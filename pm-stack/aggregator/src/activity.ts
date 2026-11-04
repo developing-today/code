@@ -78,7 +78,8 @@ export const ACTIVITY_SOURCE_COVERAGE: readonly ActivityCoverage[] = [
     status: "supported",
     supported:
       "Watchdog breach episodes (fleet-feed stale/absent/future-dated, orchestration stale/invalid/absent, registry stale, Kaneo/Grist/Pad probe failures) are written to the stream as watchdog-event records, one per episode, keyed by the stable watchdog:<input> id and the episode's since timestamp.",
-    unsupported: "Sub-threshold degradations the watchdog does not diagnose, and inputs outside watchdog.ts's diagnosed set.",
+    unsupported:
+      "Sub-threshold degradations the watchdog does not diagnose, and inputs outside watchdog.ts's diagnosed set.",
     historical:
       "From the first ingestion run forward. Watchdog diagnoses are derived live and were never persisted before #3321, so no pre-ingestion breach history exists or is claimed.",
   },
@@ -538,11 +539,7 @@ export class IngestionStore {
    *  otherwise reports a zero/short duration that understates the
    *  interruption, which ran until recovery, not until the last
    *  failed poll. */
-  async resolveGap(
-    id: string,
-    status: Exclude<GapStatus, "open">,
-    to?: string,
-  ): Promise<GapRecord | null> {
+  async resolveGap(id: string, status: Exclude<GapStatus, "open">, to?: string): Promise<GapRecord | null> {
     await this.load();
     const gap = this.data.gaps.find((g) => g.id === id);
     if (!gap || gap.status !== "open") return gap ?? null;

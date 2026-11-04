@@ -74,7 +74,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
@@ -111,8 +111,7 @@ pub const CSE_OFFER_DISCLOSURE: &str = "Hosted storage is operator-readable at r
 /// Final-screen notice for the in-browser variant (§3.3a): a binding whose
 /// only key copy dies with a browser profile is a support incident scheduled
 /// in advance.
-pub const BROWSER_KEY_EXPORT_NOTICE: &str =
-    "Export your Iroh root key now and keep the copy somewhere safe. If this browser \
+pub const BROWSER_KEY_EXPORT_NOTICE: &str = "Export your Iroh root key now and keep the copy somewhere safe. If this browser \
     profile is lost without an exported copy, the binding cannot be recovered except \
     through the delayed-rebind wait.";
 
@@ -238,7 +237,7 @@ pub fn parse_rfc3339(text: &str) -> Option<u64> {
     let hour = num(11, 13)?;
     let minute = num(14, 16)?;
     let second = num(17, 19)?;
-    if !(1..=12).contains(&month) || hour > 23 || minute > 59 || second > 60 {
+    if !(1..=12).contains(&month) || hour > 23 || minute > 59 || second > 59 {
         return None;
     }
     let leap = is_leap_year(year);
@@ -585,11 +584,7 @@ pub fn rebind_authorization_bytes(
 ) -> Vec<u8> {
     canonical_fields(
         REBIND_AUTHORIZATION_DOMAIN,
-        &[
-            binding_id,
-            &hex_encode(new_iroh_id),
-            challenge_id,
-        ],
+        &[binding_id, &hex_encode(new_iroh_id), challenge_id],
     )
 }
 
@@ -645,9 +640,9 @@ pub enum CeremonyError {
     /// challenge. Repeated failures rate-limit issuance per account.
     #[error("bad signature: the proof does not verify against the claimed key")]
     BadSignature,
-    /// This `iroh_id` is already bound to another `sub`. Not retryable as
-    /// a fresh binding; the rebind path (slice 2) applies.
-    #[error("key already bound to another account: use the rebind protocol")]
+    /// This `iroh_id` is bound to another `sub` or reserved by a pending
+    /// delayed rebind. Not retryable as a fresh binding; use the rebind path.
+    #[error("key is bound or reserved elsewhere: use the rebind protocol")]
     IrohIdBoundElsewhere,
     /// This `sub` already has an active binding for a different key. Not
     /// completable here; the rebind protocol (slice 2) applies.
@@ -696,8 +691,9 @@ pub enum RebindError {
     /// The replacement key is the currently bound key.
     #[error("new key is the currently bound key")]
     SameKey,
-    /// The replacement key is bound to another account.
-    #[error("new key already bound to another account")]
+    /// The replacement key is bound elsewhere or reserved by another
+    /// pending delayed rebind.
+    #[error("new key is bound or reserved elsewhere")]
     NewKeyBoundElsewhere,
     /// No live challenge with that ID.
     #[error("unknown challenge: request a fresh one")]
@@ -977,6 +973,7 @@ impl HostedBindingService {
         }
         // Conflict checks (§1.2 rules): an `active` or `rebind_pending`
         // binding reserves the account; one `sub` per `iroh_id` at a time.
+        // A pending delayed rebind also reserves its target key.
         if let Some(existing_id) = self.binding_by_sub.get(session_sub) {
             let Some(existing) = self.bindings.get(existing_id) else {
                 // An index entry without a record is corrupt registry state,
@@ -996,9 +993,9 @@ impl HostedBindingService {
                 }
             }
         }
-        if self
-            .binding_by_iroh
-            .contains_key(&hex_encode(&challenge.iroh_id))
+        let iroh_id = hex_encode(&challenge.iroh_id);
+        if self.binding_by_iroh.contains_key(&iroh_id)
+            || self.pending_rebind_reserves_iroh(&iroh_id, None)
         {
             return Err(CeremonyError::IrohIdBoundElsewhere);
         }
@@ -1011,7 +1008,7 @@ impl HostedBindingService {
         let transcript = ChallengeTranscript {
             challenge_id: challenge.challenge_id.clone(),
             sub: challenge.sub.clone(),
-            iroh_id: hex_encode(&challenge.iroh_id),
+            iroh_id,
             service_id: challenge.service_id.clone(),
             nonce: B64.encode(challenge.nonce),
             issued_at: unix_secs_to_rfc3339(challenge.issued_at),
@@ -1240,7 +1237,9 @@ impl HostedBindingService {
             return Err(error);
         };
         let verifying = VerifyingKey::from_bytes(&key_array).map_err(|_| error.clone())?;
-        verifying.verify_strict(message, &signature).map_err(|_| error)
+        verifying
+            .verify_strict(message, &signature)
+            .map_err(|_| error)
     }
 
     /// The binding for `sub`, requiring an `active` status for paths that
@@ -1262,14 +1261,16 @@ impl HostedBindingService {
     /// and returns the request plus the §4.3 notice artefact.
     ///
     /// During the wait the old key keeps full control, the new key has
-    /// none, and the pending binding keeps reserving the account: fresh
-    /// ceremonies fail with [`CeremonyError::RebindPending`] for the whole
-    /// wait, so the delay cannot be bypassed by re-running §3.
+    /// none, and the pending binding reserves both the account and target
+    /// key: fresh ceremonies fail with [`CeremonyError::RebindPending`]
+    /// for that account and with [`CeremonyError::IrohIdBoundElsewhere`]
+    /// for another account attempting the reserved key.
     ///
     /// # Errors
     ///
     /// See [`RebindError`]: no binding, one already pending, the new key
-    /// is the old key or is bound elsewhere, or the challenge proof fails.
+    /// is the old key, bound elsewhere, or reserved by another pending
+    /// request, or the challenge proof fails.
     pub fn request_delayed_rebind(
         &mut self,
         session_sub: &str,
@@ -1283,7 +1284,9 @@ impl HostedBindingService {
         if new_iroh_id == binding.iroh_id {
             return Err(RebindError::SameKey);
         }
-        if self.binding_by_iroh.contains_key(&new_iroh_id) {
+        if self.binding_by_iroh.contains_key(&new_iroh_id)
+            || self.pending_rebind_reserves_iroh(&new_iroh_id, None)
+        {
             return Err(RebindError::NewKeyBoundElsewhere);
         }
         let now = self.now();
@@ -1305,8 +1308,7 @@ impl HostedBindingService {
                 .attest_bytes(&mutated)
                 .ok_or(RebindError::RecordEncoding)?,
         );
-        self.bindings
-            .insert(mutated.binding_id.clone(), mutated);
+        self.bindings.insert(mutated.binding_id.clone(), mutated);
         let notice = RebindNotice {
             rebind_id: request.rebind_id.clone(),
             binding_id: request.binding_id.clone(),
@@ -1367,7 +1369,8 @@ impl HostedBindingService {
                 .attest_bytes(&binding)
                 .ok_or(RebindError::RecordEncoding)?,
         );
-        self.bindings.insert(binding.binding_id.clone(), binding.clone());
+        self.bindings
+            .insert(binding.binding_id.clone(), binding.clone());
         Ok(binding)
     }
 
@@ -1428,7 +1431,12 @@ impl HostedBindingService {
         if new_iroh_id == binding.iroh_id {
             return Err(RebindError::SameKey);
         }
-        if self.binding_by_iroh.contains_key(&new_iroh_id) {
+        if self.binding_by_iroh.contains_key(&new_iroh_id)
+            || self.pending_rebind_reserves_iroh(
+                &new_iroh_id,
+                request.as_ref().map(|request| request.rebind_id.as_str()),
+            )
+        {
             return Err(RebindError::NewKeyBoundElsewhere);
         }
         Self::verify_hex_signature(
@@ -1493,6 +1501,14 @@ impl HostedBindingService {
         if self.now() < effective_secs {
             return Err(RebindError::RebindNotYetEffective);
         }
+        if self
+            .binding_by_iroh
+            .get(&request.new_iroh_id)
+            .is_some_and(|binding_id| binding_id != &request.binding_id)
+            || self.pending_rebind_reserves_iroh(&request.new_iroh_id, Some(rebind_id))
+        {
+            return Err(RebindError::NewKeyBoundElsewhere);
+        }
         let record = RebindRecord {
             rebind_id: request.rebind_id.clone(),
             binding_id: request.binding_id.clone(),
@@ -1516,20 +1532,24 @@ impl HostedBindingService {
         Ok((updated, record))
     }
 
-    /// Apply a verified rebind (§4.4 steps 1–3): sign the record, append
-    /// the old key to history, replace the binding's key, set it back to
-    /// `active`, re-attest, re-index, and retain the published record.
+    /// Apply a verified rebind (§4.4 steps 1–3): reject a foreign key-index
+    /// owner, sign the record, append the old key to history, replace the
+    /// binding's key, set it back to `active`, re-attest, re-index, and
+    /// retain the published record.
     fn apply_rebind(
         &mut self,
         record: &RebindRecord,
     ) -> Result<(BindingRecord, RebindRecord), RebindError> {
+        if self
+            .binding_by_iroh
+            .get(&record.new_iroh_id)
+            .is_some_and(|binding_id| binding_id != &record.binding_id)
+        {
+            return Err(RebindError::NewKeyBoundElsewhere);
+        }
         let mut record = record.clone();
-        record.service_signature = hex_encode(
-            &self
-                .service_key
-                .sign(&record.canonical_bytes())
-                .to_bytes(),
-        );
+        record.service_signature =
+            hex_encode(&self.service_key.sign(&record.canonical_bytes()).to_bytes());
         let mut binding = self
             .bindings
             .get(&record.binding_id)
@@ -1555,7 +1575,8 @@ impl HostedBindingService {
         self.binding_by_iroh.remove(&record.old_iroh_id);
         self.binding_by_iroh
             .insert(record.new_iroh_id.clone(), record.binding_id.clone());
-        self.bindings.insert(binding.binding_id.clone(), binding.clone());
+        self.bindings
+            .insert(binding.binding_id.clone(), binding.clone());
         self.rebind_records.push(record.clone());
         Ok((binding, record))
     }
@@ -1572,6 +1593,16 @@ impl HostedBindingService {
     pub fn pending_rebind_for_binding(&self, binding_id: &str) -> Option<&RebindRequest> {
         self.rebind_requests.values().find(|request| {
             request.binding_id == binding_id && request.status == RebindRequestStatus::Pending
+        })
+    }
+
+    /// Whether a pending delayed rebind reserves `iroh_id`, optionally
+    /// ignoring the request currently being effected or approved.
+    fn pending_rebind_reserves_iroh(&self, iroh_id: &str, except_rebind_id: Option<&str>) -> bool {
+        self.rebind_requests.values().any(|request| {
+            request.status == RebindRequestStatus::Pending
+                && request.new_iroh_id == iroh_id
+                && Some(request.rebind_id.as_str()) != except_rebind_id
         })
     }
 
@@ -1818,7 +1849,7 @@ fn prune_before(log: &mut Vec<u64>, cutoff: u64) {
 mod tests {
     use super::*;
     use crate::groups::policy::{Policy, Template};
-    use crate::groups::{fold, Body, Create, DeviceOp, Event, Key, Role};
+    use crate::groups::{Body, Create, DeviceOp, Event, Key, Role, fold};
 
     const SUB: &str = "108204481453987112345678";
     const OTHER_SUB: &str = "209305592564098223456789";
@@ -2314,6 +2345,11 @@ mod tests {
         assert_eq!(parse_rfc3339("2023-02-29T00:00:00Z"), None);
         assert_eq!(parse_rfc3339("2024-02-29T00:00:00Z"), Some(1_709_164_800));
         assert_eq!(parse_rfc3339("not-a-time"), None);
+        // A leap second is not modelled (#756, the same ruling
+        // parse_iso_timestamp follows): second 60 is refused on every
+        // date instead of aliasing to the next minute (#5416).
+        assert_eq!(parse_rfc3339("2016-12-31T23:59:60Z"), None);
+        assert_eq!(parse_rfc3339("2023-06-15T12:30:60Z"), None);
     }
 
     #[test]
@@ -2430,6 +2466,70 @@ mod tests {
     }
 
     #[test]
+    fn pending_rebind_target_cannot_be_bound_by_ordinary_ceremony() {
+        let mut service = service();
+        let binding = bind(&mut service, SUB, 21);
+        signup(&mut service, OTHER_SUB);
+        let new_key = root_key(22);
+        let (challenge_id, proof) = signed_challenge(&mut service, SUB, &new_key);
+        let (request, _) = service
+            .request_delayed_rebind(SUB, &challenge_id, &proof)
+            .unwrap();
+
+        let (challenge_id, proof) = signed_challenge(&mut service, OTHER_SUB, &new_key);
+        assert_eq!(
+            service.submit_proof(OTHER_SUB, &challenge_id, &proof, None),
+            Err(CeremonyError::IrohIdBoundElsewhere)
+        );
+        assert!(service.binding_for_sub(OTHER_SUB).is_none());
+        assert_eq!(
+            service.binding_by_iroh.get(&binding.iroh_id),
+            Some(&binding.binding_id)
+        );
+        assert!(!service.binding_by_iroh.contains_key(&request.new_iroh_id));
+        assert_eq!(
+            service.rebind_request(&request.rebind_id).unwrap().status,
+            RebindRequestStatus::Pending
+        );
+    }
+
+    #[test]
+    fn another_account_cannot_request_a_reserved_rebind_target() {
+        let mut service = service();
+        let first_binding = bind(&mut service, SUB, 21);
+        let other_binding = bind(&mut service, OTHER_SUB, 23);
+        let reserved_key = root_key(22);
+        let (challenge_id, proof) = signed_challenge(&mut service, SUB, &reserved_key);
+        let (first_request, _) = service
+            .request_delayed_rebind(SUB, &challenge_id, &proof)
+            .unwrap();
+
+        let by_iroh_before = service.binding_by_iroh.clone();
+        let by_sub_before = service.binding_by_sub.clone();
+        let requests_before = service.rebind_requests.clone();
+        let (challenge_id, proof) = signed_challenge(&mut service, OTHER_SUB, &reserved_key);
+        assert_eq!(
+            service.request_delayed_rebind(OTHER_SUB, &challenge_id, &proof),
+            Err(RebindError::NewKeyBoundElsewhere)
+        );
+        assert_eq!(service.binding_by_iroh, by_iroh_before);
+        assert_eq!(service.binding_by_sub, by_sub_before);
+        assert_eq!(service.rebind_requests, requests_before);
+        assert_eq!(service.binding_for_sub(OTHER_SUB), Some(&other_binding));
+        assert_eq!(
+            service.binding_for_sub(SUB).unwrap().binding_id,
+            first_binding.binding_id
+        );
+        assert_eq!(
+            service
+                .rebind_request(&first_request.rebind_id)
+                .unwrap()
+                .status,
+            RebindRequestStatus::Pending
+        );
+    }
+
+    #[test]
     fn delayed_rebind_cancel_restores_active_and_restarts_full_wait() {
         let mut service = service();
         let binding = bind(&mut service, SUB, 21);
@@ -2446,7 +2546,10 @@ mod tests {
             Err(RebindError::BadOldKeySignature)
         );
         assert_eq!(
-            service.pending_rebind_for_binding(&binding.binding_id).unwrap().status,
+            service
+                .pending_rebind_for_binding(&binding.binding_id)
+                .unwrap()
+                .status,
             RebindRequestStatus::Pending
         );
 
@@ -2544,6 +2647,171 @@ mod tests {
     }
 
     #[test]
+    fn delayed_rebind_effect_refuses_a_target_bound_elsewhere_without_mutation() {
+        let mut service = service();
+        let binding = bind(&mut service, SUB, 21);
+        let other_binding = bind(&mut service, OTHER_SUB, 23);
+        let new_key = root_key(22);
+        let (challenge_id, proof) = signed_challenge(&mut service, SUB, &new_key);
+        let (request, _) = service
+            .request_delayed_rebind(SUB, &challenge_id, &proof)
+            .unwrap();
+
+        // Simulate a competing bind that raced with or predates this pending
+        // request. Keep the foreign record and its by-key index consistent.
+        let mut other_claim = other_binding.clone();
+        other_claim.iroh_id = request.new_iroh_id.clone();
+        other_claim.service_attestation = hex_encode(&service.attest_bytes(&other_claim).unwrap());
+        service.binding_by_iroh.remove(&other_binding.iroh_id);
+        service.binding_by_iroh.insert(
+            request.new_iroh_id.clone(),
+            other_binding.binding_id.clone(),
+        );
+        service
+            .bindings
+            .insert(other_claim.binding_id.clone(), other_claim.clone());
+
+        let binding_before = service.binding(&binding.binding_id).unwrap().clone();
+        let other_before = service.binding(&other_binding.binding_id).unwrap().clone();
+        let by_sub_before = service.binding_by_sub.clone();
+        let by_iroh_before = service.binding_by_iroh.clone();
+        let request_before = service.rebind_request(&request.rebind_id).unwrap().clone();
+        let published_before = service.rebind_records().to_vec();
+        let counter = countersign(
+            &binding.binding_id,
+            &binding.iroh_id,
+            &new_key,
+            REBIND_VIA_DELAYED,
+        );
+        service.set_now_override(Some(T0 + REBIND_WAITING_PERIOD_SECS));
+
+        assert_eq!(
+            service.effect_due_rebind(&request.rebind_id, &counter),
+            Err(RebindError::NewKeyBoundElsewhere)
+        );
+        assert_eq!(service.binding(&binding.binding_id), Some(&binding_before));
+        assert_eq!(
+            service.binding(&other_binding.binding_id),
+            Some(&other_before)
+        );
+        assert_eq!(service.binding_by_sub, by_sub_before);
+        assert_eq!(service.binding_by_iroh, by_iroh_before);
+        assert_eq!(
+            service.rebind_request(&request.rebind_id),
+            Some(&request_before)
+        );
+        assert_eq!(service.rebind_records(), published_before);
+    }
+
+    #[test]
+    fn delayed_rebind_effect_refuses_a_target_reserved_by_another_pending_request() {
+        let mut service = service();
+        let binding = bind(&mut service, SUB, 21);
+        let other_binding = bind(&mut service, OTHER_SUB, 23);
+        let new_key = root_key(22);
+        let (challenge_id, proof) = signed_challenge(&mut service, SUB, &new_key);
+        let (request, _) = service
+            .request_delayed_rebind(SUB, &challenge_id, &proof)
+            .unwrap();
+
+        // Model a competing pending request that was already present in
+        // retained state when this request reaches its effect time.
+        let mut other_pending_binding = other_binding.clone();
+        other_pending_binding.status = BindingStatus::RebindPending;
+        other_pending_binding.service_attestation =
+            hex_encode(&service.attest_bytes(&other_pending_binding).unwrap());
+        service.bindings.insert(
+            other_pending_binding.binding_id.clone(),
+            other_pending_binding.clone(),
+        );
+        let other_request = RebindRequest {
+            rebind_id: "earlier-pending-request".to_owned(),
+            binding_id: other_binding.binding_id.clone(),
+            sub: OTHER_SUB.to_owned(),
+            old_iroh_id: other_binding.iroh_id.clone(),
+            new_iroh_id: request.new_iroh_id.clone(),
+            requested_at: request.requested_at.clone(),
+            effective_at: request.effective_at.clone(),
+            status: RebindRequestStatus::Pending,
+        };
+        service
+            .rebind_requests
+            .insert(other_request.rebind_id.clone(), other_request.clone());
+
+        let binding_before = service.binding(&binding.binding_id).unwrap().clone();
+        let other_before = service.binding(&other_binding.binding_id).unwrap().clone();
+        let by_sub_before = service.binding_by_sub.clone();
+        let by_iroh_before = service.binding_by_iroh.clone();
+        let request_before = service.rebind_request(&request.rebind_id).unwrap().clone();
+        let other_request_before = service
+            .rebind_request(&other_request.rebind_id)
+            .unwrap()
+            .clone();
+        let counter = countersign(
+            &binding.binding_id,
+            &binding.iroh_id,
+            &new_key,
+            REBIND_VIA_DELAYED,
+        );
+        service.set_now_override(Some(T0 + REBIND_WAITING_PERIOD_SECS));
+
+        assert_eq!(
+            service.effect_due_rebind(&request.rebind_id, &counter),
+            Err(RebindError::NewKeyBoundElsewhere)
+        );
+        assert_eq!(service.binding(&binding.binding_id), Some(&binding_before));
+        assert_eq!(
+            service.binding(&other_binding.binding_id),
+            Some(&other_before)
+        );
+        assert_eq!(service.binding_by_sub, by_sub_before);
+        assert_eq!(service.binding_by_iroh, by_iroh_before);
+        assert_eq!(
+            service.rebind_request(&request.rebind_id),
+            Some(&request_before)
+        );
+        assert_eq!(
+            service.rebind_request(&other_request.rebind_id),
+            Some(&other_request_before)
+        );
+        assert!(service.rebind_records().is_empty());
+    }
+
+    #[test]
+    fn apply_rebind_refuses_to_overwrite_another_bindings_key_index() {
+        let mut service = service();
+        let binding = bind(&mut service, SUB, 21);
+        let other_binding = bind(&mut service, OTHER_SUB, 23);
+        let record = RebindRecord {
+            rebind_id: "conflicting-rebind".to_owned(),
+            binding_id: binding.binding_id.clone(),
+            old_iroh_id: binding.iroh_id.clone(),
+            new_iroh_id: other_binding.iroh_id.clone(),
+            effective_at: unix_secs_to_rfc3339(T0),
+            via: REBIND_VIA_OLD_KEY.to_owned(),
+            service_signature: String::new(),
+            new_key_countersignature: String::new(),
+        };
+        let binding_before = service.binding(&binding.binding_id).unwrap().clone();
+        let other_before = service.binding(&other_binding.binding_id).unwrap().clone();
+        let by_sub_before = service.binding_by_sub.clone();
+        let by_iroh_before = service.binding_by_iroh.clone();
+
+        assert_eq!(
+            service.apply_rebind(&record),
+            Err(RebindError::NewKeyBoundElsewhere)
+        );
+        assert_eq!(service.binding(&binding.binding_id), Some(&binding_before));
+        assert_eq!(
+            service.binding(&other_binding.binding_id),
+            Some(&other_before)
+        );
+        assert_eq!(service.binding_by_sub, by_sub_before);
+        assert_eq!(service.binding_by_iroh, by_iroh_before);
+        assert!(service.rebind_records().is_empty());
+    }
+
+    #[test]
     fn fast_path_rebind_is_immediate_and_rejects_bad_authorization() {
         let mut service = service();
         let binding = bind(&mut service, SUB, 21);
@@ -2609,6 +2877,61 @@ mod tests {
     }
 
     #[test]
+    fn fast_path_rebind_cannot_take_a_pending_request_target() {
+        let mut service = service();
+        let binding = bind(&mut service, SUB, 21);
+        let other_binding = bind(&mut service, OTHER_SUB, 23);
+        let reserved_key = root_key(22);
+        let (challenge_id, proof) = signed_challenge(&mut service, SUB, &reserved_key);
+        let (request, _) = service
+            .request_delayed_rebind(SUB, &challenge_id, &proof)
+            .unwrap();
+
+        let (challenge_id, proof) = signed_challenge(&mut service, OTHER_SUB, &reserved_key);
+        let target_id = reserved_key.verifying_key().to_bytes();
+        let authorization = root_key(23).sign(&rebind_authorization_bytes(
+            &other_binding.binding_id,
+            &target_id,
+            &challenge_id,
+        ));
+        let counter = countersign(
+            &other_binding.binding_id,
+            &other_binding.iroh_id,
+            &reserved_key,
+            REBIND_VIA_OLD_KEY,
+        );
+        let by_sub_before = service.binding_by_sub.clone();
+        let by_iroh_before = service.binding_by_iroh.clone();
+
+        assert_eq!(
+            service.rebind_with_old_key_authorization(
+                OTHER_SUB,
+                None,
+                &challenge_id,
+                &proof,
+                &authorization.to_bytes(),
+                &counter,
+            ),
+            Err(RebindError::NewKeyBoundElsewhere)
+        );
+        assert_eq!(
+            service.binding(&other_binding.binding_id),
+            Some(&other_binding)
+        );
+        assert_eq!(
+            service.binding_for_sub(SUB).unwrap().binding_id,
+            binding.binding_id
+        );
+        assert_eq!(service.binding_by_sub, by_sub_before);
+        assert_eq!(service.binding_by_iroh, by_iroh_before);
+        assert_eq!(
+            service.rebind_request(&request.rebind_id).unwrap().status,
+            RebindRequestStatus::Pending
+        );
+        assert!(service.rebind_records().is_empty());
+    }
+
+    #[test]
     fn approve_early_converts_pending_delayed_rebind() {
         let mut service = service();
         let binding = bind(&mut service, SUB, 21);
@@ -2665,6 +2988,10 @@ mod tests {
         // Nothing pends and nothing changed.
         let stored = service.binding_for_sub(SUB).unwrap();
         assert_eq!(stored.status, BindingStatus::Active);
-        assert!(service.pending_rebind_for_binding(&stored.binding_id).is_none());
+        assert!(
+            service
+                .pending_rebind_for_binding(&stored.binding_id)
+                .is_none()
+        );
     }
 }

@@ -81,7 +81,7 @@ export const PROGRAM: ProgramDoc = {
     {
       title: "Kaneo — per-repo execution board",
       detail:
-        "The execution board under the dashboard's board view, one project per repo, running our fork (developing-today/kaneo) so multi-repo linking is on our schedule.",
+        "The execution board under the dashboard's board view, one project per repo, running our fork (developing-today-forks/kaneo) so multi-repo linking is on our schedule.",
     },
     {
       title: "ready-for-agent — dispatch",

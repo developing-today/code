@@ -39,20 +39,14 @@ const requestTools = () => ({
 describe("filterContextTools", () => {
   test("hides disabled mcpx tools for the session, enabled ones remain", () => {
     const tools = requestTools();
-    const removed = filterContextTools(
-      { sessionID: "s1", tools },
-      new Set(["mcpx_exec"]),
-    );
+    const removed = filterContextTools({ sessionID: "s1", tools }, new Set(["mcpx_exec"]));
     expect(removed).toEqual(["mcpx_exec"]);
     expect(Object.keys(tools).sort()).toEqual(["bash", "mcpx_daemon_status", "read"]);
   });
 
   test("non-mcpx tools are untouched, even when the policy names them", () => {
     const tools = requestTools();
-    const removed = filterContextTools(
-      { sessionID: "s1", tools },
-      new Set(["read", "bash"]),
-    );
+    const removed = filterContextTools({ sessionID: "s1", tools }, new Set(["read", "bash"]));
     expect(removed).toEqual([]);
     expect(Object.keys(tools).length).toBe(4);
   });
@@ -88,10 +82,7 @@ describe("disabled-tools policy in ctx.storage", () => {
   test("round-trips through set/read", async () => {
     const storage = stubStorage();
     await setDisabledTools(storage, "s1", ["mcpx_exec", "mcpx_daemon_select"]);
-    expect([...(await readDisabledTools(storage, "s1"))].sort()).toEqual([
-      "mcpx_daemon_select",
-      "mcpx_exec",
-    ]);
+    expect([...(await readDisabledTools(storage, "s1"))].sort()).toEqual(["mcpx_daemon_select", "mcpx_exec"]);
     expect(await readDisabledTools(storage, "s2")).toEqual(new Set());
   });
 
@@ -240,13 +231,11 @@ describe("setup: the disabledTools option is the production policy writer", () =
   });
 
   test("the option resolves from the array, then the env string", () => {
-    expect(resolveOptions({ disabledTools: ["mcpx_exec"] }, {}).disabledTools).toEqual([
+    expect(resolveOptions({ disabledTools: ["mcpx_exec"] }, {}).disabledTools).toEqual(["mcpx_exec"]);
+    expect(resolveOptions({}, { MCPX_PLUGIN_DISABLED_TOOLS: "mcpx_exec, mcpx_daemon_status" }).disabledTools).toEqual([
       "mcpx_exec",
+      "mcpx_daemon_status",
     ]);
-    expect(
-      resolveOptions({}, { MCPX_PLUGIN_DISABLED_TOOLS: "mcpx_exec, mcpx_daemon_status" })
-        .disabledTools,
-    ).toEqual(["mcpx_exec", "mcpx_daemon_status"]);
     expect(resolveOptions({}, {}).disabledTools).toBeUndefined();
   });
 });

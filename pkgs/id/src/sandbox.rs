@@ -1138,27 +1138,42 @@ mod tests {
 
         let read_output = |store: &mut Store<()>, ptr: i32| -> Vec<u8> {
             let len = out_len.call(&mut *store, ()).unwrap();
-            assert!(len > 0, "export output must leave a positive `plaza_out_len`");
+            assert!(
+                len > 0,
+                "export output must leave a positive `plaza_out_len`"
+            );
             let mut buf = vec![0u8; usize::try_from(len).unwrap()];
-            memory.read(&*store, usize::try_from(ptr).unwrap(), &mut buf).unwrap();
+            memory
+                .read(&*store, usize::try_from(ptr).unwrap(), &mut buf)
+                .unwrap();
             buf
         };
 
         let model = init.call(&mut store, 7).unwrap();
         // Host -> guest input: allocate, write, call, free the allocation.
         let event = b"inc";
-        let in_ptr = alloc.call(&mut store, i32::try_from(event.len()).unwrap()).unwrap();
-        assert!(in_ptr > 0, "`plaza_alloc` must return a usable pointer");
-        memory.write(&mut store, usize::try_from(in_ptr).unwrap(), event).unwrap();
-        let model = update
-            .call(&mut store, (model, 1, in_ptr, i32::try_from(event.len()).unwrap()))
+        let in_ptr = alloc
+            .call(&mut store, i32::try_from(event.len()).unwrap())
             .unwrap();
-        free.call(&mut store, (in_ptr, i32::try_from(event.len()).unwrap())).unwrap();
+        assert!(in_ptr > 0, "`plaza_alloc` must return a usable pointer");
+        memory
+            .write(&mut store, usize::try_from(in_ptr).unwrap(), event)
+            .unwrap();
+        let model = update
+            .call(
+                &mut store,
+                (model, 1, in_ptr, i32::try_from(event.len()).unwrap()),
+            )
+            .unwrap();
+        free.call(&mut store, (in_ptr, i32::try_from(event.len()).unwrap()))
+            .unwrap();
 
         let view_ptr = view.call(&mut store, model).unwrap();
         let view_bytes = read_output(&mut store, view_ptr);
         assert!(
-            String::from_utf8(view_bytes.clone()).unwrap().contains("count=1"),
+            String::from_utf8(view_bytes.clone())
+                .unwrap()
+                .contains("count=1"),
             "view after one inc: {}",
             String::from_utf8_lossy(&view_bytes)
         );
@@ -1182,10 +1197,17 @@ mod tests {
             .call(&mut store, i32::try_from(snapshot_bytes.len()).unwrap())
             .unwrap();
         memory
-            .write(&mut store, usize::try_from(snap_ptr).unwrap(), &snapshot_bytes)
+            .write(
+                &mut store,
+                usize::try_from(snap_ptr).unwrap(),
+                &snapshot_bytes,
+            )
             .unwrap();
         let restored = restore
-            .call(&mut store, (snap_ptr, i32::try_from(snapshot_bytes.len()).unwrap()))
+            .call(
+                &mut store,
+                (snap_ptr, i32::try_from(snapshot_bytes.len()).unwrap()),
+            )
             .unwrap();
         free.call(
             &mut store,
@@ -1274,22 +1296,23 @@ mod tests {
                 bytes: bytes.to_vec(),
             });
         };
-        let host = |live: &mut WorldInstance, events: &mut Vec<FixtureEvent>, event: serde_json::Value| {
-            WorldProgram::update(
-                live,
-                &WorldEvent {
-                    sequence: 0,
-                    participant_id: 0,
-                    kind: WorldEventKind::System {
-                        event: event.to_string(),
+        let host =
+            |live: &mut WorldInstance, events: &mut Vec<FixtureEvent>, event: serde_json::Value| {
+                WorldProgram::update(
+                    live,
+                    &WorldEvent {
+                        sequence: 0,
+                        participant_id: 0,
+                        kind: WorldEventKind::System {
+                            event: event.to_string(),
+                        },
                     },
-                },
-            )
-            .unwrap();
-            events.push(FixtureEvent::System {
-                event: event.to_string(),
-            });
-        };
+                )
+                .unwrap();
+                events.push(FixtureEvent::System {
+                    event: event.to_string(),
+                });
+            };
 
         // Type "hi" and submit: the guest requests `chat.say` as r0, and
         // the document must satisfy the capability schema in world_caps.
@@ -1299,7 +1322,10 @@ mod tests {
         let wants = WorldProgram::wants(&mut live).unwrap().unwrap();
         let parsed = crate::world_caps::parse_wants(&wants).unwrap();
         assert!(
-            parsed.requests.iter().any(|r| r.id == "r0" && r.cap == "chat.say"),
+            parsed
+                .requests
+                .iter()
+                .any(|r| r.id == "r0" && r.cap == "chat.say"),
             "expected a chat.say request r0 in wants: {wants}"
         );
         host(
@@ -1361,7 +1387,10 @@ mod tests {
             "fixture replay diverged: {:?}",
             verification.divergence
         );
-        assert!(verification.steps > 0, "verify must compare per-event records");
+        assert!(
+            verification.steps > 0,
+            "verify must compare per-event records"
+        );
     }
 
     #[test]

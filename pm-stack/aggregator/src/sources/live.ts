@@ -519,8 +519,8 @@ async function enrichWithRegistryLinks<T extends { links: Link[] }>(
 /** Repo shorthands the orchestrator uses in linedUp titles. */
 const TITLE_REPO_ALIASES: Record<string, string> = {
   code: "developing-today/code",
-  opencode: "developing-today/opencode",
-  openchamber: "developing-today/openchamber",
+  opencode: "developing-today-forks/opencode",
+  openchamber: "developing-today-forks/openchamber",
   nix: "dezren39/nix",
 };
 
@@ -695,7 +695,11 @@ export function liveSource(
     // returning void is treated as acknowledged (legacy callers).
     onActivity?: (
       deliveries: ActivityDelivery[],
-    ) => Promise<boolean | { failed: number; failedIds?: string[] } | void> | boolean | { failed: number; failedIds?: string[] } | void;
+    ) =>
+      | Promise<boolean | { failed: number; failedIds?: string[] } | void>
+      | boolean
+      | { failed: number; failedIds?: string[] }
+      | void;
     // Kaneo polling-gap sink (#3321, Codex P2 on PR #5141): called
     // with (source, gapFrom, failureTime) while polls are failing or
     // partial, and with (source, gapFrom, null) on the first complete
@@ -749,9 +753,7 @@ export function liveSource(
     try {
       await opts.onSourceGap("kaneo", kaneoGapFrom, at.toISOString());
     } catch (err) {
-      console.error(
-        `[activity] WARNING: kaneo gap record failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      console.error(`[activity] WARNING: kaneo gap record failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
   // #3321: whether this process has already sent a gap-recovery
@@ -1043,73 +1045,69 @@ export function liveSource(
           await enqueueKaneoGap(new Date());
         } else {
           await enqueueKaneoIngestion(async () => {
-          await seedKaneoSeqFromPersisted();
-          await noteKaneoRecovered();
-          try {
-            const cards: KaneoCardSnapshot[] = board
-              .filter((b) => b.source === "kaneo")
-              .map((b) => ({
-                id: b.id,
-                status: b.status,
-                title: b.title,
-                seq: kaneoCardSeq.get(b.id) ?? prevKaneoCards?.get(b.id)?.seq ?? 0,
-                ...(b.updatedAt ? { updatedAt: b.updatedAt } : {}),
-                ...(b.kaneoUrl ? { kaneoUrl: b.kaneoUrl } : {}),
-              }));
-            if (!prevKaneoCards) {
-              // First poll: silent baseline, no deliveries, and the
-              // seq counters do not advance (nothing was ingested).
-              prevKaneoCards = new Map(cards.map((c) => [c.id, c]));
-            } else if (opts?.onActivity) {
-              const deliveries = kaneoChangeDeliveries(prevKaneoCards, cards);
-              if (!deliveries.length) {
-                advanceKaneoBaseline(cards);
-              } else {
-                // Await the ingestion acknowledgment before
-                // discarding the previous snapshot (Codex P2,
-                // PR #5141): if the append failed, the baseline —
-                // and the seq counters — stay put, so the next poll
-                // re-diffs the same change with the same stable
-                // delivery ids and the ingestion store can retry it
-                // (deliveries it did persist dedupe as duplicates).
-                const ack = await opts.onActivity(deliveries);
-                const failed =
-                  ack === false
-                    ? deliveries.length
-                    : typeof ack === "object" && ack !== null
-                      ? (ack.failed ?? 0)
-                      : 0;
-                const failedIds =
-                  typeof ack === "object" && ack !== null && Array.isArray(ack.failedIds) ? ack.failedIds : null;
-                if (failed === 0) {
+            await seedKaneoSeqFromPersisted();
+            await noteKaneoRecovered();
+            try {
+              const cards: KaneoCardSnapshot[] = board
+                .filter((b) => b.source === "kaneo")
+                .map((b) => ({
+                  id: b.id,
+                  status: b.status,
+                  title: b.title,
+                  seq: kaneoCardSeq.get(b.id) ?? prevKaneoCards?.get(b.id)?.seq ?? 0,
+                  ...(b.updatedAt ? { updatedAt: b.updatedAt } : {}),
+                  ...(b.kaneoUrl ? { kaneoUrl: b.kaneoUrl } : {}),
+                }));
+              if (!prevKaneoCards) {
+                // First poll: silent baseline, no deliveries, and the
+                // seq counters do not advance (nothing was ingested).
+                prevKaneoCards = new Map(cards.map((c) => [c.id, c]));
+              } else if (opts?.onActivity) {
+                const deliveries = kaneoChangeDeliveries(prevKaneoCards, cards);
+                if (!deliveries.length) {
                   advanceKaneoBaseline(cards);
-                } else if (failedIds) {
-                  // Advance every acknowledged card; retain only the
-                  // failed deliveries' cards for retry (Codex P2,
-                  // PR #5141).
-                  const failedCards = new Set(
-                    deliveries.filter((d) => failedIds.includes(d.sourceId)).map((d) => d.ref),
-                  );
-                  console.error(
-                    `[activity] WARNING: ${failed} kaneo deliveries were not ingested; ` +
-                      "baseline retained for the failed cards only, so the next poll retries them",
-                  );
-                  advanceKaneoBaseline(cards, failedCards);
                 } else {
-                  console.error(
-                    `[activity] WARNING: ${failed} kaneo deliveries were not ingested; ` +
-                      "board baseline retained so the next poll retries them",
-                  );
+                  // Await the ingestion acknowledgment before
+                  // discarding the previous snapshot (Codex P2,
+                  // PR #5141): if the append failed, the baseline —
+                  // and the seq counters — stay put, so the next poll
+                  // re-diffs the same change with the same stable
+                  // delivery ids and the ingestion store can retry it
+                  // (deliveries it did persist dedupe as duplicates).
+                  const ack = await opts.onActivity(deliveries);
+                  const failed =
+                    ack === false ? deliveries.length : typeof ack === "object" && ack !== null ? (ack.failed ?? 0) : 0;
+                  const failedIds =
+                    typeof ack === "object" && ack !== null && Array.isArray(ack.failedIds) ? ack.failedIds : null;
+                  if (failed === 0) {
+                    advanceKaneoBaseline(cards);
+                  } else if (failedIds) {
+                    // Advance every acknowledged card; retain only the
+                    // failed deliveries' cards for retry (Codex P2,
+                    // PR #5141).
+                    const failedCards = new Set(
+                      deliveries.filter((d) => failedIds.includes(d.sourceId)).map((d) => d.ref),
+                    );
+                    console.error(
+                      `[activity] WARNING: ${failed} kaneo deliveries were not ingested; ` +
+                        "baseline retained for the failed cards only, so the next poll retries them",
+                    );
+                    advanceKaneoBaseline(cards, failedCards);
+                  } else {
+                    console.error(
+                      `[activity] WARNING: ${failed} kaneo deliveries were not ingested; ` +
+                        "board baseline retained so the next poll retries them",
+                    );
+                  }
                 }
+              } else {
+                advanceKaneoBaseline(cards);
               }
-            } else {
-              advanceKaneoBaseline(cards);
+            } catch (err) {
+              console.error(
+                `[activity] WARNING: kaneo change diff failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
             }
-          } catch (err) {
-            console.error(
-              `[activity] WARNING: kaneo change diff failed: ${err instanceof Error ? err.message : String(err)}`,
-            );
-          }
           });
         }
         // A successfully fetched board is live data even when the
@@ -1638,7 +1636,7 @@ export function liveSource(
       return null;
     },
     async registry(): Promise<SessionRecord[]> {
-      // Slice 3 (#906 §3): feed records (sandbox OpenCode + Jules +
+      // Slice 3 (#906 §3): feed records (sandbox OpenCode +
       // Muse launches) merged with the laptop server's live
       // sessions, accumulated into the durable store.
       const incoming: SessionRecord[] = [];
@@ -1693,19 +1691,6 @@ export function liveSource(
             : laptopSeen === false
               ? "unreachable on the last read — laptop sessions may be missing"
               : "not read yet this process",
-      });
-      const j = feed?.julesSummary;
-      out.push({
-        source: "jules",
-        label: "Jules",
-        wired: Boolean(j),
-        detail: j
-          ? `via the keeper's state (jules-review) · ${j.tracked} tracked now · last keeper run ${j.at ?? "unknown"}${
-              j.total != null
-                ? ` · last run totals: ${j.total} sessions — ${j.completed ?? 0} completed, ${j.failed ?? 0} failed, ${j.inProgress ?? 0} in progress, ${j.awaitingFeedback ?? 0} awaiting feedback (completed runs are pruned by the keeper)`
-                : ""
-            }`
-          : "keeper state not in the feed — Jules sessions are not visible",
       });
       const claudeRecords = (feed?.registry ?? []).filter((r) => r.source === "claude-code");
       out.push({

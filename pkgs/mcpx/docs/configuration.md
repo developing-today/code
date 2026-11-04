@@ -865,6 +865,7 @@ skipped launcher phases).
 | `plugin.bin` | string | `mcpx` | plugin | no | `--plugin-bin` | `MCPX_PLUGIN_BIN` | the executable the plugin invokes |
 | `plugin.binArgs` | list | *(empty)* | plugin | no | `--plugin-bin-args` | `MCPX_PLUGIN_BIN_ARGS` | arguments put in front of every plugin invocation of mcpx |
 | `plugin.daemonTools` | enum | `auto` | plugin | no | `--plugin-daemon-tools` | `MCPX_PLUGIN_DAEMON_TOOLS` | offer the tools that list and choose between daemons |
+| `plugin.disabledTools` | list | *(empty)* | plugin | no | `--plugin-disabled-tools` | `MCPX_PLUGIN_DISABLED_TOOLS` | model-facing mcpx tools hidden from every session |
 | `plugin.discoveryRetry` | duration | `1m0s` | plugin | no | `--plugin-discovery-retry` | `MCPX_PLUGIN_DISCOVERY_RETRY` | how long the plugin waits before looking for mcpx again |
 | `plugin.env` | enum | `full` | plugin | no | `--plugin-env` | `MCPX_PLUGIN_ENV` | how much session context is put into each command's environment |
 | `plugin.headless` | enum | `auto` | plugin | no | `--plugin-headless` | `MCPX_PLUGIN_HEADLESS` | suppress toasts, because nobody is looking at a screen |
@@ -1109,6 +1110,28 @@ scripts on, not the one a declaration asks for. A relative `command` resolves
 against the declaration's `dir`, then `PATH`. Without `runtime`, nothing
 changes: `command` is looked up on `PATH` and exec'd directly. `mcpx adapter
 check` reports a missing interpreter or script.
+
+### Example: tailscale, no credential
+
+The shipped declaration at `examples/tailscale.json` wraps the local
+`tailscale` CLI (#1936). It declares no credential and needs none: the CLI
+is already logged in on the machine, and that session is the
+authentication. Only two tools are exposed, both over
+`tailscale status --json`:
+
+```jsonc
+{ "adapters": [{
+  "name": "tailscale", "command": "tailscale",
+  "tools": [
+    { "name": "listTailnet",   "args": ["status", "--json"], "json": true },
+    { "name": "listHostnames", "args": ["status", "--json"], "json": true }
+  ] }] }
+```
+
+Point `paths.adapters` at a copy of that file and the tailnet appears in
+`mcpx ls` like any other server. The shipped copy is pinned by
+`TestShippedTailscaleAdapterDeclaration`, so it cannot drift from the
+shape above.
 
 `mcpx catalog` also ends with the recipe tools in `tools/list`: how many are
 exposed against the recipe budget, and which recipes were kept out by a name

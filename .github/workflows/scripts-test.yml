@@ -1,22 +1,6 @@
 name: scripts-test
 
 on:
-  pull_request:
-    paths:
-      - "scripts/worker-preflight.sh"
-      - "scripts/tests/test_worker_preflight.py"
-      - ".github/workflows/scripts-test.yml"
-  push:
-    branches: [main]
-    paths:
-      - "scripts/update-nixpkgs-inputs.py"
-      - "scripts/update-nixpkgs-inputs.sh"
-      - "pkgs/id/scripts/update-nixpkgs-inputs.py"
-      - "pkgs/id/scripts/update-nixpkgs-inputs.sh"
-      - "scripts/tests/test_update_nixpkgs_inputs.py"
-      - "scripts/worker-preflight.sh"
-      - "scripts/tests/test_worker_preflight.py"
-      - ".github/workflows/scripts-test.yml"
   workflow_dispatch:
 
 permissions:

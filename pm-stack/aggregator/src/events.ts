@@ -195,11 +195,15 @@ function validateAuditExtras(input: NewAuditEvent): { ok: true } | { ok: false; 
   if (input.attribution !== undefined) {
     const a = input.attribution;
     if (
-      typeof a !== "object" || a === null ||
+      typeof a !== "object" ||
+      a === null ||
       !["authenticated", "pre-sso", "unknown"].includes(a.confidence) ||
       typeof a.asserted !== "boolean"
     ) {
-      return { ok: false, error: "event.attribution must be {confidence: authenticated|pre-sso|unknown, asserted: boolean}" };
+      return {
+        ok: false,
+        error: "event.attribution must be {confidence: authenticated|pre-sso|unknown, asserted: boolean}",
+      };
     }
     if (a.confidence === "authenticated" && !a.asserted) {
       return { ok: false, error: "event.attribution: confidence 'authenticated' requires asserted: true" };
@@ -207,7 +211,13 @@ function validateAuditExtras(input: NewAuditEvent): { ok: true } | { ok: false; 
   }
   if (input.source !== undefined) {
     const s = input.source;
-    if (typeof s !== "object" || s === null || typeof s.identity !== "string" || s.identity.trim() === "" || s.identity.length > 200) {
+    if (
+      typeof s !== "object" ||
+      s === null ||
+      typeof s.identity !== "string" ||
+      s.identity.trim() === "" ||
+      s.identity.length > 200
+    ) {
       return { ok: false, error: "event.source.identity must be a non-empty string of at most 200 chars" };
     }
     if (s.link !== undefined && (typeof s.link !== "string" || s.link.length > 500)) {
@@ -239,7 +249,9 @@ function canonicalFields(e: AuditEvent): string {
 
 /** The hash a record must carry given its predecessor's hash. */
 export function eventHash(prevHash: string, e: AuditEvent): string {
-  return createHash("sha256").update(`${prevHash}\n${canonicalFields(e)}`).digest("hex");
+  return createHash("sha256")
+    .update(`${prevHash}\n${canonicalFields(e)}`)
+    .digest("hex");
 }
 
 /** Recompute the chain in stored order and re-stamp prevHash/hash.
@@ -262,14 +274,24 @@ function rechain(events: AuditEvent[]): AuditEvent[] {
  *  record's hash) and is covered by its own hash, so pruning does
  *  not break verification — but a silently edited field, a re-stamped
  *  hash, or a deleted middle record all fail here. */
-export function verifyEventChain(events: readonly AuditEvent[]): { ok: true } | { ok: false; error: string; index: number } {
+export function verifyEventChain(
+  events: readonly AuditEvent[],
+): { ok: true } | { ok: false; error: string; index: number } {
   for (let i = 0; i < events.length; i++) {
     const e = events[i]!;
     if (eventHash(e.prevHash, e) !== e.hash) {
-      return { ok: false, error: `record ${e.id} (index ${i}): hash does not match its fields — stored record was altered`, index: i };
+      return {
+        ok: false,
+        error: `record ${e.id} (index ${i}): hash does not match its fields — stored record was altered`,
+        index: i,
+      };
     }
     if (i > 0 && e.prevHash !== events[i - 1]!.hash) {
-      return { ok: false, error: `record ${e.id} (index ${i}): prevHash does not match its predecessor — a record was deleted or reordered`, index: i };
+      return {
+        ok: false,
+        error: `record ${e.id} (index ${i}): prevHash does not match its predecessor — a record was deleted or reordered`,
+        index: i,
+      };
     }
   }
   return { ok: true };
@@ -304,9 +326,12 @@ function isAuditEvent(value: unknown): value is AuditEvent {
   const v = value as unknown as Record<string, unknown>;
   return (
     v.version === 2 &&
-    typeof v.id === "string" && v.id !== "" &&
-    typeof v.ingestedAt === "string" && Number.isFinite(Date.parse(v.ingestedAt)) &&
-    typeof v.prevHash === "string" && typeof v.hash === "string"
+    typeof v.id === "string" &&
+    v.id !== "" &&
+    typeof v.ingestedAt === "string" &&
+    Number.isFinite(Date.parse(v.ingestedAt)) &&
+    typeof v.prevHash === "string" &&
+    typeof v.hash === "string"
   );
 }
 
@@ -326,27 +351,116 @@ export function pruneEvents<T extends StreamEvent>(events: readonly T[], now = n
 export interface EventFilter {
   kind?: string;
   ref?: string;
+  refs?: readonly string[];
   actor?: string;
+  project?: string;
+  epic?: string;
+  search?: string;
+  /** Metadata resolved from the live project pool; event records stay source-native. */
+  itemContext?: ReadonlyMap<string, { project?: string | null; epic?: string | null }>;
 }
 
-/** The read surface: newest first, exact-match filters on
- *  kind / ref / actor (case-insensitive, like the views matcher). */
+/** The read surface: newest first, with stable ids breaking equal-time ties. */
 export function filterEvents<T extends StreamEvent>(events: readonly T[], filter: EventFilter = {}): T[] {
   const eq = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
-  // Newest first by PARSED time (#4489 Codex re-review): accepted
-  // timestamps may carry offsets or omit fractional seconds, where a
-  // string comparison misorders them; equal instants keep the later
-  // arrival first, matching append order.
+  const normalizeRef = (ref: string) => ref.replace(/^gh:/i, "").toLowerCase();
+  const refs = [filter.ref, ...(filter.refs ?? [])].filter((ref): ref is string => Boolean(ref));
+  const search = filter.search?.trim().toLowerCase();
+  // Newest first by parsed time. Audit ids break equal-time ties so a
+  // cursor remains stable when later records are appended; legacy
+  // StreamEvent callers without ids retain append-order tie handling.
   return [...events]
     .map((event, index) => ({ event, index }))
-    .sort((a, b) => Date.parse(b.event.at) - Date.parse(a.event.at) || b.index - a.index)
+    .sort((a, b) => {
+      const time = Date.parse(b.event.at) - Date.parse(a.event.at);
+      if (time) return time;
+      const aId = "id" in a.event && typeof a.event.id === "string" ? a.event.id : null;
+      const bId = "id" in b.event && typeof b.event.id === "string" ? b.event.id : null;
+      return aId !== null && bId !== null ? bId.localeCompare(aId) : b.index - a.index;
+    })
     .map(({ event }) => event)
     .filter(
-      (e) =>
-        (!filter.kind || eq(e.kind, filter.kind)) &&
-        (!filter.ref || eq(e.ref, filter.ref)) &&
-        (!filter.actor || eq(e.actor, filter.actor)),
+      (e) => {
+        const context = filter.itemContext?.get(normalizeRef(e.ref));
+        return (
+          (!filter.kind || eq(e.kind, filter.kind)) &&
+          (!refs.length || refs.some((ref) => normalizeRef(e.ref) === normalizeRef(ref))) &&
+          (!filter.actor || eq(e.actor, filter.actor)) &&
+          (!filter.project || Boolean(context?.project && eq(context.project, filter.project))) &&
+          (!filter.epic || Boolean(context?.epic && eq(context.epic, filter.epic))) &&
+          (!search || `${e.actor} ${e.kind} ${e.ref} ${e.summary}`.toLowerCase().includes(search))
+        );
+      },
     );
+}
+
+export interface EventPageCursor {
+  at: string;
+  id: string;
+  snapshotAt: string;
+}
+
+export interface EventPage {
+  events: AuditEvent[];
+  nextCursor: string | null;
+  snapshotAt: string;
+}
+
+function compareEventOrder(a: Pick<AuditEvent, "at" | "id">, b: Pick<AuditEvent, "at" | "id">): number {
+  return Date.parse(b.at) - Date.parse(a.at) || b.id.localeCompare(a.id);
+}
+
+export function encodeEventCursor(cursor: EventPageCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+export function decodeEventCursor(value: string | null | undefined): EventPageCursor | null {
+  if (!value) return null;
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (
+      typeof parsed === "object" && parsed !== null &&
+      typeof (parsed as EventPageCursor).at === "string" &&
+      Number.isFinite(Date.parse((parsed as EventPageCursor).at)) &&
+      typeof (parsed as EventPageCursor).id === "string" &&
+      typeof (parsed as EventPageCursor).snapshotAt === "string" &&
+      Number.isFinite(Date.parse((parsed as EventPageCursor).snapshotAt))
+    ) return parsed as EventPageCursor;
+  } catch {
+    // An invalid cursor starts a new first page; it never becomes a filter.
+  }
+  return null;
+}
+
+/** Stable descending keyset pagination over a fixed ingestion snapshot. */
+export function pageEvents(
+  events: readonly AuditEvent[],
+  options: { cursor?: string | null; limit?: number } = {},
+): EventPage {
+  const limit = Math.max(1, Math.min(100, Math.floor(options.limit ?? 50) || 50));
+  const cursor = decodeEventCursor(options.cursor);
+  // Compare ingestion timestamps as instants, never lexicographically:
+  // migrated v1 rows keep their original timestamp as `ingestedAt`,
+  // including UTC offsets and missing fractional seconds, and string
+  // order disagrees with instant order for those (Codex P2, PR #5266).
+  const snapshotAt = cursor?.snapshotAt ?? events.reduce(
+    (latest, event) => Date.parse(event.ingestedAt) > Date.parse(latest) ? event.ingestedAt : latest,
+    "1970-01-01T00:00:00.000Z",
+  );
+  const snapshotMs = Date.parse(snapshotAt);
+  const visible = events.filter((event) =>
+    Date.parse(event.ingestedAt) <= snapshotMs && (!cursor || compareEventOrder(event, cursor) > 0),
+  );
+  const page = visible.slice(0, limit);
+  const last = page.at(-1);
+  return {
+    events: page,
+    snapshotAt,
+    nextCursor:
+      visible.length > limit && last
+        ? encodeEventCursor({ at: last.at, id: last.id, snapshotAt })
+        : null,
+  };
 }
 
 /**
@@ -577,9 +691,14 @@ export class EventsStore {
       try {
         const parsed: unknown = JSON.parse(line);
         if (isAuditEvent(parsed)) pending.push(parsed);
-        else console.error(`[events] WARNING: dropping an unparseable retry-outbox line in ${this.outboxFile}: ${line.slice(0, 200)}`);
+        else
+          console.error(
+            `[events] WARNING: dropping an unparseable retry-outbox line in ${this.outboxFile}: ${line.slice(0, 200)}`,
+          );
       } catch {
-        console.error(`[events] WARNING: dropping an unparseable retry-outbox line in ${this.outboxFile}: ${line.slice(0, 200)}`);
+        console.error(
+          `[events] WARNING: dropping an unparseable retry-outbox line in ${this.outboxFile}: ${line.slice(0, 200)}`,
+        );
       }
     }
     const known = new Set(this.events.map((e) => e.id));
@@ -714,7 +833,10 @@ export class EventsStore {
   /** Append a correction to an existing record (#3322 slice A):
    *  corrections are separate, attributable, append-only records —
    *  the corrected record is never edited. */
-  async recordCorrection(targetId: string, input: Omit<NewAuditEvent, "kind" | "ref"> & { kind?: string; ref?: string }): Promise<AuditEvent> {
+  async recordCorrection(
+    targetId: string,
+    input: Omit<NewAuditEvent, "kind" | "ref"> & { kind?: string; ref?: string },
+  ): Promise<AuditEvent> {
     await this.load();
     const target = this.events.find((e) => e.id === targetId);
     if (!target) throw new Error(`cannot correct event ${targetId}: no such record in the stream`);

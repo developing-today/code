@@ -392,7 +392,11 @@ export class AlertsStore {
   }
 
   async listSubscriptions(): Promise<PushSubscriptionRow[]> {
-    return this.db.query<PushSubscriptionRow>(`select * from alerts.push_subscriptions order by created_at`);
+    const rows = await this.db.query<PushSubscriptionRow>(`select * from alerts.push_subscriptions order by created_at`);
+    // #3702 decision 3: old stored prefs are not rewritten, but must not
+    // be reinterpreted on read. Apply the same per-field fallbacks used at
+    // intake so delivery and the prefs page see safe values.
+    return rows.map((row) => ({ ...row, quiet: mergeQuiet(row.quiet) }));
   }
 
   /** Design §4: a 404/410 marks the subscription gone; two consecutive

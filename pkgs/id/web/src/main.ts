@@ -628,8 +628,14 @@ async function init(): Promise<void> {
   // Initialize theme system
   initTheme();
 
+  // A program-only surface (#2146 phase 2) has no Explorer identity
+  // or tags endpoints on its listener: registering an identity or
+  // connecting the tags WebSocket there would only fail and retry
+  // forever. The world presenter (world.ts) is the whole surface.
+  const programSurface = document.querySelector("[data-world-program]") !== null;
+
   // Initialize client identity (register if needed, validate if stored)
-  currentIdentity = await ensureIdentity();
+  currentIdentity = programSurface ? null : await ensureIdentity();
 
   // Create app API
   const app: IdApp = {
@@ -1506,7 +1512,7 @@ async function init(): Promise<void> {
   console.log("[id] Web interface initialized");
 
   // Connect tags WebSocket for live updates (global — stays connected across pages)
-  app.connectTagsWs();
+  if (!programSurface) app.connectTagsWs();
 
   // Initialize back button on main page
   updateBackLink(app.navHistory, app.currentPath);

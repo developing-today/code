@@ -28,7 +28,6 @@ import type {
   ChargeRow,
   DnsSection,
   GoalMeasurement,
-  JulesSummary,
   OrchestrationProvenance,
   OrchestrationSection,
   PaygLine,
@@ -87,15 +86,13 @@ export interface FleetFeed {
   /** PAYG lines loadFeed's sanitization dropped (#2450), set only
    * when drops occurred; absent on raw parsed feeds and clean loads. */
   paygDropped?: number;
-  /** Sandbox-server + Jules sessions, pre-classification (render classifies). */
+  /** Sandbox-server sessions, pre-classification (render classifies). */
   attention: SessionFeedEntry[];
-  /** Jules keeper totals (slice 2); absent when the keeper state is unreadable. */
-  julesSummary?: JulesSummary;
   /** The orchestration job's latest section (#899), when one exists. */
   orchestration?: OrchestrationSection;
   /** The DNS/domain register (#902), parsed by the collector (slice 3). */
   dns?: DnsSection;
-  /** Identity-registry records (#906 §3): sandbox OpenCode + Jules + Muse launches. */
+  /** Identity-registry records (#906 §3): sandbox OpenCode + Muse launches. */
   registry?: SessionRecord[];
   /** Usage & billing hub (design §2.3): family-2 services extracted from
    * quota-view.md Part (b) by the collector; absent in older feeds. */
@@ -213,19 +210,62 @@ export function sanitizeFeedMetadata(value: unknown): FeedMetadata | undefined {
  * sometimes publishes, so requiring strictly an array would reject real
  * sections.
  */
+const GOAL_MOMENTUMS: readonly string[] = ["moving", "stalled", "blocked", "no-work-lined-up"];
+const LINED_UP_HORIZONS: readonly string[] = ["today", "tomorrow", "next-3-days", "longer", "incoming"];
+const LINED_UP_STATUSES: readonly string[] = ["in-progress", "queued", "blocked", "done-recently"];
+
+// #3897: element gates for the per-goal arrays. todayFromSection reads
+// element fields directly (t.horizon, s.blocker), so a record alone is
+// not enough — the fields it dereferences must be the right shapes, or
+// the designed invalid-section fallback never happens and the consumer
+// throws (or silently renders falsified state) instead. linedUp
+// blockedBy stays out of scope here (#4316 owns the nested shape).
+function isLinedUpElement(v: unknown): boolean {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.title === "string" &&
+    typeof v.horizon === "string" &&
+    LINED_UP_HORIZONS.includes(v.horizon) &&
+    (v.status === undefined || (typeof v.status === "string" && LINED_UP_STATUSES.includes(v.status))) &&
+    (v.horizonWhy === undefined || typeof v.horizonWhy === "string")
+  );
+}
+
+function isStalledElement(v: unknown): boolean {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.title === "string" &&
+    typeof v.since === "string" &&
+    (v.blocker === undefined || typeof v.blocker === "string")
+  );
+}
+
 function isGoalMeasurement(v: unknown): boolean {
   if (typeof v !== "object" || v === null) return false;
   const g = v as Partial<GoalMeasurement>;
   return (
+    // #3897: the scalar fields todayFromSection renders (project name,
+    // momentum state, summary) were never checked — a goal missing them
+    // passed and rendered nameless / silently "stalled".
+    typeof g.goal === "string" &&
+    g.goal.length > 0 &&
+    typeof g.momentum === "string" &&
+    GOAL_MOMENTUMS.includes(g.momentum) &&
+    typeof g.summary === "string" &&
+    (typeof g.goalId === "string" || g.goalId === null) &&
     Array.isArray(g.linedUp) &&
     Array.isArray(g.stalled) &&
     Array.isArray(g.gaps) &&
     // #2417: todayFromSection dereferences every lined-up / stalled
     // element, so a non-record element must fail here, at the gate —
     // presence of the arrays alone let [null] through to a TypeError.
-    g.linedUp.every(isRecord) &&
-    g.stalled.every(isRecord) &&
-    (typeof g.progressedSinceLastRun === "string" || Array.isArray(g.progressedSinceLastRun))
+    g.linedUp.every(isLinedUpElement) &&
+    g.stalled.every(isStalledElement) &&
+    // #3897: gaps are joined into the rendered detail line, so a
+    // non-string element would render as "[object Object]".
+    g.gaps.every((gap) => typeof gap === "string") &&
+    (typeof g.progressedSinceLastRun === "string" ||
+      (Array.isArray(g.progressedSinceLastRun) && g.progressedSinceLastRun.every((line) => typeof line === "string")))
   );
 }
 
@@ -651,7 +691,7 @@ function isSaasService(v: unknown): v is SaasService {
     (v.paygEstimate === null || isPaygEstimate(v.paygEstimate)) &&
     (v.paygNote === undefined || typeof v.paygNote === "string") &&
     (v.billedUsd === undefined || v.billedUsd === null || isNonNegative(v.billedUsd)) &&
-    (typeof v.measuredAt === "string" || v.measuredAt === null) &&
+    (v.measuredAt === null || isIsoDate(v.measuredAt)) &&
     typeof v.sourceClass === "string" &&
     USAGE_SOURCE_CLASSES.includes(v.sourceClass) &&
     typeof v.sourceNote === "string" &&

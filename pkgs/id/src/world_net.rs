@@ -144,7 +144,8 @@ impl WorldProtocol {
         budgets: BudgetPolicy,
         blocks: Option<Arc<dyn BlockList>>,
     ) -> Self {
-        let mut evaluator = AbuseEvaluator::with_budgets(AbusePolicy::default(), local_node, budgets);
+        let mut evaluator =
+            AbuseEvaluator::with_budgets(AbusePolicy::default(), local_node, budgets);
         if let Some(blocks) = blocks {
             evaluator = evaluator.with_block_list(blocks);
         }
@@ -171,7 +172,13 @@ impl WorldProtocol {
     /// operator-visibility surface for budgets, alongside
     /// [`WorldProtocol::abuse_counters`].
     #[must_use]
-    pub fn budget_usage(&self) -> Vec<(crate::abuse::BudgetScope, crate::abuse::BudgetLimit, BudgetUsage)> {
+    pub fn budget_usage(
+        &self,
+    ) -> Vec<(
+        crate::abuse::BudgetScope,
+        crate::abuse::BudgetLimit,
+        BudgetUsage,
+    )> {
         self.abuse
             .lock()
             .map(|abuse| abuse.budget_usage(abuse_now_ms()))
@@ -241,9 +248,11 @@ impl ProtocolHandler for WorldProtocol {
         let remote_endpoint: AbuseEndpointId = *remote.as_bytes();
         let direct_ip = direct_ip_of(&conn);
         let connection_id = match self.abuse.lock() {
-            Ok(mut abuse) => match abuse
-                .open_connection_with_direct_ip(remote_endpoint, direct_ip, abuse_now_ms())
-            {
+            Ok(mut abuse) => match abuse.open_connection_with_direct_ip(
+                remote_endpoint,
+                direct_ip,
+                abuse_now_ms(),
+            ) {
                 Ok(connection_id) => connection_id,
                 Err(refusal) if refusal.reason == RefusalReason::BlockedByOperator => {
                     // #2245: an operator block is not a cap refusal — it
@@ -1133,10 +1142,7 @@ impl WorldClient {
             .await?
             .context("host closed without replying")?;
         if reply["type"] != "worlds" {
-            bail!(
-                "{}",
-                reply["message"].as_str().unwrap_or(refuse_message)
-            );
+            bail!("{}", reply["message"].as_str().unwrap_or(refuse_message));
         }
         let default = reply["default"].as_str().unwrap_or_default().to_owned();
         let worlds = reply["worlds"]
@@ -1879,12 +1885,15 @@ impl WorldSessions {
             let session = self
                 .roots
                 .get(&key.0)
-                .expect("root inserted above")
+                .context("root inserted above")?
                 .open_session(world)
                 .await?;
             self.sessions.insert(key.clone(), session);
         }
-        Ok(self.sessions.get_mut(&key).expect("session inserted above"))
+        Ok(self
+            .sessions
+            .get_mut(&key)
+            .context("session inserted above")?)
     }
 
     /// The live session for (`addr`, `world`), if one is open.

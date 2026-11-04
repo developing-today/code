@@ -74,13 +74,13 @@ use tokio::sync::Mutex;
 use crate::discovery::PeerDiscovery;
 use crate::tags::TagStore;
 
+pub use app_interface::{WebInterface, WebInterfaceError, WebMode, web_interface_from_app_toml};
 pub use assets::static_handler;
 pub use collab::CollabState;
 pub use identity::IdentityStore;
 #[doc(hidden)]
 pub use identity::crash_gate;
-pub use app_interface::{WebInterface, WebInterfaceError, WebMode, web_interface_from_app_toml};
-pub use routes::{create_router, create_router_for_app};
+pub use routes::{create_program_router, create_router, create_router_for_app};
 pub use security::WebSecurity;
 pub use templates::{AssetUrls, render_page};
 
@@ -152,8 +152,10 @@ impl SaveRateLimiter {
     /// so a failed save never strands the filename.
     pub async fn acquire(&self, name: &str) -> Result<SavePermit, Duration> {
         self.check(name).await?;
-        let mut flight =
-            self.in_flight.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut flight = self
+            .in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !flight.insert(name.to_owned()) {
             return Err(self.cooldown);
         }
@@ -244,6 +246,10 @@ pub struct AppState {
     /// declares one (#2325). Defaults to the world app's
     /// `/ws/world`.
     pub web_socket: Option<String>,
+    /// The world a program-only router serves at its root (#2146
+    /// phase 2), when this state's router is a program surface.
+    /// `None` for Explorer routers. Set by `create_program_router`.
+    pub program_world: Option<String>,
     /// Mark the directory explorer's session cookies `Secure`.
     pub cookie_secure: bool,
 }
@@ -328,6 +334,7 @@ impl AppState {
             world: None,
             web_route: "/world".to_owned(),
             web_socket: Some("/ws/world".to_owned()),
+            program_world: None,
             cookie_secure: false,
         })
     }
@@ -415,7 +422,7 @@ pub async fn web_router(
         identity_db_path,
     )
     .await?;
-    Ok(finish_router(state, security, world, cookie_secure))
+    Ok(finish_router(state, security, world, cookie_secure, None))
 }
 
 /// Like [`web_router`], but over a caller-opened, shared `local_events` store (see
@@ -443,11 +450,13 @@ pub async fn web_router_with_local_events(
         local_events,
     )
     .await?;
-    Ok(finish_router(state, security, world, cookie_secure))
+    Ok(finish_router(state, security, world, cookie_secure, None))
 }
 
 /// Build one router per listener security over a SINGLE shared
-/// [`AppState`] (#2145 multi-listener serve).
+/// [`AppState`] (#2145 multi-listener serve). `surfaces` is parallel
+/// to `securities`: each listener's #2146 content target (`None` =
+/// Explorer, `Some(world)` = the program-only surface for that world).
 ///
 /// `web_router` opens the identity store exclusively, so building one
 /// router per listener fails on the second open ("identity store …
@@ -466,6 +475,7 @@ pub async fn web_routers(
     world: Option<crate::world_hub::WorldHub>,
     cookie_secure: bool,
     local_events: Option<Arc<Mutex<crate::local_events::LocalEvents>>>,
+    surfaces: Vec<Option<String>>,
 ) -> anyhow::Result<Vec<Router>> {
     let state = match local_events {
         Some(events) => {
@@ -481,21 +491,43 @@ pub async fn web_routers(
             .await?
         }
         None => {
-            AppState::new(store, peers, node_id, tag_store, secret_key, identity_db_path).await?
+            AppState::new(
+                store,
+                peers,
+                node_id,
+                tag_store,
+                secret_key,
+                identity_db_path,
+            )
+            .await?
         }
     };
     Ok(securities
         .into_iter()
-        .map(|security| finish_router(state.clone(), security, world.clone(), cookie_secure))
+        .zip(surfaces)
+        .map(|(security, surface)| {
+            finish_router(
+                state.clone(),
+                security,
+                world.clone(),
+                cookie_secure,
+                surface,
+            )
+        })
         .collect())
 }
 
 /// Applies the world/cookie settings and the security layer to a built state.
+///
+/// `surface` is the listener's #2146 content target: `None` builds the
+/// Explorer router; `Some(world)` builds the program-only router for
+/// that world (#2146 phase 2).
 fn finish_router(
     mut state: AppState,
     security: WebSecurity,
     world: Option<crate::world_hub::WorldHub>,
     cookie_secure: bool,
+    surface: Option<String>,
 ) -> Router {
     state.world = world;
     state.cookie_secure = cookie_secure;
@@ -503,7 +535,11 @@ fn finish_router(
         cookie_secure,
         ..security
     };
-    create_router(state).layer(axum::middleware::from_fn_with_state(
+    let router = match &surface {
+        Some(world) => create_program_router(state, world),
+        None => create_router(state),
+    };
+    router.layer(axum::middleware::from_fn_with_state(
         Arc::new(security),
         security::guard,
     ))
@@ -531,7 +567,11 @@ mod tests {
         let limiter = SaveRateLimiter::new(Duration::from_secs(5));
         let _permit = limiter.acquire("a.txt").await.expect("first save proceeds");
         let remaining = limiter.acquire("a.txt").await.unwrap_err();
-        assert_eq!(remaining, Duration::from_secs(5), "in-flight refusal quotes the cooldown");
+        assert_eq!(
+            remaining,
+            Duration::from_secs(5),
+            "in-flight refusal quotes the cooldown"
+        );
         assert!(
             limiter.acquire("b.txt").await.is_ok(),
             "a different file is not refused"
@@ -541,10 +581,7 @@ mod tests {
     #[tokio::test]
     async fn test_save_limiter_concurrent_acquires_admit_exactly_one() {
         let limiter = SaveRateLimiter::new(Duration::from_secs(5));
-        let (first, second) = tokio::join!(
-            limiter.acquire("a.txt"),
-            limiter.acquire("a.txt")
-        );
+        let (first, second) = tokio::join!(limiter.acquire("a.txt"), limiter.acquire("a.txt"));
         let admitted = [first.is_ok(), second.is_ok()]
             .into_iter()
             .filter(|ok| *ok)

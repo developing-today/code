@@ -84,12 +84,8 @@ let
   dashboardPkg = pkgs.writeShellScriptBin "pm-dashboard-backup" (
     builtins.readFile ./pm-dashboard-backup.sh
   );
-  openclawPkg = pkgs.writeShellScriptBin "openclaw-backup" (
-    builtins.readFile ./openclaw-backup.sh
-  );
-  atlasPkg = pkgs.writeShellScriptBin "atlas-backup" (
-    builtins.readFile ./atlas-backup.sh
-  );
+  openclawPkg = pkgs.writeShellScriptBin "openclaw-backup" (builtins.readFile ./openclaw-backup.sh);
+  atlasPkg = pkgs.writeShellScriptBin "atlas-backup" (builtins.readFile ./atlas-backup.sh);
   watchdogPkg = pkgs.writeShellScriptBin "laptop-backups-watchdog" (
     builtins.readFile ./laptop-backups-watchdog.sh
   );

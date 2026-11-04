@@ -8,8 +8,8 @@
 /** The four working repositories (design record, "Request and intent"). */
 export const REPOS = [
   "developing-today/code",
-  "developing-today/opencode",
-  "developing-today/openchamber",
+  "developing-today-forks/opencode",
+  "developing-today-forks/openchamber",
   "dezren39/nix",
 ] as const;
 
@@ -84,6 +84,12 @@ export interface ProjectPoolItem {
   labels?: string[];
   author?: string;
   updatedAt?: string;
+  /** Completion timestamps from the linked issue/PR, when the
+   * projection carried them: an issue's closedAt, a PR's mergedAt
+   * (or its closedAt when closed unmerged). The digest's Done
+   * section selects by these, never by updatedAt (#5279 Codex). */
+  closedAt?: string;
+  mergedAt?: string;
   /** Project single-select fields; null when unset on the item. */
   status: string | null;
   area: string | null;
@@ -443,20 +449,6 @@ export interface SourceCoverage {
   detail: string;
 }
 
-/** Keeper run totals for Jules, parsed from jules-review-state.json. */
-export interface JulesSummary {
-  /** When the keeper last ran (its `last_run`). */
-  at: string | null;
-  /** Sessions the keeper currently tracks in its `items` map. */
-  tracked: number;
-  /** Totals from the note written by the keeper's last run, when it parses. */
-  total?: number;
-  completed?: number;
-  failed?: number;
-  inProgress?: number;
-  awaitingFeedback?: number;
-  awaitingPlan?: number;
-}
 
 export function refKey(ref: GhRef): RefKey {
   return `${ref.repo}#${ref.number}`;

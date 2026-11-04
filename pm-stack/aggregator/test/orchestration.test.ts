@@ -154,6 +154,52 @@ describe("orchestration section validation", () => {
     expect(isOrchestrationSection(nullGoal)).toBe(false);
   });
 
+  // #3897: the per-goal gate checked array presence (and, after #2417,
+  // record-ness) only — goal/momentum/summary/goalId and the element
+  // fields todayFromSection dereferences were never validated, so
+  // drifted goals rendered falsified state or threw downstream.
+  test("rejects goals with malformed scalar fields and elements", () => {
+    const goal = SECTION.goals[0]!;
+    const badGoals: unknown[] = [
+      { ...goal, goal: undefined },
+      { ...goal, goal: "" },
+      { ...goal, momentum: "flying" },
+      { ...goal, momentum: undefined },
+      { ...goal, summary: undefined },
+      { ...goal, goalId: 42 },
+      { ...goal, linedUp: [{ title: "Task A" }] },
+      { ...goal, linedUp: [{ title: "Task A", horizon: "someday" }] },
+      { ...goal, linedUp: [{ title: "Task A", horizon: "today", status: "bogus" }] },
+      { ...goal, linedUp: ["Task A"] },
+      { ...goal, stalled: [{ title: "Stuck" }] },
+      { ...goal, stalled: [{ title: "Stuck", since: "2026-10-25", blocker: 42 }] },
+      { ...goal, gaps: [{ finding: "x" }] },
+      { ...goal, progressedSinceLastRun: ["ok", 42] },
+    ];
+    for (const bad of badGoals) {
+      const malformed = { ...SECTION, goals: [bad] };
+      expect(isOrchestrationSection(malformed)).toBe(false);
+      expect(orchestrationSectionProblem(malformed)).toBe("goals (per-goal shape)");
+      expect(normalizeOrchestrationSection(malformed)).toBeNull();
+    }
+  });
+
+  test("accepts a goal with fully shaped elements", () => {
+    const rich = {
+      ...SECTION,
+      goals: [
+        {
+          ...SECTION.goals[0]!,
+          linedUp: [{ title: "Task A", status: "in-progress", horizon: "today", horizonWhy: "due" }],
+          stalled: [{ title: "Stuck", since: "2026-10-25", blocker: "waiting" }],
+          gaps: ["goal has no tasks lined up"],
+        },
+      ],
+    };
+    expect(isOrchestrationSection(rich)).toBe(true);
+    expect(() => todayFromSection(rich as OrchestrationSection)).not.toThrow();
+  });
+
   test("rejects poisoned dependency elements and bad dependency shapes", () => {
     const nullDep = { ...SECTION, dependencies: [null] };
     expect(isOrchestrationSection(nullDep)).toBe(false);

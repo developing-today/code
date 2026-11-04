@@ -28,6 +28,11 @@
   //   replace all others": the sonnet-plan and opus-plan Claude seats
   //   are re-pointed to antigravity-direct as well; no route leaf
   //   names antigravity-ls or antigravity-agy anymore.
+  // - 2026-11-04 (opencode#1414): the antigravity-direct block below no
+  //   longer names the :18751 proxy — it resolves to the fork native
+  //   antigravity provider (opencode#1457). Same id, same wire; the
+  //   door unit and bin/antigravity-direct.mjs retire once :18751
+  //   shows a zero-traffic window.
   // - "claude-code" is TEMPORARILY disabled (2026-10-27, Drew): the Claude
   //   plan is on the FREE tier for now and the API may be down. The setup
   //   itself is confirmed working — the proxy (:18749) is live and serves
@@ -357,12 +362,14 @@
       }
     },
     "antigravity-direct": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Antigravity Direct (CLI wire clone)",
-      "options": {
-        "baseURL": "http://127.0.0.1:{env:ANTIGRAVITY_DIRECT_PORT:-18751}/v1",
-        "apiKey": "antigravity-direct-local"
-      }
+      "npm": "@opencode/ai/providers/antigravity",
+      "name": "Antigravity Direct (CLI wire clone)"
+      // 2026-11-04 (opencode#1414): repointed from the :18751 door to
+      // the native in-fork provider (opencode#1457) — same provider id,
+      // same v1internal wire protocol, keyring credential read in place
+      // by the server; no baseURL/apiKey (the provider owns auth). The
+      // door unit + bin/antigravity-direct.mjs retire after a
+      // zero-traffic window on :18751.
       // "models": maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
     },
     // "openai": model catalog maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
