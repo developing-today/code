@@ -542,6 +542,19 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
             EXIT_USAGE
         }
         Some("--version") | Some("-V") => {
+            // The version shortcut takes no trailing arguments: like
+            // the queue domain (#5603), a trailing argument is a usage
+            // error naming it, not silently discarded success — a real
+            // verb after the flag () was
+            // swallowed whole with exit 0 (#5607).
+            if let Some(extra) = args.get(1) {
+                eprintln!(
+                    "fleet search: unexpected argument {extra} for {}",
+                    args[0]
+                );
+                eprintln!("{SEARCH_USAGE}");
+                return EXIT_USAGE;
+            }
             println!("fleet search {}", env!("CARGO_PKG_VERSION"));
             EXIT_OK
         }
@@ -555,6 +568,30 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn version_shortcut_rejects_trailing_arguments() {
+        // #5607:  printed the version and exited
+        // 0, swallowing a real verb. Bare flags stay accepted.
+        let config = Config::default();
+        for flag in ["--version", "-V"] {
+            assert_eq!(
+                run(&config, &args(&[flag, "--bogus"])),
+                EXIT_USAGE,
+                "{flag} must reject a trailing argument"
+            );
+            assert_eq!(
+                run(&config, &args(&[flag, "get-chunk"])),
+                EXIT_USAGE,
+                "{flag} must reject a trailing verb"
+            );
+            assert_eq!(
+                run(&config, &args(&[flag])),
+                EXIT_OK,
+                "bare {flag} stays accepted"
+            );
+        }
     }
 
     #[test]
