@@ -13,6 +13,11 @@
 
 const enc = new TextEncoder();
 
+// KV bulk chunk width (#5496): the binding's get(keys[]) accepts at
+// most 100 keys per call; the ack path reuses the same width for its
+// parallel delete fan-out.
+const KV_BULK_CHUNK = 100;
+
 async function hmacHex(secret, body) {
   const key = await crypto.subtle.importKey(
     "raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
@@ -56,10 +61,20 @@ export default {
       const options = { prefix: "ev:", limit: 500 };
       if (cursor) options.cursor = cursor;
       const list = await env.GHB_EVENTS.list(options);
+      // Bulk reads (#5496): get() with an array of keys counts as ONE
+      // KV operation and returns as a unit. The per-key loop it
+      // replaces made a 500-event page take ~50s — at the drainer's
+      // 60s per-request timeout — so polls timed out or were reset
+      // mid-page and no drain run could complete.
+      const names = list.keys.map((k) => k.name);
       const events = [];
-      for (const k of list.keys) {
-        const v = await env.GHB_EVENTS.get(k.name);
-        if (v) events.push(JSON.parse(v));
+      for (let i = 0; i < names.length; i += KV_BULK_CHUNK) {
+        const chunk = names.slice(i, i + KV_BULK_CHUNK);
+        const values = await env.GHB_EVENTS.get(chunk);
+        for (const name of chunk) {
+          const v = values.get(name);
+          if (v) events.push(JSON.parse(v));
+        }
       }
       return Response.json({
         events,
@@ -70,8 +85,17 @@ export default {
     if (url.pathname === "/queue/ack" && req.method === "POST") {
       if (!authed(req, env)) return new Response("unauthorized", { status: 401 });
       const { ids } = await req.json();
-      for (const id of ids || []) await env.GHB_EVENTS.delete("ev:" + id);
-      return Response.json({ acked: (ids || []).length });
+      const keys = (ids || []).map((id) => "ev:" + id);
+      // The binding has no bulk delete, so fan the per-key deletes
+      // out in parallel chunks (#5496): sequential awaits needed
+      // ~50s for the drainer's 500-id ack batches and timed it out
+      // mid-ack. Deletes are idempotent, so a chunk that fails
+      // partway is safe — the drainer retries what remains.
+      for (let i = 0; i < keys.length; i += KV_BULK_CHUNK) {
+        const chunk = keys.slice(i, i + KV_BULK_CHUNK);
+        await Promise.all(chunk.map((k) => env.GHB_EVENTS.delete(k)));
+      }
+      return Response.json({ acked: keys.length });
     }
     return new Response("not found", { status: 404 });
   },

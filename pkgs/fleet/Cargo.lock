@@ -140,6 +140,7 @@ name = "fleet"
 version = "0.1.0"
 dependencies = [
  "fleet-config",
+ "fleet-dispatch",
  "fleet-proxy",
  "fleet-proxy-proto",
  "fleet-queue",
@@ -154,6 +155,17 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "toml",
+]
+
+[[package]]
+name = "fleet-dispatch"
+version = "0.1.0"
+dependencies = [
+ "fleet-config",
+ "fleet-proxy",
+ "fleet-secrets",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

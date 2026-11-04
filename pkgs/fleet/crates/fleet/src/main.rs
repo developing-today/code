@@ -6,11 +6,12 @@
 //! dispatch layer, the capability-stub machinery, and the variant
 //! builds. Step 2 (#5430) landed the first real domain — queue: the
 //! repo-queue client and the queue-broker / secrets-broker serve
-//! roles run for real below. A compiled-in domain that has not
-//! landed yet answers with the "not implemented yet" form of the
-//! stub — but the *surface* is complete and honest: every variant
-//! renders the full registry, and every missing capability answers
-//! with a branchable stub, never a parser error.
+//! roles run for real below; step 3 (#5431) the proxy domain; step 4
+//! (#5432) the dispatch thin client. A compiled-in domain that has
+//! not landed yet answers with the "not implemented yet" form of
+//! the stub — but the *surface* is complete and honest: every
+//! variant renders the full registry, and every missing capability
+//! answers with a branchable stub, never a parser error.
 //!
 //! Dispatch order (§3), extended by Refinement A (name-scoping):
 //!
@@ -352,6 +353,7 @@ fn print_domain_help(surface: &Surface, d: &Domain) {
     let status = match surface.domain_state(d) {
         CapState::Available => match d.name {
             "queue" => "included in this build",
+            "dispatch" => "included in this build",
             "proxy" => "included in this build",
             "serve" => {
                 "included in this build (queue-broker and secrets-broker roles; \
@@ -468,6 +470,12 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
             #[cfg(feature = "secrets-broker")]
             if d.name == "serve" && args.first().map(|s| s.as_str()) == Some("secrets-broker") {
                 return fleet_queue::secrets_broker::run();
+            }
+            // Step 4 (#5432): the dispatch domain runs for real — a
+            // thin client over pm-stack's pm-dispatch service.
+            #[cfg(feature = "dispatch")]
+            if d.name == "dispatch" {
+                return fleet_dispatch::run(&surface.config, args);
             }
             if d.name == "proxy" {
                 return run_proxy(surface, args);

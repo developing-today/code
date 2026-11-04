@@ -237,11 +237,11 @@ pub const DOMAINS: &[Domain] = &[
     },
     Domain {
         name: "dispatch",
-        summary: "Thin client over the pm-stack dispatch services (status and launch verbs).",
+        summary: "Thin client over pm-stack dispatch: status, launch, and enqueue verbs.",
         capabilities: &[Capability::Dispatch],
         primary: Capability::Dispatch,
         aliases: &[],
-        subcommands: &["status", "launch"],
+        subcommands: &["status", "launch", "enqueue"],
     },
     Domain {
         name: "search",

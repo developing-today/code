@@ -1,0 +1,20 @@
+[package]
+name = "fleet-dispatch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The fleet dispatch domain: a thin client over pm-stack's pm-dispatch service — status, launch, and enqueue verbs (epic developing-today/code#5412, step 4 #5432)."
+
+[dependencies]
+fleet-config = { workspace = true }
+fleet-secrets = { workspace = true }
+# The tunnel half only: the dispatch client opens its own CONNECT
+# through the proxy egress (see lib.rs docs for why the framed
+# session-broker path cannot carry its Authorization header). The
+# broker half (`serve` feature) is not part of this domain.
+fleet-proxy = { workspace = true, default-features = false }
+serde = { workspace = true }
+# preserve_order, as in fleet-queue: the service's JSON key order is
+# part of the output shape agents consume.
+serde_json = { version = "1", features = ["preserve_order"] }

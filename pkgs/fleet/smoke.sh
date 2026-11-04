@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Per-variant smoke suite for the fleet workspace
 # (step 1, developing-today/code#5429; queue-domain sections added
-# by step 2, #5430; proxy-domain sections by step 3, #5431).
+# by step 2, #5430; proxy-domain sections by step 3, #5431;
+# dispatch-domain sections by step 4, #5432).
 #
 # Usage:
 #   smoke.sh <fleet-out> <fleet-serve-out> <fleet-connect-out> <fleet-connect-static-out>
@@ -38,7 +39,8 @@ QB_PID=""
 PB_PID=""
 UP_PID=""
 IDLE_PID=""
-trap 'kill $SB_PID $QB_PID $PB_PID $UP_PID $IDLE_PID 2>/dev/null; rm -rf "$TMP"' EXIT
+DS_PID=""
+trap 'kill $SB_PID $QB_PID $PB_PID $UP_PID $IDLE_PID $DS_PID 2>/dev/null; rm -rf "$TMP"' EXIT
 
 ok()   { PASS=$((PASS + 1)); echo "ok   - $1"; }
 bad()  { FAIL=$((FAIL + 1)); echo "FAIL - $1"; }
@@ -332,6 +334,104 @@ run "repo-queue: health reaches the broker (creds fail fast, exit 3)" 3 "secrets
 kill "$SB_PID" "$QB_PID" 2>/dev/null
 SB_PID=""
 QB_PID=""
+
+echo "== dispatch domain: thin client over a stub pm-dispatch (step 4, #5432) =="
+# Hermetic dispatch world: a stub pm-dispatch on a scratch loopback
+# port (health unauthenticated; POSTs bearer-checked, with canned
+# answers and one deliberate 409) and a stub `bws` on PATH, so the
+# client's by-name token resolution through fleet-secrets succeeds
+# with no vault and no session broker (the scratch HOME has no
+# broker socket, so the chain falls through to the bws source).
+# The client must resolve the token by name, present it as
+# Authorization: Bearer, and print the service's JSON verbatim.
+DS="$TMP/dispatch"
+mkdir -p "$DS/bin" "$DS/home"
+cat > "$DS/stub.py" <<'PYEOF'
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+TOKEN = "smoke-dispatch-token"
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _send(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def do_GET(self):
+        if self.path == "/health":
+            self._send(200, {"ok": True, "status": "ok", "version": "smoke"})
+        else:
+            self._send(404, {"error": "not found"})
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b"{}"
+        if self.headers.get("Authorization") != "Bearer " + TOKEN:
+            self._send(401, {"error": "unauthorized"})
+            return
+        try:
+            req = json.loads(raw)
+        except Exception:
+            req = {}
+        if self.path == "/v1/sessions":
+            self._send(201, {"task_id": 4242, "session_id": "ses_smoke",
+                             "issue_number": None,
+                             "queue": "repo-health-code-pilot",
+                             "status": "claimed"})
+        elif self.path == "/v1/tasks":
+            if req.get("dedupe_key") == "smoke-dupe":
+                self._send(409, {"error": "dedupe_key already has an open task"})
+                return
+            self._send(201, {"task_id": 4243, "issue_number": None,
+                             "queue": "repo-health-code-pilot"})
+        else:
+            self._send(404, {"error": "not found"})
+HTTPServer(("127.0.0.1", 14879), H).serve_forever()
+PYEOF
+python3 "$DS/stub.py" >"$DS/stub.log" 2>&1 &
+DS_PID=$!
+cat > "$DS/bin/bws" <<'EOF'
+#!/usr/bin/env bash
+# fleet-secrets' bws fallback, stubbed: one secret under a fixed id.
+if [ "$1 $2" = "secret list" ]; then
+  echo '[{"id":"smoke-id","key":"pm-dispatch.api-token"}]'
+elif [ "$1 $2" = "secret get" ]; then
+  echo '{"id":"smoke-id","key":"pm-dispatch.api-token","value":"smoke-dispatch-token"}'
+else
+  exit 1
+fi
+EOF
+chmod +x "$DS/bin/bws"
+printf '[dispatch]\nport = 14879\n' > "$DS/fleet.toml"
+sleep 1
+run "dispatch: status round-trips the stub /health" 0 '"version": "smoke"' \
+  env HOME="$DS/home" PATH="$DS/bin:$PATH" FLEET_CONFIG="$DS/fleet.toml" \
+  "$FULL_OUT/bin/fleet" dispatch status
+run "dispatch: status names its transport" 0 '"transport": "direct http://127.0.0.1:14879"' \
+  env HOME="$DS/home" PATH="$DS/bin:$PATH" FLEET_CONFIG="$DS/fleet.toml" \
+  "$FULL_OUT/bin/fleet" dispatch status
+run "dispatch: launch round-trips with the by-name bearer token" 0 '"task_id": 4242' \
+  env HOME="$DS/home" PATH="$DS/bin:$PATH" FLEET_CONFIG="$DS/fleet.toml" \
+  "$FULL_OUT/bin/fleet" dispatch launch --repo developing-today/code \
+    --prompt "smoke launch" --no-wait
+run "dispatch: enqueue round-trips" 0 '"task_id": 4243' \
+  env HOME="$DS/home" PATH="$DS/bin:$PATH" FLEET_CONFIG="$DS/fleet.toml" \
+  "$FULL_OUT/bin/fleet" dispatch enqueue --repo developing-today/code \
+    --title "smoke" --prompt "smoke enqueue"
+run "dispatch: a service HTTP error exits 4 with its message" 4 "dedupe_key already has an open task" \
+  env HOME="$DS/home" PATH="$DS/bin:$PATH" FLEET_CONFIG="$DS/fleet.toml" \
+  "$FULL_OUT/bin/fleet" dispatch enqueue --repo developing-today/code \
+    --title "smoke" --prompt "x" --dedupe-key smoke-dupe
+run "dispatch: an unknown task kind is a usage error" 2 "unknown task kind" \
+  env HOME="$DS/home" PATH="$DS/bin:$PATH" FLEET_CONFIG="$DS/fleet.toml" \
+  "$FULL_OUT/bin/fleet" dispatch enqueue --repo developing-today/code \
+    --title "t" --prompt "p" --kind bogus
+run "dispatch: an unresolved token name exits 3 before any request" 3 "unresolved" \
+  env HOME="$DS/home" PATH="/nonexistent" FLEET_CONFIG="$DS/fleet.toml" \
+  "$FULL_OUT/bin/fleet" dispatch launch --repo developing-today/code --prompt "x"
+kill "$DS_PID" 2>/dev/null
+DS_PID=""
 
 echo "== name narrowing: full build invoked as fleet-connect =="
 ln -s "$FULL_OUT/bin/fleet" "$TMP/fleet-connect"
