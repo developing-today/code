@@ -350,3 +350,6 @@ impl std::fmt::Display for SignError {
 }
 
 impl std::error::Error for SignError {}
+
+/// Versioned match-attestation objects and reducer policy.
+pub mod v1;
