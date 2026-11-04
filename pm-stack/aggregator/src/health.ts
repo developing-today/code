@@ -31,7 +31,13 @@ import {
 import type { GhItem, ProvenanceDetail, RefKey } from "./model.ts";
 import { PAGES } from "./pages.ts";
 import { buildServices, type ServiceDef } from "./topology.ts";
-import { fetchRfaState, rfaHealthDown, rfaHealthFacet, type RfaHealthFacet, type RfaState } from "./sources/ready-for-agent.ts";
+import {
+  fetchRfaState,
+  rfaHealthDown,
+  rfaHealthFacet,
+  type RfaHealthFacet,
+  type RfaState,
+} from "./sources/ready-for-agent.ts";
 
 /** Orchestration cadence: hourly; next run is an expectation, not a promise. */
 const ORCHESTRATION_CADENCE_MS = 3_600_000;
@@ -378,7 +384,11 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
                 detail: `feed generatedAt ${feed.generatedAt} is >60s in the future — never fresh`,
               }
             : feedAgeMs !== null && feedAgeMs >= FEED_STALE_MS
-              ? { state: "stale", ok: false, detail: `feed ${ageMsText(feedAgeMs)} — at or past the 5m freshness threshold` }
+              ? {
+                  state: "stale",
+                  ok: false,
+                  detail: `feed ${ageMsText(feedAgeMs)} — at or past the 5m freshness threshold`,
+                }
               : { state: "up", ok: true, detail: `feed ${feedAgeMs !== null ? ageMsText(feedAgeMs) : ""}`.trim() };
     } else if (def.probe === "section") {
       if (!diagnosis) {

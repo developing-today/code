@@ -13,11 +13,24 @@
   "$schema" = "https://raw.githubusercontent.com/dezren39/mcpx/main/schema/mcpx.schema.json";
   "mcpServers" = {
     "antigravity" = {
-      "args" = [ "-y" "@ask-llm/antigravity-mcp" ];
+      "args" = [
+        "-y"
+        "@ask-llm/antigravity-mcp"
+      ];
       "command" = "npx";
     };
     "chrome-devtools" = {
-      "args" = [ "-y" "chrome-devtools-mcp@latest" "--executable-path=/run/current-system/sw/bin/chromium" "--headless" "--isolated" "--viewport=800x600" "--no-usage-statistics" "--no-performance-crux" "--no-category-emulation" ];
+      "args" = [
+        "-y"
+        "chrome-devtools-mcp@latest"
+        "--executable-path=/run/current-system/sw/bin/chromium"
+        "--headless"
+        "--isolated"
+        "--viewport=800x600"
+        "--no-usage-statistics"
+        "--no-performance-crux"
+        "--no-category-emulation"
+      ];
       "command" = "npx";
       "mcpx" = {
         "scope" = "session";
@@ -25,11 +38,17 @@
       };
     };
     "cloudrun" = {
-      "args" = [ "-y" "@google-cloud/cloud-run-mcp" ];
+      "args" = [
+        "-y"
+        "@google-cloud/cloud-run-mcp"
+      ];
       "command" = "npx";
     };
     "codebase-memory" = {
-      "args" = [ "-y" "codebase-memory-mcp" ];
+      "args" = [
+        "-y"
+        "codebase-memory-mcp"
+      ];
       "command" = "npx";
     };
     "codedb" = {
@@ -41,23 +60,38 @@
       };
     };
     "codex-connectors" = {
-      "args" = [ "-y" "@wileai/codex-connectors-mcp@0.1.1" ];
+      "args" = [
+        "-y"
+        "@wileai/codex-connectors-mcp@0.1.1"
+      ];
       "command" = "npx";
       "env" = {
-        "CODEX_CONNECTORS_ALLOW" = "Airtable, ChatGPT Space, Codex Document Control, Context.dev, Context7, DigitalOcean, Dropbox, Engram, Exa, Firecrawl, GitHub, Gmail, Google Calendar, Google Drive, HAPI MCP Registry, Hotline, Lovable, Neon, OpenAI Platform, Parallel Search, Pets, Plugin Management, Railway, Remote Desktop Commander, Replit, Safety Settings, Search Service, Sites, Slack, Sprites, Stack Overflow For Agents, Supabase, tldraw, Todoist: To Do List & Calendar, Vercel, Walmart, Wolfram";
+        "CODEX_CONNECTORS_ALLOW" =
+          "Airtable, ChatGPT Space, Codex Document Control, Context.dev, Context7, DigitalOcean, Dropbox, Engram, Exa, Firecrawl, GitHub, Gmail, Google Calendar, Google Drive, HAPI MCP Registry, Hotline, Lovable, Neon, OpenAI Platform, Parallel Search, Pets, Plugin Management, Railway, Remote Desktop Commander, Replit, Safety Settings, Search Service, Sites, Slack, Sprites, Stack Overflow For Agents, Supabase, tldraw, Todoist: To Do List & Calendar, Vercel, Walmart, Wolfram";
         "CODEX_CONNECTORS_MODE" = "compact";
       };
     };
     "context7" = {
-      "args" = [ "-y" "mcp-remote" "https://mcp.context7.com/mcp" ];
+      "args" = [
+        "-y"
+        "mcp-remote"
+        "https://mcp.context7.com/mcp"
+      ];
       "command" = "npx";
     };
     "deepwiki" = {
-      "args" = [ "-y" "mcp-remote" "https://mcp.deepwiki.com/mcp" ];
+      "args" = [
+        "-y"
+        "mcp-remote"
+        "https://mcp.deepwiki.com/mcp"
+      ];
       "command" = "npx";
     };
     "desktop-commander" = {
-      "args" = [ "-y" "@wonderwhy-er/desktop-commander" ];
+      "args" = [
+        "-y"
+        "@wonderwhy-er/desktop-commander"
+      ];
       "command" = "npx";
     };
     "fff" = {
@@ -73,15 +107,26 @@
       "command" = "/home/user/.local/bin/fff-mcp";
     };
     "gopls-mcp-server" = {
-      "args" = [ "run" "golang.org/x/tools/gopls@latest" "mcp" ];
+      "args" = [
+        "run"
+        "golang.org/x/tools/gopls@latest"
+        "mcp"
+      ];
       "command" = "go";
     };
     "mcp-server-neon" = {
-      "args" = [ "-y" "mcp-remote" "https://mcp.neon.tech/sse" ];
+      "args" = [
+        "-y"
+        "mcp-remote"
+        "https://mcp.neon.tech/sse"
+      ];
       "command" = "npx";
     };
     "sequential-thinking" = {
-      "args" = [ "-y" "@modelcontextprotocol/server-sequential-thinking" ];
+      "args" = [
+        "-y"
+        "@modelcontextprotocol/server-sequential-thinking"
+      ];
       "command" = "npx";
     };
   };

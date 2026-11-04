@@ -24,6 +24,7 @@ class TestB64Url(unittest.TestCase):
 
     def test_roundtrip_shape(self):
         import base64
+
         raw = b'{"alg":"RS256","typ":"JWT"}'
         enc = fp.b64url(raw)
         pad = "=" * (-len(enc) % 4)
@@ -32,8 +33,7 @@ class TestB64Url(unittest.TestCase):
 
 class TestLedgerPacing(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.NamedTemporaryFile(
-            "w", suffix=".tsv", delete=False)
+        self.tmp = tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False)
         self.old_env = os.environ.get("FLEET_PAPERWORK_LEDGER")
         os.environ["FLEET_PAPERWORK_LEDGER"] = self.tmp.name
 
@@ -84,7 +84,8 @@ class TestLedgerPacing(unittest.TestCase):
         # Lines written by older versions (timespec="seconds") must keep
         # parsing via fromisoformat.
         Path(self.tmp.name).write_text(
-            "2026-01-01T00:00:00+00:00\tcreate\tdeveloping-today/code\t1\tx\n")
+            "2026-01-01T00:00:00+00:00\tcreate\tdeveloping-today/code\t1\tx\n"
+        )
         last = fp.last_write_epoch(Path(self.tmp.name))
         self.assertIsNotNone(last)
         self.assertAlmostEqual(last, 1767225600.0, delta=1)
@@ -119,18 +120,25 @@ class TestGenericCommandArgs(unittest.TestCase):
 
     def test_api_requires_method(self):
         with self.assertRaises(SystemExit):
-            fp.main(["api", "--repo", "developing-today/code",
-                     "--path", "/repos/developing-today/code"])
+            fp.main(
+                [
+                    "api",
+                    "--repo",
+                    "developing-today/code",
+                    "--path",
+                    "/repos/developing-today/code",
+                ]
+            )
 
     def test_api_requires_path(self):
         with self.assertRaises(SystemExit):
-            fp.main(["api", "--repo", "developing-today/code",
-                     "--method", "GET"])
+            fp.main(["api", "--repo", "developing-today/code", "--method", "GET"])
 
     def test_api_requires_repo(self):
         with self.assertRaises(SystemExit):
-            fp.main(["api", "--method", "GET",
-                     "--path", "/repos/developing-today/code"])
+            fp.main(
+                ["api", "--method", "GET", "--path", "/repos/developing-today/code"]
+            )
 
     def test_token_requires_repo(self):
         with self.assertRaises(SystemExit):

@@ -24,7 +24,7 @@ import type { RfaState } from "../src/sources/ready-for-agent.ts";
 // fake fetchers; no service is ever killed on the laptop for a test.
 
 const NOW = Date.parse("2026-10-27T06:00:00Z");
-const cfg = loadConfig({});
+const cfg = loadConfig({ PM_AGG_DEV: "1" });
 
 function feedAt(ageMs: number): FleetFeed {
   const generatedAt = new Date(NOW - ageMs).toISOString();
@@ -115,10 +115,20 @@ describe("buildHealth probes", () => {
     const stoppedAt = NOW;
     const dir = await mkdtemp(join(tmpdir(), "collector-stop-"));
     const path = join(dir, "feed.json");
-    const collector = spawn({ cmd: [process.execPath, "-e", "await Bun.write(process.argv[1], process.argv[2]); setInterval(() => {}, 1000)", path, JSON.stringify(feedAt(0))], stdout: "ignore", stderr: "inherit" });
+    const collector = spawn({
+      cmd: [
+        process.execPath,
+        "-e",
+        "await Bun.write(process.argv[1], process.argv[2]); setInterval(() => {}, 1000)",
+        path,
+        JSON.stringify(feedAt(0)),
+      ],
+      stdout: "ignore",
+      stderr: "inherit",
+    });
     try {
       for (let i = 0; i < 100 && !(await Bun.file(path).exists()); i++) await Bun.sleep(10);
-      const feed = await Bun.file(path).json() as FleetFeed;
+      const feed = (await Bun.file(path).json()) as FleetFeed;
       collector.kill();
       await collector.exited;
       const { fetcher } = fakeFetcher(allUp);

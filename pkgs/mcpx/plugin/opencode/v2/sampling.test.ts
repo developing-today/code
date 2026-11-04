@@ -25,9 +25,7 @@ const sampleRow = (over: Partial<BrokerRow> = {}): BrokerRow => ({
   mode: "sample",
   audience: "agent",
   requestedSchema: {
-    messages: [
-      { role: "user", content: { type: "text", text: "Say hello." } },
-    ],
+    messages: [{ role: "user", content: { type: "text", text: "Say hello." } }],
     systemPrompt: "Be brief.",
     modelPreferences: { hints: [{ name: "hinted-model" }] },
     maxTokens: 64,
@@ -35,7 +33,9 @@ const sampleRow = (over: Partial<BrokerRow> = {}): BrokerRow => ({
   ...over,
 });
 
-const stubClient = (rows: BrokerRow[]): {
+const stubClient = (
+  rows: BrokerRow[],
+): {
   client: SamplingDaemonLike;
   answers: Array<{ id: string; action: string; content?: unknown }>;
 } => {

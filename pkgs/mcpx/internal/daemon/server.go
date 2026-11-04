@@ -778,6 +778,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.route(mux, "POST "+takeoverRoute, s.handleTakeover)
 	s.route(mux, "POST "+upgradeRoute, s.handleUpgrade)
 	s.route(mux, "GET /v1/status", s.handleStatus)
+	s.routesSessions(mux)
 	// The permissive authorisation funnel's decision report (#1972
 	// step 2): counts by operation and principal, and the clear.
 	s.route(mux, "GET /v1/authz/decisions", s.handleAuthzDecisions)

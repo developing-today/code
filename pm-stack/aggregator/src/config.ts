@@ -1,5 +1,7 @@
 // Environment configuration. Secrets are read by NAME from the environment
-// only — never committed, never printed. Everything has a fixture-safe default.
+// only — never committed, never printed. Everything has a fixture-safe
+// default, except the default Source: implicit fixtures require the
+// explicit PM_AGG_DEV=1 switch (#1195).
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -26,7 +28,10 @@ function parseAggregatorHosts(value: string | undefined): string[] {
 }
 
 export interface Config {
-  /** "fixtures" | "live" — the default Source. */
+  /** Default Source: "live" when PM_AGG_SOURCE=live; "fixtures" when
+   * explicitly requested, or when PM_AGG_DEV=1 allows the implicit
+   * (unset/invalid PM_AGG_SOURCE) fixture default. Anything else
+   * throws at startup rather than silently serving canned data (#1195). */
   source: "fixtures" | "live";
   port: number;
   /** Bind addresses (PM_AGG_HOSTS, comma-separated). Default loopback. */
@@ -43,6 +48,7 @@ export interface Config {
   viewsFile: string;
   /** Cross-stack event log store (#1739) — one chronological stream. */
   eventsFile: string;
+  activityFile: string;
   /** Durable identity-registry store (#906 §3), merged on every read. */
   registryFile: string;
   /** Usage snapshot store (hub §4): a directory of monthly JSONL files. */
@@ -102,9 +108,25 @@ export interface Config {
   };
 }
 
+function parseAggregatorSource(env: Record<string, string | undefined>): "fixtures" | "live" {
+  const raw = env.PM_AGG_SOURCE;
+  const value = raw?.trim() ?? "";
+  // #1195: an explicit choice is always honored — "live" for the
+  // deployment, "fixtures" for deliberate fixture work.
+  if (value === "live" || value === "fixtures") return value;
+  // Anything else (unset, empty, or a typo) silently serving fixtures
+  // would let a non-development deployment look healthy while showing
+  // canned data, so fixture mode here requires the explicit dev switch.
+  if (env.PM_AGG_DEV === "1") return "fixtures";
+  throw new Error(
+    `Refusing to serve fixture data outside explicit dev mode: PM_AGG_SOURCE=${JSON.stringify(raw ?? null)}; ` +
+      `set PM_AGG_SOURCE=live, or PM_AGG_SOURCE=fixtures with PM_AGG_DEV=1`,
+  );
+}
+
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
   return {
-    source: env.PM_AGG_SOURCE === "live" ? "live" : "fixtures",
+    source: parseAggregatorSource(env),
     port: parseAggregatorPort(env.PM_AGG_PORT),
     hosts: parseAggregatorHosts(env.PM_AGG_HOSTS),
     feedFile: s(env.PM_AGG_FEED_FILE, join(process.cwd(), "fleet-feed.json")),
@@ -113,6 +135,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     actionsFile: s(env.PM_AGG_ACTIONS_FILE, join(process.cwd(), "actions.json")),
     viewsFile: s(env.PM_AGG_VIEWS_FILE, join(process.cwd(), "views.json")),
     eventsFile: s(env.PM_AGG_EVENTS_FILE, join(process.cwd(), "events.json")),
+    activityFile: s(env.PM_AGG_ACTIVITY_FILE, join(process.cwd(), "activity-ingestion.json")),
     registryFile: s(env.PM_AGG_REGISTRY_FILE, join(process.cwd(), "registry.json")),
     snapshotsDir: s(env.PM_AGG_SNAPSHOTS_DIR, join(process.cwd(), "snapshots")),
     quotaViewFile: s(
