@@ -106,13 +106,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "atlas-proto"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "atlas-search"
 version = "0.1.0"
 dependencies = [
  "atlas-core",
  "atlas-embed",
+ "atlas-proto",
  "clap",
  "rusqlite",
+ "serde",
  "serde_json",
  "ureq",
 ]

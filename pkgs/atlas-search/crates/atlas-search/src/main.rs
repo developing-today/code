@@ -5,8 +5,10 @@
 //! front-end over atlas-core (step 2) and atlas-embed (step 1).
 //! Standalone is the default and is complete — embed the query
 //! in-process, talk to Turso or a local publish file directly.
-//! `--via-service` prefers a running service and falls back to
-//! standalone loudly until the step-4 protocol lands (#5354).
+//! `--via-service` prefers a running service (the step-4 job
+//! protocol, #5354) and falls back to standalone loudly on any
+//! service failure. `serve` runs that service; `init` generates
+//! its client table.
 //!
 //! Exit behavior mirrors the Python: `die()` fatals print
 //! `atlas-search: <msg>` on stderr and exit 2 (argparse errors
@@ -16,8 +18,10 @@
 
 mod pyjson;
 mod render;
+mod server;
 mod service;
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::OnceLock;
@@ -27,6 +31,10 @@ use atlas_core::turso::{TURSO_HOST, resolve_turso_token};
 use atlas_core::{
     AtlasEmbedder, Error as CoreError, FixedEmbedder, LocalBackend, QueryEmbedder, SearchBackend,
     SearchMode, SearchOptions, TursoBackend, VectorBackend, run_get_chunk, run_search,
+};
+use atlas_proto::{
+    FilterSpec, SearchMode as ProtoSearchMode, SearchRequest, Sensitivity as ProtoSensitivity,
+    VectorBackend as ProtoVectorBackend,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde_json::Value as Json;
@@ -50,6 +58,36 @@ enum Cmd {
     Search(Box<SearchArgs>),
     /// one chunk with provenance
     GetChunk(GetChunkArgs),
+    /// run the Atlas service (loopback HTTP job protocol; step 4)
+    Serve(ServeArgs),
+    /// generate the service config + v1 client table (0600)
+    Init(InitArgs),
+}
+
+#[derive(Args)]
+struct ServeArgs {
+    /// service config path (default: ~/.local/state/atlas-search/service.json; env ATLAS_SEARCH_SERVICE_CONFIG)
+    #[arg(long)]
+    config: Option<PathBuf>,
+    /// listen address override (loopback only)
+    #[arg(long)]
+    listen: Option<SocketAddr>,
+    /// completed-job TTL override, milliseconds (default 600000)
+    #[arg(long)]
+    job_ttl_ms: Option<u64>,
+    /// submit hard-cap override, milliseconds (default 3600000)
+    #[arg(long)]
+    hard_ttl_ms: Option<u64>,
+}
+
+#[derive(Args)]
+struct InitArgs {
+    /// service config path (default: ~/.local/state/atlas-search/service.json; env ATLAS_SEARCH_SERVICE_CONFIG)
+    #[arg(long)]
+    config: Option<PathBuf>,
+    /// replace an existing config (rotates every client token)
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -399,20 +437,99 @@ fn load_embedder(model: &str, embedder: EmbedderChoice) -> Result<AtlasEmbedder,
 
 // ------------------------------------------------------------- service --
 
-/// When via-service is in play: probe, warn loudly on stderr, and
-/// return the envelope note. Standalone proceeds regardless —
-/// step 4 swaps the probe for the real protocol client.
-fn via_service_note(args: &BackendArgs) -> Option<String> {
-    if !(args.via_service || service::via_env()) {
+fn via_requested(args: &BackendArgs) -> bool {
+    args.via_service || service::via_env()
+}
+
+/// The shipped fallback contract: warn loudly on stderr and
+/// record the same fact in the envelope's notes.
+fn via_fallback_note(detail: String) -> String {
+    eprintln!("atlas-search: warning: --via-service: {detail}; falling back to standalone");
+    format!("via-service: {detail}; served standalone")
+}
+
+/// Translate the CLI's search surface into the wire request.
+fn proto_search_request(args: &SearchArgs) -> SearchRequest {
+    SearchRequest {
+        query: args.query.clone(),
+        mode: match args.mode {
+            ModeChoice::Hybrid => ProtoSearchMode::Hybrid,
+            ModeChoice::Fts => ProtoSearchMode::Fts,
+            ModeChoice::Vector => ProtoSearchMode::Vector,
+        },
+        filters: FilterSpec {
+            kind: split_csv(args.kind.as_deref()),
+            topic: split_csv(args.topic.as_deref()),
+            project: split_csv(args.project.as_deref()),
+            client: split_csv(args.client.as_deref()),
+            since: args.since.clone(),
+            until: args.until.clone(),
+        },
+        ceiling: ProtoSensitivity::from_name(&args.max_sensitivity)
+            .unwrap_or(ProtoSensitivity::Personal),
+        k: u(args.k),
+        pool: u(args.pool),
+        group_by_session: args.group_by_session,
+        expand: u(args.expand),
+        with_message: args.with_message,
+        model: args.vector.model.clone(),
+        embedder: match args.vector.embedder {
+            EmbedderChoice::Auto => "auto",
+            EmbedderChoice::Fastembed => "fastembed",
+            EmbedderChoice::St => "st",
+        }
+        .to_string(),
+        trunc: u(args.vector.trunc),
+        vector_backend: match args.vector.vector_backend {
+            VectorBackendChoice::Scan => ProtoVectorBackend::Scan,
+            VectorBackendChoice::IndexFill => ProtoVectorBackend::IndexFill,
+            VectorBackendChoice::IndexFixed => ProtoVectorBackend::IndexFixed,
+        },
+        page_limit: None,
+    }
+}
+
+/// Try the service for a search. `Ok(Some(envelope))` = served by
+/// the service; `Ok(None)` = not applicable, caller serves
+/// standalone silently; `Err(note)` = attempted and fell back,
+/// with the envelope note to record.
+fn try_via_service_search(args: &SearchArgs) -> Result<Option<Json>, String> {
+    if !via_requested(&args.backend) {
+        return Ok(None);
+    }
+    if ProtoSensitivity::from_name(&args.max_sensitivity).is_none() {
+        // Let the standalone path produce the Python's exact
+        // validation fatal rather than silently clamping here.
+        return Ok(None);
+    }
+    let base = service::base_url(args.backend.service_url.as_deref());
+    if args.backend.backend == BackendChoice::Local {
+        return Err(via_fallback_note(format!(
+            "service at {base} serves the Turso backend only; a local backend was requested"
+        )));
+    }
+    if args.vector.vec_table != atlas_core::DEFAULT_VEC_TABLE {
+        return Err(via_fallback_note(format!(
+            "service at {base} is configured for the production vector table {}; --vec-table {} needs standalone",
+            atlas_core::DEFAULT_VEC_TABLE,
+            args.vector.vec_table
+        )));
+    }
+    match service::search(&base, &proto_search_request(args)) {
+        Ok(out) => Ok(Some(out)),
+        Err(detail) => Err(via_fallback_note(detail)),
+    }
+}
+
+/// get-chunk has no via-service path in the job protocol (chunk
+/// reads are scoped to an existing job), so it keeps the shipped
+/// loud-fallback shape.
+fn via_service_note_get_chunk(args: &BackendArgs) -> Option<String> {
+    if !via_requested(args) {
         return None;
     }
     let base = service::base_url(args.service_url.as_deref());
-    let att = service::attempt(&base);
-    eprintln!(
-        "atlas-search: warning: --via-service: {}; falling back to standalone",
-        att.detail
-    );
-    Some(format!("via-service: {}; served standalone", att.detail))
+    Some(via_fallback_note(service::get_chunk_fallback_detail(&base)))
 }
 
 fn push_note(out: &mut Json, note: String) {
@@ -443,7 +560,15 @@ fn u(v: i64) -> usize {
 // -------------------------------------------------------------- commands --
 
 fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
-    let note = via_service_note(&args.backend);
+    let mut note: Option<String> = None;
+    match try_via_service_search(&args) {
+        Ok(Some(out)) => {
+            print_output(&out, args.text);
+            return Ok(());
+        }
+        Ok(None) => {}
+        Err(n) => note = Some(n),
+    }
     let filters = Filters::new(
         split_csv(args.kind.as_deref()),
         split_csv(args.topic.as_deref()),
@@ -492,7 +617,7 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
 }
 
 fn cmd_get_chunk(args: GetChunkArgs) -> Result<(), CliError> {
-    let note = via_service_note(&args.backend);
+    let note = via_service_note_get_chunk(&args.backend);
     // The Python's get-chunk takes no vector args: pick_backend
     // sees the defaults (getattr fallbacks in its main()).
     let backend = pick_backend(&args.backend, atlas_core::DEFAULT_VEC_TABLE, 0)?;
@@ -505,10 +630,52 @@ fn cmd_get_chunk(args: GetChunkArgs) -> Result<(), CliError> {
     Ok(())
 }
 
+fn cmd_serve(args: ServeArgs) -> Result<(), CliError> {
+    let path = server::resolve_service_config_path(args.config.as_deref());
+    let settings = server::load_service_settings(
+        &path,
+        server::ServeOverrides {
+            listen: args.listen,
+            job_ttl_ms: args.job_ttl_ms,
+            hard_ttl_ms: args.hard_ttl_ms,
+        },
+    )
+    .map_err(|m| (2, m))?;
+    let backend = TursoBackend::new(&settings.vec_table).map_err(map_err)?;
+    let shared = std::sync::Arc::new(server::SharedEmbedder::new(std::sync::Arc::new(
+        CliEmbedder::new(atlas_core::DEFAULT_MODEL.to_string(), EmbedderChoice::Auto),
+    )));
+    let state_fn = shared.state_fn();
+    let engine = std::sync::Arc::new(server::CoreSearchEngine::new(
+        std::sync::Arc::new(backend),
+        shared,
+        state_fn,
+    ));
+    server::serve_forever(settings, engine).map_err(|m| (1, m))
+}
+
+fn cmd_init(args: InitArgs) -> Result<(), CliError> {
+    let path = server::resolve_service_config_path(args.config.as_deref());
+    let summary = server::init_service_config(&path, args.force).map_err(|m| (2, m))?;
+    println!(
+        "atlas-search: wrote service config {} (0600) with the v1 client table:",
+        path.display()
+    );
+    for (name, cap) in summary {
+        println!("  {name} (ceiling cap: {})", cap.name());
+    }
+    println!(
+        "atlas-search: token values are in the config file only; copy each client's token into its own client config — never commit them"
+    );
+    Ok(())
+}
+
 fn run(cli: Cli) -> Result<(), CliError> {
     match cli.cmd {
         Cmd::Search(args) => cmd_search(*args),
         Cmd::GetChunk(args) => cmd_get_chunk(args),
+        Cmd::Serve(args) => cmd_serve(args),
+        Cmd::Init(args) => cmd_init(args),
     }
 }
 
