@@ -6,9 +6,11 @@ developing-today/code#5412; design note
 workspace began as the step-1 (#5429) skeleton: the registry,
 config, secrets-by-name and proxy-protocol platform crates. Step 2
 (#5430) landed the queue domain — the repo-queue client and the
-queue-broker / secrets-broker serve roles are real below. The
-remaining domains are capability stubs until their own steps land
-(proxy #5431, dispatch #5432, search #5433).
+queue-broker / secrets-broker serve roles are real below. Step 3
+(#5431) landed the proxy domain — the session broker, its client,
+the hello negotiation and the PATH shims. The remaining domains
+are capability stubs until their own steps land (dispatch #5432,
+search #5433).
 
 ## Layout
 
@@ -25,9 +27,22 @@ crates/fleet-config/        fleet.toml: [domains] switches, [proxy],
 crates/fleet-secrets/       secrets by NAME only (broker first, then
                             `bws` fallback). Values never appear in
                             code, tests, errors or logs.
-crates/fleet-proxy-proto/   session-broker wire protocol: 4-byte BE
-                            length + JSON frames, hello/capability
-                            handshake, major-version window (N, N-1).
+crates/fleet-proxy-proto/   session-broker wire protocol: 8-byte BE
+                            length + JSON frames (the live wire's
+                            size — the note's "4-byte" was a census
+                            error), hello/capability handshake,
+                            major-version window (N, N-1, plus the
+                            legacy proto 0 the Python clients speak).
+crates/fleet-proxy/         the proxy domain (step 3): `proxy serve`
+                            (the broker — per-port CONNECT-tunnel
+                            pools on the historical socket path,
+                            idle exit, nothing persisted) and the
+                            client (`proxy connect`, `fleet init`,
+                            the --stdio ProxyCommand relay, and PATH
+                            shim regeneration from the negotiated
+                            services map). The `serve` half is the
+                            fleet-proxy/serve cargo feature, present
+                            only in builds carrying proxy-serve.
 crates/fleet-queue/         the queue domain (step 2): the repo-queue
                             client, the queue-broker and secrets-broker
                             roles, and packet validation — the broker
@@ -94,6 +109,15 @@ cargo test --workspace   # unit tests (registry, config, proto, secrets)
 The connect variants carry the D7 size contract: **≤ 2 MiB hard
 gate** (target ≤ 1.5 MiB), enforced in `default.nix` postFixup
 against the final stripped artifact and re-asserted by smoke.sh.
+
+Step 3 flips the sandbox session proxy the same way: the new
+binary deploys beside the old, the client proves itself against
+the still-running Python broker (legacy dialect), then the broker
+role flips on the same socket path and every consumer re-proves
+(the evidence lives on #5431). The Python broker and
+laptop-proxy-connect.py stay in place, untouched — SSH's
+ProxyCommand re-point is gated on days of proof, a separate
+reversible flip.
 
 Step 1 installed nothing live. Step 2 performs the queue pilot's
 flips — the laptop's broker units re-point at `fleet serve

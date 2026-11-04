@@ -148,20 +148,39 @@ fn all_digits(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// Parses a dedupe-key number in its canonical spelling only: plain
+/// decimal digits, no leading zeros, and at least 1 (issue/PR numbers
+/// start at 1). A non-canonical spelling (05424, 0) would be a
+/// different dedupe_key string for the same number — a second dedupe
+/// identity for the same work — so it matches nothing (#5510; the
+/// pr-set/maintenance families got the same treatment in #5482).
+fn canonical_number(s: &str) -> Option<i64> {
+    if !all_digits(s) {
+        return None;
+    }
+    let n: i64 = s.parse().ok()?;
+    if n < 1 || n.to_string() != s {
+        return None;
+    }
+    Some(n)
+}
+
 /// Hand-rolled equivalent of the DEDUPE_REGEXES family patterns.
 fn match_dedupe(key: &str) -> Option<DedupeMatch> {
     let rest = key.strip_prefix("repo-health:v1:")?;
     // set family has a different shape: set:<num>:owed:<repo>
     if let Some(tail) = rest.strip_prefix("set:") {
         let (num_s, repo) = tail.split_once(":owed:")?;
-        if all_digits(num_s) && FLEET_REPOS.contains(&repo) {
-            return Some(DedupeMatch {
-                family: "set".into(),
-                repo: repo.to_string(),
-                num: None,
-                nums: None,
-                origin: num_s.parse().ok(),
-            });
+        if let Some(origin) = canonical_number(num_s) {
+            if FLEET_REPOS.contains(&repo) {
+                return Some(DedupeMatch {
+                    family: "set".into(),
+                    repo: repo.to_string(),
+                    num: None,
+                    nums: None,
+                    origin: Some(origin),
+                });
+            }
         }
         return None;
     }
@@ -176,11 +195,11 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
             match fam {
                 "fix" | "triage" => {
                     if let Some(n) = tail.strip_prefix("issue:") {
-                        if all_digits(n) {
+                        if let Some(num) = canonical_number(n) {
                             return Some(DedupeMatch {
                                 family: fam.into(),
                                 repo: repo.to_string(),
-                                num: n.parse().ok(),
+                                num: Some(num),
                                 nums: None,
                                 origin: None,
                             });
@@ -189,11 +208,11 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
                 }
                 "pr" => {
                     if let Some(n) = tail.strip_prefix("pr:") {
-                        if all_digits(n) {
+                        if let Some(num) = canonical_number(n) {
                             return Some(DedupeMatch {
                                 family: fam.into(),
                                 repo: repo.to_string(),
-                                num: n.parse().ok(),
+                                num: Some(num),
                                 nums: None,
                                 origin: None,
                             });
@@ -207,11 +226,7 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
                     // repeated number is not a set — both spellings would give
                     // the same coverage a second valid dedupe key (#5482).
                     let parts: Vec<&str> = tail.split('-').collect();
-                    let nums: Vec<i64> = parts
-                        .iter()
-                        .filter(|p| all_digits(p))
-                        .filter_map(|p| p.parse().ok())
-                        .collect();
+                    let nums: Vec<i64> = parts.iter().filter_map(|p| canonical_number(p)).collect();
                     if parts.len() >= 2
                         && nums.len() == parts.len()
                         && nums.windows(2).all(|w| w[0] < w[1])
@@ -505,6 +520,30 @@ mod tests {
         assert!(match_dedupe("repo-health:v1:pr-set:developing-today/code:100-200-5424").is_some());
         // The single-PR family is untouched.
         assert!(match_dedupe("repo-health:v1:pr:developing-today/code:pr:5424").is_some());
+    }
+
+    #[test]
+    fn plain_number_keys_are_canonical() {
+        // Leading zeros are a different dedupe_key string for the same
+        // number: a second dedupe identity for the same work (#5510).
+        assert!(match_dedupe("repo-health:v1:fix:developing-today/code:issue:05424").is_none());
+        assert!(match_dedupe("repo-health:v1:fix:developing-today/code:issue:0005424").is_none());
+        assert!(match_dedupe("repo-health:v1:triage:developing-today/code:issue:05424").is_none());
+        assert!(match_dedupe("repo-health:v1:pr:developing-today/code:pr:05424").is_none());
+        assert!(match_dedupe("repo-health:v1:set:05424:owed:developing-today/code").is_none());
+        assert!(match_dedupe("repo-health:v1:pr-set:developing-today/code:0100-5424").is_none());
+        // Issue/PR numbers start at 1: 0 names nothing.
+        assert!(match_dedupe("repo-health:v1:fix:developing-today/code:issue:0").is_none());
+        assert!(match_dedupe("repo-health:v1:pr:developing-today/code:pr:0").is_none());
+        assert!(match_dedupe("repo-health:v1:set:0:owed:developing-today/code").is_none());
+        // Canonical spellings are untouched.
+        let m = match_dedupe("repo-health:v1:fix:developing-today/code:issue:5424")
+            .expect("canonical fix key matches");
+        assert_eq!(m.num, Some(5424));
+        let m = match_dedupe("repo-health:v1:set:5424:owed:developing-today/code")
+            .expect("canonical set key matches");
+        assert_eq!(m.origin, Some(5424));
+        assert!(match_dedupe("repo-health:v1:pr-set:developing-today/code:100-5424").is_some());
     }
 
     #[test]
