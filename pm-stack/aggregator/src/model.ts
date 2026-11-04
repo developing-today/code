@@ -488,7 +488,10 @@ const GH_URL = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+
 /** Every GitHub issue/PR URL in a piece of text, as ref keys (deduplicated). */
 export function refsInText(text: string): RefKey[] {
   const out = new Set<RefKey>();
-  for (const m of text.matchAll(GH_URL)) out.add(`${m[1]}#${m[2]}`);
+  for (const m of text.matchAll(GH_URL)) {
+    const key = m[1] + "#" + m[2];
+    if (isValidRef(key)) out.add(key);
+  }
   return [...out];
 }
 

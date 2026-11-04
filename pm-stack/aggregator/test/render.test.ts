@@ -61,6 +61,14 @@ describe("ref parsing", () => {
     );
     expect(refs.sort()).toEqual(["developing-today/code#752", "dezren39/nix#501"].sort());
   });
+  test("skips URLs with unsafe numbers while keeping valid refs", () => {
+    const refs = refsInText(
+      "bad https://github.com/developing-today/code/issues/99999999999999999999 " +
+        "bad https://github.com/developing-today/code/pull/9007199254740992 " +
+        "good https://github.com/developing-today/code/issues/123",
+    );
+    expect(refs).toEqual(["developing-today/code#123"]);
+  });
   test("refUrl builds issue vs pr paths", () => {
     expect(refUrl("developing-today/code#752", "pr")).toBe("https://github.com/developing-today/code/pull/752");
     expect(refUrl("developing-today/code#752")).toBe("https://github.com/developing-today/code/issues/752");
