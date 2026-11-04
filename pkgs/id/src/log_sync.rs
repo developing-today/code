@@ -716,6 +716,7 @@ mod tests {
                 note: None,
                 link: None,
                 checkpoint: None,
+                rotation: None,
             };
             events.push(sign(signer, seq, backlink, None, ext).unwrap());
         }
@@ -1222,6 +1223,7 @@ mod tests {
             note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
         };
         let rival = sign(alice, 1, Some(honest[0].id), None, rival_ext).unwrap();
         assert!(matches!(

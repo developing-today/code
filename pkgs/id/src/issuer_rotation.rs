@@ -30,16 +30,25 @@
 //!   reference its rotation event ([`references_rotation`], §3.2
 //!   rule 4).
 //!
+//! The rotation record travels in the signed header extension
+//! ([`crate::chain::ChainExt::rotation`]), not in an event body: the
+//! event store persists the signed header but not arbitrary body
+//! content, so a body-carried rotation would be unrecoverable from
+//! stored or synchronized events (design §3.2, §1). A decoded event
+//! therefore carries its whole rotation, and any observer can run
+//! the fold from received events alone.
+//!
 //! Following the [`crate::currency`] precedent, state is a fold over
 //! the signed objects alone ([`fold_rotation_chain`]): callers obtain
-//! authors from decoded events ([`author_id`]) — [`crate::chain`]
-//! has already verified every envelope signature before this module
-//! sees an object — and supply the definition's recovery-key
-//! commitment, exactly as `fold_authorisation` takes the expected
-//! issuer. The commitment is an input because no currency-definition
-//! type exists in `pkgs/id` yet (#2251 owns that format); the design
-//! §10 question defaults to Option A (anchored definitions precommit
-//! a recovery key) unless Drew rules otherwise.
+//! authors and rotations from decoded events ([`author_id`],
+//! `header.extensions.rotation`) — [`crate::chain`] has already
+//! verified every envelope signature before this module sees an
+//! object — and supply the definition's recovery-key commitment,
+//! exactly as `fold_authorisation` takes the expected issuer. The
+//! commitment is an input because no currency-definition type exists
+//! in `pkgs/id` yet (#2251 owns that format); the design §10
+//! question defaults to Option A (anchored definitions precommit a
+//! recovery key) unless Drew rules otherwise.
 //!
 //! Out of scope here, per the design's phased plan (§7 phases 3–6):
 //! counting-view pinning (#2030), the anchored registry/gateway
@@ -58,6 +67,14 @@ use crate::currency::IssuerId;
 
 /// The event kind carrying an issuer rotation body.
 pub const ISSUER_ROTATION_KIND: &str = "issuer.rotation";
+
+/// Whether `kind` is the issuer rotation kind: an event of this
+/// kind must carry a rotation in its extension, and no other kind
+/// may ([`crate::chain::ChainExt::validate`]).
+#[must_use]
+pub fn is_rotation_kind(kind: &str) -> bool {
+    kind == ISSUER_ROTATION_KIND
+}
 
 /// Domain separator for the successor proof: the proof signs the
 /// canonical rotation fields under this domain and no other, so a
@@ -204,32 +221,14 @@ impl IssuerRotation {
         }
     }
 
-    /// The canonical body bytes this rotation is signed over.
-    ///
-    /// # Errors
-    ///
-    /// Returns a JSON error if the rotation cannot be serialized
-    /// (not expected for this shape).
-    pub fn body(&self) -> Result<Vec<u8>, serde_json::Error> {
-        serde_json::to_vec(self)
-    }
-
-    /// Decodes a rotation from a signed event's body bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns a JSON error if the bytes are not a rotation object.
-    pub fn from_body(bytes: &[u8]) -> Result<Self, serde_json::Error> {
-        serde_json::from_slice(bytes)
-    }
-
     /// The domain-separated message the successor proof signs: the
     /// proof domain, then the canonical JSON of every rotation field
     /// except the proof itself.
     ///
     /// # Errors
     ///
-    /// As [`IssuerRotation::body`].
+    /// Returns a JSON error if the proof fields cannot be serialized
+    /// (not expected for this shape).
     pub fn proof_message(&self) -> Result<Vec<u8>, serde_json::Error> {
         let fields = SuccessorProofFields {
             issuer_id: &self.issuer_id,
@@ -254,7 +253,8 @@ impl IssuerRotation {
     ///
     /// # Errors
     ///
-    /// As [`IssuerRotation::proof_message`].
+    /// Returns a JSON error if the proof message cannot be
+    /// serialized (not expected for this shape).
     pub fn prove_successor(&mut self, successor: &SigningKey) -> Result<(), serde_json::Error> {
         let message = self.proof_message()?;
         self.successor_proof = successor.sign(&message).to_bytes();
@@ -416,10 +416,11 @@ pub enum ChainStatus {
     /// Every accepted transition was the unique valid successor of
     /// its predecessor; the chain's head is authoritative.
     Settled,
-    /// Two or more valid transitions claim the same predecessor.
-    /// Neither branch settles (§3.2 rule 5): the chain stops at the
-    /// fork generation and later activity on both branches stays
-    /// disputed until a recovery resolves the issuer head.
+    /// Two or more valid transitions claim the same predecessor and
+    /// no single recovery transition resolves the fork. Neither
+    /// branch settles (§3.2 rule 5): the chain stops at the fork
+    /// generation and later activity on both branches stays disputed
+    /// until a recovery resolves the issuer head.
     Conflicted {
         /// The generation the competing transitions each claim to
         /// install.
@@ -446,6 +447,11 @@ pub struct GenerationChain {
     pub transitions: Vec<Hash>,
     /// The accepted recovery transitions, in generation order.
     pub recoveries: Vec<RecoveryStep>,
+    /// Transitions that claimed a predecessor a recovery then
+    /// resolved: they are void (§3.2 rule 5), their successors are
+    /// not any generation's key, and activity under them stays
+    /// disputed. Empty unless a recovery resolved a fork.
+    pub voided_transitions: Vec<Hash>,
     /// Whether the chain head settled or forked.
     pub status: ChainStatus,
 }
@@ -483,7 +489,7 @@ impl GenerationChain {
 /// objects alone.
 ///
 /// `rotations` pairs each rotation event's verified author and event
-/// id with the body decoded from it; `committed_recovery` is the
+/// id with the rotation carried in its extension; `committed_recovery` is the
 /// recovery-key hash from the currency definition, or `None` when
 /// the definition committed none (recovery transitions are then
 /// never authoritative, §3.4).
@@ -497,12 +503,17 @@ impl GenerationChain {
 ///   current generation key;
 /// - a *recovery* transition counts only when authored by the
 ///   committed recovery key and not by the key it replaces;
-/// - a body failing [`IssuerRotation::validate`] never counts
+/// - a rotation failing [`IssuerRotation::validate`] never counts
 ///   (fail closed, §6).
 ///
 /// Exactly one candidate advances the chain. Zero ends it. Two or
-/// more distinct candidates fork it: the chain stops, the status is
-/// [`ChainStatus::Conflicted`], and neither candidate's successor is
+/// more distinct candidates fork it — unless exactly one of them is
+/// a recovery transition: a valid committed-key recovery supersedes
+/// a compromised generation (§3.4), so it resolves the fork, the
+/// chain advances through it, and the rival transitions are recorded
+/// in [`GenerationChain::voided_transitions`] rather than settled.
+/// A fork no single recovery claims stops the chain with status
+/// [`ChainStatus::Conflicted`], and no candidate's successor is
 /// treated as settled (§3.2 rule 5).
 #[must_use]
 pub fn fold_rotation_chain(
@@ -517,6 +528,7 @@ pub fn fold_rotation_chain(
         keys: vec![*issuer_id],
         transitions: Vec::new(),
         recoveries: Vec::new(),
+        voided_transitions: Vec::new(),
         status: ChainStatus::Settled,
     };
     loop {
@@ -555,23 +567,51 @@ pub fn fold_rotation_chain(
                 chain.transitions.push(event_id);
             }
             many => {
-                chain.status = ChainStatus::Conflicted {
-                    generation: generation + 1,
-                    candidates: many.iter().map(|(_, event_id, _)| *event_id).collect(),
-                };
-                break;
+                // A single recovery candidate resolves the fork
+                // (§3.4): the compromised generation's own transitions
+                // cannot veto the committed recovery key. Rival
+                // transitions are void, never settled.
+                let recovery_candidates: Vec<&(IssuerId, Hash, IssuerRotation)> = many
+                    .iter()
+                    .filter(|(_, _, rotation)| rotation.mode == RotationMode::CompromiseRecovery)
+                    .copied()
+                    .collect();
+                if let [(_, event_id, rotation)] = recovery_candidates.as_slice() {
+                    let event_id = *event_id;
+                    let rotation = (*rotation).clone();
+                    chain.voided_transitions.extend(
+                        many.iter()
+                            .map(|(_, rival, _)| *rival)
+                            .filter(|rival| *rival != event_id),
+                    );
+                    chain.recoveries.push(RecoveryStep {
+                        generation,
+                        event_id,
+                        asserted_compromise_from: rotation.asserted_compromise_from,
+                    });
+                    chain.keys.push(rotation.successor_key);
+                    chain.transitions.push(event_id);
+                } else {
+                    chain.status = ChainStatus::Conflicted {
+                        generation: generation + 1,
+                        candidates: many.iter().map(|(_, event_id, _)| *event_id).collect(),
+                    };
+                    break;
+                }
             }
         }
     }
     chain
 }
 
-/// Signs a rotation as an `issuer.rotation` event.
+/// Signs a rotation as an `issuer.rotation` event. The rotation
+/// travels in the signed header extension, with no event body: the
+/// store persists the header, so a decoded event always carries the
+/// whole rotation with it (§3.2).
 ///
 /// # Errors
 ///
-/// Returns a chain error if the extension or backlink is invalid,
-/// or a JSON error if the rotation cannot be serialized.
+/// Returns a chain error if the extension or backlink is invalid.
 pub fn sign_rotation(
     key: &SigningKey,
     seq_num: SeqNum,
@@ -579,12 +619,11 @@ pub fn sign_rotation(
     rotation: &IssuerRotation,
     after: Vec<Hash>,
 ) -> Result<Event, SignError> {
-    let body = rotation.body()?;
     Ok(chain::sign(
         key,
         seq_num,
         backlink,
-        Some(&body),
+        None,
         ChainExt {
             kind: ISSUER_ROTATION_KIND.to_owned(),
             group: None,
@@ -595,24 +634,16 @@ pub fn sign_rotation(
             note: None,
             link: None,
             checkpoint: None,
+            rotation: Some(rotation.clone()),
         },
     )?)
 }
 
-/// A signing failure: the object would not serialize, or the chain
-/// refused the event.
+/// A signing failure: the chain refused the event.
 #[derive(Debug)]
 pub enum SignError {
-    /// The object would not serialize to its canonical body.
-    Json(serde_json::Error),
     /// The chain refused the event (extension or backlink rules).
     Chain(chain::ChainError),
-}
-
-impl From<serde_json::Error> for SignError {
-    fn from(err: serde_json::Error) -> Self {
-        Self::Json(err)
-    }
 }
 
 impl From<chain::ChainError> for SignError {
@@ -624,7 +655,6 @@ impl From<chain::ChainError> for SignError {
 impl std::fmt::Display for SignError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Json(err) => write!(f, "rotation object would not serialize: {err}"),
             Self::Chain(err) => write!(f, "chain refused the rotation event: {err:?}"),
         }
     }
@@ -648,6 +678,10 @@ mod tests {
 
     fn gen2_key() -> SigningKey {
         SigningKey::from_bytes(&[11; 32])
+    }
+
+    fn gen3_key() -> SigningKey {
+        SigningKey::from_bytes(&[17; 32])
     }
 
     fn recovery_key() -> SigningKey {
@@ -912,19 +946,104 @@ mod tests {
     }
 
     #[test]
+    fn recovery_resolves_a_conflicted_head() {
+        // The compromised generation-0 key signs two rival routine
+        // rotations; the committed recovery key's rotation from the
+        // same predecessor resolves the fork and neither rival
+        // settles.
+        let rival_a = rotation(RotationMode::Routine, 0, None, &gen1_key(), None);
+        let rival_b = rotation(RotationMode::Routine, 0, None, &gen2_key(), None);
+        let recovery = rotation(
+            RotationMode::CompromiseRecovery,
+            0,
+            None,
+            &gen3_key(),
+            Some(event(50)),
+        );
+        let chain = fold_rotation_chain(
+            &issuer_id(&gen0_key()),
+            &currency(),
+            Some(&commitment()),
+            &[
+                (issuer_id(&gen0_key()), event(1), rival_a),
+                (issuer_id(&gen0_key()), event(2), rival_b),
+                (issuer_id(&recovery_key()), event(3), recovery),
+            ],
+        );
+        assert_eq!(chain.status, ChainStatus::Settled);
+        assert_eq!(chain.active_generation(), 1);
+        assert_eq!(chain.active_key(), &issuer_id(&gen3_key()));
+        assert_eq!(chain.voided_transitions.len(), 2);
+        assert!(chain.voided_transitions.contains(&event(1)));
+        assert!(chain.voided_transitions.contains(&event(2)));
+        assert_eq!(
+            chain.recoveries,
+            vec![RecoveryStep {
+                generation: 0,
+                event_id: event(3),
+                asserted_compromise_from: Some(event(50)),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_recovery_racing_a_routine_rotation_wins() {
+        let routine = rotation(RotationMode::Routine, 0, None, &gen1_key(), None);
+        let recovery = rotation(RotationMode::CompromiseRecovery, 0, None, &gen2_key(), None);
+        let chain = fold_rotation_chain(
+            &issuer_id(&gen0_key()),
+            &currency(),
+            Some(&commitment()),
+            &[
+                (issuer_id(&gen0_key()), event(1), routine),
+                (issuer_id(&recovery_key()), event(2), recovery),
+            ],
+        );
+        assert_eq!(chain.status, ChainStatus::Settled);
+        assert_eq!(chain.active_key(), &issuer_id(&gen2_key()));
+        assert_eq!(chain.voided_transitions, vec![event(1)]);
+    }
+
+    #[test]
+    fn two_recovery_transitions_still_conflict() {
+        let first = rotation(RotationMode::CompromiseRecovery, 0, None, &gen1_key(), None);
+        let second = rotation(RotationMode::CompromiseRecovery, 0, None, &gen2_key(), None);
+        let chain = fold_rotation_chain(
+            &issuer_id(&gen0_key()),
+            &currency(),
+            Some(&commitment()),
+            &[
+                (issuer_id(&recovery_key()), event(1), first),
+                (issuer_id(&recovery_key()), event(2), second),
+            ],
+        );
+        assert_eq!(chain.active_generation(), 0);
+        assert!(matches!(chain.status, ChainStatus::Conflicted { .. }));
+        assert!(chain.voided_transitions.is_empty());
+    }
+
+    #[test]
     fn signed_events_round_trip_through_the_fold() {
         let issuer = gen0_key();
         let first = rotation(RotationMode::Routine, 0, None, &gen1_key(), None);
         let signed = sign_rotation(&issuer, 0, None, &first, vec![]).expect("sign rotation");
         let decoded = chain::decode(&signed.bytes).expect("decode rotation");
         assert_eq!(author_id(&decoded), issuer_id(&issuer));
-        let body =
-            IssuerRotation::from_body(&first.body().expect("body bytes")).expect("decode body");
+        // The rotation is recovered from the decoded event's signed
+        // extension alone — the only part of an event the store
+        // persists — never from the original object.
+        let carried = decoded
+            .header
+            .extensions
+            .rotation
+            .clone()
+            .expect("rotation in extension");
+        assert_eq!(carried, first);
         let chain = fold_rotation_chain(
             &issuer_id(&issuer),
             &currency(),
             Some(&commitment()),
-            &[(author_id(&decoded), event(1), body)],
+            &[(author_id(&decoded), signed.id, carried)],
         );
         assert_eq!(chain.active_generation(), 1);
         assert_eq!(chain.active_key(), &issuer_id(&gen1_key()));

@@ -1158,6 +1158,7 @@ mod tests {
             note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1571,6 +1572,7 @@ mod tests {
                     audit_blob: None,
                 },
             }),
+            rotation: None,
         };
         let y0 = sign(&y, 0, None, None, ext).unwrap();
         assert_eq!(ingest(&mut store, &y0), Ingest::Waiting { id: y0.id });
@@ -1628,6 +1630,7 @@ mod tests {
                     audit_blob: None,
                 },
             }),
+            rotation: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1878,6 +1881,7 @@ mod tests {
                 note: None,
                 link: None,
                 checkpoint: None,
+                rotation: None,
             };
             sign(&signer, seq, backlink, None, ext).unwrap()
         };
@@ -1913,6 +1917,7 @@ mod tests {
             note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
         (event, body)
