@@ -252,6 +252,18 @@ pub struct RequestArgs {
     pub body: Option<serde_json::Value>,
 }
 
+/// The `fleet proxy connect` usage text, shared by the parser's
+/// help arm and the bin's help intercept, which prints it to
+/// stdout at exit 0 (#5619).
+pub const CONNECT_USAGE: &str = "\
+usage: fleet proxy connect [--print-path] [--stdio [--host H] \
+[--port N]] [--request METHOD PATH [--service-port N] \
+[--token-file F] [--body JSON]]
+
+Connect to the session proxy: ensure a broker answers (starting
+one when none does), sync the PATH shims from its services map,
+and optionally issue one request over the negotiated stream.";
+
 impl ConnectArgs {
     pub fn parse(argv: &[String]) -> Result<ConnectArgs, ClientError> {
         let mut out = ConnectArgs::default();
@@ -333,12 +345,7 @@ impl ConnectArgs {
                         .body = Some(body);
                 }
                 "--help" | "-h" => {
-                    return Err(ClientError::Usage(
-                        "usage: fleet proxy connect [--print-path] [--stdio [--host H] \
-                         [--port N]] [--request METHOD PATH [--service-port N] \
-                         [--token-file F] [--body JSON]]"
-                            .to_string(),
-                    ));
+                    return Err(ClientError::Usage(CONNECT_USAGE.to_string()));
                 }
                 other => return Err(usage(&format!("unknown argument {other:?}"))),
             }
@@ -428,6 +435,16 @@ pub fn run_connect(
     Ok(0)
 }
 
+/// The `fleet init` usage text (#5619).
+pub const INIT_USAGE: &str = "\
+Usage: fleet init
+
+Autostart the session proxy if it is not running: probe the broker
+socket, sync the PATH shims when a broker answers, and start one
+when none does. A strict no-op when a broker is already running.
+
+Takes no arguments.";
+
 /// `fleet init` — autostart semantics (§8): probe first; a live
 /// broker (either dialect) means status + shim sync and out,
 /// never a spawn, never a restart. Only an unanswered socket
@@ -438,6 +455,13 @@ pub fn run_init(
     client: &str,
     capabilities: &[String],
 ) -> Result<i32, ClientError> {
+    // A help flag asks for the usage: print it and succeed, like
+    // the other fleet leaves (#5619) - it is not an illegal
+    // argument, and asking must never probe, spawn, or sync shims.
+    if argv.iter().any(|a| matches!(a.as_str(), "--help" | "-h")) {
+        println!("{INIT_USAGE}");
+        return Ok(0);
+    }
     if !argv.is_empty() {
         return Err(ClientError::Usage(format!(
             "fleet init takes no arguments (got {:?})",
@@ -485,4 +509,34 @@ pub fn run_init(
         sync.tools.join(", ")
     );
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strings(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn init_help_succeeds_without_touching_the_broker() {
+        // #5619: --help/-h print the init usage and return Ok(0)
+        // before the takes-no-arguments rejection and before any
+        // socket probe, so these calls double as the
+        // no-side-effect pins.
+        let config = Config::default();
+        for flag in ["--help", "-h"] {
+            assert_eq!(
+                run_init(&strings(&[flag]), &config, "test-client", &[]).ok(),
+                Some(0),
+                "{flag} must print the init usage and succeed"
+            );
+        }
+        // A non-help argument is still a usage error (exit 2).
+        let err = run_init(&strings(&["--bogus"]), &config, "test-client", &[])
+            .expect_err("a non-help argument must be rejected");
+        assert_eq!(err.exit_code(), EXIT_USAGE);
+        assert!(err.to_string().contains("--bogus"));
+    }
 }

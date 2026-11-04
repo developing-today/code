@@ -587,6 +587,18 @@ fn run_proxy(surface: &Surface, args: &[String]) -> i32 {
             }
         },
         Some("connect") => {
+            // A help flag in the tail asks for the leaf's usage:
+            // print it to stdout and succeed, like the dispatch
+            // verbs and proxy serve (#5560/#5575). ConnectArgs::parse
+            // can only carry the text out as a usage error (exit 2),
+            // so the help form is answered here (#5619).
+            if args[1..]
+                .iter()
+                .any(|a| matches!(a.as_str(), "--help" | "-h"))
+            {
+                println!("{}", fleet_proxy::client::CONNECT_USAGE);
+                return EXIT_OK;
+            }
             let parsed = match fleet_proxy::client::ConnectArgs::parse(&args[1..]) {
                 Ok(a) => a,
                 Err(e) => {
@@ -812,6 +824,26 @@ mod tests {
             classify_proxy_serve_args(&args(&["extra", "args"])),
             ProxyServeArgs::Reject("extra".to_string())
         );
+    }
+
+    #[test]
+    fn proxy_connect_and_init_help_exit_ok() {
+        // #5619: connect/init --help answered through the error
+        // channel (exit 2, stderr). Both now print usage to stdout
+        // and succeed, before any broker probe or spawn.
+        let surface = Surface::new(None, fleet_config::Config::default());
+        for flag in ["--help", "-h"] {
+            assert_eq!(
+                run_proxy(&surface, &args(&["connect", flag])),
+                EXIT_OK,
+                "proxy connect {flag} must succeed"
+            );
+            assert_eq!(
+                run_proxy(&surface, &args(&["init", flag])),
+                EXIT_OK,
+                "proxy init {flag} must succeed"
+            );
+        }
     }
 
     #[test]
