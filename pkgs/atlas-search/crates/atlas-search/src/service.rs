@@ -117,6 +117,10 @@ fn read_body(resp: &mut ureq::http::Response<ureq::Body>) -> Result<String, Stri
 /// detail for the caller's loud fallback.
 pub fn search(base: &str, request: &SearchRequest) -> Result<Json, String> {
     let token = client_token()?;
+    search_with_token(base, request, &token)
+}
+
+fn search_with_token(base: &str, request: &SearchRequest, token: &str) -> Result<Json, String> {
     let agent = agent();
     let auth = format!("Bearer {token}");
 
@@ -188,6 +192,9 @@ pub fn search(base: &str, request: &SearchRequest) -> Result<Json, String> {
     let mut results: Vec<Json> = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
+        if Instant::now() >= deadline {
+            return Err("service job results did not finish paging within 330 seconds".to_string());
+        }
         let mut call = agent
             .get(format!("{job_url}/results"))
             .header("Authorization", &job_auth)
@@ -214,11 +221,28 @@ pub fn search(base: &str, request: &SearchRequest) -> Result<Json, String> {
         if envelope.is_none() {
             envelope = Some(page.envelope.clone());
         }
+        let page_len = page.results.len();
         results.extend(page.results.iter().cloned());
         if results.len() >= request.k || page.next_cursor.is_none() {
             break;
         }
-        cursor = page.next_cursor;
+        // Another iteration would follow `next_cursor`: it must
+        // actually advance the ranking, or this loop never ends
+        // (issue #5424). A non-advancing cursor, or an empty page
+        // that still claims more results, is a malformed response:
+        // return Err so the caller falls back to standalone loudly.
+        let next_cursor = page.next_cursor.clone().unwrap();
+        if page_len == 0 {
+            return Err(format!(
+                "service at {base} sent a malformed results page: empty page still returns a next_cursor"
+            ));
+        }
+        if cursor.as_deref() == Some(next_cursor.as_str()) {
+            return Err(format!(
+                "service at {base} sent a malformed results page: next_cursor did not advance (repeats the cursor just used)"
+            ));
+        }
+        cursor = Some(next_cursor);
     }
     let mut out = envelope.ok_or("service returned no results envelope")?;
     if let Some(obj) = out.as_object_mut() {
@@ -247,5 +271,142 @@ pub fn get_chunk_fallback_detail(base: &str) -> String {
             resp.status().as_u16()
         ),
         Err(e) => format!("service at {base} unreachable ({e})"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::thread;
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum StubMode {
+        RepeatingCursor,
+        EmptyPage,
+        HappyPath,
+    }
+
+    fn respond(stream: &mut TcpStream, status: &str, body: &str) {
+        let resp = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    }
+
+    fn read_request(stream: &mut TcpStream) -> String {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let n = stream.read(&mut chunk).unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&buf[..pos]).to_string();
+                let mut content_length = 0usize;
+                for line in head.lines() {
+                    if let Some((k, v)) = line.split_once(':')
+                        && k.trim().eq_ignore_ascii_case("content-length")
+                    {
+                        content_length = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                if buf.len() >= pos + 4 + content_length {
+                    break;
+                }
+            }
+        }
+        String::from_utf8_lossy(&buf).to_string()
+    }
+
+    /// A stub atlas service: submit -> 202, status -> done, and a
+    /// results endpoint whose paging behaviour is set by `mode`.
+    fn start_stub(mode: StubMode) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let req = read_request(&mut stream);
+                let first = req.lines().next().unwrap_or("").to_string();
+                if first.starts_with("POST /v1/search/jobs") {
+                    respond(
+                        &mut stream,
+                        "202 Accepted",
+                        r#"{"job_id":"job-1","job_token":"job-token","status":"queued","effective_ceiling":"personal","queue_depth":0,"submitted_at_ms":0,"expires_at_ms":999999999}"#,
+                    );
+                } else if first.contains("/results") {
+                    let has_cursor = first.contains("cursor=");
+                    let (results, next): (&str, &str) = match mode {
+                        StubMode::RepeatingCursor => (r#"[{"id":1}]"#, r#""same-cursor""#),
+                        StubMode::EmptyPage => (r#"[]"#, r#""some-cursor""#),
+                        StubMode::HappyPath => {
+                            if has_cursor {
+                                (r#"[{"id":2}]"#, "null")
+                            } else {
+                                (r#"[{"id":1}]"#, r#""cursor-2""#)
+                            }
+                        }
+                    };
+                    let body = format!(
+                        r#"{{"job_id":"job-1","status":"done","effective_ceiling":"personal","envelope":{{"results":[]}},"results":{results},"next_cursor":{next},"total_results":99}}"#
+                    );
+                    respond(&mut stream, "200 OK", &body);
+                } else if first.starts_with("GET /v1/search/jobs/") {
+                    respond(
+                        &mut stream,
+                        "200 OK",
+                        r#"{"job_id":"job-1","status":"done","branch_states":{"fts":"done","vector":"done"},"effective_ceiling":"personal","pool":100,"notes":[],"submitted_at_ms":0,"expires_at_ms":999999999}"#,
+                    );
+                } else {
+                    respond(
+                        &mut stream,
+                        "404 Not Found",
+                        r#"{"error":{"code":"not_found","message":"no such route"}}"#,
+                    );
+                }
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    fn request_k(k: usize) -> SearchRequest {
+        let mut req = SearchRequest::new("stub query");
+        req.k = k;
+        req
+    }
+
+    #[test]
+    fn search_repeating_cursor_returns_err_promptly() {
+        let base = start_stub(StubMode::RepeatingCursor);
+        let started = Instant::now();
+        let err = search_with_token(&base, &request_k(10), "test-token").unwrap_err();
+        assert!(err.contains("did not advance"), "unexpected error: {err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "repeating cursor was not rejected promptly"
+        );
+    }
+
+    #[test]
+    fn search_empty_page_with_cursor_returns_err() {
+        let base = start_stub(StubMode::EmptyPage);
+        let err = search_with_token(&base, &request_k(10), "test-token").unwrap_err();
+        assert!(err.contains("empty page"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn search_multi_page_happy_path_unchanged() {
+        let base = start_stub(StubMode::HappyPath);
+        let out = search_with_token(&base, &request_k(10), "test-token").unwrap();
+        let results = out
+            .get("results")
+            .and_then(Json::as_array)
+            .expect("envelope carries a results array");
+        assert_eq!(results.len(), 2);
     }
 }
