@@ -70,7 +70,16 @@ pub fn relay_stdio(config: &Config, host: &str, port: u16) -> Result<i32, Client
     // tunnel → stdout on this thread.
     let mut stdout = std::io::stdout().lock();
     pump(&mut tunnel, &mut stdout);
+    // The tunnel is done, so the relay is done — do NOT join the
+    // upload thread (#5518): it may be blocked reading stdin
+    // with stdin still open (an SSH ProxyCommand whose local side
+    // has not hung up), and it holds the socket clone, so joining
+    // here wedges the process until stdin EOFs. Shut the socket
+    // down so a late stdin burst fails the upload pump fast, then
+    // detach: process exit reaps the thread, exactly like the
+    // Python relay exiting when either side finished.
+    let _ = tunnel.shutdown(std::net::Shutdown::Both);
     drop(tunnel);
-    let _ = up.join();
+    drop(up);
     Ok(0)
 }
