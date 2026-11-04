@@ -123,7 +123,7 @@ const resolveModelEnum = (requestedModel, requestedEffort, liveModels = {}) => {
 
   // 2. Exact match in MODEL_MAP
   for (const cand of candIds) {
-    if (MODEL_MAP[cand]?.enum) {
+    if (Object.hasOwn(MODEL_MAP, cand) && MODEL_MAP[cand]?.enum) {
       return {
         modelEnum: MODEL_MAP[cand].enum,
         displayName: MODEL_MAP[cand].name,
@@ -134,6 +134,7 @@ const resolveModelEnum = (requestedModel, requestedEffort, liveModels = {}) => {
 
   // 3. Model family with effort in MODEL_MAP
   for (const cand of candIds) {
+    if (!Object.hasOwn(MODEL_MAP, cand)) continue;
     const family = MODEL_MAP[cand];
     if (family) {
       // A family entry also carries metadata keys — `default` (an effort

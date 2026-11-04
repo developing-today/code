@@ -77,6 +77,14 @@ describe("titleRefs", () => {
     expect(titleRefs("Daily morning readout")).toEqual([]);
   });
 
+  test("prototype-spelling title tokens stay unlinked like unknown aliases", () => {
+    const unknown = titleRefs("unknown #3106");
+    for (const token of ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"]) {
+      expect(titleRefs(`${token} #3106`)).toEqual(unknown);
+    }
+    expect(titleRefs("code #3106")).toEqual(["developing-today/code#3106"]);
+  });
+
   test("does not re-attribute an explicit non-fleet ref as nearby shorthand", () => {
     expect(titleRefs("code #811 blocked on developing-today-forks/kaneo#42")).toEqual([
       "developing-today-forks/kaneo#42",

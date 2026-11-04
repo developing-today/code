@@ -261,7 +261,7 @@ const ensureCliCaps = () => {
       cliCaps.serve = serve;
       cliCaps.exec = exec;
       for (const sub of ['serve', 'exec']) {
-        cliDropped[sub] = CLI_FLAG_PLAN[sub]
+        cliDropped[sub] = (Object.hasOwn(CLI_FLAG_PLAN, sub) ? CLI_FLAG_PLAN[sub] : [])
           .filter(p => !flagSupported(sub, p.flag, p.optional))
           .map(p => p.flag);
         if (cliCaps[sub]) {
@@ -1105,11 +1105,11 @@ const DIRECT_TOOL_NAMES = Object.fromEntries(
   Object.entries(DIRECT_TOOL_ALIASES).map(([client, alias]) => [alias, client])
 );
 const directToolAlias = (name, taken) => {
-  const alias = DIRECT_TOOL_ALIASES[name];
+  const alias = Object.hasOwn(DIRECT_TOOL_ALIASES, name) ? DIRECT_TOOL_ALIASES[name] : undefined;
   if (!alias || (taken && taken.has(alias))) return name;
   return alias;
 };
-const clientToolName = (name) => DIRECT_TOOL_NAMES[name] || name;
+const clientToolName = (name) => Object.hasOwn(DIRECT_TOOL_NAMES, name) ? DIRECT_TOOL_NAMES[name] : name;
 
 // The /v1/responses passthrough forwards client bodies in Responses shape;
 // apply the same tool-name aliasing there, in both directions, so a native
