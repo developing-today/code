@@ -694,7 +694,7 @@ function isSaasService(v: unknown): v is SaasService {
     (v.paygEstimate === null || isPaygEstimate(v.paygEstimate)) &&
     (v.paygNote === undefined || typeof v.paygNote === "string") &&
     (v.billedUsd === undefined || v.billedUsd === null || isNonNegative(v.billedUsd)) &&
-    (typeof v.measuredAt === "string" || v.measuredAt === null) &&
+    (v.measuredAt === null || isIsoDate(v.measuredAt)) &&
     typeof v.sourceClass === "string" &&
     USAGE_SOURCE_CLASSES.includes(v.sourceClass) &&
     typeof v.sourceNote === "string" &&
