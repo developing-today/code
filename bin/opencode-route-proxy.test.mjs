@@ -33,7 +33,7 @@ const freePort = () =>
 const makeLeaf = (name, expectedKey) => {
   const leaf = {
     name,
-    mode: "ok", // ok | rate
+    mode: "ok", // ok | rate | sse-rate | delayed-sse-rate | stream-break | late-sse-rate | delayed-stream
     last: null,
     hits: 0,
     server: null,
@@ -61,6 +61,46 @@ const makeLeaf = (name, expectedKey) => {
         });
         return res.end(JSON.stringify({ error: { message: "quota" } }));
       }
+      if (leaf.mode === "sse-rate") {
+        res.writeHead(200, {
+          "content-type": "text/event-stream",
+          "retry-after": "30",
+        });
+        const error = JSON.stringify({
+          error: {
+            message: "quota exhausted",
+            type: "rate_limit_error",
+            code: "insufficient_quota",
+            status: 429,
+          },
+        });
+        res.write(`data: ${error.slice(0, 14)}`);
+        return setTimeout(() => res.end(`${error.slice(14)}\n\n`), 10);
+      }
+      if (leaf.mode === "delayed-sse-rate") {
+        res.writeHead(200, {
+          "content-type": "text/event-stream",
+          "retry-after": "30",
+        });
+        res.write(": heartbeat\n\n");
+        const error = JSON.stringify({
+          error: {
+            message: "quota exhausted",
+            type: "rate_limit_error",
+            code: "insufficient_quota",
+            status: 429,
+          },
+        });
+        return setTimeout(() => {
+          res.write(`data: ${error.slice(0, 14)}`);
+          setTimeout(() => res.end(`${error.slice(14)}\n\n`), 10);
+        }, 300);
+      }
+      if (leaf.mode === "stream-break") {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(": heartbeat\n\n");
+        return setTimeout(() => res.destroy(), 10);
+      }
       if (body.stream) {
         res.writeHead(200, { "content-type": "text/event-stream" });
         const chunk = (delta, usage) =>
@@ -78,7 +118,30 @@ const makeLeaf = (name, expectedKey) => {
             ],
             ...(usage ? { usage } : {}),
           })}\n\n`;
-        res.write(chunk({ role: "assistant", content: name }));
+        if (leaf.mode === "delayed-stream") {
+          res.write(chunk({ role: "assistant" }));
+          return setTimeout(() => {
+            res.write(chunk({ content: name }));
+            res.write(
+              chunk({}, { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 }),
+            );
+            res.end("data: [DONE]\n\n");
+          }, 350);
+        }
+        res.write(chunk({ role: "assistant" }));
+        res.write(chunk({ content: name }));
+        if (leaf.mode === "late-sse-rate") {
+          return res.end(
+            `data: ${JSON.stringify({
+              error: {
+                message: "late quota exhausted",
+                type: "rate_limit_error",
+                code: "insufficient_quota",
+                status: 429,
+              },
+            })}\n\n`,
+          );
+        }
         res.write(
           chunk({}, { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 }),
         );
@@ -259,7 +322,7 @@ const startProxy = async (arg = {}) => {
     const ro = new DatabaseSync(dbPath, { readOnly: true });
     const rows = ro
       .prepare(
-        "SELECT route_id, provider_id, model_id, variant, outcome, error_tag, session_id, failed_over_to, output_started FROM route_attempt ORDER BY id",
+        "SELECT route_id, provider_id, model_id, variant, outcome, error_tag, error_status, error_message, session_id, failed_over_to, output_started, first_token_ms, quota FROM route_attempt ORDER BY id",
       )
       .all();
     ro.close();
@@ -283,6 +346,18 @@ const MSGS = [
   { role: "system", content: "be terse" },
   { role: "user", content: "hello" },
 ];
+
+const waitForAttempts = async (p, count) => {
+  let rows = [];
+  for (let i = 0; i < 20; i++) {
+    try {
+      rows = p.attempts();
+    } catch {}
+    if (rows.length >= count) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return rows;
+};
 
 test("invalid timeout exits at startup with a useful diagnostic", () => {
   for (const raw of ["0", "-1", "1.5", "1e3", "0x10", " 100", "2147483648", "3000000000", "abc", "nope"]) {
@@ -357,7 +432,7 @@ test("429 on the first leaf fails over; both attempts recorded", async () => {
     // leafB has no static key in config: it must be served by the
     // credential-store key, which the leaf verifies.
     assert.equal(p.leafB.last.headers.authorization, "Bearer key-b");
-    const rows = p.attempts();
+    const rows = await waitForAttempts(p, 2);
     assert.equal(rows.length, 2);
     assert.equal(rows[0].outcome, "failure");
     assert.equal(rows[0].error_tag, "RateLimit");
@@ -379,7 +454,7 @@ test("variant remap reaches the leaf as reasoning_effort", async () => {
     });
     assert.equal(res.status, 200);
     assert.equal(p.leafA.last.body.reasoning_effort, "high");
-    const rows = p.attempts();
+    const rows = await waitForAttempts(p, 1);
     assert.equal(rows[0].variant, "high");
   } finally {
     await p.cleanup();
@@ -425,6 +500,130 @@ test("streaming relays SSE and records a success attempt", async () => {
     assert.equal(rows[0].outcome, "success");
     assert.equal(rows[0].output_started, 1);
     assert.equal(rows[0].session_id, null);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("first-token timing includes delay past the pre-content window", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "delayed-stream";
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    assert.ok((await res.text()).includes("LEAF-A"));
+    const rows = await waitForAttempts(p, 1);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].outcome, "success");
+    assert.ok(rows[0].first_token_ms > 200, `first_token_ms=${rows[0].first_token_ms}`);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("pre-content SSE quota error fails over to the next stream", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "sse-rate";
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("LEAF-B"), text);
+    assert.ok(!text.includes("quota exhausted"), text);
+    const rows = await waitForAttempts(p, 2);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].outcome, "failure");
+    assert.equal(rows[0].error_tag, "RateLimit");
+    assert.equal(rows[0].error_status, 429);
+    assert.equal(rows[0].failed_over_to, "leafB/m-b");
+    assert.equal(rows[0].output_started, 0);
+    assert.equal(JSON.parse(rows[0].quota).retryAfterMs, 30_000);
+    assert.equal(rows[1].outcome, "success");
+    assert.equal(rows[1].provider_id, "leafB");
+    assert.equal(rows[1].output_started, 1);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("pre-content SSE error after the buffer window still fails over cleanly", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "delayed-sse-rate";
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("LEAF-B"), text);
+    assert.ok(!text.includes("quota exhausted"), text);
+    assert.ok(!text.includes("heartbeat"), text);
+    const rows = await waitForAttempts(p, 2);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].outcome, "failure");
+    assert.equal(rows[0].error_tag, "RateLimit");
+    assert.equal(rows[0].failed_over_to, "leafB/m-b");
+    assert.equal(rows[0].output_started, 0);
+    assert.equal(JSON.parse(rows[0].quota).retryAfterMs, 30_000);
+    assert.equal(rows[1].outcome, "success");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("pre-content transport break fails over without committing the heartbeat", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "stream-break";
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("LEAF-B"), text);
+    assert.ok(!text.includes("heartbeat"), text);
+    const rows = await waitForAttempts(p, 2);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].outcome, "failure");
+    assert.equal(rows[0].error_tag, "Transport");
+    assert.equal(rows[0].failed_over_to, "leafB/m-b");
+    assert.equal(rows[0].output_started, 0);
+    assert.equal(rows[1].outcome, "success");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("stream errors after content do not fail over", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "late-sse-rate";
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("LEAF-A"), text);
+    assert.ok(text.includes("late quota exhausted"), text);
+    assert.equal(p.leafB.hits, 0);
+    const rows = await waitForAttempts(p, 1);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].outcome, "failure");
+    assert.equal(rows[0].output_started, 1);
   } finally {
     await p.cleanup();
   }
