@@ -197,18 +197,28 @@ export function resolveEpicRefs(items: ProjectPoolItem[]): ProjectPoolItem[] {
   });
 }
 
-export function projectPageInfo(json: unknown): { hasNextPage: boolean; endCursor: string | null; totalCount: number } {
+export function projectPageInfo(json: unknown): { hasNextPage: boolean; endCursor: string | null; totalCount: number | null } {
   const items = (json as GqlProjectPage)?.data?.node?.items;
+  const rawTotal = items?.totalCount;
   return {
     hasNextPage: Boolean(items?.pageInfo?.hasNextPage),
     endCursor: items?.pageInfo?.endCursor ?? null,
-    totalCount: items?.totalCount ?? 0,
+    totalCount: typeof rawTotal === "number" && Number.isSafeInteger(rawTotal) && rawTotal >= 0 ? rawTotal : null,
   };
+}
+
+export interface ProjectPoolRead {
+  items: ProjectPoolItem[];
+  /** GraphQL's provider-reported total, comparable to the emitted item count. */
+  reportedTotal: number | null;
 }
 
 /** Fetch the whole pool (paginated). Throws on HTTP/GraphQL errors so
  * the collector can fail-soft and omit the section. Never logs the token. */
-export async function fetchProjectPool(token: string, fetchFn: typeof fetch = fetch): Promise<ProjectPoolItem[]> {
+export async function fetchProjectPoolWithCount(
+  token: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<ProjectPoolRead> {
   const out: ProjectPoolItem[] = [];
   let cursor: string | null = null;
   let lastPageInfo: ReturnType<typeof projectPageInfo> | null = null;
@@ -236,7 +246,12 @@ export async function fetchProjectPool(token: string, fetchFn: typeof fetch = fe
   }
   // Epic membership needs the whole pool (parents may sit on other
   // pages), so it resolves once over the aggregate, not per page.
-  return resolveEpicRefs(out);
+  return { items: resolveEpicRefs(out), reportedTotal: lastPageInfo?.totalCount ?? null };
+}
+
+/** Array-only compatibility helper for consumers that do not need source totals. */
+export async function fetchProjectPool(token: string, fetchFn: typeof fetch = fetch): Promise<ProjectPoolItem[]> {
+  return (await fetchProjectPoolWithCount(token, fetchFn)).items;
 }
 
 /** Structural check for a pool entry in a feed (collector + live share

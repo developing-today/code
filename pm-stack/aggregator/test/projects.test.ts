@@ -7,6 +7,7 @@ import type { OrchestrationSection } from "../src/model.ts";
 import {
   derivedProjectState,
   fetchProjectPool,
+  fetchProjectPoolWithCount,
   isProjectPoolItem,
   parseProjectItems,
   poolItemToGhItem,
@@ -123,6 +124,25 @@ describe("fetchProjectPool pagination", () => {
     const items = await fetchProjectPool("test-token", fetchFn);
     expect(calls).toBe(3);
     expect(items).toHaveLength(6);
+  });
+
+  test("preserves the provider-reported total beside the emitted pool entries", async () => {
+    const fetchFn: typeof fetch = Object.assign(
+      async () => new Response(JSON.stringify(projectPage(false, null, 9))),
+      { preconnect: () => {} },
+    );
+    const read = await fetchProjectPoolWithCount("test-token", fetchFn);
+    expect(read.reportedTotal).toBe(9);
+    expect(read.items).toHaveLength(2);
+  });
+
+  test("keeps a missing provider total unknown instead of turning it into zero", async () => {
+    const page = projectPage(false, null, 9);
+    delete (page.data.node.items as { totalCount?: number }).totalCount;
+    const fetchFn: typeof fetch = Object.assign(async () => new Response(JSON.stringify(page)), { preconnect: () => {} });
+    const read = await fetchProjectPoolWithCount("test-token", fetchFn);
+    expect(read.reportedTotal).toBeNull();
+    expect(read.items).toHaveLength(2);
   });
 
   test("returns a single-page pool unchanged", async () => {
