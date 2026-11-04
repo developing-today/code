@@ -91,8 +91,8 @@ def is_candidate(row):
     # worked/parked/failed them in parallel). The recorded yield is
     # the only launch-safe signal. Stage "launch_failed" is the other
     # launch-safe yield: the claimant's own recovery rule (#4758)
-    # checkpointed it after deleting a verified never-prompted bound
-    # session and clearing the binding, which is exactly the state a
+    # atomically cleared both progress and ledger bindings after
+    # verifying/removing the old session, which is exactly the state a
     # relaunch needs.
     if prog.get("stage") not in ("handed_off", "launch_failed"):
         return False

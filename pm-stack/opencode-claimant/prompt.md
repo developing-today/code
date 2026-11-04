@@ -36,6 +36,8 @@ Never claim, bind, launch, or mutate a task in shadow mode.
   close — plus the live root-session count for the cap, plus a
   `stuck_bound` list: bound tasks whose sessions look
   created-but-never-prompted and dead (step 1's recovery rule, #4758).
+  Retain the candidate list from the start of each fire; a task recovered
+  during supervision is eligible on the next fire, not this one.
 - Concurrency cap: **12** active root sessions across the fleet. Count
   with poll.py (OpenCode server `GET /api/session` on
   http://127.0.0.1:13420, root sessions only; poll.py counts a root as
@@ -59,10 +61,11 @@ Never claim, bind, launch, or mutate a task in shadow mode.
    normal post-launch state (every candidate bound) is exactly when
    supervision matters most. A bound session that is gone with no
    terminal state recorded gets ONE relaunch attempt on a later fire
-   only after its lease has expired (through the normal launch path
-   below, once the task is a candidate again) -- before that, note it
-   in the fire log and let Tend's fleet-watchdog (ledger backstop)
-   see it. Never relaunch over a live session.
+   only when attempts remain and its lease has expired. Once absence is
+   verified, use the atomic recovery operation below to clear both
+   bindings before the task becomes a launch candidate. Until the lease
+   expires, note it in the fire log and let Tend's fleet-watchdog
+   (ledger backstop) see it. Never relaunch over a live session.
    RECOVERY RULE for a bound session that never received its prompt
    (#4758, Phase 3 of design #4912): poll.py's `stuck_bound` list
    names the candidates — bound session present as a root with no
@@ -77,7 +80,9 @@ Never claim, bind, launch, or mutate a task in shadow mode.
       gained any activity marker, or is active after all, it is NOT
       this case — leave it bound, note it in the fire log, and move
       on. A live, progressing bound session is never reclaimed or
-      relaunched over (hard rule, unchanged).
+      relaunched over (hard rule, unchanged). If the session list or
+      message read is unavailable/incomplete, treat the state as
+      unknown, not absent/zero; leave it bound and stop.
    b. DELETE the verified zero-message session, per-id
       (`DELETE /api/session/<id>`), BEFORE touching the task. If the
       delete fails or its effect cannot be verified, fail closed:
@@ -85,26 +90,39 @@ Never claim, bind, launch, or mutate a task in shadow mode.
       and stop — an un-deleted session with a cleared binding is the
       duplicate-execution defect this ordering exists to prevent.
    c. Attempts remain (`attempts < max_attempts` in poll.py's
-      stuck_bound entry): reclaim the task to unbound as the task's
-      `worker_id` — `checkpoint <id> --worker <worker_id> --stage
-      launch_failed` with progress that CLEARS `session_id`
-      (an explicit `"session_id": null`) and
-      keeps the prior id in the audit field `launch_failed_session_id`
-      (plus `launch_failed_at` and the reason). Stage `launch_failed`
-      is a recorded yield poll.py accepts like `handed_off`, so the
-      next fire sees the task as a normal launch candidate and
-      relaunches it through step 4.
-   d. Attempts exhausted (`attempts >= max_attempts`): after the
-      same verified delete, terminally fail the task as its
-      `worker_id` — `fail <id> --worker <worker_id> --error
-      "bound session <id> never received its prompt; attempts
+      stuck_bound entry): reclaim the task to unbound with one atomic
+      compare-and-clear helper call:
+      `bind <id> --worker opencode-claimant --session-id <old session
+      id> --launched-by opencode-claimant-recovery:zero-message-deleted`.
+      Migration 0022 makes this reserved `launched_by` value verify the
+      old id against BOTH `tasks.progress.session_id` and the lane
+      ledger, then clear both in one transaction and record
+      `stage: "launch_failed"`, `session_id: null`, and the old id in
+      `launch_failed_session_id` with timestamp and reason. The same
+      transaction increments task `attempts` to consume one recovery
+      attempt, so repeated launch failures reach `max_attempts`. The
+      exact id is a compare-and-clear guard: on any mismatch or RPC failure,
+      do not fall back to a progress-only checkpoint; note it and stop.
+      This atomic update is the recorded yield poll.py accepts like
+      `handed_off`, so the next fire sees the task as a normal launch
+      candidate and relaunches it through step 4.
+   d. For a bound session already absent from the server, when
+      attempts remain and its lease expires, use the same operation
+      with `--launched-by opencode-claimant-recovery:gone-session` and
+      the old session id. This also clears both bindings atomically;
+      never clear `progress.session_id` with a standalone checkpoint.
+   e. Attempts exhausted (`attempts >= max_attempts`): for a
+      zero-message session, first do the verified delete above; for a
+      gone session, absence is already verified. Then terminally fail
+      the task as its `worker_id` — `fail <id> --worker <worker_id>
+      --error "bound session <id> unavailable without terminal outcome; attempts
       exhausted" --reason-class deterministic` with `--execution
-      "{\"lane\": \"opencode\", \"session_id\": \"<the deleted
-      session id>\", \"fallback_reason\": \"launch_failed_attempts_exhausted\"}"`
+      "{\"lane\": \"opencode\", \"session_id\": \"<the bound
+      session id>\", \"fallback_reason\": \"launch_failed_attempts_exhausted\"}"
       so the bound session id survives in the execution record.
-   The checkpoint/fail progress record IS the watchdog notification:
-   Tend's fleet-watchdog reads the task's progress, so the stage,
-   the audit field, and the execution record above are what it
+   The atomic recovery/fail progress record IS the watchdog
+   notification: Tend's fleet-watchdog reads the task's progress, so
+   the stage, audit field, and execution record above are what it
    agrees with — no separate channel is sent or needed.
 2. GATE: run the helper `health` for the four queues. If every queue
    shows 0 claimed-with-lane-opencode unbound candidates (poll.py
