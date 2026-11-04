@@ -571,6 +571,17 @@ fn cmd_init(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
     }
 }
 
+/// Root built-ins take no arguments: a trailing argument is a usage
+/// error naming it (#5572), not silently discarded output.
+fn reject_extra_args(args: &[String]) -> Option<i32> {
+    args.get(1).map(|extra| {
+        usage_error(&format!(
+            "unexpected argument '{extra}' for 'fleet {}'",
+            args.first().map(|s| s.as_str()).unwrap_or("")
+        ))
+    })
+}
+
 fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
     let first = args.first().map(|s| s.as_str());
     match first {
@@ -597,14 +608,23 @@ fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
             )),
         },
         Some("--version") | Some("-V") => {
+            if let Some(code) = reject_extra_args(args) {
+                return code;
+            }
             println!("fleet {VERSION}");
             EXIT_OK
         }
         Some("version") => {
+            if let Some(code) = reject_extra_args(args) {
+                return code;
+            }
             print_version(surface, invoked_as);
             EXIT_OK
         }
         Some("capabilities") => {
+            if let Some(code) = reject_extra_args(args) {
+                return code;
+            }
             print_capabilities(surface, invoked_as);
             EXIT_OK
         }
@@ -712,5 +732,24 @@ mod tests {
         // A subcommand's own --help belongs to the domain's parser.
         assert!(!wants_domain_help(queue, &args(&["enqueue", "--help"])));
         assert!(!wants_domain_help(queue, &args(&[])));
+    }
+
+    #[test]
+    fn root_builtins_reject_trailing_arguments() {
+        // #5572: version / capabilities / --version silently discarded
+        // trailing arguments and returned success.
+        let surface = Surface::new(None, fleet_config::Config::default());
+        for cmd in ["version", "capabilities", "--version", "-V"] {
+            assert_eq!(
+                run_root(&surface, &args(&[cmd, "--bogus"]), "fleet"),
+                EXIT_USAGE,
+                "{cmd} must reject a trailing argument"
+            );
+            assert_eq!(
+                run_root(&surface, &args(&[cmd]), "fleet"),
+                EXIT_OK,
+                "bare {cmd} stays accepted"
+            );
+        }
     }
 }
