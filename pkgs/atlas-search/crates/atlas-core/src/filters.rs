@@ -127,10 +127,20 @@ impl Filters {
                 .ok_or_else(|| Error::fatal(format!("--until must be YYYY-MM-DD, got {u}")))?;
             until_exclusive = Some(format_iso_date(add_one_day(d)));
         }
-        if let Some(s) = &since {
-            parse_iso_date(s)
-                .ok_or_else(|| Error::fatal(format!("--since must be YYYY-MM-DD, got {s}")))?;
-        }
+        // `since` is bound verbatim as the created_at >= parameter, and
+        // created_at values are dashed ISO timestamps -- so, like `until`
+        // above, it is normalized to the dashed form from the parsed
+        // date. Storing the raw spelling would let the accepted basic
+        // form (YYYYMMDD) reach the comparison unnormalized, where
+        // lexicographic order silently inverts the window (#5378).
+        let since = match &since {
+            Some(s) => {
+                let d = parse_iso_date(s)
+                    .ok_or_else(|| Error::fatal(format!("--since must be YYYY-MM-DD, got {s}")))?;
+                Some(format_iso_date(d))
+            }
+            None => None,
+        };
         Ok(Filters {
             kinds,
             topics,
@@ -609,6 +619,40 @@ mod tests {
             f.describe().to_string(),
             "{\"max_sensitivity\":\"personal\",\"kind\":[\"code\"],\"since\":\"2026-10-01\"}"
         );
+    }
+
+    #[test]
+    fn since_spellings_normalize_identically() {
+        // #5378: parse_iso_date accepts YYYYMMDD as well as YYYY-MM-DD;
+        // both spellings must bind the same dashed parameter everywhere
+        // `since` reaches SQL, and describe() must report the same value.
+        let basic = Filters::new(
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            "personal",
+            Some("20261031".into()),
+            None,
+        )
+        .unwrap();
+        let dashed = Filters::new(
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            "personal",
+            Some("2026-10-31".into()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(basic.since.as_deref(), Some("2026-10-31"));
+        assert_eq!(basic.where_clause(TURSO_SHAPE), dashed.where_clause(TURSO_SHAPE));
+        assert_eq!(
+            basic.session_clauses("s2", "l2"),
+            dashed.session_clauses("s2", "l2")
+        );
+        assert_eq!(basic.describe(), dashed.describe());
     }
 
     #[test]
