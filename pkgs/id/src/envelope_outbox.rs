@@ -391,6 +391,11 @@ impl Outbox {
     }
 
     fn insert_queued(&mut self, target: String, payload: Payload) -> Result<()> {
+        // The live path checks the target in the enqueue verbs
+        // before committing; replay must hold the same line, or a journal
+        // record the live API could never produce loads as a due entry and
+        // only fails at flush time as a spurious refusal (#5635).
+        check_target(&target)?;
         let key = payload.key(&target);
         ensure!(!self.entries.contains_key(&key), "{key} is queued twice");
         self.entries.insert(
@@ -832,6 +837,40 @@ mod tests {
             ],
             3,
             "already attempted",
+        );
+    }
+
+    #[test]
+    fn replay_rejects_a_queued_record_with_a_malformed_target() {
+        assert_replay_error(
+            [Record::Queued {
+                target: "not a target".to_owned(),
+                envelope: envelope("e1"),
+            }],
+            1,
+            "is neither an endpoint ticket nor a node ID",
+        );
+    }
+
+    #[test]
+    fn replay_rejects_a_queued_artifact_record_with_a_malformed_target() {
+        let artifact = SignedArtifact {
+            author: "00".to_owned(),
+            seq: 1,
+            prev: String::new(),
+            kind: "note".to_owned(),
+            body: serde_json::Value::Null,
+            after: Vec::new(),
+            hash: "00".to_owned(),
+            signature: "00".to_owned(),
+        };
+        assert_replay_error(
+            [Record::QueuedArtifact {
+                target: "not a target".to_owned(),
+                artifact,
+            }],
+            1,
+            "is neither an endpoint ticket nor a node ID",
         );
     }
 
