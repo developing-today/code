@@ -1,0 +1,15 @@
+[Unit]
+Description=Read-only OpenCode quota freshness summary
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=240
+WorkingDirectory=%h/git/code
+Environment=PATH=%h/.local/bin:%h/.nix-profile/bin:/run/current-system/sw/bin:/usr/bin:/bin
+Environment=OPENCODE_BIN=@OPENCODE_BIN@
+Environment=OPENCODE_MODEL=opencode-route/workhorse
+Environment=QUOTA_CURRENT_PATH=%h/.local/state/pm-aggregator/quota-current.json
+Environment=OPENCODE_SCHEDULED_JOB_DIR=%h/.local/state/opencode-scheduled/quota-freshness-summary
+ExecStart=%h/atlas/opencode-scheduled-jobs/quota-freshness-summary/run.sh

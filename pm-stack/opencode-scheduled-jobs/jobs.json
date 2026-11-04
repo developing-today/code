@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "jobs": [
+    {
+      "id": "quota-freshness-summary",
+      "description": "Read-only summary of the latest quota snapshot freshness and health",
+      "service": "opencode-quota-freshness-summary.service",
+      "timer": "opencode-quota-freshness-summary.timer",
+      "cadence": "OnCalendar=hourly",
+      "route": "opencode-route/workhorse",
+      "input": "~/.local/state/pm-aggregator/quota-current.json (sanitized before model use)",
+      "logs": "~/.local/state/opencode-scheduled/quota-freshness-summary/{latest.log,history.jsonl}",
+      "state": "disabled pending explicit enablement"
+    }
+  ]
+}
