@@ -2348,7 +2348,7 @@ function chargesStripHtml(usage: UsageView): string {
 function quotaRefreshHtml(refresh?: import("./quota-refresh.ts").RefreshStatus): string {
   if (!refresh) return "";
   const marker = refresh.refreshing
-    ? `<span class="badge refreshing" data-quota-refreshing="true">refreshing — quotas were stale, the gatherer is running; reload for fresh data</span>`
+    ? `<span class="badge refreshing" data-quota-refreshing="true">refreshing — the quota gatherer is running; reload for updated data</span>`
     : refresh.stale
       ? `<span class="muted">quota data is older than five minutes</span>`
       : "";

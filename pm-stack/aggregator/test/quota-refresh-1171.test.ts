@@ -78,9 +78,10 @@ function harness(nowMs = NOW) {
 }
 
 describe("quota freshness (#1171)", () => {
-  test("newest measurement wins across windows and gatherer tick", () => {
+  test("gatherer attempt timestamps do not make old measurements fresh", () => {
     const v = view(iso(10 * 60_000), { tickAt: iso(60_000) });
-    expect(newestMeasurement(v, NOW)).toBe(NOW - 60_000);
+    expect(newestMeasurement(v, NOW)).toBe(NOW - 10 * 60_000);
+    expect(isQuotaStale(v, NOW)).toBe(true);
   });
 
   test("missing measurements count as stale", () => {
@@ -108,6 +109,13 @@ describe("lazy refresh trigger (#1171)", () => {
   test("stale load triggers exactly one gatherer run", () => {
     const h = harness();
     const status = h.refresher.request(view(iso(10 * 60_000)));
+    expect(status).toMatchObject({ stale: true, refreshing: true, triggered: true });
+    expect(h.calls).toEqual(["stale"]);
+  });
+
+  test("a recent gatherer tick does not suppress refresh for stale measurements", () => {
+    const h = harness();
+    const status = h.refresher.request(view(iso(10 * 60_000), { tickAt: iso(60_000) }));
     expect(status).toMatchObject({ stale: true, refreshing: true, triggered: true });
     expect(h.calls).toEqual(["stale"]);
   });

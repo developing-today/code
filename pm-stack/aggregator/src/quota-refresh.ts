@@ -29,7 +29,7 @@ export interface RefreshStatus {
 
 export type RefreshTrigger = (reason: "stale" | "manual") => void | Promise<void>;
 
-/** Newest measuredAt/gatherer tick in the view, in epoch ms, or null. */
+/** Newest provider/pool measurement in the view, in epoch ms, or null. */
 export function newestMeasurement(view: QuotaView, nowMs = Date.now()): number | null {
   const times: number[] = [];
   const add = (raw: string | null | undefined) => {
@@ -43,8 +43,6 @@ export function newestMeasurement(view: QuotaView, nowMs = Date.now()): number |
     for (const credential of pool.credentials ?? []) add(credential.freshness?.measuredAt);
   }
   if (view.gatherer) {
-    add(view.gatherer.generatedAt);
-    add(view.gatherer.tickAt);
     for (const provider of view.gatherer.providers ?? []) add(provider.measuredAt);
   }
   return times.length ? Math.max(...times) : null;
