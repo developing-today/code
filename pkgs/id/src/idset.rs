@@ -150,15 +150,19 @@ impl WriterSet {
 }
 
 /// Refuses a repeated entry identity within one list: the same author key
-/// twice, the same group id twice, or more than one `public` entry.
-/// `include_history` and `role_min` are attributes of an admission, not part
-/// of its identity, so entries that differ only in those fields are still
-/// duplicates. The check is per list: the same key appearing once in
+/// twice, the same group at the same `role_min` twice, or more than one
+/// `public` entry. `include_history` is an attribute of an admission, not
+/// part of its identity, so entries that differ only in that flag are still
+/// duplicates. `role_min` IS part of a group entry's identity: the design
+/// (writer-set spec §D3 / OQ-8) expresses a group whose members split by
+/// role threshold as two `Group` entries for the same group id, so the
+/// same group at different `role_min` values is a documented shape, not a
+/// duplicate. The check is per list: the same key appearing once in
 /// `entries` and once in `excludes` is not a duplicate — exclusions win by
 /// design (spec §D6).
 fn check_entry_identities(entries: &[Entry], list: &str) -> Result<(), IdsetError> {
     let mut keys: std::collections::HashSet<AuthorKey> = std::collections::HashSet::new();
-    let mut groups: std::collections::HashSet<Hash> = std::collections::HashSet::new();
+    let mut groups: std::collections::HashSet<(Hash, u64)> = std::collections::HashSet::new();
     let mut public_seen = false;
     for entry in entries {
         match entry {
@@ -167,8 +171,8 @@ fn check_entry_identities(entries: &[Entry], list: &str) -> Result<(), IdsetErro
                     return Err(IdsetError::Shape(format!("duplicate key entry in {list}")));
                 }
             }
-            Entry::Group { id, .. } => {
-                if !groups.insert(*id) {
+            Entry::Group { id, role_min, .. } => {
+                if !groups.insert((*id, role_level(*role_min))) {
                     return Err(IdsetError::Shape(format!(
                         "duplicate group entry in {list}"
                     )));
@@ -623,7 +627,7 @@ mod tests {
     use p2panda_core::SigningKey;
 
     use super::*;
-    use crate::chain::{ChainExt, decode, sign};
+    use crate::chain::{decode, sign, ChainExt};
 
     fn owner() -> AuthorKey {
         std::array::from_fn(|i| u8::try_from(i).unwrap())
@@ -815,8 +819,9 @@ mod tests {
 
     /// Hand-built bodies (not encoder output, which now refuses these too)
     /// carrying a repeated identity in one list must be refused on decode:
-    /// same key with opposite `include_history`, same group with a different
-    /// `role_min`, `public` twice, and a duplicate inside `excludes`.
+    /// same key with opposite `include_history`, same group at the same
+    /// `role_min` with opposite `include_history`, `public` twice, and a
+    /// duplicate inside `excludes`.
     #[test]
     fn duplicate_entry_identities_are_refused_on_decode() {
         let group = Hash::digest(b"household");
@@ -843,7 +848,7 @@ mod tests {
                     },
                     Entry::Group {
                         id: group,
-                        role_min: Role::Admin,
+                        role_min: Role::Read,
                         include_history: true,
                     },
                 ],
@@ -937,6 +942,39 @@ mod tests {
         let set = decode_writer_body(&body).unwrap();
         assert_eq!(set.entries.len(), 1);
         assert_eq!(set.excludes.0.len(), 1);
+    }
+
+    /// The same group at two different `role_min` values is NOT a
+    /// duplicate: the design (writer-set spec §D3 / OQ-8) expresses a group
+    /// whose members split by role threshold exactly this way — e.g.
+    /// readers admitted prospectively, admins also importing history.
+    #[test]
+    fn same_group_at_different_role_min_still_decodes() {
+        let group = Hash::digest(b"household");
+        let body = Value::Array(vec![
+            Value::TextString(WRITER_KIND.into()),
+            Value::Unsigned(VERSION),
+            hash_value(&Hash::digest(b"set")),
+            Value::Unsigned(0),
+            Value::ByteString(owner().to_vec().into()),
+            Value::null(),
+            entries_value(&[
+                Entry::Group {
+                    id: group,
+                    role_min: Role::Read,
+                    include_history: false,
+                },
+                Entry::Group {
+                    id: group,
+                    role_min: Role::Admin,
+                    include_history: true,
+                },
+            ]),
+            entries_value(&[]),
+        ])
+        .encode();
+        let set = decode_writer_body(&body).unwrap();
+        assert_eq!(set.entries.len(), 2);
     }
 
     #[test]
