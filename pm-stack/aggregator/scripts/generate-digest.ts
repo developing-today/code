@@ -17,7 +17,7 @@ import { loadConfig } from "../src/config.ts";
 import { buildDigest, digestText, writeDigestArchive, type DigestKind } from "../src/digest.ts";
 import { fixtureSource } from "../src/sources/fixtures.ts";
 import { liveSource } from "../src/sources/live.ts";
-import { getAlertsStore } from "../src/alerts.ts";
+import { classEnabled, getAlertsStore, inQuietHours } from "../src/alerts.ts";
 import { sendPush, type PushTarget } from "../src/push.ts";
 
 function arg(name: string): string | undefined {
@@ -33,16 +33,22 @@ async function main(): Promise<void> {
   }
   const cfg = loadConfig();
   const source = cfg.source === "live" ? liveSource(cfg) : fixtureSource();
-  const [pool, needsDrew, quota] = await Promise.all([
+  // Prime the items facet first (#1267 pattern): items() records the
+  // pool's feed freshness into provenance; projects() alone does not.
+  await source.items([]).catch(() => null);
+  const [pool, needsDrew, quota, poolAvailable] = await Promise.all([
     source.projects(),
     source.needsDrew ? source.needsDrew().catch(() => null) : Promise.resolve(null),
     source.quota().catch(() => null),
+    source.projectsAvailable ? source.projectsAvailable().catch(() => undefined) : Promise.resolve(undefined),
   ]);
   const digest = buildDigest({
     pool,
     needsDrew,
     quota,
     provenanceDetail: source.provenanceDetail?.() ?? null,
+    poolAvailable,
+    sourceKind: cfg.source,
     now: new Date(),
     kind,
   });
@@ -71,7 +77,16 @@ async function main(): Promise<void> {
       .join(" · "),
   };
   let sent = 0;
+  const now = new Date();
   for (const sub of subs) {
+    // Subscription preferences are promises (#3676): a class the
+    // subscriber turned off gets nothing, and a non-breakthrough class
+    // like digest honors quiet hours (suppression is ledgered).
+    if (!classEnabled(sub, "digest")) continue;
+    if (inQuietHours(sub.quiet, now)) {
+      await store.logSend({ class: "digest", objectRef: digest.archiveRoute, outcome: "suppressed-quiet" });
+      continue;
+    }
     const target: PushTarget = { endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth };
     const outcome = await sendPush(target, payload);
     if (outcome.ok) {

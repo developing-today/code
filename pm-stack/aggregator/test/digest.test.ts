@@ -130,7 +130,24 @@ describe("buildDigest", () => {
   test("weekly window reaches back seven days", () => {
     const d = buildDigest(inputs({ kind: "weekly" }));
     expect(d.windowHours).toBe(168);
+    expect(d.archiveRoute).toBe("/digest?date=2026-11-02&kind=weekly");
     expect(section(d, "done").items.map((i) => i.ref)).toContain("developing-today/code#5");
+  });
+
+  test("an unavailable pool degrades the pool sections visibly", () => {
+    const d = buildDigest(inputs({ poolAvailable: false }));
+    expect(section(d, "moved").stale).toBe(true);
+    expect(section(d, "moved").staleNote).toContain("no projects section");
+  });
+
+  test("an unprimed (fixtures) facet in live mode is stale, not healthy", () => {
+    const detail = {
+      items: { text: "fixtures", state: "fixtures", ageMs: 0 },
+    } as unknown as ProvenanceDetail;
+    const live = buildDigest(inputs({ provenanceDetail: detail, sourceKind: "live" }));
+    expect(section(live, "moved").stale).toBe(true);
+    const fixtures = buildDigest(inputs({ provenanceDetail: detail, sourceKind: "fixtures" }));
+    expect(section(fixtures, "moved").stale).toBe(false);
   });
 
   test("a missing census degrades Needs Drew visibly, never silently", () => {
@@ -178,7 +195,8 @@ describe("buildDigest", () => {
     const d = buildDigest(inputs({ quota: burning }));
     const outlook = section(d, "quota");
     expect(outlook.items).toHaveLength(1);
-    expect(outlook.items[0].note).toContain("fills");
+    expect(outlook.items[0].note).toContain("fills in ~");
+    expect(outlook.items[0].note).not.toContain("before its");
   });
 
   test("chat text states freshness and links every section item", () => {
@@ -202,6 +220,10 @@ describe("digest archive", () => {
       expect(await listDigestArchives(dir)).toEqual([
         { kind: "daily", date: "2026-11-02", route: "/digest?date=2026-11-02" },
       ]);
+      const weekly = buildDigest(inputs({ kind: "weekly" }));
+      await writeDigestArchive(dir, weekly);
+      const list = await listDigestArchives(dir);
+      expect(list).toContainEqual({ kind: "weekly", date: "2026-11-02", route: "/digest?date=2026-11-02&kind=weekly" });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

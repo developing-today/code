@@ -73,6 +73,14 @@ export interface DigestInputs {
   quota: QuotaView | null;
   /** Structured per-facet freshness, when the source provides it. */
   provenanceDetail?: ProvenanceDetail | null;
+  /** Whether the fleet feed actually carried a projects section
+   * (Source.projectsAvailable); false = the pool is unavailable, not
+   * empty. Absent = the source cannot say. */
+  poolAvailable?: boolean;
+  /** The caller's source mode: a "fixtures" facet state is the honest
+   * expected state in fixtures mode, but in live mode it means the
+   * facet was never primed — stale, not healthy. */
+  sourceKind?: "live" | "fixtures";
   now: Date;
   kind: DigestKind;
 }
@@ -100,10 +108,18 @@ function facetStale(
   detail: ProvenanceDetail | null | undefined,
   facet: "items" | "quota",
   staleAgeMs: number,
+  sourceKind: "live" | "fixtures" | undefined,
 ): { stale: boolean; note: string | null; ageMs: number | null } {
   const f = detail?.[facet];
   if (!f) return { stale: false, note: null, ageMs: null };
   const ageMs = typeof f.ageMs === "number" ? f.ageMs : null;
+  if (f.state === "fixtures" && sourceKind === "live") {
+    return {
+      stale: true,
+      note: `source facet “${facet}” is still at its fixture default in live mode — the facet was never primed, so its freshness is unmeasured`,
+      ageMs,
+    };
+  }
   if (f.state !== "live" && f.state !== "fixtures") {
     return { stale: true, note: `source facet “${facet}” is ${f.state} (${f.text})`, ageMs };
   }
@@ -128,7 +144,11 @@ export function buildDigest(inputs: DigestInputs): Digest {
   };
   const staleAgeMs = kind === "weekly" ? DIGEST_STALE_AGE_MS * 7 : DIGEST_STALE_AGE_MS;
 
-  const poolFresh = facetStale(inputs.provenanceDetail, "items", staleAgeMs);
+  const poolFreshBase = facetStale(inputs.provenanceDetail, "items", staleAgeMs, inputs.sourceKind);
+  const poolFresh =
+    inputs.poolAvailable === false
+      ? { stale: true, note: "fleet feed carried no projects section — the pool is unavailable, not empty; pool sections are unverified", ageMs: poolFreshBase.ageMs }
+      : poolFreshBase;
   const byRef = new Map(inputs.pool.map((i) => [i.ref, i] as const));
   const byUpdatedDesc = (a: ProjectPoolItem, b: ProjectPoolItem) =>
     (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
@@ -224,7 +244,7 @@ export function buildDigest(inputs: DigestInputs): Digest {
   }
 
   // --- Quota outlook: walled / near-wall pools, walls predicted ---------
-  const quotaFresh = facetStale(inputs.provenanceDetail, "quota", staleAgeMs);
+  const quotaFresh = facetStale(inputs.provenanceDetail, "quota", staleAgeMs, inputs.sourceKind);
   let quotaSection: DigestSection;
   if (!inputs.quota) {
     quotaSection = {
@@ -284,7 +304,7 @@ export function buildDigest(inputs: DigestInputs): Digest {
     generatedAt: now.toISOString(),
     windowStart: new Date(windowStartMs).toISOString(),
     windowHours,
-    archiveRoute: `/digest?date=${date}`,
+    archiveRoute: kind === "weekly" ? `/digest?date=${date}&kind=weekly` : `/digest?date=${date}`,
     freshness,
     sections: [
       poolSection("moved", kind === "weekly" ? "Moved this week" : "Moved today", moved),
@@ -313,7 +333,7 @@ function quotaPoolNote(pool: QuotaPool, now: Date): string | null {
       const wallAt = now.getTime() + (remaining / pool.burnTokensPerMin) * 60000;
       if (wallAt < Date.parse(w.resetsAt)) {
         parts.push(
-          `at ${Math.round(pool.burnTokensPerMin)} tok/min the ${w.name} window fills ~${Math.round((wallAt - now.getTime()) / 3600000)}h before its ${w.resetsAt} reset`,
+          `at ${Math.round(pool.burnTokensPerMin)} tok/min the ${w.name} window fills in ~${Math.round((wallAt - now.getTime()) / 3600000)}h from now (reset: ${w.resetsAt})`,
         );
         break;
       }
@@ -391,7 +411,12 @@ export async function listDigestArchives(
   const out: { kind: DigestKind; date: string; route: string }[] = [];
   for (const name of names) {
     const m = /^(daily|weekly)-(\d{4}-\d{2}-\d{2})\.json$/.exec(name);
-    if (m) out.push({ kind: m[1] as DigestKind, date: m[2], route: `/digest?date=${m[2]}` });
+    if (m)
+      out.push({
+        kind: m[1] as DigestKind,
+        date: m[2],
+        route: m[1] === "weekly" ? `/digest?date=${m[2]}&kind=weekly` : `/digest?date=${m[2]}`,
+      });
   }
   return out.sort((a, b) => b.date.localeCompare(a.date) || a.kind.localeCompare(b.kind));
 }

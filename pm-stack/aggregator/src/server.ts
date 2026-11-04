@@ -816,16 +816,23 @@ async function applyViewAction(action: DashAction): Promise<string> {
 /** The digest (#1278): built live from the same Source as every page;
  * the archived form is the JSON the generator script wrote. */
 async function digestContext(kind: DigestKind): Promise<Digest> {
-  const [pool, needsDrew, quota] = await Promise.all([
+  // Prime the items facet first (#1267 pattern): items() is the call
+  // that records the pool's feed freshness into provenance — without
+  // it the digest's pool sections would read an unprimed facet.
+  await source.items([]).catch(() => null);
+  const [pool, needsDrew, quota, poolAvailable] = await Promise.all([
     source.projects(),
     source.needsDrew ? source.needsDrew().catch(() => null) : Promise.resolve(null),
     source.quota().catch(() => null),
+    source.projectsAvailable ? source.projectsAvailable().catch(() => undefined) : Promise.resolve(undefined),
   ]);
   return buildDigest({
     pool,
     needsDrew,
     quota,
     provenanceDetail: source.provenanceDetail?.() ?? null,
+    poolAvailable,
+    sourceKind: cfg.source,
     now: new Date(),
     kind,
   });
