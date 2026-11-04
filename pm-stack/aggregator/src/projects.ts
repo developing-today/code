@@ -35,8 +35,8 @@ export const PROJECT_QUERY = `query($id: ID!, $cursor: String) {
           databaseId
           type
           content {
-            ... on Issue { number title state url repository { nameWithOwner } updatedAt author { login } labels(first: 20) { nodes { name } } parent { number url repository { nameWithOwner } } blockedBy(first: 50) { nodes { number url repository { nameWithOwner } } } blocking(first: 50) { nodes { number url repository { nameWithOwner } } } }
-            ... on PullRequest { number title state url repository { nameWithOwner } updatedAt author { login } isDraft }
+            ... on Issue { number title state url repository { nameWithOwner } updatedAt closedAt author { login } labels(first: 20) { nodes { name } } parent { number url repository { nameWithOwner } } blockedBy(first: 50) { nodes { number url repository { nameWithOwner } } } blocking(first: 50) { nodes { number url repository { nameWithOwner } } } }
+            ... on PullRequest { number title state url repository { nameWithOwner } updatedAt mergedAt closedAt author { login } isDraft }
             ... on DraftIssue { title }
           }
           fieldValues(first: 30) {
@@ -68,6 +68,8 @@ interface GqlContent {
   url?: string;
   repository?: { nameWithOwner?: string } | null;
   updatedAt?: string;
+  closedAt?: string;
+  mergedAt?: string;
   author?: { login?: string } | null;
   isDraft?: boolean;
   labels?: { nodes?: { name?: string }[] } | null;
@@ -161,6 +163,8 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
       labels: (c.labels?.nodes ?? []).map((l) => l?.name).filter((x): x is string => typeof x === "string"),
       author: c.author?.login ?? "",
       updatedAt: c.updatedAt ?? "",
+      ...(c.closedAt ? { closedAt: c.closedAt } : {}),
+      ...(c.mergedAt ? { mergedAt: c.mergedAt } : {}),
       status: singleSelect(item, "Status"),
       area: singleSelect(item, "Area"),
       horizon: singleSelect(item, "Horizon"),
@@ -270,6 +274,8 @@ export function isProjectPoolItem(v: unknown): v is ProjectPoolItem {
     (p.labels === undefined || (Array.isArray(p.labels) && p.labels.every((x) => typeof x === "string"))) &&
     (p.author === undefined || typeof p.author === "string") &&
     (p.updatedAt === undefined || typeof p.updatedAt === "string") &&
+    (p.closedAt === undefined || typeof p.closedAt === "string") &&
+    (p.mergedAt === undefined || typeof p.mergedAt === "string") &&
     (p.state === "open" || p.state === "closed" || p.state === "merged") &&
     (p.parentRef === undefined || typeof p.parentRef === "string") &&
     (p.epicRef === undefined || typeof p.epicRef === "string") &&

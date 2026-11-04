@@ -110,6 +110,7 @@ import {
   eventTableHtml,
 } from "./render.ts";
 import { buildBriefs } from "./brief.ts";
+import { buildDigest, listDigestArchives, readDigestArchive, type Digest, type DigestKind } from "./digest.ts";
 import { timingSafeEqual } from "node:crypto";
 import {
   getAlertsStore,
@@ -122,7 +123,7 @@ import {
 import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
 import { resolveBwsSecret } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
-import { renderAlerts, renderNotifications, esc } from "./render.ts";
+import { renderAlerts, renderNotifications, renderDigest, esc } from "./render.ts";
 import { rollupNotificationSends } from "./notifications.ts";
 import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
@@ -837,6 +838,31 @@ async function applyViewAction(action: DashAction): Promise<string> {
   }
 }
 
+/** The digest (#1278): built live from the same Source as every page;
+ * the archived form is the JSON the generator script wrote. */
+async function digestContext(kind: DigestKind): Promise<Digest> {
+  // Prime the items facet first (#1267 pattern): items() is the call
+  // that records the pool's feed freshness into provenance — without
+  // it the digest's pool sections would read an unprimed facet.
+  await source.items([]).catch(() => null);
+  const [pool, needsDrew, quota, poolAvailable] = await Promise.all([
+    source.projects(),
+    source.needsDrew ? source.needsDrew().catch(() => null) : Promise.resolve(null),
+    source.quota().catch(() => null),
+    source.projectsAvailable ? source.projectsAvailable().catch(() => undefined) : Promise.resolve(undefined),
+  ]);
+  return buildDigest({
+    pool,
+    needsDrew,
+    quota,
+    provenanceDetail: source.provenanceDetail?.() ?? null,
+    poolAvailable,
+    sourceKind: cfg.source,
+    now: new Date(),
+    kind,
+  });
+}
+
 const GRAINS = new Set<string>(["quarter", "month", "week", "3d", "today"]);
 
 async function handler(req: Request): Promise<Response> {
@@ -1320,6 +1346,20 @@ async function handler(req: Request): Promise<Response> {
     return sseResponse(ssePatch("#today-main", wrapped));
   }
 
+  if (path === "/digest") {
+    const kind = url.searchParams.get("kind") === "weekly" ? "weekly" : "daily";
+    const date = url.searchParams.get("date");
+    const archives = await listDigestArchives(cfg.digestsDir);
+    // The dated archive URL (#1278): renders the stored digest verbatim.
+    if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      const archived =
+        (await readDigestArchive(cfg.digestsDir, date, kind)) ??
+        (kind === "daily" ? null : await readDigestArchive(cfg.digestsDir, date, "daily"));
+      if (archived) return html(renderDigest(archived, archives, prov(), provDetail()));
+      return html(renderDigest(await digestContext("daily"), archives, prov(), provDetail()), 404);
+    }
+    return html(renderDigest(await digestContext(kind), archives, prov(), provDetail()));
+  }
   if (path === "/queue") {
     if (url.searchParams.get("full") !== "1") return html(renderQueueShell(prov(), provDetail()));
     return html(renderQueue(await queueContext(), prov(), provDetail()));
@@ -1798,6 +1838,24 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/today.json") {
     const { today } = await todayContext();
     return json(today);
+  }
+  if (path === "/api/digest.json") {
+    const kind = url.searchParams.get("kind") === "weekly" ? "weekly" : "daily";
+    const date = url.searchParams.get("date");
+    // Share the /digest handler's archive resolution (#5279 Codex): a
+    // dated request returns the stored digest verbatim, so the machine
+    // twin of a weekly or historical page is the digest it displays.
+    if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      const archived =
+        (await readDigestArchive(cfg.digestsDir, date, kind)) ??
+        (kind === "daily" ? null : await readDigestArchive(cfg.digestsDir, date, "daily"));
+      if (archived) return json(archived);
+      return json({ error: `no ${kind} digest archived for ${date}` }, 404);
+    }
+    return json(await digestContext(kind));
+  }
+  if (path === "/api/digests.json") {
+    return json({ archives: await listDigestArchives(cfg.digestsDir) });
   }
   if (path === "/api/queue.json") {
     return json(await queueContext());

@@ -34,6 +34,8 @@ a registry row whose schedule no longer exists is the same defect in
 the other direction. Reviews refresh the `Last review` date and fill
 in any `not recorded` fields the surface now exposes.
 
+When refreshing systemd timer rows (Surface 2b), preserve each timer's complete effective calendar specification — date and time components — exactly as `systemctl --user show` reports it; truncating a spec to a date-only prefix silently changes the documented cadence (issue #5313).
+
 ## Fields
 
 Per schedule, per #4988: surface, name/id, repo/scope, cadence, route
@@ -54,6 +56,13 @@ from live sources: Muse `cron.list` (131 jobs: 120 enabled,
 laptop `systemctl --user list-timers --all` + per-unit timer specs
 (37 timers), and issue #2265 for the Jules pilot. Last review:
 2026-11-03.
+
+Surface 2b re-verified 2026-11-04 by queue task 9317 (lane code-e):
+every row re-read against live `systemctl --user show`
+TimersCalendar/TimersMonotonic on the laptop (the two pm-digest
+timers are not loaded there and were verified against
+`nixos/services/pm-stack/default.nix` instead), and all rows now
+record complete calendar expressions (issue #5313).
 
 ## Surface 1 — Muse cron (131 jobs)
 
@@ -218,47 +227,49 @@ Execution route/pool is recorded separately from work scope: the repo-health que
 
 ### 2b. Laptop systemd user timers (37 timers)
 
-The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitActiveUSec` spec, read live from `systemctl --user show`. Prompt/brief pointer is the unit file in `~/.config/systemd/user/` (or its Nix store target for linked units).
+The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitActiveUSec` spec, read live from `systemctl --user show`. Specs are recorded **complete** — the full effective calendar expression, date **and** time components (e.g. `*-*-* *:*:00`); never truncate a spec to a date-only prefix, because a bare `*-*-*` normalizes to daily at midnight and misstates the cadence (issue #5313). Prompt/brief pointer is the unit file in `~/.config/systemd/user/` (or its Nix store target for linked units).
 
-| timer unit                               | cadence spec                             | activates                                  | owner / scope         | budget       | kill criteria | created      | last review |
-| ---------------------------------------- | ---------------------------------------- | ------------------------------------------ | --------------------- | ------------ | ------------- | ------------ | ----------- |
-| `atlas-backup.timer`                     | `OnCalendar=*-*-*`                       | `atlas-backup.service`                     | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `cargo-target-janitor.timer`             | `OnCalendar=*-*-*`                       | `cargo-target-janitor.service`             | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `charge-producer.timer`                  | `OnCalendar=*-*-*`                       | `charge-producer.service`                  | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `cloudflare-quota-export.timer`          | `OnCalendar=*-*-*`                       | `cloudflare-quota-export.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `codex-remote-control-watchdog.timer`    | `OnUnitActiveUSec=5min,OnBootUSec=2min`  | `codex-remote-control-watchdog.service`    | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `cold-store-drill.timer`                 | `OnCalendar=*-*-01`                      | `cold-store-drill.service`                 | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `cold-store-nightly.timer`               | `OnCalendar=*-*-*`                       | `cold-store-nightly.service`               | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `dashboard-backup.timer`                 | `OnCalendar=*-*-*`                       | `dashboard-backup.service`                 | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `fleet-feed-collector.timer`             | `OnUnitActiveUSec=5min,OnBootUSec=2min`  | `fleet-feed-collector.service`             | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `git-maintenance@daily.timer`            | `OnCalendar=Tue..Sun`                    | `git-maintenance@daily.service`            | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `git-maintenance@hourly.timer`           | `OnCalendar=*-*-*`                       | `git-maintenance@hourly.service`           | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `git-maintenance@weekly.timer`           | `OnCalendar=Mon`                         | `git-maintenance@weekly.service`           | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `github-backup-drain.timer`              | `OnUnitActiveUSec=5min,OnBootUSec=3min`  | `github-backup-drain.service`              | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `github-backup-fetch.timer`              | `OnCalendar=*-*-*`                       | `github-backup-fetch.service`              | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `github-backup-reconcile.timer`          | `OnCalendar=Mon`                         | `github-backup-reconcile.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `laptop-autocommit-hatch-personal.timer` | `OnCalendar=*-*-*`                       | `laptop-autocommit-hatch-personal.service` | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `laptop-autocommit-hatch.timer`          | `OnCalendar=*-*-*`                       | `laptop-autocommit-hatch.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `laptop-autocommit-openclaw.timer`       | `OnCalendar=*-*-*`                       | `laptop-autocommit-openclaw.service`       | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `laptop-backups-watchdog.timer`          | `OnCalendar=*-*-*`                       | `laptop-backups-watchdog.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `laptop-repo-keeper.timer`               | `OnCalendar=*-*-*`                       | `laptop-repo-keeper.service`               | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `laptop-untracked-review.timer`          | `OnCalendar=*-*-*`                       | `laptop-untracked-review.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `oc-sumauto.timer`                       | `OnCalendar=*-*-*`                       | `oc-sumauto.service`                       | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `openai-cred-watchdog.timer`             | `OnCalendar=*-*-*`                       | `openai-cred-watchdog.service`             | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `openclaw-backup.timer`                  | `OnCalendar=*-*-*`                       | `openclaw-backup.service`                  | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `opencode-usage-export.timer`            | `OnCalendar=*-*-*`                       | `opencode-usage-export.service`            | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `pm-dashboard-backup.timer`              | `OnCalendar=*-*-*`                       | `pm-dashboard-backup.service`              | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `pm-git-sync.timer`                      | `OnUnitActiveUSec=30s,OnBootUSec=30s`    | `pm-git-sync.service`                      | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `pm-kaneo.timer`                         | `OnUnitActiveUSec=30min,OnBootUSec=1min` | `pm-kaneo.service`                         | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `pm-projector-reconcile.timer`           | `OnCalendar=*-*-*`                       | `pm-projector-reconcile.service`           | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `quota-gatherer.timer`                   | `OnCalendar=*-*-*`                       | `quota-gatherer.service`                   | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `repo-archive-backup.timer`              | `OnCalendar=*-*-*`                       | `repo-archive-backup.service`              | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `repo-universe-issue-check.timer`        | `OnCalendar=*-*-*`                       | `repo-universe-issue-check.service`        | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `supabase-backup.timer`                  | `OnCalendar=*-*-*,OnCalendar=*-*-*`      | `supabase-backup.service`                  | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `sync-models.timer`                      | `OnCalendar=*-*-*`                       | `sync-models.service`                      | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `systemd-tmpfiles-clean.timer`           | `OnUnitActiveUSec=1d,OnStartupUSec=5min` | `systemd-tmpfiles-clean.service`           | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `tldr-update.timer`                      | `OnCalendar=Mon`                         | `tldr-update.service`                      | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `worktree-reaper.timer`                  | `OnCalendar=*-*-*`                       | `worktree-reaper.service`                  | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
+| timer unit                               | cadence spec                                          | activates                                  | owner / scope         | budget       | kill criteria | created      | last review |
+| ---------------------------------------- | ----------------------------------------------------- | ------------------------------------------ | --------------------- | ------------ | ------------- | ------------ | ----------- |
+| `atlas-backup.timer`                     | `OnCalendar=*-*-* 04:47:00`                           | `atlas-backup.service`                     | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `cargo-target-janitor.timer`             | `OnCalendar=*-*-* *:00:00`                            | `cargo-target-janitor.service`             | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `charge-producer.timer`                  | `OnCalendar=*-*-* *:18,48:00`                         | `charge-producer.service`                  | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `cloudflare-quota-export.timer`          | `OnCalendar=*-*-* *:00/15:00`                         | `cloudflare-quota-export.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `codex-remote-control-watchdog.timer`    | `OnUnitActiveUSec=5min,OnBootUSec=2min`               | `codex-remote-control-watchdog.service`    | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `cold-store-drill.timer`                 | `OnCalendar=*-*-01 05:12:00`                          | `cold-store-drill.service`                 | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `cold-store-nightly.timer`               | `OnCalendar=*-*-* 03:12:00`                           | `cold-store-nightly.service`               | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `dashboard-backup.timer`                 | `OnCalendar=*-*-* 04:30:00`                           | `dashboard-backup.service`                 | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `fleet-feed-collector.timer`             | `OnUnitActiveUSec=5min,OnBootUSec=2min`               | `fleet-feed-collector.service`             | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `git-maintenance@daily.timer`            | `OnCalendar=Tue..Sun *-*-* 00:56:00`                  | `git-maintenance@daily.service`            | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `git-maintenance@hourly.timer`           | `OnCalendar=*-*-* 01..23:56:00`                       | `git-maintenance@hourly.service`           | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `git-maintenance@weekly.timer`           | `OnCalendar=Mon *-*-* 00:56:00`                       | `git-maintenance@weekly.service`           | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `github-backup-drain.timer`              | `OnUnitActiveUSec=5min,OnBootUSec=3min`               | `github-backup-drain.service`              | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `github-backup-fetch.timer`              | `OnCalendar=*-*-* 00:00:00`                           | `github-backup-fetch.service`              | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `github-backup-reconcile.timer`          | `OnCalendar=Mon *-*-* 00:00:00`                       | `github-backup-reconcile.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `laptop-autocommit-hatch-personal.timer` | `OnCalendar=*-*-* *:*:00`                             | `laptop-autocommit-hatch-personal.service` | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `laptop-autocommit-hatch.timer`          | `OnCalendar=*-*-* *:*:00`                             | `laptop-autocommit-hatch.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `laptop-autocommit-openclaw.timer`       | `OnCalendar=*-*-* *:*:00`                             | `laptop-autocommit-openclaw.service`       | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `laptop-backups-watchdog.timer`          | `OnCalendar=*-*-* 06,12,18:30:00`                     | `laptop-backups-watchdog.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `laptop-repo-keeper.timer`               | `OnCalendar=*-*-* *:23:00`                            | `laptop-repo-keeper.service`               | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `laptop-untracked-review.timer`          | `OnCalendar=*-*-* 07:37:00`                           | `laptop-untracked-review.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `oc-sumauto.timer`                       | `OnCalendar=*-*-* *:00:00`                            | `oc-sumauto.service`                       | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `openai-cred-watchdog.timer`             | `OnCalendar=*-*-* *:00:00`                            | `openai-cred-watchdog.service`             | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `openclaw-backup.timer`                  | `OnCalendar=*-*-* 04:05:00`                           | `openclaw-backup.service`                  | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `opencode-usage-export.timer`            | `OnCalendar=*-*-* *:00/15:00`                         | `opencode-usage-export.service`            | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `pm-dashboard-backup.timer`              | `OnCalendar=*-*-* 04:30:00`                           | `pm-dashboard-backup.service`              | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `pm-digest-daily.timer`                  | `OnCalendar=*-*-* 07:00:00`                           | `pm-digest-daily.service`                  | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `pm-digest-weekly.timer`                 | `OnCalendar=Mon *-*-* 07:05:00`                       | `pm-digest-weekly.service`                 | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `pm-git-sync.timer`                      | `OnUnitActiveUSec=30s,OnBootUSec=30s`                 | `pm-git-sync.service`                      | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `pm-kaneo.timer`                         | `OnUnitActiveUSec=30min,OnBootUSec=1min`              | `pm-kaneo.service`                         | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `pm-projector-reconcile.timer`           | `OnCalendar=*-*-* *:00/15:00`                         | `pm-projector-reconcile.service`           | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `quota-gatherer.timer`                   | `OnCalendar=*-*-* *:00/15:00`                         | `quota-gatherer.service`                   | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `repo-archive-backup.timer`              | `OnCalendar=*-*-* 05:15:00`                           | `repo-archive-backup.service`              | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `repo-universe-issue-check.timer`        | `OnCalendar=*-*-* 00:00:00`                           | `repo-universe-issue-check.service`        | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `supabase-backup.timer`                  | `OnCalendar=*-*-* 04:42:00,OnCalendar=*-*-* 16:42:00` | `supabase-backup.service`                  | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `sync-models.timer`                      | `OnCalendar=*-*-* 00:00:00`                           | `sync-models.service`                      | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `systemd-tmpfiles-clean.timer`           | `OnUnitActiveUSec=1d,OnStartupUSec=5min`              | `systemd-tmpfiles-clean.service`           | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `tldr-update.timer`                      | `OnCalendar=Mon *-*-* 00:00:00`                       | `tldr-update.service`                      | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `worktree-reaper.timer`                  | `OnCalendar=*-*-* *:00:00`                            | `worktree-reaper.service`                  | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
 
 ## Surface 3 — Jules schedules (1 entry, retired)
 

@@ -108,6 +108,10 @@ jobs:
       # argument (#1941).
       - name: Nix build (deploy variant, siteUrl /code/)
         run: |
+          # Intentional: the single-quoted string in this block is a Nix expression
+          # evaluated by nix, not the shell -- ${builtins.currentSystem} in it is
+          # Nix's, and letting the shell expand it would break the build.
+          # shellcheck disable=SC2016
           nix build --impure --print-build-logs --expr \
             '(builtins.getFlake (toString ./.)).packages.${builtins.currentSystem}.mcpx-docs.override { siteUrl = "/code/"; }'
 

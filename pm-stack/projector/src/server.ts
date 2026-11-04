@@ -24,6 +24,7 @@ function libsqlStore(db: Client): ProjectorStore {
     upsertComment: (c) => store.upsertComment(db, c),
     markCommentDeleted: (c) => store.markCommentDeleted(db, c),
     recordPush: (p) => store.recordPush(db, p),
+    appendHotEvents: (events) => store.appendHotEvents(db, events),
   };
 }
 
@@ -56,6 +57,13 @@ export function parseLimit(raw: string | null, defaultLimit: number, maxLimit: n
   const n = Number(raw);
   if (n < 1) return defaultLimit;
   return Math.min(n, maxLimit);
+}
+
+/** Parse a hot-list cursor parameter: decimal digits only, else null. */
+export function parseCursor(raw: string | null): number | null {
+  if (raw === null || !/^[0-9]+$/.test(raw)) return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) ? n : null;
 }
 
 function bearerAuthorized(req: Request, env: ServerEnv): boolean {
@@ -236,6 +244,57 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
     const view = await store.getSubject(db, subject);
     if (!view) return jsonResponse(404, { error: "subject_not_found" });
     return jsonResponse(200, view);
+  }
+
+  // -- hot list (#5204): append-only change ledger + consumer checkpoints --
+  if (path === "/hot" && method === "GET") {
+    const after = parseCursor(url.searchParams.get("after") ?? url.searchParams.get("cursor")) ?? 0;
+    const limit = parseLimit(url.searchParams.get("limit"), DEFAULT_ITEMS_LIMIT, MAX_ITEMS_LIMIT);
+    // A sweep pins the high-water the server issues at its start; pages
+    // requested with that high-water never see events past it, so a sweep
+    // is a fixed window and its checkpoint can ack up to it exactly.
+    const pinned = parseCursor(url.searchParams.get("high_water"));
+    // The issued high-water is always server-controlled: a caller-supplied
+    // pin is clamped to the ledger's actual high-water, never echoed past
+    // it, so the value a sweep acks against is one the server truly issued.
+    const serverHighWater = await store.hotHighWater(db);
+    const highWater = pinned === null ? serverHighWater : Math.min(pinned, serverHighWater);
+    const events = await store.listHotEvents(db, { after, limit, highWater });
+    return jsonResponse(200, {
+      events,
+      high_water: highWater,
+      next_cursor: events.length ? events[events.length - 1].seq : after,
+    });
+  }
+
+  if (path === "/hot/checkpoints" && method === "GET") {
+    const consumer = url.searchParams.get("consumer");
+    if (!consumer) return jsonResponse(400, { error: "consumer required" });
+    const cursor = await store.getConsumerCheckpoint(db, consumer);
+    return jsonResponse(200, { consumer, cursor });
+  }
+
+  if (path === "/hot/checkpoints" && method === "POST") {
+    if (!bearerAuthorized(req, env)) return jsonResponse(401, { error: "unauthorized" });
+    let body: any;
+    try {
+      body = await req.json();
+    } catch {
+      return jsonResponse(400, { error: "invalid_json" });
+    }
+    const { consumer, cursor, highWater } = body ?? {};
+    if (typeof consumer !== "string" || consumer.length === 0) {
+      return jsonResponse(400, { error: "consumer (non-empty string) required" });
+    }
+    if (!Number.isInteger(cursor) || !Number.isInteger(highWater)) {
+      return jsonResponse(400, { error: "cursor and highWater (integers) required" });
+    }
+    try {
+      const stored = await store.ackConsumerCheckpoint(db, consumer, cursor, highWater);
+      return jsonResponse(200, { consumer, cursor: stored });
+    } catch (e) {
+      return jsonResponse(400, { error: String((e as Error).message) });
+    }
   }
 
   // -- reconcile trigger ------------------------------------------------------
