@@ -289,6 +289,34 @@ fn state_hash(doc: &str) -> [u8; 32] {
     blake(doc.as_bytes())
 }
 
+/// The canonical header core the session ID commits to (built by
+/// `Producer::new`). Verifiers recompute it from the header's fields
+/// and compare against `header.session_id`, so a header whose
+/// participant list, policy limits, or initial state was modified
+/// after creation is rejected instead of trusted (Codex P2 on
+/// PR #4435: the signature check authenticates only the supplied
+/// session ID, so un-recomputed fields were unauthenticated).
+fn header_core_bytes(header: &SessionHeader) -> Vec<u8> {
+    let mut core = Vec::new();
+    core.extend_from_slice(b"id.session.start.v1");
+    core.extend_from_slice(&header.participants[0]);
+    core.extend_from_slice(&header.participants[1]);
+    core.extend_from_slice(&header.initial_state);
+    core.extend_from_slice(&header.nonce);
+    core.extend_from_slice(&header.mac_key_commitment);
+    core.extend_from_slice(&header.max_frames.to_be_bytes());
+    core.extend_from_slice(&header.max_interval_ms.to_be_bytes());
+    core
+}
+
+fn verify_header(header: &SessionHeader) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        blake(&header_core_bytes(header)) == header.session_id,
+        "header fields do not recompute to the session ID: participants/policy are not bound to it"
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Records
 // ---------------------------------------------------------------------------
@@ -323,7 +351,7 @@ impl CloseReason {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SessionHeader {
     session_id: [u8; 32],
     participants: [[u8; 32]; 2],
@@ -375,6 +403,11 @@ impl Checkpoint {
 struct SegmentBody {
     frames: Vec<(Vec<u8>, [u8; 32])>,
     state_snapshot: String,
+    /// Document at the segment's first frame (the `state_before`
+    /// content). Keyless verification replays the segment's frames
+    /// onto this snapshot; without it "replay-verified" was a claim
+    /// no verifier had actually checked (Codex P2 on PR #4435).
+    state_before_snapshot: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -425,6 +458,7 @@ struct Producer {
     segment_first_seq: u64,
     segment_start_ms: u64,
     segment_state_before: [u8; 32],
+    segment_doc_before: String,
     segment_frames: Vec<(Vec<u8>, [u8; 32])>,
     checkpoints: Vec<Checkpoint>,
     bodies: Vec<SegmentBody>,
@@ -440,17 +474,8 @@ impl Producer {
         let commitment = mac_key_commitment(&nonce, &key);
         // PoC session ID: BLAKE3 over the header core (the production
         // shape derives it from the signed session.start event bytes).
-        let mut core = Vec::new();
-        core.extend_from_slice(b"id.session.start.v1");
-        core.extend_from_slice(owner.verifying_key().as_bytes());
-        core.extend_from_slice(peer.as_bytes());
-        core.extend_from_slice(&initial_state);
-        core.extend_from_slice(&nonce);
-        core.extend_from_slice(&commitment);
-        core.extend_from_slice(&256u32.to_be_bytes());
-        core.extend_from_slice(&2000u32.to_be_bytes());
-        let header = SessionHeader {
-            session_id: blake(&core),
+        let mut header = SessionHeader {
+            session_id: [0u8; 32],
             participants: [*owner.verifying_key().as_bytes(), *peer.as_bytes()],
             initial_state,
             nonce,
@@ -458,8 +483,11 @@ impl Producer {
             max_frames: 256,
             max_interval_ms: 2000,
         };
+        header.session_id = blake(&header_core_bytes(&header));
+        let header = header;
         Self {
             segment_state_before: initial_state,
+            segment_doc_before: String::new(),
             header,
             key,
             signer: owner.clone(),
@@ -484,6 +512,7 @@ impl Producer {
         if self.segment_frames.is_empty() {
             self.segment_start_ms = at_ms;
             self.segment_first_seq = self.next_seq;
+            self.segment_doc_before = self.doc.clone();
         }
         let canonical = op.canonical();
         let mac = frame_mac(
@@ -499,6 +528,22 @@ impl Producer {
             self.close_segment(reason)?;
         } else if self.segment_frames.len() >= self.header.max_frames as usize {
             self.close_segment(CloseReason::Count)?;
+        }
+        Ok(())
+    }
+
+    /// Clock tick with no incoming frame: if the open segment has
+    /// reached the interval boundary, checkpoint it now. Without
+    /// this, a pause in frames left the segment unsigned until the
+    /// next frame (or forever, if none arrived), so the advertised
+    /// 2-second limit did not bound the unsigned tail (Codex P2 on
+    /// PR #4435). A live driver calls this from its timer; the PoC
+    /// calls it explicitly.
+    fn tick(&mut self, at_ms: u64) -> anyhow::Result<()> {
+        if !self.segment_frames.is_empty()
+            && at_ms.saturating_sub(self.segment_start_ms) >= u64::from(self.header.max_interval_ms)
+        {
+            self.close_segment(CloseReason::Interval)?;
         }
         Ok(())
     }
@@ -543,6 +588,7 @@ impl Producer {
         self.bodies.push(SegmentBody {
             frames: std::mem::take(&mut self.segment_frames),
             state_snapshot: self.doc.clone(),
+            state_before_snapshot: std::mem::take(&mut self.segment_doc_before),
         });
         Ok(())
     }
@@ -571,6 +617,7 @@ fn verify_segment(
     key: Option<&[u8; 32]>,
     owner: &VerifyingKey,
 ) -> anyhow::Result<VerifyLevel> {
+    verify_header(header)?;
     owner
         .verify(
             &checkpoint.core_bytes(&header.session_id),
@@ -615,6 +662,24 @@ fn verify_segment(
         state_hash(&body.state_snapshot) == checkpoint.state_after,
         "segment snapshot does not hash to the checkpoint state_after"
     );
+    // Replay: the snapshot hash check above only proves the snapshot
+    // matches the signed state_after - an owner-signed checkpoint can
+    // commit a snapshot its frames never produce. Actually apply the
+    // segment's operations to the pre-segment state (parsing every
+    // canonical frame) and require the replay to land exactly on the
+    // committed snapshot before calling this replay-verified.
+    anyhow::ensure!(
+        state_hash(&body.state_before_snapshot) == checkpoint.state_before,
+        "segment pre-state snapshot does not hash to the checkpoint state_before"
+    );
+    let mut replayed = body.state_before_snapshot.clone();
+    for (canonical, _) in &body.frames {
+        Op::from_canonical(canonical)?.apply(&mut replayed);
+    }
+    anyhow::ensure!(
+        replayed == body.state_snapshot && state_hash(&replayed) == checkpoint.state_after,
+        "replaying the segment frames does not produce the checkpoint snapshot"
+    );
     Ok(if key.is_some() {
         VerifyLevel::MacAuthenticated
     } else {
@@ -623,6 +688,7 @@ fn verify_segment(
 }
 
 fn verify_chain(header: &SessionHeader, checkpoints: &[Checkpoint]) -> anyhow::Result<()> {
+    verify_header(header)?;
     let mut expected_state = header.initial_state;
     let mut expected_first = 0u64;
     for (i, checkpoint) in checkpoints.iter().enumerate() {
@@ -690,6 +756,13 @@ fn build_session() -> anyhow::Result<Producer> {
     // near the end, and a disconnect flush at the end.
     for i in 0..700u64 {
         let at_ms = i * 10 + if i >= 300 { 3000 } else { 0 };
+        if i == 300 {
+            // The 3 s pause crosses the 2 s boundary mid-pause: a
+            // clock tick at the boundary (segment started at
+            // 2560 ms) checkpoints the idle segment instead of
+            // waiting for frame 300 to arrive at 6000 ms.
+            producer.tick(4560)?;
+        }
         let op = if i == 680 || i == 681 {
             Op::Backspace
         } else {
@@ -881,6 +954,87 @@ mod tests {
                 &owner_key
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn idle_segment_checkpoints_on_tick_at_time_boundary() {
+        let owner = SigningKey::from_bytes(&[7u8; 32]);
+        let peer = SigningKey::from_bytes(&[9u8; 32]).verifying_key();
+        let mut producer = Producer::new(&owner, &peer);
+        producer.push_frame(Op::Append(b'a'), 0, None).unwrap();
+        producer.push_frame(Op::Append(b'b'), 1000, None).unwrap();
+        assert!(producer.checkpoints.is_empty());
+        // A tick before the 2 s boundary changes nothing.
+        producer.tick(1999).unwrap();
+        assert!(producer.checkpoints.is_empty());
+        // At the boundary the idle segment checkpoints with no new frame.
+        producer.tick(2000).unwrap();
+        assert_eq!(producer.checkpoints.len(), 1);
+        let checkpoint = &producer.checkpoints[0];
+        assert_eq!(checkpoint.close_reason, CloseReason::Interval);
+        assert_eq!(
+            (checkpoint.first_frame_seq, checkpoint.last_frame_seq),
+            (0, 1)
+        );
+        // A later frame starts a fresh segment; the chain still verifies.
+        producer.push_frame(Op::Append(b'c'), 6000, None).unwrap();
+        producer.finish().unwrap();
+        assert_eq!(producer.checkpoints.len(), 2);
+        verify_chain(&producer.header, &producer.checkpoints).unwrap();
+    }
+
+    #[test]
+    fn keyless_verification_rejects_snapshot_the_frames_do_not_produce() {
+        let producer = build_session().unwrap();
+        let owner_key = producer.signer.verifying_key();
+        let latest = producer.checkpoints.last().unwrap();
+        let latest_body = producer.bodies.last().unwrap();
+        // Genuine body: keyless verification passes and is replay-verified.
+        let level =
+            verify_segment(&producer.header, latest, latest_body, None, &owner_key).unwrap();
+        assert_eq!(level, VerifyLevel::ReplayVerifiedKeyless);
+        // Forged: the owner signs a checkpoint whose state_after commits
+        // a snapshot unrelated to the segment frames. The snapshot hash
+        // matches the signed state_after, so the old snapshot-only
+        // check passed; replaying the frames must reject it.
+        let mut forged = latest.clone();
+        forged.state_after = state_hash("a snapshot the frames never produce");
+        let core = forged.core_bytes(&producer.header.session_id);
+        forged.id = blake(&core);
+        forged.signature = producer.signer.sign(&core).to_bytes();
+        let mut forged_body = latest_body.clone();
+        forged_body.state_snapshot = "a snapshot the frames never produce".to_string();
+        assert!(
+            verify_segment(&producer.header, &forged, &forged_body, None, &owner_key).is_err(),
+            "keyless verification accepted a snapshot its frames do not replay to"
+        );
+    }
+
+    #[test]
+    fn tampered_header_participant_is_rejected() {
+        let producer = build_session().unwrap();
+        let owner_key = producer.signer.verifying_key();
+        let mut header = producer.header.clone();
+        header.participants[1] = SigningKey::from_bytes(&[11u8; 32])
+            .verifying_key()
+            .to_bytes();
+        let latest = producer.checkpoints.last().unwrap();
+        let latest_body = producer.bodies.last().unwrap();
+        assert!(
+            verify_segment(
+                &header,
+                latest,
+                latest_body,
+                Some(&producer.key),
+                &owner_key
+            )
+            .is_err(),
+            "segment verification accepted a header whose participant list does not recompute to the session ID"
+        );
+        assert!(
+            verify_chain(&header, &producer.checkpoints).is_err(),
+            "chain verification accepted a tampered header"
         );
     }
 
