@@ -130,6 +130,7 @@ fn init_logging(filter: &str, config: &id::structured_logging::LogConfig) {
                             .with_filter(tracing_subscriber::EnvFilter::new(&file_filter))
                             .boxed(),
                         LogFormat::Text => fmt::layer()
+                            .fmt_fields(id::structured_logging::PlainFields::new())
                             .with_writer(move || writer.clone())
                             .with_timer(timer)
                             .with_ansi(false)

@@ -44,7 +44,13 @@ use std::{
 };
 
 use chrono::{DateTime, FixedOffset, Local, SecondsFormat, Utc};
-use tracing_subscriber::fmt::time::FormatTime;
+use tracing_subscriber::{
+    field::RecordFields,
+    fmt::{
+        format::{DefaultFields, FormatFields, Writer},
+        time::FormatTime,
+    },
+};
 
 /// Output format for a log destination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,7 +174,7 @@ pub struct Rfc3339TzTimer {
 impl FormatTime for Rfc3339TzTimer {
     fn format_time(
         &self,
-        writer: &mut tracing_subscriber::fmt::format::Writer<'_>,
+        writer: &mut Writer<'_>,
     ) -> std::fmt::Result {
         write!(writer, "{}", self.zone.format_timestamp(SystemTime::now()))
     }
@@ -225,6 +231,43 @@ impl LogConfig {
         self.file_filter
             .clone()
             .unwrap_or_else(|| base_filter.to_owned())
+    }
+}
+
+/// Field formatter for the file destination: a distinct type
+/// wrapping [`DefaultFields`].
+///
+/// `tracing_subscriber` caches each span's formatted fields in the
+/// span's extensions, keyed by the formatter's type. If the file
+/// layer used [`DefaultFields`] directly (like the console layer),
+/// whichever layer formatted a span first would populate the shared
+/// cache — and the console formats with ANSI styling, so escape
+/// sequences would leak into the log file even with
+/// `.with_ansi(false)` on the file layer. Giving the file layer its
+/// own formatter type gives it its own cache slot, formatted without
+/// ANSI. The rendered field text is otherwise identical to
+/// [`DefaultFields`].
+#[derive(Debug, Default)]
+pub struct PlainFields {
+    inner: DefaultFields,
+}
+
+impl PlainFields {
+    /// Create a `PlainFields` formatter.
+    pub fn new() -> Self {
+        Self {
+            inner: DefaultFields::new(),
+        }
+    }
+}
+
+impl<'writer> FormatFields<'writer> for PlainFields {
+    fn format_fields<R: RecordFields>(
+        &self,
+        writer: Writer<'writer>,
+        fields: R,
+    ) -> std::fmt::Result {
+        self.inner.format_fields(writer, fields)
     }
 }
 
@@ -433,6 +476,61 @@ mod tests {
         assert!(
             span["name"] == "probe_span" || spans.to_string().contains("probe_span"),
             "span context in line: {line}"
+        );
+    }
+
+    #[test]
+    fn structured_logging_file_layer_span_fields_stay_plain() {
+        use tracing_subscriber::{Layer as _, fmt::format::FmtSpan, layer::SubscriberExt};
+
+        let console_buffer = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let file_buffer = Arc::new(Mutex::new(Vec::<u8>::new()));
+
+        // Same layer order as production (console first, file second):
+        // with a shared formatter type the console's ANSI-styled span
+        // fields would populate the cache the file layer reuses.
+        let console_layer = tracing_subscriber::fmt::layer()
+            .with_writer({
+                let writer = console_buffer.clone();
+                move || SharedVecWriter(writer.clone())
+            })
+            .with_ansi(true)
+            .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
+            .with_filter(tracing_subscriber::EnvFilter::new("trace"))
+            .boxed();
+        let file_layer = tracing_subscriber::fmt::layer()
+            .fmt_fields(PlainFields::new())
+            .with_writer({
+                let writer = file_buffer.clone();
+                move || SharedVecWriter(writer.clone())
+            })
+            .with_ansi(false)
+            .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
+            .with_filter(tracing_subscriber::EnvFilter::new("trace"))
+            .boxed();
+        let subscriber = tracing_subscriber::registry().with(vec![console_layer, file_layer]);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("ansi_probe", marker = "plainvalue");
+            let _entered = span.enter();
+            tracing::info!("inside the probe span");
+        });
+
+        let console_text = String::from_utf8(console_buffer.lock().expect("console lock").clone())
+            .expect("console utf8");
+        let file_text =
+            String::from_utf8(file_buffer.lock().expect("file lock").clone()).expect("file utf8");
+        assert!(
+            console_text.contains('\u{1b}'),
+            "console output should carry ANSI styling: {console_text:?}"
+        );
+        assert!(
+            file_text.contains("plainvalue"),
+            "file output should contain the span field: {file_text:?}"
+        );
+        assert!(
+            !file_text.contains('\u{1b}'),
+            "file output must not contain ANSI escapes: {file_text:?}"
         );
     }
 
