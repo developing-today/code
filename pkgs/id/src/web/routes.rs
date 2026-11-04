@@ -112,7 +112,7 @@ fn image_bytes_match_declared_type(content_type: &str, data: &[u8]) -> bool {
 /// `<!DOCTYPE ...>` declaration (real-world SVGs carry all of these:
 /// see `doc/database_structure_20231217_074440.svg`, a Graphviz export
 /// with a declaration, an SVG 1.1 DOCTYPE, and comments before the
-/// root) — the document must open with an `<svg` root element.
+/// root) — the document must open with an `svg` root element (plain or namespace-prefixed).
 fn svg_document_starts(data: &[u8]) -> bool {
     let mut rest = data;
     if rest.starts_with(&[0xEF, 0xBB, 0xBF]) {
@@ -156,10 +156,36 @@ fn svg_document_starts(data: &[u8]) -> bool {
             break;
         }
     }
-    rest.starts_with(b"<svg")
-        && rest
-            .get(4)
-            .is_some_and(|b| b.is_ascii_whitespace() || *b == b'>' || *b == b'/')
+    svg_root_element_opens(rest)
+}
+
+/// Whether `rest` opens an element whose local name is `svg`: the
+/// plain `<svg ...>` spelling, or a namespace-prefixed root such as
+/// `<s:svg xmlns:s="http://www.w3.org/2000/svg"/>` (Codex P2 on
+/// PR #5357 — prefixed SVGs previously uploaded fine and the client
+/// allowlist still accepts them). The tag name is read whole, so
+/// `<svgx>` and `<x:html>` do not pass.
+fn svg_root_element_opens(rest: &[u8]) -> bool {
+    if !rest.starts_with(b"<")
+        || rest.starts_with(b"</")
+        || rest.starts_with(b"<!")
+        || rest.starts_with(b"<?")
+    {
+        return false;
+    }
+    let name = &rest[1..];
+    let end = name
+        .iter()
+        .position(|b| b.is_ascii_whitespace() || *b == b'>' || *b == b'/')
+        .unwrap_or(name.len());
+    if end == 0 {
+        return false;
+    }
+    let local_name = name[..end]
+        .rsplit(|b| *b == b':')
+        .next()
+        .unwrap_or(&name[..end]);
+    local_name == b"svg"
 }
 
 /// Query parameters for the file list (pagination + search).
@@ -3435,6 +3461,20 @@ mod upload_router_tests {
         assert!(!image_bytes_match_declared_type(
             "image/svg+xml",
             b"<!-- only a comment, no root -->"
+        ));
+        // Codex P2 on PR #5357 (second round): a namespace-prefixed
+        // root is still an SVG root; lookalike tag names are not.
+        assert!(image_bytes_match_declared_type(
+            "image/svg+xml",
+            b"<s:svg xmlns:s=\"http://www.w3.org/2000/svg\"/>"
+        ));
+        assert!(!image_bytes_match_declared_type(
+            "image/svg+xml",
+            b"<svgx></svgx>"
+        ));
+        assert!(!image_bytes_match_declared_type(
+            "image/svg+xml",
+            b"<x:html></x:html>"
         ));
         assert!(!image_bytes_match_declared_type(
             "image/png",
