@@ -8,9 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/signal"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -125,7 +123,7 @@ func detachRemote(t *testing.T, url string) (*Registry, *RegistryHandoff) {
 	if !ok {
 		t.Fatal("no pool for remote")
 	}
-	lease, err := p.Acquire(context.Background(), "global")
+	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +227,7 @@ func TestSuccessorShutdownWaitsForABlockedOrphanTermination(t *testing.T) {
 	if !ok {
 		t.Fatal("no pool for remote")
 	}
-	lease, err := p.Acquire(context.Background(), "global")
+	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +295,7 @@ func TestDaemonRestartWaitsForABlockedOrphanTermination(t *testing.T) {
 	if !ok {
 		t.Fatal("no pool for remote")
 	}
-	lease, err := p.Acquire(context.Background(), "global")
+	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,11 +335,19 @@ func TestDaemonRestartWaitsForABlockedOrphanTermination(t *testing.T) {
 	}
 	t.Cleanup(func() { execSelf = oldExec })
 
-	// The handler SIGTERMs this process when the (stubbed) exec fails;
-	// intercept it like TestHandleDaemonRestart does.
+	// The handler asks for a self-SIGTERM when the (stubbed) exec fails;
+	// capture it through the signalSelf seam (#5262) instead of letting a
+	// real SIGTERM loose in the test process.
 	term := make(chan os.Signal, 1)
-	signal.Notify(term, syscall.SIGTERM)
-	defer signal.Stop(term)
+	oldSignal := signalSelf
+	signalSelf = func(sig os.Signal) error {
+		select {
+		case term <- sig:
+		default:
+		}
+		return nil
+	}
+	t.Cleanup(func() { signalSelf = oldSignal })
 
 	w := httptest.NewRecorder()
 	successor.handleDaemonRestart(w, httptest.NewRequest(http.MethodPost, "/v1/daemon/restart", nil))
@@ -360,7 +366,7 @@ func TestDaemonRestartWaitsForABlockedOrphanTermination(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("restart did not re-execute after the orphan DELETE completed")
 	}
-	// Drain the fallback SIGTERM so it cannot land in a later test.
+	// The fallback self-signal must arrive through the seam.
 	select {
 	case <-term:
 	case <-time.After(2 * time.Second):
@@ -420,7 +426,7 @@ func TestAbortedTakeoverLeavesARemovedServersSessionAlone(t *testing.T) {
 		t.Fatalf("an aborted handoff ended the upstream session with %d DELETE(s)", deletes)
 	}
 	p, _ := old.Pool("remote")
-	lease, err := p.Acquire(context.Background(), "global")
+	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +458,7 @@ func TestSuccessorServeWaitsForABlockedOrphanTerminationOnHandoff(t *testing.T) 
 	if !ok {
 		t.Fatal("no pool for remote")
 	}
-	lease, err := p.Acquire(context.Background(), "global")
+	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
 	if err != nil {
 		t.Fatal(err)
 	}

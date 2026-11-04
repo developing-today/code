@@ -75,6 +75,9 @@ impl Writer {
             tag: Some(op.clone()),
             document: None,
             removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
             chat: None,
         };
         let event = sign(&self.key, self.seq, self.last, None, ext).unwrap();
@@ -262,6 +265,9 @@ fn test_a_tag_event_whose_operation_does_not_fit_its_kind_is_not_signed() {
         tag: Some(set(subject, "city", None)),
         document: None,
         removes: None,
+        note: None,
+        link: None,
+        checkpoint: None,
         chat: None,
     };
     assert!(sign(&a.key, 0, None, None, mismatch).is_err());
@@ -272,6 +278,9 @@ fn test_a_tag_event_whose_operation_does_not_fit_its_kind_is_not_signed() {
         tag: None,
         document: None,
         removes: None,
+        note: None,
+        link: None,
+        checkpoint: None,
         chat: None,
     };
     assert!(sign(&a.key, 0, None, None, missing).is_err());
@@ -354,9 +363,16 @@ fn history(seed: u64, steps: usize, count: usize) -> History {
                     continue;
                 }
                 let named_count = 1 + rng.below(3);
-                let named: Vec<Hash> = (0..named_count)
-                    .map(|_| sets[rng.below(sets.len())].id())
-                    .collect();
+                // A clear naming a claim twice is invalid input since #4765 (the store
+                // refuses it in check_op), so the generator must not produce one: pick
+                // without replacement.
+                let mut named: Vec<Hash> = Vec::new();
+                for _ in 0..named_count {
+                    let id = sets[rng.below(sets.len())].id();
+                    if !named.contains(&id) {
+                        named.push(id);
+                    }
+                }
                 let seen: HashSet<Hash> = known[w].values().map(Sent::id).collect();
                 let after = frontier(&known[w], count);
                 let sent = writers[w].send(&clear(&named), after, w);

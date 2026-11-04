@@ -4,8 +4,11 @@
 # guest_replay line re-taken 2026-10-30 on the same machine after the #1403 harness fix:
 # the 2026-10-28 line was restore-only (the guest saw zero events); see the correction
 # note in BASELINES.md. The other three lines remain the 2026-10-28 run.
+# many_worlds measured 2026-11-02 on the same reference machine; p99 misses the 50 ms
+# target. The checkpoint/eviction/reopen integrity assertions passed; see BASELINES.md.
 # Format: the harness's own output lines, one per benchmark; slice 3 diffs medians.
 bench journal_append_fsync unit=us_per_append median=5180.353 min=5128.725 reps=5
 bench checkpoint_compaction unit=us_per_compact median=10971.985 min=10683.191 reps=5
 bench guest_replay unit=us_per_event median=0.170 min=0.145 reps=5
 bench session_fanout unit=us_per_delivery median=1.437 min=1.383 reps=5
+bench many_worlds unit=ms_per_command median=1076.753 min=6.368 reps=1 p50_ms=1076.753 p95_ms=4547.595 p99_ms=5650.792 target_p99_ms=50 target_met=false idle_worlds=1000 active_worlds=100 events_per_second=20 duration_secs=10 commands=20000 load_elapsed_secs=13.132 completed_events_per_second=1523.1 checkpoint_triggers=100 checkpoints=100 evicted=100 reopened=100

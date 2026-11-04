@@ -28,6 +28,16 @@ pub enum ConfigError {
     /// A key names two users, two groups, or a user and a group.
     #[error("key `{0}` is declared more than once; keys are unique within the config")]
     DuplicateKey(String),
+    /// A user or group declaration key is blank or carries surrounding whitespace.
+    #[error(
+        "{kind} key `{key}` is not a usable declaration key; keys are non-blank and carry no surrounding whitespace"
+    )]
+    InvalidKey {
+        /// The kind of declaration the key belongs to.
+        kind: &'static str,
+        /// The key exactly as declared.
+        key: String,
+    },
     /// Two user keys name the same public key, so the two declared users are one account.
     #[error(
         "users `{first}` and `{second}` name the same id; each user key must name a different id"
@@ -108,6 +118,18 @@ pub enum ConfigError {
     /// The freshness window is zero seconds, so no accept could ever fall inside it.
     #[error("the freshness window in [policy] is 0 seconds; omit it or give at least 1")]
     ZeroWindow,
+    /// A `[budgets]` value is zero, so the budget could never admit anything.
+    #[error("`{field}` in [budgets] is 0; omit it or give at least 1")]
+    ZeroBudget {
+        /// The field that was set to zero.
+        field: &'static str,
+    },
+    /// Two `[[budgets.counterparty]]` rows name the same peer.
+    #[error("peer `{peer}` has more than one [[budgets.counterparty]] row; give each peer one row")]
+    DuplicateCounterparty {
+        /// The peer named twice, as written in the file.
+        peer: String,
+    },
     /// A group lists one member twice.
     #[error("group `{group}` lists member `{member}` more than once")]
     DuplicateMember {
@@ -116,6 +138,14 @@ pub enum ConfigError {
         /// The member's key.
         member: String,
     },
+    /// `[create]` lists the same user or group twice, so the repetition is a typo.
+    #[error("`{key}` is listed more than once in {list}")]
+    DuplicateCreate {
+        /// The key exactly as declared in the repeated entry.
+        key: String,
+        /// Which `[create]` list held the repetition.
+        list: &'static str,
+    },
 }
 
 #[derive(Deserialize)]
@@ -123,6 +153,7 @@ pub enum ConfigError {
 struct Raw {
     create: Option<RawCreate>,
     policy: Option<RawPolicy>,
+    budgets: Option<RawBudgets>,
     #[serde(default)]
     users: Vec<RawUser>,
     #[serde(default)]
@@ -137,6 +168,29 @@ struct RawCreate {
     #[serde(default)]
     groups: Vec<String>,
     min_role: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBudgets {
+    app_inbound_bytes_per_second: Option<u64>,
+    app_inbound_bytes_per_hour: Option<u64>,
+    app_outbound_bytes_per_second: Option<u64>,
+    app_outbound_bytes_per_hour: Option<u64>,
+    per_peer_bytes_per_hour: Option<u64>,
+    per_peer_burst_bytes_per_minute: Option<u64>,
+    per_ip_bytes_per_hour: Option<u64>,
+    #[serde(default)]
+    counterparty: Vec<RawCounterparty>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCounterparty {
+    peer: String,
+    bytes_per_window: u64,
+    window_seconds: u64,
+    messages_per_window: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -181,6 +235,7 @@ pub(super) fn parse(text: &str) -> Result<ServerConfig, ConfigError> {
     let mut users = Vec::with_capacity(raw.users.len());
     let mut user_ids: BTreeMap<Key, String> = BTreeMap::new();
     for user in &raw.users {
+        check_declaration_key("user", &user.key)?;
         let id = parse_id(&user.key, &user.id)?;
         claim(&mut names, &user.key, Object::User(id))?;
         if let Some(first) = user_ids.get(&id) {
@@ -204,6 +259,7 @@ pub(super) fn parse(text: &str) -> Result<ServerConfig, ConfigError> {
 
     let mut pending = Vec::with_capacity(raw.groups.len());
     for group in &raw.groups {
+        check_declaration_key("group", &group.key)?;
         let creator = user_of(&names, &group.creator, &format!("group `{}`", group.key))?;
         let id = group_id(&creator, &group.key);
         claim(&mut names, &group.key, Object::Group(id))?;
@@ -260,14 +316,131 @@ pub(super) fn parse(text: &str) -> Result<ServerConfig, ConfigError> {
         None => PolicySpec::default(),
         Some(raw_policy) => policy_spec(raw_policy)?,
     };
+    let budgets = match &raw.budgets {
+        None => crate::abuse::BudgetPolicy::default(),
+        Some(raw_budgets) => budget_policy(raw_budgets, &names)?,
+    };
     Ok(ServerConfig {
         users,
         groups,
         create,
         policy,
+        budgets,
         names,
         aliases,
     })
+}
+
+/// The #2247 budgets from their `[budgets]` table. Every field the
+/// table leaves unset keeps its code default, so a table that sets
+/// one knob changes only that knob. Counterparty `peer` names a
+/// declared user key or a raw 64-hex public key; each peer may have
+/// one row, and the row replaces the per-peer defaults for it.
+fn budget_policy(
+    raw: &RawBudgets,
+    names: &BTreeMap<String, Object>,
+) -> Result<crate::abuse::BudgetPolicy, ConfigError> {
+    use crate::abuse::BudgetLimit;
+    let mut policy = crate::abuse::BudgetPolicy::default();
+    let checked = |field: &'static str, value: Option<u64>| -> Result<Option<u64>, ConfigError> {
+        match value {
+            Some(0) => Err(ConfigError::ZeroBudget { field }),
+            other => Ok(other),
+        }
+    };
+    if let Some(v) = checked(
+        "app_inbound_bytes_per_second",
+        raw.app_inbound_bytes_per_second,
+    )? {
+        policy.app_inbound[0] = BudgetLimit::bytes(1_000, v);
+    }
+    if let Some(v) = checked("app_inbound_bytes_per_hour", raw.app_inbound_bytes_per_hour)? {
+        policy.app_inbound[1] = BudgetLimit::bytes(3_600_000, v);
+    }
+    if let Some(v) = checked(
+        "app_outbound_bytes_per_second",
+        raw.app_outbound_bytes_per_second,
+    )? {
+        policy.app_outbound[0] = BudgetLimit::bytes(1_000, v);
+    }
+    if let Some(v) = checked(
+        "app_outbound_bytes_per_hour",
+        raw.app_outbound_bytes_per_hour,
+    )? {
+        policy.app_outbound[1] = BudgetLimit::bytes(3_600_000, v);
+    }
+    if let Some(v) = checked(
+        "per_peer_burst_bytes_per_minute",
+        raw.per_peer_burst_bytes_per_minute,
+    )? {
+        policy.per_peer[0] = BudgetLimit::bytes(60_000, v);
+    }
+    if let Some(v) = checked("per_peer_bytes_per_hour", raw.per_peer_bytes_per_hour)? {
+        policy.per_peer[1] = BudgetLimit::bytes(3_600_000, v);
+    }
+    if let Some(v) = checked("per_ip_bytes_per_hour", raw.per_ip_bytes_per_hour)? {
+        policy.per_ip[0] = BudgetLimit::bytes(3_600_000, v);
+    }
+    let mut seen: BTreeSet<crate::abuse::EndpointId> = BTreeSet::new();
+    for row in &raw.counterparty {
+        if row.bytes_per_window == 0 {
+            return Err(ConfigError::ZeroBudget {
+                field: "bytes_per_window",
+            });
+        }
+        if row.window_seconds == 0 {
+            return Err(ConfigError::ZeroBudget {
+                field: "window_seconds",
+            });
+        }
+        if row.messages_per_window == Some(0) {
+            return Err(ConfigError::ZeroBudget {
+                field: "messages_per_window",
+            });
+        }
+        let peer = counterparty_peer(&row.peer, names)?;
+        if !seen.insert(peer) {
+            return Err(ConfigError::DuplicateCounterparty {
+                peer: row.peer.clone(),
+            });
+        }
+        policy.counterparty_overrides.push((
+            peer,
+            vec![BudgetLimit {
+                window_ms: row.window_seconds.saturating_mul(1_000),
+                bytes_per_window: row.bytes_per_window,
+                messages_per_window: row.messages_per_window.unwrap_or(0),
+            }],
+        ));
+    }
+    Ok(policy)
+}
+
+/// Resolves a counterparty `peer` to an endpoint ID: a declared
+/// user key names that user; anything else must be the peer's
+/// 64-hex public key.
+fn counterparty_peer(
+    peer: &str,
+    names: &BTreeMap<String, Object>,
+) -> Result<crate::abuse::EndpointId, ConfigError> {
+    if let Some(object) = names.get(peer) {
+        return match object {
+            Object::User(id) => Ok(*id),
+            Object::Group(_) => Err(ConfigError::WrongKind {
+                key: peer.to_owned(),
+                expected: "user",
+                found: "group",
+                place: "a [[budgets.counterparty]] row".to_owned(),
+            }),
+        };
+    }
+    let unknown = || ConfigError::UnknownKey {
+        kind: "user",
+        key: peer.to_owned(),
+        place: "a [[budgets.counterparty]] row".to_owned(),
+    };
+    let normalized = normalize_key(peer).map_err(|_| unknown())?;
+    hex_to_array::<32>(&normalized).ok_or_else(unknown)
 }
 
 /// The serving policy from its `[policy]` table. An absent table, and a table that sets
@@ -309,11 +482,23 @@ fn create_rule(
     }
     let mut users = BTreeSet::new();
     for key in &rule.users {
-        users.insert(user_of(names, key, "[create].users")?);
+        let id = user_of(names, key, "[create].users")?;
+        if !users.insert(id) {
+            return Err(ConfigError::DuplicateCreate {
+                key: key.clone(),
+                list: "[create].users",
+            });
+        }
     }
     let mut groups = BTreeSet::new();
     for key in &rule.groups {
-        groups.insert(group_of(names, key, "[create].groups")?);
+        let id = group_of(names, key, "[create].groups")?;
+        if !groups.insert(id) {
+            return Err(ConfigError::DuplicateCreate {
+                key: key.clone(),
+                list: "[create].groups",
+            });
+        }
     }
     let floor = match &rule.min_role {
         None => Role::Pull,
@@ -324,6 +509,19 @@ fn create_rule(
         groups,
         floor,
     })
+}
+
+/// A declaration key must be non-blank and exactly as referenced: surrounding whitespace is
+/// refused, never trimmed, so a key cannot diverge from the trimmed account name that
+/// provisioning derives from it, and references keep exact-key semantics.
+fn check_declaration_key(kind: &'static str, key: &str) -> Result<(), ConfigError> {
+    if key.trim().is_empty() || key.trim() != key {
+        return Err(ConfigError::InvalidKey {
+            kind,
+            key: key.to_owned(),
+        });
+    }
+    Ok(())
 }
 
 /// Records that `key` names `object`. Keys are unique across users and groups.
@@ -540,6 +738,74 @@ mod tests {
             config(&again),
             Err(ConfigError::DuplicateKey("ann".to_owned()))
         );
+    }
+
+    #[test]
+    fn test_a_blank_user_key_is_refused_naming_it() {
+        let text = format!("\n[[users]]\nkey = \"\"\nid = \"{}\"\n", hex(9));
+        assert_eq!(
+            config(&text),
+            Err(ConfigError::InvalidKey {
+                kind: "user",
+                key: String::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_a_whitespace_only_user_key_is_refused() {
+        let text = format!("\n[[users]]\nkey = \"  \"\nid = \"{}\"\n", hex(9));
+        assert_eq!(
+            config(&text),
+            Err(ConfigError::InvalidKey {
+                kind: "user",
+                key: "  ".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_a_padded_user_key_is_refused_not_trimmed() {
+        let text = format!("\n[[users]]\nkey = \" eve\"\nid = \"{}\"\n", hex(9));
+        assert_eq!(
+            config(&text),
+            Err(ConfigError::InvalidKey {
+                kind: "user",
+                key: " eve".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_a_blank_group_key_is_refused_naming_it() {
+        let text = "\n[[groups]]\nkey = \"\"\nname = \"Team\"\ncreator = \"ann\"\n";
+        assert_eq!(
+            config(text),
+            Err(ConfigError::InvalidKey {
+                kind: "group",
+                key: String::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_a_padded_group_key_is_refused_not_trimmed() {
+        let text = "\n[[groups]]\nkey = \"team \"\nname = \"Team\"\ncreator = \"ann\"\n";
+        assert_eq!(
+            config(text),
+            Err(ConfigError::InvalidKey {
+                kind: "group",
+                key: "team ".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_a_padded_reference_does_not_resolve_to_a_declared_key() {
+        let text = "\n[[groups]]\nkey = \"team\"\nname = \"Team\"\ncreator = \"ann\"\n\n\
+                    [[groups.members]]\nuser = \" bo\"\nrole = \"write\"\n";
+        let refused = config(text).unwrap_err();
+        assert!(matches!(refused, ConfigError::UnknownKey { .. }));
     }
 
     #[test]
@@ -803,6 +1069,105 @@ mod tests {
                 users: std::iter::once(key(1)).collect(),
                 groups: std::iter::once(team).collect(),
                 floor: Role::Write,
+            }
+        );
+    }
+
+    #[test]
+    fn test_budgets_default_when_the_table_is_absent() {
+        assert_eq!(
+            config("").unwrap().budgets(),
+            &crate::abuse::BudgetPolicy::default()
+        );
+    }
+
+    #[test]
+    fn test_budgets_table_overrides_only_the_knobs_it_sets() {
+        let parsed = config("[budgets]\nper_peer_bytes_per_hour = 12345\n").unwrap();
+        let budgets = parsed.budgets();
+        assert_eq!(
+            budgets.per_peer[1],
+            crate::abuse::BudgetLimit::bytes(3_600_000, 12345)
+        );
+        // Everything else keeps the code default.
+        let defaults = crate::abuse::BudgetPolicy::default();
+        assert_eq!(budgets.app_inbound, defaults.app_inbound);
+        assert_eq!(budgets.per_peer[0], defaults.per_peer[0]);
+        assert_eq!(budgets.per_ip, defaults.per_ip);
+    }
+
+    #[test]
+    fn test_counterparty_row_resolves_a_user_key_and_a_raw_hex_key() {
+        let parsed = config(&format!(
+            "[budgets]\n[[budgets.counterparty]]\npeer = \"ann\"\nbytes_per_window = 1048576\nwindow_seconds = 86400\nmessages_per_window = 1000\n\n[[budgets.counterparty]]\npeer = \"{}\"\nbytes_per_window = 5\nwindow_seconds = 60\n",
+            hex(3)
+        ))
+        .unwrap();
+        let overrides = &parsed.budgets().counterparty_overrides;
+        assert_eq!(overrides.len(), 2);
+        assert_eq!(overrides[0].0, key(1));
+        assert_eq!(
+            overrides[0].1,
+            vec![crate::abuse::BudgetLimit {
+                window_ms: 86_400_000,
+                bytes_per_window: 1_048_576,
+                messages_per_window: 1000,
+            }]
+        );
+        assert_eq!(overrides[1].0, key(3));
+        // The resolved override is the one the evaluator consults.
+        assert_eq!(
+            parsed.budgets().limits_for_peer(&key(1)),
+            overrides[0].1.as_slice()
+        );
+    }
+
+    #[test]
+    fn test_counterparty_rows_refuse_duplicates_zeroes_and_unknown_peers() {
+        let duplicate = config(
+            "[budgets]\n[[budgets.counterparty]]\npeer = \"ann\"\nbytes_per_window = 5\nwindow_seconds = 60\n\n[[budgets.counterparty]]\npeer = \"ann\"\nbytes_per_window = 6\nwindow_seconds = 60\n",
+        );
+        assert!(matches!(
+            duplicate,
+            Err(ConfigError::DuplicateCounterparty { .. })
+        ));
+        let zero = config("[budgets]\nper_ip_bytes_per_hour = 0\n");
+        assert!(matches!(zero, Err(ConfigError::ZeroBudget { .. })));
+        let unknown = config(
+            "[budgets]\n[[budgets.counterparty]]\npeer = \"nobody\"\nbytes_per_window = 5\nwindow_seconds = 60\n",
+        );
+        assert!(matches!(unknown, Err(ConfigError::UnknownKey { .. })));
+    }
+
+    #[test]
+    fn test_a_repeated_user_in_the_create_rule_is_refused_naming_it() {
+        assert!(matches!(
+            config(&format!("{TEAM}\n[create]\nusers = [\"ann\", \"bo\", \"ann\"]\n")),
+            Err(ConfigError::DuplicateCreate { ref key, list: "[create].users" }) if key == "ann"
+        ));
+    }
+
+    #[test]
+    fn test_a_repeated_group_in_the_create_rule_is_refused_naming_it() {
+        assert!(matches!(
+            config(&format!("{TEAM}\n[create]\nusers = [\"ann\"]\ngroups = [\"team\", \"team\"]\n")),
+            Err(ConfigError::DuplicateCreate { ref key, list: "[create].groups" }) if key == "team"
+        ));
+    }
+
+    #[test]
+    fn test_a_create_rule_without_repetition_is_unchanged() {
+        let parsed = config(&format!(
+            "{TEAM}\n[create]\nusers = [\"ann\", \"bo\"]\ngroups = [\"team\"]\n"
+        ))
+        .unwrap();
+        let team = parsed.group_id("team").unwrap();
+        assert_eq!(
+            parsed.create_rule(),
+            &CreateRule::Listed {
+                users: [key(1), key(2)].into_iter().collect(),
+                groups: std::iter::once(team).collect(),
+                floor: Role::Pull,
             }
         );
     }

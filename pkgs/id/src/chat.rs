@@ -38,6 +38,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
+use unicode_normalization::{UnicodeNormalization, is_nfc};
 
 use crate::groups::policy::History;
 use crate::waiting::AuthorKey;
@@ -101,7 +102,8 @@ impl ChatLink {
     ///
     /// # Errors
     ///
-    /// Returns [`ChatError::Hint`] when the hint is longer than [`MAX_HINT_BYTES`].
+    /// Returns [`ChatError::Hint`] when the hint is longer than [`MAX_HINT_BYTES`] or is
+    /// not NFC.
     pub fn check(&self) -> Result<(), ChatError> {
         if let Some(hint) = &self.hint
             && hint.len() > MAX_HINT_BYTES
@@ -110,6 +112,9 @@ impl ChatLink {
                 "the hint is {} bytes, it must be at most {MAX_HINT_BYTES}",
                 hint.len()
             )));
+        }
+        if self.hint.as_deref().is_some_and(|hint| !is_nfc(hint)) {
+            return Err(ChatError::Hint("the hint is not NFC".to_owned()));
         }
         Ok(())
     }
@@ -144,18 +149,26 @@ pub struct ChatMessage {
 }
 
 impl ChatMessage {
-    /// A message over `text` with `links`: the text is sanitized first, then checked, so a
-    /// built message always passes [`ChatMessage::check`] on receipt.
+    /// A message over `text` with `links`: text and link hints are sanitized or normalized
+    /// to NFC first, then checked, so a built message passes [`ChatMessage::check`] on
+    /// receipt.
     ///
     /// # Errors
     ///
     /// Returns [`ChatError::Text`] when the sanitized text is empty or too long, and the
     /// failing link's error when a link is refused.
     pub fn new(text: &str, links: Vec<ChatLink>) -> Result<Self, ChatError> {
-        let message = Self {
-            text: sanitize_chat(text),
-            links,
-        };
+        let text = sanitize_chat(text).nfc().collect();
+        let links = links
+            .into_iter()
+            .map(|mut link| {
+                if let Some(hint) = &mut link.hint {
+                    *hint = hint.nfc().collect();
+                }
+                link
+            })
+            .collect();
+        let message = Self { text, links };
         message.check()?;
         Ok(message)
     }
@@ -166,11 +179,17 @@ impl ChatMessage {
     ///
     /// # Errors
     ///
-    /// Returns [`ChatError::Text`] for empty, oversize, or unsanitized text,
-    /// [`ChatError::Links`] for too many links, and the failing link's error otherwise.
+    /// Returns [`ChatError::Text`] for empty, oversize, non-NFC, or unsanitized text,
+    /// [`ChatError::Links`] for too many links or a link repeated in full (kind, hash,
+    /// author, and hint), and the failing link's error otherwise. Two links that agree on
+    /// kind, hash, and author but differ in hint name different retrieval places, so they
+    /// are not repeats.
     pub fn check(&self) -> Result<(), ChatError> {
         if self.text.is_empty() {
             return Err(ChatError::Text("the text is empty".to_owned()));
+        }
+        if !is_nfc(&self.text) {
+            return Err(ChatError::Text("the text is not NFC".to_owned()));
         }
         if self.text.len() > MAX_TEXT_BYTES {
             return Err(ChatError::Text(format!(
@@ -179,15 +198,20 @@ impl ChatMessage {
             )));
         }
         if sanitize_chat(&self.text) != self.text {
-            return Err(ChatError::Text(
-                "the text is not sanitized".to_owned(),
-            ));
+            return Err(ChatError::Text("the text is not sanitized".to_owned()));
         }
         if self.links.len() > MAX_LINKS {
             return Err(ChatError::Links(format!(
                 "the message carries {} links, it must carry at most {MAX_LINKS}",
                 self.links.len()
             )));
+        }
+        for (index, link) in self.links.iter().enumerate() {
+            if self.links[..index].contains(link) {
+                return Err(ChatError::Links(format!(
+                    "link {index} repeats an earlier link, a message names each link once"
+                )));
+            }
         }
         for link in &self.links {
             link.check()?;
@@ -199,13 +223,13 @@ impl ChatMessage {
 /// Why a chat message or link was refused.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ChatError {
-    /// The text is empty, longer than [`MAX_TEXT_BYTES`], or not sanitized.
+    /// The text is empty, longer than [`MAX_TEXT_BYTES`], not NFC, or not sanitized.
     #[error("{0}")]
     Text(String),
-    /// The message carries more than [`MAX_LINKS`] links.
+    /// The message carries more than [`MAX_LINKS`] links or repeats a link.
     #[error("{0}")]
     Links(String),
-    /// A link hint is longer than [`MAX_HINT_BYTES`].
+    /// A link hint is longer than [`MAX_HINT_BYTES`] or is not NFC.
     #[error("{0}")]
     Hint(String),
     /// Blob bytes do not hash to the link's hash.
@@ -225,7 +249,8 @@ pub struct ChatRecord {
     pub id: Hash,
     /// The key that signed the event.
     pub author: AuthorKey,
-    /// The event IDs this message causally follows: the other authors' frontier heads.
+    /// The event IDs this message causally follows: other authors' frontier heads, plus
+    /// the nearest chat ancestors reached through non-chat events by the store adapter.
     pub after: Vec<Hash>,
     /// The author's own previous event, from the event header's backlink. A causal parent
     /// like any `after` entry, kept in its own field because the store does.
@@ -250,8 +275,11 @@ pub fn project(records: impl IntoIterator<Item = ChatRecord>) -> Vec<ChatRecord>
     let mut pending: HashMap<[u8; 32], usize> = HashMap::new();
     for record in by_id.values() {
         let mut parents = 0;
-        let mut parent_ids: Vec<[u8; 32]> =
-            record.after.iter().map(|parent| *parent.as_bytes()).collect();
+        let mut parent_ids: Vec<[u8; 32]> = record
+            .after
+            .iter()
+            .map(|parent| *parent.as_bytes())
+            .collect();
         if let Some(backlink) = &record.backlink {
             parent_ids.push(*backlink.as_bytes());
         }
@@ -441,7 +469,10 @@ pub fn visible_history(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use p2panda_core::SigningKey;
+
     use super::*;
+    use crate::chain::{ChainExt, decode, sign};
 
     fn author(seed: u8) -> AuthorKey {
         [seed; 32]
@@ -451,7 +482,10 @@ mod tests {
         ChatRecord {
             id: Hash::digest(&[id]),
             author: author(id),
-            after: after.iter().map(|parent| Hash::digest(&[*parent])).collect(),
+            after: after
+                .iter()
+                .map(|parent| Hash::digest(&[*parent]))
+                .collect(),
             backlink: None,
             message: ChatMessage::new(text, Vec::new()).unwrap(),
         }
@@ -495,7 +529,8 @@ mod tests {
         let full = visible_history(timeline.clone(), &History::Full, Some(&join), &parents);
         assert_eq!(full.len(), 3);
 
-        let from_join = visible_history(timeline.clone(), &History::FromJoin, Some(&join), &parents);
+        let from_join =
+            visible_history(timeline.clone(), &History::FromJoin, Some(&join), &parents);
         let texts: Vec<&str> = from_join.iter().map(|r| r.message.text.as_str()).collect();
         assert_eq!(texts, vec!["after the join", "chained"]);
 
@@ -521,6 +556,32 @@ mod tests {
     }
 
     #[test]
+    fn test_message_refuses_a_repeated_link() {
+        let link = ChatLink {
+            kind: ChatLinkKind::Blob,
+            hash: Hash::digest(b"attachment"),
+            author: author(1),
+            hint: None,
+        };
+        assert!(matches!(
+            ChatMessage::new("hello", vec![link.clone(), link.clone()]),
+            Err(ChatError::Links(_))
+        ));
+
+        let raw = ChatMessage {
+            text: "hello".to_owned(),
+            links: vec![link.clone(), link.clone()],
+        };
+        assert!(matches!(raw.check(), Err(ChatError::Links(_))));
+
+        let hinted = ChatLink {
+            hint: Some("relay".to_owned()),
+            ..link.clone()
+        };
+        ChatMessage::new("hello", vec![link, hinted]).unwrap();
+    }
+
+    #[test]
     fn test_decoded_message_must_be_sanitized() {
         let raw = ChatMessage {
             text: "has\u{7}control".to_owned(),
@@ -531,8 +592,9 @@ mod tests {
 
     #[test]
     fn test_link_kinds_are_only_blob_and_event() {
-        let parsed: Result<ChatLink, _> =
-            serde_json::from_str(r#"{"kind":"file","hash":"0000000000000000000000000000000000000000000000000000000000000000","author":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"hint":null}"#);
+        let parsed: Result<ChatLink, _> = serde_json::from_str(
+            r#"{"kind":"file","hash":"0000000000000000000000000000000000000000000000000000000000000000","author":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"hint":null}"#,
+        );
         assert!(parsed.is_err());
     }
 
@@ -601,5 +663,82 @@ mod tests {
         let timeline = project(vec![second, first]);
         let texts: Vec<&str> = timeline.iter().map(|r| r.message.text.as_str()).collect();
         assert_eq!(texts, vec!["first from seven", "second from seven"]);
+    }
+
+    fn chat_ext(message: ChatMessage) -> ChainExt {
+        ChainExt {
+            kind: CHAT_MESSAGE_KIND.to_owned(),
+            group: None,
+            after: Vec::new(),
+            tag: None,
+            document: None,
+            removes: None,
+            chat: Some(message),
+            note: None,
+            link: None,
+            checkpoint: None,
+        }
+    }
+
+    fn decode_round_trip(message: ChatMessage) -> ChatMessage {
+        let event = sign(
+            &SigningKey::from_bytes(&[7; 32]),
+            0,
+            None,
+            None,
+            chat_ext(message),
+        )
+        .unwrap();
+        let decoded = decode(&event.bytes).unwrap();
+        decoded.header.extensions.chat.unwrap()
+    }
+
+    fn blob_link(hint: Option<&str>) -> ChatLink {
+        ChatLink {
+            kind: ChatLinkKind::Blob,
+            hash: Hash::digest(b"attachment"),
+            author: author(1),
+            hint: hint.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn test_text_within_the_message_cap_crosses_the_header_decoder() {
+        // A full 2,048-byte message of multibyte text is split into header-sized
+        // chunks and decodes to the same text; the message limit is still enforced.
+        let text = "\u{e9}".repeat(MAX_TEXT_BYTES / 2);
+        assert_eq!(text.len(), MAX_TEXT_BYTES);
+        let message = ChatMessage::new(&text, Vec::new()).unwrap();
+        assert_eq!(decode_round_trip(message.clone()), message);
+        assert!(matches!(
+            ChatMessage::new(&"a".repeat(MAX_TEXT_BYTES + 1), Vec::new()),
+            Err(ChatError::Text(_))
+        ));
+    }
+
+    #[test]
+    fn test_messages_and_hint_strings_normalize_to_nfc_before_signing() {
+        // The header decoder requires NFC text. A built message normalizes instead of
+        // failing later on its own ingestion.
+        let message = ChatMessage::new("e\u{301}", Vec::new()).unwrap();
+        assert_eq!(message.text, "\u{e9}");
+        assert_eq!(decode_round_trip(message.clone()), message);
+
+        let hinted = ChatMessage::new("see this", vec![blob_link(Some("re\u{301}lay"))]).unwrap();
+        assert_eq!(hinted.links[0].hint.as_deref(), Some("r\u{e9}lay"));
+        assert_eq!(decode_round_trip(hinted.clone()), hinted);
+
+        // A manually built value that skipped normalization is refused rather than
+        // producing an event the decoder cannot read back.
+        let raw = ChatMessage {
+            text: "e\u{301}".to_owned(),
+            links: Vec::new(),
+        };
+        assert!(matches!(raw.check(), Err(ChatError::Text(_))));
+        let raw_hint = ChatMessage {
+            text: "hello".to_owned(),
+            links: vec![blob_link(Some("re\u{301}lay"))],
+        };
+        assert!(matches!(raw_hint.check(), Err(ChatError::Hint(_))));
     }
 }

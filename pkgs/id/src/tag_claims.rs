@@ -18,7 +18,10 @@
 //!
 //! Two folds give the live claims. [`live_claims`] walks the causal past of each clear. It is the
 //! reference. [`compacted_claims`] makes one pass over the parent links and keeps, for each event,
-//! only the live claims in its past. Both give the same result (P5.3, #184).
+//! only the live claims in its past. Both give the same result (P5.3, #184). An applied list
+//! may repeat an event ID — a verbatim duplicate, or two entries with the same ID and
+//! different contents; both folds keep only the last entry for an ID, so the agreement
+//! holds on those inputs too (#4359).
 //!
 //! The old iroh-docs tag store in [`crate::tags`] is a separate model and is not read here.
 
@@ -116,7 +119,7 @@ pub fn is_tag_kind(kind: &str) -> bool {
 ///
 /// Returns [`TagError::KindMismatch`] when the operation is not the one `kind` names. Returns
 /// [`TagError::Field`] for a name or value that breaks its limit or the NFC rule, and for a clear
-/// that names more than [`MAX_CLEAR_CLAIMS`] claims.
+/// that names more than [`MAX_CLEAR_CLAIMS`] claims or names the same claim twice.
 pub fn check_op(kind: &str, op: &TagOp) -> Result<(), TagError> {
     match (kind, op) {
         (SET_KIND, TagOp::Set { name, value, .. }) => {
@@ -132,6 +135,10 @@ pub fn check_op(kind: &str, op: &TagOp) -> Result<(), TagError> {
                     "{} claims, the most is {MAX_CLEAR_CLAIMS}",
                     claims.len()
                 )));
+            }
+            let mut seen = HashSet::with_capacity(claims.len());
+            if !claims.iter().all(|claim| seen.insert(claim)) {
+                return Err(TagError::Field("a clear names a claim twice".to_owned()));
             }
             Ok(())
         }
@@ -175,14 +182,22 @@ pub fn causal_past(start: &[Hash], parents: &HashMap<Hash, Vec<Hash>>) -> HashSe
 
 /// The live claims, given the applied tag events and the parent links of every event the store
 /// holds. A claim is live unless an applied clear names it and has it in its causal past.
+/// If the applied list repeats an event ID, only the last entry for that ID is folded —
+/// the same normalization [`compacted_claims`] gets from its by-ID map (#4359).
 ///
 /// This walks the causal past of each clear, so it costs O(clears x history). It is the reference
 /// for [`compacted_claims`]. The result is sorted by claim ID.
 #[must_use]
 pub fn live_claims(applied: &[Applied], parents: &HashMap<Hash, Vec<Hash>>) -> Vec<Claim> {
+    // Fold only the last entry for each event ID, as `compacted_claims` does through
+    // its by-ID map: a repeated ID -- even carrying a different operation -- is one event.
+    let mut by_id: BTreeMap<[u8; 32], &Applied> = BTreeMap::new();
+    for event in applied {
+        by_id.insert(*event.id.as_bytes(), event);
+    }
     let mut sets: BTreeMap<[u8; 32], Claim> = BTreeMap::new();
     let mut removed: HashSet<Hash> = HashSet::new();
-    for event in applied {
+    for event in by_id.values().copied() {
         if let TagOp::Set {
             subject,
             name,
@@ -201,7 +216,7 @@ pub fn live_claims(applied: &[Applied], parents: &HashMap<Hash, Vec<Hash>>) -> V
             );
         }
     }
-    for event in applied {
+    for event in by_id.values().copied() {
         let TagOp::Clear { claims } = &event.op else {
             continue;
         };
@@ -225,8 +240,10 @@ pub fn live_claims(applied: &[Applied], parents: &HashMap<Hash, Vec<Hash>>) -> V
 /// removed claim is dropped from every set built after it, so a set holds only claims that are
 /// still live. Removal is final, so dropping it changes no later decision.
 ///
-/// The result is the same as [`live_claims`], and it is sorted by claim ID. The walk for a clear is
-/// over the live claims in its parents' sets, not over its whole past. A clear from an author who
+/// The result is the same as [`live_claims`], and it is sorted by claim ID. The output is built
+/// from the by-ID map, so a repeated event ID contributes one claim — the last entry for that
+/// ID — exactly as [`live_claims`] collapses repeats when it inserts into its map.
+/// The walk for a clear is over the live claims in its parents' sets, not over its whole past. A clear from an author who
 /// had not seen a claim leaves that claim live, as [`live_claims`] does.
 #[must_use]
 pub fn compacted_claims(applied: &[Applied], parents: &HashMap<Hash, Vec<Hash>>) -> Vec<Claim> {
@@ -278,8 +295,12 @@ pub fn compacted_claims(applied: &[Applied], parents: &HashMap<Hash, Vec<Hash>>)
             live_past.insert(id, past);
         }
     }
-    let mut live: Vec<Claim> = applied
-        .iter()
+    // One claim per event ID: `by_id` keeps the last entry for a repeated ID, as
+    // `live_claims` does when it inserts into its map, so duplicates in `applied`
+    // never reach the output (#4359).
+    let mut live: Vec<Claim> = by_id
+        .values()
+        .copied()
         .filter(|event| !removed.contains(&event.id))
         .filter_map(|event| match &event.op {
             TagOp::Set {
@@ -366,6 +387,34 @@ mod tests {
     }
 
     #[test]
+    fn test_a_clear_naming_a_claim_twice_is_refused() {
+        let adjacent = TagOp::Clear {
+            claims: vec![hash(1), hash(1)],
+        };
+        assert!(matches!(
+            check_op(CLEAR_KIND, &adjacent),
+            Err(TagError::Field(_))
+        ));
+        let non_adjacent = TagOp::Clear {
+            claims: vec![hash(1), hash(2), hash(1)],
+        };
+        assert!(matches!(
+            check_op(CLEAR_KIND, &non_adjacent),
+            Err(TagError::Field(_))
+        ));
+    }
+
+    #[test]
+    fn test_a_clear_naming_max_distinct_claims_is_accepted() {
+        let op = TagOp::Clear {
+            claims: (0..MAX_CLEAR_CLAIMS)
+                .map(|n| Hash::digest(n.to_be_bytes()))
+                .collect(),
+        };
+        assert!(check_op(CLEAR_KIND, &op).is_ok());
+    }
+
+    #[test]
     fn test_a_clear_naming_too_many_claims_is_refused() {
         let op = TagOp::Clear {
             claims: (0..=MAX_CLEAR_CLAIMS)
@@ -394,5 +443,59 @@ mod tests {
         let live = compacted_claims(&applied, &parents);
         assert_eq!(live.iter().map(|c| c.id).collect::<Vec<_>>(), vec![hash(2)]);
         assert_eq!(live, live_claims(&applied, &parents));
+    }
+
+    #[test]
+    fn test_a_duplicate_applied_set_entry_yields_one_claim() {
+        // #4359: a verbatim repeat of a set entry must not emit the claim twice.
+        let applied = [set(1, 9, "city"), set(1, 9, "city"), set(2, 9, "seen")];
+        let parents: HashMap<Hash, Vec<Hash>> = HashMap::from([(hash(2), vec![hash(1)])]);
+        let live = compacted_claims(&applied, &parents);
+        assert_eq!(
+            live.iter().map(|c| c.id).collect::<Vec<_>>(),
+            vec![hash(1), hash(2)]
+        );
+        assert_eq!(live, live_claims(&applied, &parents));
+    }
+
+    #[test]
+    fn test_same_id_entries_with_different_values_keep_the_last() {
+        // #4359: equivocation — two entries share an ID; the last entry wins,
+        // as it does in `live_claims`, and only one claim is emitted.
+        let with_value = |value: &str| Applied {
+            id: hash(1),
+            author: [1; 32],
+            op: TagOp::Set {
+                subject: hash(9),
+                name: "city".to_owned(),
+                value: Some(value.to_owned()),
+            },
+        };
+        let applied = [with_value("A"), with_value("B")];
+        let parents: HashMap<Hash, Vec<Hash>> = HashMap::from([(hash(1), vec![])]);
+        let live = compacted_claims(&applied, &parents);
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].value, Some("B".to_owned()));
+        assert_eq!(live, live_claims(&applied, &parents));
+    }
+
+    #[test]
+    fn test_same_id_entries_with_different_operations_fold_as_the_last() {
+        // #4359: a repeated ID carrying a different operation is still one event:
+        // the last entry decides, in both folds. Set-then-clear leaves no claim;
+        // clear-then-set leaves the claim live.
+        let parents: HashMap<Hash, Vec<Hash>> = HashMap::from([(hash(1), vec![])]);
+        let set_then_clear = [set(1, 9, "city"), clear(1, &[])];
+        assert!(compacted_claims(&set_then_clear, &parents).is_empty());
+        assert_eq!(
+            compacted_claims(&set_then_clear, &parents),
+            live_claims(&set_then_clear, &parents)
+        );
+        let clear_then_set = [clear(1, &[]), set(1, 9, "city")];
+        assert_eq!(compacted_claims(&clear_then_set, &parents).len(), 1);
+        assert_eq!(
+            compacted_claims(&clear_then_set, &parents),
+            live_claims(&clear_then_set, &parents)
+        );
     }
 }

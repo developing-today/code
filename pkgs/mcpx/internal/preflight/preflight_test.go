@@ -1,10 +1,12 @@
 package preflight_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/preflight"
 )
@@ -125,5 +127,41 @@ func TestMergeCombinesReports(t *testing.T) {
 	})
 	if got := len(preflight.Merge(a, b, nil).Problems); got != 2 {
 		t.Errorf("got %d", got)
+	}
+}
+
+// Codex round (PR #2589): the type-check subprocess runs where the
+// script will execute, so a relative --config in the runtime arguments
+// resolves against the same directory at check time as at execution.
+func TestTypeCheckRunsInExecutionWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	execDir := t.TempDir()
+	entry := filepath.Join(dir, "main.ts")
+	if err := os.WriteFile(entry, []byte("export {};\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "cwd")
+	stub := filepath.Join(dir, "deno-stub")
+	script := "#!/bin/sh\npwd -P > '" + marker + "'\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rep := preflight.TypeCheckResolved(context.Background(), stub, entry,
+		preflight.TypeCheckOn, 10*time.Second,
+		[]string{"--config", "./deno.json"}, execDir)
+	if err := rep.Err(); err != nil {
+		t.Fatalf("unexpected report: %v", err)
+	}
+	got, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(execDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(got)) != want {
+		t.Fatalf("type check ran in %q, want the execution directory %q",
+			strings.TrimSpace(string(got)), want)
 	}
 }

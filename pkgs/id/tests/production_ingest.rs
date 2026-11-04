@@ -78,6 +78,9 @@ impl Chains {
             tag: None,
             document: None,
             removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
             chat: None,
         };
         let event = sign(&key(who), seq, backlink, body.as_deref(), ext).unwrap();
@@ -293,6 +296,9 @@ fn test_a_body_that_does_not_match_its_payload_hash_is_refused() {
             tag: None,
             document: None,
             removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
             chat: None,
         },
     )

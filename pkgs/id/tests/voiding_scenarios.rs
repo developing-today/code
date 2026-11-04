@@ -96,6 +96,9 @@ impl Builder {
             tag: None,
             document: None,
             removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
             chat: None,
         };
         let body = action.as_ref().map(|action| encode_body(action).unwrap());
