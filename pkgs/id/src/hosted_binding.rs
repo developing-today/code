@@ -1124,13 +1124,6 @@ impl HostedBindingService {
         }
         log.push(now);
 
-        // Minting supersedes every earlier unexchanged code for this
-        // challenge (#4871): at most one live pairing code per ceremony,
-        // so "that code went to the wrong place, give me a new one"
-        // actually revokes the old one.
-        self.pairing_codes
-            .retain(|_, existing| existing.challenge_id != challenge.challenge_id);
-
         let mut rng = rand::rng();
         let code = loop {
             let candidate: u32 = rng.random_range(0..1_000_000);
@@ -1139,6 +1132,15 @@ impl HostedBindingService {
                 break candidate;
             }
         };
+        // Minting supersedes every earlier unexchanged code for this
+        // challenge (#4871): at most one live pairing code per ceremony,
+        // so "that code went to the wrong place, give me a new one"
+        // actually revokes the old one. The supersede runs after the new
+        // code is generated, while the old codes are still in the map, so
+        // the collision loop above can never re-issue a just-revoked
+        // string as its replacement.
+        self.pairing_codes
+            .retain(|_, existing| existing.challenge_id != challenge.challenge_id);
         self.pairing_codes.insert(
             code.clone(),
             PairingCode {
@@ -1955,15 +1957,14 @@ mod tests {
             .create_pairing_code(SUB, &challenge.challenge_id)
             .unwrap();
 
-        // The superseded code no longer exchanges. (If the RNG happened to
-        // re-issue the superseded string as the new live code, code_a IS
-        // code_b and there is nothing distinct left to reject.)
-        if code_a != code_b {
-            assert_eq!(
-                service.exchange_pairing_code(&code_a),
-                Err(CeremonyError::UnknownChallenge)
-            );
-        }
+        // The superseded code no longer exchanges. The replacement is
+        // generated while the old code is still in the map, so the two
+        // strings are always distinct.
+        assert_ne!(code_a, code_b);
+        assert_eq!(
+            service.exchange_pairing_code(&code_a),
+            Err(CeremonyError::UnknownChallenge)
+        );
         // The surviving code exchanges and returns the challenge, once.
         let exchanged = service.exchange_pairing_code(&code_b).unwrap();
         assert_eq!(exchanged.challenge_id, challenge.challenge_id);
