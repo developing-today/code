@@ -19,7 +19,7 @@ export interface ExecutionStrip {
   unknown: RefKey[];
 }
 
-const IMPLEMENTING_LABELS = new Set(["status:in-progress", "in-progress", "ready-for-agent"]);
+const IMPLEMENTING_LABELS = new Set(["status:in-progress", "in-progress"]);
 
 export function executionStrip(links: Link[], items: Map<RefKey, GhItem>): ExecutionStrip {
   const strip: ExecutionStrip = {

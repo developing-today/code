@@ -130,11 +130,38 @@ import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
 import { buildQueueView } from "./queue-view.ts";
+import { dispatchStateFor, fetchRfaState, RFA_NOT_PICKED_UP } from "./sources/ready-for-agent.ts";
 
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
 const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
 const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
+
+async function readyAgentDispatchStates(items: Map<RefKey, GhItem>) {
+  const targets = [...items.values()].filter((item) =>
+    item.labels.some((label) => label.toLowerCase() === "ready-for-agent") && /#\d+$/.test(item.ref),
+  );
+  if (!targets.length) return [];
+  const observedAt = new Date().toISOString();
+  try {
+    const state = await fetchRfaState(cfg.readyForAgent.baseUrl);
+    return targets.map((item) => {
+      const match = /^(.*)#(\d+)$/.exec(item.ref);
+      if (!match) return null;
+      return {
+        ref: item.ref,
+        state: dispatchStateFor(state, match[1], Number(match[2])) || RFA_NOT_PICKED_UP,
+        provenance: { source: "ready-for-agent", observedAt, repository: match[1] },
+      };
+    }).filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+  } catch {
+    return targets.map((item) => ({
+      ref: item.ref,
+      state: "unavailable",
+      provenance: { source: "ready-for-agent", observedAt, repository: item.ref.split("#")[0], error: "harness read failed" },
+    }));
+  }
+}
 
 /** #1220: the coverage snapshot behind the /projects panel — computed
  * from the feed's items + the Project pool, rotated weekly by
@@ -1935,12 +1962,15 @@ async function handler(req: Request): Promise<Response> {
     return json(body);
   }
 
+  const itemJsonMatch = /^\/api\/item\/(.+)\.json$/.exec(path);
   const itemMatch = /^\/item\/(.+)$/.exec(path);
-  if (itemMatch) {
+  const matchedItemPath = itemJsonMatch ?? itemMatch;
+  if (matchedItemPath) {
     // #2748: same guard as /discuss — JSON 400 on malformed encoding.
-    const id = decodePathSegment(itemMatch[1]);
+    const encodedId = matchedItemPath[1];
+    const id = decodePathSegment(encodedId);
     if (id === null) {
-      return json({ error: `malformed percent-encoding in path segment: ${itemMatch[1]}` }, 400);
+      return json({ error: `malformed percent-encoding in path segment: ${encodedId}` }, 400);
     }
     const [board, rows] = await Promise.all([source.board().catch(() => []), source.roadmap().catch(() => [])]);
     const roadmapRow = rows.find((r) => r.subject === id);
@@ -1976,6 +2006,14 @@ async function handler(req: Request): Promise<Response> {
       // item page carries the status-request control for that pool item.
       const pooled = pool.find((p) => refs.includes(p.ref));
       const epicRollup = pooled?.kind === "Epic" ? buildEpicRollups(pool).get(pooled.ref) : undefined;
+      const dispatchStates = await readyAgentDispatchStates(items);
+      if (itemJsonMatch) {
+        return json({
+          subject,
+          linkedItems: [...items.values()],
+          dispatchStates,
+        });
+      }
       const extras = {
         dashComments,
         ...(roadmapRow ? { roadmapAnnotations } : {}),
@@ -1995,6 +2033,7 @@ async function handler(req: Request): Promise<Response> {
           : {}),
         ...(epicRollup ? { epicRollup } : {}),
         briefs,
+        ...(dispatchStates.length ? { dispatchStates } : {}),
       };
       return html(renderItem(title, id, links, items, comments, prov(), extras));
     }

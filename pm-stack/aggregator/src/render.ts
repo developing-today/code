@@ -2092,6 +2092,8 @@ export interface ItemExtras {
   epicRollup?: EpicRollup;
   /** Project-pool briefs for linked refs (#1279). */
   briefs?: Map<RefKey, ItemBrief>;
+  /** Real ready-for-agent dispatch state for explicitly labelled linked issues. */
+  dispatchStates?: { ref: RefKey; state: string; provenance: { source: string; observedAt: string } }[];
 }
 
 function roadmapAnnotationFormHtml(objectRef: string, identities: AuthorIdentity[]): string {
@@ -2160,9 +2162,17 @@ export function renderItem(
     ? `<p>Live services: ${extras.serviceLinks.map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>`
     : "";
   const epicRollup = extras?.epicRollup ? epicRollupHtml(extras.epicRollup) : "";
+  const dispatchSection = extras?.dispatchStates?.length
+    ? `<section><h2>ready-for-agent dispatch</h2><ul>${extras.dispatchStates
+        .map(
+          (entry) =>
+            `<li><a href="https://github.com/${esc(entry.ref.replace("#", "/issues/"))}">${esc(entry.ref)}</a>: <strong>${esc(entry.state)}</strong> <span class="muted">· ${esc(entry.provenance.source)} checked ${esc(entry.provenance.observedAt)}</span></li>`,
+        )
+        .join("")}</ul></section>`
+    : "";
   return layout(
     title,
-    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${epicRollup}${svcLinks}${stripHtml(items, links)}
+    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${epicRollup}${svcLinks}${dispatchSection}${stripHtml(items, links)}
 ${
   extras?.briefs
     ? briefPanelsForRefs(

@@ -45,6 +45,21 @@ describe("server boots from fixtures", () => {
     expect(body.source.board).toBe("fixtures");
   });
 
+  test("item JSON exposes ready-for-agent dispatch state and provenance", async () => {
+    const id = "kaneo:code/fx0dispatchtrial0000107";
+    const res = await fetch(`http://127.0.0.1:${port}/api/item/${encodeURIComponent(id)}.json`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      linkedItems: { ref: string; labels: string[] }[];
+      dispatchStates: { ref: string; state: string; provenance: { source: string; observedAt: string } }[];
+    };
+    expect(body.linkedItems.find((item) => item.ref === "developing-today/code#762")?.labels).toContain("ready-for-agent");
+    expect(body.dispatchStates).toHaveLength(1);
+    expect(body.dispatchStates[0].state).toBeTruthy();
+    expect(body.dispatchStates[0].provenance.source).toBe("ready-for-agent");
+    expect(body.dispatchStates[0].provenance.observedAt).toBeTruthy();
+  });
+
   test("front door renders the overview, board lives at /board (#1134)", async () => {
     const root = await fetch(`http://127.0.0.1:${port}/`);
     expect(root.status).toBe(200);
