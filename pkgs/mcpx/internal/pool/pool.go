@@ -815,11 +815,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 	// session this start established, and keep saving whenever the
 	// transport adopts a new session id mid-flight. Installed on the
 	// final transport, after every redial path above has settled.
-	if ht, ok := tr.(*mcpclient.HTTPTransport); ok && p.sessionStore() != nil {
-		ht.SetSessionAdoptedHook(func(string) {
-			p.saveUpstreamSession(eff, rs.Key, legacy, ref)
-		})
-	}
+	p.installSessionPersistence(eff, rs.Key, legacy, ref, cl, tr)
 	p.saveUpstreamSession(eff, rs.Key, legacy, ref)
 	return in, nil
 }

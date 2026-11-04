@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -55,6 +56,14 @@ type UpstreamSessionRecord struct {
 // daemon over the state directory.
 type SessionStore interface {
 	Get(server, key string, legacyLane bool) (UpstreamSessionRecord, bool)
+	// Take is Get plus removal, atomically: a persisted session has
+	// exactly one resumer. Two concurrent starts for the same identity
+	// must never both resume the same upstream session -- when Acquire
+	// later retires the duplicate start, closing it DELETEs the session
+	// the survivor is using. The loser of a Take race initialises fresh,
+	// as starts did before persistence existed, and the winner's start
+	// re-saves the record when it completes.
+	Take(server, key string, legacyLane bool) (UpstreamSessionRecord, bool)
 	Put(rec UpstreamSessionRecord) error
 }
 
@@ -156,13 +165,10 @@ func (f *SessionFile) Get(server, key string, legacyLane bool) (UpstreamSessionR
 	return r, ok
 }
 
-// Put records one session and rewrites the file atomically: a temporary
-// file in place beside it, then a rename, so a crash mid-write leaves the
-// old file or the new one and never half of each.
-func (f *SessionFile) Put(rec UpstreamSessionRecord) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.m[sessionStoreKey(rec.Server, rec.Key, rec.LegacyLane)] = rec
+// writeLocked rewrites the file atomically from the in-memory table: a
+// temporary file in place beside it, then a rename, so a crash mid-write
+// leaves the old file or the new one and never half of each.
+func (f *SessionFile) writeLocked() error {
 	b, err := json.Marshal(sessionFileDoc{Version: upstreamSessionsVersion, Sessions: f.m})
 	if err != nil {
 		return err
@@ -177,6 +183,33 @@ func (f *SessionFile) Put(rec UpstreamSessionRecord) error {
 		return err
 	}
 	return os.Rename(tmp, f.path)
+}
+
+// Put records one session and rewrites the file.
+func (f *SessionFile) Put(rec UpstreamSessionRecord) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.m[sessionStoreKey(rec.Server, rec.Key, rec.LegacyLane)] = rec
+	return f.writeLocked()
+}
+
+// Take returns the persisted session for one instance identity and
+// removes it, so no second start can resume the same session. A failed
+// rewrite still returns the record with the in-memory entry removed:
+// the session then behaves as one the store never had if this start
+// also fails, which is the pre-persistence behaviour, not an error
+// worth surfacing to the caller.
+func (f *SessionFile) Take(server, key string, legacyLane bool) (UpstreamSessionRecord, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := sessionStoreKey(server, key, legacyLane)
+	r, ok := f.m[k]
+	if !ok {
+		return UpstreamSessionRecord{}, false
+	}
+	delete(f.m, k)
+	_ = f.writeLocked()
+	return r, true
 }
 
 func (p *Pool) sessionStore() SessionStore {
@@ -209,7 +242,7 @@ func (p *Pool) saveUpstreamSession(eff *config.Resolved, key string, legacyLane 
 		Server:      p.cfg.Name,
 		Key:         key,
 		LegacyLane:  legacyLane,
-		URL:         hs.URL,
+		URL:         sanitizedSessionURL(hs.URL),
 		Fingerprint: sessionFingerprint(eff, p.Preference()),
 		SessionID:   hs.SessionID,
 		Negotiated:  hs.Negotiated,
@@ -219,6 +252,50 @@ func (p *Pool) saveUpstreamSession(eff *config.Resolved, key string, legacyLane 
 	if err := store.Put(rec); err != nil {
 		lifecycle("upstream.session.saveFailed", map[string]any{
 			"server": p.cfg.Name, "key": key, "reason": err.Error(),
+		})
+	}
+}
+
+// sanitizedSessionURL strips everything credential-shaped from a
+// transport URL before it is persisted: the query string (auth.type
+// query resolves its credential INTO the URL -- see httpOptions) and
+// any userinfo. The record never needs them: restoration dials from
+// live config, which re-derives credentials, and HTTPTransport.Resume
+// does not dial the handoff URL. An unparseable URL persists as empty
+// rather than risk carrying a credential into the file.
+func sanitizedSessionURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	return u.String()
+}
+
+// installSessionPersistence wires a started or adopted instance's
+// session into the store: save whenever its transport adopts a new
+// session id mid-flight, save again once a legacy recovery has fully
+// settled (the adoption hook fires at initialize-response headers,
+// before the recovered session's protocol state is installed -- see
+// mcpclient.SetSessionSettledHook), and save the session it now holds.
+// Used by startLane and by the takeover path (resumeInstance), so a
+// session adopted from a predecessor is persisted exactly like one
+// this daemon started.
+func (p *Pool) installSessionPersistence(eff *config.Resolved, key string, legacyLane bool, ref *instanceRef, cl *mcpclient.Client, tr mcpclient.Transport) {
+	if p.sessionStore() == nil {
+		return
+	}
+	if ht, ok := tr.(*mcpclient.HTTPTransport); ok {
+		ht.SetSessionAdoptedHook(func(string) {
+			p.saveUpstreamSession(eff, key, legacyLane, ref)
+		})
+	}
+	if cl != nil {
+		cl.SetSessionSettledHook(func() {
+			p.saveUpstreamSession(eff, key, legacyLane, ref)
 		})
 	}
 }
@@ -244,7 +321,13 @@ func (p *Pool) resumeUpstreamSession(ctx context.Context, tr mcpclient.Transport
 	if !ok {
 		return nil, tr, nil
 	}
-	rec, ok := store.Get(p.cfg.Name, rs.Key, legacyLane)
+	// Take, not Get: this start now owns the record, and a concurrent
+	// start for the same identity initialises fresh instead of resuming
+	// the same session (see SessionStore.Take). Every exit below is
+	// safe: a refused resume redials fresh and the fresh start saves
+	// its own record; a fingerprint mismatch discards the record,
+	// which is what the mismatch path always intended.
+	rec, ok := store.Take(p.cfg.Name, rs.Key, legacyLane)
 	if !ok || rec.SessionID == "" {
 		return nil, tr, nil
 	}

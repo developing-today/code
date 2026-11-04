@@ -123,8 +123,8 @@ func TestAColdRestartFallsBackWhenTheUpstreamForgotTheSession(t *testing.T) {
 // the daemon starts and operates normally without it.
 func TestASessionStoreIgnoresACorruptOrForeignFile(t *testing.T) {
 	for name, contents := range map[string]string{
-		"corrupt":  "this is not a session table",
-		"foreign":  `{"version": 99, "sessions": {}}`,
+		"corrupt":   "this is not a session table",
+		"foreign":   `{"version": 99, "sessions": {}}`,
 		"truncated": `{"version": 1, "sessions": {"remote`,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -175,9 +175,9 @@ func TestAPersistedSessionRecordCarriesNoSecretValue(t *testing.T) {
 		t.Fatalf("the persisted session file does not name the session it should resume:\n%s", b)
 	}
 	var doc struct {
-		Version  int               `json:"version"`
-		Sessions map[string]any    `json:"sessions"`
-		Raw      map[string]any    `json:"-"`
+		Version  int            `json:"version"`
+		Sessions map[string]any `json:"sessions"`
+		Raw      map[string]any `json:"-"`
 	}
 	if err := json.Unmarshal(b, &doc); err != nil || doc.Version != 1 || len(doc.Sessions) != 1 {
 		t.Fatalf("unexpected session file shape: err=%v doc=%+v", err, doc)
@@ -272,5 +272,184 @@ func TestASessionIDRotatedMidFlightIsTheOnePersisted(t *testing.T) {
 	// rotated session, not the original; its own ping then serves sess-3.
 	if len(up.served) != 3 || up.served[0] != "sess-1" || up.served[1] != "sess-2" || up.served[2] != "sess-3" {
 		t.Fatalf("served sessions = %v; want [sess-1 sess-2 sess-3] -- the restart should resume the rotated session", up.served)
+	}
+}
+
+// A persisted session has exactly one resumer: Take hands the record to
+// the first start and removes it, so a concurrent start for the same
+// identity initialises fresh instead of resuming the same session --
+// whose DELETE-on-close would otherwise kill the survivor's session
+// when Acquire retires the duplicate (Codex review on PR 5455).
+func TestASessionRecordHasExactlyOneResumer(t *testing.T) {
+	path := filepath.Join(t.TempDir(), pool.UpstreamSessionsFile)
+	store := pool.OpenSessionFile(path)
+	rec := pool.UpstreamSessionRecord{Server: "remote", Key: "k", SessionID: "sess-1"}
+	if err := store.Put(rec); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := store.Take("remote", "k", false); !ok || got.SessionID != "sess-1" {
+		t.Fatalf("first Take = %+v, %v; want the sess-1 record", got, ok)
+	}
+	if _, ok := store.Take("remote", "k", false); ok {
+		t.Fatal("second Take returned the same session to a second resumer")
+	}
+	reopened := pool.OpenSessionFile(path)
+	if _, ok := reopened.Get("remote", "k", false); ok {
+		t.Fatal("the taken record is still in the persisted file")
+	}
+}
+
+// Query auth resolves its credential into the transport URL, so the
+// persisted record must not carry it: the URL is stored with its query
+// stripped (Codex review on PR 5455). The header/bearer sentinel scan
+// above cannot see this mode.
+func TestAPersistedSessionRecordCarriesNoQueryCredential(t *testing.T) {
+	const sentinel = "SENTINEL-QUERY-SECRET-1415"
+	up := newSessionUpstream(t)
+	path := filepath.Join(t.TempDir(), pool.UpstreamSessionsFile)
+
+	srv := httpServerCfg(up.URL)
+	srv.Auth = &mcpauth.Auth{Type: "query", Param: "api_key", ParamValue: sentinel}
+	p := sessionPool(t, srv, pool.OpenSessionFile(path))
+	pingThrough(t, p, "k")
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), sentinel) {
+		t.Fatalf("the persisted session file contains the resolved query credential:\n%s", b)
+	}
+	if !strings.Contains(string(b), "sess-1") {
+		t.Fatalf("the persisted session file does not name the session it should resume:\n%s", b)
+	}
+}
+
+// A session adopted in a takeover is persisted like one this daemon
+// started (Codex review on PR 5455): the adopting pool has the store,
+// the predecessor did not, and after Attach the record names the
+// adopted session, so a cold restart after the takeover can resume it.
+func TestAnAdoptedSessionIsPersistedByTheAdoptingPool(t *testing.T) {
+	up := newSessionUpstream(t)
+	path := filepath.Join(t.TempDir(), pool.UpstreamSessionsFile)
+
+	old := upstreamPool(t, up.URL)
+	pingThrough(t, old, "k")
+	successor := sessionPool(t, httpServerCfg(up.URL), pool.OpenSessionFile(path))
+	handOff(t, old, successor)
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the adopting pool wrote no session file: %v", err)
+	}
+	if !strings.Contains(string(b), "sess-1") {
+		t.Fatalf("the adopting pool's session file does not name the adopted session:\n%s", b)
+	}
+}
+
+// reinitUpstream forgets every session on expireAll and answers the
+// next initialize with a different protocol version, so a test can see
+// which protocol state a save paired with the replacement session id.
+type reinitUpstream struct {
+	*httptest.Server
+	mu      sync.Mutex
+	live    map[string]bool
+	issued  int
+	version string
+}
+
+func newReinitUpstream(t *testing.T) *reinitUpstream {
+	t.Helper()
+	u := &reinitUpstream{live: map[string]bool{}, version: "2025-03-26"}
+	u.Server = httptest.NewServer(http.HandlerFunc(u.serve))
+	t.Cleanup(u.Close)
+	return u
+}
+
+func (u *reinitUpstream) expireAll(nextVersion string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.live = map[string]bool{}
+	u.version = nextVersion
+}
+
+func (u *reinitUpstream) serve(w http.ResponseWriter, r *http.Request) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	sid := r.Header.Get("Mcp-Session-Id")
+	switch r.Method {
+	case http.MethodDelete:
+		if u.live[sid] {
+			delete(u.live, sid)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	case http.MethodPost:
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		switch {
+		case req.Method == "initialize":
+			u.issued++
+			sid = fmt.Sprintf("sess-%d", u.issued)
+			u.live[sid] = true
+			w.Header().Set("Mcp-Session-Id", sid)
+			rpcReply(w, req.ID, map[string]any{
+				"protocolVersion": u.version,
+				"capabilities":    map[string]any{"tools": map[string]any{}},
+				"serverInfo":      map[string]any{"name": "upstream", "version": "1"},
+			})
+		case req.Method == "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case req.Method == "server/discover":
+			rpcError(w, req.ID, -32601, "method not found")
+		case !u.live[sid]:
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			rpcReply(w, req.ID, map[string]any{})
+		}
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+// When a session expires mid-flight and the client reinitialises, the
+// persisted record must pair the NEW session id with the NEW session's
+// protocol state. The transport's adoption hook fires at the initialize
+// response headers -- before finishLegacy installs the recovered
+// session's negotiated version -- so a save taken then would persist
+// the old version against the new id (Codex review on PR 5455).
+func TestARecoveredSessionIsPersistedWithItsOwnProtocolState(t *testing.T) {
+	up := newReinitUpstream(t)
+	path := filepath.Join(t.TempDir(), pool.UpstreamSessionsFile)
+	p := sessionPool(t, httpServerCfg(up.URL), pool.OpenSessionFile(path))
+	pingThrough(t, p, "k")
+
+	up.expireAll("2025-06-18")
+	pingThrough(t, p, "k")
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Sessions map[string]struct {
+			SessionID  string `json:"sessionId"`
+			Negotiated string `json:"negotiated"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Sessions) != 1 {
+		t.Fatalf("session file holds %d records, want 1:\n%s", len(doc.Sessions), b)
+	}
+	for _, rec := range doc.Sessions {
+		if rec.SessionID != "sess-2" || rec.Negotiated != "2025-06-18" {
+			t.Fatalf("persisted record = session %q negotiated %q; want sess-2 with its own 2025-06-18", rec.SessionID, rec.Negotiated)
+		}
 	}
 }

@@ -120,6 +120,15 @@ type Client struct {
 	// onURLElicitationRequired opens the URL elicitations a -32042
 	// tools/call error names, when something (the daemon broker) can.
 	onURLElicitationRequired URLElicitationHandler
+	// onSessionSettled, when set, runs after a legacy session recovery
+	// has fully reinitialised -- new session id AND the protocol state
+	// finishLegacy installed from its answer. The transport's
+	// session-adopted hook fires earlier, when the initialize response
+	// headers arrive, so a consumer persisting session state (the
+	// pool's upstream-session record) must read it from here, not from
+	// the adoption moment, or it saves the old session's state against
+	// the new id.
+	onSessionSettled func()
 	// notif holds notification handlers.
 	notif Notifications
 	// roots are the directories servers may work within.
@@ -683,6 +692,14 @@ type URLElicitationHandler func(ctx context.Context, elicitations []URLElicitati
 func (c *Client) SetURLElicitationHandler(h URLElicitationHandler) {
 	c.mu.Lock()
 	c.onURLElicitationRequired = h
+	c.mu.Unlock()
+}
+
+// SetSessionSettledHook installs the hook run after a legacy session
+// recovery has fully reinitialised (see onSessionSettled).
+func (c *Client) SetSessionSettledHook(fn func()) {
+	c.mu.Lock()
+	c.onSessionSettled = fn
 	c.mu.Unlock()
 }
 
@@ -1258,6 +1275,15 @@ func (c *Client) reinitializeLegacy(ctx context.Context, gen uint64) bool {
 		return false
 	}
 	c.reinitGen.Add(1)
+	// The recovery has settled: the new session's id and protocol state
+	// are both installed, so a persistence consumer reading the session
+	// now gets the pair that belongs together.
+	c.mu.Lock()
+	settled := c.onSessionSettled
+	c.mu.Unlock()
+	if settled != nil {
+		settled()
+	}
 	// A restarted upstream's catalogue is not the cached one.
 	c.mu.Lock()
 	n := c.notif
