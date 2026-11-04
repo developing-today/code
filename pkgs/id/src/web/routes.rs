@@ -22,7 +22,8 @@ use super::templates::{
     render_file_list_content, render_main_page_wrapper, render_media_viewer, render_page,
     render_peers, render_settings,
 };
-use crate::fileops::{FileOpError, FileOps, claim_archive_name};
+use crate::fileops::{FileOpError, FileOps, claim_archive_name, snapshot_provenance_tags};
+use crate::tags::TagStore;
 
 /// Default number of files per page.
 const DEFAULT_PER_PAGE: usize = 50;
@@ -1633,7 +1634,8 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
     let document_id = published.id.to_hex();
 
     // Archive the original blob under a timestamped tag
-    let archive_name = archive_original_tag(&state.store, &req.name, &req.doc_id).await;
+    let archive_name =
+        archive_original_tag(&state.store, &state.tag_store, &req.name, &req.doc_id).await;
 
     // Set the tag to point to the new blob
     let tag = iroh_blobs::api::Tag::from(req.name.clone());
@@ -2726,6 +2728,7 @@ fn extract_raw_text(doc: &serde_json::Value) -> String {
 /// creates a new tag `{name}.archive.{timestamp}` pointing to the same hash.
 async fn archive_original_tag(
     store: &iroh_blobs::api::Store,
+    tag_store: &TagStore,
     name: &str,
     expected_hash: &str,
 ) -> Option<String> {
@@ -2760,6 +2763,14 @@ async fn archive_original_tag(
     // concurrent same-second archives could collide (#2462).
     match claim_archive_name(store, name, timestamp, expected).await {
         Ok(archive_name) => {
+            // The archive alias keeps the source's recorded provenance
+            // (#5383), so listings report its real origin and origin
+            // filtering finds it.
+            if let Err(err) = snapshot_provenance_tags(tag_store, name, &archive_name).await {
+                tracing::warn!(
+                    "[routes] Failed to snapshot provenance {name} -> {archive_name}: {err:#}"
+                );
+            }
             tracing::info!(
                 "[routes] Archived original: {} -> {}",
                 archive_name,
@@ -2892,6 +2903,58 @@ mod save_publication_tests {
             .unwrap();
         assert!(state.local_events.lock().await.history(event_id).is_ok());
         assert!(state.local_events.lock().await.history(second_id).is_ok());
+    }
+
+    #[tokio::test]
+    async fn archive_original_tag_preserves_recorded_provenance() {
+        let (state, _endpoint, _docs) = state().await;
+        let outcome = state
+            .store
+            .blobs()
+            .add_bytes(b"original bytes".to_vec())
+            .await
+            .unwrap();
+        let hash = outcome.hash;
+        state
+            .store
+            .tags()
+            .set(iroh_blobs::api::Tag::from("doc.md".to_owned()), hash)
+            .await
+            .unwrap();
+        for (key, value) in [("origin", "node-alpha"), ("created", "1700000000")] {
+            state
+                .tag_store
+                .set_singleton(
+                    &state.tag_store.global,
+                    b"doc.md",
+                    key.as_bytes(),
+                    Some(value.as_bytes()),
+                    b"",
+                )
+                .await
+                .unwrap();
+        }
+
+        let archive =
+            archive_original_tag(&state.store, &state.tag_store, "doc.md", &hash.to_string())
+                .await
+                .unwrap();
+        assert!(archive.starts_with("doc.md.archive."), "{archive}");
+
+        // #5383: the archive alias carries the source's recorded
+        // provenance, so listings report its real origin.
+        for (key, expected) in [
+            (b"origin".as_slice(), "node-alpha"),
+            (b"created".as_slice(), "1700000000"),
+        ] {
+            let tags = state
+                .tag_store
+                .get_by_key(&state.tag_store.global, archive.as_bytes(), key)
+                .await
+                .unwrap();
+            assert_eq!(tags.len(), 1, "{key:?}: {tags:?}");
+            assert_eq!(tags[0].value.as_ref().unwrap().as_str(), Some(expected));
+        }
     }
 
     #[tokio::test]
