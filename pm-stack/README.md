@@ -17,13 +17,13 @@ Phase 2 (2026-10-24) added three layers, each in its own subdirectory
 with the same deploy shape (SOPS → mode-600 env → compose/unit →
 health gate):
 
-| Layer     | Piece           | Version / pin                                                    | Reach                                                                                    | Deployment definition |
-| --------- | --------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | --------------------- |
-| Dispatch  | ready-for-agent | npm `ready-for-agent@1.1.0` (no container image exists upstream) | UI + GraphQL on `6056`, all interfaces (loopback + tailnet + LAN)                        | `ready-for-agent/`    |
-| Planning  | Pad             | `ghcr.io/perpetualsoftware/pad:0.18.1`, pinned by digest         | `127.0.0.1:7777` + host tailnet address (`PM_STACK_TAILNET_IP`):7777; no tunnel hostname | `pad/`                |
-| Tables    | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + host tailnet address (`PM_STACK_TAILNET_IP`):8484; no tunnel hostname | `grist/`              |
-| Dashboard | Aggregator      | this repo (Bun app, user unit `pm-aggregator`)                   | `127.0.0.1:4870` + tailnet `amd-6.raptor-pumpkinseed.ts.net:4870`; no public route       | `aggregator/`         |
-| Intake    | pm-dispatch     | this repo (Bun app, user unit `pm-dispatch`)                     | `127.0.0.1:4879` + tailnet; public via tunnel as `dispatch.security.cab`                 | `dispatch/`           |
+| Layer     | Piece           | Version / pin                                                    | Reach                                                                                           | Deployment definition |
+| --------- | --------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------- |
+| Dispatch  | ready-for-agent | npm `ready-for-agent@1.1.0` (no container image exists upstream) | UI + GraphQL on `6056`, loopback + tailnet (app loopback-only; tailnet via socket proxy, #1181) | `ready-for-agent/`    |
+| Planning  | Pad             | `ghcr.io/perpetualsoftware/pad:0.18.1`, pinned by digest         | `127.0.0.1:7777` + host tailnet address (`PM_STACK_TAILNET_IP`):7777; no tunnel hostname        | `pad/`                |
+| Tables    | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + host tailnet address (`PM_STACK_TAILNET_IP`):8484; no tunnel hostname        | `grist/`              |
+| Dashboard | Aggregator      | this repo (Bun app, user unit `pm-aggregator`)                   | `127.0.0.1:4870` + tailnet `amd-6.raptor-pumpkinseed.ts.net:4870`; no public route              | `aggregator/`         |
+| Intake    | pm-dispatch     | this repo (Bun app, user unit `pm-dispatch`)                     | `127.0.0.1:4879` + tailnet; public via tunnel as `dispatch.security.cab`                        | `dispatch/`           |
 
 ready-for-agent runs as a systemd **user unit** (like `pm-tunnel`)
 because upstream ships only an npm package; Pad and Grist run as
@@ -98,7 +98,10 @@ All secrets live in [`../secrets/pm-stack.sops.yaml`](../secrets/pm-stack.sops.y
 `cloudflare_tunnel_token` — plus the Phase 2 additions:
 `pad_api_key`, `pad_admin_email`, `pad_admin_password`,
 `pad_api_token`, `grist_session_secret`, `grist_admin_password`,
-`grist_api_key`, `grist_boot_key`. The same values are also filed in
+`grist_api_key`, `grist_boot_key` — plus the pm-dispatch Supabase
+additions: `supabase_url`, `supabase_service_role_key` (fleet
+Supabase is muse-dev2; Bitwarden source:
+`supabase.muse-dev2.service-role-key`). The same values are also filed in
 Bitwarden and 1Password under the names recorded in the design
 record (Bitwarden/1Password names use dots, e.g. `pad.api-token`,
 `grist.boot-key`).
@@ -218,20 +221,26 @@ cd ready-for-agent
 ./install.sh clone    # one-time: clone the repos it serves into ./repos/
 ```
 
-- **Register a repo** through the harness's GraphQL API (loopback
-  `http://127.0.0.1:6056/graphql`): mutation
-  `addLocalRepository(path: "<absolute path to a full clone>")`.
-  Do **not** use the `ready-for-agent add` CLI from an interactive
-  SSH shell on this host — its in-process git inspection returns
+- **Register + configure repos declaratively (#1203):**
+  [`ready-for-agent/config.json`](ready-for-agent/config.json) names
+  every served repository (clone URL, local dir, `mergePolicy`,
+  `defaultModel`, `includeAllIssueAuthors`, paused). `./install.sh
+clone` clones/fetches them all into `ready-for-agent/repos/`, and
+  every `./install.sh` run finishes by applying the config through
+  the harness's GraphQL API via
+  [`ready-for-agent/apply-config.sh`](ready-for-agent/apply-config.sh)
+  (addLocalRepository for unregistered clones, a full-object
+  updateRepositorySettings built from the live settings with only
+  the config-owned fields overridden, pause/unpause to match; a
+  converged harness receives no mutations, so re-runs are no-ops;
+  `DRY_RUN=1 ./apply-config.sh` previews). Fleet posture:
+  `mergePolicy: OFF` (human merge) on every repo. Do **not** use the
+  `ready-for-agent add` CLI from an interactive SSH shell on this
+  host - its in-process git inspection returns
   `NOT_A_GIT_REPOSITORY` for valid repos there (it succeeds from
-  the service's clean environment, which is what GraphQL uses).
-- **Configure a repo** with `updateRepositorySettings` (a
-  full-object input — every field is required, so read the current
-  settings first) and `unpauseRepository`. Fleet posture for
-  `developing-today/code`: `mergePolicy: OFF` (human merge),
-  `includeAllIssueAuthors: true`, `defaultModel:
-opencode-go/kimi-k3.1-pro` on the OpenCode backend. A repo with
-  no build model set refuses Implement ("No build model set").
+  the service's clean environment, which is what GraphQL uses). A
+  repo with no build model set refuses Implement ("No build model
+  set") - the config's `defaultModel` is what prevents that.
 - **Dispatch:** label an issue `ready-for-agent`, then Implement
   from the UI, via GraphQL `implementNow(repositoryId, nativeId:
 "<issue number>")`, or via the CLI `ready-for-agent intake

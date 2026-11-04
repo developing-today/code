@@ -809,4 +809,59 @@ mod tests {
         assert_eq!(stored.channels, vec![chan]);
         assert_eq!(stored.typing, vec![chan]);
     }
+    #[test]
+    fn update_at_dedups_wire_channels_before_the_cap() {
+        // #4404: a decoded wire heartbeat may repeat a channel (the constructor
+        // dedups, but the wire carries the raw signed list). Duplicates must not
+        // displace distinct channels the heartbeat genuinely claims.
+        let table = PresenceTable::new();
+        let alice = key(1);
+        let a = channel("a");
+        let b = channel("b");
+        let mut raw = vec![a; MAX_HEARTBEAT_CHANNELS];
+        raw.push(b);
+        let wire = PresenceHeartbeat {
+            node: alice,
+            channels: raw,
+            typing: Vec::new(),
+            ts: 4_100,
+            signature: Vec::new(),
+        };
+        // Through the encode/decode round trip, as the gossip plane carries it.
+        let frame = encode_frame(&wire);
+        let decoded = decode_frame(&frame).expect("presence frame decodes");
+        assert!(table.update_at(decoded, 4_100, &|_, _| true));
+        assert_eq!(table.liveness_at(&alice, &a, 4_100), Liveness::Live);
+        assert_eq!(
+            table.liveness_at(&alice, &b, 4_100),
+            Liveness::Live,
+            "[A x64, B] must keep B live: duplicates fill the cap, not displace B"
+        );
+    }
+
+    #[test]
+    fn update_at_keeps_every_distinct_channel_past_duplicate_fill() {
+        // [A x63, B, C]: after dedup only three distinct channels exist, so all
+        // three survive the cap — C must not be truncated away.
+        let table = PresenceTable::new();
+        let alice = key(1);
+        let (a, b, c) = (channel("a"), channel("b"), channel("c"));
+        let mut raw = vec![a; MAX_HEARTBEAT_CHANNELS - 2];
+        raw.push(b);
+        raw.push(c);
+        let wire = PresenceHeartbeat {
+            node: alice,
+            channels: raw,
+            typing: Vec::new(),
+            ts: 4_200,
+            signature: Vec::new(),
+        };
+        let frame = encode_frame(&wire);
+        let decoded = decode_frame(&frame).expect("presence frame decodes");
+        assert!(table.update_at(decoded, 4_200, &|_, _| true));
+        for chan in [a, b, c] {
+            assert_eq!(table.liveness_at(&alice, &chan, 4_200), Liveness::Live);
+        }
+    }
+
 }

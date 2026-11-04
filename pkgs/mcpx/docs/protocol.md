@@ -55,6 +55,38 @@ the corrections are why this is increment 3.
 | `2025-11-25` | legacy | `initialize` | once                   | yes                                                                              | offered on every `initialize`                                  |
 | `2026-07-28` | modern | none         | `_meta`, every request | yes                                                                              | **probed first**                                               |
 
+Which revision defines which feature, generated from the same
+`FeatureMatrix()` table `GET /v1/protocol` reports:
+
+<!-- BEGIN GENERATED: protocol-features -->
+
+| feature | `2026-07-28` | `2025-11-25` | `2025-06-18` | `2025-03-26` | `2024-11-05` |
+| --- | --- | --- | --- | --- | --- |
+| `initialize` | — | ✓ | ✓ | ✓ | ✓ |
+| `discover` | ✓ | — | — | — | — |
+| `resultType` | ✓ | — | — | — | — |
+| `inputRequired` | ✓ | — | — | — | — |
+| `structuredContent` | ✓ | ✓ | ✓ | — | — |
+| `resource_link` | ✓ | ✓ | ✓ | — | — |
+| `audio` | ✓ | ✓ | ✓ | ✓ | — |
+| `toolAnnotations` | ✓ | ✓ | ✓ | ✓ | — |
+| `completions` | ✓ | ✓ | ✓ | ✓ | — |
+| `title` | ✓ | ✓ | ✓ | — | — |
+| `icons` | ✓ | ✓ | — | — | — |
+| `elicitation` | ✓ | ✓ | ✓ | — | — |
+| `elicitationURL` | ✓ | ✓ | — | — | — |
+| `elicitationComplete` | — | ✓ | — | — | — |
+| `tasks` | — | ✓ | — | — | — |
+| `tasksExtension` | ✓ | — | — | — | — |
+| `extensions` | ✓ | — | — | — | — |
+| `cacheable` | ✓ | — | — | — | — |
+| `resourceSubscribe` | — | ✓ | ✓ | ✓ | ✓ |
+| `subscriptionsListen` | ✓ | — | — | — | — |
+| `loggingSetLevel` | — | ✓ | ✓ | ✓ | ✓ |
+| `batch` | — | — | — | ✓ | — |
+
+<!-- END GENERATED: protocol-features -->
+
 The split is the thing everything else follows from. A legacy implementation
 negotiates once and can send its peer a request at any time afterwards. A
 modern one has no handshake, restates its version and capabilities on every
@@ -213,16 +245,21 @@ that could never work (#284).
 
 ### 2.2 Capabilities mcpx declares
 
-| capability                                     | 2024-11-05                                                             | 2025-03-26 | 2025-06-18 | 2025-11-25 | 2026-07-28                                      |
-| ---------------------------------------------- | ---------------------------------------------------------------------- | ---------- | ---------- | ---------- | ----------------------------------------------- |
-| `tools.listChanged`                            | true in pass-through mode when the connection can push, else false     | same       | same       | same       | same                                            |
-| `resources.subscribe`, `.listChanged`          | when the connection can push                                           | same       | same       | same       | same                                            |
-| `prompts.listChanged`                          | when the connection can push                                           | same       | same       | same       | same                                            |
-| `completions`                                  | — (the revision has no such capability; the method is answered anyway) | ✓          | ✓          | ✓          | ✓                                               |
-| `logging`                                      | ✓                                                                      | ✓          | ✓          | ✓          | — (the level travels in each request's `_meta`) |
-| `tasks` (core)                                 | —                                                                      | —          | —          | ✓          | —                                               |
-| `extensions["io.modelcontextprotocol/tasks"]`  | —                                                                      | —          | —          | —          | ✓                                               |
-| `extensions["io.modelcontextprotocol/skills"]` | —                                                                      | —          | —          | —          | `{"directoryRead": true}`                       |
+<!-- BEGIN GENERATED: protocol-capabilities -->
+
+| capability | `2026-07-28` | `2025-11-25` | `2025-06-18` | `2025-03-26` | `2024-11-05` |
+| --- | --- | --- | --- | --- | --- |
+| `tools.listChanged` | false for mcpx's own list (fixed when the server is built); true in pass-through mode when the connection can push | false for mcpx's own list (fixed when the server is built); true in pass-through mode when the connection can push | false for mcpx's own list (fixed when the server is built); true in pass-through mode when the connection can push | false for mcpx's own list (fixed when the server is built); true in pass-through mode when the connection can push | false for mcpx's own list (fixed when the server is built); true in pass-through mode when the connection can push |
+| `resources.subscribe` | true when the connection can push | true when the connection can push | true when the connection can push | true when the connection can push | true when the connection can push |
+| `resources.listChanged` | true when the connection can push | true when the connection can push | true when the connection can push | true when the connection can push | true when the connection can push |
+| `prompts.listChanged` | true when the connection can push | true when the connection can push | true when the connection can push | true when the connection can push | true when the connection can push |
+| `completions` | ✓ | ✓ | ✓ | ✓ | — (the revision has no such capability; the method is answered anyway) |
+| `logging` | — (the level travels in each request's `_meta`) | ✓ | ✓ | ✓ | ✓ |
+| `tasks` (core) | — | ✓ | — | — | — |
+| `extensions["io.modelcontextprotocol/tasks"]` | ✓ | — | — | — | — |
+| `extensions["io.modelcontextprotocol/skills"]` | `{"directoryRead": true}`, where skills are served | — (declared where skills are served) | — (declared where skills are served) | — (declared where skills are served) | — (declared where skills are served) |
+
+<!-- END GENERATED: protocol-capabilities -->
 
 - **`tools.listChanged` is false unless mcpx passes tools through.** mcpx's
   own tool list is fixed when its server is built. It used to be declared and
@@ -423,10 +460,14 @@ could answer.
 Declaring one is not declaring the other. A sampling-only client is never sent
 an elicitation, and vice versa. Anything mcpx may not send this client is left
 with the broker and its default audience, so nothing is lost by a client's
-narrowness — it just does not get to answer. Two gates are coarser than they
-should be (#210): any `elicitation` declaration counts as form mode, though a
-2025-11-25 client that declared only `url` has not offered forms; and
-`sampling` is not checked for `sampling.tools` or `sampling.context`.
+narrowness — it just does not get to answer. The gates are narrower than a
+bare declaration: from 2025-11-25 a client that declared only `url` is never
+sent a form (form needs the `form` key, and `{}` remains the form-only
+declaration), and `sampling` is read for sub-capabilities — a tools-carrying
+question is refused whole when the client did not declare `sampling.tools`
+(never stripped and degraded), and `includeContext` is dropped when it did not
+declare `sampling.context` ([`internal/mcpserver/conn.go`](../internal/mcpserver/conn.go)
+`CanElicit`, `CanSampleTools`, `CanSampleContext`).
 
 **Why a non-declaring 2026-07-28 client never gets `-32021` for a tool that
 asks.** 2026-07-28 `basic/index` says a server "MUST NOT rely on capabilities
@@ -628,7 +669,7 @@ What mcpx sends upstream, and what it will accept from a server.
 | per-server override | `protocol: prefer-discover \| prefer-initialize \| force-discover \| force-initialize \| follow`, over `upstream.protocol` (default `prefer-discover`); the old names `modern`, `legacy`, `force-modern`, `force-legacy` and others are accepted as aliases ([spec/era-probe.md](spec/era-probe.md#values)); `follow` adds a legacy session for legacy callers ([spec/era-probe.md](spec/era-probe.md#follow)) |
 | legacy version      | `2025-11-25` offered; `2024-11-05` .. `2025-11-25` accepted; anything else and mcpx disconnects                                                                                                                                                                                                                                                                                                                |
 | modern version      | `2026-07-28`                                                                                                                                                                                                                                                                                                                                                                                                   |
-| declared to servers | `elicitation.form` and `roots` always; `elicitation.url` and `sampling` when a handler is installed — which in the daemon is always (#210)                                                                                                                                                                                                                                                                     |
+| declared to servers | `elicitation.form` and `roots` always; `elicitation.url` and `sampling` only when the corresponding handler is installed — in the daemon always, and it answers (`internal/mcpclient/modern.go` `capabilities`)                                                                                                                                                                                                |
 | transports          | stdio, Streamable HTTP, and HTTP+SSE (2024-11-05) as the last fallback of the HTTP probe, remembered in the era record                                                                                                                                                                                                                                                                                         |
 | stdio shutdown      | close stdin, wait `stdioShutdown.stdinGrace` (2s, a built-in default) for the server to exit, then `SIGTERM` the process group, wait `stdioShutdown.termGrace` (3s), then `SIGKILL` — every revision's stdio SHOULD (#203 LV-39; it used to `SIGTERM` at once)                                                                                                                                                 |
 | headers             | legacy: `MCP-Protocol-Version` is the negotiated version, omitted on `initialize` and up to 2025-03-26; modern: `Mcp-Method`, `Mcp-Name`, `Mcp-Param-*` for `x-mcp-header` parameters, never a session id                                                                                                                                                                                                      |
@@ -646,13 +687,13 @@ passed every test.
 
 ### 4.1 Server-initiated requests mcpx answers
 
-| request                  | mcpx answers                                                                                                                          | regardless of era |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
-| `ping`                   | `{}`                                                                                                                                  | yes               |
-| `roots/list`             | the daemon's roots, before consulting any handler — and the daemon passes none, so the list is empty (#210)                           | yes               |
-| `elicitation/create`     | through the broker, or `{"action":"cancel"}` when nothing can answer; a mode that was not declared for the revision in use is refused | yes               |
-| `sampling/createMessage` | through the broker; a decline becomes an error, since the specification has no decline result for sampling                            | yes               |
-| anything else            | `-32601`, but **always answered** — silence is indistinguishable from a hung server                                                   | yes               |
+| request                  | mcpx answers                                                                                                                                                         | regardless of era |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| `ping`                   | `{}`                                                                                                                                                                 | yes               |
+| `roots/list`             | relayed to the host client whose call raised the question when it declared `roots`; otherwise mcpx's configured `daemon.roots` (empty only when none are configured) | yes               |
+| `elicitation/create`     | through the broker, or `{"action":"cancel"}` when nothing can answer; a mode that was not declared for the revision in use is refused                                | yes               |
+| `sampling/createMessage` | through the broker; a decline becomes an error, since the specification has no decline result for sampling                                                           | yes               |
+| anything else            | `-32601`, but **always answered** — silence is indistinguishable from a hung server                                                                                  | yes               |
 
 Always answered, unless the server withdraws the question first: a
 `notifications/cancelled` naming a request still being answered ends the
@@ -858,9 +899,6 @@ Named, because a gap nobody wrote down is a gap somebody rediscovers.
 - **Tasks.** `notifications/tasks/status` is dropped; mcpx never
   task-augments a call upstream, so a tool with `taskSupport: "required"`
   cannot be called; an extension task never reaches `input_required` (#209).
-- **Capabilities declared upstream that nothing answers**: `sampling` and
-  `elicitation.url` whenever a handler exists, `roots` with an empty list
-  (#210).
 - **Authorization.** No OAuth client and no OAuth on `/mcp` (#253). The
   per-server `auth` block (bearer, basic, header, query, env) is applied to
   every connection (#240); `type: oauth` is refused with a message, since the

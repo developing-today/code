@@ -148,7 +148,7 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
       // number: null becomes absent, so a valid item is never dropped by
       // isProjectPoolItem for an upstream null (Codex P2 on PR #4181).
       databaseId: item.databaseId ?? undefined,
-      url: projectItemUrl(item.databaseId, projectUrl),
+      url: projectItemUrl(item.databaseId ?? undefined, projectUrl),
       projectUrl,
       ref: refKey({ repo, number: c.number }),
       repo,

@@ -202,6 +202,9 @@ describe("horizon calendar-date validation (#1628)", () => {
     expect(ymdLabel("2026-13-15")).toBe("2026-13-15");
     expect(ymdLabel("2026-02-30")).toBe("2026-02-30");
     expect(ymdLabel("2026-10-24")).toBe("Sat Oct 24");
+    expect(ymdLabel("2026-10-25xyz")).toBe("Sun Oct 25");
+    expect(ymdLabel("2026-10-25 (today)")).toBe("Sun Oct 25");
+    expect(ymdLabel("2026-10-25T99")).toBe("Sun Oct 25");
     expect(monthLabel("2026-13")).toBe("2026-13");
     expect(monthLabel("2026-00")).toBe("2026-00");
     expect(monthLabel("2026-10")).toBe("October 2026");

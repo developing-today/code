@@ -540,6 +540,48 @@ grep -qF '/* example syntax: /* text */' "$tmp/block-comment-inner-delimiter.jso
   failures=$((failures + 1))
 }
 
+# Case 7: a repair preserves the config's original permission bits.
+# (Input is the v1 `plugin` spelling — the canonical direction since
+# the v2 rename — so the run performs a real rewrite.)
+cat >"$tmp/mode.fixture" <<'EOF'
+{
+  "plugin": ["opencode-plugin-x"]
+}
+EOF
+cp "$tmp/mode.fixture" "$tmp/mode.jsonc"
+chmod 0600 "$tmp/mode.jsonc"
+OPENCODE_CONFIG="$tmp/mode.jsonc" bash "$script" 2>/dev/null
+if [ "$?" -ne 0 ] || [ "$(stat -c '%a' "$tmp/mode.jsonc")" != "600" ] ||
+  [ "$(parsed_doc "$tmp/mode.jsonc")" != '{"plugins": ["opencode-plugin-x"]}' ]; then
+  echo "FAIL mode-preserved: repair must preserve 0600 and normalize plugins"
+  failures=$((failures + 1))
+else
+  echo "PASS mode-preserved"
+fi
+
+# Case 8: a symlinked config is refused before writes; keep both the link
+# target and its contents unchanged.
+cat >"$tmp/symlink-target.jsonc" <<'EOF'
+{
+  "plugin": ["opencode-plugin-x"]
+}
+EOF
+ln -s symlink-target.jsonc "$tmp/symlink.jsonc"
+link_before="$(readlink "$tmp/symlink.jsonc")"
+target_before="$(sha256sum "$tmp/symlink-target.jsonc" | cut -d' ' -f1)"
+OPENCODE_CONFIG="$tmp/symlink.jsonc" bash "$script" 2>"$tmp/symlink.stderr"
+symlink_exit=$?
+target_after="$(sha256sum "$tmp/symlink-target.jsonc" | cut -d' ' -f1)"
+if [ "$symlink_exit" -eq 0 ] || [ ! -L "$tmp/symlink.jsonc" ] ||
+  [ "$(readlink "$tmp/symlink.jsonc")" != "$link_before" ] ||
+  [ "$target_before" != "$target_after" ] ||
+  ! grep -q 'refusing symlinked config' "$tmp/symlink.stderr"; then
+  echo "FAIL symlink-refused: expected a clear refusal with link and target unchanged"
+  failures=$((failures + 1))
+else
+  echo "PASS symlink-refused"
+fi
+
 if [ "$failures" -ne 0 ]; then
   echo "normalize_test: $failures failure(s)"
   exit 1

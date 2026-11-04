@@ -1,0 +1,204 @@
+Source: https://github.com/developing-today/code/issues/534
+Title: id: Phase 12 designs to run through the research workflow
+Retrieved: 2026-11-03T00:04:00Z
+
+--- ISSUE BODY (verbatim) ---
+## What and why
+
+These Phase 12 tasks (`.opencode/plans/phase-12-platform-flexibility.md`) need a design, or for D1-026 a research package, before anyone implements them. Run each through the research workflow, commit the design, then open an implementation issue and tick the box. F12.1 (manifest) and F12.4 (provider registry) are the plan's two highest-return tasks; F12.7 (ABI spec) is part of its recommended first slice.
+
+## Items
+
+Each box is done when the design (or research package) is committed and an implementation issue is linked here.
+
+- [ ] **D1-019 — F12.1 Declarative world manifest (world.toml) with apply / --dry-run / diff** (L, design)
+  A world.toml naming module (hash or source), seed, grants, ceilings, resource profile, roles/invites and schedules. `id world apply` reconciles a live world idempotently through existing admin operations, and `id world diff` detects drift. The plan calls it one of the two highest-return tasks.
+  - Status: not started. No `world.toml` parser and no Apply/Diff command: `grep -rn 'world.toml' pkgs/id/src` finds nothing; `WorldCommand` (cli.rs:1388) lacks Apply/Diff.
+  - Source: .opencode/plans/phase-12-platform-flexibility.md:31; .opencode/plans/phase-12-platform-flexibility.md:21; .opencode/plans/phase-12-platform-flexibility.md:80
+  - Prerequisites: #543 — D1-011 F11.11 One client projection (seed secret, chat by scope) + enforcement test, #227 — D1-012 F11.12 Journal format version header, check and backup commands
+- [ ] **D1-022 — F12.4 Capability provider registry (manifested components)** (L, design)
+  Providers become components with a manifest (name, version, argument schema, bounds, required scope, default ceiling), read by the ledger, compile gate and CLI, so adding a capability needs no edit to world.rs. One of the two highest-return tasks.
+  - Status: not started. pkgs/id/src/world_caps.rs:55 `pub const CATALOG: &[&str]` is a hard-coded list, and execution is a string `match` in pkgs/id/src/world.rs:2526-2547. No registry type (`grep -rn 'ProviderRegistry\|provider_registry' pkgs/id/src` finds nothing).
+  - Source: .opencode/plans/phase-12-platform-flexibility.md:37; .opencode/plans/phase-12-platform-flexibility.md:16; .opencode/plans/phase-12-platform-flexibility.md:80
+  - Prerequisites: #540 — D1-010 F11.10 Split world.rs, world_session.rs, cli.rs (moves only), #554 — D1-013 F11.13 Error taxonomy: stable codes plus reasons on the wire
+- [ ] **D1-025 — F12.7 Versioned guest ABI spec, plaza_abi_version export, conformance suite** (L, design)
+  Write the `plaza_*` exports and capability protocol down as a versioned spec, add a `plaza_abi_version` export, and publish a conformance suite built on F11.16 fixtures and the #239 recordings. Part of the recommended first slice.
+  - Status: not started. The ABI is described only in module docs (pkgs/id/src/sandbox.rs:6-8 lists plaza_out_len, plaza_alloc, memory). `grep -rn plaza_abi_version pkgs/id` finds nothing, and there is no spec document or conformance test directory.
+  - Source: .opencode/plans/phase-12-platform-flexibility.md:43; .opencode/plans/phase-12-platform-flexibility.md:84
+  - Prerequisites: #544 — D1-016 F11.16 Replay self-check (`id world verify`)
+- [ ] **D1-021 — F12.3 Roles v2: journaled builder and moderator scopes with audit** (M, design)
+  Journaled grants for builder (install modules) and moderator (revoke participants) as scope bits, with an audit record for each use; builder never gets network/file/process authority.
+  - Status: not started. WorldScopes checks only CHAT/HISTORY/JOIN-style bits (pkgs/id/src/world.rs:201-204); `grep -rn 'BUILDER\|MODERATOR' pkgs/id/src` finds nothing.
+  - Source: .opencode/plans/phase-12-platform-flexibility.md:33; doc/2026-10-17T08-00-00Z_feature_world_roles_directory/
+  - Prerequisites: D1-019 F12.1 Declarative world manifest (world.toml) with apply / --dry-run / diff (in this list)
+- [ ] **D1-024 — F12.6 Structured audit log with OpenTelemetry export** (L, design)
+  A structured audit log of admin actions and provider use, exported via OpenTelemetry, building on F11.7; a test replays the log to the final grants.
+  - Status: not started. `grep -rn 'opentelemetry\|OpenTelemetry\|audit' pkgs/id/src/world*.rs` finds nothing. Prerequisite F11.7 has not started (D1-007).
+  - Source: .opencode/plans/phase-12-platform-flexibility.md:39
+  - Prerequisites: #553 — D1-007 F11.7 Host metrics, Prometheus endpoint and tracing spans
+- [ ] **D1-023 — F12.5 First new providers: kv, blob, http.fetch, notify** (XL, design)
+  A bounded durable per-world KV store, content-addressed blobs over iroh-blobs, allowlisted http.fetch (off by default, no off-list redirects), and rate-limited notify. Each needs a ceiling, an audit entry, and bound, refusal and replay tests.
+  - Status: not started. None of kv/blob/http.fetch/notify appears in CATALOG (pkgs/id/src/world_caps.rs:55-73) or in the dispatch match (world.rs:2526-2547).
+  - Source: .opencode/plans/phase-12-platform-flexibility.md:38; .opencode/plans/phase-12-platform-flexibility.md:85
+  - Prerequisites: D1-022 F12.4 Capability provider registry (manifested components) (in this list), D1-024 F12.6 Structured audit log with OpenTelemetry export (in this list)
+- [ ] **D1-026 — F12.8 Rust and TypeScript/Zig guest SDKs; WIT/component-model decision** (XL, research package)
+  SDKs for Rust (wasm32-unknown-unknown) and AssemblyScript or Zig with screen/json/grid/cap helpers equal to the Roc libraries, each with an example world and a passing conformance run. Record a decision on the Wasm component model / WIT.
+  - Status: not started. No sdk directory (`ls pkgs/id/sdk pkgs/id/sdks`: no such directory); all eight examples are Roc (pkgs/id/examples/{lounge,roc-chat,roc-counter,roc-grid,roc-screen,roc-world,territory,tic-tac-toe}).
+  - Source: .opencode/plans/phase-12-platform-flexibility.md:44; .opencode/plans/phase-12-platform-flexibility.md:17
+  - Prerequisites: D1-025 F12.7 Versioned guest ABI spec, plaza_abi_version export, conformance suite (in this list)
+- [ ] **D1-027 — F12.9 Program upgrade with state migration and rollback** (L, design)
+  Versioned snapshots and an optional `migrate` export; an upgrade runs on a probe instance, commits only if migrated state round-trips, otherwise rolls back.
+  - Status: not started. Install swaps the program and resets state handling (pkgs/id/src/world.rs:3168-3180); `grep -rn '"migrate"\|fn migrate' pkgs/id/src/world*.rs pkgs/id/src/sandbox.rs` finds nothing.
+  - Source: .opencode/plans/phase-12-platform-flexibility.md:45
+  - Prerequisites: D1-025 F12.7 Versioned guest ABI spec, plaza_abi_version export, conformance suite (in this list)
+- [ ] **D1-028 — F12.10 Fair cross-world scheduling, per-account quotas, slow-client back-pressure** (L, design)
+  A hub scheduler that shares fuel/CPU fairly across worlds, with per-account quotas (worlds, storage, fuel/s) and back-pressure; exit: a spinning world cannot raise another's p99 by more than 10%.
+  - Status: not started. pkgs/id/src/world_hub.rs bounds only sessions and open worlds (:12); `grep -n 'quota\|fair\|fuel_per_sec' pkgs/id/src/world_hub.rs pkgs/id/src/sandbox.rs` finds nothing. F11.7/F11.8 prerequisites are not started.
+  - Source: .opencode/plans/phase-12-platform-flexibility.md:49
+  - Prerequisites: #553 — D1-007 F11.7 Host metrics, Prometheus endpoint and tracing spans, #539 — D1-008 F11.8 Benchmark harness with committed baselines
+- [ ] **D1-032 — F12.14 Portals: cross-world messaging granted by both admins** (L, design)
+  A capability both worlds' admins grant, with bounded rate and size and an audit entry on each side.
+  - Status: not started. Only host-level cross-world write toggles exist (`CrossWorldWrite`/`ForceCrossWorldWrite` in the WorldCommand enum, cli.rs:1388); there is no guest-visible portal capability in CATALOG (world_caps.rs:55-73).
+  - Source: .opencode/plans/phase-12-platform-flexibility.md:56; doc/2026-10-10T04-59-57Z_feature_cross_world_access/
+  - Prerequisites: D1-022 F12.4 Capability provider registry (manifested components) (in this list), D1-024 F12.6 Structured audit log with OpenTelemetry export (in this list)
+- [ ] **D1-035 — F12.17 Module signature trust list and compiler-version provenance** (M, design)
+  Verify module signatures against an admin trust list, add the compiler version to observed provenance, journal the trust decision; an unsigned module is refused when the list is non-empty.
+  - Status: not started. Observed provenance exists (`ModuleProvenance` fields at pkgs/id/src/world.rs:299, :527, :586), but world.rs:310 states it is "not a signature or a trust attestation"; there is no trust list. The plan cites PR #225, which is CLOSED; provenance reached main another way.
+  - Source: .opencode/plans/phase-12-platform-flexibility.md:65; doc/2026-10-16T09-00-00Z_feature_world_module_provenance/; doc/2026-10-16T09-30-00Z_feature_world_module_provenance/
+  - Prerequisites: #541 — D1-018 F11.18 Pinned Roc compiler for checked-in example modules + CI rebuild job
+
+## Source
+
+- [`.opencode/plans/phase-12-platform-flexibility.md:16`](https://github.com/developing-today/code/blob/main/.opencode/plans/phase-12-platform-flexibility.md#L16)
+- [`.opencode/plans/phase-12-platform-flexibility.md:17`](https://github.com/developing-today/code/blob/main/.opencode/plans/phase-12-platform-flexibility.md#L17)
+- [`.opencode/plans/phase-12-platform-flexibility.md:21`](https://github.com/developing-today/code/blob/main/.opencode/plans/phase-12-platform-flexibility.md#L21)
+- [`.opencode/plans/phase-12-platform-flexibility.md:31`](https://github.com/developing-today/code/blob/main/.opencode/plans/phase-12-platform-flexibility.md#L31)
+- [`.opencode/plans/phase-12-platform-flexibility.md:33`](https://github.com/developing-today/code/blob/main/.opencode/plans/phase-12-platform-flexibility.md#L33)
+- [`.opencode/plans/phase-12-platform-flexibility.md:37`](https://github.com/developing-today/code/blob/main/.opencode/plans/phase-12-platform-flexibility.md#L37)
+- [`.opencode/plans/phase-12-platform-flexibility.md:38`](https://github.com/developing-today/code/blob/main/.opencode/plans/phase-12-platform-flexibility.md#L38)
+- [`.opencode/plans/phase-12-platform-flexibility.md:39`](https://github.com/developing-today/code/blob/main/.opencode/plans/phase-12-platform-flexibility.md#L39)
+- [`.opencode/plans/phase-12-platform-flexibility.md:43`](https://github.com/developing-today/code/blob/main/.opencode/plans/phase-12-platform-flexibility.md#L43)
+- [`.opencode/plans/phase-12-platform-flexibility.md:44`](https://github.com/developing-today/code/blob/main/.opencode/plans/phase-12-platform-flexibility.md#L44)
+- [`.opencode/plans/phase-12-platform-flexibility.md:45`](https://github.com/developing-today/code/blob/main/.opencode/plans/phase-12-platform-flexibility.md#L45)
+- [`.opencode/plans/phase-12-platform-flexibility.md:49`](https://github.com/developing-today/code/blob/main/.opencode/plans/phase-12-platform-flexibility.md#L49)
+- [`.opencode/plans/phase-12-platform-flexibility.md:56`](https://github.com/developing-today/code/blob/main/.opencode/plans/phase-12-platform-flexibility.md#L56)
+- [`.opencode/plans/phase-12-platform-flexibility.md:65`](https://github.com/developing-today/code/blob/main/.opencode/plans/phase-12-platform-flexibility.md#L65)
+- [`.opencode/plans/phase-12-platform-flexibility.md:80`](https://github.com/developing-today/code/blob/main/.opencode/plans/phase-12-platform-flexibility.md#L80)
+- [`.opencode/plans/phase-12-platform-flexibility.md:84`](https://github.com/developing-today/code/blob/main/.opencode/plans/phase-12-platform-flexibility.md#L84)
+- [`.opencode/plans/phase-12-platform-flexibility.md:85`](https://github.com/developing-today/code/blob/main/.opencode/plans/phase-12-platform-flexibility.md#L85)
+- [`doc/2026-10-10T04-59-57Z_feature_cross_world_access/`](https://github.com/developing-today/code/tree/main/doc/2026-10-10T04-59-57Z_feature_cross_world_access/)
+- [`doc/2026-10-16T09-00-00Z_feature_world_module_provenance/`](https://github.com/developing-today/code/tree/main/doc/2026-10-16T09-00-00Z_feature_world_module_provenance/)
+- [`doc/2026-10-16T09-30-00Z_feature_world_module_provenance/`](https://github.com/developing-today/code/tree/main/doc/2026-10-16T09-30-00Z_feature_world_module_provenance/)
+- [`doc/2026-10-17T08-00-00Z_feature_world_roles_directory/`](https://github.com/developing-today/code/tree/main/doc/2026-10-17T08-00-00Z_feature_world_roles_directory/)
+
+## Size
+
+XL overall (items M to XL)
+
+## Prerequisites
+
+Listed per item above.
+
+<!-- discovery:D1-019 discovery:D1-022 discovery:D1-025 discovery:D1-021 discovery:D1-024 discovery:D1-023 discovery:D1-026 discovery:D1-027 discovery:D1-028 discovery:D1-032 discovery:D1-035 -->
+
+## Acceptance criteria
+
+- [ ] Every item listed above has its design (or research package, where marked) committed to the repo
+- [ ] Every item has a linked implementation issue, and its checkbox above is ticked only once both are true
+- [ ] No item is closed out on the basis of a plan or report reference alone — the committed artifact is the evidence
+
+
+--- DECISION-BEARING ISSUE COMMENTS (verbatim bodies) ---
+
+[Comment by @dezren39 at 2026-10-24T19:29:10Z; https://github.com/developing-today/code/issues/534#issuecomment-6388559285]
+Progress from Phase 12 (Session C, PR #801): F12.16 (`id world doctor`) is implemented with tests; F12.1's declarative world.toml model (parse/plan/apply/diff) is in, with CLI `apply`/`diff` wiring in progress.
+
+[Comment by @dezren39 at 2026-10-24T23:04:41Z; https://github.com/developing-today/code/issues/534#issuecomment-6390665385]
+Progress (Session C, PR #801): F12.16 (doctor) done; F12.1 declarative world.toml + diff/apply landed (module/schedule apply → #807); F12.18 consolidated DoS suite landed; F12.3 builder/moderator scope bits + audit journal landed (remaining: wire builder/moderator capability acceptance into the install/revoke frames). Filed #805 (F12.11), #806 (F12.13), #807 (F12.1 apply wiring).
+
+[Comment by @dezren39 at 2026-10-26T17:29:02Z; https://github.com/developing-today/code/issues/534#issuecomment-6422881000]
+## Intake review
+
+**Partially progressed — verified on main `14dd66b6` (2026-10-26, fleet monitor).** This is the Phase 12 design tracker. Its lead item, D1-019 (F12.1 declarative world manifest), appears to have outgrown the design stage: `WorldCommand` in `pkgs/id/src/cli.rs` now has `Diff` (:1731, "Show the drift between a world.toml and a live world") and `Apply` (:1756, "Reconcile a live world to a world.toml (idempotent; journaled)", with `--dry-run`) variants. That is the F12.1 surface the plan asked for. Not ticking the box or closing anything from the monitor chair: whether a committed design document exists and whether the implementation counts as complete (the Apply doc itself notes module install is still routed via install/compile) is a reviewer call — flagging it here so the tracker does not claim not-started for work that has landed.
+
+The remaining items (F12.4 provider registry, F12.7 ABI spec, and the rest in the body) show no equivalent landed surface in this pass. No acceptance-criteria section existed, so one has been appended (original body preserved verbatim above it).
+
+**Related:** prerequisite items name #543 and #227; downstream trackers #538 and #536 depend on this one's D1-022/D1-025 designs.
+
+**Risks / suggested approach:** a reviewer pass over the Items list against current main, ticking what has genuinely landed (starting with D1-019), would sharpen this tracker considerably — several Phase 12 items have been shipping incrementally and tracker drift is the main risk.
+
+[Comment by @dezren39 at 2026-10-27T03:21:42Z; https://github.com/developing-today/code/issues/534#issuecomment-6432929359]
+## Reprioritization: Phase 12 is the goal; the path to Phase 12 comes first (Drew, 2026-10-26)
+
+The id queue has been re-ordered. **Adopt this order in all sweep / queue / orchestration work:**
+
+1. **Path to Phase 12** — `now` + `priority/high`: validation tasks #1075 (Phases 0–8 + platform completion), #1076 (Phase 9), #1077 (Phase 10), #1078 (delivered Phase 11), umbrella #796; CI trust #229, #241, #551; journal format #227; cost visibility #553, #539, #542; projection remainder #242; remaining F11 #544, #555, #541; and this epic, #534.
+2. **Phase 12** — `next` label: F12.1–F12.18. The full set now has issues: #807, #556, #835, **#1061 (F12.4 registry)**, **#1062 (F12.5 providers)**, **#1063 (F12.6 audit)**, **#1064 (F12.7 ABI)**, **#1065 (F12.8 SDKs)**, **#1066 (F12.9 upgrades)**, **#1067 (F12.10 scheduling)**, #805, #557, #806, **#1068 (F12.14 portals)**, #558, **#1069 (F12.17 trust)**, #560. Fix the F12.4 gate (#838) before the registry lands.
+3. **Phase 13 + long-term ideas** — `priority/low`: #785–#790, #840, and the newly tracked ideas #1070 (group encryption), #1071 (TUI), #1072 (GUI), #1073 (Datastar), plus #793, #812. Do not pull these ahead of tiers 1–2.
+
+**Every roadmap item now has an issue** — including the smallest, furthest-out ideas — so nothing lives only in a plan document. The roadmap of record is updated in PR #1079 (`planning/roadmaps/id.md`: Now = path to Phase 12, Next = Phase 12).
+
+**Dashboard mirrors this list:** this org Project (Area `id-train`; Horizon Week = tier 1, Month = tier 2, Quarter = the rest) and the Grist Program roadmap (Area `id`, 7 rows: path-to-Phase-12, four Phase 12 rows, Phase 13, long-term ideas).
+
+**Drop rule:** if an item turns out to be blocked, wrong, or superseded, park it (`status/parked`) or close it with a note saying why — that is always allowed and never needs permission. What is not allowed is letting one item silently stall the items behind it. Work the tiers in order and keep moving.
+
+
+[Comment by @dezren39 at 2026-10-27T04:10:20Z; https://github.com/developing-today/code/issues/534#issuecomment-6433533889]
+Ordered queue now lives in #1235 (Path to Phase 12): the 14 prerequisite steps in claim order, with queue-packet priorities encoding the same sequence, then this epic's F12 items as tier 2. The validation audits are steps 4–7 (#1075 → #1076 → #1077 → #1078, phase order). Designs under this epic run continuously ahead of each F12 implementation.
+
+[Comment by @dezren39 at 2026-10-27T07:45:46Z; https://github.com/developing-today/code/issues/534#issuecomment-6436491422]
+🤖 **Agent note** · cross-reference from Phase 10 validation (#1077 slice 5, queue task 1258)
+
+Mapping the validation's Phase 12 remainders onto this umbrella so nothing is double-tracked:
+
+- **F12.3 Roles v2** = this issue's **D1-021** (design, prereq F12.1) — tracked here; no separate issue filed.
+- **F12.5 First new providers** (incl. `notify`, the 'outbound notifications' remainder) = **D1-023** (design, prereqs F12.4 + F12.6) — tracked here; no separate issue filed.
+- **F12.2 Forking and templates** was **missing from the D1 checklist** and tracked nowhere — now filed as dedicated issue #1354 (spec + exit criteria from the plan, dependency F12.1 noted). Add it to the checklist or treat #1354 as its home.
+
+<!-- agent-note:v1 agent=repo-worker-code state=triaged task=1258 ref=534 -->
+
+[Comment by @dezren39 at 2026-10-27T08:49:36Z; https://github.com/developing-today/code/issues/534#issuecomment-6437548554]
+🤖 **Agent note** · CORRECTION to my cross-reference note above (queue task 1258)
+
+The F12.2 line in that note was wrong, based on a corrupted dedupe result: F12.2 forking/templates was **not** missing — it is tracked by dedicated issue **#556** (`id(world): F12.2 world forking and templates`). My duplicate filing #1354 has been closed as a duplicate of #556. For completeness, F12.3 also has dedicated remainder issue #835 and F12.5 has #1062, alongside D1-021/D1-023 here. Nothing on this umbrella needs adding for F12.2.
+<!-- agent-note:v1 agent=repo-worker-code state=triaged task=1258 correction=1 -->
+
+[Comment by @dezren39 at 2026-11-01T18:20:55Z; https://github.com/developing-today/code/issues/534#issuecomment-6561986981]
+## Design summary
+
+Decision note: [Phase 12 workflow design](https://github.com/developing-today/code/blob/design/id-534/doc/2026-11-01_design_id534.md).
+- Keep #534 as the umbrella; use one shared research package with one concept per its 11 listed D1 items.
+- Reconcile code and later comments first: F12.1 manifest/apply/diff exists; F12.3 has role bits and journal records, but install still requires the admin token on the live path.
+- Reuse the existing F12 implementation issues; do not create duplicates or treat code alone as a completed design.
+- Keep each concept's design/research PR independently mergeable; dependencies gate implementation, not ready research.
+- Tick a D1 only after its committed artifact and linked implementation issue are verified; leave #534 open.
+
+PR: https://github.com/developing-today/code/pull/3912
+
+**Phased plan:** (0) reconcile inventory and issue links; (1) F12.1/F12.3 deltas plus F12.4/F12.7 foundations, with F12.6 design in parallel; (2) F12.5/F12.14 after registry and audit; (3) F12.8 research and F12.9 after the ABI; (4) F12.10; (5) F12.17; (6) verify artifacts/links before ticking boxes.
+
+**Questions for Drew:**
+1. **F12.5 vs F12.6 order:** options are (A) plan sequence F12.5 → F12.6 or (B) D1-023's explicit F12.6 prerequisite before F12.5. **Recommend B**: make durable audit precede external-effect providers and reconcile the plan.
+2. **F12.17 prerequisite:** options are (A) plan's F11.10 gate or (B) D1-035's #541/F11.18 gate. **Recommend B**: compiler provenance is part of the trust decision; retain the more specific pinned-compiler prerequisite and reconcile the plan.
+
+
+[Comment by @dezren39 at 2026-11-02T22:09:11Z; https://github.com/developing-today/code/issues/534#issuecomment-6589710037]
+🤖 **Agent note** · triage verdict: CONFIRMED, routed
+- **Agent:** queue worker (repo-worker-code), OpenChamber scheduled lane c29174f1-48e0-4b13-b4ff-9b73ab67e9ab
+- **Session / ID:** queue task 2123 (triage packet for this issue)
+- **Found via:** queue claim
+- **Verified on current main 9f730f1c2:** `world.toml` manifest + `apply`/`diff` exist (cli.rs Diff/Apply, commands/world.rs manifest parse) — the body s "not started" for F12.1 is stale, as the 2026-10-26 intake review already flagged. No `ProviderRegistry`/`provider_registry` and no `plaza_abi_version` anywhere under pkgs/id — F12.4/F12.7 still code-absent, matching the merged design s reconciliation table. The issue body remains a stale snapshot; the comments + merged design are authoritative.
+- **Routing:** design workflow decided and merged (doc/2026-11-01_design_id534.md, PR #3912 merged 2026-11-02): umbrella ledger + one shared research package, one concept per D1, phased plan 0–6, #534 stays open, no D1 ticked without committed artifact + linked implementation issue. No package exists yet in doc/, so enqueued execution slice task 6507 (repo-health-code-pilot, small_fix): open the package intake + phase-0 inventory/link reconciliation, carrying Drew s two open order questions (F12.5 vs F12.6; F12.17 prerequisite) with the design s option-B recommendations for confirmation. Dependencies gate implementation, not research — the questions are not research blockers.
+- **Expectation:** #534 stays open as the umbrella; task 6507 stands up the package. No code changed by this triage; no D1 box ticked.
+<!-- agent-note:v1 agent=repo-worker-code state=triaged task=2123 follow_up=6507 at=2026-11-02T22:18:00Z -->
+
+[Comment by @dezren39 at 2026-11-02T23:14:55Z; https://github.com/developing-today/code/issues/534#issuecomment-6590906086]
+🤖 **Agent note** · handed off
+- **Agent:** queue worker (repo-worker-code), lane code-g
+- **Session / ID:** task 6507
+- **Found via:** queue claim
+- **Task:** Open the #534 Phase 12 research package intake per the merged workflow design (PR #3912 verified MERGED; issue #534 verified OPEN, no hard-stop labels) — assigned to the opencode execution lane.
+- **Expectation:** effort/l packet, package-opening slice only; the laptop claimant launches a bound opencode session that drives task 6507 to its terminal state. #534 stays open; no D1 box ticked without its artifact + linked implementation issue.
+- **Links:** issue #534; PR #3912 (merged design)
+<!-- agent-note:v1 agent=repo-worker-code state=handed-off at=2026-11-02T23:16:00Z -->
+

@@ -15,15 +15,15 @@ Run it only to reproduce a CI failure, and then only the packages CI named.
 
 ## What to run, by change
 
-| You changed | Run | Cost |
-| --- | --- | --- |
-| anything | nothing — read the diff first | — |
-| one package | `go test ./internal/<pkg> -count=1` | seconds |
-| a test you just wrote | `go test ./internal/<pkg> -run TestTheName -count=1 -v` | seconds |
-| a registry, table or manifest | its guard test (see below), then the package | seconds |
+| You changed                                    | Run                                                                                     | Cost           |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------- | -------------- |
+| anything                                       | nothing — read the diff first                                                           | —              |
+| one package                                    | `go test ./internal/<pkg> -count=1`                                                     | seconds        |
+| a test you just wrote                          | `go test ./internal/<pkg> -run TestTheName -count=1 -v`                                 | seconds        |
+| a registry, table or manifest                  | its guard test (see below), then the package                                            | seconds        |
 | CLI or daemon behaviour a unit test cannot see | the named e2e tests that cover it: `go test ./internal/e2e -run 'TestThatOne' -count=1` | ~10 s per test |
-| a shared helper used by e2e | `go test ./internal/e2e -count=1` | ~2 min |
-| anything, before merging | `go test ./... -count=1` in CI, not on your machine | ~3 min |
+| a shared helper used by e2e                    | `go test ./internal/e2e -count=1`                                                       | ~2 min         |
+| anything, before merging                       | `go test ./... -count=1` in CI, not on your machine                                     | ~3 min         |
 
 [`docs/testing/inventory.md`](./testing/inventory.md) is the per-package map:
 test counts, which packages hide time, randomness or ports, and which are
@@ -37,6 +37,22 @@ just the input that tripped it: a parser bug gets the neighbouring shapes, a
 state bug gets the transitions either side of it. Skip the test only when
 writing it is genuinely expensive, and say so in the PR body.
 (Decided in #1969.)
+
+**Enforcement (#1969, option C):** the basic-tier check
+`basic: mcpx fix carries a test (#1969)` (workflow
+`.github/workflows/mcpx-fix-test-guard.yml`, script
+`.github/scripts/check-mcpx-fix-test.sh`, contract tests in
+`.github/scripts/check-mcpx-fix-test.test.sh`) runs on pull requests
+touching `pkgs/mcpx/**`. A PR counts as a fix when its title starts with
+`fix` (`fix:`, `fix(mcpx):`, …) or its body has a `Fixes`/`Closes`/
+`Resolves` link to an issue labelled `bug`/`kind/bug`. A fix PR passes
+when it changes a `*_test.go` or `*.test.ts` file under `pkgs/mcpx/`, or
+when its body contains `No test: <reason>` with a non-empty reason — the
+reason is printed in the check output and the job summary, so the skip
+is attested, not silent. The check proves presence only: whether the
+test actually fails without the fix stays a review item. Non-fix PRs
+and PRs that touch no mcpx file are unaffected (the workflow's path
+filter means no check fires for them at all).
 
 ## Guards, not instances
 
@@ -65,7 +81,7 @@ A flake is a bug in the test or the code under it; a retry hides it.
 - CI's PR gate is Linux only; the nightly stress job below also runs macOS,
   so a macOS-only difference surfaces within a day (#35). Say so in the PR
   when the change is platform-sensitive.
-(Decided in #1973.)
+  (Decided in #1973.)
 
 ### The flake policy in CI (#1973, approach C)
 

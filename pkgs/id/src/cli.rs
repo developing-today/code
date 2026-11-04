@@ -97,6 +97,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 
 use crate::groups::Role;
 use crate::groups::policy::Delegation;
+use crate::groups::policy::SuccessorKind;
 
 /// The main CLI structure for the `id` peer-to-peer file sharing tool.
 ///
@@ -361,6 +362,14 @@ pub enum Command {
         /// or temporary file sharing sessions.
         #[arg(long)]
         ephemeral: bool,
+        /// Path to the operator server config TOML (#5119 slice 1).
+        ///
+        /// When given, the config is loaded at startup: a malformed
+        /// file fails startup naming the parse error, and startup
+        /// provisioning runs from the loaded config. Without the
+        /// flag no file is read and serve behaves exactly as before.
+        #[arg(long)]
+        server_config: Option<PathBuf>,
         /// Disable relay servers and use direct connections only.
         ///
         /// May prevent connections through NATs or firewalls.
@@ -1534,13 +1543,20 @@ pub enum GroupCommand {
         #[arg(long, value_enum, default_value = "read")]
         role: Role,
     },
-    /// Remove a member. Removing yourself is leaving.
+    /// Remove a member. Removing yourself is leaving. The group's default mode is used when
+    /// `--mode` is omitted.
     Remove {
         /// The group.
         group: String,
         /// The account to remove.
         member: String,
-        /// Under the `transfer` mode, the account that takes over the member's grants.
+        /// Grant-disposition mode. Defaults to the group's configured remove default.
+        #[arg(long, value_enum)]
+        mode: Option<GroupRemoveMode>,
+        /// The successor category for `--mode transfer` (defaults to `member`).
+        #[arg(long, value_enum)]
+        successor_kind: Option<SuccessorKind>,
+        /// The account for a `member` or `designated` transfer successor.
         #[arg(long, value_name = "ACCOUNT")]
         successor: Option<String>,
     },
@@ -1581,6 +1597,21 @@ pub enum GroupTemplate {
     Normal,
     /// Two members who ask and accept each other.
     Friendship,
+}
+
+/// A requested mode for `id group remove`; `server-default` is resolved before recording.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupRemoveMode {
+    /// Resolve to the group's configured removal default.
+    ServerDefault,
+    /// End the removed member's grants.
+    Revoke,
+    /// Transfer the removed member's grants to a successor.
+    Transfer,
+    /// Keep grants under their original grantor.
+    KeepPrior,
+    /// Re-anchor grants at the group.
+    ReassignToGroup,
 }
 
 /// The arguments of `id delegate`.
@@ -2154,13 +2185,16 @@ pub enum WorldCommand {
         #[arg(long)]
         allow_partial: bool,
     },
-    /// List the worlds a host serves (needs the host's admin token).
+    /// List the worlds a host serves. Without `--admin-token` this reads
+    /// the host's public directory (#812: names, loaded state, presence
+    /// counts); with it, the admin listing is used.
     List {
         /// The host's node ID (64 hex characters).
         node: String,
         /// Admin secret configured with `serve --world-admin-token`.
+        /// Optional: omit it to read the public directory.
         #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
-        admin_token: String,
+        admin_token: Option<String>,
         /// Print one JSON object instead of tab-separated lines.
         #[arg(long)]
         json: bool,

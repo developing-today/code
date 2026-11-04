@@ -10,11 +10,27 @@ import { stat } from "node:fs/promises";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
 import { ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
-import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
+import {
+  checkActionAgainstItem,
+  effectiveNeedsOrder,
+  effectiveStandingAuto,
+  findTierItem,
+  questionIdForOption,
+} from "./tier-items.ts";
 import { commentKindCounts, CommentsStore, queuedComments, validateNewComment } from "./comments.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
 import { EventsStore, emitEvent } from "./events.ts";
+import {
+  IngestionStore,
+  WatchdogEpisodeStabilizer,
+  ingestActivity,
+  createWatchdogGapSyncQueue,
+  watchdogDeliveries,
+  activityCoverageHtml,
+  gapsHtml,
+  ACTIVITY_SOURCE_COVERAGE,
+} from "./activity.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import {
   computeCoverage,
@@ -26,6 +42,7 @@ import {
 import { loadConfig } from "./config.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
+import { shouldFetchNeedsDrewCensus, type NeedsDrewCensus } from "./needs-drew.ts";
 import {
   buildHealth,
   pageRenderHealth,
@@ -35,6 +52,7 @@ import {
   type ItemsCoverage,
 } from "./health.ts";
 import { manifestRouteFor } from "./pages.ts";
+import { conflictInbox, type ConflictInbox } from "./conflicts.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
 import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
 import {
@@ -65,6 +83,7 @@ import {
   renderBoardBody,
   renderDiscuss,
   renderDns,
+  renderConflicts,
   renderHealth,
   renderItem,
   deriveOverview,
@@ -81,6 +100,7 @@ import {
   renderQueueShell,
   buildRoadmapDrill,
   renderRoadmap,
+  renderSearch,
   renderServiceDetail,
   renderSessions,
   renderToday,
@@ -101,9 +121,11 @@ import {
 import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
 import { resolveBwsSecret } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
-import { renderAlerts, esc } from "./render.ts";
+import { renderAlerts, renderNotifications, esc } from "./render.ts";
+import { rollupNotificationSends } from "./notifications.ts";
 import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
+import { searchWork } from "./search-view.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
@@ -141,6 +163,7 @@ async function coverageSnapshot(
 const actionsStore = new ActionsStore(cfg.actionsFile);
 const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);
+const activityStore = new IngestionStore(cfg.activityFile);
 
 /** #1739: the event log's fire-and-forget sink for source-side
  *  writers (orchestration publishes, registry merges). Never awaited,
@@ -148,6 +171,54 @@ const eventsStore = new EventsStore(cfg.eventsFile);
 function recordStreamEvent(event: Parameters<typeof emitEvent>[1]): void {
   void emitEvent(eventsStore, event);
 }
+
+/** #3321: the activity-ingestion sink for the source-side writers
+ *  (watchdog episodes, Kaneo board changes). Dedupe + checkpoints
+ *  live in the store. The returned promise resolves true only when
+ *  every delivery is durable (ingested or already seen): the live
+ *  source awaits it as the acknowledgment that lets it discard its
+ *  Kaneo baseline (Codex P2, PR #5141) — failed deliveries retain
+ *  their cards' baseline entries so the next poll retries the same
+ *  stable delivery ids, while acknowledged cards advance. */
+async function recordActivity(
+  deliveries: Parameters<typeof ingestActivity>[2],
+): Promise<{ failed: number; failedIds: string[] }> {
+  const result = await ingestActivity(activityStore, eventsStore, deliveries);
+  return { failed: result.failed, failedIds: result.failedIds };
+}
+
+/** #3321: the source-gap sink for the live source's polling gaps
+ *  (Codex P2, PR #5141): a non-null `to` records (or extends) the
+ *  open gap for the source; a null `to` is recovery — the open gap
+ *  resolves as backfilled, since polling has resumed and the next
+ *  diff lands against the preserved baseline. Never throws into the
+ *  source's read path. */
+async function recordSourceGap(source: string, from: string, to: string | null): Promise<void> {
+  try {
+    if (to !== null) {
+      await activityStore.recordGap(source, from, to);
+      return;
+    }
+    for (const gap of await activityStore.gaps()) {
+      if (gap.source === source && gap.status === "open") {
+        // Recovery happened now, not at the last failed poll: extend
+        // the gap window to the recovery moment as it resolves
+        // (Codex P2, PR #5141).
+        await activityStore.resolveGap(gap.id, "backfilled", new Date().toISOString());
+      }
+    }
+  } catch (err) {
+    console.error(
+      `[activity] WARNING: source gap record failed for ${source}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/** #3321: pins watchdog episodes to their first-observed `since`
+ *  (Codex P2, PR #5141) — watchdogTierItems assigns `now` for
+ *  several breach kinds, so without this the stream would gain a
+ *  new "episode" on every attention render of one outage. */
+const watchdogEpisodes = new WatchdogEpisodeStabilizer();
 async function hasStreamEvent(kind: string, ref: string): Promise<boolean> {
   return eventsStore.has(kind, ref);
 }
@@ -161,6 +232,9 @@ function pickSource(): Source {
         standingAuto: async () => effectiveStandingAuto(await actionsStore.all()).standingAuto,
         onEvent: recordStreamEvent,
         hasEvent: hasStreamEvent,
+        onActivity: recordActivity,
+        onSourceGap: recordSourceGap,
+        seenActivityIds: (source) => activityStore.seenIds(source),
       })
     : fixtureSource();
 }
@@ -219,6 +293,20 @@ async function ensureProvenancePrimed(): Promise<void> {
 }
 
 /**
+ * The source-conflict inbox (#1282 slice 1), assembled from the same facets
+ * the rest of the dashboard reads. Read-only: detection collects what the
+ * facets already report, and no render changes because of it.
+ */
+async function assembleConflicts(): Promise<ConflictInbox> {
+  const [pool, orchestration, usage] = await Promise.all([
+    source.projects().catch(() => []),
+    source.orchestration().catch(() => null),
+    source.usage().catch(() => emptyUsageView()),
+  ]);
+  return conflictInbox({ pool, orchestration, services: usage.services });
+}
+
+/**
  * The one health assembly behind both /health and /api/health
  * (#1147): primed provenance first (so facet truth never depends on
  * request order, #1267), then the feed snapshot the section ages and
@@ -250,6 +338,7 @@ async function healthContext(prime = true): Promise<HealthView> {
     detail: source.provenanceDetail?.(),
     itemsCoverage: lastItemsCoverage,
     comments: await commentsStore.pendingCounts().catch(() => undefined),
+    conflicts: await assembleConflicts().catch(() => null),
   });
 }
 
@@ -408,6 +497,19 @@ async function roadmapContext() {
   return { rows, items, pool: poolResult.pool, reconciliation, drill };
 }
 
+async function searchContext(query: string) {
+  const [board, rows] = await Promise.all([source.board(), source.roadmap()]);
+  const refs = [...new Set([...allRefs(board), ...allRefs(rows)])];
+  const items = await source.items(refs);
+  return { query, results: searchWork(board, rows, items, query), items };
+}
+
+// #3321: watchdog gap-sync passes run whole and in observation
+// order through this queue (Codex P2, PR #5141 round 5) — see
+// createWatchdogGapSyncQueue in activity.ts for why the bare
+// fire-and-forget sync interleaved.
+const enqueueWatchdogGapSync = createWatchdogGapSyncQueue();
+
 // #1148: the watchdog derives NEEDS ORCHESTRATOR items from the
 // current diagnoses (feed age + probes via the health assembly —
 // its probe cache keeps this cheap — plus the orchestration
@@ -420,7 +522,7 @@ async function roadmapContext() {
 async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["diagnostics"]>>["orchestration"]) {
   if (cfg.source !== "live") return [];
   const health = await healthContext(false);
-  return watchdogTierItems({
+  const items = watchdogTierItems({
     now: Date.now(),
     feedAgeMs: health.feed.ageMs,
     feedGeneratedAt: health.feed.generatedAt,
@@ -436,13 +538,37 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
         ...(s.probedAt ? { probedAt: s.probedAt } : {}),
       })),
   });
+  // #3321: every derivation is also an ingestion pass — the current
+  // breach episodes go to the stream (dedupe makes re-derivation a
+  // no-op) and the gap records sync with the breach set. Episodes
+  // are stabilized first (first-observed `since` wins until the
+  // breach clears), so one continuous outage is one delivery.
+  const stableItems = watchdogEpisodes.stabilize(items);
+  void recordActivity(watchdogDeliveries(stableItems));
+  void enqueueWatchdogGapSync(activityStore, stableItems).catch((err) => {
+    console.error(
+      `[activity] WARNING: watchdog gap sync failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
+  return items;
 }
 
-async function attentionContext() {
-  const [feed, summary, coverage] = await Promise.all([
+async function attentionContext(opts: { census?: boolean } = {}) {
+  // #1226/#3970: the Needs-Drew census costs up to eight sequential
+  // GitHub search calls (up to ~64 s when the API is unreachable). Only
+  // the attention page render consumes it, so it opts in; the overview,
+  // Today, /api/attention.json and /api/coverage.json must not inherit
+  // that external dependency (Codex P2 on PR #3970).
+  const wantsCensus = shouldFetchNeedsDrewCensus(opts);
+  const [feed, summary, coverage, census] = await Promise.all([
     source.attention().catch(() => []),
     source.orchestration().catch(() => null),
     source.coverage().catch(() => []),
+    // A source without the census (or a failed sweep) yields null and
+    // the view renders it as unavailable, never as an empty queue.
+    wantsCensus
+      ? ((source.needsDrew?.() ?? Promise.resolve(null)).catch(() => null) as Promise<NeedsDrewCensus | null>)
+      : Promise.resolve<NeedsDrewCensus | null>(null),
   ]);
   // Read the diagnosis AFTER orchestration() has run: the live source
   // recomputes it on every orchestration read (#1139).
@@ -453,6 +579,7 @@ async function attentionContext() {
     coverage,
     orchestration: summary,
     diagnosis,
+    census,
   };
 }
 
@@ -505,7 +632,7 @@ async function boardRender() {
  *  the view, the action/comment stores grouped by object, and the
  *  effective Needs-you order preference (#1456). */
 async function attentionRender() {
-  const { view, coverage, orchestration, diagnosis } = await attentionContext();
+  const { view, coverage, orchestration, diagnosis, census } = await attentionContext({ census: true });
   const [pool, formOpts, actionsByObject, commentsByObject, counts, allActions] = await Promise.all([
     source.projects().catch(() => []),
     commentFormOpts(),
@@ -528,7 +655,7 @@ async function attentionRender() {
     needsOrder: order.order,
     needsOrderPending: order.pending,
   };
-  return { view, coverage, counts, act, briefs };
+  return { view, coverage, counts, act, briefs, census };
 }
 
 async function todaySignals() {
@@ -798,13 +925,14 @@ async function handler(req: Request): Promise<Response> {
       // consumer rejects what it cannot apply.
       if (parsed.value.kind === "triage") {
         const section = await source.orchestration().catch(() => null);
+        let item: ReturnType<typeof findTierItem>;
         if (section) {
-          const problem = checkActionAgainstItem(
-            parsed.value,
-            findTierItem(section, parsed.value.objectRef),
-            Date.now(),
-          );
+          item = findTierItem(section, parsed.value.objectRef);
+          const problem = checkActionAgainstItem(parsed.value, item, Date.now());
           if (problem) return json({ error: problem }, 400);
+        }
+        if (parsed.value.verb === "answer" && parsed.value.payload.optionId) {
+          parsed.value.payload.questionId = questionIdForOption(item, parsed.value.payload.optionId) ?? "$options";
         }
       }
       // #1509: persistence failure -> 5xx (see /api/comments above).
@@ -815,6 +943,29 @@ async function handler(req: Request): Promise<Response> {
         return json({ error: `action persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
       }
       const { action, created } = added;
+      if (added.duplicateOf) {
+        return json(
+          {
+            error: `duplicate answer recorded as ${action.id}; it points to existing answer action ${added.duplicateOf}`,
+            action,
+            duplicateOf: added.duplicateOf,
+          },
+          409,
+        );
+      }
+      // A client-token replay of an already-persisted duplicate attempt
+      // keeps the rejected semantics instead of reading as a fresh
+      // "sent · pending" success (Codex P2 on PR #4024).
+      if (!created && action.duplicateOf) {
+        return json(
+          {
+            error: `duplicate answer recorded as ${action.id}; it points to existing answer action ${action.duplicateOf}`,
+            action,
+            duplicateOf: action.duplicateOf,
+          },
+          409,
+        );
+      }
       // #1276: saved-view preference verbs are applied by the
       // aggregator itself to the views store and marked applied (or
       // rejected, with the reason) in the same request — the action
@@ -960,7 +1111,10 @@ async function handler(req: Request): Promise<Response> {
       ref: url.searchParams.get("ref") ?? undefined,
       actor: url.searchParams.get("actor") ?? undefined,
     });
-    return json({ events });
+    // #3322 slice A: the audit health surface rides along — pending
+    // retry-outbox count + hash-chain integrity verdict.
+    const health = await eventsStore.health();
+    return json({ events, health });
   }
   if (path === "/events") {
     // #1739: the human page over the same stream /api/events.json
@@ -983,8 +1137,20 @@ async function handler(req: Request): Promise<Response> {
         `<h1>Events</h1><p>${events.length} event(s), newest first. ` +
         `Machine twin: <a href="/api/events.json">/api/events.json</a> (filters: kind, ref, actor).</p>` +
         `<table><thead><tr><th>at</th><th>actor</th><th>kind</th><th>ref</th><th>summary</th></tr></thead>` +
-        `<tbody>${rows}</tbody></table></body></html>`,
+        `<tbody>${rows}</tbody></table>` +
+        `<h2>Activity gaps</h2>` +
+        gapsHtml(await activityStore.gaps()) +
+        `<h2>Activity source coverage</h2>` +
+        activityCoverageHtml() +
+        `</body></html>`,
     );
+  }
+  if (path === "/api/activity.json") {
+    // #3321: activity-ingestion state — per-source checkpoints, gap
+    // records, and the documented source coverage. The machine twin
+    // of the sections the /events page renders below its table.
+    const [checkpoints, gaps] = await Promise.all([activityStore.checkpoints(), activityStore.gaps()]);
+    return json({ checkpoints, gaps, coverage: ACTIVITY_SOURCE_COVERAGE });
   }
   if (path === "/api/views.json") {
     // #1276: the saved views, per owner (?owner=<kind>:<id>) or all.
@@ -1187,7 +1353,7 @@ async function handler(req: Request): Promise<Response> {
     const svc = usage.services.find((s) => s.id === serviceMatch[1]);
     if (svc) return html(renderServiceDetail(svc, usage.history[svc.id] ?? [], prov(), provDetail()));
     return html(
-      `<h1>Not found</h1><p class="muted">no SaaS service with id <code>${serviceMatch[1]}</code> — <a href="/quota">back to Usage &amp; billing</a></p>`,
+      `<h1>Not found</h1><p class="muted">no SaaS service with id <code>${esc(serviceMatch[1])}</code> — <a href="/quota">back to Usage &amp; billing</a></p>`,
       404,
     );
   }
@@ -1198,20 +1364,29 @@ async function handler(req: Request): Promise<Response> {
     if (url.searchParams.get("full") !== "1") {
       return html(renderAttentionShell(prov(), provDetail()));
     }
-    const { view, coverage, counts, act, briefs } = await attentionRender();
-    return html(renderAttention(view, coverage, prov(), counts, provDetail(), act, briefs));
+    const { view, coverage, counts, act, briefs, census } = await attentionRender();
+    return html(renderAttention(view, coverage, prov(), counts, provDetail(), act, briefs, census));
   }
   const attnFragMatch = /^\/frag\/attention\/(header|queues|sessions)$/.exec(path);
   if (attnFragMatch) {
     const section = attnFragMatch[1] as "header" | "queues" | "sessions";
-    const { view, coverage, counts, act, briefs } = await attentionRender();
-    const sections = attentionSections(view, coverage, counts, act, briefs);
+    const { view, coverage, counts, act, briefs, census } = await attentionRender();
+    const sections = attentionSections(view, coverage, counts, act, briefs, census);
     return sseResponse(ssePatch(`#attn-${section}`, attentionFragment(section, sections[section])));
   }
   if (path === "/assets/datastar.js") {
     // The vendored Datastar bundle (#1444) — a static asset, never a
     // service worker; /sw.js keeps serving the kill switch.
     const file = Bun.file(new URL("./assets/datastar.js", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
+  }
+  if (path === "/assets/aa-explorer-computations.js") {
+    // Shared with Bun tests so the browser and regression suite exercise the
+    // same Cost Explorer calculations.
+    const file = Bun.file(new URL("./assets/aa-explorer-computations.js", import.meta.url));
     if (!(await file.exists())) return json({ error: "asset missing" }, 404);
     return new Response(file, {
       headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
@@ -1251,6 +1426,14 @@ async function handler(req: Request): Promise<Response> {
       ),
     );
   }
+  if (path === "/search") {
+    const { query, results, items } = await searchContext(url.searchParams.get("q") ?? "");
+    return html(renderSearch(query, results, items, prov(), provDetail()));
+  }
+  if (path === "/api/search.json") {
+    const { query, results } = await searchContext(url.searchParams.get("q") ?? "");
+    return json({ query: query.trim(), total: results.length, results });
+  }
   if (path === "/api/registry.json") {
     const records = await source.registry();
     // #1209: same query pipeline as /sessions — same params, same page.
@@ -1286,6 +1469,15 @@ async function handler(req: Request): Promise<Response> {
   // #1279: briefs need the latest comment per item, guaranteed per ref —
   // the bulk comments() read can truncate an item's latest comment away
   // in a busy batch, so prefer the source's per-ref latest read.
+  // #1282 slice 1: one read-only inbox over every disagreement the facets
+  // report. The page and its JSON twin are the same projection, assembled
+  // once per request — they cannot disagree about what disagrees.
+  if (path === "/conflicts" || path === "/api/conflicts.json") {
+    const inbox = await assembleConflicts();
+    if (path === "/api/conflicts.json") return json(inbox);
+    return html(renderConflicts(inbox, prov(), provDetail()));
+  }
+
   if (path === "/api/projects.json") {
     const [pool, census, poolAvailable] = await Promise.all([
       source.projects().catch(() => []),
@@ -1370,7 +1562,7 @@ async function handler(req: Request): Promise<Response> {
     const config = projectConfigById(programProjectMatch[1]);
     if (!config) {
       return html(
-        `<h1>Not found</h1><p class="muted">no project with id <code>${programProjectMatch[1]}</code> in the registry (<code>src/project-config.ts</code>) — <a href="/program">back to the projects index</a></p>`,
+        `<h1>Not found</h1><p class="muted">no project with id <code>${esc(programProjectMatch[1])}</code> in the registry (<code>src/project-config.ts</code>) — <a href="/program">back to the projects index</a></p>`,
         404,
       );
     }
@@ -1506,6 +1698,15 @@ async function handler(req: Request): Promise<Response> {
       .map((metricId) => ({ metricId, pace: projectPace(history, metricId) }))
       .filter((p) => p.pace);
     return json({ service: svc, history, paces });
+  }
+  if (path === "/api/needs-drew.json") {
+    // #1226: the Needs-Drew label census as data — open user/review +
+    // user/escalated items across the four repos with per-source
+    // status and freshness. 503 when this source cannot census, so a
+    // consumer never mistakes "unavailable" for "nothing waiting".
+    const census = (await source.needsDrew?.().catch(() => null)) ?? null;
+    if (!census) return json({ error: "needs-drew census unavailable from this source" }, 503);
+    return json(census);
   }
   if (path === "/api/attention.json") {
     // Slice 2: the flat array shape stays; entries are now current-only
@@ -1680,6 +1881,27 @@ async function handler(req: Request): Promise<Response> {
         : json({ error: "alerts store unavailable" }, 503);
     }
   }
+  if (path === "/notifications" || path === "/api/notifications.json") {
+    // #3319: the weekly sent-vs-acted roll-up over the send ledger.
+    // Same reachability as every dashboard page (the tailnet origin);
+    // the only alerts write surface stays the bearer-gated intake.
+    const store = await getAlertsStore();
+    if (!store) {
+      return path === "/notifications"
+        ? html(renderNotifications({ available: false, rollup: null }, prov()))
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+    try {
+      const sends = await store.listSends();
+      const rollup = rollupNotificationSends(sends, new Date());
+      if (path === "/api/notifications.json") return json(rollup);
+      return html(renderNotifications({ available: true, rollup }, prov()));
+    } catch {
+      return path === "/notifications"
+        ? html(renderNotifications({ available: false, rollup: null }, prov()))
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+  }
   if (path === "/api/health") {
     // #1267: prime first — health's answer must not depend on
     // request order. `sections` carries the structured diagnosis
@@ -1706,6 +1928,11 @@ async function handler(req: Request): Promise<Response> {
     body.pages = view.pages.map((p) => ({ route: p.route, lastRenderedAt: p.lastRenderedAt, ok: p.ok }));
     body.jobs = view.jobs;
     body.comments = view.comments;
+    body.conflicts = view.conflicts;
+    // #1203: the ready-for-agent harness facet — backend readiness,
+    // repository settings, work-item counts and GraphQL errors reach the
+    // machine surface too, not only the rendered page.
+    body.rfa = view.rfa;
     body.degraded = view.degraded;
     return json(body);
   }
@@ -1774,7 +2001,7 @@ async function handler(req: Request): Promise<Response> {
       return html(renderItem(title, id, links, items, comments, prov(), extras));
     }
     return html(
-      `<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${id}</code></p>`,
+      `<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${esc(id)}</code></p>`,
       404,
     );
   }

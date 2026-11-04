@@ -23,7 +23,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isProjectPoolItem, parseProjectItems } from "../src/projects.ts";
-import type { PaygLine, QuotaCredentialRow, QuotaPool, QuotaView, QuotaWindow } from "../src/model.ts";
+import type { PaygLine, QuotaCredentialRow, QuotaPool, QuotaView, QuotaWindow, SessionRecord } from "../src/model.ts";
 
 // Minimal valid pool item: edges entirely absent (the missing-edge
 // shape must validate cleanly — absence is data, not an error).
@@ -644,6 +644,21 @@ describe("feed subscriptions sanitization (#2446)", () => {
     expect(out.dropped).toBe(1);
   });
 
+  test("invalid renewsAt strings drop; ISO dates and null survive (#3513)", async () => {
+    const bad = (renewsAt: string) => ({ name: "Bad", plan: "p", renewsAt });
+    const out = sanitizeSubscriptions([
+      SUB,
+      SUB_NULL_RENEW,
+      bad("banana"),
+      bad("2026-02-30"),
+      bad("2026-13-01"),
+      bad("12/01/2026"),
+      bad("2026-12-01banana"),
+    ]);
+    expect(out.rows).toEqual([SUB, SUB_NULL_RENEW]);
+    expect(out.dropped).toBe(5);
+  });
+
   test("a mixed valid/invalid array through loadFeed keeps only renderer-safe rows", async () => {
     const loaded = await loadWithSubs([SUB, null, "junk", { name: "Ok", plan: 7, renewsAt: null }, SUB_NULL_RENEW]);
     expect(loaded?.subscriptions).toEqual([SUB, SUB_NULL_RENEW]);
@@ -677,7 +692,16 @@ describe("feed subscriptions sanitization (#2446)", () => {
 });
 
 describe("feed registry sanitization (#2539)", () => {
-  const RECORD = { id: "ses-1", source: "claude-code", label: "Muse run", taskRefs: [] };
+  const RECORD: SessionRecord = {
+    id: "ses-1",
+    source: "claude-code",
+    label: "Muse run",
+    agentId: "claude-code",
+    agentLabel: "Muse",
+    parentId: null,
+    status: "in-progress",
+    taskRefs: [],
+  };
   const feedWithRegistry = (registry: unknown) => ({
     version: 1,
     generatedAt: "2026-10-01T00:00:00Z",
@@ -764,10 +788,14 @@ describe("feed PAYG sanitization (#2450)", () => {
       { ...PAYG, label: null },
       { ...PAYG, accruedUsd: "23.92" },
       { ...PAYG, accruedUsd: Number.POSITIVE_INFINITY },
+      { ...PAYG, accruedUsd: -0.01 },
       { ...PAYG, collectedUsd: "23.91" },
+      { ...PAYG, collectedUsd: -0.01 },
       { ...PAYG, unbilledUsd: "6.01" },
+      { ...PAYG, unbilledUsd: -0.01 },
       { ...PAYG, note: 42 },
       { ...PAYG, measuredAt: 42 },
+      { ...PAYG, measuredAt: "banana" },
       { ...PAYG, sourceClass: "unknown" },
     ]) {
       expect(isPaygLine(bad)).toBe(false);
@@ -798,6 +826,29 @@ describe("feed PAYG sanitization (#2450)", () => {
     expect(loaded?.paygDropped).toBe(2);
   });
 
+  test("negative and inverted measurements drop individually; valid and null controls survive", async () => {
+    const allNull = {
+      ...PAYG,
+      accruedUsd: null,
+      collectedUsd: null,
+      estimate: null,
+      unbilledUsd: null,
+      measuredAt: null,
+    };
+    const invalid = [
+      { ...PAYG, accruedUsd: -1 },
+      { ...PAYG, collectedUsd: -1 },
+      { ...PAYG, unbilledUsd: -1 },
+      { ...PAYG, estimate: { low: -1, high: 5, period: "month" } },
+      { ...PAYG, estimate: { low: 1, high: -1, period: "month" } },
+      { ...PAYG, estimate: { low: 6, high: 5, period: "month" } },
+      { ...PAYG, measuredAt: "banana" },
+    ];
+    const loaded = await loadWithPayg([PAYG, ...invalid, allNull]);
+    expect(loaded?.payg).toEqual([PAYG, allNull]);
+    expect(loaded?.paygDropped).toBe(invalid.length);
+  });
+
   test("estimate variants are checked structurally", async () => {
     const noEstimate = { ...PAYG };
     delete noEstimate.estimate;
@@ -808,6 +859,9 @@ describe("feed PAYG sanitization (#2450)", () => {
       { ...PAYG, estimate: { high: 25, period: "month" } },
       { ...PAYG, estimate: { low: "20", high: 25, period: "month" } },
       { ...PAYG, estimate: { low: Number.POSITIVE_INFINITY, high: 25, period: "month" } },
+      { ...PAYG, estimate: { low: -1, high: 25, period: "month" } },
+      { ...PAYG, estimate: { low: 20, high: -1, period: "month" } },
+      { ...PAYG, estimate: { low: 26, high: 25, period: "month" } },
       { ...PAYG, estimate: { low: 20, high: 25, period: 3 } },
       { ...PAYG, estimate: { low: 20, high: 25, period: "month", note: 3 } },
     ];
@@ -935,7 +989,7 @@ describe("feed chargesAttention gate + sanitization (#2439)", () => {
     normalized: "mystery ai",
     amountUsd: 42.5,
     at: "2026-10-30",
-    source: "plaid",
+    source: "plaid" as const,
   };
   const feedWithCa = (chargesAttention: unknown) => ({
     version: 1,
@@ -1015,7 +1069,7 @@ describe("charge gates reject impossible rows (#3458)", () => {
     normalized: "mystery ai",
     amountUsd: 42.5,
     at: "2026-10-30",
-    source: "plaid",
+    source: "plaid" as const,
   };
   const baseFeed = (extra: unknown) => ({
     version: 1,

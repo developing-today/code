@@ -180,6 +180,15 @@ func mustJSON(v any) json.RawMessage {
 // become a stored question that whatever drives mcpx can answer -- which is
 // exactly what "passthrough" means.
 func (r *Registry) answerServer(ctx context.Context, server, key, method string, params json.RawMessage) (any, error) {
+	if method == "sampling/createMessage" && r.consumer.SamplingAnswerLocally {
+		// sampling.answerLocally (#1925 slice 3): mcpx answers from its
+		// own configured provider layer instead of relaying the request
+		// to a caller. This precedes the broker check on purpose: a
+		// local answer needs no broker, and a daemon with the setting
+		// on but nothing configured hears the clean failure from
+		// sampleLocally rather than a missing-broker error.
+		return r.sampleLocally(ctx, server, key, params)
+	}
 	if r.broker == nil {
 		// Nothing can answer, so say so rather than hang. Cancel is honest:
 		// nobody was asked, so nobody chose.

@@ -682,14 +682,23 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             no_relay,
         } => {
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, None).await?;
-            let result = client.list_worlds(&admin_token).await;
+            // With an admin token this is the admin listing; without one
+            // it is the host's public directory (#812) — same reply shape.
+            let result = match &admin_token {
+                Some(token) => client.list_worlds(token).await,
+                None => client.directory().await,
+            };
             client.close();
             endpoint.close().await;
             let (default, worlds) = result?;
             if json {
                 let worlds: Vec<crate::world_hub::WorldInfo> = worlds
                     .into_iter()
-                    .map(|(name, open)| crate::world_hub::WorldInfo { name, open })
+                    .map(|(name, open, presence)| crate::world_hub::WorldInfo {
+                        name,
+                        open,
+                        presence,
+                    })
                     .collect();
                 println!(
                     "{}",
@@ -698,7 +707,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                     ))?
                 );
             } else {
-                for (name, open) in worlds {
+                for (name, open, _presence) in worlds {
                     println!("{}", world_list_plain_row(&name, &default, open));
                 }
             }
@@ -1819,24 +1828,22 @@ where
                 Some(line) => {
                     let line = line.trim();
                     if line.is_empty() { continue; }
-                    let frame = if command_mode {
-                        match pump_command(line, capability) {
-                            PumpLine::Send(frame) => frame,
-                            PumpLine::Say { level, message } => {
-                                if json {
-                                    println!("{}", local_transcript_record(level, &message));
-                                } else {
-                                    eprintln!("{message}");
-                                }
-                                continue;
-                            }
-                            PumpLine::Quit => break Ok(()),
-                        }
+                    let action = if command_mode {
+                        pump_command(line, capability)
                     } else {
-                        match line.strip_prefix("/input ") {
-                            Some(hex) => serde_json::json!({"type": "input", "data_hex": hex.trim()}),
-                            None => serde_json::json!({"type": "chat", "text": line}),
+                        pump_plain(line)
+                    };
+                    let frame = match action {
+                        PumpLine::Send(frame) => frame,
+                        PumpLine::Say { level, message } => {
+                            if json {
+                                println!("{}", local_transcript_record(level, &message));
+                            } else {
+                                eprintln!("{message}");
+                            }
+                            continue;
                         }
+                        PumpLine::Quit => break Ok(()),
                     };
                     if let Err(e) = write_frame_to(&mut send, frame.to_string().as_bytes()).await {
                         break Err(e);
@@ -1883,7 +1890,7 @@ fn check_contract(text: &str) -> Result<String> {
     )
 }
 
-/// What one stdin line does in the `id world join --command-mode` pump.
+/// What one stdin line does in the `id world join` pump.
 #[derive(Debug, PartialEq, Eq)]
 enum PumpLine {
     /// Send this session frame.
@@ -1947,6 +1954,29 @@ fn pump_command(line: &str, capability: &str) -> PumpLine {
             };
         }
     })
+}
+
+/// Map the plain `id world join` input line, validating `/input` while
+/// leaving every other line as chat.
+fn pump_plain(line: &str) -> PumpLine {
+    use crate::world_line::{WorldLine, parse_line};
+
+    if line != "/input" && !line.starts_with("/input ") {
+        return PumpLine::Send(serde_json::json!({"type": "chat", "text": line}));
+    }
+    match parse_line(line) {
+        Some(WorldLine::Input(hex)) => {
+            PumpLine::Send(serde_json::json!({"type": "input", "data_hex": hex}))
+        }
+        Some(WorldLine::Message(message)) => PumpLine::Say {
+            level: "error",
+            message,
+        },
+        _ => PumpLine::Say {
+            level: "info",
+            message: "usage: /input <hex>".to_owned(),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -2178,6 +2208,36 @@ mod tests {
     }
 
     #[test]
+    fn the_plain_pump_validates_input_and_preserves_chat() {
+        use super::pump_plain;
+        use serde_json::json;
+
+        for hex in ["00af", "00AF"] {
+            assert_eq!(
+                pump_plain(&format!("/input {hex}")),
+                PumpLine::Send(json!({"type": "input", "data_hex": "00af"}))
+            );
+        }
+        assert_eq!(
+            pump_plain("/input  00AF"),
+            PumpLine::Send(json!({"type": "input", "data_hex": "00af"}))
+        );
+        for line in ["/input ZZ", "/input 0", "/input"] {
+            assert_eq!(
+                pump_plain(line),
+                PumpLine::Say {
+                    level: "error",
+                    message: "usage: /input <hex>".to_owned()
+                }
+            );
+        }
+        assert_eq!(
+            pump_plain("hello world"),
+            PumpLine::Send(json!({"type": "chat", "text": "hello world"}))
+        );
+    }
+
+    #[test]
     fn the_contract_check_reports_conformance_or_every_violation() {
         let good = [
             r#"{"from": "client", "frame": {"type": "join", "capability": "c"}}"#,
@@ -2187,7 +2247,7 @@ mod tests {
         .join("\n");
         assert_eq!(
             check_contract(&good).unwrap(),
-            "3 frames conform to shell contract v1.4"
+            "3 frames conform to shell contract v1.5"
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,

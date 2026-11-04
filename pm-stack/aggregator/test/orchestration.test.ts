@@ -633,7 +633,17 @@ describe("live source diagnostics + provenance detail (#1139/#1138)", () => {
   test("registry facet counts the MERGED total, with its noun (#1138)", async () => {
     const src = await sourceWithFeed({
       orchestration: liveSection(),
-      registry: [{ id: "ses-diag-1", source: "opencode-sandbox", label: "Diag session", taskRefs: [] }],
+      registry: [
+        {
+          id: "ses-diag-1",
+          source: "opencode-sandbox",
+          label: "Diag session",
+          status: "idle",
+          agentId: "opencode:main",
+          agentLabel: "OpenCode · main (sandbox)",
+          taskRefs: [],
+        },
+      ],
     });
     const records = await src.registry();
     expect(records.length).toBe(1);
@@ -659,8 +669,24 @@ describe("live source diagnostics + provenance detail (#1139/#1138)", () => {
 
     const clean = await sourceWithFeed({
       registry: [
-        { id: "ses-muse-1", source: "claude-code", label: "Muse launch", taskRefs: [] },
-        { id: "ses-opencode-1", source: "opencode-sandbox", label: "OpenCode session", taskRefs: [] },
+        {
+          id: "ses-muse-1",
+          source: "claude-code",
+          label: "Muse launch",
+          status: "launched",
+          agentId: "claude-code",
+          agentLabel: "Muse",
+          taskRefs: [],
+        },
+        {
+          id: "ses-opencode-1",
+          source: "opencode-sandbox",
+          label: "OpenCode session",
+          status: "idle",
+          agentId: "opencode:main",
+          agentLabel: "OpenCode · main (sandbox)",
+          taskRefs: [],
+        },
       ],
     });
     expect(await clean.registry()).toHaveLength(2);
