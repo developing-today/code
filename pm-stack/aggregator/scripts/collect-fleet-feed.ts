@@ -68,7 +68,7 @@
 // the feed's snapshots field for the laptop store to ingest),
 // CHARGE_CANDIDATES_PATH / CHARGES_SURFACED_STATE_PATH (#1057: the
 // producer's candidates file and the collector's surfaced-once state),
-// SUPABASE_PROJECT_REF (else the Bitwarden supabase.project-ref secret;
+// SUPABASE_PROJECT_REF (else the Bitwarden supabase.muse-dev2.project-ref secret;
 // fallback default: the muse-dev2 project),
 // AA_OPENCODE_CONFIG_PATH (default: the repo's .opencode/opencode.jsonc).
 import { execFile } from "node:child_process";
@@ -447,11 +447,11 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     lastGood ? { ...lastGood.section, stale: true, staleReason: reason } : aaAbsent(reason, generatedAt);
   const token = await resolveBwsSecret("supabase.access-token-muse-cli");
   if (!token) return degrade("no Supabase management token available (bws)");
-  // Project ref: env override, else the Bitwarden supabase.project-ref
+  // Project ref: env override, else the Bitwarden supabase.muse-dev2.project-ref
   // secret (the same resolve-by-name discipline as the token), else the
   // muse-dev2 project — never the retired muse-dev project.
   const ref =
-    process.env.SUPABASE_PROJECT_REF ?? (await resolveBwsSecret("supabase.project-ref")) ?? "keihfchslgjetkmnmzra";
+    process.env.SUPABASE_PROJECT_REF ?? (await resolveBwsSecret("supabase.muse-dev2.project-ref")) ?? "keihfchslgjetkmnmzra";
   const fingerprint = await opencodeConfigFingerprint();
   // Cheap batch probe first (code#3332): the payload only changes on a
   // new import or a config change, so most ticks reuse the last good
