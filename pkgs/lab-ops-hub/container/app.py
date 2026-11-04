@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Lab Ops Hub crawler container.
 
-Tiny stdlib-only HTTP service. POST /crawl {"url": "..."} -> fetches the page
-with a real HTTP client, extracts title / link count / readable text, returns
-JSON in the same shape the Worker's fallback produces. Runs only on demand
-(Worker starts it via getContainer, sleepAfter=2m kills it when idle), so it
-burns container minutes only while crawling.
+Tiny HTTP service with one IDNA dependency. POST /crawl {"url": "..."} ->
+fetches the page with a real HTTP client, extracts title / link count / readable
+text, returns JSON in the same shape the Worker's fallback produces. Runs only
+on demand (Worker starts it via getContainer, sleepAfter=2m kills it when idle),
+so it burns container minutes only while crawling.
 """
 
 import base64
@@ -22,6 +22,8 @@ import urllib.request
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import unquote, urlparse, urlsplit
+
+import idna
 
 # Crawl-target policy (#441): the Worker validates before dispatching,
 # and this service re-validates independently (defence in depth — it is
@@ -521,10 +523,19 @@ def validate_crawl_url(raw):
                 if candidate.isascii():
                     return judged_label
                 try:
-                    return candidate.encode("idna").decode("ascii")
+                    # Match the Worker's WHATWG URL hostname conversion:
+                    # UTS-46 nontransitional, not Python's IDNA2003
+                    # stdlib codec (Unicode 3.2 nameprep).
+                    return idna.encode(
+                        candidate,
+                        uts46=True,
+                        transitional=False,
+                        std3_rules=False,
+                    ).decode("ascii")
                 except (UnicodeError, ValueError):
-                    # The fallback still owes the Worker the UTS-46
-                    # compatibility mappings NFC does not perform:
+                    # Preserve the permissive fallback for labels
+                    # python-idna declines. NFKC supplies compatibility
+                    # mappings before punycode:
                     # NFKC maps e.g. the fullwidth digit in an RTL
                     # label the codec's Unicode 3.2 bidi rules refuse
                     # (the alef + fullwidth-1 label returns the

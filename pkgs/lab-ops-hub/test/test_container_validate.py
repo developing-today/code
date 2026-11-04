@@ -1,8 +1,9 @@
 # Tests for the container crawler's validate_crawl_url (container/app.py).
 # The TypeScript validator has its own suite (lib.test.ts); the Python copy
 # is the component that actually fetches, so its policy is pinned here.
-# Run with plain Python: `python3 -m unittest discover -s test -p "test_*.py"`
-# from pkgs/lab-ops-hub (stdlib only).
+# Run with the configured Python environment (including the pinned `idna`
+# dependency): `python3 -m unittest discover -s test -p "test_*.py"` from
+# pkgs/lab-ops-hub.
 import importlib.util
 import pathlib
 import time
@@ -1451,6 +1452,23 @@ class TestValidateCrawlUrl(unittest.TestCase):
             # (xn--3xa). Both spellings return the sigma form.
             "http://ϲ.com/": "http://xn--4xa.com/",
             "http://Ϲ.com/": "http://xn--4xa.com/",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+
+    def test_returns_uts46_nontransitional_alabels_matching_whatwg(self):
+        # These are new URL(raw).hostname values from the Worker runtime.
+        # Keep the Python copy aligned for nontransitional sharp S,
+        # final/ordinary/lunate sigma, and post-Unicode-3.2 mappings.
+        cases = {
+            "http://ß.com/": "http://xn--zca.com/",
+            "http://a.ß.com/": "http://a.xn--zca.com/",
+            "http://ẞ.com/": "http://xn--zca.com/",
+            "http://ς.com/": "http://xn--3xa.com/",
+            "http://σ.com/": "http://xn--4xa.com/",
+            "http://ϲ.com/": "http://xn--4xa.com/",
+            "http://ꭰ.com/": "http://xn--58d.com/",
+            "http://Ა.com/": "http://xn--lod.com/",
         }
         for raw, expected in cases.items():
             self.assertEqual(validate_crawl_url(raw), expected, raw)
