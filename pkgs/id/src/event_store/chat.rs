@@ -296,6 +296,7 @@ mod tests {
             note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
         (event, body)
@@ -321,6 +322,7 @@ mod tests {
             note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -476,6 +478,7 @@ mod tests {
                 note: None,
                 link: None,
                 checkpoint: None,
+                rotation: None,
             },
         )
         .unwrap();

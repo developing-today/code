@@ -45,6 +45,9 @@ pub enum Capability {
     Dispatch,
     /// `fleet laptop-agent …` — client for the (Python) laptop-agent daemon.
     LaptopAgent,
+    /// `fleet secrets …` — resolve secrets by name (step 6, #5554):
+    /// the fleet-secrets chain as a verb — broker first, `bws` fallback.
+    Secrets,
 }
 
 impl Capability {
@@ -61,6 +64,7 @@ impl Capability {
             Capability::SearchServe => "search-serve",
             Capability::Dispatch => "dispatch",
             Capability::LaptopAgent => "laptop-agent",
+            Capability::Secrets => "secrets",
         }
     }
 
@@ -76,6 +80,7 @@ impl Capability {
         Capability::SearchServe,
         Capability::Dispatch,
         Capability::LaptopAgent,
+        Capability::Secrets,
     ];
 }
 
@@ -108,6 +113,7 @@ pub fn serve_capabilities() -> CapabilitySet {
         Capability::QueueBroker,
         Capability::SecretsBroker,
         Capability::SearchServe,
+        Capability::Secrets,
     ])
 }
 
@@ -237,11 +243,19 @@ pub const DOMAINS: &[Domain] = &[
     },
     Domain {
         name: "dispatch",
-        summary: "Thin client over the pm-stack dispatch services (status and launch verbs).",
+        summary: "Thin client over pm-stack dispatch: status, launch, and enqueue verbs.",
         capabilities: &[Capability::Dispatch],
         primary: Capability::Dispatch,
         aliases: &[],
-        subcommands: &["status", "launch"],
+        subcommands: &["status", "launch", "enqueue"],
+    },
+    Domain {
+        name: "secrets",
+        summary: "Resolve secrets by name: the laptop secrets-broker first, Bitwarden as fallback.",
+        capabilities: &[Capability::Secrets],
+        primary: Capability::Secrets,
+        aliases: &[],
+        subcommands: &["get", "list"],
     },
     Domain {
         name: "search",

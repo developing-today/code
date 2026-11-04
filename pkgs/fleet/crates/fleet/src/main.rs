@@ -6,11 +6,12 @@
 //! dispatch layer, the capability-stub machinery, and the variant
 //! builds. Step 2 (#5430) landed the first real domain — queue: the
 //! repo-queue client and the queue-broker / secrets-broker serve
-//! roles run for real below. A compiled-in domain that has not
-//! landed yet answers with the "not implemented yet" form of the
-//! stub — but the *surface* is complete and honest: every variant
-//! renders the full registry, and every missing capability answers
-//! with a branchable stub, never a parser error.
+//! roles run for real below; step 3 (#5431) the proxy domain; step 4
+//! (#5432) the dispatch thin client; step 6 (#5554) the secrets verb. A compiled-in domain that has
+//! not landed yet answers with the "not implemented yet" form of
+//! the stub — but the *surface* is complete and honest: every
+//! variant renders the full registry, and every missing capability
+//! answers with a branchable stub, never a parser error.
 //!
 //! Dispatch order (§3), extended by Refinement A (name-scoping):
 //!
@@ -37,6 +38,9 @@ use fleet_registry::{
     Capability, CapabilitySet, Domain, Variant, alias_route, capability_set, domain,
     is_known_invocation_name,
 };
+
+#[cfg(feature = "secrets")]
+mod secrets;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const SOURCE_REV: &str = env!("FLEET_SOURCE_REV");
@@ -74,6 +78,9 @@ fn compiled_capabilities() -> CapabilitySet {
     }
     if cfg!(feature = "laptop-agent") {
         caps.insert(Capability::LaptopAgent);
+    }
+    if cfg!(feature = "secrets") {
+        caps.insert(Capability::Secrets);
     }
     caps
 }
@@ -352,6 +359,8 @@ fn print_domain_help(surface: &Surface, d: &Domain) {
     let status = match surface.domain_state(d) {
         CapState::Available => match d.name {
             "queue" => "included in this build",
+            "dispatch" => "included in this build",
+            "secrets" => "included in this build",
             "proxy" => "included in this build",
             "serve" => {
                 "included in this build (queue-broker and secrets-broker roles; \
@@ -469,6 +478,18 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
             if d.name == "serve" && args.first().map(|s| s.as_str()) == Some("secrets-broker") {
                 return fleet_queue::secrets_broker::run();
             }
+            // Step 4 (#5432): the dispatch domain runs for real — a
+            // thin client over pm-stack's pm-dispatch service.
+            #[cfg(feature = "dispatch")]
+            if d.name == "dispatch" {
+                return fleet_dispatch::run(&surface.config, args);
+            }
+            // Step 6 (#5554): the secrets domain runs for real —
+            // the fleet-secrets resolver chain as a verb.
+            #[cfg(feature = "secrets")]
+            if d.name == "secrets" {
+                return secrets::run(&surface.config, args);
+            }
             if d.name == "proxy" {
                 return run_proxy(surface, args);
             }
@@ -484,6 +505,38 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
     }
 }
 
+const PROXY_SERVE_USAGE: &str = "\
+Usage: fleet proxy serve
+
+Run the session proxy (the broker) in the foreground, binding the
+broker socket from fleet config (FLEET_BROKER_SOCKET / broker_socket).
+
+Takes no arguments.";
+
+/// What the arguments after `fleet proxy serve` ask for. The serve
+/// leaf takes no arguments at all (`fleet_proxy::serve::run` is
+/// config-only), so anything trailing is either a help request or a
+/// mistake — never something to silently drop before the broker
+/// socket is bound (#5575; the #5488/#5560 bug class on the proxy
+/// leaf, reached directly and via the `laptop-agent-broker` argv0
+/// alias, whose implied arg lands in exactly this position).
+#[derive(Debug, PartialEq, Eq)]
+enum ProxyServeArgs {
+    Run,
+    Help,
+    Reject(String),
+}
+
+fn classify_proxy_serve_args(tail: &[String]) -> ProxyServeArgs {
+    if tail.iter().any(|a| is_help_flag(a)) {
+        ProxyServeArgs::Help
+    } else if let Some(first) = tail.first() {
+        ProxyServeArgs::Reject(first.clone())
+    } else {
+        ProxyServeArgs::Run
+    }
+}
+
 /// The proxy domain's leaves (step 3, #5431). `required_capability`
 /// has already mapped serve → ProxyServe and connect/init →
 /// ProxyConnect, and cap_state has already stubbed at 69 where the
@@ -494,16 +547,25 @@ fn run_proxy(surface: &Surface, args: &[String]) -> i32 {
     let client = format!("fleet {} ({})", VERSION, build_name(&surface.compiled));
     let capabilities = fleet_proxy_proto::capability_ids(&surface.usable());
     match args.first().map(|s| s.as_str()) {
-        Some("serve") => {
-            #[cfg(feature = "proxy-serve")]
-            {
-                fleet_proxy::serve::run(config)
+        Some("serve") => match classify_proxy_serve_args(&args[1..]) {
+            ProxyServeArgs::Help => {
+                println!("{PROXY_SERVE_USAGE}");
+                EXIT_OK
             }
-            #[cfg(not(feature = "proxy-serve"))]
-            {
-                unreachable!("proxy serve dispatched without the proxy-serve capability")
+            ProxyServeArgs::Reject(arg) => usage_error(&format!(
+                "'fleet proxy serve' takes no arguments, got {arg:?}\n\n{PROXY_SERVE_USAGE}"
+            )),
+            ProxyServeArgs::Run => {
+                #[cfg(feature = "proxy-serve")]
+                {
+                    fleet_proxy::serve::run(config)
+                }
+                #[cfg(not(feature = "proxy-serve"))]
+                {
+                    unreachable!("proxy serve dispatched without the proxy-serve capability")
+                }
             }
-        }
+        },
         Some("connect") => {
             let parsed = match fleet_proxy::client::ConnectArgs::parse(&args[1..]) {
                 Ok(a) => a,
@@ -550,6 +612,17 @@ fn cmd_init(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
     }
 }
 
+/// Root built-ins take no arguments: a trailing argument is a usage
+/// error naming it (#5572), not silently discarded output.
+fn reject_extra_args(args: &[String]) -> Option<i32> {
+    args.get(1).map(|extra| {
+        usage_error(&format!(
+            "unexpected argument '{extra}' for 'fleet {}'",
+            args.first().map(|s| s.as_str()).unwrap_or("")
+        ))
+    })
+}
+
 fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
     let first = args.first().map(|s| s.as_str());
     match first {
@@ -576,14 +649,23 @@ fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
             )),
         },
         Some("--version") | Some("-V") => {
+            if let Some(code) = reject_extra_args(args) {
+                return code;
+            }
             println!("fleet {VERSION}");
             EXIT_OK
         }
         Some("version") => {
+            if let Some(code) = reject_extra_args(args) {
+                return code;
+            }
             print_version(surface, invoked_as);
             EXIT_OK
         }
         Some("capabilities") => {
+            if let Some(code) = reject_extra_args(args) {
+                return code;
+            }
             print_capabilities(surface, invoked_as);
             EXIT_OK
         }
@@ -685,11 +767,58 @@ mod tests {
     }
 
     #[test]
+    fn proxy_serve_args_classify_help_and_reject_strays() {
+        // Bare serve runs the broker; the argv0 alias route
+        // (laptop-agent-broker) lands here with the same tail.
+        assert_eq!(classify_proxy_serve_args(&args(&[])), ProxyServeArgs::Run);
+        for flag in ["--help", "-h", "help"] {
+            assert_eq!(
+                classify_proxy_serve_args(&args(&[flag])),
+                ProxyServeArgs::Help,
+                "{flag} after proxy serve must print usage, not bind the socket"
+            );
+        }
+        // Help wins anywhere in the tail (mirrors verb_status, #5560);
+        // any other stray is rejected, never silently dropped.
+        assert_eq!(
+            classify_proxy_serve_args(&args(&["--bogus", "--help"])),
+            ProxyServeArgs::Help
+        );
+        assert_eq!(
+            classify_proxy_serve_args(&args(&["--bogus"])),
+            ProxyServeArgs::Reject("--bogus".to_string())
+        );
+        assert_eq!(
+            classify_proxy_serve_args(&args(&["extra", "args"])),
+            ProxyServeArgs::Reject("extra".to_string())
+        );
+    }
+
+    #[test]
     fn help_flag_positions_for_other_domains_are_unchanged() {
         let queue = domain("queue").expect("queue domain exists");
         assert!(wants_domain_help(queue, &args(&["--help"])));
         // A subcommand's own --help belongs to the domain's parser.
         assert!(!wants_domain_help(queue, &args(&["enqueue", "--help"])));
         assert!(!wants_domain_help(queue, &args(&[])));
+    }
+
+    #[test]
+    fn root_builtins_reject_trailing_arguments() {
+        // #5572: version / capabilities / --version silently discarded
+        // trailing arguments and returned success.
+        let surface = Surface::new(None, fleet_config::Config::default());
+        for cmd in ["version", "capabilities", "--version", "-V"] {
+            assert_eq!(
+                run_root(&surface, &args(&[cmd, "--bogus"]), "fleet"),
+                EXIT_USAGE,
+                "{cmd} must reject a trailing argument"
+            );
+            assert_eq!(
+                run_root(&surface, &args(&[cmd]), "fleet"),
+                EXIT_OK,
+                "bare {cmd} stays accepted"
+            );
+        }
     }
 }

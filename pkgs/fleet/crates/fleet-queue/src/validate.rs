@@ -110,12 +110,31 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
     if !ded_ok {
         errs.push("payload.dedupe: must have checked_at and basis".to_string());
     }
+    // Identity numbers are GitHub numbers: positive integers only. A
+    // non-positive issue number names no issue, whatever the dedupe key
+    // says (a maintenance-family key has no issue cross-check to catch
+    // it), so it is an error in its own right (#5549).
+    if let Some(issue) = get("issue").and_then(|i| i.as_object()) {
+        if !matches!(issue.get("number"), Some(Value::Number(n)) if n.as_i64().is_some_and(|v| v >= 1))
+        {
+            errs.push("payload.issue.number: must be a positive integer".to_string());
+        }
+    }
     let has_issue = matches!(get("issue"), Some(Value::Object(i))
-        if matches!(i.get("number"), Some(Value::Number(n)) if n.is_i64()));
-    let has_prs = matches!(get("prs"), Some(Value::Array(a)) if !a.is_empty());
-    let has_set = matches!(get("set"), Some(Value::Object(_)));
+        if matches!(i.get("number"), Some(Value::Number(n)) if n.as_i64().is_some_and(|v| v >= 1)));
+    // A prs list satisfies identity only when every element is a PR
+    // reference: an object with a positive-integer `number`. Placeholder
+    // elements ([null], [{"number": "5424"}], [{}]) used to pass on the
+    // array being non-empty alone, and the dedupe cross-check's
+    // filter_map then silently dropped them (#5549). Every real packet
+    // in the fleet corpus (87/87 elements) already has this shape.
+    let has_prs = matches!(get("prs"), Some(Value::Array(a)) if !a.is_empty()
+        && a.iter().all(|p| matches!(p.get("number"), Some(Value::Number(n)) if n.as_i64().is_some_and(|v| v >= 1))));
+    // An empty object names no set (#5549); real set objects carry
+    // content (origin_issue, prs, ...).
+    let has_set = matches!(get("set"), Some(Value::Object(o)) if !o.is_empty());
     let has_source = matches!(get("source"), Some(Value::Object(s))
-        if matches!(s.get("pr"), Some(Value::Number(n)) if n.is_i64())
+        if matches!(s.get("pr"), Some(Value::Number(n)) if n.as_i64().is_some_and(|v| v >= 1))
             && matches!(s.get("finding"), Some(Value::String(f)) if !f.is_empty()));
     if !(has_issue || has_prs || has_set || has_source) {
         errs.push(
@@ -504,6 +523,63 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn payload_with(identity: serde_json::Value) -> Value {
+        let mut payload = json!({
+            "schema": "repo-task/v1",
+            "kind": "small_fix",
+            "repo": "developing-today/code",
+            "problem": "p",
+            "priority_reason": "r",
+            "evidence": ["e"],
+            "acceptance": ["a"],
+            "tests": ["t"],
+            "context_refs": [],
+            "scope": {"include": ["x"], "exclude": ["y"]},
+            "risk": {"level": "low", "flags": []},
+            "timebox_minutes": 45,
+            "max_attempts": 4,
+            "dedupe": {"checked_at": "2026-11-04T00:00:00Z", "basis": "search"},
+        });
+        if let (Some(obj), Some(extra)) = (payload.as_object_mut(), identity.as_object()) {
+            for (k, v) in extra {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+        payload
+    }
+
+    fn identity_errors(payload: &Value) -> Vec<String> {
+        manual_schema_errors(payload)
+            .into_iter()
+            .filter(|e| e.contains("identity") || e.contains("issue.number"))
+            .collect()
+    }
+
+    #[test]
+    fn placeholder_identities_do_not_validate() {
+        // #5549 variant A: prs [null] is not an identity.
+        assert!(!identity_errors(&payload_with(json!({"prs": [null]}))).is_empty());
+        // Variant B: prs elements without a positive-integer number.
+        assert!(
+            !identity_errors(&payload_with(json!({"prs": [{"number": "5424"}, {}]}))).is_empty()
+        );
+        // Variant C: an empty set object is not an identity.
+        assert!(!identity_errors(&payload_with(json!({"set": {}}))).is_empty());
+        // A non-positive issue number is an error in its own right.
+        assert!(!identity_errors(&payload_with(json!({"issue": {"number": -5}}))).is_empty());
+        assert!(!identity_errors(&payload_with(json!({"issue": {"number": 0}}))).is_empty());
+        // Real shapes still satisfy identity.
+        assert!(identity_errors(&payload_with(json!({"prs": [{"number": 5424}]}))).is_empty());
+        assert!(identity_errors(&payload_with(json!({"set": {"prs": [605, 620]}}))).is_empty());
+        assert!(identity_errors(&payload_with(json!({"issue": {"number": 5424}}))).is_empty());
+        assert!(
+            identity_errors(&payload_with(
+                json!({"source": {"pr": 588, "finding": "f"}})
+            ))
+            .is_empty()
+        );
+    }
 
     #[test]
     fn pr_set_keys_are_canonical() {

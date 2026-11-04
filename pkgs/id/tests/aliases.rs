@@ -63,6 +63,7 @@ impl Writer {
             link: None,
             checkpoint: None,
             chat: None,
+            rotation: None,
         };
         let event = sign(&self.key, self.seq, self.last, None, ext).unwrap();
         self.seq += 1;

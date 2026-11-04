@@ -812,6 +812,7 @@ impl LocalEvents {
             note,
             link: None,
             checkpoint: None,
+            rotation: None,
         };
         let event = sign(&self.key, chain.next_seq, chain.head, None, ext)?;
         match self.store.ingest(&event.bytes, now_ms())? {
@@ -1073,6 +1074,7 @@ mod tests {
                 link: None,
                 checkpoint: None,
                 chat: None,
+                rotation: None,
             },
         )
         .unwrap();
@@ -1329,6 +1331,7 @@ mod chat_tests {
             note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
         };
         let event = sign(alice, 0, None, Some(&body), ext).unwrap();
         (event, body)

@@ -200,6 +200,7 @@ pub mod hosted_binding;
 pub mod idset;
 pub mod invite;
 pub mod invites;
+pub mod issuer_rotation;
 pub(crate) mod key_envelope;
 pub mod local;
 pub mod local_events;

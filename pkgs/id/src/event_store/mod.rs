@@ -1666,6 +1666,7 @@ mod tests {
             link: None,
             checkpoint: None,
             chat: None,
+            rotation: None,
         }
     }
 

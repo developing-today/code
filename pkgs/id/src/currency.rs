@@ -349,6 +349,7 @@ pub fn sign_authorisation(
             link: None,
             checkpoint: None,
             chat: None,
+            rotation: None,
         },
     )?)
 }
@@ -382,6 +383,7 @@ pub fn sign_revoke(
             link: None,
             checkpoint: None,
             chat: None,
+            rotation: None,
         },
     )?)
 }

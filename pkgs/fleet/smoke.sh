@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Per-variant smoke suite for the fleet workspace
 # (step 1, developing-today/code#5429; queue-domain sections added
-# by step 2, #5430; proxy-domain sections by step 3, #5431).
+# by step 2, #5430; proxy-domain sections by step 3, #5431;
+# dispatch-domain sections by step 4, #5432).
 #
 # Usage:
 #   smoke.sh <fleet-out> <fleet-serve-out> <fleet-connect-out> <fleet-connect-static-out>
@@ -19,7 +20,8 @@
 #   * the proxy domain end to end, hermetically: broker auto-start,
 #     round-trips, shim materialization + stale-shim removal on a
 #     services-map change, init no-op, legacy proto-0 interop,
-#     idle exit
+#     idle exit, pool default rendering + a 32-concurrent burst
+#     on the default pool config (pool fix, #5563)
 #
 # Exits nonzero if any check fails. No network, no installs, no
 # state outside a mktemp dir.
@@ -38,7 +40,9 @@ QB_PID=""
 PB_PID=""
 UP_PID=""
 IDLE_PID=""
-trap 'kill $SB_PID $QB_PID $PB_PID $UP_PID $IDLE_PID 2>/dev/null; rm -rf "$TMP"' EXIT
+DS_PID=""
+SECB_PID=""
+trap 'kill $SB_PID $QB_PID $PB_PID $UP_PID $IDLE_PID $DS_PID $SECB_PID 2>/dev/null; rm -rf "$TMP"' EXIT
 
 ok()   { PASS=$((PASS + 1)); echo "ok   - $1"; }
 bad()  { FAIL=$((FAIL + 1)); echo "FAIL - $1"; }
@@ -61,8 +65,8 @@ run() {
   ok "$name"
 }
 
-FULL_CAPS="Enabled capabilities: proxy-connect, proxy-serve, queue, queue-broker, secrets-broker, search, search-serve, dispatch, laptop-agent"
-SERVE_CAPS="Enabled capabilities: proxy-connect, proxy-serve, queue-broker, secrets-broker, search-serve"
+FULL_CAPS="Enabled capabilities: proxy-connect, proxy-serve, queue, queue-broker, secrets-broker, search, search-serve, dispatch, laptop-agent, secrets"
+SERVE_CAPS="Enabled capabilities: proxy-connect, proxy-serve, queue-broker, secrets-broker, search-serve, secrets"
 CONNECT_CAPS="Enabled capabilities: proxy-connect"
 
 check_variant() {
@@ -97,6 +101,8 @@ run "serve: fleet dispatch stubs" 69 "this build does not include 'dispatch'" \
   "$SERVE_OUT/bin/fleet" dispatch
 run "serve: fleet laptop-agent stubs" 69 "this build does not include 'laptop-agent'" \
   "$SERVE_OUT/bin/fleet" laptop-agent
+run "connect: fleet secrets stubs" 69 "this build does not include 'secrets'" \
+  "$CONNECT_OUT/bin/fleet" secrets get smoke.secret
 
 echo "== stubs via argv0 alias symlinks =="
 ln -s "$CONNECT_OUT/bin/fleet" "$TMP/repo-queue"
@@ -235,6 +241,76 @@ PYEOF
 run "proxy: legacy proto-0 client round-trips (no hello)" 0 "legacy-ok" \
   python3 "$PX/legacy.py" "$PX/broker.sock"
 
+# Pool sizing (#5563): this broker was auto-spawned by connect
+# with no LAPTOP_AGENT_POOL anywhere in its environment, so
+# its startup line must render the compiled default of 50.
+run "proxy: broker startup renders the effective pool size (default 50)" 0 \
+  "pool: 50 per port" grep "pool: 50 per port" "$PX/broker.log"
+
+# 32-concurrent burst against that default-config broker,
+# mirroring the #5412 benchmark method (hello-negotiated
+# framed requests, one untimed warm-up per worker, barrier
+# release, two timed requests each). Hermetically the
+# connections are loopback, so this asserts the bounded
+# wait's safety properties — 32 in flight at once, none hang,
+# none fail — plus a sane p50; the production cliff it
+# prevents was measured against real egress (see #5563).
+cat > "$PX/burst.py" <<'PYEOF'
+import json, socket, struct, sys, threading, time
+sock_path, port = sys.argv[1], int(sys.argv[2])
+lat, errors = [], []
+lock = threading.Lock()
+barrier = threading.Barrier(33)
+def readn(s, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = s.recv(n - len(buf))
+        if not chunk: raise ConnectionError("broker closed mid-frame")
+        buf += chunk
+    return buf
+def send_frame(s, obj):
+    data = json.dumps(obj).encode()
+    s.sendall(struct.pack(">Q", len(data)) + data)
+def read_frame(s):
+    (n,) = struct.unpack(">Q", readn(s, 8))
+    return json.loads(readn(s, n))
+def rpc(s, method, path, sport):
+    send_frame(s, {"method": method, "path": path, "port": sport})
+    return read_frame(s)
+def worker():
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(30)
+        s.connect(sock_path)
+        send_frame(s, {"hello": {"proto": 1, "client": "smoke-burst",
+                                 "capabilities": ["proxy-connect"]}})
+        read_frame(s)  # hello response
+        r = rpc(s, "GET", "/health", port)  # untimed warm-up
+        assert r["status"] == 200, r
+        barrier.wait(timeout=30)
+        for _ in range(2):
+            t0 = time.perf_counter()
+            r = rpc(s, "GET", "/health", port)
+            dt = (time.perf_counter() - t0) * 1000
+            assert r["status"] == 200, r
+            with lock: lat.append(dt)
+        s.close()
+    except Exception as e:
+        with lock: errors.append(repr(e))
+threads = [threading.Thread(target=worker) for _ in range(32)]
+for t in threads: t.start()
+barrier.wait(timeout=30)
+for t in threads: t.join()
+assert not errors, f"burst errors: {errors[:3]}"
+assert len(lat) == 64, len(lat)
+lat.sort()
+p50 = lat[len(lat) // 2]
+assert p50 < 1000, f"p50 {p50:.1f}ms"
+print(f"burst-ok n=64 errors=0 p50={p50:.1f}ms")
+PYEOF
+run "proxy: 32-concurrent burst on the default pool (no hang, no failure)" 0 "burst-ok" \
+  python3 "$PX/burst.py" "$PX/broker.sock" 14801
+
 # Services-map change: restart the broker with a smaller map; the
 # repo-queue shim must disappear, laptop-agent must stay.
 kill "$PB_PID" 2>/dev/null
@@ -333,6 +409,186 @@ kill "$SB_PID" "$QB_PID" 2>/dev/null
 SB_PID=""
 QB_PID=""
 
+echo "== dispatch domain: thin client over a stub pm-dispatch (step 4, #5432) =="
+# Hermetic dispatch world: a stub pm-dispatch on a scratch loopback
+# port (health unauthenticated; POSTs bearer-checked, with canned
+# answers and one deliberate 409) and a stub `bws` on PATH, so the
+# client's by-name token resolution through fleet-secrets succeeds
+# with no vault and no session broker (the scratch HOME has no
+# broker socket, so the chain falls through to the bws source).
+# The client must resolve the token by name, present it as
+# Authorization: Bearer, and print the service's JSON verbatim.
+DS="$TMP/dispatch"
+mkdir -p "$DS/bin" "$DS/home"
+cat > "$DS/stub.py" <<'PYEOF'
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+TOKEN = "smoke-dispatch-token"
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _send(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def do_GET(self):
+        if self.path == "/health":
+            self._send(200, {"ok": True, "status": "ok", "version": "smoke"})
+        else:
+            self._send(404, {"error": "not found"})
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b"{}"
+        if self.headers.get("Authorization") != "Bearer " + TOKEN:
+            self._send(401, {"error": "unauthorized"})
+            return
+        try:
+            req = json.loads(raw)
+        except Exception:
+            req = {}
+        if self.path == "/v1/sessions":
+            self._send(201, {"task_id": 4242, "session_id": "ses_smoke",
+                             "issue_number": None,
+                             "queue": "repo-health-code-pilot",
+                             "status": "claimed"})
+        elif self.path == "/v1/tasks":
+            if req.get("dedupe_key") == "smoke-dupe":
+                self._send(409, {"error": "dedupe_key already has an open task"})
+                return
+            self._send(201, {"task_id": 4243, "issue_number": None,
+                             "queue": "repo-health-code-pilot"})
+        else:
+            self._send(404, {"error": "not found"})
+HTTPServer(("127.0.0.1", 14879), H).serve_forever()
+PYEOF
+python3 "$DS/stub.py" >"$DS/stub.log" 2>&1 &
+DS_PID=$!
+cat > "$DS/bin/bws" <<'EOF'
+#!/usr/bin/env bash
+# fleet-secrets' bws fallback, stubbed: one secret under a fixed id.
+if [ "$1 $2" = "secret list" ]; then
+  echo '[{"id":"smoke-id","key":"pm-dispatch.api-token"}]'
+elif [ "$1 $2" = "secret get" ]; then
+  echo '{"id":"smoke-id","key":"pm-dispatch.api-token","value":"smoke-dispatch-token"}'
+else
+  exit 1
+fi
+EOF
+chmod +x "$DS/bin/bws"
+printf '[dispatch]\nport = 14879\n' > "$DS/fleet.toml"
+sleep 1
+run "dispatch: status round-trips the stub /health" 0 '"version": "smoke"' \
+  env HOME="$DS/home" PATH="$DS/bin:$PATH" FLEET_CONFIG="$DS/fleet.toml" \
+  "$FULL_OUT/bin/fleet" dispatch status
+run "dispatch: status names its transport" 0 '"transport": "direct http://127.0.0.1:14879"' \
+  env HOME="$DS/home" PATH="$DS/bin:$PATH" FLEET_CONFIG="$DS/fleet.toml" \
+  "$FULL_OUT/bin/fleet" dispatch status
+run "dispatch: launch round-trips with the by-name bearer token" 0 '"task_id": 4242' \
+  env HOME="$DS/home" PATH="$DS/bin:$PATH" FLEET_CONFIG="$DS/fleet.toml" \
+  "$FULL_OUT/bin/fleet" dispatch launch --repo developing-today/code \
+    --prompt "smoke launch" --no-wait
+run "dispatch: enqueue round-trips" 0 '"task_id": 4243' \
+  env HOME="$DS/home" PATH="$DS/bin:$PATH" FLEET_CONFIG="$DS/fleet.toml" \
+  "$FULL_OUT/bin/fleet" dispatch enqueue --repo developing-today/code \
+    --title "smoke" --prompt "smoke enqueue"
+run "dispatch: a service HTTP error exits 4 with its message" 4 "dedupe_key already has an open task" \
+  env HOME="$DS/home" PATH="$DS/bin:$PATH" FLEET_CONFIG="$DS/fleet.toml" \
+  "$FULL_OUT/bin/fleet" dispatch enqueue --repo developing-today/code \
+    --title "smoke" --prompt "x" --dedupe-key smoke-dupe
+run "dispatch: an unknown task kind is a usage error" 2 "unknown task kind" \
+  env HOME="$DS/home" PATH="$DS/bin:$PATH" FLEET_CONFIG="$DS/fleet.toml" \
+  "$FULL_OUT/bin/fleet" dispatch enqueue --repo developing-today/code \
+    --title "t" --prompt "p" --kind bogus
+run "dispatch: an unresolved token name exits 3 before any request" 3 "unresolved" \
+  env HOME="$DS/home" PATH="/nonexistent" FLEET_CONFIG="$DS/fleet.toml" \
+  "$FULL_OUT/bin/fleet" dispatch launch --repo developing-today/code --prompt "x"
+kill "$DS_PID" 2>/dev/null
+DS_PID=""
+
+echo "== secrets domain: broker-first chain, bws fallback (step 6, #5554) =="
+# Hermetic secrets world: a stub session broker speaking the framed
+# protocol on a scratch socket (it answers /secrets and /secret/<name>
+# itself — the BrokerSource exchange in the legacy dialect, no hello),
+# plus a stub `bws` on PATH whose value for the shared name DIFFERS
+# from the broker's, so the source that answered is provable from the
+# returned value alone.
+SEC="$TMP/secrets"
+mkdir -p "$SEC/bin" "$SEC/home"
+cat > "$SEC/broker.py" <<'SECEOF'
+import socket, struct, json, sys, threading, os
+sock_path = sys.argv[1]
+RESP = {
+    "/secrets": (200, {"names": ["other.name", "smoke.secret"]}),
+    "/secret/smoke.secret": (200, {"key": "smoke.secret", "value": "smoke-broker-value"}),
+}
+def frame(obj):
+    payload = json.dumps(obj).encode()
+    return struct.pack(">Q", len(payload)) + payload
+def readn(conn, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = conn.recv(n - len(buf))
+        if not chunk: raise EOFError
+        buf += chunk
+    return buf
+def handle(conn):
+    try:
+        while True:
+            n = struct.unpack(">Q", readn(conn, 8))[0]
+            req = json.loads(readn(conn, n))
+            status, body = RESP.get(req["path"], (404, {"error": "no such secret"}))
+            conn.sendall(frame({"status": status, "body": body}))
+    except Exception:
+        return
+srv = socket.socket(socket.AF_UNIX)
+if os.path.exists(sock_path): os.unlink(sock_path)
+srv.bind(sock_path); srv.listen(16)
+while True:
+    conn, _ = srv.accept()
+    threading.Thread(target=handle, args=(conn,), daemon=True).start()
+SECEOF
+python3 "$SEC/broker.py" "$SEC/broker.sock" >"$SEC/broker.log" 2>&1 &
+SECB_PID=$!
+cat > "$SEC/bin/bws" <<'EOF'
+#!/usr/bin/env bash
+# fleet-secrets' bws fallback, stubbed: two secrets under fixed ids.
+# smoke.secret exists in BOTH sources with different values (the
+# broker must win); fallback.name exists only here.
+if [ "$1 $2" = "secret list" ]; then
+  echo '[{"id":"id-1","key":"smoke.secret"},{"id":"id-2","key":"fallback.name"}]'
+elif [ "$1 $2" = "secret get" ] && [ "$3" = "id-1" ]; then
+  echo '{"id":"id-1","key":"smoke.secret","value":"smoke-bws-value"}'
+elif [ "$1 $2" = "secret get" ] && [ "$3" = "id-2" ]; then
+  echo '{"id":"id-2","key":"fallback.name","value":"smoke-bws-fallback-value"}'
+else
+  exit 1
+fi
+EOF
+chmod +x "$SEC/bin/bws"
+sleep 1
+secrets_env() {
+  env HOME="$SEC/home" PATH="$SEC/bin:$PATH" FLEET_BROKER_SOCKET="$SEC/broker.sock" "$@"
+}
+run "secrets: --help renders from the registry" 0 "Commands: get, list" \
+  "$FULL_OUT/bin/fleet" secrets --help
+run "secrets: get resolves broker-first (broker value, not bws')" 0 "smoke-broker-value" \
+  secrets_env "$FULL_OUT/bin/fleet" secrets get smoke.secret
+run "secrets: list returns the broker's names" 0 "smoke.secret" \
+  secrets_env "$FULL_OUT/bin/fleet" secrets list
+run "secrets: a broker 404 falls back to bws" 0 "smoke-bws-fallback-value" \
+  secrets_env "$FULL_OUT/bin/fleet" secrets get fallback.name
+kill "$SECB_PID" 2>/dev/null
+SECB_PID=""
+rm -f "$SEC/broker.sock"
+run "secrets: broker down, get falls back to bws" 0 "smoke-bws-value" \
+  secrets_env "$FULL_OUT/bin/fleet" secrets get smoke.secret
+run "secrets: broker down, list fails loud (no bws substitution)" 3 "unavailable via secrets-broker" \
+  secrets_env "$FULL_OUT/bin/fleet" secrets list
+run "secrets: unknown name fails clean through both legs" 3 "unresolved" \
+  secrets_env "$FULL_OUT/bin/fleet" secrets get absent.name
+
 echo "== name narrowing: full build invoked as fleet-connect =="
 ln -s "$FULL_OUT/bin/fleet" "$TMP/fleet-connect"
 run "narrowed: version lists only the connect set" 0 "$CONNECT_CAPS" "$TMP/fleet-connect" version
@@ -340,6 +596,8 @@ run "narrowed: queue stubs with narrowed wording" 69 "invoked as 'fleet-connect'
   "$TMP/fleet-connect" queue health
 run "narrowed: proxy serve stubs with narrowed wording" 69 "invoked as 'fleet-connect'" \
   "$TMP/fleet-connect" proxy serve
+run "narrowed: secrets stubs with narrowed wording" 69 "invoked as 'fleet-connect'" \
+  "$TMP/fleet-connect" secrets get smoke.secret
 run "narrowed: --help marks queue as narrowed out" 0 "[narrowed out by this name]" \
   "$TMP/fleet-connect" --help
 

@@ -49,6 +49,17 @@ pub const DEFAULT_BROKER_TOKEN_FILE: &str = "tools/laptop-agent-token";
 /// files, read per request, never stored, never logged).
 pub const DEFAULT_SECRETS_TOKEN_FILE: &str = "tools/secrets-broker-token";
 
+/// pm-dispatch's port on the laptop (pm-stack/dispatch: the intake
+/// service binds loopback + the tailnet address there).
+pub const PORT_DISPATCH: u16 = 4879;
+
+/// The fleet-secrets name the dispatch domain resolves its bearer
+/// token by (step 4, #5432). The value is pm-dispatch's
+/// `DISPATCH_API_TOKEN`; its by-name home is the vault, per the
+/// platform rule that secrets resolve by name through fleet-secrets
+/// only.
+pub const DEFAULT_DISPATCH_TOKEN_NAME: &str = "pm-dispatch.api-token";
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -56,6 +67,7 @@ pub struct Config {
     pub domains: BTreeMap<String, bool>,
     pub proxy: ProxyConfig,
     pub secrets: SecretsConfig,
+    pub dispatch: DispatchConfig,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -100,6 +112,25 @@ pub struct SecretsConfig {
     /// Path of the secrets-broker token file (handed to the session
     /// broker per request; fleet never opens it).
     pub token_file: Option<String>,
+}
+
+/// `[dispatch]` — the dispatch thin client's view of pm-dispatch
+/// (step 4, #5432). All optional: the laptop seat needs no config
+/// at all (the client probes the loopback bind), and the sandbox
+/// seat rides the proxy egress to the target host's dispatch port.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DispatchConfig {
+    /// Direct base URL (`http://host[:port]`) for pm-dispatch,
+    /// bypassing transport selection. `FLEET_DISPATCH_URL` beats
+    /// the file (the fleet-queue client's env-first pattern).
+    pub url: Option<String>,
+    /// The fleet-secrets name the bearer token resolves by
+    /// (default [`DEFAULT_DISPATCH_TOKEN_NAME`]).
+    pub token_name: Option<String>,
+    /// pm-dispatch's port on the target host (default
+    /// [`PORT_DISPATCH`]).
+    pub port: Option<u16>,
 }
 
 #[derive(Debug)]
@@ -293,6 +324,29 @@ impl Config {
         resolve_under_home(DEFAULT_BROKER_TOKEN_FILE)
     }
 
+    /// The dispatch base URL when one is configured:
+    /// `FLEET_DISPATCH_URL` (empty counts as unset, as with every
+    /// env path here) beats `[dispatch] url`.
+    pub fn dispatch_url(&self) -> Option<String> {
+        match std::env::var("FLEET_DISPATCH_URL") {
+            Ok(v) if !v.trim().is_empty() => Some(v.trim().to_string()),
+            _ => self.dispatch.url.clone(),
+        }
+    }
+
+    /// The fleet-secrets name the dispatch bearer token resolves by.
+    pub fn dispatch_token_name(&self) -> &str {
+        self.dispatch
+            .token_name
+            .as_deref()
+            .unwrap_or(DEFAULT_DISPATCH_TOKEN_NAME)
+    }
+
+    /// pm-dispatch's port on the target host.
+    pub fn dispatch_port(&self) -> u16 {
+        self.dispatch.port.unwrap_or(PORT_DISPATCH)
+    }
+
     /// The secrets-broker token *file path* (never its contents).
     pub fn secrets_token_file(&self) -> PathBuf {
         match &self.secrets.token_file {
@@ -451,6 +505,31 @@ mod tests {
             Config::broker_socket_from(None, Some("rel/c.sock"), &home),
             home.join("rel").join("c.sock")
         );
+    }
+
+    #[test]
+    fn dispatch_settings_default_to_the_live_service() {
+        let cfg = Config::default();
+        assert_eq!(cfg.dispatch_port(), PORT_DISPATCH);
+        assert_eq!(cfg.dispatch_token_name(), DEFAULT_DISPATCH_TOKEN_NAME);
+        assert_eq!(cfg.dispatch_url(), None);
+    }
+
+    #[test]
+    fn dispatch_settings_resolve() {
+        let (_dir, path) = write_temp(
+            "[dispatch]\nport = 14879\ntoken_name = \"other.token\"\nurl = \"http://127.0.0.1:9\"\n",
+        );
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.dispatch_port(), 14879);
+        assert_eq!(cfg.dispatch_token_name(), "other.token");
+        assert_eq!(cfg.dispatch_url().as_deref(), Some("http://127.0.0.1:9"));
+        // A misspelled dispatch key is a loud error like any other.
+        let (_dir2, path2) = write_temp("[dispatch]\nprt = 1\n");
+        match Config::load_from(&path2) {
+            Err(ConfigError::Parse { .. }) => {}
+            other => panic!("expected Parse error, got {other:?}"),
+        }
     }
 
     #[test]

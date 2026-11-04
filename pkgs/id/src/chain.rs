@@ -24,6 +24,7 @@ use unicode_normalization::is_nfc;
 
 use crate::chat::{ChatLink, ChatMessage, is_chat_message_kind};
 use crate::documents::{DocumentRef, is_document_kind, is_removal_kind};
+use crate::issuer_rotation::{IssuerRotation, is_rotation_kind};
 use crate::note_links::{NoteLinkOp, check_note_link_op, is_note_link_kind};
 use crate::notes::{NoteOp, check_note_op, is_note_kind};
 use crate::session_checkpoint::{SessionCheckpoint, check_session_checkpoint, is_checkpoint_kind};
@@ -140,6 +141,11 @@ pub struct ChainExt {
     /// the segment this checkpoint closes, signed with the header, so an
     /// event carries its whole checkpoint, and sync needs no separate body.
     pub checkpoint: Option<SessionCheckpoint>,
+    /// The issuer rotation of an `issuer.rotation` event, and `None` for every
+    /// other kind. It is the rotation record (#5526, design #2804 section 3.2): signed
+    /// with the header and persisted with it, because the event store keeps the
+    /// header but not an event body, so an event carries its whole rotation.
+    pub rotation: Option<IssuerRotation>,
 }
 
 #[derive(Serialize)]
@@ -252,6 +258,8 @@ struct Wire {
     link: Option<NoteLinkOp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     checkpoint: Option<SessionCheckpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rotation: Option<IssuerRotation>,
 }
 
 impl From<ChainExt> for Wire {
@@ -268,6 +276,7 @@ impl From<ChainExt> for Wire {
             note: ext.note,
             link: ext.link,
             checkpoint: ext.checkpoint,
+            rotation: ext.rotation,
         }
     }
 }
@@ -290,6 +299,7 @@ impl TryFrom<Wire> for ChainExt {
             note: wire.note,
             link: wire.link,
             checkpoint: wire.checkpoint,
+            rotation: wire.rotation,
         };
         ext.validate()?;
         Ok(ext)
@@ -458,6 +468,22 @@ impl ChainExt {
                     .map_err(|err| ChainError::Extension(err.to_string()))?;
             }
         }
+        match (is_rotation_kind(&self.kind), &self.rotation) {
+            (false, None) => {}
+            (false, Some(_)) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} carries an issuer rotation",
+                    self.kind
+                )));
+            }
+            (true, None) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} needs its issuer rotation",
+                    self.kind
+                )));
+            }
+            (true, Some(_)) => {}
+        }
         Ok(())
     }
 }
@@ -614,6 +640,7 @@ mod tests {
             note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
         }
     }
 
@@ -957,6 +984,7 @@ mod tests {
                     },
                 }),
                 chat: None,
+                rotation: None,
             },
         )
         .unwrap()
@@ -1186,6 +1214,7 @@ mod golden {
                 note: None,
                 link: None,
                 checkpoint: None,
+                rotation: None,
             },
         )
         .unwrap();
@@ -1206,6 +1235,7 @@ mod golden {
                 note: None,
                 link: None,
                 checkpoint: None,
+                rotation: None,
             },
         )
         .unwrap();

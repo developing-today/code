@@ -677,6 +677,7 @@ mod tests {
             note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
         }
     }
 
