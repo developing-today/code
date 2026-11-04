@@ -201,6 +201,7 @@ pub mod hosted_binding;
 pub mod idset;
 pub mod invite;
 pub mod invites;
+pub(crate) mod key_envelope;
 pub mod local;
 pub mod local_events;
 pub mod log_sync;
@@ -282,7 +283,7 @@ pub use id_core::qr;
 pub mod web;
 
 // Re-export commonly used types for convenience
-pub use cli::{Cli, Command, TagCommand};
+pub use cli::{Cli, Command, KeyCommand, TagCommand};
 pub use commands::{
     PeekOptions, PeersOptions, ReplContext, ReplContextInner, SearchOptions, ServeInfo,
     ServeOptions, cmd_find, cmd_find_matches, cmd_get_local, cmd_get_multi, cmd_get_one,

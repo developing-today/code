@@ -104,6 +104,8 @@ id list <node_id>
 
 # Identity and peers
 id id                   # Print local node ID
+id key export backup.idkey    # Export with a hidden passphrase prompt
+id key import backup.idkey    # Import; existing identities require --replace
 id peers                # List discovered peers
 ```
 
@@ -149,6 +151,7 @@ it is — a valid world capability, minted by the host's admin with
 | `tag`          | `label`, `link`                | Manage metadata tags on files                   |
 | `migrate-tags` | `migrate`                      | Add name/file auto-tags to existing files       |
 | `id`           |                                | Print local node public ID                      |
+| `key`          |                                | Export or import a passphrase-wrapped identity key |
 | `peers`        |                                | Discover and list known peers                   |
 | `world`        |                                | Mint invites for, and join, multiplayer worlds  |
 | `match-audit`  |                                | Export and verify signed match-audit v0 logs    |

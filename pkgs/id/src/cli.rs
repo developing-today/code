@@ -23,6 +23,7 @@
 //!   peek       Preview files with head/tail display
 //!   list       List all stored files
 //!   id         Print node ID
+//!   key        Export or import a local identity key
 //!   peers      Discover and list known peers
 //!   tag        Manage metadata tags (set, del, list, search) (aliases: label, link)
 //!   world        Mint invites for, and join, multiplayer worlds hosted over Iroh
@@ -1347,6 +1348,11 @@ pub enum Command {
         #[arg(long)]
         client: bool,
     },
+    /// Export or import a local identity key using a passphrase-wrapped envelope.
+    Key {
+        #[command(subcommand)]
+        command: KeyCommand,
+    },
     /// Discover and list known peers.
     ///
     /// Discovers other `id` servers via gossip-based networking, RPC
@@ -1450,6 +1456,32 @@ pub enum Command {
         /// local serve instance.
         #[arg(required = false)]
         node: Option<String>,
+    },
+}
+
+/// Subcommands for `id key`.
+#[derive(Subcommand, Debug)]
+pub enum KeyCommand {
+    /// Export the server identity (or `--client` identity) to an encrypted file.
+    /// The passphrase is entered at a hidden prompt, never on the command line.
+    Export {
+        /// Destination for the encrypted key envelope.
+        output: PathBuf,
+        /// Export the client identity instead of the server identity.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Import an encrypted key envelope as the server or client identity.
+    /// The passphrase is entered at a hidden prompt, never on the command line.
+    Import {
+        /// The encrypted key envelope to import.
+        input: PathBuf,
+        /// Import as the client identity instead of the server identity.
+        #[arg(long)]
+        client: bool,
+        /// Replace an existing identity key file atomically.
+        #[arg(long)]
+        replace: bool,
     },
 }
 
@@ -3175,6 +3207,29 @@ mod tests {
     fn test_cli_parse_id() {
         let cli = Cli::parse_from(["id", "id"]);
         assert!(matches!(cli.command, Some(Command::Id { client: false })));
+    }
+
+    #[test]
+    fn test_cli_parse_key_export_and_import() {
+        let export = Cli::parse_from(["id", "key", "export", "backup.idkey", "--client"]);
+        assert!(matches!(
+            export.command,
+            Some(Command::Key {
+                command: KeyCommand::Export { client: true, .. }
+            })
+        ));
+
+        let import = Cli::parse_from(["id", "key", "import", "backup.idkey", "--replace"]);
+        assert!(matches!(
+            import.command,
+            Some(Command::Key {
+                command: KeyCommand::Import {
+                    client: false,
+                    replace: true,
+                    ..
+                }
+            })
+        ));
     }
 
     #[test]
