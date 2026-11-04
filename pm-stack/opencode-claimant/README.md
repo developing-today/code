@@ -59,8 +59,16 @@ The launch binding is one atomic helper call (migration 0021,
 create session, bind (ledger `session_id` + `progress.session_id` +
 `launched_by` in a single transaction; overwriting a different
 existing binding is refused), checkpoint `launched`,
-agent-note on the issue. A session without a binding is treated as a
-defect, not a launch.
+agent-note on the issue. Migration 0022 adds a guarded recovery mode to
+the same helper: after a bound session is verified absent (or verified
+empty and deleted), it compare-checks the old ID in both stores, clears
+both atomically, and records the `launch_failed` stage plus the prior ID
+for the watchdog; each recovery increments the task's attempt count.
+A progress-only clear is not a recovery. A session
+without a binding is treated as a defect, not a launch.
+Apply migration 0022 before installing or enabling a prompt that uses
+the recovery mode; the older RPC does not implement the guarded
+compare-and-clear operation.
 
 ## Tests
 

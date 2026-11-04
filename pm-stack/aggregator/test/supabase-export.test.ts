@@ -16,12 +16,12 @@ const VIEW = `
 
 | Service | Plan / price | Allowance sketch | Usage / status | Next date recorded |
 |---|---|---|---|---|
-| Supabase | Free plan (muse-dev) | DB + egress + storage | manual dashboard read needed | unknown |
+| Supabase | Free plan (muse-dev2) | DB + egress + storage | manual dashboard read needed | unknown |
 
 ## Service details (b)
 
 ### Supabase
-- **Plan / price:** Free plan (muse-dev); numerical quotas unknown in local records.
+- **Plan / price:** Free plan (muse-dev2); numerical quotas unknown in local records.
 - **Usage / dates:** Not measured — manual dashboard read needed.
 - **Last checked:** 2026-10-28.
 `;
@@ -34,8 +34,8 @@ function freshDoc(overrides: Partial<SupabaseExportDoc> = {}): SupabaseExportDoc
     source: "file-export/supabase",
     status: "partial",
     measuredAt: "2026-10-29T14:55:00Z",
-    project: "muse-dev",
-    ref: "nltgxorqwxhgfzseiirt",
+    project: "muse-dev2",
+    ref: "keihfchslgjetkmnmzra",
     metrics: [
       {
         id: "db-size",
@@ -169,6 +169,28 @@ describe("applySupabaseExport", () => {
     const recordedDb = structuredClone(metricOf(base, "db-size"));
     const out = applySupabaseExport(base, freshDoc({ metrics: [{ id: "db-size", used: 0.25, limit: -0.5 }] }), NOW);
     expect(metricOf(out, "db-size")).toEqual(recordedDb);
+  });
+
+  test("an impossible or non-ISO measuredAt changes nothing — no Date.parse rollover (#5018)", () => {
+    // now is 2026-03-02T12:05Z: Date.parse rolls 2026-02-30 over to
+    // Mar 2 12:00, inside the freshness window; the real-calendar gate
+    // refuses it, and non-ISO stamps are refused the same way.
+    const now = Date.parse("2026-03-02T12:05:00Z");
+    for (const bad of ["2026-02-30T12:00:00.000Z", "2026-04-31T12:00:00.000Z", "March 2, 2026 12:00 UTC"]) {
+      const base = extractSaasServices(VIEW);
+      const out = applySupabaseExport(base, freshDoc({ measuredAt: bad }), now);
+      expect(out).toEqual(base);
+      expect(supabaseCard(out).sourceClass).toBe("manual");
+    }
+  });
+
+  test("a leap-date measuredAt still overlays (#5018)", () => {
+    const now = Date.parse("2024-02-29T12:05:00Z");
+    const base = extractSaasServices(VIEW);
+    const out = applySupabaseExport(base, freshDoc({ measuredAt: "2024-02-29T12:00:00.000Z" }), now);
+    expect(metricOf(out, "db-size").used).toBe(1.154);
+    expect(supabaseCard(out).sourceClass).toBe("api");
+    expect(supabaseCard(out).measuredAt).toBe("2024-02-29");
   });
 
   test("a stale export falls back to exactly today's card", () => {

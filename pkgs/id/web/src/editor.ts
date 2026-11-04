@@ -150,6 +150,10 @@ export const richSchema = new Schema({
       attrs: {
         order: { default: 1, validate: "number" },
         tight: { default: true },
+        // #1380: mirror the codec's delimiter attr ("period"/"paren",
+        // default period) so paren-style lists are not rewritten on
+        // save; undeclared, it was dropped on editor load.
+        delimiter: { default: "period" },
       },
     })
     .update("image", {
@@ -211,7 +215,13 @@ export const richSchema = new Schema({
         // depends on it so multi-block task items do not fuse on save.
         // #997: ordered task lists carry their start in `order` (null for
         // bullet task lists), mirroring the markdown codec's attrs.order.
-        attrs: { tight: { default: true }, order: { default: null } },
+        // #1380: ordered task lists also carry `delimiter`, mirroring
+        // the codec (default period, as in ordered_list above).
+        attrs: {
+          tight: { default: true },
+          order: { default: null },
+          delimiter: { default: "period" },
+        },
         parseDOM: [
           {
             tag: "ul",
@@ -234,9 +244,11 @@ export const richSchema = new Schema({
               // reflection admits fractional/negative/hex starts the u64
               // markdown codec cannot represent).
               const el = dom as HTMLOListElement;
-              if (el.classList.contains("contains-task-list")) return { order: parseOrderedListStart(el.getAttribute("start")) };
+              if (el.classList.contains("contains-task-list"))
+                return { order: parseOrderedListStart(el.getAttribute("start")) };
               const firstLi = el.querySelector("li");
-              if (firstLi?.querySelector('input[type="checkbox"]')) return { order: parseOrderedListStart(el.getAttribute("start")) };
+              if (firstLi?.querySelector('input[type="checkbox"]'))
+                return { order: parseOrderedListStart(el.getAttribute("start")) };
               return false;
             },
           },
@@ -360,6 +372,49 @@ export const richSchema = new Schema({
         ],
         toDOM(node) {
           return ["pre", { "data-front-matter": node.attrs.text as string }];
+        },
+      },
+      // #1347: footnote reference atom carrying `label`; the markdown
+      // codec reads/writes it (markdown.rs). Display shows the
+      // reference as inert text — never rendered as live markup.
+      footnote_reference: {
+        inline: true,
+        group: "inline",
+        atom: true,
+        selectable: true,
+        attrs: { label: { default: "" } },
+        parseDOM: [
+          {
+            tag: "span[data-footnote-reference]",
+            getAttrs(dom) {
+              return { label: (dom as HTMLElement).dataset.footnoteReference ?? "" };
+            },
+          },
+        ],
+        toDOM(node) {
+          const label = node.attrs.label as string;
+          return ["span", { "data-footnote-reference": label }, `[^${label}]`];
+        },
+      },
+      // #1347: footnote definition block carrying `label` plus block
+      // children (paragraphs, lists, code blocks per #1031); the
+      // markdown codec reads/writes it. The label travels in the data
+      // attribute only — children render normally.
+      footnote_definition: {
+        group: "block",
+        content: "block+",
+        defining: true,
+        attrs: { label: { default: "" } },
+        parseDOM: [
+          {
+            tag: "div[data-footnote-definition]",
+            getAttrs(dom) {
+              return { label: (dom as HTMLElement).dataset.footnoteDefinition ?? "" };
+            },
+          },
+        ],
+        toDOM(node) {
+          return ["div", { "data-footnote-definition": node.attrs.label as string }, 0];
         },
       },
     }),

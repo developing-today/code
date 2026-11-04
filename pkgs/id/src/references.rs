@@ -16,9 +16,16 @@
 //!   its provenance and nothing is picked silently. There is no commit-on-Enter for an
 //!   ambiguous list — [`LocalIndex::insert_unambiguous`] refuses, the author picks a candidate
 //!   explicitly with [`LocalIndex::insert`].
+//!   Petnames are claims for this rule among themselves: a petname the viewer gave to two or
+//!   more actor targets is contested, while one target's petname never contests another
+//!   target's title or alias claim — the petname is the viewer's own disambiguation of its
+//!   target, which is why it outranks those claims instead of tying with them.
 //! - Resolution is viewer-relative: the viewer's own petnames live only in their local index,
 //!   so the same phrase may resolve differently for different viewers, and a reference whose
 //!   target a viewer cannot see renders as inert text that reveals only the stored surface.
+//! - Cleared (tombstoned) objects are excluded from resolution candidates and from surface
+//!   claimant counts. A reference inserted while its target is live still renders as cleared if
+//!   that target is cleared later.
 
 use std::collections::BTreeMap;
 
@@ -375,21 +382,35 @@ impl LocalIndex {
         true
     }
 
-    /// How many distinct targets **of the requested sigil** claim `surface` as a title or
-    /// alias (case-folded). Two or more means the surface is contested for that sigil. An
-    /// actor and a topic sharing a title never contest each other: they answer different
-    /// sigils, so neither is a competing target for the other's resolution.
-    fn claimants(&self, sigil: Sigil, surface: &str) -> usize {
+    /// How many distinct targets **of the requested sigil** claim `surface` the way
+    /// `match_kind` claimed it (case-folded): a petname match counts the targets the viewer
+    /// gave that petname (actors only — topics have no petname tier), and every other exact
+    /// match counts title and alias claims. Two or more means the surface is contested for
+    /// that sigil and claim class. An actor and a topic sharing a title never contest each
+    /// other: they answer different sigils, so neither is a competing target for the other's
+    /// resolution. Claim classes do not cross either: a petname is the viewer's own
+    /// disambiguation of its target, so it outranks a title or alias claim instead of
+    /// contesting it — but two targets sharing one petname contest each other.
+    fn claimants(&self, sigil: Sigil, surface: &str, match_kind: MatchKind) -> usize {
         let folded = fold(surface);
         self.objects
             .iter()
             .filter(|object| object.kind == sigil)
+            .filter(|object| !object.cleared)
             .filter(|object| {
-                fold(&object.title) == folded
-                    || object
-                        .alias_claims
-                        .iter()
-                        .any(|claim| fold(&claim.text) == folded)
+                if match_kind == MatchKind::Petname {
+                    sigil == Sigil::Actor
+                        && self
+                            .petnames
+                            .get(&object.id)
+                            .is_some_and(|petname| fold(petname) == folded)
+                } else {
+                    fold(&object.title) == folded
+                        || object
+                            .alias_claims
+                            .iter()
+                            .any(|claim| fold(&claim.text) == folded)
+                }
             })
             .count()
     }
@@ -402,7 +423,11 @@ impl LocalIndex {
         let folded = fold(phrase);
         let mut candidates: Vec<Candidate> = Vec::new();
         if !folded.is_empty() {
-            for object in self.objects.iter().filter(|object| object.kind == sigil) {
+            for object in self
+                .objects
+                .iter()
+                .filter(|object| object.kind == sigil && !object.cleared)
+            {
                 if let Some(candidate) = self.best_match(object, sigil, &folded) {
                     candidates.push(candidate);
                 }
@@ -423,35 +448,37 @@ impl LocalIndex {
 
     /// The best (lowest-tier) match of one object against the folded phrase, if it matches.
     fn best_match(&self, object: &IndexedObject, sigil: Sigil, folded: &str) -> Option<Candidate> {
-        let claim_state = |surface: &str| {
-            if self.claimants(sigil, surface) > 1 {
+        let claim_state = |match_kind: MatchKind, surface: &str| {
+            if self.claimants(sigil, surface, match_kind) > 1 {
                 ClaimState::Contested
             } else {
                 ClaimState::Uncontested
             }
         };
-        let candidate = |match_kind: MatchKind, surface: String, author: AuthorKey, state: ClaimState| {
-            Candidate {
-                target_id: object.id,
-                kind: sigil,
-                match_kind,
-                provenance: Provenance {
-                    store: self.store.clone(),
-                    author,
-                    claim_state: state,
-                },
-                surface,
-            }
-        };
+        let candidate =
+            |match_kind: MatchKind, surface: String, author: AuthorKey, state: ClaimState| {
+                Candidate {
+                    target_id: object.id,
+                    kind: sigil,
+                    match_kind,
+                    provenance: Provenance {
+                        store: self.store.clone(),
+                        author,
+                        claim_state: state,
+                    },
+                    surface,
+                }
+            };
         // Tier 1: the viewer's petname, `@` only.
         if sigil == Sigil::Actor {
             if let Some(petname) = self.petnames.get(&object.id) {
                 if fold(petname) == folded {
+                    let state = claim_state(MatchKind::Petname, petname);
                     return Some(candidate(
                         MatchKind::Petname,
                         petname.clone(),
                         object.author,
-                        ClaimState::Uncontested,
+                        state,
                     ));
                 }
             }
@@ -462,12 +489,22 @@ impl LocalIndex {
             .iter()
             .find(|claim| fold(&claim.text) == folded)
         {
-            let state = claim_state(&claim.text);
-            return Some(candidate(MatchKind::ExactClaim, object.current_label().to_owned(), claim.author, state));
+            let state = claim_state(MatchKind::ExactClaim, &claim.text);
+            return Some(candidate(
+                MatchKind::ExactClaim,
+                object.current_label().to_owned(),
+                claim.author,
+                state,
+            ));
         }
         if fold(&object.title) == folded {
-            let state = claim_state(&object.title);
-            return Some(candidate(MatchKind::ExactTitle, object.current_label().to_owned(), object.author, state));
+            let state = claim_state(MatchKind::ExactTitle, &object.title);
+            return Some(candidate(
+                MatchKind::ExactTitle,
+                object.current_label().to_owned(),
+                object.author,
+                state,
+            ));
         }
         // Tier 3: prefix, then token, then full-text. A prefix that matches an alias claim
         // keeps that claim's author as provenance — the claim, not the object, is what the
@@ -477,16 +514,40 @@ impl LocalIndex {
             .iter()
             .find(|claim| fold(&claim.text).starts_with(folded))
         {
-            return Some(candidate(MatchKind::Prefix, object.current_label().to_owned(), claim.author, ClaimState::Uncontested));
+            return Some(candidate(
+                MatchKind::Prefix,
+                object.current_label().to_owned(),
+                claim.author,
+                ClaimState::Uncontested,
+            ));
         }
         if fold(&object.title).starts_with(folded) {
-            return Some(candidate(MatchKind::Prefix, object.current_label().to_owned(), object.author, ClaimState::Uncontested));
+            return Some(candidate(
+                MatchKind::Prefix,
+                object.current_label().to_owned(),
+                object.author,
+                ClaimState::Uncontested,
+            ));
         }
-        if object.title.split_whitespace().any(|word| fold(word.trim_matches(|chr: char| !chr.is_alphanumeric())) == folded) {
-            return Some(candidate(MatchKind::Token, object.current_label().to_owned(), object.author, ClaimState::Uncontested));
+        if object
+            .title
+            .split_whitespace()
+            .any(|word| fold(word.trim_matches(|chr: char| !chr.is_alphanumeric())) == folded)
+        {
+            return Some(candidate(
+                MatchKind::Token,
+                object.current_label().to_owned(),
+                object.author,
+                ClaimState::Uncontested,
+            ));
         }
         if fold(&object.title).contains(folded) {
-            return Some(candidate(MatchKind::FullText, object.current_label().to_owned(), object.author, ClaimState::Uncontested));
+            return Some(candidate(
+                MatchKind::FullText,
+                object.current_label().to_owned(),
+                object.author,
+                ClaimState::Uncontested,
+            ));
         }
         None
     }
@@ -615,7 +676,13 @@ mod tests {
         [n; 32]
     }
 
-    fn object(seed: &[u8], kind: Sigil, title: &str, claims: Vec<(&str, u8)>, by: u8) -> IndexedObject {
+    fn object(
+        seed: &[u8],
+        kind: Sigil,
+        title: &str,
+        claims: Vec<(&str, u8)>,
+        by: u8,
+    ) -> IndexedObject {
         IndexedObject {
             id: Hash::digest(seed),
             kind,
@@ -657,6 +724,55 @@ mod tests {
     }
 
     #[test]
+    fn a_petname_shared_by_two_actors_is_contested() {
+        // Regression for #4654: the petname tier used to hardcode Uncontested, so a
+        // viewer petname shared by two actors reported no contest at all.
+        let first = object(b"p1", Sigil::Actor, "Ann Lee", vec![], 1);
+        let second = object(b"p2", Sigil::Actor, "Ann Kim", vec![], 2);
+        let mut index = index_with(vec![first.clone(), second.clone()]);
+        index.set_petname(first.id, "ann");
+        index.set_petname(second.id, "ANN");
+
+        let resolution = index.resolve(Sigil::Actor, "ann");
+        assert_eq!(resolution.candidates.len(), 2);
+        assert!(
+            resolution
+                .candidates
+                .iter()
+                .all(|candidate| candidate.match_kind == MatchKind::Petname)
+        );
+        assert!(
+            resolution
+                .candidates
+                .iter()
+                .all(|candidate| candidate.contested())
+        );
+        assert!(resolution.is_contested());
+        assert_eq!(resolution.single(), None);
+        assert!(
+            index
+                .insert_unambiguous(Sigil::Actor, "ann", author(9))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_petname_shared_with_a_topic_is_not_contested() {
+        // Sigils do not cross: a topic recorded with the same petname string is not a
+        // competing target for the actor's resolution (topics have no petname tier).
+        let actor = object(b"pa", Sigil::Actor, "Ann Lee", vec![], 1);
+        let topic = object(b"pt", Sigil::Topic, "Ann Notes", vec![], 2);
+        let mut index = index_with(vec![actor.clone(), topic.clone()]);
+        index.set_petname(actor.id, "ann");
+        index.set_petname(topic.id, "ann");
+
+        let resolution = index.resolve(Sigil::Actor, "ann");
+        assert_eq!(resolution.candidates.len(), 1);
+        assert!(!resolution.is_contested());
+        assert_eq!(resolution.single().map(|c| c.target_id), Some(actor.id));
+    }
+
+    #[test]
     fn ranking_orders_exact_prefix_token_fulltext() {
         let index = index_with(vec![
             object(b"a", Sigil::Topic, "Atlas", vec![], 1),
@@ -679,10 +795,12 @@ mod tests {
                 MatchKind::FullText
             ]
         );
-        assert!(resolution
-            .candidates
-            .iter()
-            .all(|candidate| candidate.provenance.store == StoreId::local()));
+        assert!(
+            resolution
+                .candidates
+                .iter()
+                .all(|candidate| candidate.provenance.store == StoreId::local())
+        );
     }
 
     #[test]
@@ -718,14 +836,18 @@ mod tests {
         ]);
         let resolution = index.resolve(Sigil::Actor, "sam");
         assert_eq!(resolution.candidates.len(), 2);
-        assert!(resolution
-            .candidates
-            .iter()
-            .all(|candidate| candidate.contested()));
+        assert!(
+            resolution
+                .candidates
+                .iter()
+                .all(|candidate| candidate.contested())
+        );
         assert_eq!(resolution.single(), None);
-        assert!(index
-            .insert_unambiguous(Sigil::Actor, "sam", author(9))
-            .is_err());
+        assert!(
+            index
+                .insert_unambiguous(Sigil::Actor, "sam", author(9))
+                .is_err()
+        );
     }
 
     #[test]
@@ -779,6 +901,40 @@ mod tests {
     }
 
     #[test]
+    fn a_cleared_only_target_does_not_resolve_or_insert() {
+        let cleared = object(b"cleared", Sigil::Topic, "Roadmap", vec![], 1);
+        let mut index = index_with(vec![cleared.clone()]);
+        assert!(index.clear(&cleared.id));
+
+        assert!(index.resolve(Sigil::Topic, "roadmap").candidates.is_empty());
+        assert_eq!(
+            index.insert_unambiguous(Sigil::Topic, "roadmap", author(7)),
+            Err(InsertError::NoMatch)
+        );
+    }
+
+    #[test]
+    fn a_cleared_duplicate_does_not_contest_a_live_target() {
+        let live = object(b"live", Sigil::Topic, "Roadmap", vec![], 1);
+        let cleared = object(b"cleared", Sigil::Topic, "Roadmap", vec![], 2);
+        let mut index = index_with(vec![live.clone(), cleared.clone()]);
+        assert!(index.clear(&cleared.id));
+
+        let resolution = index.resolve(Sigil::Topic, "roadmap");
+        assert_eq!(resolution.candidates.len(), 1);
+        assert_eq!(resolution.candidates[0].target_id, live.id);
+        assert!(!resolution.is_contested());
+        assert_eq!(
+            resolution.single().map(|candidate| candidate.target_id),
+            Some(live.id)
+        );
+        let inserted = index
+            .insert_unambiguous(Sigil::Topic, "roadmap", author(7))
+            .unwrap();
+        assert_eq!(inserted.target_id, live.id);
+    }
+
+    #[test]
     fn a_target_another_viewer_cannot_see_is_unresolved_and_leaks_nothing() {
         let doc = object(b"doc", Sigil::Topic, "Roadmap", vec![], 1);
         let mine = index_with(vec![doc]);
@@ -820,12 +976,16 @@ mod tests {
         let actor = index.resolve(Sigil::Actor, "atlas");
         assert!(!actor.is_contested());
         assert!(actor.single().is_some());
-        assert!(index
-            .insert_unambiguous(Sigil::Actor, "atlas", author(9))
-            .is_ok());
-        assert!(index
-            .insert_unambiguous(Sigil::Topic, "atlas", author(9))
-            .is_ok());
+        assert!(
+            index
+                .insert_unambiguous(Sigil::Actor, "atlas", author(9))
+                .is_ok()
+        );
+        assert!(
+            index
+                .insert_unambiguous(Sigil::Topic, "atlas", author(9))
+                .is_ok()
+        );
     }
 
     #[test]

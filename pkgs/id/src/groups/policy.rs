@@ -7,7 +7,173 @@
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
-use super::Role;
+use super::{Key, Role};
+
+/// A concrete group-removal behavior, without its per-call options.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+pub enum RemoveModeKind {
+    /// End the removed member's grants.
+    Revoke,
+    /// Reissue the removed member's grants to a successor.
+    Transfer,
+    /// Retain grants under their original grantor.
+    KeepPrior,
+    /// Re-anchor grants at the group.
+    ReassignToGroup,
+}
+
+/// A successor category that group policy can allow or reject.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+pub enum SuccessorKind {
+    /// A specifically named member.
+    Member,
+    /// A group administrator.
+    Admin,
+    /// A specifically designated account.
+    Designated,
+    /// The account performing the removal.
+    Actor,
+}
+
+/// Who takes over grants in a transfer removal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RemoveSuccessor {
+    /// A specifically named member.
+    Member(#[serde(with = "super::log::wire::key")] Key),
+    /// A group administrator, resolved at the removal's causal position.
+    Admin,
+    /// A specifically designated account.
+    Designated(#[serde(with = "super::log::wire::key")] Key),
+    /// The account performing the removal.
+    Actor,
+}
+
+impl RemoveSuccessor {
+    /// The policy category for this successor.
+    pub const fn kind(self) -> SuccessorKind {
+        match self {
+            Self::Member(_) => SuccessorKind::Member,
+            Self::Admin => SuccessorKind::Admin,
+            Self::Designated(_) => SuccessorKind::Designated,
+            Self::Actor => SuccessorKind::Actor,
+        }
+    }
+}
+
+/// Options specific to a transfer removal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferOpts {
+    /// The successor that receives the removed member's grants.
+    pub successor: RemoveSuccessor,
+}
+
+/// The requested behavior for one member removal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RemoveMode {
+    /// End the removed member's grants.
+    Revoke,
+    /// Reissue the grants to a successor.
+    Transfer(TransferOpts),
+    /// Retain prior grants under their original grantor.
+    KeepPrior,
+    /// Re-anchor grants at the group.
+    ReassignToGroup,
+    /// Resolve to the group's configured default before emitting an event.
+    ServerDefault,
+}
+
+impl RemoveMode {
+    /// The concrete policy category, or `None` for the pre-emission resolver request.
+    pub const fn kind(self) -> Option<RemoveModeKind> {
+        match self {
+            Self::Revoke => Some(RemoveModeKind::Revoke),
+            Self::Transfer(_) => Some(RemoveModeKind::Transfer),
+            Self::KeepPrior => Some(RemoveModeKind::KeepPrior),
+            Self::ReassignToGroup => Some(RemoveModeKind::ReassignToGroup),
+            Self::ServerDefault => None,
+        }
+    }
+}
+
+/// Group policy for explicit member-removal modes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemovePolicy {
+    /// Concrete modes callers may request. `ServerDefault` is not a concrete mode.
+    pub allowed_modes: Vec<RemoveModeKind>,
+    /// Successor categories callers may use with `Transfer`.
+    pub allowed_successors: Vec<SuccessorKind>,
+    /// The concrete mode selected for a `RemoveMode::ServerDefault` request.
+    pub default_mode: RemoveMode,
+}
+
+impl Default for RemovePolicy {
+    /// Allow the settled modes and successor categories; default to the least-authority behavior.
+    fn default() -> Self {
+        Self {
+            allowed_modes: vec![
+                RemoveModeKind::Revoke,
+                RemoveModeKind::Transfer,
+                RemoveModeKind::KeepPrior,
+                RemoveModeKind::ReassignToGroup,
+            ],
+            allowed_successors: vec![
+                SuccessorKind::Member,
+                SuccessorKind::Admin,
+                SuccessorKind::Designated,
+                SuccessorKind::Actor,
+            ],
+            default_mode: RemoveMode::Revoke,
+        }
+    }
+}
+
+impl RemovePolicy {
+    /// Whether this policy's lists and default form a valid configuration.
+    pub fn is_valid(&self) -> bool {
+        let unique_modes = self
+            .allowed_modes
+            .iter()
+            .enumerate()
+            .all(|(index, mode)| !self.allowed_modes[..index].contains(mode));
+        let unique_successors = self
+            .allowed_successors
+            .iter()
+            .enumerate()
+            .all(|(index, successor)| !self.allowed_successors[..index].contains(successor));
+        let Some(default_kind) = self.default_mode.kind() else {
+            return false;
+        };
+
+        !self.allowed_modes.is_empty()
+            && unique_modes
+            && unique_successors
+            && self.allowed_modes.contains(&default_kind)
+            && match self.default_mode {
+                RemoveMode::Transfer(opts) => {
+                    self.allowed_successors.contains(&opts.successor.kind())
+                }
+                RemoveMode::ServerDefault => false,
+                _ => true,
+            }
+            && (!self.allowed_modes.contains(&RemoveModeKind::Transfer)
+                || !self.allowed_successors.is_empty())
+    }
+
+    /// Whether `mode` is concrete and permitted, including its transfer successor category.
+    pub fn allows(&self, mode: RemoveMode) -> bool {
+        let Some(kind) = mode.kind() else {
+            return false;
+        };
+        self.allowed_modes.contains(&kind)
+            && match mode {
+                RemoveMode::Transfer(opts) => {
+                    self.allowed_successors.contains(&opts.successor.kind())
+                }
+                RemoveMode::ServerDefault => false,
+                _ => true,
+            }
+    }
+}
 
 /// Who may join a group, and how.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,16 +209,17 @@ pub enum Removal {
     Weak,
 }
 
-/// What happens to a removed member's grants (design §7.3).
+/// Legacy group-wide delegation preference. New removals carry their own [`RemoveMode`], which is
+/// validated by `remove_policy` and is not overridden by this setting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 pub enum Delegation {
-    /// Grants made before the removal stand. Grants made concurrently with it are void.
+    /// Legacy preference to keep grants made before a removal.
     #[value(name = "keep_prior")]
     KeepPrior,
-    /// A grant stands only while its grantor still holds the scope. The default.
+    /// Legacy preference to cascade a grant when its grantor loses the scope. The default.
     Cascade,
-    /// The removal names a successor, who takes over the removed member's grants from the removal
-    /// on. Without a successor the grants end.
+    /// Legacy preference for transfer removals. New events record a concrete successor in
+    /// `RemoveMode::Transfer`.
     Transfer,
 }
 
@@ -99,9 +266,11 @@ pub struct Policy {
     pub on_member_removed: OnMemberRemoved,
     /// How removals take effect.
     pub removal: Removal,
-    /// The fate of a removed member's grants. `None` means cascade (design §7.3). Read it through
-    /// [`Policy::delegation_mode`].
+    /// Legacy group-wide delegation preference. A removal's concrete [`RemoveMode`] takes precedence.
     pub delegation: Option<Delegation>,
+    /// Allowed explicit removal modes and the mode used for `ServerDefault`.
+    #[serde(default)]
+    pub remove_policy: RemovePolicy,
     /// What a joiner may see of earlier history.
     pub history: History,
     /// The key-agreement scheme. `None` means no scheme.
@@ -120,6 +289,7 @@ impl Default for Policy {
             on_member_removed: OnMemberRemoved::Continue,
             removal: Removal::Strong,
             delegation: None,
+            remove_policy: RemovePolicy::default(),
             history: History::Full,
             scheme: None,
             roles: RoleRules {
@@ -132,13 +302,14 @@ impl Default for Policy {
 impl Policy {
     /// The friendship template (design §5.3): two members, mutual request, dissolve on removal,
     /// strong remove, cascade delegation, and full history.
-    pub const fn friendship() -> Self {
+    pub fn friendship() -> Self {
         Self {
             member_cap: Some(2),
             join: Join::MutualRequest,
             on_member_removed: OnMemberRemoved::Dissolve,
             removal: Removal::Strong,
             delegation: Some(Delegation::Cascade),
+            remove_policy: RemovePolicy::default(),
             history: History::Full,
             scheme: None,
             roles: RoleRules {
@@ -147,7 +318,7 @@ impl Policy {
         }
     }
 
-    /// The delegation mode in effect: the record's, or cascade when it names none.
+    /// The legacy delegation preference: the record's, or cascade when it names none.
     pub fn delegation_mode(&self) -> Delegation {
         self.delegation.unwrap_or(Delegation::Cascade)
     }
@@ -158,6 +329,7 @@ impl Policy {
         self.roles.change == Role::Admin
             && self.member_cap.is_none_or(|cap| cap >= 1)
             && !matches!(self.history, History::Recent(0))
+            && self.remove_policy.is_valid()
     }
 }
 
@@ -236,6 +408,84 @@ mod tests {
             ..Policy::default()
         };
         assert!(!no_members.is_valid());
+    }
+
+    #[test]
+    fn test_remove_policy_defaults_to_revoke_and_allows_configured_modes() {
+        let policy = RemovePolicy::default();
+        assert!(policy.is_valid());
+        assert_eq!(policy.default_mode, RemoveMode::Revoke);
+        assert!(policy.allows(RemoveMode::Revoke));
+        assert!(!policy.allows(RemoveMode::ServerDefault));
+        assert!(policy.allows(RemoveMode::Transfer(TransferOpts {
+            successor: RemoveSuccessor::Member([7; 32]),
+        })));
+    }
+
+    #[test]
+    fn test_remove_policy_restricts_modes_and_successor_kinds() {
+        let policy = RemovePolicy {
+            allowed_modes: vec![RemoveModeKind::Revoke, RemoveModeKind::Transfer],
+            allowed_successors: vec![SuccessorKind::Member],
+            default_mode: RemoveMode::Revoke,
+        };
+        assert!(policy.is_valid());
+        assert!(policy.allows(RemoveMode::Transfer(TransferOpts {
+            successor: RemoveSuccessor::Member([3; 32]),
+        })));
+        assert!(!policy.allows(RemoveMode::Transfer(TransferOpts {
+            successor: RemoveSuccessor::Admin,
+        })));
+        assert!(!policy.allows(RemoveMode::KeepPrior));
+    }
+
+    #[test]
+    fn test_remove_mode_serializes_successor_keys_as_hex() {
+        let mode = RemoveMode::Transfer(TransferOpts {
+            successor: RemoveSuccessor::Designated([0xab; 32]),
+        });
+        let encoded = serde_json::to_string(&mode).unwrap();
+        assert!(encoded.contains(&"ab".repeat(32)));
+        let decoded: RemoveMode = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, mode);
+    }
+
+    #[test]
+    fn test_remove_policy_rejects_invalid_defaults_and_duplicate_entries() {
+        let resolver_default = RemovePolicy {
+            default_mode: RemoveMode::ServerDefault,
+            ..RemovePolicy::default()
+        };
+        assert!(!resolver_default.is_valid());
+
+        let duplicate_mode = RemovePolicy {
+            allowed_modes: vec![RemoveModeKind::Revoke, RemoveModeKind::Revoke],
+            ..RemovePolicy::default()
+        };
+        assert!(!duplicate_mode.is_valid());
+
+        let disallowed_default_successor = RemovePolicy {
+            allowed_modes: vec![RemoveModeKind::Transfer],
+            allowed_successors: vec![SuccessorKind::Member],
+            default_mode: RemoveMode::Transfer(TransferOpts {
+                successor: RemoveSuccessor::Admin,
+            }),
+        };
+        assert!(!disallowed_default_successor.is_valid());
+
+        let invalid_group_policy = Policy {
+            remove_policy: resolver_default,
+            ..Policy::default()
+        };
+        assert!(!invalid_group_policy.is_valid());
+    }
+
+    #[test]
+    fn test_old_policy_records_default_the_new_remove_policy() {
+        let mut old_record = serde_json::to_value(Policy::default()).unwrap();
+        old_record.as_object_mut().unwrap().remove("remove_policy");
+        let decoded: Policy = serde_json::from_value(old_record).unwrap();
+        assert_eq!(decoded.remove_policy, RemovePolicy::default());
     }
 
     #[test]

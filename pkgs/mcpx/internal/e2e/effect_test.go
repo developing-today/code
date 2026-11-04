@@ -52,6 +52,7 @@ var implementedEffectProbes = map[string]string{
 	"deps.manifest":              "TestDepsManifestNamesTheManifestResolutionReads",
 	"deps.packages":              "TestDepsPackagesPinContradictingTheManifestFailsTheRun",
 	"paths.deps":                 "TestPathsDepsExtendsManifestDiscovery",
+	"proxy.timeout":              "TestProxyUpstreamTimeoutIsReachableFromTheEnvironment",
 }
 
 // effectProbeFuncs anchors every declared probe name to the actual
@@ -65,6 +66,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestLoggingFileOffWritesNoDurableLog":                   TestLoggingFileOffWritesNoDurableLog,
 	"TestOutputJSONIsReachableFromTheEnvironment":            TestOutputJSONIsReachableFromTheEnvironment,
 	"TestPathsConfigFileChangesWhichConfigLoads":             TestPathsConfigFileChangesWhichConfigLoads,
+	"TestProxyUpstreamTimeoutIsReachableFromTheEnvironment":  TestProxyUpstreamTimeoutIsReachableFromTheEnvironment,
 	"TestPoolDefaultsAreReachableFromTheEnvironment":         TestPoolDefaultsAreReachableFromTheEnvironment,
 	"TestRegistryLimitReachesTheCLI":                         TestRegistryLimitReachesTheCLI,
 	"TestRegistryPageSizeChangesWhatTheCLIAsksFor":           TestRegistryPageSizeChangesWhatTheCLIAsksFor,

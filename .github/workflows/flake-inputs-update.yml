@@ -148,9 +148,11 @@ jobs:
             error_log="$RUNNER_TEMP/validate.log"
           fi
           if [ -n "${failed_step}" ]; then
-            echo "result=failure" >> "$GITHUB_OUTPUT"
-            echo "failed_step=${failed_step}" >> "$GITHUB_OUTPUT"
-            echo "error_log=${error_log}" >> "$GITHUB_OUTPUT"
+            {
+              echo "result=failure"
+              echo "failed_step=${failed_step}"
+              echo "error_log=${error_log}"
+            } >> "$GITHUB_OUTPUT"
           else
             echo "result=success" >> "$GITHUB_OUTPUT"
           fi

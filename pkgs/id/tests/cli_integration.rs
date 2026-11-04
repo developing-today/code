@@ -359,12 +359,119 @@ mod cli_tests {
     }
 
     #[test]
+    fn key_export_and_import_help_are_available() {
+        let tmp = TempDir::new().unwrap();
+        for args in [["key", "export", "--help"], ["key", "import", "--help"]] {
+            let output = run_cmd(&args, tmp.path());
+            assert!(output.status.success());
+            assert!(String::from_utf8_lossy(&output.stdout).contains("passphrase"));
+        }
+    }
+
+    #[test]
     fn test_version() {
         let tmp = TempDir::new().unwrap();
         let output = run_cmd(&["--version"], tmp.path());
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("id"));
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[test]
+    fn match_audit_cli_exports_verifies_and_rejects_tampered_inputs_and_checkpoints() {
+        let tmp = TempDir::new().unwrap();
+        let log_path = tmp.path().join("reference.malog");
+        let log_path_arg = log_path.to_str().unwrap();
+        let exported = run_cmd(
+            &[
+                "match-audit",
+                "export-tic-tac-toe",
+                "--output",
+                log_path_arg,
+            ],
+            tmp.path(),
+        );
+        assert!(
+            exported.status.success(),
+            "export failed: {}",
+            String::from_utf8_lossy(&exported.stderr)
+        );
+        let exported_report: serde_json::Value = serde_json::from_slice(&exported.stdout).unwrap();
+        assert_eq!(
+            exported_report["technical"]["ResultConfirmed"]["runtime"],
+            "PinnedRuntime"
+        );
+        assert_eq!(exported_report["actual"], "InconclusiveNoObservedMetadata");
+
+        let verified = run_cmd(&["match-audit", "verify", log_path_arg], tmp.path());
+        assert!(
+            verified.status.success(),
+            "verify failed: {}",
+            String::from_utf8_lossy(&verified.stderr)
+        );
+        let verified_report: serde_json::Value = serde_json::from_slice(&verified.stdout).unwrap();
+        assert!(verified_report.get("technical_verdict").is_some());
+        assert_eq!(
+            verified_report["technical"]["ResultConfirmed"]["runtime"],
+            "PinnedRuntime"
+        );
+
+        let mut tampered_input =
+            id::match_audit::MatchLogV0::decode(&std::fs::read(&log_path).unwrap()).unwrap();
+        let id::match_audit::EntryBodyV0::InputBlock(block) = &mut tampered_input.entries[0].body
+        else {
+            panic!("reference log starts with an input block")
+        };
+        block.records[0].payload[0] ^= 1;
+        let tampered_input_path = tmp.path().join("tampered-input.malog");
+        std::fs::write(&tampered_input_path, tampered_input.encode().unwrap()).unwrap();
+        let tampered_input_arg = tampered_input_path.to_str().unwrap();
+        let rejected_input = run_cmd(&["match-audit", "verify", tampered_input_arg], tmp.path());
+        assert!(!rejected_input.status.success());
+        let rejected_input_report: serde_json::Value =
+            serde_json::from_slice(&rejected_input.stdout).unwrap();
+        assert_eq!(
+            rejected_input_report["technical"]["InvalidRecord"]["reason"],
+            "EntryHashMismatch"
+        );
+
+        let mut tampered_checkpoint =
+            id::match_audit::MatchLogV0::decode(&std::fs::read(&log_path).unwrap()).unwrap();
+        let id::match_audit::EntryBodyV0::Checkpoint(checkpoint) =
+            &mut tampered_checkpoint.entries[1].body
+        else {
+            panic!("reference log's second entry is its first checkpoint")
+        };
+        checkpoint.state_hash = p2panda_core::Hash::digest(b"tampered checkpoint");
+        let tampered_checkpoint_path = tmp.path().join("tampered-checkpoint.malog");
+        std::fs::write(
+            &tampered_checkpoint_path,
+            tampered_checkpoint.encode().unwrap(),
+        )
+        .unwrap();
+        let tampered_checkpoint_arg = tampered_checkpoint_path.to_str().unwrap();
+        let rejected_checkpoint = run_cmd(
+            &["match-audit", "verify", tampered_checkpoint_arg],
+            tmp.path(),
+        );
+        assert!(!rejected_checkpoint.status.success());
+        let rejected_checkpoint_report: serde_json::Value =
+            serde_json::from_slice(&rejected_checkpoint.stdout).unwrap();
+        assert_eq!(
+            rejected_checkpoint_report["technical"]["InvalidRecord"]["reason"],
+            "EntryHashMismatch"
+        );
+
+        let oversized_path = tmp.path().join("oversized.malog");
+        std::fs::File::create(&oversized_path)
+            .unwrap()
+            .set_len(128_u64 * 1024 * 1024 + 1)
+            .unwrap();
+        let oversized_arg = oversized_path.to_str().unwrap();
+        let oversized = run_cmd(&["match-audit", "verify", oversized_arg], tmp.path());
+        assert!(!oversized.status.success());
+        assert!(String::from_utf8_lossy(&oversized.stderr).contains("maximum is 134217728"));
     }
 
     #[test]
@@ -413,6 +520,83 @@ mod cli_tests {
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("opening phase"), "{stderr}");
+    }
+
+    /// `id world verify` surfaces the fixture-header verdict (#1539): a
+    /// fixture whose two replays agree with each other but mismatch the
+    /// tampered header records must print the header verdict, name the
+    /// agree-but-mismatch case, and exit nonzero. Before the fix it
+    /// printed "records verify" and exited 0.
+    #[test]
+    fn test_world_verify_rejects_agree_but_mismatch_header() {
+        let tmp = TempDir::new().unwrap();
+        let module = apps_dir().join("tic-tac-toe/program/tic-tac-toe.wasm");
+        let module = module.to_str().unwrap();
+        // Embedded at build time: the NixOS VM integration suite runs
+        // the compiled test binary without the source tree, so a
+        // CARGO_MANIFEST_DIR runtime read would panic there (Codex P2
+        // finding on PR #4619).
+        let fixture_text = include_str!("fixtures/tic-tac-toe-determinism.jsonl");
+
+        // The checked-in fixture verifies clean: the header verdict is a
+        // match and the command succeeds.
+        let good = tmp.path().join("good.jsonl");
+        std::fs::write(&good, fixture_text).unwrap();
+        let good = good.to_str().unwrap();
+        let verified = run_cmd_success_stdout(
+            &[
+                "world",
+                "verify",
+                "--module",
+                module,
+                "--fixture",
+                good,
+                "--seed",
+                "7",
+            ],
+            tmp.path(),
+        );
+        assert!(verified.contains("records verify"), "{verified}");
+        assert!(
+            verified.contains("header verdict: records match"),
+            "{verified}"
+        );
+
+        // Tamper only the header records: both replays still agree with
+        // each other, but they now mismatch the fixture header.
+        let tampered = fixture_text.replace(
+            r#""records":{"board":"XXXOO----","plays":5,"winner":"X"}"#,
+            r#""records":{"board":"XXXXXXXXX","plays":9,"winner":"X"}"#,
+        );
+        assert_ne!(tampered, fixture_text);
+        let bad = tmp.path().join("tampered.jsonl");
+        std::fs::write(&bad, &tampered).unwrap();
+        let bad = bad.to_str().unwrap();
+        let output = run_cmd(
+            &[
+                "world",
+                "verify",
+                "--module",
+                module,
+                "--fixture",
+                bad,
+                "--seed",
+                "7",
+            ],
+            tmp.path(),
+        );
+        assert!(!output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("header verdict: records differ"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("agree with each other but mismatch the fixture header"),
+            "{stdout}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("differ from the fixture"), "{stderr}");
     }
 }
 
@@ -549,12 +733,25 @@ mod list_tests {
 
         let list_output = run_cmd_success(&["list"], tmp.path());
 
-        // Output should be hash<tab>name format
+        // Output should be hash<tab>name<tab>origin<tab>uploaded_at format
+        // (#4973: listings carry origin node + upload time).
         for line in list_output.lines() {
             if line.contains("test.list-format.txt") {
                 let parts: Vec<&str> = line.split('\t').collect();
-                assert_eq!(parts.len(), 2, "List output should be hash<tab>name");
+                assert_eq!(
+                    parts.len(),
+                    4,
+                    "List output should be hash<tab>name<tab>origin<tab>uploaded_at"
+                );
                 assert_eq!(parts[0].len(), 64, "Hash should be 64 hex chars");
+                // The file was just stored by this node, so origin is this
+                // node's id and uploaded_at is a unix timestamp.
+                assert_eq!(parts[2].len(), 64, "Origin should be a node id");
+                assert!(
+                    parts[3].parse::<u64>().is_ok(),
+                    "uploaded_at should be unix seconds, got {:?}",
+                    parts[3]
+                );
             }
         }
     }
@@ -571,10 +768,7 @@ mod list_tests {
         // stdin auto-detect (a lone `path:name` spec does not exist
         // as a file, so it would be read as a stdin blob name and
         // parse_put_spec would never run).
-        run_cmd_success(
-            &["put", &put_spec, test_file.to_str().unwrap()],
-            tmp.path(),
-        );
+        run_cmd_success(&["put", &put_spec, test_file.to_str().unwrap()], tmp.path());
 
         let output = run_cmd_success_stdout(&["list"], tmp.path());
         let rows: Vec<_> = output.lines().filter(|line| line.contains('\t')).collect();
@@ -588,7 +782,7 @@ mod list_tests {
             let fields: Vec<_> = row.split('\t').collect();
             assert_eq!(
                 fields.len(),
-                2,
+                4,
                 "the stored name must not forge a column: {output:?}"
             );
             assert_eq!(fields[0].len(), 64);
@@ -596,7 +790,10 @@ mod list_tests {
                 quoted_names += 1;
             }
         }
-        assert_eq!(quoted_names, 1, "the unsafe name must appear quoted: {output:?}");
+        assert_eq!(
+            quoted_names, 1,
+            "the unsafe name must appear quoted: {output:?}"
+        );
     }
 }
 
@@ -1773,7 +1970,11 @@ mod serve_tests {
         assert!(!capability.is_empty() && !capability.contains(char::is_whitespace));
     }
 
+    /// The world web presentation only exists when the binary is built
+    /// with the `web` feature; without it the server never prints the
+    /// `web:` line this test waits for.
     #[test]
+    #[cfg(feature = "web")]
     fn test_world_module_shared_over_iroh_and_web_presentations() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
@@ -4001,10 +4202,7 @@ mod serve_tests {
         );
 
         let instance_dir = tmp.path().join(".iroh").join("space-dev");
-        assert!(
-            instance_dir.exists(),
-            ".iroh/space-dev/ should be created"
-        );
+        assert!(instance_dir.exists(), ".iroh/space-dev/ should be created");
         assert!(
             instance_dir.join(".iroh-key").exists(),
             "Key file should be in named instance directory"
@@ -4565,5 +4763,188 @@ mod tag_tests {
         let tmp = TempDir::new().unwrap();
         let output = run_cmd(&["link", "search", "--help"], tmp.path());
         assert!(output.status.success(), "link search --help should succeed");
+    }
+}
+
+/// Integration tests for the #1791 structured operational logging
+/// configuration (`ID_LOG_*`), exercised through the real binary so
+/// the production environment-reading path and `init_logging` in
+/// `main.rs` are covered — not only the library-level configuration
+/// resolution in `id::structured_logging`.
+mod structured_logging_tests {
+    use super::*;
+    use std::process::Stdio;
+
+    /// Run the fast `id` command with extra environment variables and
+    /// return its output.
+    fn run_id_with_env(work_dir: &std::path::Path, env: &[(&str, &str)]) -> std::process::Output {
+        let mut command = Command::new(get_binary_path());
+        command.args(["id"]).current_dir(work_dir);
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        command
+            .output_within(PROCESS_TIMEOUT)
+            .expect("Failed to execute command")
+    }
+
+    #[test]
+    fn test_structured_logging_unrecognized_tz_warns_and_succeeds() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_id_with_env(tmp.path(), &[("ID_LOG_TZ", "Mars/Olympus_Mons")]);
+        assert!(
+            output.status.success(),
+            "id command should succeed despite the bad ID_LOG_TZ: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("ID_LOG_TZ value not recognized"),
+            "startup should warn about the unrecognized timezone: {stderr}"
+        );
+    }
+
+    #[test]
+    fn test_structured_logging_unopenable_log_file_warns_and_succeeds() {
+        let tmp = TempDir::new().unwrap();
+        // A path whose parent is a regular file can never be opened,
+        // even after the parent-directory creation attempt.
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let log_file = blocker.join("id.log");
+        let output = run_id_with_env(tmp.path(), &[("ID_LOG_FILE", log_file.to_str().unwrap())]);
+        assert!(
+            output.status.success(),
+            "id command should succeed despite the unopenable log file: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("could not open log file"),
+            "startup should warn about the unopenable log file: {stderr}"
+        );
+    }
+
+    #[test]
+    fn test_structured_logging_json_file_with_independent_level() {
+        let tmp = TempDir::new().unwrap();
+        let log_file = tmp.path().join("id.log");
+        let console_file = tmp.path().join("console.log");
+        let console = std::fs::File::create(&console_file).unwrap();
+
+        // Console stays at the default level (warn, plus the existing
+        // per-module caps); the file destination independently takes
+        // debug. Both use the JSON format.
+        let child = Command::new(get_binary_path())
+            .args([
+                "serve",
+                "--ephemeral",
+                "--no-relay",
+                "--no-gossip",
+                "--no-mdns",
+            ])
+            .current_dir(tmp.path())
+            .env("ID_LOG_FORMAT", "json")
+            .env("ID_LOG_FILE", &log_file)
+            .env("ID_LOG_FILE_LEVEL", "debug")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(console))
+            .spawn()
+            .expect("Failed to spawn server");
+        let _guard = KillOnDrop(child);
+
+        // Wait until the file destination has recorded a DEBUG event;
+        // startup produces plenty (store, rustls, iroh internals).
+        let mut contents = String::new();
+        for _ in 0..120 {
+            contents = std::fs::read_to_string(&log_file).unwrap_or_default();
+            if contents.contains("\"level\":\"DEBUG\"") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        assert!(
+            contents.contains("\"level\":\"DEBUG\""),
+            "file destination should record DEBUG events: {}",
+            contents.chars().take(2000).collect::<String>()
+        );
+
+        // Every line in the file is a JSON object with the structured
+        // fields, and the timestamp is RFC 3339 with nanoseconds in
+        // some zone (host local by default — the suffix varies).
+        let first_line = contents.lines().next().expect("log file has lines");
+        for line in contents.lines() {
+            let value: serde_json::Value =
+                serde_json::from_str(line).expect("log file line should be JSON");
+            assert!(value["timestamp"].is_string(), "line: {line}");
+            assert!(value["level"].is_string(), "line: {line}");
+            assert!(value["target"].is_string(), "line: {line}");
+        }
+        let first: serde_json::Value =
+            serde_json::from_str(first_line).expect("first line should be JSON");
+        let timestamp = first["timestamp"].as_str().expect("timestamp field");
+        let fraction: String = timestamp
+            .split('.')
+            .nth(1)
+            .expect("timestamp has fractional seconds")
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        assert_eq!(fraction.len(), 9, "timestamp: {timestamp}");
+
+        // The console destination kept its own (higher) level: it saw
+        // the same run but recorded no DEBUG events.
+        let console_contents = std::fs::read_to_string(&console_file).unwrap_or_default();
+        assert!(
+            !console_contents.contains("\"level\":\"DEBUG\""),
+            "console should not record DEBUG events: {}",
+            console_contents.chars().take(2000).collect::<String>()
+        );
+    }
+
+    #[test]
+    fn test_structured_logging_text_file_is_plain_text() {
+        let tmp = TempDir::new().unwrap();
+        let log_file = tmp.path().join("id.log");
+        let child = Command::new(get_binary_path())
+            .args([
+                "serve",
+                "--ephemeral",
+                "--no-relay",
+                "--no-gossip",
+                "--no-mdns",
+            ])
+            .current_dir(tmp.path())
+            .env("ID_LOG_FILE", &log_file)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Failed to spawn server");
+        let _guard = KillOnDrop(child);
+
+        let mut contents = String::new();
+        for _ in 0..120 {
+            contents = std::fs::read_to_string(&log_file).unwrap_or_default();
+            if !contents.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        assert!(
+            !contents.is_empty(),
+            "file destination should record events in text mode too"
+        );
+        assert!(
+            !contents.contains('\u{1b}'),
+            "file output must not contain ANSI escapes: {:?}",
+            contents.chars().take(500).collect::<String>()
+        );
+        assert!(
+            !contents.trim_start().starts_with('{'),
+            "text mode should not emit JSON lines: {}",
+            contents.chars().take(500).collect::<String>()
+        );
     }
 }

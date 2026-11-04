@@ -85,6 +85,7 @@ pub fn sign_move(
             removes: None,
             note: None,
             link: None,
+            checkpoint: None,
         },
     )
 }

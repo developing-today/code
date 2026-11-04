@@ -23,6 +23,7 @@ import {
 import type { RoadmapReconciliation } from "./roadmap-reconcile.ts";
 import type { RoadmapAnnotation } from "./roadmap-annotations.ts";
 import { diffCoverage, type CoverageSnapshotFile } from "./coverage.ts";
+import { DIGEST_SECTION_LIMIT, type Digest, type DigestKind } from "./digest.ts";
 import { registryQueryString, type RegistryView } from "./registry-view.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
 import { applyBoardDonePolicy, DONE_STRIP_RENDER_LIMIT } from "./board-policy.ts";
@@ -33,13 +34,29 @@ import {
   effectiveStandingAuto,
   proposalExpired,
   proposalIdentity,
+  questionIdForOption,
   type NeedsOrder,
 } from "./tier-items.ts";
 import { commentKindCounts, githubCommentUrl, queuedComments, type CommentKindCounts } from "./comments.ts";
 import { serviceHomeLinks, type ItemServiceLink } from "./service-links.ts";
+import { activityCoverageHtml, gapsHtml, type ActivityCoverage, type GapRecord } from "./activity.ts";
+import type { AuditEvent } from "./events.ts";
 import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
+import {
+  applyInequalityFilters,
+  bandIndex,
+  computeRecommendations,
+  logEdges,
+  normName,
+  paretoSet,
+  pctRank,
+  projectTask,
+  scoreEdges,
+} from "./assets/aa-explorer-computations.js";
 import { summarizeDns } from "./dns.ts";
+import type { NeedsDrewCensus } from "./needs-drew.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
+import type { NotificationRollup } from "./notifications.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
 import type { QueueView, QueueRow } from "./queue-view.ts";
 import type { HealthView, PageHealth } from "./health.ts";
@@ -89,11 +106,14 @@ import { KEY_HINT, KEYBOARD_SCRIPT, paletteHtml } from "./keyboard.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
+import type { ConflictEntry, ConflictInbox } from "./conflicts.ts";
 import { buildItemBrief, type ItemBrief } from "./brief.ts";
-import { buildEpicRollups, type EpicRollup } from "./epics.ts";
+import { buildEpicRollups, isEpicChildDone, type EpicRollup } from "./epics.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
+import { EPIC_GRAPH_DEFAULT_CAP, epicGraph, epicSelector } from "./epic-graph.ts";
 import { type AuthorIdentity } from "./registry.ts";
+import type { SearchResult } from "./search-view.ts";
 
 export function esc(s: unknown): string {
   return String(s ?? "")
@@ -120,6 +140,11 @@ const CSS = `
 body { margin: 0; font: 14px/1.45 system-ui, -apple-system, sans-serif; background: #0e1117; color: #e6edf3; }
 [id] { scroll-margin-top: 96px; }
 nav { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; padding: 8px 16px; border-bottom: 1px solid #30363d; background: #161b22; position: sticky; top: 0; }
+.navsearch { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.navsearch input, .search-page-form input { min-width: 12rem; padding: 7px 9px; border: 1px solid #30363d; border-radius: 6px; background: #0d1117; color: inherit; }
+.navsearch button, .search-page-form button { padding: 7px 10px; border: 1px solid #30363d; border-radius: 6px; background: #21262d; color: inherit; cursor: pointer; }
+.search-page-form { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.search-page-form input { flex: 1; }
 .navgroup { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
 .navgroup + .navgroup { border-left: 1px solid #30363d; padding-left: 12px; }
 .navlabel { color: #8b949e; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; margin-right: 4px; }
@@ -132,6 +157,13 @@ h1 { font-size: 18px; } h2 { font-size: 15px; }
 a { color: #58a6ff; }
 .card { border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; margin: 8px 0; background: #161b22; overflow-wrap: anywhere; }
 .muted { color: #8b949e; font-size: 12px; }
+@media (max-width: 480px) {
+  .attention-card-header { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; min-width: 0; margin-bottom: 4px; }
+  .attention-card-header > strong { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+  .attention-card-header .badge { white-space: normal; }
+  .item-session-records > .session-record-line { box-sizing: border-box; max-width: 100%; min-width: 0; }
+  .item-session-records .session-record-meta { display: block; max-width: 100%; overflow-wrap: anywhere; }
+}
 .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid #30363d; margin: 1px 2px 1px 0; white-space: nowrap; }
 .badge.open { background: #1f6feb33; border-color: #1f6feb; color: #58a6ff; }
 .badge.merged { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
@@ -306,6 +338,10 @@ pre { max-width: 100%; overflow-x: auto; }
 .chart-expanded { position: fixed !important; inset: 12px; z-index: 80; background: #0d1117; border: 1px solid #30363d; border-radius: 10px; padding: 14px; overflow: auto; box-shadow: 0 12px 48px rgba(0,0,0,.6); }
 .chart-expanded svg { width: 100% !important; max-width: none !important; height: auto; max-height: calc(100vh - 150px); }
 circle.xpt { cursor: pointer; }
+g.xpt-control { cursor: pointer; }
+g.xpt-control .xpt-hit { fill: transparent; stroke: transparent; stroke-width: 0; pointer-events: all; }
+g.xpt-control:focus-visible .xpt-hit { stroke: #fff; stroke-width: 2; }
+g.xpt-control .xpt { pointer-events: none; }
 .xpl-table td.num, .xpl-table th.num { text-align: right; }
 .xpl-table tr { cursor: pointer; }
 .xpl-table tr:hover td { background: #161b22; }
@@ -404,13 +440,26 @@ body.xp-plan .xpl-costcol { display: none; }
   .qblock { border-top-color: #d1d9e0; }
   .cbox { border-top-color: #d1d9e0; }
 }
+  .epic-graph-flex { display: flex; gap: 16px; align-items: flex-start; }
+  .epic-graph-svg { flex: 1 1 auto; min-width: 0; overflow-x: auto; }
+  .epic-graph-side { flex: 0 0 320px; max-width: 100%; }
+  .epic-graph-list { margin: 0; padding-left: 18px; }
+  .epic-graph-list li { margin: 4px 0; }
+  .epic-graph-selector { position: static; }
+  .epic-graph-selector a { white-space: normal; display: inline; min-height: 0; padding: 0; }
+  @media (max-width: 720px) { .epic-graph-flex { flex-direction: column; } .epic-graph-side { flex: none; width: 100%; } }
 @media (max-width: 720px) {
   body { font-size: 13.5px; }
+  body { overflow-x: clip; }
   main { padding: 12px 10px 60px; }
   nav { padding: 7px 10px; gap: 2px 8px; }
   .navgroup + .navgroup { padding-left: 8px; }
   .navlabel { font-size: 10px; margin-right: 2px; }
   nav a { padding: 5px 7px; }
+  [id] { scroll-margin-top: 192px; }
+  button, select, input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), textarea, summary { min-height: 40px; }
+  label:has(input[type="checkbox"]), label:has(input[type="radio"]) { display: inline-flex; align-items: center; min-height: 40px; }
+  a.today-health-link { min-height: 40px; }
   h1 { font-size: 16px; }
   .board { grid-template-columns: 1fr; }
   .pool { grid-template-columns: 1fr; }
@@ -598,6 +647,7 @@ document.addEventListener("submit", async (ev) => {
   if (standingAuto) payload.standingAuto = standingAuto === "true";
   const answersByQuestion = {};
   for (const el of form.querySelectorAll("[name^='answers:']")) {
+    if (el.disabled) continue;
     const qid = el.name.slice("answers:".length);
     if (el.type === "checkbox") { if (el.checked) (answersByQuestion[qid] = answersByQuestion[qid] || []).push(el.value); }
     else if (el.type === "radio") { if (el.checked) answersByQuestion[qid] = el.value; }
@@ -623,7 +673,21 @@ document.addEventListener("submit", async (ev) => {
   if (form.dataset.supersedes) body.supersedes = form.dataset.supersedes;
   try {
     const res = await fetch("/api/actions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ("HTTP " + res.status)); }
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      if (typeof b.duplicateOf === "string") {
+        if (submitBtn) submitBtn.disabled = false;
+        // The rejected attempt is persisted under this form's token; a
+        // corrected resubmit (e.g. dropping the already-answered
+        // question) is a NEW attempt and needs a fresh token, or the
+        // store's client-token dedupe would replay the rejected record
+        // as if it had been sent (Codex P2 on PR #4024).
+        form.dataset.token = "ct-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+        if (err) err.textContent = "Duplicate recorded" + (typeof b.action?.id === "string" ? " as " + b.action.id : "") + "; points to existing answer " + b.duplicateOf + ".";
+        return;
+      }
+      throw new Error(b.error || ("HTTP " + res.status));
+    }
     window.__dashAfter(form, "✓ sent · pending — the fleet applies it on its next pass");
   } catch (e) {
     if (submitBtn) submitBtn.disabled = false;
@@ -718,6 +782,10 @@ export function pageDropdown(active: string): string {
   return `<select aria-label="Go to page" onchange="if(this.value)location.href=this.value"><option value="">Pages ▾</option>${groups}</select>`;
 }
 
+function globalSearch(): string {
+  return `<form class="navsearch" action="/search" method="get" role="search"><input type="search" name="q" aria-label="Search board and roadmap work" placeholder="Search work…" required><button type="submit">Search</button></form>`;
+}
+
 function layout(
   title: string,
   body: string,
@@ -737,9 +805,41 @@ function layout(
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · aggregator</title><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#161b22"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="PM Stack"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"><style>${CSS}</style><script type="module" src="/assets/datastar.js"></script></head>
-<body><nav>${links}${dropdown}</nav><main>${chipsHtml}${body}
+<body><nav>${links}${dropdown}${globalSearch()}</nav><main>${chipsHtml}${body}
 <div class="foot"><details class="srcdetail"><summary>source detail</summary>board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}</details><span class="kbd-hint">${KEY_HINT}</span> · tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
 </main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script>${extra}${paletteHtml()}${KEYBOARD_SCRIPT}</body></html>`;
+}
+
+/** First-slice global search over board/roadmap subjects and linked refs. */
+export function renderSearch(
+  query: string,
+  results: SearchResult[],
+  items: Map<RefKey, GhItem>,
+  provenance: Provenance,
+  detail?: ProvenanceDetail,
+): string {
+  const cards = results
+    .map((result) => {
+      const badges = result.refs
+        .map((ref) => {
+          const item = items.get(ref);
+          return item
+            ? itemBadge(item)
+            : `<a class="badge closed" href="${esc(refUrl(ref))}" title="Unresolved by the current item source">${esc(ref)} · unresolved</a>`;
+        })
+        .join(" ");
+      return `<div class="card"><a href="/item/${encodeURIComponent(result.id)}"><strong>${esc(result.title)}</strong></a><br><span class="muted">${result.kind} · ${esc(result.summary)}</span>${badges ? `<div class="strip">${badges}</div>` : ""}</div>`;
+    })
+    .join("");
+  const body = `<h1>Search</h1><p class="muted">Search board items and roadmap rows by subject, title, or linked issue/PR ref. Linked GitHub badges show their current projected state and whether the result is fixture-only.</p><form class="search-page-form" action="/search" method="get" role="search"><label for="search-query">Search work</label><input id="search-query" type="search" name="q" value="${esc(query)}" placeholder="Title or owner/repo#123"><button type="submit">Search</button></form>${query ? `<h2>${results.length} result${results.length === 1 ? "" : "s"} for “${esc(query)}”</h2>${cards || '<p class="muted">No matching work found.</p>'}` : '<p class="muted">Enter a title or issue/PR reference to search.</p>'}`;
+  return layout(
+    "Search",
+    body,
+    provenance,
+    "/search",
+    "",
+    detail ? freshnessChips(detail, ["board", "roadmap", "items"]) : "",
+  );
 }
 
 // --- Dashboard comments (#906 §2) ------------------------------------------
@@ -1235,9 +1335,10 @@ export function whyUserBadge(item: TierItem): string {
   return ` <span class="badge whyuser ${esc(item.whyUser)}" title="Why this needs the user: ${esc(WHY_USER_LABELS[item.whyUser])}">${esc(WHY_USER_LABELS[item.whyUser])}</span>`;
 }
 
-function questionFieldHtml(q: TierItemQuestion, answeredValue?: string | string[]): string {
+function questionFieldHtml(q: TierItemQuestion, answeredValue?: string | string[], answerAction?: DashAction): string {
   const name = `answers:${q.id}`;
   const answered = answeredValue !== undefined;
+  const disabled = answered ? " disabled" : "";
   let field: string;
   if (q.type === "single" || q.type === "yesno") {
     const opts = q.options ?? [
@@ -1247,7 +1348,7 @@ function questionFieldHtml(q: TierItemQuestion, answeredValue?: string | string[
     field = `<span class="qopts">${opts
       .map(
         (o) =>
-          `<label><input type="radio" name="${esc(name)}" value="${esc(o.id)}"${answeredValue === o.id ? " checked" : ""}> ${esc(o.label)}</label>`,
+          `<label><input type="radio" name="${esc(name)}" value="${esc(o.id)}"${answeredValue === o.id ? " checked" : ""}${disabled}> ${esc(o.label)}</label>`,
       )
       .join("")}</span>`;
   } else if (q.type === "multi") {
@@ -1255,16 +1356,16 @@ function questionFieldHtml(q: TierItemQuestion, answeredValue?: string | string[
     field = `<span class="qopts">${(q.options ?? [])
       .map(
         (o) =>
-          `<label><input type="checkbox" name="${esc(name)}" value="${esc(o.id)}"${chosen.includes(o.id) ? " checked" : ""}> ${esc(o.label)}</label>`,
+          `<label><input type="checkbox" name="${esc(name)}" value="${esc(o.id)}"${chosen.includes(o.id) ? " checked" : ""}${disabled}> ${esc(o.label)}</label>`,
       )
       .join("")}</span>`;
   } else {
-    field = `<input type="text" name="${esc(name)}" aria-label="${esc(q.prompt)}" value="${esc(typeof answeredValue === "string" ? answeredValue : "")}">`;
+    field = `<input type="text" name="${esc(name)}" aria-label="${esc(q.prompt)}" value="${esc(typeof answeredValue === "string" ? answeredValue : "")}"${disabled}>`;
   }
   // #1451: answered state rides the card — a partial submit records
   // what it covered and the still-open required questions say so.
   const state = answered
-    ? ` <span class="qanswered">✓ answered: ${esc(Array.isArray(answeredValue) ? answeredValue.join(", ") : (answeredValue ?? ""))}</span>`
+    ? ` <span class="qanswered">✓ answered: ${esc(Array.isArray(answeredValue) ? answeredValue.join(", ") : (answeredValue ?? ""))}${answerAction ? ` · ${answerAction.state === "new" ? "pending" : "applied"} · action ${esc(answerAction.id)}` : ""}</span>`
     : q.required
       ? ` <span class="qremaining">still needed</span>`
       : "";
@@ -1369,28 +1470,45 @@ export function needsUserFormsHtml(
   cs: CardState = cardState(undefined),
 ): string {
   const forms: string[] = [];
+  // Older option actions predate the canonical question pointer. Resolve
+  // them from the currently published item so already-answered cards
+  // cannot reopen the same question after this deploy.
+  const answered = new Map(cs.answered);
+  const answerActionsByQuestion = new Map(cs.answerActionsByQuestion);
+  for (const [optionId, action] of cs.answeredOptionActionsById) {
+    const questionId = questionIdForOption(item, optionId);
+    if (questionId && !answered.has(questionId)) {
+      answered.set(questionId, optionId);
+      answerActionsByQuestion.set(questionId, action);
+    }
+  }
   for (const opt of item.options ?? []) {
-    const picked = cs.answeredOptionId === opt.id;
+    const questionId = questionIdForOption(item, opt.id);
+    const questionValue = questionId ? answered.get(questionId) : undefined;
+    const answerAction = questionId ? answerActionsByQuestion.get(questionId) : cs.answeredOptionAction;
+    const locked = questionId ? questionValue !== undefined : cs.answeredOptionActionsById.size > 0;
+    const picked = cs.answeredOptionId === opt.id || (questionId !== undefined && questionValue === opt.id);
     forms.push(
       aformHtml({
         kind: "triage",
         verb: "answer",
         objectRef,
-        inner: `<input type="hidden" name="optionId" value="${esc(opt.id)}"><button type="submit" class="primary"${picked ? " disabled" : ""}>${esc(opt.label)}${picked ? " ✓ answered · pending" : ""}</button>${
+        inner: `<input type="hidden" name="optionId" value="${esc(opt.id)}"><button type="submit" class="primary"${locked ? " disabled" : ""}>${esc(opt.label)}${locked ? ` ✓ answered${answerAction?.state === "new" ? " · pending" : ""}` : ""}</button>${locked && answerAction ? `<span class="muted">Answer action ${esc(answerAction.id)}</span>` : ""}${
           opt.description ? `<span class="why">${esc(opt.description)}</span>` : ""
         }${opt.effect ? `<span class="effect">Effect: ${esc(opt.effect)}</span>` : ""}`,
       }),
     );
   }
   if (item.questions?.length) {
-    const remaining = item.questions.filter((q) => q.required && !cs.answered.has(q.id));
-    const allDone = remaining.length === 0 && item.questions.some((q) => cs.answered.has(q.id));
+    const remaining = item.questions.filter((q) => q.required && !answered.has(q.id));
+    const allDone = remaining.length === 0 && item.questions.some((q) => answered.has(q.id));
+    const hasUnanswered = item.questions.some((q) => !answered.has(q.id));
     forms.push(
       aformHtml({
         kind: "triage",
         verb: "answer",
         objectRef,
-        inner: `${item.questions.map((q) => questionFieldHtml(q, cs.answered.get(q.id))).join("")}<button type="submit" class="primary">Submit answers</button><span class="why">${
+        inner: `${item.questions.map((q) => questionFieldHtml(q, answered.get(q.id), answerActionsByQuestion.get(q.id))).join("")}<button type="submit" class="primary"${hasUnanswered ? "" : " disabled"}>Submit answers</button><span class="why">${
           allDone
             ? "All required questions are answered — the answers are recorded and pending with the orchestrator."
             : `Answer any subset and submit (#1451): answered questions are recorded, and the card keeps showing what remains${remaining.length ? ` — still needed: ${esc(remaining.map((q) => q.id).join(", "))}` : ""}.`
@@ -1510,13 +1628,6 @@ export function statusRequestHtml(
 export function sessionVerbSupport(source: string): { verb: "poke" | "answer" | "stop"; reason?: string }[] {
   if (source === "opencode-sandbox" || source === "opencode-laptop") {
     return [{ verb: "poke" }, { verb: "answer" }, { verb: "stop" }];
-  }
-  if (source === "jules") {
-    return [
-      { verb: "poke", reason: "Jules sessions are keeper-mediated — answer only" },
-      { verb: "answer" },
-      { verb: "stop", reason: "Jules sessions are keeper-mediated — answer only" },
-    ];
   }
   if (source === "claude-code") {
     const reason = "No live control channel for Muse sessions — launch records only";
@@ -1841,7 +1952,7 @@ function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow): string {
     if (drill.children.length === 0) {
       parts.push(`<p class="muted">No child issues in the Project pool for this epic yet.</p>`);
     } else {
-      const done = drill.children.filter((c) => c.state === "closed" || c.state === "merged").length;
+      const done = drill.children.filter(isEpicChildDone).length;
       const total = drill.children.length;
       const pct = Math.round((done / total) * 100);
       parts.push(
@@ -1993,6 +2104,8 @@ export interface ItemExtras {
   epicRollup?: EpicRollup;
   /** Project-pool briefs for linked refs (#1279). */
   briefs?: Map<RefKey, ItemBrief>;
+  /** The shared audit stream, scoped to the item's canonical refs. */
+  activity?: { events: AuditEvent[]; globalHref: string; gaps: GapRecord[]; coverage?: readonly ActivityCoverage[] };
 }
 
 function roadmapAnnotationFormHtml(objectRef: string, identities: AuthorIdentity[]): string {
@@ -2012,6 +2125,18 @@ function epicRollupHtml(rollup: EpicRollup): string {
     ? `Children: <strong>${rollup.done}/${rollup.total} done</strong>`
     : `Children: <strong>0 resolved</strong> · completion unknown`;
   return `<p class="muted epic-rollup"><strong>Epic rollup</strong> — ${children} · Status mix: ${statusMix} · Blocked: ${rollup.blocked}</p>`;
+}
+
+export function eventTableHtml(events: readonly AuditEvent[]): string {
+  const rows = events.map((event) => {
+    const source = event.source.link
+      ? `<a href="${esc(event.source.link)}" rel="noopener">${esc(event.source.identity)}</a>`
+      : esc(event.source.identity);
+    const delay = Date.parse(event.ingestedAt) - Date.parse(event.at);
+    const ingested = Number.isFinite(delay) && delay > 0 ? `<span class="muted">(+${Math.round(delay / 1000)}s ingest)</span>` : "";
+    return `<tr><td>${esc(event.at)} ${ingested}</td><td>${esc(event.actor)} <span class="muted">(${esc(event.attribution.confidence)})</span></td><td>${esc(event.kind)}</td><td><code>${esc(event.ref)}</code></td><td>${esc(event.summary)}</td><td>${source}</td></tr>`;
+  }).join("\n");
+  return `<div class="tblwrap"><table class="activity-events"><caption>Shared activity events</caption><thead><tr><th scope="col">When</th><th scope="col">Actor</th><th scope="col">Kind</th><th scope="col">Ref</th><th scope="col">Summary</th><th scope="col">Source</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No matching events; this does not establish complete coverage.</td></tr>'}</tbody></table></div>`;
 }
 
 export function renderItem(
@@ -2051,7 +2176,7 @@ export function renderItem(
       : "";
   const sessionSection =
     extras && extras.sessions.length
-      ? `<h2>Sessions that worked this</h2>${extras.sessions.map((r) => sessionRecordLine(r)).join("")}`
+      ? `<h2>Sessions that worked this</h2><div class="item-session-records">${extras.sessions.map((r) => sessionRecordLine(r)).join("")}</div>`
       : "";
   const statusSection =
     extras?.statusRequest && extras.formOpts
@@ -2061,6 +2186,9 @@ export function renderItem(
     ? `<p>Live services: ${extras.serviceLinks.map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>`
     : "";
   const epicRollup = extras?.epicRollup ? epicRollupHtml(extras.epicRollup) : "";
+  const activitySection = extras?.activity
+    ? `<h2>Activity stream</h2><p><a href="${esc(extras.activity.globalHref)}">View these events in the global river</a></p><p class="muted"><strong>Freshness: unknown.</strong> The ingestion checkpoint records deliveries, not successful source polls. An empty event list does not establish complete coverage. Known gaps and documented source coverage are shown below.</p>${eventTableHtml(extras.activity.events)}<h3>Known activity gaps</h3><p class="muted">Gap records are source-scoped and do not currently identify affected item refs, so this is the global known-gap list.</p><div class="tblwrap">${gapsHtml(extras.activity.gaps)}</div><h3>Activity source coverage</h3><div class="tblwrap">${activityCoverageHtml(extras.activity.coverage)}</div>`
+    : "";
   return layout(
     title,
     `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${epicRollup}${svcLinks}${stripHtml(items, links)}
@@ -2073,8 +2201,8 @@ ${
     : ""
 }
 <h2>Linked issues / PRs</h2><div class="tblwrap"><table><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
-<h2>Activity stream</h2><div class="tblwrap"><table><caption>Activity stream</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
-${sessionSection}${statusSection}${roadmapAnnotationSection}${dashSection}`,
+ <h2>Activity stream comments</h2><div class="tblwrap"><table><caption>Comments</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
+ ${activitySection}${sessionSection}${statusSection}${roadmapAnnotationSection}${dashSection}`,
     provenance,
     "/board",
     extras
@@ -2109,7 +2237,7 @@ export function sessionRecordLine(
   const badges = actionBadgesHtml(act?.actions);
   const controls =
     act?.identities && sessionRecordIsLive(r) ? sessionActionsHtml(r.id, r.source, { identities: act.identities }) : "";
-  return `<div class="card" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span>${badges}<br><span class="muted">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}</span>${controls}</div>`;
+  return `<div class="card session-record-line" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span>${badges}<br><span class="muted session-record-meta">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}</span>${controls}</div>`;
 }
 
 // --- Quota view (#851) + Usage & billing hub (design 2026-10-25) -----------
@@ -2154,7 +2282,7 @@ function metricRow(m: UsageMetric): string {
 
 function attentionStripHtml(usage: UsageView): string {
   if (!usage.attention.length) {
-    return `<div class="card"><strong>Needs attention</strong> — nothing over threshold. <span class="muted">(Bubble rules: any metric over 80% of its limit, or projected unbilled PAYG over $5.)</span></div>`;
+    return `<div class="card"><strong>Needs attention</strong> — no quota or credential alerts. <span class="muted">(Bubble rules: any metric over 80% of its limit, or projected unbilled PAYG over $5.)</span></div>`;
   }
   const rows = usage.attention
     .map(
@@ -2171,7 +2299,7 @@ function attentionStripHtml(usage: UsageView): string {
  * the yuan figure as read, never converted to dollars.
  */
 function paygBalanceHtml(usage: UsageView): string {
-  const recs = (usage.history["deepseek:api"] ?? []).filter((r) => r.unit === "cny" && typeof r.value === "number");
+  const recs = (usage.history["deepseek"] ?? []).filter((r) => r.unit === "cny" && typeof r.value === "number");
   if (!recs.length) return "";
   const last = recs[recs.length - 1];
   return `<div><strong>DeepSeek PAYG reserve balance</strong>: <strong>¥${(last.value as number).toFixed(2)}</strong><br><span class="muted">reserve only — never a routine route · measured ${esc(last.ts.slice(0, 10))} · ${esc(last.observedBy)}</span></div>`;
@@ -2249,6 +2377,18 @@ export function renderQuota(
   usage?: UsageView,
   detail?: ProvenanceDetail,
 ): string {
+  const credentialLifecycle = view.credentialLifecycle?.length
+    ? `<h2>Credential lifecycle</h2><div class="card">${view.credentialLifecycle
+        .map((credential) => {
+          const expiry = credential.expiresAt ? ` · expires ${fmtDate(credential.expiresAt)}` : " · expiry unknown";
+          const reason = credential.reason ? ` · ${esc(credential.reason)}` : "";
+          const action = credential.userAction
+            ? ` · <strong>user action:</strong> ${esc(credential.userAction.title)}`
+            : "";
+          return `<div><strong>${esc(credential.providerName)} · ${esc(credential.label)}</strong> <span class="badge ${esc(credential.state)}">${esc(credential.state)}</span>${expiry}${reason}${action}</div>`;
+        })
+        .join("")}</div>`
+    : "";
   const pools = view.pools
     .map((p) => {
       const windows = p.windows
@@ -2297,6 +2437,7 @@ export function renderQuota(
     return layout(
       "Quota + throughput",
       `<h1>Quota + throughput</h1><p class="muted">All pooled quotas, resets, and burn rates. Machine-first: the same data is at <a href="/api/quota.json">/api/quota.json</a>.</p>
+${credentialLifecycle}
 <h2>Pools</h2>${pools}
 ${burnAndChoices}`,
       provenance,
@@ -2338,6 +2479,7 @@ ${burnAndChoices}`,
     "Usage & billing",
     `<h1>Usage &amp; billing</h1><p class="muted">Token quotas, PAYG dollars, and SaaS usage vs limits — from dated local records; every card carries its measured-at stamp, and stale cards dim. Machine-first: <a href="/api/quota.json">/api/quota.json</a>.</p>
 ${attentionStripHtml(usage)}
+${credentialLifecycle}
 <h2>Token quotas</h2>${pools}
 ${paygCardHtml(usage)}
 <h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}
@@ -2524,7 +2666,7 @@ function sessionCard(
     act?.identities && act.commentOpts
       ? cardCommentHtml(objectRef, undefined, act.commentsByObject?.get(objectRef), act.commentOpts)
       : "";
-  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><strong><a href="/sessions?id=${encodeURIComponent(e.sessionId)}#${encodeURIComponent(e.sessionId)}">${esc(e.title ?? e.sessionId)}</a></strong> <span class="badge src">${esc(src)}</span> <span class="badge ${esc(e.state)}">${esc(STATE_LABELS[e.state])}</span>${tierBadge}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""}${sub}${cmt}${badges}<br><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")}${e.branch ? ` · ${esc(e.branch)}` : ""} · ${esc(e.model ?? "—")}${e.provider ? ` / ${esc(e.provider)}` : ""} · last activity ${fmtDate(e.lastActivityAt)} · ${esc(e.messageCount ?? "—")} msgs${e.outcome ? ` · outcome: ${esc(e.outcome)}` : ""}</span><br>${esc(evidence)}${reason}${orch}${controls}${detail}${commentBox}${kidsHtml}</div>`;
+  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><div class="attention-card-header"><strong><a href="/sessions?id=${encodeURIComponent(e.sessionId)}#${encodeURIComponent(e.sessionId)}">${esc(e.title ?? e.sessionId)}</a></strong> <span class="badge src">${esc(src)}</span> <span class="badge ${esc(e.state)}">${esc(STATE_LABELS[e.state])}</span>${tierBadge}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""}${sub}${cmt}${badges}</div><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")}${e.branch ? ` · ${esc(e.branch)}` : ""} · ${esc(e.model ?? "—")}${e.provider ? ` / ${esc(e.provider)}` : ""} · last activity ${fmtDate(e.lastActivityAt)} · ${esc(e.messageCount ?? "—")} msgs${e.outcome ? ` · outcome: ${esc(e.outcome)}` : ""}</span><br>${esc(evidence)}${reason}${orch}${controls}${detail}${commentBox}${kidsHtml}</div>`;
 }
 
 /** A #899 tier item that is not a live session — a decision, task, or gap. */
@@ -2594,7 +2736,7 @@ function tierItemCard(
   const detail = `<details class="carddetail"><summary>Details &amp; history</summary><dl><dt>Source</dt><dd>${esc(item.source)} · ${esc(item.kind)}${item.state ? ` · state ${esc(item.state)}` : ""}</dd><dt>Since</dt><dd>${esc(fmtDate(item.since))}</dd><dt>Last seen</dt><dd>${esc(fmtDate(item.lastSeenAt))}</dd>${item.horizon ? `<dt>Horizon</dt><dd>${esc(item.horizon)}</dd>` : ""}<dt>Ref</dt><dd><code>${esc(objectRef)}</code>${item.ref ? ` · <a href="${esc(refUrl(item.ref))}">${esc(item.ref)}</a>` : ""}</dd>${item.blockedBy?.length ? `<dt>Blocked by</dt><dd>${item.blockedBy.map((d) => esc(`${d.task} (${d.status}${d.workerLabel ? `, ${d.workerLabel}` : ""})`)).join("; ")}</dd>` : ""}${questionPayload}</dl>${actionHistoryHtml(act?.actions)}</details>`;
   const commentBox =
     act?.identities && act.commentOpts ? cardCommentHtml(objectRef, item.ref, act.comments, act.commentOpts) : "";
-  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span>${isUserTier ? whyUserBadge(item) : ""}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""} <strong>${titleHtml}</strong>${cmt}${badges}<br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${extBody}${ref}${controls}${detail}${commentBox}</div>`;
+  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><div class="attention-card-header"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span>${isUserTier ? whyUserBadge(item) : ""}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""} <strong>${titleHtml}</strong>${cmt}${badges}</div><br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${extBody}${ref}${controls}${detail}${commentBox}</div>`;
 }
 
 export interface AttentionAct {
@@ -3002,8 +3144,9 @@ export function renderAttention(
   detail?: ProvenanceDetail,
   act?: AttentionAct,
   briefs?: Map<RefKey, ItemBrief>,
+  census?: NeedsDrewCensus | null,
 ): string {
-  const sections = attentionSections(view, coverage, counts, act, briefs);
+  const sections = attentionSections(view, coverage, counts, act, briefs, census);
   return layout(
     "Needs you",
     `<h1>Needs you</h1><p class="muted">The NEEDS USER queue is an intake the orchestrator works first — it resolves what it can and escalates only what genuinely requires the user, each escalated item with its reason. Everything else the fleet can work is the orchestrator's own queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>. Incident alerts (watchdog push + ack) live on <a href="/alerts">Alerts</a>.</p>
@@ -3013,6 +3156,49 @@ ${sections.header}${sections.queues}${sections.sessions}`,
     act?.identities ? ACTION_SCRIPT + COMMENT_SCRIPT + BULK_SCRIPT : "",
     detail ? freshnessChips(detail, ["orchestration", "attention", "registry"]) : "",
   );
+}
+
+/**
+ * The Needs-Drew label census section (#1226): open user/review +
+ * user/escalated items across the four repos, straight from GitHub —
+ * the labels are the system of record and this view only reads them.
+ * census === null means the source cannot census: the section says
+ * "unavailable" rather than rendering an empty, confident zero.
+ * census === undefined means the caller predates the census (tests,
+ * fragments) and the section is omitted entirely.
+ */
+export function needsDrewCensusHtml(census: NeedsDrewCensus | null | undefined): string {
+  if (census === undefined) return "";
+  if (census === null) {
+    return `<h2 id="needs-drew-census">Needs Drew — GitHub label census</h2><p class="muted">Unavailable — this source cannot census the user/review and user/escalated labels, so this queue cannot be reported here.</p>`;
+  }
+  const failed = census.sources.filter((x) => !x.ok || x.truncated || x.incomplete);
+  const failureNote = failed.length
+    ? `<div class="banner">Label census incomplete — ${failed
+        .map((x) => {
+          if (!x.ok) return `${esc(x.repo)} ${esc(x.label)}: ${esc(x.error ?? "failed")}`;
+          // Truncation and GitHub's partial-search signal are different
+          // failures: say which one it was instead of blurring them.
+          const why = x.incomplete
+            ? "search returned incomplete results, count is a floor"
+            : "page cap reached, count is a floor";
+          return `${esc(x.repo)} ${esc(x.label)}: ${why}`;
+        })
+        .join("; ")}. The list below may be missing items from those sources.</div>`
+    : "";
+  const rows = census.items.length
+    ? `<ul>${census.items
+        .map(
+          (i) =>
+            `<li><a href="${esc(i.url)}">${esc(i.ref)}</a> ${i.kind === "pr" ? "(PR) " : ""}${esc(i.title)} — ${i.needsLabels
+              .map((l) => `<code>${esc(l)}</code>`)
+              .join(
+                " ",
+              )} — ${i.reason ? esc(i.reason) : "no reason recorded on the item — open it for context"} <span class="muted">(updated ${esc(i.updatedAt)})</span></li>`,
+        )
+        .join("")}</ul>`
+    : `<p class="muted">No open items carry user/review or user/escalated right now${census.complete ? "" : " in the sources that answered"}.</p>`;
+  return `<h2 id="needs-drew-census">Needs Drew — GitHub label census (${census.items.length})</h2><p class="muted">Every open issue and PR carrying <code>user/review</code> or <code>user/escalated</code> across the four repos (#1226). The labels are the system of record; this view reads them and never writes them. Census taken ${esc(census.fetchedAt)}${census.complete ? "" : " — incomplete, see below"}. Machine form: <a href="/api/needs-drew.json">/api/needs-drew.json</a>.</p>${failureNote}${rows}`;
 }
 
 /**
@@ -3028,6 +3214,7 @@ export function attentionSections(
   counts?: Map<string, number | CommentKindCounts>,
   act?: AttentionAct,
   briefs?: Map<RefKey, ItemBrief>,
+  census?: NeedsDrewCensus | null,
 ): { header: string; queues: string; sessions: string } {
   const children = sessionChildren(view.all);
   const roots = sessionRoots(view.all);
@@ -3214,7 +3401,7 @@ ${delegationDefault}`;
     ? `<details class="hiddenstrip"><summary><strong>Dismissed / done by you (${hiddenList.length})</strong> — hidden from the queues; restore any of them to re-review or add a note</summary>${hiddenList.map((e) => stripCardHtml(e, act?.identities)).join("")}</details>`
     : "";
   const queues = `${bulkBarHtml(act)}${needsOrderHtml(act)}<h2 id="drew">Needs User (${drewCount})${sectionStamp}</h2>${drewCards}
-${snoozedStrip}${hiddenStrip}<h2 id="orchestrator">Needs Orchestrator (${orchCount})${sectionStamp}</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates to the user queue only what truly needs the user.</p>${orchCards}`;
+${snoozedStrip}${hiddenStrip}<h2 id="orchestrator">Needs Orchestrator (${orchCount})${sectionStamp}</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates to the user queue only what truly needs the user.</p>${orchCards}${needsDrewCensusHtml(census)}`;
   const sessionCards = roots.length
     ? roots.map((e) => sessionCard(e, children, 0, counts, sessionAct)).join("")
     : `<p class="muted">No current sessions.</p>`;
@@ -3892,7 +4079,8 @@ ${dnsTable(section.entries, renewingSoon, next)}`;
  * src/aa.ts). Dependency-free inline script, like COMMENT_SCRIPT.
  * Written without template literals on purpose — it lives inside one.
  */
-const AA_EXPLORER_SCRIPT = `<script>
+const AA_EXPLORER_SCRIPT = `<script type="module">
+import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, normName, paretoSet, pctRank, projectTask, scoreEdges } from "/assets/aa-explorer-computations.js";
 (function () {
   var dataEl = document.getElementById("xpl-data");
   if (!dataEl) return;
@@ -3937,11 +4125,6 @@ const AA_EXPLORER_SCRIPT = `<script>
   function eord(e) { var v = EORD[String(e || "").toLowerCase()]; return v == null ? 50 : v; }
   var ESHORT = { "medium": "med", "reasoning": "reas", "max (peak)": "max·pk", "max (off-peak, derived)": "max·offpk", "non-reasoning": "base" };
   function shortLabel(p) { var e = String(p.effort || ""); return p.family + " " + (ESHORT[e.toLowerCase()] || e); }
-  function normName(s) {
-    var t = String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-    for (var i = 0; i < 3; i++) t = t.replace(/(\d) (\d)/g, "$1.$2");
-    return t.replace(/\s+/g, " ");
-  }
   var goCapByName = {};
   (CATALOG || []).forEach(function (e) { if (e.goCapUsd != null) goCapByName[normName(e.name)] = e.goCapUsd; });
   function goCapFor(p) { var v = goCapByName[normName(p.family)]; return v == null ? null : v; }
@@ -3984,36 +4167,6 @@ const AA_EXPLORER_SCRIPT = `<script>
   function scoreWord() { return S.persp === "cai" ? "CAI score" : "Intelligence"; }
   function scoreAxis() { return S.persp === "cai" ? "Coding Agent Index" : "Intelligence Index"; }
   function timeWord() { return S.persp === "cai" ? "agent wall time" : "time"; }
-  /** Percentile rank of v within vals (100 = best). higherBetter picks
-   * the direction; ties split. Null when the population is too small. */
-  function pctRank(vals, v, higherBetter) {
-    var xs = vals.filter(function (x) { return x != null; });
-    if (xs.length < 2 || v == null) return null;
-    var worse = 0, ties = 0;
-    xs.forEach(function (x) {
-      if (x === v) ties++;
-      else if (higherBetter ? x < v : x > v) worse++;
-    });
-    return Math.round((100 * (worse + 0.5 * (ties - 1))) / (xs.length - 1));
-  }
-  /** Non-dominated subset: dims are {get, better:"high"|"low"}; a point
-   * is kept unless another is at least as good on every dim and strictly
-   * better on one. Points missing any dim are excluded. */
-  function paretoSet(rows, dims) {
-    var pool = rows.filter(function (p) { return dims.every(function (d) { return d.get(p) != null; }); });
-    return pool.filter(function (p) {
-      return !pool.some(function (q) {
-        if (q === p) return false;
-        var allGe = true, anyGt = false;
-        dims.forEach(function (d) {
-          var a = d.get(q), b = d.get(p);
-          if (d.better === "high") { if (a < b) allGe = false; if (a > b) anyGt = true; }
-          else { if (a > b) allGe = false; if (a < b) anyGt = true; }
-        });
-        return allGe && anyGt;
-      });
-    });
-  }
   var S = {
     tab: location.hash === "#models" ? "models" : "aa",
     persp: "aa",
@@ -4064,55 +4217,9 @@ const AA_EXPLORER_SCRIPT = `<script>
   // (all other filters applied): score gap = best score at or below this
   // cost minus this score; price premium = this cost over the cheapest
   // cost at or above this score; speed gap = score gap against time.
-  function gapMetrics(rows) {
-    var map = {};
-    rows.forEach(function (p) {
-      var g = { score: p.score, cost: p.cost, time: p.time, tps: p.tps, gapScore: null, gapCost: null, gapSpeed: null };
-      if (p.cost != null && p.score != null) {
-        var best = null, minCost = null;
-        rows.forEach(function (q) {
-          if (q.cost == null || q.score == null) return;
-          if (q.cost <= p.cost && (best == null || q.score > best)) best = q.score;
-          if (q.score >= p.score && (minCost == null || q.cost < minCost)) minCost = q.cost;
-        });
-        if (best != null) g.gapScore = best - p.score;
-        if (minCost != null && minCost > 0) g.gapCost = p.cost / minCost;
-      }
-      if (p.time != null && p.score != null) {
-        var bestT = null;
-        rows.forEach(function (q) {
-          if (q.time == null || q.score == null) return;
-          if (q.time <= p.time && (bestT == null || q.score > bestT)) bestT = q.score;
-        });
-        if (bestT != null) g.gapSpeed = bestT - p.score;
-      }
-      map[p.key] = g;
-    });
-    return map;
-  }
-  var INEQ_OPS = {
-    "<": function (a, b) { return a < b; },
-    "<=": function (a, b) { return a <= b; },
-    "=": function (a, b) { return a === b; },
-    ">=": function (a, b) { return a >= b; },
-    ">": function (a, b) { return a > b; },
-  };
   function visPoints() {
     var base = basePoints();
-    if (S.ineq.mode === "off") return base;
-    var active = S.ineq.conds.filter(function (c) { return c.value !== "" && !isNaN(Number(c.value)); });
-    if (!active.length) return base;
-    var gaps = gapMetrics(base);
-    return base.filter(function (p) {
-      var g = gaps[p.key];
-      var results = active.map(function (c) {
-        var v = g ? g[c.metric] : null;
-        if (v == null || !INEQ_OPS[c.op]) return false;
-        return INEQ_OPS[c.op](v, Number(c.value));
-      });
-      var match = S.ineq.combine === "or" ? results.some(function (x) { return x; }) : results.every(function (x) { return x; });
-      return S.ineq.mode === "reject" ? !match : match;
-    });
+    return applyInequalityFilters(base, S.ineq.mode, S.ineq.combine, S.ineq.conds);
   }
   function visCatalog() {
     if (!CATALOG) return [];
@@ -4896,92 +5003,7 @@ const AA_EXPLORER_SCRIPT = `<script>
   // survivors rank by (relative time)^speed-weight x (relative
   // price)^(1-speed-weight); scores inside the window break ties.
   function computeRecs() {
-    var R = S.rec;
-    var rows = visPoints();
-    var scored = rows.filter(function (p) { return p.score != null; });
-    if (!scored.length) return { bands: [], empty: "No scored configurations are visible under the current filters." };
-    var lo = Math.min.apply(null, scored.map(function (p) { return p.score; }));
-    var hi = Math.max.apply(null, scored.map(function (p) { return p.score; }));
-    var n = Math.max(2, Math.min(8, Number(S.bandCount) || 3));
-    var w = (hi - lo) / n || 1;
-    var bands = [];
-    for (var i = 0; i < n; i++) {
-      var bLo = lo + i * w, bHi = i === n - 1 ? hi : lo + (i + 1) * w;
-      var members = scored.filter(function (p) { return p.score >= bLo && (i === n - 1 ? p.score <= bHi : p.score < bHi); });
-      if (!members.length) continue;
-      var best = Math.max.apply(null, members.map(function (p) { return p.score; }));
-      var decision = {};
-      var candidates = [];
-      members.forEach(function (p) {
-        if (p.cost == null || p.time == null) decision[p.key] = "Missing selected cost or speed";
-        else candidates.push(p);
-      });
-      var ref = candidates.slice().sort(function (a, b) { return cmpDesc(a.score, b.score) || cmpAsc(a.cost, b.cost); })[0] || null;
-      var maxCost = R.maxCost === "" || R.maxCost == null ? null : Number(R.maxCost);
-      var maxTime = R.maxSec === "" || R.maxSec == null ? null : Number(R.maxSec);
-      var nearTop = [];
-      candidates.forEach(function (p) {
-        if (p.score < best - Number(R.allow)) decision[p.key] = "Below near-top score floor";
-        else if (maxCost != null && p.cost > maxCost) decision[p.key] = "Above the absolute price limit";
-        else if (maxTime != null && p.time > maxTime) decision[p.key] = "Above the absolute time limit";
-        else nearTop.push(p);
-      });
-      var picks = [];
-      var cheapest = null, fastest = null, priceCeil = null, timeCeil = null;
-      if (nearTop.length) {
-        cheapest = Math.min.apply(null, nearTop.map(function (p) { return p.cost; }));
-        fastest = Math.min.apply(null, nearTop.map(function (p) { return p.time; }));
-        priceCeil = cheapest * (1 + Number(R.priceAllow) / 100);
-        timeCeil = fastest * Number(R.slowAllow);
-        var survivors = [];
-        nearTop.forEach(function (p) {
-          if (p.cost > priceCeil) decision[p.key] = "Above relative price allowance";
-          else if (p.time > timeCeil) decision[p.key] = "Slower than relative speed limit";
-          else survivors.push(p);
-        });
-        var kept = survivors.filter(function (p) {
-          if (R.dominance === "none") return true;
-          var dominated = survivors.some(function (q) {
-            if (q === p) return false;
-            if (R.dominance === "lab" && q.creator !== p.creator) return false;
-            return q.score >= p.score && q.cost <= p.cost && q.time <= p.time && (q.score > p.score || q.cost < p.cost || q.time < p.time);
-          });
-          if (dominated) decision[p.key] = R.dominance === "lab" ? "Dominated within its lab" : "Dominated on score, price and speed";
-          return !dominated;
-        });
-        var sw = Number(R.speedPriority) / 100;
-        var ranked = kept.map(function (p) {
-          return { p: p, factor: Math.pow(p.time / fastest, sw) * Math.pow(p.cost / cheapest, 1 - sw) };
-        }).sort(function (a, b) { return a.factor - b.factor || cmpDesc(a.p.score, b.p.score); });
-        var bestFactor = ranked.length ? ranked[0].factor : null;
-        var pickedLabs = {};
-        var passes = R.diversity === "labsfirst" ? 2 : 1;
-        for (var pass = 0; pass < passes && picks.length < Number(R.perBand); pass++) {
-          ranked.forEach(function (r) {
-            if (picks.length >= Number(R.perBand)) return;
-            if (picks.some(function (x) { return x.p.key === r.p.key; })) return;
-            if (bestFactor != null && r.factor > bestFactor * Number(R.altWindow)) return;
-            if (R.diversity === "lab" && pickedLabs[r.p.creator]) return;
-            if (R.diversity === "labsfirst" && pass === 0 && pickedLabs[r.p.creator]) return;
-            picks.push(r);
-            pickedLabs[r.p.creator] = true;
-          });
-        }
-        ranked.forEach(function (r) {
-          if (picks.some(function (x) { return x.p.key === r.p.key; })) { decision[r.p.key] = "Recommended"; return; }
-          if (decision[r.p.key]) return;
-          if (bestFactor != null && r.factor > bestFactor * Number(R.altWindow)) decision[r.p.key] = "Outside the alternative window";
-          else if (R.diversity === "lab" && pickedLabs[r.p.creator]) decision[r.p.key] = "Not selected — one choice per lab";
-          else decision[r.p.key] = "Not selected — band cap reached";
-        });
-      }
-      bands.push({
-        label: "Score band " + (bands.length + 1) + " · " + scoreWord() + " " + fmtN(bLo, 2) + (i === n - 1 ? " to ≤ " : " to < ") + fmtN(bHi, 2),
-        members: members, best: best, ref: ref, picks: picks, decision: decision,
-        priceCeil: priceCeil, timeCeil: timeCeil, floor: best - Number(R.allow),
-      });
-    }
-    return { bands: bands, empty: null };
+    return computeRecommendations(visPoints(), S.rec, S.bandCount, scoreWord());
   }
   function bandScatter(band) {
     var pts = band.members.filter(function (p) { return p.cost != null && p.time != null; });
@@ -5178,7 +5200,9 @@ const AA_EXPLORER_SCRIPT = `<script>
         var py = cy + ((pi % 5) - 2) * 2.5;
         var color = famColor[p.family] || "#8b949e";
         var desc = shortLabel(p) + " — " + axisLabel + " " + valueLabel(v);
-        svg += '<circle class="xpt" data-pick="' + esc(p.key) + '" cx="' + x(v).toFixed(1) + '" cy="' + py.toFixed(1) + '" r="' + (isLeader ? 5 : 3.8) + '" fill="' + color + '" fill-opacity="' + (isLeader ? 0.95 : 0.65) + '" stroke="' + (isLeader ? "#fff" : color) + '" stroke-width="' + (isLeader ? 1.5 : 0.8) + '" tabindex="0" role="button" aria-label="' + esc("Select " + desc) + '"><title>' + esc(desc + (isLeader ? " — band leader" : " — near-leader")) + "</title></circle>";
+        const pointX = x(v).toFixed(1);
+        const pointY = py.toFixed(1);
+        svg += '<g class="xpt-control" data-pick="' + esc(p.key) + '" tabindex="0" role="button" aria-label="' + esc("Select " + desc) + '"><circle class="xpt-hit" cx="' + pointX + '" cy="' + pointY + '" r="40"/><circle class="xpt" cx="' + pointX + '" cy="' + pointY + '" r="' + (isLeader ? 5 : 3.8) + '" fill="' + color + '" fill-opacity="' + (isLeader ? 0.95 : 0.65) + '" stroke="' + (isLeader ? "#fff" : color) + '" stroke-width="' + (isLeader ? 1.5 : 0.8) + '"/><title>' + esc(desc + (isLeader ? " — band leader" : " — near-leader")) + "</title></g>";
       });
     });
     return '<div class="xpl-band-lane-wrap">' + svg + "</svg></div>";
@@ -5326,49 +5350,8 @@ const AA_EXPLORER_SCRIPT = `<script>
   // (answer + thinking) output]; time = turns x (measured TTFT +
   // answer / measured throughput + tool overhead), borrowing the
   // family timing from either benchmark point set.
-  function pjBand(e) {
-    if (!e.rate || !e.rate.bands.length) return null;
-    var bands = e.rate.bands;
-    var win = bands.filter(function (b) { return b.window === S.pj.window; });
-    var pool = win.length ? win : bands.filter(function (b) { return b.window == null || b.window === "flat"; });
-    if (!pool.length) pool = bands;
-    var input = Number(S.pj.inputTokens) || 0;
-    for (var i = 0; i < pool.length; i++) {
-      var b = pool[i];
-      if ((b.minTokens == null || input >= b.minTokens) && (b.maxTokens == null || input < b.maxTokens)) return b;
-    }
-    return pool[pool.length - 1];
-  }
-  function pjTiming(e) {
-    var norm = normName(e.name);
-    var sets = [AA_POINTS, CAI_POINTS];
-    for (var si = 0; si < sets.length; si++) {
-      var cands = sets[si].filter(function (p) { return normName(p.family) === norm; });
-      for (var i = 0; i < cands.length; i++) if (cands[i].tps != null) return { tps: cands[i].tps, ttft: cands[i].ttft };
-    }
-    return null;
-  }
   function project(e) {
-    var band = pjBand(e);
-    if (!band) return { cost: null, time: null, band: null };
-    var P = S.pj;
-    var input = Number(P.inputTokens) || 0, answer = Number(P.answerTokens) || 0, thinking = Number(P.thinkingTokens) || 0;
-    var turns = Number(P.turns) || 0;
-    var cacheShare = (Number(P.cacheReadPct) || 0) / 100;
-    var writesShare = (Number(P.writesPct) || 0) / 100;
-    var uncached = input * (1 - cacheShare);
-    var reads = input * cacheShare;
-    var writes = uncached * writesShare;
-    var missing = band.input == null || band.output == null || (reads > 0 && band.cacheRead == null) || (writes > 0 && band.cacheWrite == null);
-    var cost = null;
-    if (!missing) {
-      var perTurn = (uncached * band.input + reads * (band.cacheRead || 0) + writes * (band.cacheWrite || 0) + (answer + thinking) * band.output) / 1000000;
-      cost = turns * perTurn;
-    }
-    var timing = pjTiming(e);
-    var time = null;
-    if (timing && timing.tps) time = turns * ((timing.ttft || 0) + answer / timing.tps + (Number(P.overheadSec) || 0));
-    return { cost: cost, time: time, band: band };
+    return projectTask(e, S.pj, AA_POINTS, CAI_POINTS);
   }
   function renderModels() {
     var tb = document.getElementById("xpl-mrows");
@@ -6079,7 +6062,7 @@ export function renderSessions(
   }
   const body = `<h1>Sessions — identity registry</h1>
 ${viewHtml}<p class="muted">Every agent/session the fleet can see, with its stable id, the agent identity it ran as, its parent session, and its token total where the source reports one. Task links are loose (from the session's PR, title, or launch record) and improve over time. ${records.length} records shown · ${totalTokens.toLocaleString()} tokens recorded on this page. Machine-first: <a href="/api/registry.json">/api/registry.json</a>.</p>
-<p class="muted">Coverage honesty: OpenCode sessions register from their servers; Jules from the keeper's state; Muse sessions only when a launch record was appended at spawn (<code>scripts/record-claude-launch.ts</code>) — a Muse session that never wrote one is invisible here, and the coverage note on Needs you says which sources are wired.</p>
+<p class="muted">Coverage honesty: OpenCode sessions register from their servers; Muse sessions only when a launch record was appended at spawn (<code>scripts/record-claude-launch.ts</code>) — a Muse session that never wrote one is invisible here, and the coverage note on Needs you says which sources are wired.</p>
 ${groups || '<p class="muted">No sessions recorded yet.</p>'}`;
   return layout(
     "Sessions",
@@ -6092,6 +6075,56 @@ ${groups || '<p class="muted">No sessions recorded yet.</p>'}`;
 }
 
 // --- All pages (the manifest as a page) ---------------------------------------
+
+// --- Source-conflict inbox (#1282, slice 1) -----------------------------------
+
+/**
+ * /conflicts — the read-only source-conflict inbox. Every disagreement the
+ * facets already report, in one queue, grouped by conflict class, each entry
+ * naming the item, both sources, both values and how long the pair has been
+ * on record. It resolves nothing: slice 1 projects only, so this page is the
+ * same list /api/conflicts.json serves, rendered.
+ */
+export function renderConflicts(inbox: ConflictInbox, provenance: Provenance, detail?: ProvenanceDetail): string {
+  const chips = detail ? freshnessChips(detail, ["items", "usage"]) : "";
+  const ageCell = (entry: ConflictEntry): string => {
+    if (entry.ageDays === null) return `<span class="muted">undated</span>`;
+    const days = `<strong>${entry.ageDays}</strong> day${entry.ageDays === 1 ? "" : "s"}`;
+    const floor = entry.ageBasis === "project-item-updated-at" ? " (floor)" : "";
+    return `at least ${days}${floor}<br><span class="muted">${esc(fmtDate(entry.observedAt ?? ""))}${entry.ageBasis === "undated" ? "" : ` · ${esc(entry.ageBasis)}`}</span>`;
+  };
+  const itemCell = (entry: ConflictEntry): string => {
+    const label = esc(entry.item.title);
+    if (!entry.item.url) return `<strong>${label}</strong>`;
+    return `<a href="${esc(entry.item.url)}"><strong>${label}</strong></a>${entry.item.ref ? `<br><span class="muted"><code>${esc(entry.item.ref)}</code></span>` : ""}`;
+  };
+  const groups = inbox.byClass
+    .map((cls) => {
+      const entries = inbox.entries.filter((e) => e.classId === cls.classId);
+      if (!entries.length) return "";
+      const rows = entries
+        .map(
+          (e) =>
+            `<tr><td>${itemCell(e)}</td><td>${esc(e.sources.a)}<br><span class="muted">vs</span><br>${esc(e.sources.b)}</td><td><span class="badge stale">${esc(e.values.a)}</span><br><span class="muted">vs</span><br><span class="badge stale">${esc(e.values.b)}</span></td><td>${ageCell(e)}</td><td>${e.href ? `<a href="${esc(e.href)}">records →</a>` : "—"}</td></tr>`,
+        )
+        .join("");
+      return `<h2 id="class-${esc(cls.classId)}">${esc(cls.label)} (${entries.length})</h2>
+<div class="tblwrap"><table><caption>${esc(cls.label)} — item, sources, both values, age</caption><tr><th scope="col">Item</th><th scope="col">Sources</th><th scope="col">Both values</th><th scope="col">Disagreeing for</th><th scope="col">Records</th></tr>${rows}</table></div>`;
+    })
+    .join("");
+  const oldest =
+    inbox.oldestAgeDays === null ? "—" : `at least ${inbox.oldestAgeDays} day${inbox.oldestAgeDays === 1 ? "" : "s"}`;
+  const body = `<h1>Source conflicts</h1>
+<p class="muted">Every live disagreement the facets already report, in one queue: <strong>${inbox.total}</strong> entr${inbox.total === 1 ? "y" : "ies"} across ${inbox.byClass.filter((c) => c.count > 0).length} class${inbox.byClass.filter((c) => c.count > 0).length === 1 ? "" : "es"} · oldest ${oldest} · assembled ${esc(fmtDate(inbox.generatedAt))}. Machine-first: <a href="/api/conflicts.json">/api/conflicts.json</a>. This page projects; it does not resolve — trust rulings are slice 2 of #1282, so nothing here changes what a render shows.</p>
+<div class="board">
+<div class="card"><strong>Conflicts</strong><br>${inbox.total} live</div>
+${inbox.byClass.map((c) => `<div class="card"><strong>${esc(c.label)}</strong><br>${c.count} live</div>`).join("")}
+<div class="card"><strong>Oldest disagreement</strong><br>${oldest}</div>
+</div>
+<p class="muted">Age is a <strong>floor</strong>, not an exact birthday: it is measured from the newest timestamp the source carries for the pair (a Project item's <code>updatedAt</code>, a service's <code>measuredAt</code>), so the values have disagreed for <em>at least</em> that long — an item edited yesterday for another reason can carry a much older clash.</p>
+${inbox.total ? groups : `<div class="banner">No live source disagreements in this projection — every facet that reports a disagreement agrees with its counterpart right now. An empty inbox here is a real empty, not an unread one: the page and /api/conflicts.json are built from the same projection.</div>`}`;
+  return layout("Source conflicts", body, provenance, "/conflicts", "", chips);
+}
 
 export function renderPages(provenance: Provenance, history: PageHealth[] = []): string {
   const byRoute = new Map(history.map((p) => [p.route, p]));
@@ -6169,6 +6202,32 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
       return `<tr><td><a href="${esc(p.route)}">${esc(p.title)}</a></td><td><code>${esc(p.route)}</code></td><td>${last}</td></tr>`;
     })
     .join("");
+  // #1203: the ready-for-agent facet — the harness's real dispatch-layer
+  // state, not just whether its UI answers 200. "down" means the GraphQL
+  // read failed (detail names the error) or a backend is not READY; the
+  // repositories table still shows what the harness reports when it can
+  // be read at all.
+  const rfa = view.rfa;
+  const rfaState =
+    rfa.state === "up"
+      ? '<span class="dot up"></span><strong>up</strong>'
+      : rfa.state === "fixtures"
+        ? '<span class="dot fixtures"></span><strong>fixtures</strong>'
+        : '<span class="dot down"></span><strong>down</strong>';
+  const rfaRepoRows = rfa.repositories.length
+    ? rfa.repositories
+        .map(
+          (r) =>
+            `<tr><td><code>${esc(r.projectPath)}</code></td><td>${r.paused ? "paused" : "running"}</td><td><code>${esc(r.mergePolicy ?? "—")}</code></td><td>${r.workItems}</td></tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="4" class="muted">No harness repositories reported — the harness could not be read, or none are registered.</td></tr>`;
+  const rfaBackendLine = rfa.backends.length
+    ? `Backends: ${rfa.backends.map((b) => `<code>${esc(b.id)}</code> ${esc(b.kind)}${b.reason ? ` — ${esc(b.reason)}` : ""}`).join(" · ")}`
+    : "Backends: none reported.";
+  const rfaSection = `<h2 id="ready-for-agent">ready-for-agent harness</h2>
+<div class="card">${rfaState} — ${esc(rfa.detail)}<br>${rfaBackendLine}</div>
+<div class="tblwrap"><table><caption>ready-for-agent repositories — settings and dispatch work items</caption><tr><th scope="col">Repository</th><th scope="col">Paused</th><th scope="col">Merge policy</th><th scope="col">Work items</th></tr>${rfaRepoRows}</table></div>`;
   const cov = view.itemsCoverage;
   const coverageLine =
     cov && cov.total > 0
@@ -6202,6 +6261,7 @@ ${degraded}${modeNote}
 <h2 id="topology">Services &amp; topology</h2>
 <p class="muted">What runs where: the component, its port and bind as actually deployed, what consumes it, and what breaks without it. State is probed, never assumed.</p>
 <div class="tblwrap"><table><caption>Services, ports, and topology</caption><tr><th scope="col">Service</th><th scope="col">Port</th><th scope="col">Bind</th><th scope="col">Runs as</th><th scope="col">State</th><th scope="col">Consumed by</th><th scope="col">If it is down</th></tr>${serviceRows}</table></div>
+${rfaSection}
 <h2>Feed sections</h2>
 <div class="tblwrap"><table><caption>Feed sections — presence and age</caption><tr><th scope="col">Section</th><th scope="col">Present</th><th scope="col">Age</th><th scope="col">Note</th></tr>${sectionRows}</table></div>
 <h2>Jobs</h2>
@@ -6209,6 +6269,17 @@ ${degraded}${modeNote}
 <div class="card"><strong>Fleet-feed collector</strong><br>${collLine}</div>
 <h2>Item resolution coverage</h2>
 <div class="card">${coverageLine}</div>
+<h2>Source conflicts</h2>
+<div class="card">${
+    view.conflicts
+      ? `<strong><a href="/conflicts">${view.conflicts.total} live source conflict${view.conflicts.total === 1 ? "" : "s"}</a></strong>${view.conflicts.byClass
+          .filter((c) => c.count > 0)
+          .map((c) => ` · ${esc(c.label)}: ${c.count}`)
+          .join(
+            "",
+          )}${view.conflicts.oldestAgeDays === null ? "" : ` · oldest at least <strong>${view.conflicts.oldestAgeDays}</strong> day${view.conflicts.oldestAgeDays === 1 ? "" : "s"}`} (#1282 slice 1 — a growing count means the sources keep disagreeing and nobody has ruled on the class)`
+      : `<span class="muted">not assembled for this health view</span>`
+  }</div>
 <h2>Dashboard comments</h2>
 <div class="card"><strong>${view.comments.pendingMessages} message${view.comments.pendingMessages === 1 ? "" : "s"} awaiting triage</strong> · <strong>${view.comments.pendingGithub} GitHub comment${view.comments.pendingGithub === 1 ? "" : "s"} awaiting posting</strong> · ${view.comments.total} comment${view.comments.total === 1 ? "" : "s"} in the store (#1145 — a pending count that does not drain means work arrives faster than it is cleared, or the triage/poster loop has stopped; check the loop's last run before acting)</div>
 <h2>Source facets</h2>
@@ -6304,7 +6375,7 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
     ? `Week-over-week delta vs the ${esc(fmtDate(baseline.generatedAt))} snapshot in parentheses. Snapshot stored ${esc(fmtDate(current.generatedAt))}; it rotates into the baseline after a week.`
     : `First snapshot stored ${esc(fmtDate(current.generatedAt))} — the week-over-week delta appears after the next weekly rotation.`;
   return `<h2>Coverage — pool vs backlog (#1220)</h2>
-<table><caption>Coverage — pool vs backlog by repository</caption><thead><tr><th scope="col">Repo</th><th scope="col">Open issues</th><th scope="col">now gate</th><th scope="col">next gate</th><th scope="col">Pool items</th><th scope="col">Unset Status</th><th scope="col">Unset Area</th></tr></thead><tbody>${rows}</tbody></table>
+ <div class="tblwrap"><table><caption>Coverage — pool vs backlog by repository</caption><thead><tr><th scope="col">Repo</th><th scope="col">Open issues</th><th scope="col">now gate</th><th scope="col">next gate</th><th scope="col">Pool items</th><th scope="col">Unset Status</th><th scope="col">Unset Area</th></tr></thead><tbody>${rows}</tbody></table></div>
 <p class="muted">${note} Open issues and gate labels come from the collector's Search API census in the fleet feed; pool counts from Project #4 (— = that source was unavailable for the repo, never a real zero). The same report is in <a href="/api/projects.json">/api/projects.json</a> as \`coverage\`.</p>`;
 }
 
@@ -6626,6 +6697,152 @@ function poolGraphHtml(items: ProjectPoolItem[], allW: ReturnType<typeof summari
   return `<h3>Blocked + depth graph</h3>${blockedHtml}${svg}`;
 }
 
+
+/** The #3973 per-epic dependency graph section of a project page
+ * (design doc/2026-11-01T21-05-00Z_design_aggregator_dependency_graph_1257.md):
+ * an epic selector with item/blocked counts, then per epic a summary +
+ * ranked blocked list beside the graph SVG and a vertical,
+ * keyboard-readable dependency list. The list is the primary surface
+ * on narrow screens (the flex column stacks it full-width; the SVG
+ * may scroll horizontally as a secondary detail). Dependency edges
+ * are dashed amber, hierarchy edges solid grey, and every node's
+ * state is written as text — color is never the only signal. Empty
+ * or unavailable graph data says so; it is never an empty success. */
+/** Section anchor for one epic's graph, derived from the canonical ref
+ * (owner/repo#number), never the bare issue number: two repositories
+ * can hold epics with the same number, and bare-number ids collide. */
+function epicGraphAnchor(ref: RefKey): string {
+  return `epic-graph-${ref.replace(/[^a-zA-Z0-9]+/g, "-")}`;
+}
+
+function epicGraphSectionHtml(items: ProjectPoolItem[], selectorItems: ProjectPoolItem[] = items): string {
+  // Selector entries and rendered sections are scoped to the project's
+  // own pool (selectorItems = detail.poolItems): on a normal project
+  // request the caller passes the entire org pool as `items` for
+  // membership and blocker resolution, and rendering every eligible
+  // epic from every Area would bury this project's section in unrelated
+  // projects (Codex round-2 on #3973). Resolution inside each section
+  // still runs against the full `items` pool.
+  // The selector rollups are computed from the full `items` pool too,
+  // then filtered to this project's epic refs (Codex round-3 on
+  // #3973): computing them from the scoped pool made a member whose
+  // blocker lives in another Area count as blocked in the selector
+  // while its section — resolving against the full pool — correctly
+  // reported it unblocked.
+  const projectEpicRefs = new Set(
+    selectorItems.filter((i) => i.kind === "Epic").map((i) => i.ref),
+  );
+  const selector = epicSelector(items).filter((e) => projectEpicRefs.has(e.ref));
+  if (!selector.length) {
+    return `<h3>Per-epic dependency graph</h3><div class="banner">Dependency graph unavailable: no epic in this pool has items yet, so there is no per-epic graph to draw — this is an unavailable state, not an empty graph.</div>`;
+  }
+  const selectorHtml = `<nav class="epic-graph-selector" aria-label="Epic graph selector"><ul class="epic-graph-list">${selector
+    .map(
+      (e) =>
+        `<li><a href="#${epicGraphAnchor(e.ref)}">${esc(e.title)}</a> <span class="muted">${esc(e.ref)} · ${e.itemCount} item${e.itemCount === 1 ? "" : "s"} · ${e.blockedCount} blocked · ${e.doneCount} done</span></li>`,
+    )
+    .join("")}</ul></nav>`;
+  const sections = selector.map((entry) => epicGraphOneHtml(items, entry)).join("");
+  return `<h3>Per-epic dependency graph</h3>${selectorHtml}${sections}`;
+}
+
+function epicGraphOneHtml(
+  items: ProjectPoolItem[],
+  entry: ReturnType<typeof epicSelector>[number],
+): string {
+  const g = epicGraph(items, entry.ref);
+  const heading = `<h4 id="${epicGraphAnchor(entry.ref)}">${esc(entry.title)} <span class="muted">(${esc(entry.ref)})</span></h4>`;
+  if (g.status === "unavailable" || !g.epic) {
+    return `<section>${heading}<div class="banner">Dependency graph unavailable: ${esc(g.reason ?? "no graph data for this epic")}.</div></section>`;
+  }
+  const poolByRef = new Map(items.map((p) => [p.ref, p]));
+  const unresolvedOf = (ref: RefKey): boolean => {
+    const held = poolByRef.get(ref);
+    return held === undefined || held.state === "open";
+  };
+  const summary = `<p class="muted"><strong>${g.memberCount} item${g.memberCount === 1 ? "" : "s"} in this epic</strong> · ${g.blockedCount} blocked on an unresolved blocker · ${g.externalCount} one-hop reference${g.externalCount === 1 ? "" : "s"} outside this pool (unresolved — status unknown, never counted as resolved).</p>`;
+  const truncatedHtml = g.truncated
+    ? `<p class="muted">Truncated: this graph shows ${g.nodes.length} of ${g.totalNodes} nodes (cap ${EPIC_GRAPH_DEFAULT_CAP}). The counts above cover the full set; a capped graph is not complete.</p>`
+    : "";
+
+  // Ranked summary: open member items by how many unresolved blockers
+  // they wait on, from the graph's pre-cap ranking (the full transitive
+  // unblock ranking is #3974; this is the per-epic blocked summary
+  // beside the graph). Never derived from the capped node list: a
+  // member the cap hid is still waiting.
+  const ranked = g.rankedBlocked;
+  const rankedHtml = ranked.length
+    ? `<ul class="epic-graph-list">${ranked
+        .map(
+          (r) =>
+            `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${r.blockers.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>`).join(", ")}</li>`,
+        )
+        .join("")}</ul>`
+    : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
+
+  // SVG: hierarchy edges solid grey, dependency edges dashed amber —
+  // distinct by dash and color, and named in the legend text.
+  const pos = new Map(g.nodes.map((n) => [n.ref, n]));
+  const X = (depth: number) => 16 + depth * 180;
+  const Y = (row: number) => 16 + row * 26;
+  const width = X(g.maxDepth) + 340;
+  const height = g.nodes.length ? Y(g.nodes.length - 1) + 16 : 32;
+  // Dependency edges carry an arrowhead marker pointing at the blocker
+  // (the `to` node): hierarchy depth alone does not show which sibling
+  // blocks which (Codex round-2 on #3973). The marker id is per-epic --
+  // several epic sections share one page, and duplicate ids would make
+  // every edge reference the first section's marker.
+  const depMarkerId = `dep-arrow-${epicGraphAnchor(g.epic.ref)}`;
+  const depDefs = g.edges.some((e) => e.type === "dependency")
+    ? `<defs><marker id="${depMarkerId}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d29922"/></marker></defs>`
+    : "";
+  const edgeLines = g.edges
+    .map((e) => {
+      const a = pos.get(e.from)!;
+      const b = pos.get(e.to)!;
+      return e.type === "dependency"
+        ? `<line x1="${X(a.depth)}" y1="${Y(a.row)}" x2="${X(b.depth)}" y2="${Y(b.row)}" stroke="#d29922" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#${depMarkerId})"/>`
+        : `<line x1="${X(a.depth)}" y1="${Y(a.row)}" x2="${X(b.depth)}" y2="${Y(b.row)}" stroke="#8b949e" stroke-width="1"/>`;
+    })
+    .join("");
+  const nodeShapes = g.nodes
+    .map((n) => {
+      const label = n.title
+        ? `#${n.number} ${n.title.length > 34 ? `${n.title.slice(0, 33)}…` : n.title}`
+        : `${n.ref} (outside this pool)`;
+      const x = X(n.depth);
+      const y = Y(n.row);
+      const shape = n.unresolved
+        ? `<polygon points="${x},${y - 7} ${x + 7},${y} ${x},${y + 7} ${x - 7},${y}" fill="none" stroke="#d29922" stroke-width="1.5" stroke-dasharray="3 2"/>`
+        : n.epic
+          ? `<rect x="${x - 6}" y="${y - 6}" width="12" height="12" fill="${n.state === "open" ? "#8957e5" : "#6e7781"}" stroke="#0d1117" stroke-width="1.5"/>`
+          : `<circle cx="${x}" cy="${y}" r="6" fill="${n.state === "open" ? "#bf8700" : "#6e7781"}" stroke="#0d1117" stroke-width="1.5"/>`;
+      return `${shape}<a href="${esc(n.issueUrl)}"><text x="${x + 11}" y="${y + 4}" font-size="11" fill="currentColor">${esc(label)}</text></a>`;
+    })
+    .join("");
+  const svg = g.edges.length
+    ? `<div class="epic-graph-svg"><svg viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="Dependency graph for epic ${esc(g.epic.ref)}" style="max-width:100%;height:auto">${depDefs}${edgeLines}${nodeShapes}</svg><p class="muted">Solid grey lines are sub-issue hierarchy (parent → child); dashed amber lines are dependency edges, with an arrowhead pointing at the blocker (item → blocker). Squares are epics; diamonds are references outside this pool whose status is unknown. Every node's state is also written as text in the list — color is never the only signal.</p></div>`
+    : `<p class="muted">Not yet graphed: this epic's items carry no parent / blocked-by edges yet, so there is no graph to draw. The items are listed below.</p>`;
+
+  const listHtml = `<ul class="epic-graph-list">${g.nodes
+    .map((n) => {
+      const stateText = n.unresolved
+        ? "not in this pool / status unknown — unresolved"
+        : `issue ${esc(n.state ?? "unknown")}`;
+      const blockedBy = n.blockers.length
+        ? `blocked by: ${n.blockers.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>${unresolvedOf(b) ? " (unresolved)" : " (resolved)"}`).join(", ")}`
+        : "blocked by: none observed";
+      const blocks = n.dependents.length
+        ? `blocks: ${n.dependents.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>`).join(", ")}`
+        : "blocks: none observed";
+      const name = n.title ? `${esc(n.title)}` : "(outside this pool — no title in this feed)";
+      return `<li><a href="${esc(n.issueUrl)}">${esc(n.ref)}</a> ${name} — ${stateText}; ${blockedBy}; ${blocks}</li>`;
+    })
+    .join("")}</ul>`;
+
+  return `<section>${heading}${summary}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Blocked in this epic</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
+}
+
 export function renderProgramProject(
   detail: ProjectDetail,
   items: Map<RefKey, GhItem>,
@@ -6697,7 +6914,7 @@ export function renderProgramProject(
     const epicHtml = epics.length
       ? `<h3>Epics — weighted progress</h3><p class="muted"><strong>${esc(weightedLine(epicW))}</strong></p>${epicRows}`
       : "";
-    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${poolGraphHtml(detail.poolItems, allW)}${cards}${more}`;
+    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${poolGraphHtml(detail.poolItems, allW)}${epicGraphSectionHtml(epicPool, detail.poolItems)}${cards}${more}`;
   }
 
   let roadmapHtml: string;
@@ -6886,7 +7103,7 @@ ${view.subscriptions.length ? view.subscriptions.map(subscriptionRow).join("") :
 ${open.length ? open.map(incidentCard).join("") : `<p class="muted">No open incidents. Silence is golden.</p>`}
 ${closed.length ? `<h2>Closed (recent)</h2>${closed.map(incidentCard).join("")}` : ""}
 <h2>Ledger — recent transitions</h2>
-<table><caption>Recent alert-ledger transitions</caption><tr><th scope="col">at</th><th scope="col">kind</th><th scope="col">incident</th><th scope="col">source · key</th></tr>${events}</table>`;
+ <div class="tblwrap"><table><caption>Recent alert-ledger transitions</caption><tr><th scope="col">at</th><th scope="col">kind</th><th scope="col">incident</th><th scope="col">source · key</th></tr>${events}</table></div>`;
   const script = `<script>
 const VAPID = ${JSON.stringify(vapidPublicKey)};
 const SUBS = ${JSON.stringify(view.subscriptions.map((s) => ({ endpoint: s.endpoint, classes: s.classes, quiet: s.quiet })))};
@@ -7025,4 +7242,116 @@ document.getElementById("push-test").addEventListener("click", async () => {
 });
 </script>`;
   return layout("Alerts", body, provenance, "/alerts", script);
+}
+
+// --- Notifications page (#3319, notification measurement) -------------------
+
+export interface NotificationsPageView {
+  available: boolean;
+  rollup: NotificationRollup | null;
+}
+
+function pct(ratio: number | null): string {
+  return ratio === null ? "—" : `${Math.round(ratio * 100)}%`;
+}
+
+export function renderNotifications(view: NotificationsPageView, provenance: Provenance): string {
+  if (!view.available || !view.rollup) {
+    return layout(
+      "Notifications",
+      `<h1>Notifications</h1><p class="muted">The notification send ledger (Supabase <code>alerts.notification_sends</code>) is unreachable from this process right now — the roll-up is paused with it. The rest of the dashboard is unaffected.</p>`,
+      provenance,
+      "/notifications",
+    );
+  }
+  const rollup = view.rollup;
+  const proposals = rollup.classes.filter((c) => c.proposal);
+  const rows = rollup.classes
+    .map((c) => {
+      const cells = c.weeks
+        .map((w) => `<td>${w.sent} sent · ${w.acted} acted (${pct(w.ratio)})</td>`)
+        .join("");
+      return `<tr><td><strong>${esc(c.class)}</strong></td>${cells}<td>${c.sent} sent · ${c.acted} acted (${pct(c.ratio)})</td></tr>`;
+    })
+    .join("");
+  const weekHeads = rollup.classes[0]
+    ? rollup.classes[0].weeks.map((w) => `<th scope="col">week of ${esc(fmtDate(w.start))}</th>`).join("")
+    : "";
+  const proposalHtml = proposals.length
+    ? `<h2>Default-off proposals</h2>${proposals
+        .map(
+          (c) =>
+            `<div class="card"><strong>Proposal: default class <code>${esc(c.class)}</code> off</strong> — acted-on ratio ${pct(c.ratio)} over the rolling window (${c.acted} of ${c.sent} sends acted on within 24h), under the 10% threshold.<br><span class="muted">Proposal only — this page never changes a preference or a default. Turning a class off by default is Drew's call, made on the Alerts page's subscription preferences.</span></div>`,
+        )
+        .join("")}`
+    : `<h2>Default-off proposals</h2><p class="muted">No class is under the 10% acted-on threshold over the rolling window.</p>`;
+  const body = `<h1>Notifications</h1>
+<p class="muted">Weekly sent-vs-acted-on roll-up over the alert throat's send ledger (<code>alerts.notification_sends</code>), rolling four weeks ending ${esc(fmtDate(rollup.asOf))}. Read-only: this page measures; it never changes a notification preference or default. Machine-first: <a href="/api/notifications.json">/api/notifications.json</a>.</p>
+<h2>How acted-on is counted (attribution)</h2>
+<p class="muted">A send counts as acted-on when the incident's Ack lands within 24 hours of the send: Ack is the exactly-once transition that stamps the send's <code>acted_on_at</code>, so it is the durable acted-on signal. Only ledger rows with outcome <code>sent</code> count as sends — suppressed (quiet hours / dedupe), gone, and error attempts never reached a device and never enter the denominator, and no send is inferred from delivered/escalated incident events. What this cannot attribute: reading a notification without acking, acting on the incident through another surface (GitHub, chat, a later dashboard visit that does not ack), and sends to subscriptions that were later removed — those count as sent-but-not-acted even when a human did see them. Test sends (class <code>test</code>) are real ledger rows and are reported as their own class.</p>
+${rollup.undated ? `<p class="muted">${rollup.undated} ledger row(s) carried no usable send timestamp and were excluded from the roll-up.</p>` : ""}
+<h2>Per class, per week</h2>
+${
+  rollup.classes.length
+    ? `<div class="tblwrap"><table><caption>Sent vs acted-on by class and rolling week</caption><tr><th scope="col">class</th>${weekHeads}<th scope="col">rolling 4 weeks</th></tr>${rows}</table></div>`
+    : `<p class="muted">No sends in the rolling four-week window.</p>`
+}
+${proposalHtml}`;
+  return layout("Notifications", body, provenance, "/notifications");
+}
+
+/** The digest page (#1278): renders a Digest verbatim — the archived
+ * JSON is the page's data, so a re-read shows exactly what was
+ * delivered to chat. /digest?date=<date> renders that day's archive;
+ * /digest renders today's live build with the archive index. */
+export function renderDigest(
+  digest: Digest,
+  archives: { kind: DigestKind; date: string; route: string }[],
+  provenance: Provenance,
+  detail?: ProvenanceDetail,
+): string {
+  const freshness = digest.freshness.length
+    ? `<p class="muted">Data freshness: ${digest.freshness
+        .map((f) => `${esc(f.facet)}=${esc(f.state)}${f.ageMs !== null ? ` (${esc(ageTextDigest(f.ageMs))})` : ""}`)
+        .join(" · ")}</p>`
+    : `<p class="muted">Data freshness: not measured by this source — treat every section as unverified.</p>`;
+  const sections = digest.sections
+    .map((s) => {
+      const items = s.items.length
+        ? `<ul>${s.items
+            .map(
+              (i) =>
+                `<li><a href="${esc(i.url)}">${esc(i.title)}</a> <span class="muted">${esc(i.ref)} — ${esc(i.note)}</span></li>`,
+            )
+            .join("")}</ul>${s.truncated ? `<p class="muted">… capped at ${DIGEST_SECTION_LIMIT} items</p>` : ""}`
+        : `<p class="muted">${s.stale ? "(unavailable — see the stale note)" : "(nothing)"}</p>`;
+      return `<h2>${esc(s.title)}${s.stale ? ` — <span class="stale">STALE: ${esc(s.staleNote ?? "source degraded")}</span>` : ""}</h2>${items}`;
+    })
+    .join("\n");
+  const archiveLinks = archives.length
+    ? `<h2>Archive</h2><ul>${archives
+        .map((a) => `<li><a href="${esc(a.route)}">${esc(a.date)}</a> <span class="muted">${esc(a.kind)}</span></li>`)
+        .join("")}</ul>`
+    : `<h2>Archive</h2><p class="muted">No digests archived yet — the generator (scripts/generate-digest.ts) writes one per day.</p>`;
+  const body = `<h1>PM ${esc(digest.kind)} digest — ${esc(digest.date)}</h1>
+<p class="muted">Generated ${esc(digest.generatedAt)} from the canonical projection · window ${digest.windowHours}h from ${esc(digest.windowStart)} · machine twin: <a href="${esc(`/api/digest.json?date=${digest.date}&kind=${digest.kind}`)}">${esc(`/api/digest.json?date=${digest.date}&kind=${digest.kind}`)}</a></p>
+${freshness}
+${sections}
+${archiveLinks}`;
+  return layout(
+    `Digest ${digest.date}`,
+    body,
+    provenance,
+    "/digest",
+    "",
+    detail ? freshnessChips(detail, ["items", "quota"]) : "",
+  );
+}
+
+function ageTextDigest(ageMs: number): string {
+  const mins = Math.max(0, Math.round(ageMs / 60000));
+  if (mins < 60) return `${mins}m old`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) return `${hours}h ${mins % 60}m old`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h old`;
 }

@@ -305,17 +305,23 @@ test('clef-proxy binds exactly the requested valid port', async (t) => {
   assert.equal((await res.json()).port, port);
 });
 
-test('all eight parse sites in the six proxies use the shared helper', () => {
-  const files = [
-    'codex-proxy.mjs',
-    'clef-proxy.mjs',
-    'agy-proxy.mjs',
-    'antigravity-ls-proxy.mjs',
-    'design-code-proxy.mjs',
-    'muse-proxy.mjs'
-  ];
-  let sites = 0;
-  for (const file of files) {
+test('every proxy port parse site in the six proxies uses the shared helper', () => {
+  // Per-file inventory, named, so a rework that moves a port from one proxy
+  // to another has to update this list on purpose instead of drifting a bare
+  // total. design-code-proxy owns the antigravity-direct port parses.
+  const expected = {
+    'codex-proxy.mjs': ['CODEX_PROXY_PORT'],
+    'clef-proxy.mjs': ['CLEF_PROXY_PORT'],
+    'agy-proxy.mjs': ['AGY_PROXY_PORT'],
+    'antigravity-ls-proxy.mjs': ['ANTIGRAVITY_LS_PROXY_PORT'],
+    'design-code-proxy.mjs': [
+      'DESIGN_CODE_PROXY_PORT',
+      'ANTIGRAVITY_DIRECT_PORT',
+      'CODEX_PROXY_PORT'
+    ],
+    'muse-proxy.mjs': ['MUSE_PROXY_PORT']
+  };
+  for (const [file, names] of Object.entries(expected)) {
     const source = fs.readFileSync(path.join(binDir, file), 'utf8');
     assert.match(
       source,
@@ -324,12 +330,18 @@ test('all eight parse sites in the six proxies use the shared helper', () => {
     );
     assert.doesNotMatch(
       source,
-      /parseInt\(process\.env\.[A-Z_]*PROXY_PORT/,
-      `${file} still parses a proxy port with bare parseInt`
+      /parseInt\(process\.env\.[A-Z_]+PORT/,
+      `${file} still parses a port with bare parseInt`
     );
-    sites += source.match(/parseProxyPort\('[A-Z_]+_PROXY_PORT', \d+\)/g).length;
+    const parsed = [
+      ...source.matchAll(/parseProxyPort\('([A-Z_]+)', \d+\)/g)
+    ].map((m) => m[1]);
+    assert.deepEqual(
+      parsed.sort(),
+      [...names].sort(),
+      `${file} should parse ${names.join(', ')} through the helper`
+    );
   }
-  assert.equal(sites, 8);
 });
 
 test('home-manager launches the proxies from the bin directory', () => {

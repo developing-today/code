@@ -6,6 +6,7 @@ import { computeCheckoutDrift, type GitRun } from "../src/checkout-drift.ts";
 import type { FleetFeed } from "../src/feed.ts";
 import { buildHealth, createProbeCache, type HealthInputs, type ProbeFetch } from "../src/health.ts";
 import { loadConfig } from "../src/config.ts";
+import type { RfaState } from "../src/sources/ready-for-agent.ts";
 
 const HEAD = "a".repeat(40);
 const MAIN = "b".repeat(40);
@@ -73,11 +74,21 @@ describe("computeCheckoutDrift", () => {
 describe("buildHealth checkout surfacing", () => {
   const NOW = Date.parse("2026-10-31T00:00:00Z");
   const fetcher: ProbeFetch = async () => ({ status: 200 });
+  // #1203: buildHealth reads the ready-for-agent harness facet and a
+  // failed read degrades the view; inject an up harness (mirroring
+  // health.test.ts) so these tests pin checkout surfacing only, never
+  // whether a live :6056 harness happens to answer.
+  const RFA_STATE: RfaState = {
+    repositories: [],
+    backends: [{ id: "opencode", kind: "READY", reason: null }],
+    workItems: [],
+  };
+  const rfaUp = async (): Promise<RfaState> => RFA_STATE;
 
   function inputs(feed: FleetFeed | null): HealthInputs {
     return {
       mode: "live",
-      cfg: loadConfig({}),
+      cfg: loadConfig({ PM_AGG_DEV: "1" }),
       feed,
       feedFileMtimeMs: null,
     };
@@ -92,25 +103,34 @@ describe("buildHealth checkout surfacing", () => {
   }
 
   test("a feed without a checkout report surfaces unknown-with-reason", async () => {
-    const view = await buildHealth(inputs(feedWith()), { fetcher, cache: createProbeCache(), now: NOW });
+    const view = await buildHealth(inputs(feedWith()), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+      rfaState: rfaUp,
+    });
     expect(view.feed.checkout.state).toBe("unknown");
     expect(view.feed.checkout.reason).toContain("did not report");
   });
 
   test("behind drift is surfaced verbatim and marks the view degraded", async () => {
-    const view = await buildHealth(
-      inputs(feedWith({ state: "behind", head: HEAD, originMain: MAIN, behindBy: 3 })),
-      { fetcher, cache: createProbeCache(), now: NOW },
-    );
+    const view = await buildHealth(inputs(feedWith({ state: "behind", head: HEAD, originMain: MAIN, behindBy: 3 })), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+      rfaState: rfaUp,
+    });
     expect(view.feed.checkout).toEqual({ state: "behind", head: HEAD, originMain: MAIN, behindBy: 3 });
     expect(view.degraded).toBe(true);
   });
 
   test("in-sync drift does not degrade on its own", async () => {
-    const view = await buildHealth(
-      inputs(feedWith({ state: "in-sync", head: HEAD, originMain: HEAD, behindBy: 0 })),
-      { fetcher, cache: createProbeCache(), now: NOW },
-    );
+    const view = await buildHealth(inputs(feedWith({ state: "in-sync", head: HEAD, originMain: HEAD, behindBy: 0 })), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+      rfaState: rfaUp,
+    });
     expect(view.feed.checkout.state).toBe("in-sync");
     expect(view.degraded).toBe(false);
   });

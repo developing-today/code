@@ -78,8 +78,8 @@ describe("titleRefs", () => {
   });
 
   test("does not re-attribute an explicit non-fleet ref as nearby shorthand", () => {
-    expect(titleRefs("code #811 blocked on developing-today/kaneo#42")).toEqual([
-      "developing-today/kaneo#42",
+    expect(titleRefs("code #811 blocked on developing-today-forks/kaneo#42")).toEqual([
+      "developing-today-forks/kaneo#42",
       "developing-today/code#811",
     ]);
   });
@@ -87,11 +87,11 @@ describe("titleRefs", () => {
   test("keeps mixed shorthand and explicit refs, including GitHub URL refs", () => {
     expect(
       titleRefs(
-        "nix #889 blocked on developing-today/kaneo#42; openchamber #492 mirrors https://github.com/developing-today/opencode/issues/927",
+        "nix #889 blocked on developing-today-forks/kaneo#42; openchamber #492 mirrors https://github.com/developing-today/opencode/issues/927",
       ),
     ).toEqual([
       "developing-today/opencode#927",
-      "developing-today/kaneo#42",
+      "developing-today-forks/kaneo#42",
       "dezren39/nix#889",
       "developing-today/openchamber#492",
     ]);
@@ -111,14 +111,16 @@ describe("inFlightBoardItems", () => {
       ]),
       [],
     );
-    expect(out.map((i) => i.orchStatus)).toEqual(["in-progress", "queued", "blocked"]);
+    // #1206: the lane is in canonical queue-rank order (in-progress,
+    // then blocked, then queued), not raw section order.
+    expect(out.map((i) => i.orchStatus)).toEqual(["in-progress", "blocked", "queued"]);
     expect(out.every((i) => i.source === "orchestrator" && i.status === "in-flight")).toBe(true);
     expect(out.every((i) => i.updatedAt === GENERATED)).toBe(true);
     expect(out[0].links.map((l) => l.ref)).toEqual(["developing-today/code#944", "developing-today/code#985"]);
     expect(out[0].repo).toBe("developing-today/code");
-    expect(out[2].blockedBy).toEqual(["Drew's Plaid/Citi sign-in (stalled)"]);
-    expect(out[2].links).toEqual([]);
-    expect(out[2].goal).toBe("Keep the four repos healthy");
+    expect(out[1].blockedBy).toEqual(["Drew's Plaid/Citi sign-in (stalled)"]);
+    expect(out[1].links).toEqual([]);
+    expect(out[1].goal).toBe("Keep the four repos healthy");
   });
 
   test("an explicit linedUp ref is linked even when the title carries none", () => {
