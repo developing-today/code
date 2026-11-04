@@ -1110,6 +1110,28 @@ against the declaration's `dir`, then `PATH`. Without `runtime`, nothing
 changes: `command` is looked up on `PATH` and exec'd directly. `mcpx adapter
 check` reports a missing interpreter or script.
 
+### Example: tailscale, no credential
+
+The shipped declaration at `examples/tailscale.json` wraps the local
+`tailscale` CLI (#1936). It declares no credential and needs none: the CLI
+is already logged in on the machine, and that session is the
+authentication. Only two tools are exposed, both over
+`tailscale status --json`:
+
+```jsonc
+{ "adapters": [{
+  "name": "tailscale", "command": "tailscale",
+  "tools": [
+    { "name": "listTailnet",   "args": ["status", "--json"], "json": true },
+    { "name": "listHostnames", "args": ["status", "--json"], "json": true }
+  ] }] }
+```
+
+Point `paths.adapters` at a copy of that file and the tailnet appears in
+`mcpx ls` like any other server. The shipped copy is pinned by
+`TestShippedTailscaleAdapterDeclaration`, so it cannot drift from the
+shape above.
+
 `mcpx catalog` also ends with the recipe tools in `tools/list`: how many are
 exposed against the recipe budget, and which recipes were kept out by a name
 collision or the cap.
