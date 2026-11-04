@@ -100,6 +100,7 @@ fn document_ext(doc: &DocumentRef, after: Vec<Hash>) -> ChainExt {
         note: None,
         link: None,
         checkpoint: None,
+        chat: None,
         rotation: None,
     }
 }
@@ -119,6 +120,7 @@ fn tag_ext(subject: Hash, name: &str, value: &str, after: Vec<Hash>) -> ChainExt
         note: None,
         link: None,
         checkpoint: None,
+        chat: None,
         rotation: None,
     }
 }
@@ -134,6 +136,7 @@ fn removal_ext(target: Hash, after: Vec<Hash>) -> ChainExt {
         note: None,
         link: None,
         checkpoint: None,
+        chat: None,
         rotation: None,
     }
 }

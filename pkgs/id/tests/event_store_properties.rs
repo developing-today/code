@@ -151,6 +151,7 @@ fn signed(
         note: None,
         link: None,
         checkpoint: None,
+        chat: None,
         rotation: None,
     };
     sign(key, seq, backlink, None, ext).unwrap()
@@ -342,6 +343,7 @@ fn present_event(
         note: None,
         link: None,
         checkpoint: None,
+        chat: None,
         rotation: None,
     };
     sign(key, seq, backlink, None, ext).unwrap()
@@ -766,6 +768,7 @@ proptest! {
                     after: Vec::new(), tag: None, document: None, removes: None, note: None,
                     link: None,
                     checkpoint: None,
+                    chat: None,
                     rotation: None,
                 },
             )
@@ -813,6 +816,7 @@ fn print_ingest_seeds() {
                 note: None,
                 link: None,
                 checkpoint: None,
+                chat: None,
                 rotation: None,
             };
             sign(key, seq, backlink, None, ext).unwrap()

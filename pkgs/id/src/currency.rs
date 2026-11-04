@@ -348,6 +348,7 @@ pub fn sign_authorisation(
             note: None,
             link: None,
             checkpoint: None,
+            chat: None,
             rotation: None,
         },
     )?)
@@ -381,6 +382,7 @@ pub fn sign_revoke(
             note: None,
             link: None,
             checkpoint: None,
+            chat: None,
             rotation: None,
         },
     )?)

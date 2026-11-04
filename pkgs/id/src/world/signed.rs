@@ -86,6 +86,7 @@ pub fn sign_move(
             note: None,
             link: None,
             checkpoint: None,
+            chat: None,
             rotation: None,
         },
     )

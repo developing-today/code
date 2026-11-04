@@ -437,6 +437,7 @@ fn workload() -> Vec<Vec<u8>> {
         note: None,
         link: None,
         checkpoint: None,
+        chat: None,
         rotation: None,
     };
     let a0 = sign(&author, 0, None, None, ext("message", Vec::new())).unwrap();

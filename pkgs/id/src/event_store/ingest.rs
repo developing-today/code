@@ -1158,6 +1158,7 @@ mod tests {
             note: None,
             link: None,
             checkpoint: None,
+            chat: None,
             rotation: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
@@ -1572,6 +1573,7 @@ mod tests {
                     audit_blob: None,
                 },
             }),
+            chat: None,
             rotation: None,
         };
         let y0 = sign(&y, 0, None, None, ext).unwrap();
@@ -1630,6 +1632,7 @@ mod tests {
                     audit_blob: None,
                 },
             }),
+            chat: None,
             rotation: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
@@ -1881,6 +1884,7 @@ mod tests {
                 note: None,
                 link: None,
                 checkpoint: None,
+                chat: None,
                 rotation: None,
             };
             sign(&signer, seq, backlink, None, ext).unwrap()
@@ -1917,6 +1921,7 @@ mod tests {
             note: None,
             link: None,
             checkpoint: None,
+            chat: None,
             rotation: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();

@@ -22,6 +22,7 @@ use p2panda_core::{AnyHeader, Hash, Header, HeaderError, SeqNum, SigningKey};
 use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
 
+use crate::chat::{ChatLink, ChatMessage, is_chat_message_kind};
 use crate::documents::{DocumentRef, is_document_kind, is_removal_kind};
 use crate::issuer_rotation::{IssuerRotation, is_rotation_kind};
 use crate::note_links::{NoteLinkOp, check_note_link_op, is_note_link_kind};
@@ -47,6 +48,10 @@ const LENGTH_LIMIT: u64 = 512;
 
 /// Byte budget for speculative pre-allocation. Matches p2panda's decoder.
 const OOM_MITIGATION: usize = 64;
+
+/// p2panda's header decoder caps each CBOR text string at 512 bytes. Longer chat
+/// text is represented as chunks so the message shape's 2,048-byte limit remains usable.
+const CHAT_TEXT_CHUNK_BYTES: usize = 512;
 
 /// Why an event header, or the extension it carries, was refused.
 #[derive(Debug, thiserror::Error)]
@@ -119,6 +124,10 @@ pub struct ChainExt {
     /// The ID of the `document.put` a `document.remove` removes, and `None` for every other kind.
     /// It is signed with the header (P5.6).
     pub removes: Option<Hash>,
+    /// The chat message of a `chat.message.v1`, and `None` for every other kind. It is the
+    /// message's body (#3799): it is signed with the header, so an event carries its
+    /// message, and sync needs no separate body.
+    pub chat: Option<ChatMessage>,
     /// The note operation of a `note.create` or `note.revise`, and `None` for every
     /// other kind. It is the note's body (#3814): signed with the header, so an event
     /// carries its whole note operation, and sync needs no separate body.
@@ -139,9 +148,95 @@ pub struct ChainExt {
     pub rotation: Option<IssuerRotation>,
 }
 
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ChatTextWireRef<'a> {
+    Plain(&'a str),
+    Chunks(Vec<&'a str>),
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ChatTextWire {
+    Plain(String),
+    Chunks(Vec<String>),
+}
+
+#[derive(Serialize)]
+struct ChatMessageWireRef<'a> {
+    text: ChatTextWireRef<'a>,
+    links: &'a [ChatLink],
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChatMessageWire {
+    text: ChatTextWire,
+    #[serde(default)]
+    links: Vec<ChatLink>,
+}
+
+/// A chat message's header-only wire representation. Keeping chunking here
+/// leaves the general `ChatMessage` serde shape unchanged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HeaderChatMessage(ChatMessage);
+
+impl Serialize for HeaderChatMessage {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let message = &self.0;
+        let text = if message.text.len() <= CHAT_TEXT_CHUNK_BYTES {
+            ChatTextWireRef::Plain(&message.text)
+        } else {
+            ChatTextWireRef::Chunks(chat_text_chunks(&message.text))
+        };
+        ChatMessageWireRef {
+            text,
+            links: &message.links,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for HeaderChatMessage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = ChatMessageWire::deserialize(deserializer)?;
+        let text = match wire.text {
+            ChatTextWire::Plain(text) => text,
+            ChatTextWire::Chunks(chunks) => chunks.concat(),
+        };
+        Ok(Self(ChatMessage {
+            text,
+            links: wire.links,
+        }))
+    }
+}
+
+/// Splits only at UTF-8 character boundaries, keeping each CBOR text string
+/// inside the header decoder's declared length limit.
+fn chat_text_chunks(text: &str) -> Vec<&str> {
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    for (index, character) in text.char_indices() {
+        if index > start && index + character.len_utf8() - start > CHAT_TEXT_CHUNK_BYTES {
+            chunks.push(&text[start..index]);
+            start = index;
+        }
+    }
+    if start < text.len() {
+        chunks.push(&text[start..]);
+    }
+    chunks
+}
+
 /// The wire form of [`ChainExt`]: the same fields, plus the domain tag. Keys
-/// this form does not name are refused. `tag`, `document` and `removes` are left
-/// out when they are `None`, so events of other kinds keep their encoding.
+/// this form does not name are refused. Optional fields are left out when they
+/// are `None`, so events of other kinds keep their encoding.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Wire {
@@ -155,6 +250,8 @@ struct Wire {
     document: Option<DocumentRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     removes: Option<Hash>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chat: Option<HeaderChatMessage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     note: Option<NoteOp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -175,6 +272,7 @@ impl From<ChainExt> for Wire {
             tag: ext.tag,
             document: ext.document,
             removes: ext.removes,
+            chat: ext.chat.map(HeaderChatMessage),
             note: ext.note,
             link: ext.link,
             checkpoint: ext.checkpoint,
@@ -197,6 +295,7 @@ impl TryFrom<Wire> for ChainExt {
             tag: wire.tag,
             document: wire.document,
             removes: wire.removes,
+            chat: wire.chat.map(|message| message.0),
             note: wire.note,
             link: wire.link,
             checkpoint: wire.checkpoint,
@@ -291,6 +390,26 @@ impl ChainExt {
                 )));
             }
             (true, Some(_)) => {}
+        }
+        match (is_chat_message_kind(&self.kind), &self.chat) {
+            (false, None) => {}
+            (false, Some(_)) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} carries a chat message",
+                    self.kind
+                )));
+            }
+            (true, None) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} needs its chat message",
+                    self.kind
+                )));
+            }
+            (true, Some(message)) => {
+                message
+                    .check()
+                    .map_err(|err| ChainError::Extension(err.to_string()))?;
+            }
         }
         match (is_note_kind(&self.kind), &self.note) {
             (false, None) => {}
@@ -517,6 +636,7 @@ mod tests {
             tag: None,
             document: None,
             removes: None,
+            chat: None,
             note: None,
             link: None,
             checkpoint: None,
@@ -863,6 +983,7 @@ mod tests {
                         audit_blob: Some(hash(5)),
                     },
                 }),
+                chat: None,
                 rotation: None,
             },
         )
@@ -1089,6 +1210,7 @@ mod golden {
                 tag: None,
                 document: None,
                 removes: None,
+                chat: None,
                 note: None,
                 link: None,
                 checkpoint: None,
@@ -1109,6 +1231,7 @@ mod golden {
                 tag: None,
                 document: None,
                 removes: None,
+                chat: None,
                 note: None,
                 link: None,
                 checkpoint: None,

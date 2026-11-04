@@ -642,6 +642,7 @@ pub fn sign_rotation(
             note: None,
             link: None,
             checkpoint: None,
+            chat: None,
             rotation: Some(rotation.clone()),
         },
     )?)

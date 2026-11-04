@@ -808,6 +808,7 @@ mod tests {
                 note: None,
                 link: None,
                 checkpoint: None,
+                chat: None,
                 rotation: None,
             },
         )
