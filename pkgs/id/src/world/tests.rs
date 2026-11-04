@@ -5903,8 +5903,12 @@ mod schedule_tests {
         let _ = response.await.unwrap().unwrap();
         actor.after_change().await;
         assert!(
-            actor.core.ledger.is_granted("schedule.at"),
+            actor.core.ledger.granted().contains("schedule.at"),
             "the grant is kept under the ceiling"
+        );
+        assert!(
+            !actor.core.ledger.is_granted("schedule.at"),
+            "is_granted is allowed-and-granted: false while the ceiling excludes it"
         );
         assert!(
             !actor.core.ledger.effective().contains("schedule.at"),
@@ -5920,7 +5924,7 @@ mod schedule_tests {
         .await;
         assert_eq!(
             schedule_result(&actor, "s1").unwrap()["error"],
-            "cap_denied"
+            "outside_ceiling"
         );
         assert!(
             actor.core.ledger.usage()["schedule.at"].denied > 0,
@@ -6003,12 +6007,14 @@ mod schedule_tests {
         // Positive control: a participant event is visible to joiners.
         assert_eq!(core.input(&token, b"move").unwrap().sequence, 1);
         // A delivered fire, retained as host events are, carrying the
-        // schedule-fired payload for schedule "nap".
+        // schedule-fired payload for schedule "siesta" (an id that is
+        // not a substring of any EventPage field name — "nap" is one
+        // of needs_snapshot, which false-positives a whole-page scan).
         let fire = WorldEvent {
             sequence: 2,
             participant_id: 0,
             kind: WorldEventKind::System {
-                event: schedule_fired_event("nap", false),
+                event: schedule_fired_event("siesta", false),
             },
         };
         core.sequence = fire.sequence;
@@ -6021,7 +6027,7 @@ mod schedule_tests {
         );
         assert!(matches!(page.events[0].kind, WorldEventKind::Input(_)));
         assert!(
-            !format!("{page:?}").contains("nap"),
+            !format!("{:?}", page.events).contains("siesta"),
             "the schedule fire leaked to a joiner via events_after"
         );
     }
