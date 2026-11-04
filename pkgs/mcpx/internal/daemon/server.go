@@ -1519,13 +1519,25 @@ func (s *Server) handleShutdown(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{"status": "stopping"})
 	go func() {
 		time.Sleep(defaults.DaemonRestartSettle)
-		p, _ := os.FindProcess(os.Getpid())
-		_ = p.Signal(syscall.SIGTERM)
+		_ = signalSelf(syscall.SIGTERM)
 	}()
 }
 
 // execSelf is replaced in tests: a real exec re-runs the test binary.
 var execSelf = syscall.Exec
+
+// signalSelf delivers a signal to this process. It is replaced in tests:
+// a real self-SIGTERM kills the test binary whenever the delayed signal
+// lands while no signal.Notify interception is active (#5262). The
+// production value is the real signal — the daemon's shutdown and
+// restart-fallback exits depend on it.
+var signalSelf = func(sig os.Signal) error {
+	p, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		return err
+	}
+	return p.Signal(sig)
+}
 
 func (s *Server) handleDaemonRestart(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{"status": "restarting"})
@@ -1557,8 +1569,7 @@ func (s *Server) handleDaemonRestart(w http.ResponseWriter, _ *http.Request) {
 				s.logger.Printf("re-exec failed: %v", execErr)
 			}
 		}
-		p, _ := os.FindProcess(os.Getpid())
-		_ = p.Signal(syscall.SIGTERM)
+		_ = signalSelf(syscall.SIGTERM)
 	}()
 }
 
