@@ -104,7 +104,7 @@ pub fn py_string(s: &str, ensure_ascii: bool) -> String {
             c if (c as u32) < 0x20 => {
                 let _ = write!(out, "\\u{:04x}", c as u32);
             }
-            c if ensure_ascii && (c as u32) > 0x7f => {
+            c if ensure_ascii && (c as u32) >= 0x7f => {
                 if (c as u32) > 0xffff {
                     let v = (c as u32) - 0x10000;
                     let _ = write!(
@@ -255,6 +255,19 @@ mod tests {
             dumps_pretty(&v),
             "{\n \"a\": 1,\n \"b\": [\n  1.5,\n  \"x\"\n ],\n \"c\": {},\n \"d\": []\n}"
         );
+    }
+
+    #[test]
+    fn compact_escapes_del_like_cpython() {
+        // CPython's ensure_ascii encoder escapes everything outside
+        // 0x20..=0x7e, so DEL (0x7f) becomes \u007f even though it is
+        // ASCII; with ensure_ascii=False it stays raw (#5404).
+        assert_eq!(py_string("\u{7f}", true), "\"\\u007f\"");
+        assert_eq!(py_string("\u{7f}", false), "\"\u{7f}\"");
+        assert_eq!(py_string("~", true), "\"~\"");
+        assert_eq!(py_string("\u{80}", true), "\"\\u0080\"");
+        let v = json!({"k": "x\u{7f}y"});
+        assert_eq!(dumps_compact(&v), "{\"k\": \"x\\u007fy\"}");
     }
 
     #[test]
