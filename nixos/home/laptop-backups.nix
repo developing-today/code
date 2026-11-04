@@ -328,7 +328,13 @@ in
           Service = {
             Type = "oneshot";
             ExecStart = "${watchdogPkg}/bin/laptop-backups-watchdog ${toString cfg.watchdog.maxAgeHours} ${watchdogJobs}";
-            Environment = "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin";
+            # LAPTOP_BACKUPS_OFFSITE_CHECK (#3914): the watchdog also
+            # asserts the dashboard backup's date dir exists on R2.
+            # servicePath carries rclone and ~/tools/bin carries bws.
+            Environment = [
+              "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin"
+              "LAPTOP_BACKUPS_OFFSITE_CHECK=1"
+            ];
           };
         };
       })
