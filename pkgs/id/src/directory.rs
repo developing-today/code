@@ -1581,11 +1581,11 @@ impl Directory {
         servers: Vec<HomeServer>,
     ) -> Result<SignedArtifact> {
         let (account, _) = self.authenticate(credential)?;
-        self.publish(
-            credential,
-            &Kind::HomeDeclared(HomeDeclared { account, servers }),
-            Vec::new(),
-        )
+        let declared = HomeDeclared { account, servers };
+        // Refuse here what receipt would refuse (#3187): the same check
+        // `SignedArtifact::parsed` runs, before anything is signed.
+        artifact::check_home_declared(&declared.account, &declared, false)?;
+        self.publish(credential, &Kind::HomeDeclared(declared), Vec::new())
     }
 
     /// Publish structured JSON as the signed document of the credential's account.
@@ -2667,6 +2667,26 @@ mod tests {
         assert_eq!(declared(&home), home_server(2).endpoint);
         assert_eq!(home.receive_artifact(&first).unwrap(), Stored::Duplicate);
         assert_eq!(declared(&home), home_server(2).endpoint);
+    }
+
+    #[test]
+    fn declare_home_refuses_what_receipt_would_refuse() {
+        let mut home = Directory::new();
+        let (ann, ann_credential) = account(&mut home, "Ann");
+        // The same endpoint named twice.
+        assert!(
+            home.declare_home(&ann_credential, vec![home_server(1), home_server(1)])
+                .is_err()
+        );
+        // A world ID past the receipt bound.
+        let mut oversized = home_server(1);
+        oversized.world_id = "w".repeat(65);
+        assert!(home.declare_home(&ann_credential, vec![oversized]).is_err());
+        assert_eq!(home.artifacts().head_seq(&ann), 0);
+        // A well-formed declaration still publishes.
+        home.declare_home(&ann_credential, vec![home_server(1)])
+            .unwrap();
+        assert_eq!(home.artifacts().head_seq(&ann), 1);
     }
 
     #[test]

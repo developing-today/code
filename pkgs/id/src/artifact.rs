@@ -8,6 +8,18 @@
 //! this server does not know is stored but never applied, so a newer peer
 //! cannot break an older server. Applying a known kind is the directory's job.
 //!
+//! Receipt contract (#3231): a known-kind artifact is acceptable on receipt
+//! only when it satisfies the same rules its in-tree builder must satisfy —
+//! enforced in [`SignedArtifact::parsed`] before [`ArtifactLog`] stores or
+//! replays it, and at the producer seams that build each kind. A structural
+//! rule failure is [`Refusal::Forbidden`] naming the rule; only hash and
+//! signature failures are [`Refusal::Unauthenticated`]. Receipt never
+//! rewrites signed bytes: duplicates and noncanonical values are refused,
+//! not deduplicated or normalized. Unknown kinds keep the forward-compatible
+//! rule above: envelope only, stored, never applied. A rule added after an
+//! artifact was legitimately stored does not brick replay of its log — the
+//! replay path (`parsed_for_replay`) carries each such grandfathered rule.
+//!
 //! An artifact may also name, in `after`, the hashes of artifacts its author
 //! had applied before writing it. Those names are signed, so a receiver can
 //! order concurrent statements; enforcing that order is up to the consumer.
@@ -230,6 +242,66 @@ fn check_key(key: &str) -> Result<()> {
     }
 }
 
+/// The `home_declared` rules, shared by receipt ([`SignedArtifact::parsed`])
+/// and the directory's producer seam ([`Directory::declare_home`]) so a
+/// declaration is refused before it is signed under the same rules that
+/// refuse it on receipt (#3187). With `replay` set, the bounds added for
+/// #3187 do not apply, so a declaration accepted before them still replays.
+pub(crate) fn check_home_declared(author: &str, body: &HomeDeclared, replay: bool) -> Result<()> {
+    check_key(&body.account)?;
+    if author != body.account {
+        return Err(forbidden(
+            "a home declaration must be signed by its own account",
+        ));
+    }
+    if body.servers.len() > MAX_HOME_SERVERS {
+        return Err(forbidden(format!(
+            "a declaration names at most {MAX_HOME_SERVERS} servers"
+        )));
+    }
+    // Duplicate refusal compares the validated endpoint
+    // identities, not the raw strings: one node can be named
+    // by its bare ID or by an endpoint ticket for that ID.
+    let mut targets: Vec<EndpointAddr> = Vec::with_capacity(body.servers.len());
+    for server in &body.servers {
+        let target =
+            check_target(&server.endpoint).map_err(|error| forbidden(format!("{error:#}")))?;
+        if !replay && targets.iter().any(|prior| prior.id == target.id) {
+            return Err(forbidden("a declaration names each endpoint at most once"));
+        }
+        targets.push(target);
+    }
+    for server in &body.servers {
+        if server.world_id.is_empty() {
+            return Err(forbidden("a home server needs a world ID"));
+        }
+        if replay {
+            continue;
+        }
+        if server.world_id.len() > MAX_WORLD_ID_BYTES {
+            return Err(forbidden(format!(
+                "a home server's world ID is 1 to {MAX_WORLD_ID_BYTES} bytes"
+            )));
+        }
+        if server.world_id.trim().is_empty() {
+            return Err(forbidden(
+                "a home server's world ID must not be whitespace only",
+            ));
+        }
+        if server.world_id.chars().any(char::is_control) {
+            return Err(forbidden(
+                "a home server's world ID must not contain control characters",
+            ));
+        }
+        if server.world_id.chars().any(crate::is_format_char) {
+            return Err(forbidden(
+                "a home server's world ID must not contain format characters",
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl SignedArtifact {
     /// Sign a body of `kind` as the author holding `key`, at `seq` after `prev`.
     ///
@@ -250,7 +322,8 @@ impl SignedArtifact {
     ///
     /// # Errors
     ///
-    /// Fails if `seq` is zero or the body cannot be serialized.
+    /// Fails if `seq` is zero, if `after` breaks the frontier rules (see
+    /// [`Self::check_after`]), or if the body cannot be serialized.
     pub fn sign_after(
         key: &SigningKey,
         seq: u64,
@@ -260,6 +333,7 @@ impl SignedArtifact {
         after: Vec<String>,
     ) -> Result<Self> {
         ensure!(seq >= 1, "an artifact's sequence number starts at 1");
+        Self::check_after(&after)?;
         let author = hex_encode(&key.verifying_key().to_bytes());
         let bytes = signed_bytes(&author, seq, prev, kind, &body, &after)?;
         Ok(Self {
@@ -278,29 +352,46 @@ impl SignedArtifact {
     ///
     /// # Errors
     ///
-    /// Fails with [`Refusal::Unauthenticated`] if either does not check out.
+    /// Fails with [`Refusal::Forbidden`] when the `after` frontier breaks a
+    /// frontier rule — a structural policy refusal, not an authenticity
+    /// failure (#3196) — and with [`Refusal::Unauthenticated`] if the hash
+    /// or signature does not check out.
     pub fn verify(&self) -> Result<()> {
-        self.check()
+        Self::check_after(&self.after)?;
+        self.check_authenticity()
             .map_err(|error| Refusal::Unauthenticated(format!("{error:#}")).into())
     }
 
-    fn check(&self) -> Result<()> {
+    /// The `after` frontier rules, shared by construction
+    /// ([`Self::sign_after`]) and receipt ([`Self::verify`]): at most
+    /// [`MAX_AFTER`] hashes, each one a well-formed hash, and none named
+    /// twice. Receipt refuses a duplicate rather than deduplicating it, so
+    /// what the signer supplied stays visible (#3231).
+    fn check_after(after: &[String]) -> Result<()> {
+        if after.len() > MAX_AFTER {
+            return Err(forbidden(format!(
+                "an artifact names at most {MAX_AFTER} artifacts before it"
+            )));
+        }
+        if after.iter().any(|hash| !is_hash(hash)) {
+            return Err(forbidden("an artifact names a malformed hash in after"));
+        }
+        let mut seen = HashSet::with_capacity(after.len());
+        for hash in after {
+            if !seen.insert(hash) {
+                return Err(forbidden(format!(
+                    "an artifact names {hash} twice in after"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_authenticity(&self) -> Result<()> {
         ensure!(
             normalize_key(&self.author)? == self.author,
             "author is not a canonical key"
         );
-        ensure!(
-            self.after.len() <= MAX_AFTER,
-            "an artifact names at most {MAX_AFTER} artifacts before it"
-        );
-        ensure!(
-            self.after.iter().all(|hash| is_hash(hash)),
-            "an artifact names a malformed hash in after"
-        );
-        let mut seen = HashSet::with_capacity(self.after.len());
-        for hash in &self.after {
-            ensure!(seen.insert(hash), "an artifact names {hash} twice in after");
-        }
         let bytes = signed_bytes(
             &self.author,
             self.seq,
@@ -363,6 +454,19 @@ impl SignedArtifact {
                         "a friend removal request ID is not 32 lowercase hexadecimal characters",
                     ));
                 }
+                // The producer sorts and deduplicates its request IDs
+                // (directory.rs `friendship_requests`); a receipt naming
+                // the same request twice is refused rather than
+                // deduplicated (#3146). Replay stays lenient, mirroring
+                // the #3187 grandfathering below: a removal stored before
+                // this rule still replays, and its effect on the
+                // removed-request set is idempotent.
+                if !replay {
+                    let mut named = HashSet::with_capacity(body.requests.len());
+                    if body.requests.iter().any(|request| !named.insert(request)) {
+                        return Err(forbidden("a friend removal names the same request twice"));
+                    }
+                }
                 if body.a == body.b {
                     return Err(forbidden("no one befriends themselves"));
                 }
@@ -375,59 +479,7 @@ impl SignedArtifact {
             }
             HOME_DECLARED => {
                 let body: HomeDeclared = self.decode()?;
-                check_key(&body.account)?;
-                if self.author != body.account {
-                    return Err(forbidden(
-                        "a home declaration must be signed by its own account",
-                    ));
-                }
-                if body.servers.len() > MAX_HOME_SERVERS {
-                    return Err(forbidden(format!(
-                        "a declaration names at most {MAX_HOME_SERVERS} servers"
-                    )));
-                }
-                // Duplicate refusal compares the validated endpoint
-                // identities, not the raw strings: one node can be named
-                // by its bare ID or by an endpoint ticket for that ID.
-                let mut targets: Vec<EndpointAddr> = Vec::with_capacity(body.servers.len());
-                for server in &body.servers {
-                    let target = check_target(&server.endpoint)
-                        .map_err(|error| forbidden(format!("{error:#}")))?;
-                    if !replay && targets.iter().any(|prior| prior.id == target.id) {
-                        return Err(forbidden(
-                            "a declaration names each endpoint at most once",
-                        ));
-                    }
-                    targets.push(target);
-                }
-                for server in &body.servers {
-                    if server.world_id.is_empty() {
-                        return Err(forbidden("a home server needs a world ID"));
-                    }
-                    if replay {
-                        continue;
-                    }
-                    if server.world_id.len() > MAX_WORLD_ID_BYTES {
-                        return Err(forbidden(format!(
-                            "a home server's world ID is 1 to {MAX_WORLD_ID_BYTES} bytes"
-                        )));
-                    }
-                    if server.world_id.trim().is_empty() {
-                        return Err(forbidden(
-                            "a home server's world ID must not be whitespace only",
-                        ));
-                    }
-                    if server.world_id.chars().any(char::is_control) {
-                        return Err(forbidden(
-                            "a home server's world ID must not contain control characters",
-                        ));
-                    }
-                    if server.world_id.chars().any(crate::is_format_char) {
-                        return Err(forbidden(
-                            "a home server's world ID must not contain format characters",
-                        ));
-                    }
-                }
+                check_home_declared(&self.author, &body, replay)?;
                 Ok(Some(Kind::HomeDeclared(body)))
             }
             DOCUMENT => {
@@ -607,14 +659,12 @@ impl ArtifactLog {
     /// The latest home-server declaration an account has made.
     #[must_use]
     pub fn declared(&self, account: &str) -> Option<HomeDeclared> {
-        self.chains
-            .get(account)?
-            .iter()
-            .rev()
-            .find_map(|artifact| match artifact.parsed_for_replay() {
+        self.chains.get(account)?.iter().rev().find_map(|artifact| {
+            match artifact.parsed_for_replay() {
                 Ok(Some(Kind::HomeDeclared(declared))) => Some(declared),
                 _ => None,
-            })
+            }
+        })
     }
 
     /// Sign `kind` as the author holding `key`, at the position after its chain's head.
@@ -1163,6 +1213,31 @@ mod tests {
         })
     }
 
+    /// Sign with full control of the `after` frontier, bypassing the
+    /// builder-side frontier check in [`SignedArtifact::sign_after`], so
+    /// receipt-side refusal of invalid frontiers stays testable.
+    fn sign_raw_after(
+        key: &SigningKey,
+        seq: u64,
+        prev: &str,
+        kind: &Kind,
+        after: Vec<String>,
+    ) -> SignedArtifact {
+        let (name, body) = kind.encode().unwrap();
+        let author = hex_encode(&key.verifying_key().to_bytes());
+        let bytes = signed_bytes(&author, seq, prev, name, &body, &after).unwrap();
+        SignedArtifact {
+            hash: hex_encode(&Sha256::digest(&bytes)),
+            signature: hex_encode(&key.sign(&bytes).to_bytes()),
+            author,
+            seq,
+            prev: prev.to_owned(),
+            kind: name.to_owned(),
+            body,
+            after,
+        }
+    }
+
     fn author_tag(subject: &str, author: u8) -> Kind {
         Kind::Tag(Tag {
             subject: subject.to_owned(),
@@ -1310,6 +1385,7 @@ mod tests {
 
         let cases = [
             vec![valid_id(1), valid_id(2), valid_id(3), valid_id(4)],
+            vec![valid_id(1), valid_id(1)],
             vec!["g".repeat(32)],
             vec!["a".repeat(31)],
             vec!["a".repeat(33)],
@@ -1345,6 +1421,32 @@ mod tests {
             );
             assert_eq!(log.head_seq(&public(1)), 0);
         }
+    }
+
+    #[test]
+    fn a_legacy_removal_naming_a_request_twice_still_replays() {
+        // Stored before the uniqueness rule (#3146): fresh receipt refuses
+        // it, but replay does not brick the log that already holds it.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE);
+        let legacy = SignedArtifact::sign(
+            &key(1),
+            1,
+            "",
+            FRIEND_REMOVE,
+            json!({
+                "a": public(1),
+                "b": public(2),
+                "requests": [format!("{:032x}", 7), format!("{:032x}", 7)]
+            }),
+        )
+        .unwrap();
+        assert!(legacy.parsed().is_err());
+        assert!(ArtifactLog::default().insert(legacy.clone()).is_err());
+        append(&path, &legacy).unwrap();
+
+        let reopened = ArtifactLog::open(&path).unwrap();
+        assert_eq!(reopened.head_seq(&public(1)), 1);
     }
 
     #[test]
@@ -1885,6 +1987,7 @@ mod tests {
         assert_eq!(second.after, vec![first.hash.clone()]);
         log.insert(second.clone()).unwrap();
 
+        let second_hash = second.hash.clone();
         let mut stripped = second;
         stripped.after.clear();
         let error = ArtifactLog::default().insert(stripped).unwrap_err();
@@ -1896,17 +1999,21 @@ mod tests {
             "{error:#}"
         );
 
-        let malformed = log
-            .sign_after(&key(1), &document("third"), vec!["not a hash".to_owned()])
-            .unwrap();
+        let malformed = sign_raw_after(
+            &key(1),
+            3,
+            &second_hash,
+            &document("third"),
+            vec!["not a hash".to_owned()],
+        );
         assert!(log.insert(malformed).is_err());
-        let crowded = log
-            .sign_after(
-                &key(1),
-                &document("fourth"),
-                vec![first.hash; MAX_AFTER + 1],
-            )
-            .unwrap();
+        let crowded = sign_raw_after(
+            &key(1),
+            3,
+            &second_hash,
+            &document("fourth"),
+            vec![first.hash; MAX_AFTER + 1],
+        );
         assert!(log.insert(crowded).is_err());
         assert_eq!(log.head_seq(&public(1)), 2);
     }
@@ -1917,23 +2024,42 @@ mod tests {
         let first = log.sign(&key(1), &document("first")).unwrap();
         log.insert(first.clone()).unwrap();
 
-        let doubled = log
-            .sign_after(
+        let doubled = sign_raw_after(
+            &key(1),
+            2,
+            &first.hash,
+            &document("second"),
+            vec![first.hash.clone(), first.hash.clone()],
+        );
+        // A validly signed duplicate frontier is a policy refusal, not an
+        // authenticity failure (#3196).
+        let refused = doubled.verify().unwrap_err();
+        assert!(
+            matches!(
+                refused.downcast_ref::<Refusal>(),
+                Some(Refusal::Forbidden(_))
+            ),
+            "{refused:#}"
+        );
+        assert!(log.insert(doubled).is_err());
+
+        // The builder refuses the same frontier before receipt sees it.
+        assert!(
+            log.sign_after(
                 &key(1),
                 &document("second"),
                 vec![first.hash.clone(), first.hash.clone()],
             )
-            .unwrap();
-        assert!(doubled.verify().is_err());
-        assert!(log.insert(doubled).is_err());
+            .is_err()
+        );
 
-        let repeated = log
-            .sign_after(
-                &key(1),
-                &document("third"),
-                vec![first.hash.clone(); MAX_AFTER],
-            )
-            .unwrap();
+        let repeated = sign_raw_after(
+            &key(1),
+            2,
+            &first.hash,
+            &document("third"),
+            vec![first.hash.clone(); MAX_AFTER],
+        );
         assert!(repeated.verify().is_err());
         assert!(log.insert(repeated).is_err());
         assert_eq!(log.head_seq(&public(1)), 1);
