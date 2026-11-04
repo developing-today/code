@@ -322,6 +322,12 @@ fn validate_limits(limits: &RuntimeLimits) -> Result<(), String> {
     if limits.max_concurrent_jobs_per_client == 0 {
         return Err("max_concurrent_jobs_per_client must be at least 1".to_string());
     }
+    if limits.max_queued_jobs == 0 {
+        return Err("max_queued_jobs must be at least 1".to_string());
+    }
+    if limits.max_queued_jobs_per_client == 0 {
+        return Err("max_queued_jobs_per_client must be at least 1".to_string());
+    }
     if limits.job_ttl.is_zero() || limits.hard_ttl.is_zero() {
         return Err("job TTLs must be positive".to_string());
     }
@@ -2267,6 +2273,32 @@ mod tests {
             vec_table: atlas_core::DEFAULT_VEC_TABLE.to_string(),
             limits,
         }
+    }
+
+    #[test]
+    fn validate_limits_rejects_zero_queue_caps() {
+        // #5630: the admission check is `queued >= cap`, so a zero
+        // queue cap rejects every submission on an empty queue --
+        // the service serves nothing but 429s. Both queue caps get
+        // the same at-least-1 guard as the concurrency caps.
+        let d = RuntimeLimits::default();
+        assert!(validate_limits(&d).is_ok());
+        assert_eq!(
+            validate_limits(&RuntimeLimits {
+                max_queued_jobs: 0,
+                ..d
+            })
+            .unwrap_err(),
+            "max_queued_jobs must be at least 1"
+        );
+        assert_eq!(
+            validate_limits(&RuntimeLimits {
+                max_queued_jobs_per_client: 0,
+                ..d
+            })
+            .unwrap_err(),
+            "max_queued_jobs_per_client must be at least 1"
+        );
     }
 
     fn start(
