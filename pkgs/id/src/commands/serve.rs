@@ -1626,7 +1626,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[allow(unused_mut)] // web_binding_addrs is only mutated with the `web` feature
     let mut web_binding_addrs: Vec<String> = Vec::new();
     #[cfg(feature = "web")]
-    let web_listeners: Vec<(SocketAddr, tokio::net::TcpListener)> = if web {
+    let web_listeners: Vec<(SocketAddr, tokio::net::TcpListener, WebContentTarget)> = if web {
         info!("serve startup: binding web listener(s) (#190 breadcrumb)");
         let mut listeners = Vec::new();
         for binding in &web_bindings {
@@ -1645,7 +1645,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 web_port = Some(actual_port);
             }
             web_binding_addrs.push(actual_addr.to_string());
-            listeners.push((actual_addr, listener));
+            listeners.push((actual_addr, listener, binding.target().clone()));
         }
         listeners
     } else {
@@ -1722,8 +1722,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     }
 
     // Start the web servers now that the lock file is written: one
-    // serve task per bound listener (#2145), every listener serving the
-    // same Explorer router with its own per-bind security.
+    // serve task per bound listener (#2145), each listener serving
+    // the router for its #2146 content target (Explorer by default,
+    // a program-only surface for a `Program` binding) with its own
+    // per-bind security.
     #[cfg(feature = "web")]
     let _web_handles = {
         let mut handles = Vec::new();
@@ -1735,8 +1737,19 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             // when serving without the web interface.
             let securities: Vec<crate::web::WebSecurity> = web_listeners
                 .iter()
-                .map(|(listener_addr, _)| {
+                .map(|(listener_addr, _, _)| {
                     crate::web::WebSecurity::for_bind(listener_addr.ip(), web_token.clone(), &[])
+                })
+                .collect();
+            // Each listener's #2146 content target, parallel to
+            // `securities`: a Program binding gets the program-only
+            // router for its world (phase 2); Explorer is the legacy
+            // router.
+            let surfaces: Vec<Option<String>> = web_listeners
+                .iter()
+                .map(|(_, _, target)| match target {
+                    WebContentTarget::Explorer => None,
+                    WebContentTarget::Program(world) => Some(world.clone()),
                 })
                 .collect();
             let web_routers = crate::web::web_routers(
@@ -1750,9 +1763,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 world_hub.clone(),
                 web_cookie_secure,
                 event_events.as_ref().map(Arc::clone),
+                surfaces,
             )
             .await?;
-            for ((listener_addr, listener), web_router) in
+            for ((listener_addr, listener, target), web_router) in
                 web_listeners.into_iter().zip(web_routers)
             {
                 let listener_ip = listener_addr.ip();
@@ -1785,10 +1799,20 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 }
                 #[cfg(feature = "world")]
                 if world {
-                    status!(
-                        "world: browser http://{shown_host}:{}/world",
-                        listener_addr.port()
-                    );
+                    match &target {
+                        WebContentTarget::Explorer => {
+                            status!(
+                                "world: browser http://{shown_host}:{}/world",
+                                listener_addr.port()
+                            );
+                        }
+                        WebContentTarget::Program(program_world) => {
+                            status!(
+                                "program {program_world}: browser http://{shown_host}:{}/",
+                                listener_addr.port()
+                            );
+                        }
+                    }
                 }
                 if !listener_ip.is_loopback() && web_token.is_none() {
                     status_err!(
