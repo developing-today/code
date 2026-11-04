@@ -186,7 +186,8 @@ function poolFor(provider: string, model: string): string | null {
     case "openai":
     case "openai-codex":
     case "chatgpt":
-      return "openai";
+      // Keep aligned with the pool IDs in ../src/quota-extract.ts; matching below is exact.
+      return "openai.main";
     case "openai.alternate":
       return "openai.alternate";
     case "cline-pass":
