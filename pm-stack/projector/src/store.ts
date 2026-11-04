@@ -594,8 +594,10 @@ export async function getConsumerCheckpoint(db: Client, consumer: string): Promi
  * Acknowledge a consumer checkpoint after a completed sweep. Monotonic: a
  * stale or repeated ack never moves the cursor backwards. A cursor past
  * the sweep's server-issued high-water is rejected outright -- a consumer
- * can only ack events the server actually issued to it. Returns the
- * stored cursor after the ack.
+ * can only ack events the server actually issued to it. The claimed
+ * high-water is checked against the ledger's own current high-water
+ * (server-controlled state), so a caller cannot mint a future bound and
+ * ack past events that do not exist yet. Returns the stored cursor.
  */
 export async function ackConsumerCheckpoint(
   db: Client,
@@ -606,6 +608,13 @@ export async function ackConsumerCheckpoint(
   if (!Number.isInteger(cursor) || cursor < 0) throw new Error("invalid_checkpoint_cursor");
   if (!Number.isInteger(highWater) || highWater < 0) throw new Error("invalid_high_water");
   if (cursor > highWater) throw new Error("checkpoint_past_high_water");
+  // The bound is validated against server-controlled state, never just the
+  // caller-supplied pair: a high-water the ledger has not actually reached
+  // was never issued, and acking up to it would silently skip the events
+  // that later arrive under those seqs (Codex finding on PR #5327).
+  const serverHighWater = await hotHighWater(db);
+  if (highWater > serverHighWater) throw new Error("high_water_past_server");
+  if (cursor > serverHighWater) throw new Error("checkpoint_past_high_water");
   await db.execute({
     sql: `INSERT INTO pmp_consumer_checkpoints (consumer, cursor, updated_at)
           VALUES (?,?,?)

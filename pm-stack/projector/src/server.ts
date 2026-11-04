@@ -254,7 +254,11 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
     // requested with that high-water never see events past it, so a sweep
     // is a fixed window and its checkpoint can ack up to it exactly.
     const pinned = parseCursor(url.searchParams.get("high_water"));
-    const highWater = pinned ?? (await store.hotHighWater(db));
+    // The issued high-water is always server-controlled: a caller-supplied
+    // pin is clamped to the ledger's actual high-water, never echoed past
+    // it, so the value a sweep acks against is one the server truly issued.
+    const serverHighWater = await store.hotHighWater(db);
+    const highWater = pinned === null ? serverHighWater : Math.min(pinned, serverHighWater);
     const events = await store.listHotEvents(db, { after, limit, highWater });
     return jsonResponse(200, {
       events,

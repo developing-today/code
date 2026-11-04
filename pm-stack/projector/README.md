@@ -123,7 +123,11 @@ webhook bodies are never persisted. A push appends one row per commit.
   (`POST /hot/checkpoints`, bearer). Acks are monotonic (a stale ack never
   rewinds) and a cursor past the sweep's issued `high_water` is rejected,
   so a failed or partial sweep resumes from its old checkpoint and
-  replays safely.
+  replays safely. The bound is enforced against server-controlled state:
+  a `high_water` pin on `GET /hot` is clamped to the ledger's actual
+  high-water, and an ack whose claimed `highWater` exceeds the ledger's
+  current high-water is rejected (`high_water_past_server`) -- a caller
+  cannot mint a future bound and skip events that arrive later.
 
 Retention/ownership: the ledger lives in the same namespaced (`pmp_`)
 database as the rest of the projection and is owned by the projector;

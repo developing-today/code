@@ -103,6 +103,17 @@ describe("store: consumer checkpoints", () => {
     await expect(ackConsumerCheckpoint(db, "sweep-a", 6, 5)).rejects.toThrow("checkpoint_past_high_water");
     expect(await getConsumerCheckpoint(db, "sweep-a")).toBe(5); // failed ack changed nothing
   });
+
+  test("ack rejects a caller-minted future high-water against server state", async () => {
+    // Codex finding on PR #5327: comparing only the two caller-supplied
+    // numbers lets a consumer ack cursor == highWater far past the actual
+    // ledger and silently skip events that arrive later under those seqs.
+    const hw = await hotHighWater(db);
+    await expect(ackConsumerCheckpoint(db, "sweep-forged", hw + 1000, hw + 1000)).rejects.toThrow(
+      "high_water_past_server",
+    );
+    expect(await getConsumerCheckpoint(db, "sweep-forged")).toBe(0); // forged ack persisted nothing
+  });
 });
 
 describe("projector: hot mapping", () => {
@@ -262,5 +273,26 @@ describe("server: hot routes", () => {
 
     const read = await handleRequest(new Request("http://x/hot/checkpoints?consumer=sweep-b"), db, env);
     expect(((await read.json()) as any).cursor).toBe(body.next_cursor);
+  });
+
+  test("GET /hot clamps a caller-pinned high_water to the server ledger; forged ack pair is rejected", async () => {
+    const hw = await hotHighWater(db);
+    const res = await handleRequest(new Request(`http://x/hot?after=0&limit=1&high_water=${hw + 1000}`), db, env);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any).high_water).toBe(hw); // issued bound is server-controlled
+
+    const forged = await handleRequest(
+      new Request("http://x/hot/checkpoints", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer tok" },
+        body: JSON.stringify({ consumer: "sweep-forged", cursor: hw + 1000, highWater: hw + 1000 }),
+      }),
+      db,
+      env,
+    );
+    expect(forged.status).toBe(400);
+    expect(((await forged.json()) as any).error).toBe("high_water_past_server");
+    const read = await handleRequest(new Request("http://x/hot/checkpoints?consumer=sweep-forged"), db, env);
+    expect(((await read.json()) as any).cursor).toBe(0);
   });
 });
