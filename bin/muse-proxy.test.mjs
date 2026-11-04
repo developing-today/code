@@ -601,6 +601,15 @@ const startMetaStub = async (mode) => {
           res.end(JSON.stringify({ received: JSON.parse(body || '{}'), authorization: req.headers.authorization }));
           return;
         }
+        if (mode === 'tool-name') {
+          const parsed = JSON.parse(body || '{}');
+          const name = String(parsed.model || '').replace(/^prototype-/, '');
+          const response = structuredClone(RESPONSES_FIXTURE);
+          response.output.find(item => item.type === 'function_call').name = name;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(response));
+          return;
+        }
         if (mode === 'failed-empty' || mode === 'failed-partial') {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
@@ -901,6 +910,49 @@ test('direct mode: /v1/responses passes the body through verbatim, swapping only
   const upstream = meta.requests.filter(r => r.url === '/v1/responses');
   assert.equal(upstream.length, 1);
   assert.equal(upstream[0].body, JSON.stringify(clientBody), 'byte-for-byte passthrough on the wire');
+});
+
+test('direct mode: prototype-spelling tool names are not aliases', async (t) => {
+  const meta = await startMetaStub('echo');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const names = ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf'];
+  const clientBody = {
+    model: 'muse-spark-1.3',
+    stream: false,
+    input: names.map((name, i) => ({ type: 'function_call', call_id: `call_${i}`, name, arguments: '{}' })),
+    tools: names.map(name => ({ type: 'function', name, parameters: { type: 'object', properties: {} } }))
+  };
+  const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer client-token' },
+    body: JSON.stringify(clientBody)
+  });
+  assert.equal(res.status, 200);
+  const echoed = JSON.parse(await res.text());
+  assert.deepEqual(echoed.received, clientBody, 'only the two configured tool names are aliased');
+});
+
+test('direct mode: prototype-spelling response tool names survive reverse translation', async (t) => {
+  const meta = await startMetaStub('tool-name');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  for (const name of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf']) {
+    const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer client-token' },
+      body: JSON.stringify({ model: `prototype-${name}`, input: [], stream: false })
+    });
+    assert.equal(res.status, 200);
+    const response = JSON.parse(await res.text());
+    assert.equal(response.output.find(item => item.type === 'function_call').name, name);
+  }
 });
 
 test('direct mode: /v1/responses aliases the shell tool and translates calls back', async (t) => {

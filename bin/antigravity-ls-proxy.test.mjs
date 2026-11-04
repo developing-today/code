@@ -153,6 +153,13 @@ test('an unknown model is still refused with 400', async () => {
   assert.equal(capturedModel, undefined);
 });
 
+test('prototype-spelling model ids are refused like unknown models', async () => {
+  for (const model of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf']) {
+    const res = await chat({ model });
+    assert.equal(res.status, 400, `prototype spelling ${model} must miss MODEL_MAP`);
+  }
+});
+
 // --- Tool-call translation (#865) -------------------------------------------
 // The language server returns plain text; the proxy must lift the tool
 // calls models spell in that text into structured OpenAI tool_calls, or
