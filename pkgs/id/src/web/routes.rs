@@ -503,6 +503,34 @@ pub fn create_router_for_app(
     create_router_inner(state)
 }
 
+/// Create the program-only router for one hosted world (#2146
+/// phase 2): the world program frontend at `/`, the static assets
+/// the trusted presenter loads, and the world session bridge (the
+/// shared world HTTP surface plus the live channel at the app's
+/// socket) -- and nothing else. Explorer pages and APIs (files,
+/// settings, peers, identity, collab, tags, save/upload) are absent
+/// from this router, so a program listener cannot serve them; the
+/// session authority is unchanged (a valid world guest capability,
+/// never the web token or the world admin token).
+pub fn create_program_router(mut state: AppState, world_name: &str) -> Router {
+    state.program_world = Some(world_name.to_owned());
+    let world_socket = state
+        .web_socket
+        .clone()
+        .unwrap_or_else(|| "/ws/world".to_owned());
+    let world_state = super::world_ws::WorldWebState {
+        hub: state.world.clone(),
+        cookie_secure: state.cookie_secure,
+    };
+    let router = Router::new()
+        .route("/", get(program_page_handler))
+        .route("/assets/{*path}", get(assets_handler))
+        .merge(super::world_ws::world_routes_at(&world_socket).with_state(world_state));
+    router
+        .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
+        .with_state(state)
+}
+
 fn create_router_inner(state: AppState) -> Router {
     let world_route = state.web_route.clone();
     let world_socket = state.web_socket.clone();
@@ -577,6 +605,30 @@ fn create_router_inner(state: AppState) -> Router {
     router
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
         .with_state(state)
+}
+
+/// The program-only surface's root: the program frontend for the
+/// world this router's binding names (#2146 phase 2). A hub that
+/// does not host that world (not its default and not in its world
+/// list) is a 404 -- never a lobby for a different world.
+async fn program_page_handler(State(state): State<AppState>) -> Response {
+    let Some(world_name) = state.program_world.as_deref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Some(hub) = state.world.as_ref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let hosted = hub.default_world() == world_name
+        || hub.list().iter().any(|world| world.name == world_name);
+    if !hosted {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    Html(super::templates::render_program_page(
+        &state.assets,
+        world_name,
+        state.web_socket.as_deref(),
+    ))
+    .into_response()
 }
 
 async fn world_page_handler(State(state): State<AppState>) -> Response {
@@ -3028,6 +3080,100 @@ mod upload_router_tests {
         .await
         .unwrap();
         (create_router(state.clone()), state, dir, endpoint, docs)
+    }
+
+    fn hub_with_world(name: &str, admin: Option<&str>) -> crate::world_hub::WorldHub {
+        crate::world_hub::WorldHub::single_named(
+            name,
+            crate::world_session::WorldService::new(
+                crate::world::WorldHandle::spawn(
+                    crate::world::WorldCore::new(name, crate::world::WorldLimits::default())
+                        .unwrap(),
+                ),
+                admin.map(str::to_owned),
+            ),
+        )
+    }
+
+    #[tokio::test]
+    async fn program_router_serves_only_the_program_surface() {
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        state.world = Some(hub_with_world("arena", Some("s3cret")));
+        let app = create_program_router(state, "arena");
+
+        // Root: the program page, pinned to the bound world.
+        let root = app
+            .clone()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(root.status(), StatusCode::OK);
+        let body = to_bytes(root.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("data-world-program=\"arena\""), "{text}");
+        assert!(text.contains("data-world-view"), "{text}");
+        assert!(!text.contains("data-world-admin"), "{text}");
+
+        // Explorer pages and APIs are absent from the program surface.
+        for path in [
+            "/files",
+            "/settings",
+            "/peers",
+            "/world",
+            "/api/files",
+            "/api/save",
+            "/api/identity/me",
+        ] {
+            let res = app
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+
+        // The world session surface is present with its gates intact:
+        // minting an invite without the admin secret is refused
+        // (401), not missing (404) and never satisfied by the web
+        // layer -- the program surface adds no authority of its own.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/world/invite")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{\"display_name\":\"guest\"}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn program_router_404s_for_a_world_the_hub_does_not_host() {
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        state.world = Some(hub_with_world("arena", None));
+        let app = create_program_router(state, "missing");
+        let root = app
+            .clone()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(root.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn program_router_404s_without_a_hub() {
+        let (_, state, _dir, _endpoint, _docs) = router_with_state().await;
+        let app = create_program_router(state, "arena");
+        let root = app
+            .clone()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(root.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
