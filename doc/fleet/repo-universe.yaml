@@ -226,8 +226,8 @@ repos:
     class: fork
     watch: inventory-only
     sources: [github]
-  - name: developing-today/kaneo
-    url: https://github.com/developing-today/kaneo
+  - name: developing-today-forks/kaneo
+    url: https://github.com/developing-today-forks/kaneo
     class: fork
     watch: inventory-only
     sources: [github, census]
