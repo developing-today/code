@@ -27,8 +27,10 @@ Never claim, bind, launch, or mutate a task in shadow mode.
 - Queues (all four): `repo-health-code-pilot`,
   `repo-health-opencode-pilot`, `repo-health-openchamber-pilot`,
   `repo-health-nix-pilot`.
-- Queue helper on this machine: `python3 ~/hatch/tools/repo-queue.py`
-  (pass `--worker opencode-claimant` on every verb you use).
+- Queue CLI on this machine: `repo-queue`
+  (`~/fleet-brokers/bin/repo-queue`; it reaches the queue-broker
+  directly — pass `--worker opencode-claimant` on every verb you
+  use).
 - Candidate discovery: `python3 pm-stack/opencode-claimant/poll.py`
   (run from the primary clone `~/git/code`). It prints JSON: tasks that
   are claimed, lane-assigned `opencode` in their progress, and carry no
@@ -91,7 +93,7 @@ Never claim, bind, launch, or mutate a task in shadow mode.
       duplicate-execution defect this ordering exists to prevent.
    c. Attempts remain (`attempts < max_attempts` in poll.py's
       stuck_bound entry): reclaim the task to unbound with one atomic
-      compare-and-clear helper call:
+      compare-and-clear CLI call:
       `bind <id> --worker opencode-claimant --session-id <old session
       id> --launched-by opencode-claimant-recovery:zero-message-deleted`.
       Migration 0022 makes this reserved `launched_by` value verify the
@@ -124,7 +126,7 @@ Never claim, bind, launch, or mutate a task in shadow mode.
    notification: Tend's fleet-watchdog reads the task's progress, so
    the stage, audit field, and execution record above are what it
    agrees with — no separate channel is sent or needed.
-2. GATE: run the helper `health` for the four queues. If every queue
+2. GATE: run the CLI `health` for the four queues. If every queue
    shows 0 claimed-with-lane-opencode unbound candidates (poll.py
    returns an empty candidate list), end the fire quietly.
 3. CAP: if poll.py reports `cap_room` 0 (active root sessions at the
@@ -170,7 +172,7 @@ Never claim, bind, launch, or mutate a task in shadow mode.
    is KNOWN and the steps below are ordered so it can never be
    lost.
    c. BIND AT LAUNCH, immediately after creation and BEFORE sending
-   the prompt or anything else that can interleave: run the helper
+   the prompt or anything else that can interleave: run the CLI
    `bind <id> --worker opencode-claimant --session-id <session id>`
    (bind_repo_task_lane_session, migration 0021). That one call
    atomically writes the session id into the lane ledger AND sets
@@ -178,7 +180,7 @@ Never claim, bind, launch, or mutate a task in shadow mode.
    "opencode-claimant"` on the task row, and it refuses to overwrite
    a different existing binding -- a bind error means someone else
    owns the launch; do not prompt your session, note it in the fire
-   log, and move on. Then run the helper
+   log, and move on. Then run the CLI
    `checkpoint <id> --worker <worker_id> --stage launched`
    with the session id in the progress JSON -- the checkpoint verb
    enforces claim ownership, so it runs as the candidate's
@@ -191,16 +193,17 @@ Never claim, bind, launch, or mutate a task in shadow mode.
    lane-bound; it must not claim another). The claim belongs to the
    queue's repo worker (the candidate record's `worker_id` from
    poll.py), NOT to you: instruct the worker to pass
-   `--worker <worker_id>` on EVERY helper verb it uses (heartbeat,
+   `--worker <worker_id>` on EVERY queue CLI verb it uses (heartbeat,
    checkpoint, and the terminal verbs), to heartbeat while it works
-   so the claim's lease stays alive, and to finish with the helper
+   so the claim's lease stays alive, and to finish with the CLI
    terminal verbs (complete / park / block / fail) carrying
    `--execution "{\"lane\": \"opencode\", \"session_id\": \"<id>\"}"`
-   with the SAME session id you bound in step c.
+   with the SAME session id you bound in step c. The queue CLI on
+   this machine is `repo-queue` (`~/fleet-brokers/bin/repo-queue`).
    e. Post the launch agent-note on the issue (agent-note:v1,
    state=handed off) naming task id + session id.
 5. Terminal states are recorded by the worker session itself via the
-   helper when it ends (step 4d instructs it). Failure handling
+   CLI when it ends (step 4d instructs it). Failure handling
    depends on whether a session id exists:
    - Session creation itself failed (no session id): checkpoint the
      failure on the task and leave it unbound for the next fire;
@@ -232,5 +235,6 @@ Never claim, bind, launch, or mutate a task in shadow mode.
   `do-not-merge`, or `do-not-auto-edit` — skip and log it.
 - Never exceed the 12-session cap, never double-bind a task, never
   bind a session id you did not just create.
-- No credential value ever enters a prompt, log, or task record; the
-  helper and poll.py fetch what they need transiently at runtime.
+- No credential value ever enters a prompt, log, or task record; the queue
+  CLI and poll.py reach the queue-broker with the broker's client
+  token — no queue credential lives on this path.
