@@ -130,7 +130,9 @@ impl WriterSet {
     /// # Errors
     ///
     /// Returns [`IdsetError::Shape`] for a scope that is too long or not NFC,
-    /// or for more than [`MAX_ENTRIES`] entries in total.
+    /// for more than [`MAX_ENTRIES`] entries in total, or for a duplicate
+    /// entry identity within `entries` or within `excludes` (see
+    /// [`check_entry_identities`]).
     pub fn check(&self) -> Result<(), IdsetError> {
         if let Some(scope) = &self.scope {
             check_scope(scope)?;
@@ -141,8 +143,48 @@ impl WriterSet {
                 "{total} entries, the most is {MAX_ENTRIES}"
             )));
         }
+        check_entry_identities(&self.entries, "entries")?;
+        check_entry_identities(&self.excludes.0, "excludes")?;
         Ok(())
     }
+}
+
+/// Refuses a repeated entry identity within one list: the same author key
+/// twice, the same group id twice, or more than one `public` entry.
+/// `include_history` and `role_min` are attributes of an admission, not part
+/// of its identity, so entries that differ only in those fields are still
+/// duplicates. The check is per list: the same key appearing once in
+/// `entries` and once in `excludes` is not a duplicate — exclusions win by
+/// design (spec §D6).
+fn check_entry_identities(entries: &[Entry], list: &str) -> Result<(), IdsetError> {
+    let mut keys: std::collections::HashSet<AuthorKey> = std::collections::HashSet::new();
+    let mut groups: std::collections::HashSet<Hash> = std::collections::HashSet::new();
+    let mut public_seen = false;
+    for entry in entries {
+        match entry {
+            Entry::Key { author, .. } => {
+                if !keys.insert(*author) {
+                    return Err(IdsetError::Shape(format!("duplicate key entry in {list}")));
+                }
+            }
+            Entry::Group { id, .. } => {
+                if !groups.insert(*id) {
+                    return Err(IdsetError::Shape(format!(
+                        "duplicate group entry in {list}"
+                    )));
+                }
+            }
+            Entry::Public { .. } => {
+                if public_seen {
+                    return Err(IdsetError::Shape(format!(
+                        "duplicate public entry in {list}"
+                    )));
+                }
+                public_seen = true;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// One entry of a writer set (spec §D3): a union of three shapes, each
@@ -769,6 +811,132 @@ mod tests {
         assert_eq!(received.header.extensions.kind, WRITER_KIND);
         assert_eq!(received.header.payload_hash, Some(Hash::digest(&body)));
         assert_eq!(decode_writer_body(&body).unwrap(), set);
+    }
+
+    /// Hand-built bodies (not encoder output, which now refuses these too)
+    /// carrying a repeated identity in one list must be refused on decode:
+    /// same key with opposite `include_history`, same group with a different
+    /// `role_min`, `public` twice, and a duplicate inside `excludes`.
+    #[test]
+    fn duplicate_entry_identities_are_refused_on_decode() {
+        let group = Hash::digest(b"household");
+        let cases: Vec<(Vec<Entry>, Vec<Entry>)> = vec![
+            (
+                vec![
+                    Entry::Key {
+                        author: [9u8; 32],
+                        include_history: true,
+                    },
+                    Entry::Key {
+                        author: [9u8; 32],
+                        include_history: false,
+                    },
+                ],
+                vec![],
+            ),
+            (
+                vec![
+                    Entry::Group {
+                        id: group,
+                        role_min: Role::Read,
+                        include_history: false,
+                    },
+                    Entry::Group {
+                        id: group,
+                        role_min: Role::Admin,
+                        include_history: true,
+                    },
+                ],
+                vec![],
+            ),
+            (
+                vec![
+                    Entry::Public {
+                        include_history: true,
+                    },
+                    Entry::Public {
+                        include_history: false,
+                    },
+                ],
+                vec![],
+            ),
+            (
+                vec![],
+                vec![
+                    Entry::Key {
+                        author: [5u8; 32],
+                        include_history: true,
+                    },
+                    Entry::Key {
+                        author: [5u8; 32],
+                        include_history: false,
+                    },
+                ],
+            ),
+        ];
+        for (entries, excludes) in cases {
+            let body = Value::Array(vec![
+                Value::TextString(WRITER_KIND.into()),
+                Value::Unsigned(VERSION),
+                hash_value(&Hash::digest(b"set")),
+                Value::Unsigned(0),
+                Value::ByteString(owner().to_vec().into()),
+                Value::null(),
+                entries_value(&entries),
+                entries_value(&excludes),
+            ])
+            .encode();
+            assert!(
+                matches!(
+                    decode_writer_body(&body),
+                    Err(IdsetError::Shape(ref msg)) if msg.contains("duplicate")
+                ),
+                "entries {entries:?} excludes {excludes:?} must be refused as duplicates"
+            );
+        }
+    }
+
+    /// The encoder shares the decoder's gate, so a set with a duplicate
+    /// identity cannot be written either.
+    #[test]
+    fn duplicate_entry_identities_are_refused_on_encode() {
+        let mut set = sample_set();
+        // sample_set already lists key [9; 32] with include_history: true.
+        set.entries.push(Entry::Key {
+            author: [9u8; 32],
+            include_history: false,
+        });
+        assert!(matches!(
+            encode_writer_body(&set),
+            Err(IdsetError::Shape(_))
+        ));
+    }
+
+    /// The same key once in `entries` and once in `excludes` is NOT a
+    /// duplicate: exclusions win by design (spec §D6), and the shape must
+    /// keep decoding.
+    #[test]
+    fn same_key_in_entries_and_excludes_still_decodes() {
+        let body = Value::Array(vec![
+            Value::TextString(WRITER_KIND.into()),
+            Value::Unsigned(VERSION),
+            hash_value(&Hash::digest(b"set")),
+            Value::Unsigned(0),
+            Value::ByteString(owner().to_vec().into()),
+            Value::null(),
+            entries_value(&[Entry::Key {
+                author: [9u8; 32],
+                include_history: true,
+            }]),
+            entries_value(&[Entry::Key {
+                author: [9u8; 32],
+                include_history: false,
+            }]),
+        ])
+        .encode();
+        let set = decode_writer_body(&body).unwrap();
+        assert_eq!(set.entries.len(), 1);
+        assert_eq!(set.excludes.0.len(), 1);
     }
 
     #[test]
