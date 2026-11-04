@@ -359,6 +359,16 @@ mod cli_tests {
     }
 
     #[test]
+    fn key_export_and_import_help_are_available() {
+        let tmp = TempDir::new().unwrap();
+        for args in [["key", "export", "--help"], ["key", "import", "--help"]] {
+            let output = run_cmd(&args, tmp.path());
+            assert!(output.status.success());
+            assert!(String::from_utf8_lossy(&output.stdout).contains("passphrase"));
+        }
+    }
+
+    #[test]
     fn test_version() {
         let tmp = TempDir::new().unwrap();
         let output = run_cmd(&["--version"], tmp.path());

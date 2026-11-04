@@ -136,6 +136,10 @@ aes-gcm = { version = "0.11", default-features = false, features = [
   "aes",
   "alloc",
 ], optional = true }
+argon2 = "0.6"
+chacha20poly1305 = "0.10"
+zeroize = "1"
+rpassword = "7"
 base64 = "0.22"
 blake3 = "1"
 qrcode = { version = "0.14.1", default-features = false, optional = true }
