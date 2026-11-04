@@ -80,6 +80,61 @@ fn mime_to_extension(mime: &str) -> &'static str {
     }
 }
 
+/// Verify that uploaded bytes actually look like the image type the
+/// multipart field declared (#5342). Before this check, `upload_handler`
+/// trusted the declared Content-Type alone, so any bytes (HTML, script,
+/// plain text) could be stored — and later served — as an image of the
+/// declared type. Raster formats are recognised by their magic
+/// signatures; SVG is text, so it is checked structurally by
+/// [`svg_document_starts`]. This is a signature check, not a full format
+/// decode: it stops type masquerading, it does not prove the rest of
+/// the file is well-formed.
+fn image_bytes_match_declared_type(content_type: &str, data: &[u8]) -> bool {
+    match content_type {
+        "image/png" => data.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]),
+        "image/jpeg" => data.starts_with(&[0xFF, 0xD8, 0xFF]),
+        "image/gif" => data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a"),
+        "image/webp" => data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP",
+        "image/bmp" => data.starts_with(b"BM"),
+        // ICO (type 1) and CUR (type 2) share the container header.
+        "image/x-icon" => {
+            data.starts_with(&[0x00, 0x00, 0x01, 0x00])
+                || data.starts_with(&[0x00, 0x00, 0x02, 0x00])
+        }
+        "image/svg+xml" => svg_document_starts(data),
+        _ => false,
+    }
+}
+
+/// Whether `data` is an SVG document: after an optional UTF-8 BOM,
+/// leading whitespace, and an optional `<?xml ... ?>` prolog, the
+/// document must open with an `<svg` root element.
+fn svg_document_starts(data: &[u8]) -> bool {
+    let mut rest = data;
+    if rest.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        rest = &rest[3..];
+    }
+    loop {
+        while rest.first().is_some_and(u8::is_ascii_whitespace) {
+            rest = &rest[1..];
+        }
+        if rest.starts_with(b"<?xml") {
+            match rest.windows(2).position(|w| w == b"?>") {
+                Some(end) => {
+                    rest = &rest[end + 2..];
+                    continue;
+                }
+                None => return false,
+            }
+        }
+        break;
+    }
+    rest.starts_with(b"<svg")
+        && rest
+            .get(4)
+            .is_some_and(|b| b.is_ascii_whitespace() || *b == b'>' || *b == b'/')
+}
+
 /// Query parameters for the file list (pagination + search).
 #[derive(Debug, Deserialize, Default)]
 pub struct FileListQuery {
@@ -1825,6 +1880,18 @@ async fn upload_handler(State(state): State<AppState>, mut multipart: Multipart)
         return (StatusCode::BAD_REQUEST, "Uploaded file is empty").into_response();
     }
 
+    // #5342: the declared Content-Type above is caller-asserted; verify
+    // the bytes themselves carry that type's signature before storing,
+    // so the stored name/type metadata cannot claim a format the
+    // content does not have. A mismatch stores and tags nothing.
+    if !image_bytes_match_declared_type(&content_type, &data) {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("Uploaded bytes do not match the declared image type: {content_type}"),
+        )
+            .into_response();
+    }
+
     tracing::info!(
         "[routes] upload_handler: name={}, content_type={}, size={}",
         filename,
@@ -2932,7 +2999,10 @@ mod upload_router_tests {
         let guard = state.upload_name_lock.lock().await;
         let barrier = Arc::new(tokio::sync::Barrier::new(3));
         let mut tasks = Vec::new();
-        for bytes in [b"first-bytes".as_slice(), b"second-bytes".as_slice()] {
+        for bytes in [
+            b"\x89PNG\r\n\x1a\nfirst-bytes".as_slice(),
+            b"\x89PNG\r\n\x1a\nsecond-bytes".as_slice(),
+        ] {
             let router = router.clone();
             let barrier = barrier.clone();
             let body = multipart_body_named("image.png", "image/png", bytes);
@@ -2958,10 +3028,10 @@ mod upload_router_tests {
         assert_ne!(images[0]["name"], images[1]["name"]);
         assert_ne!(images[0]["hash"], images[1]["hash"]);
         let listed = list_images(router.clone()).await;
-        for (image, bytes) in images
-            .iter()
-            .zip([b"first-bytes".as_slice(), b"second-bytes".as_slice()])
-        {
+        for (image, bytes) in images.iter().zip([
+            b"\x89PNG\r\n\x1a\nfirst-bytes".as_slice(),
+            b"\x89PNG\r\n\x1a\nsecond-bytes".as_slice(),
+        ]) {
             let name = image["name"].as_str().unwrap();
             let hash = image["hash"].as_str().unwrap();
             assert_eq!(
@@ -3018,7 +3088,7 @@ mod upload_router_tests {
         let (router, _dir, _endpoint, _docs) = router().await;
         let (status, first) = upload(
             router.clone(),
-            multipart_body_named("image.png", "image/png", b"first-bytes"),
+            multipart_body_named("image.png", "image/png", b"\x89PNG\r\n\x1a\nfirst-bytes"),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "body: {first}");
@@ -3027,7 +3097,7 @@ mod upload_router_tests {
 
         let (status, second) = upload(
             router.clone(),
-            multipart_body_named("image.png", "image/png", b"second-bytes"),
+            multipart_body_named("image.png", "image/png", b"\x89PNG\r\n\x1a\nsecond-bytes"),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "body: {second}");
@@ -3041,7 +3111,7 @@ mod upload_router_tests {
 
         let (status, again) = upload(
             router.clone(),
-            multipart_body_named("image.png", "image/png", b"first-bytes"),
+            multipart_body_named("image.png", "image/png", b"\x89PNG\r\n\x1a\nfirst-bytes"),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "body: {again}");
@@ -3062,9 +3132,9 @@ mod upload_router_tests {
         assert_eq!(by_name("image-1.png")["hash"], second_hash);
 
         let (_, _, bytes) = get_blob(router.clone(), &format!("/blob/{first_hash}")).await;
-        assert_eq!(bytes, b"first-bytes");
+        assert_eq!(bytes, b"\x89PNG\r\n\x1a\nfirst-bytes");
         let (_, _, bytes) = get_blob(router, &format!("/blob/{second_hash}")).await;
-        assert_eq!(bytes, b"second-bytes");
+        assert_eq!(bytes, b"\x89PNG\r\n\x1a\nsecond-bytes");
     }
 
     // #1549: the nameless paste-{secs} fallback passes through the
@@ -3075,13 +3145,13 @@ mod upload_router_tests {
         let (router, _dir, _endpoint, _docs) = router().await;
         let (status, first) = upload(
             router.clone(),
-            multipart_body_noname("image/png", b"nameless-one"),
+            multipart_body_noname("image/png", b"\x89PNG\r\n\x1a\nnameless-one"),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "body: {first}");
         let (status, second) = upload(
             router.clone(),
-            multipart_body_noname("image/png", b"nameless-two"),
+            multipart_body_noname("image/png", b"\x89PNG\r\n\x1a\nnameless-two"),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "body: {second}");
@@ -3127,7 +3197,8 @@ mod upload_router_tests {
     #[tokio::test]
     async fn upload_exactly_max_image_size_succeeds() {
         let (router, _dir, _endpoint, _docs) = router().await;
-        let file = vec![b'y'; MAX_IMAGE_SIZE];
+        let mut file = b"\x89PNG\r\n\x1a\n".to_vec();
+        file.resize(MAX_IMAGE_SIZE, b'y');
         let (status, body) = upload(router, multipart_body(&file)).await;
         assert_eq!(status, StatusCode::OK, "body: {body}");
         assert!(body.contains("\"name\":\"photo.png\""), "body: {body}");
@@ -3161,13 +3232,17 @@ mod upload_router_tests {
     #[tokio::test]
     async fn blob_html_filename_param_is_not_served_as_html() {
         let (router, _dir, _endpoint, _docs) = router().await;
-        let (status, body) = upload(router.clone(), multipart_body(b"png-bytes")).await;
+        let (status, body) = upload(
+            router.clone(),
+            multipart_body(b"\x89PNG\r\n\x1a\npng-bytes"),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "body: {body}");
         let hash = uploaded_hash(&body);
         let (status, headers, bytes) =
             get_blob(router, &format!("/blob/{hash}?filename=evil.html")).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(bytes, b"png-bytes");
+        assert_eq!(bytes, b"\x89PNG\r\n\x1a\npng-bytes");
         assert_eq!(
             header_str(&headers, "content-type"),
             Some("application/octet-stream")
@@ -3189,7 +3264,11 @@ mod upload_router_tests {
     #[tokio::test]
     async fn blob_png_is_served_inline_with_protective_headers() {
         let (router, _dir, _endpoint, _docs) = router().await;
-        let (status, body) = upload(router.clone(), multipart_body(b"png-bytes")).await;
+        let (status, body) = upload(
+            router.clone(),
+            multipart_body(b"\x89PNG\r\n\x1a\npng-bytes"),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "body: {body}");
         let hash = uploaded_hash(&body);
         let (status, headers, _bytes) =
@@ -3239,7 +3318,7 @@ mod upload_router_tests {
         let (router, _dir, _endpoint, _docs) = router().await;
         let (status, body) = upload(
             router,
-            multipart_body_named("evil.html", "image/png", b"png-bytes"),
+            multipart_body_named("evil.html", "image/png", b"\x89PNG\r\n\x1a\npng-bytes"),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "body: {body}");
@@ -3284,6 +3363,133 @@ mod upload_router_tests {
             reconcile_upload_filename("archive.tar.gz", "gif"),
             "archive.tar.gif"
         );
+    }
+
+    #[test]
+    fn image_bytes_match_declared_type_accepts_real_headers_and_rejects_masquerades() {
+        assert!(image_bytes_match_declared_type(
+            "image/png",
+            b"\x89PNG\r\n\x1a\nrest"
+        ));
+        assert!(image_bytes_match_declared_type(
+            "image/jpeg",
+            b"\xff\xd8\xff\xe0rest"
+        ));
+        assert!(image_bytes_match_declared_type("image/gif", b"GIF87a-rest"));
+        assert!(image_bytes_match_declared_type("image/gif", b"GIF89a-rest"));
+        assert!(image_bytes_match_declared_type(
+            "image/webp",
+            b"RIFF\x04\x00\x00\x00WEBPrest"
+        ));
+        assert!(image_bytes_match_declared_type("image/bmp", b"BM-rest"));
+        assert!(image_bytes_match_declared_type(
+            "image/x-icon",
+            b"\x00\x00\x01\x00rest"
+        ));
+        assert!(image_bytes_match_declared_type(
+            "image/svg+xml",
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>"
+        ));
+        assert!(image_bytes_match_declared_type(
+            "image/svg+xml",
+            b"\xef\xbb\xbf  <?xml version=\"1.0\"?>\n<svg/>"
+        ));
+        assert!(!image_bytes_match_declared_type(
+            "image/png",
+            b"<html><script>alert(1)</script></html>"
+        ));
+        assert!(!image_bytes_match_declared_type(
+            "image/jpeg",
+            b"plain text"
+        ));
+        assert!(!image_bytes_match_declared_type(
+            "image/svg+xml",
+            b"<html></html>"
+        ));
+        assert!(!image_bytes_match_declared_type("image/png", b""));
+        assert!(!image_bytes_match_declared_type(
+            "image/webp",
+            b"RIFF\x04\x00\x00\x00WAVErest"
+        ));
+    }
+
+    // #5342 (the probe that filed the issue): HTML/script bytes declared
+    // image/png were accepted, stored, and served as a PNG. They must
+    // now be refused 400, and nothing may be stored or listed.
+    #[tokio::test]
+    async fn upload_html_declared_as_png_is_refused_and_stores_nothing() {
+        let (router, _dir, _endpoint, _docs) = router().await;
+        let (status, body) = upload(
+            router.clone(),
+            multipart_body_named(
+                "evil.png",
+                "image/png",
+                b"<html><script>alert(1)</script></html>",
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+        assert!(
+            body.contains("do not match the declared image type"),
+            "body: {body}"
+        );
+        assert!(list_images(router).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn upload_mismatched_bytes_are_refused_for_other_declared_types() {
+        let (router, _dir, _endpoint, _docs) = router().await;
+        for (name, content_type, bytes) in [
+            ("photo.jpg", "image/jpeg", b"plain text".as_slice()),
+            ("icon.svg", "image/svg+xml", b"not an svg".as_slice()),
+            (
+                "anim.gif",
+                "image/gif",
+                b"\x89PNG\r\n\x1a\nnot-a-gif".as_slice(),
+            ),
+            (
+                "pic.webp",
+                "image/webp",
+                b"RIFF\x04\x00\x00\x00WAVErest".as_slice(),
+            ),
+        ] {
+            let (status, body) = upload(
+                router.clone(),
+                multipart_body_named(name, content_type, bytes),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{content_type}: {body}");
+        }
+        assert!(list_images(router).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn upload_real_headers_for_each_allowed_type_are_accepted() {
+        let (router, _dir, _endpoint, _docs) = router().await;
+        for (name, content_type, bytes) in [
+            ("a.png", "image/png", b"\x89PNG\r\n\x1a\nx".as_slice()),
+            ("a.jpg", "image/jpeg", b"\xff\xd8\xff\xe0x".as_slice()),
+            ("a.gif", "image/gif", b"GIF89ax".as_slice()),
+            (
+                "a.webp",
+                "image/webp",
+                b"RIFF\x04\x00\x00\x00WEBPx".as_slice(),
+            ),
+            ("a.bmp", "image/bmp", b"BMx".as_slice()),
+            ("a.ico", "image/x-icon", b"\x00\x00\x01\x00x".as_slice()),
+            (
+                "a.svg",
+                "image/svg+xml",
+                b"<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\"/>".as_slice(),
+            ),
+        ] {
+            let (status, body) = upload(
+                router.clone(),
+                multipart_body_named(name, content_type, bytes),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{content_type}: {body}");
+        }
     }
 }
 
