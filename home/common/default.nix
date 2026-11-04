@@ -378,7 +378,7 @@ in
     # };
     activitywatch = {
       enable = true;
-      package = inputs.nixpkgs-stable.legacyPackages.${pkgs.system}.activitywatch;
+      package = inputs.nixpkgs-unstable.legacyPackages.${pkgs.system}.activitywatch;
     };
   };
   # Every opencode on this machine is the 2.x fork (CLI and server), whose
@@ -1198,7 +1198,7 @@ in
     # };
     ghostty = {
       enable = true;
-      package = inputs.nixpkgs-master.legacyPackages.${system}.ghostty;
+      package = inputs.nixpkgs-unstable.legacyPackages.${system}.ghostty;
       settings = {
         # ghostty +list-themes
         theme = "Synthwave";
