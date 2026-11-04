@@ -87,6 +87,26 @@ describe("entryFromResult", () => {
     expect(absent.state).toBe("unconfigured");
     expect(absent.credentialWatch).toBe(true);
   });
+  test("rejects impossible and non-ISO credential expiry strings", () => {
+    const tick = "2026-10-27T05:00:00.000Z";
+    for (const credentialExpiresAt of [
+      "2026-02-30T00:00:00.000Z",
+      "2026-04-31",
+      "March 2, 2026",
+    ]) {
+      const entry = entryFromResult({ ...OK_RESULT, credentialExpiresAt }, tick);
+      expect(entry.credentialExpiresAt).toBeUndefined();
+    }
+
+    const validIso = entryFromResult(
+      { ...OK_RESULT, credentialExpiresAt: "2027-01-15T00:00:00.000Z" },
+      tick,
+    );
+    expect(validIso.credentialExpiresAt).toBe("2027-01-15T00:00:00.000Z");
+
+    const validEpoch = entryFromResult({ ...OK_RESULT, credentialExpiresAt: 1793438427299 }, tick);
+    expect(validEpoch.credentialExpiresAt).toBe("2026-10-31T09:20:27.299Z");
+  });
   test("falls back for invalid fetchedAt values without dropping a mixed batch", () => {
     const tickIso = "2026-11-02T03:00:00.000Z";
     const fetchedAts = [1e16, -1e16, 0, -1, NaN, Infinity, -Infinity, undefined, 1793075143879];
