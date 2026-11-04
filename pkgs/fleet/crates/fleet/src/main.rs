@@ -460,6 +460,16 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
                     args.first().map(|s| s.as_str()),
                     Some("--version") | Some("-V")
                 ) {
+                    // The version shortcut takes no trailing arguments:
+                    // like the root built-ins (#5572), a trailing argument
+                    // is a usage error naming it, not silently discarded
+                    // success (#5603).
+                    if let Some(extra) = args.get(1) {
+                        return usage_error(&format!(
+                            "unexpected argument '{extra}' for 'fleet queue {}'",
+                            args.first().map(|s| s.as_str()).unwrap_or("--version")
+                        ));
+                    }
                     println!(
                         "{} {VERSION}",
                         if invoked_as == "repo-queue" {
@@ -828,6 +838,27 @@ mod tests {
                 run_root(&surface, &args(&[cmd]), "fleet"),
                 EXIT_OK,
                 "bare {cmd} stays accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn queue_domain_version_rejects_trailing_arguments() {
+        // #5603: the queue domain's --version shortcut in run_domain
+        // checked only the first argument, so `fleet queue --version
+        // --bogus` (and the repo-queue argv0 form) returned success.
+        let surface = Surface::new(None, fleet_config::Config::default());
+        let queue = domain("queue").expect("queue domain exists");
+        for flag in ["--version", "-V"] {
+            assert_eq!(
+                run_domain(&surface, queue, &args(&[flag, "--bogus"]), "fleet"),
+                EXIT_USAGE,
+                "{flag} must reject a trailing argument"
+            );
+            assert_eq!(
+                run_domain(&surface, queue, &args(&[flag]), "fleet"),
+                EXIT_OK,
+                "bare {flag} stays accepted"
             );
         }
     }
