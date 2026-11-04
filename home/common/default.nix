@@ -1091,6 +1091,22 @@ in
     # wrapper collided with this package on bin/opencode, and it
     # exec'd the root input's build besides (CLI/service skew).
     package = opencodeWrapped;
+
+    environment = {
+      # code#5490: the runtime overlay (code#4544) must be layered into
+      # the server process itself. As a home.sessionVariables entry it
+      # reached shells only; the systemd unit never saw it, and the
+      # standing server ran without the overlay after the 2026-11-04
+      # reboot (overlay-only models, e.g. all of antigravity-direct,
+      # unavailable) until a drop-in restored it live.
+      OPENCODE_CONFIG = "%h/.local/state/opencode/opencode-runtime.jsonc";
+      # opencode#1633: the fork agy client-secret extraction matches
+      # the nix agy build binary layout, not the self-updated
+      # ~/.gemini/bin build (1.4.11 moved the pairing secret). Pin the
+      # intel source to the nix build until the fork iterates
+      # candidates; remove then.
+      AGY_BIN = "/run/current-system/sw/bin/agy";
+    };
   };
 
   services.mcpx = {
