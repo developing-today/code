@@ -20,7 +20,9 @@ let
   codexProxyPort = 18744;
   museProxyPort = 18747;
   commandcodeProxyPort = 18748;
-  opencodeRouteProxyPort = 18750;
+  # opencodeRouteProxyPort (18750) retired 2026-11-04
+  # (opencode#1153): OpenClaw repointed to the server facade
+  # (127.0.0.1:13420/v1); the port is free.
   claudeCodeProxyPort = 18749;
   # antigravityDirectProxyPort (18751) retired 2026-11-04 (opencode#1414):
   # the in-fork native provider replaced the door; the port is free.
@@ -815,35 +817,16 @@ in
     Install.WantedBy = [ "default.target" ];
   };
 
-  # OpenAI-compatible front for the OpenCode server (:13420): exposes the
-  # opencode-route pool models (workhorse et al.) in the chat-completions
-  # shape OpenClaw providers use (code#2229). Runs the repo checkout's
-  # start script -- the same invocation the proxy-supervisor ran for its
-  # transient unit -- so the routing-only door (bin/opencode-route-proxy.mjs)
-  # is owned by exactly one unit. Enrolled as an automatic service under
-  # the #2104 redesign (this unit landed on main after that branch was
-  # cut): retiring the supervisor must not strand :18750, and the
-  # openclaw-gateway unit Wants this service.
-  systemd.user.services.opencode-route-proxy = {
-    Unit = {
-      Description = "OpenCode route proxy (OpenAI-compatible front for the OpenCode server)";
-      After = [ "network-online.target" ];
-      Wants = [ "network-online.target" ];
-    };
-    Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "opencode-route-proxy-start-unit" ''
-          exec /run/current-system/sw/bin/bash "$HOME/code/bin/opencode-route-proxy-start.sh"
-        ''
-      );
-      Restart = "always";
-      RestartSec = 3;
-      Environment = [
-        "OPENCODE_ROUTE_PROXY_PORT=${toString opencodeRouteProxyPort}"
-      ];
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
+  # Route proxy retired 2026-11-04 (opencode#1153): the door's
+  # only live consumer, OpenClaw's opencode-route provider, was
+  # repointed to the OpenCode server facade (127.0.0.1:13420/v1)
+  # and verified live (four-part proof on opencode#1146: all five
+  # route ids answered through the direct path, a workhorse turn
+  # completed with this unit stopped and :18750 refusing
+  # connections). Demotion lives in the fork (routes.settings
+  # .demotion + ledger counts, opencode#1151), so nothing of the
+  # door's behaviour is lost. bin/opencode-route-proxy.mjs, its
+  # start script and test were removed in the same change.
 
   # Atlas search service (code#5350 step 5, #5355): the packaged
   # atlas-search binary's serve mode — one resident Snowflake
