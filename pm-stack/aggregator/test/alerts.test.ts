@@ -136,6 +136,57 @@ describe("class + quiet merges (design §1/§2)", () => {
   });
 });
 
+describe("stored subscription preference reads (#4978)", () => {
+  test("invalid stored quiet fields fall back per field without rewriting rows", async () => {
+    const invalidQuiet = { start: "99:99", end: "24:60", tz: "Not/AZone", enabled: true };
+    const validQuiet = { start: "22:30", end: "06:15", tz: "UTC", enabled: true };
+    const rawRows: PushSubscriptionRow[] = [
+      {
+        id: "sub-invalid",
+        endpoint: "https://push.example/invalid",
+        p256dh: "p256dh",
+        auth: "auth",
+        classes: { incident: true },
+        quiet: invalidQuiet,
+        user_agent: null,
+        created_at: "2026-11-01T00:00:00Z",
+        last_seen_at: "2026-11-01T00:00:00Z",
+        gone_count: 0,
+      },
+      {
+        id: "sub-valid",
+        endpoint: "https://push.example/valid",
+        p256dh: "p256dh",
+        auth: "auth",
+        classes: { incident: true },
+        quiet: validQuiet,
+        user_agent: null,
+        created_at: "2026-11-02T00:00:00Z",
+        last_seen_at: "2026-11-02T00:00:00Z",
+        gone_count: 0,
+      },
+    ];
+    const queries: string[] = [];
+    const db: SupabaseClient = {
+      ref: "test",
+      async query<T>(sql: string): Promise<T[]> {
+        queries.push(sql);
+        return rawRows as unknown as T[];
+      },
+    };
+
+    const loaded = await new AlertsStore(db).listSubscriptions();
+
+    expect(loaded.map((row) => row.quiet)).toEqual([
+      { start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true },
+      validQuiet,
+    ]);
+    expect(inQuietHours(loaded[0].quiet, new Date("2026-01-15T12:00:00Z"))).toBe(true);
+    expect(rawRows.map((row) => row.quiet)).toEqual([invalidQuiet, validQuiet]);
+    expect(queries).toEqual(["select * from alerts.push_subscriptions order by created_at"]);
+  });
+});
+
 const incident: Incident = {
   id: "11111111-2222-3333-4444-555555555555",
   source: "globalping-watch",
@@ -593,7 +644,16 @@ describe("push subscription redaction (#3693)", () => {
     // Serialize exactly as the /api/push/subscriptions handlers do.
     const getBody = JSON.stringify({ subscriptions: [row].map(toPublicSubscription) });
     const postBody = JSON.stringify({ subscription: toPublicSubscription(row) });
-    const expectedFields = ["id", "endpoint", "classes", "quiet", "user_agent", "created_at", "last_seen_at", "gone_count"];
+    const expectedFields = [
+      "id",
+      "endpoint",
+      "classes",
+      "quiet",
+      "user_agent",
+      "created_at",
+      "last_seen_at",
+      "gone_count",
+    ];
     for (const body of [getBody, postBody]) {
       expect(body).not.toContain(sentinelP256dh);
       expect(body).not.toContain(sentinelAuth);

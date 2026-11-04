@@ -443,4 +443,3 @@ fn same_player_claims_with_different_position_fields_are_disputed() {
         );
     }
 }
-

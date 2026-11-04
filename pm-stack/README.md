@@ -17,13 +17,13 @@ Phase 2 (2026-10-24) added three layers, each in its own subdirectory
 with the same deploy shape (SOPS → mode-600 env → compose/unit →
 health gate):
 
-| Layer     | Piece           | Version / pin                                                    | Reach                                                                                    | Deployment definition |
-| --------- | --------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | --------------------- |
-| Dispatch  | ready-for-agent | npm `ready-for-agent@1.1.0` (no container image exists upstream) | UI + GraphQL on `6056`, loopback + tailnet (app loopback-only; tailnet via socket proxy, #1181)                        | `ready-for-agent/`    |
-| Planning  | Pad             | `ghcr.io/perpetualsoftware/pad:0.18.1`, pinned by digest         | `127.0.0.1:7777` + host tailnet address (`PM_STACK_TAILNET_IP`):7777; no tunnel hostname | `pad/`                |
-| Tables    | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + host tailnet address (`PM_STACK_TAILNET_IP`):8484; no tunnel hostname | `grist/`              |
-| Dashboard | Aggregator      | this repo (Bun app, user unit `pm-aggregator`)                   | `127.0.0.1:4870` + tailnet `amd-6.raptor-pumpkinseed.ts.net:4870`; no public route       | `aggregator/`         |
-| Intake    | pm-dispatch     | this repo (Bun app, user unit `pm-dispatch`)                     | `127.0.0.1:4879` + tailnet; public via tunnel as `dispatch.security.cab`                 | `dispatch/`           |
+| Layer     | Piece           | Version / pin                                                    | Reach                                                                                           | Deployment definition |
+| --------- | --------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------- |
+| Dispatch  | ready-for-agent | npm `ready-for-agent@1.1.0` (no container image exists upstream) | UI + GraphQL on `6056`, loopback + tailnet (app loopback-only; tailnet via socket proxy, #1181) | `ready-for-agent/`    |
+| Planning  | Pad             | `ghcr.io/perpetualsoftware/pad:0.18.1`, pinned by digest         | `127.0.0.1:7777` + host tailnet address (`PM_STACK_TAILNET_IP`):7777; no tunnel hostname        | `pad/`                |
+| Tables    | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + host tailnet address (`PM_STACK_TAILNET_IP`):8484; no tunnel hostname        | `grist/`              |
+| Dashboard | Aggregator      | this repo (Bun app, user unit `pm-aggregator`)                   | `127.0.0.1:4870` + tailnet `amd-6.raptor-pumpkinseed.ts.net:4870`; no public route              | `aggregator/`         |
+| Intake    | pm-dispatch     | this repo (Bun app, user unit `pm-dispatch`)                     | `127.0.0.1:4879` + tailnet; public via tunnel as `dispatch.security.cab`                        | `dispatch/`           |
 
 ready-for-agent runs as a systemd **user unit** (like `pm-tunnel`)
 because upstream ships only an npm package; Pad and Grist run as
@@ -225,7 +225,7 @@ cd ready-for-agent
   [`ready-for-agent/config.json`](ready-for-agent/config.json) names
   every served repository (clone URL, local dir, `mergePolicy`,
   `defaultModel`, `includeAllIssueAuthors`, paused). `./install.sh
-  clone` clones/fetches them all into `ready-for-agent/repos/`, and
+clone` clones/fetches them all into `ready-for-agent/repos/`, and
   every `./install.sh` run finishes by applying the config through
   the harness's GraphQL API via
   [`ready-for-agent/apply-config.sh`](ready-for-agent/apply-config.sh)

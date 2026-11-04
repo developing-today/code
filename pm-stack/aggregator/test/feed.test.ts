@@ -23,14 +23,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isProjectPoolItem, parseProjectItems } from "../src/projects.ts";
-import type {
-  PaygLine,
-  QuotaCredentialRow,
-  QuotaPool,
-  QuotaView,
-  QuotaWindow,
-  SessionRecord,
-} from "../src/model.ts";
+import type { PaygLine, QuotaCredentialRow, QuotaPool, QuotaView, QuotaWindow, SessionRecord } from "../src/model.ts";
 
 // Minimal valid pool item: edges entirely absent (the missing-edge
 // shape must validate cleanly — absence is data, not an error).

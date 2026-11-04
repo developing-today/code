@@ -27,7 +27,7 @@ use futures_lite::StreamExt;
 use iroh_blobs::{Hash, api::Store};
 use thiserror::Error;
 
-use crate::tags::{TagStore, now_unix};
+use crate::tags::{TagStore, TagValue, now_unix};
 
 const ARCHIVE_IDENTITY_TAG_KEYS: [&[u8]; 5] = [
     b"name",
@@ -51,6 +51,9 @@ pub enum FileOpError {
     /// The name is rooted or contains a traversal component.
     #[error("name must be a safe relative path: {0}")]
     InvalidName(String),
+    /// The name collides with the namespace used for system archives.
+    #[error("name is reserved for archives: {0}")]
+    ReservedArchiveName(String),
     /// Source and destination are the same name.
     #[error("new name must differ from the current name")]
     SameName,
@@ -104,11 +107,15 @@ pub struct DeleteOutcome {
 }
 
 /// File operations over a blob [`Store`] and a [`TagStore`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct FileOps<'a> {
     store: &'a Store,
     tags: &'a TagStore,
     blob_wait: Duration,
+    /// Node that originated a write, stamped as the file's `origin` tag
+    /// (#4973). `None` when the caller does not know its node id: no
+    /// origin is stamped and listings show the file's origin as unknown.
+    origin: Option<String>,
 }
 
 /// Serialises archive-name resolve+claim within this process (#2462).
@@ -175,6 +182,36 @@ pub(crate) async fn claim_archive_name(
     Ok(candidate)
 }
 
+/// Provenance metadata keys recorded at a file's first write (#4973):
+/// the origin node and the upload (`created`) timestamp. Listings read
+/// a file's origin and upload time from these tags on its own name.
+pub(crate) const PROVENANCE_TAG_KEYS: [&[u8]; 2] = [b"origin", b"created"];
+
+/// Snapshot `from`'s recorded provenance tags onto `to` (#5383).
+///
+/// An archive alias points at the same blob as its source but lives
+/// under a new name, so without this copy a listing reports the
+/// archive's origin as unknown and origin filtering misses it. Tags
+/// are copied by content hash so the recorded values are preserved
+/// exactly; a source with no recorded provenance leaves `to` with
+/// none — unknown stays unknown, provenance is never invented.
+pub(crate) async fn snapshot_provenance_tags(tags: &TagStore, from: &str, to: &str) -> Result<()> {
+    for key in PROVENANCE_TAG_KEYS {
+        for tag in tags.get_by_key(&tags.global, from.as_bytes(), key).await? {
+            tags.set_tag_hash(
+                &tags.global,
+                to.as_bytes(),
+                &tag.key,
+                tag.value.as_ref().map(TagValue::as_bytes),
+                tag.hash,
+                tag.len,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 impl<'a> FileOps<'a> {
     /// Create file operations over the given stores.
     pub const fn new(store: &'a Store, tags: &'a TagStore) -> Self {
@@ -182,6 +219,7 @@ impl<'a> FileOps<'a> {
             store,
             tags,
             blob_wait: Duration::ZERO,
+            origin: None,
         }
     }
 
@@ -195,6 +233,16 @@ impl<'a> FileOps<'a> {
     #[must_use]
     pub const fn with_blob_wait(mut self, wait: Duration) -> Self {
         self.blob_wait = wait;
+        self
+    }
+
+    /// Stamp writes with `origin` (a node id) as the file's origin node
+    /// (#4973). The stamp is set-if-absent: the node that first wrote a
+    /// file stays its origin across later writes and renames, and files
+    /// written before origin stamping existed simply have no origin tag.
+    #[must_use]
+    pub fn with_origin(mut self, origin: String) -> Self {
+        self.origin = Some(origin);
         self
     }
 
@@ -242,6 +290,9 @@ impl<'a> FileOps<'a> {
                 .any(|component| component.is_empty() || matches!(component, "." | ".."))
         {
             return Err(FileOpError::InvalidName(name.to_owned()));
+        }
+        if is_archive_tag_name(name) {
+            return Err(FileOpError::ReservedArchiveName(name.to_owned()));
         }
         Ok(())
     }
@@ -314,7 +365,11 @@ impl<'a> FileOps<'a> {
     /// Name `hash` as `name`, after verifying the blob is complete in the store.
     ///
     /// Sets the `created` tag only if absent and always refreshes `modified`,
-    /// then auto-tags `name`/`file`.
+    /// stamps the `origin` node on a genuine first write (no `created` tag
+    /// recorded yet) if one is configured, then auto-tags `name`/`file`.
+    /// A legacy file that predates origin stamping keeps an unknown origin
+    /// when it is overwritten: absence of an `origin` tag alone does not
+    /// prove this write is the file's first.
     pub async fn put(&self, name: &str, hash: Hash) -> Result<(), FileOpError> {
         Self::validate_name(name)?;
         if !self.blob_present(hash).await? {
@@ -337,6 +392,15 @@ impl<'a> FileOps<'a> {
         let ns = &self.tags.global;
         let now = now_unix().to_string();
         let subject = name.as_bytes();
+        // Origin is stamped only for a genuine first write: a name with a
+        // `created` tag but no `origin` tag is a legacy file whose true
+        // origin is unknown and must stay unknown (Codex review, PR #5191).
+        let first_write = self
+            .tags
+            .get_by_key(ns, subject, b"created")
+            .await
+            .map(|existing| existing.is_empty())
+            .unwrap_or(false);
         let created = if reset_created {
             self.tags
                 .set_singleton(ns, subject, b"created", Some(now.as_bytes()), b"")
@@ -356,6 +420,15 @@ impl<'a> FileOps<'a> {
             .await
         {
             tracing::warn!("failed to set modified tag for {name}: {e:#}");
+        }
+        if first_write
+            && let Some(origin) = &self.origin
+            && let Err(e) = self
+                .tags
+                .set_if_absent(ns, subject, b"origin", Some(origin.as_bytes()), b"")
+                .await
+        {
+            tracing::warn!("failed to set origin tag for {name}: {e:#}");
         }
         if let Err(e) = self.tags.auto_tag(ns, subject, None).await {
             tracing::warn!("failed to auto-tag {name}: {e:#}");
@@ -401,6 +474,15 @@ impl<'a> FileOps<'a> {
         } else {
             None
         };
+
+        // The archive alias keeps the source's recorded provenance
+        // (#5383): snapshot it now, before the transfer below moves
+        // (and deletes) the source name's tags onto `to`.
+        if let Some(archive_name) = &archived_original
+            && let Err(e) = snapshot_provenance_tags(self.tags, from, archive_name).await
+        {
+            tracing::warn!("failed to snapshot provenance {from} -> {archive_name}: {e:#}");
+        }
 
         self.store
             .tags()
@@ -607,6 +689,24 @@ mod archive_name_tests {
 
     fn hash(byte: u8) -> Hash {
         Hash::from([byte; 32])
+    }
+
+    #[test]
+    fn fileops_rejects_archive_shaped_names_but_allows_lookalikes() {
+        for name in [
+            "report.archive.0",
+            "report.archive.1700000000",
+            "report.archive.18446744073709551616",
+        ] {
+            assert!(matches!(
+                FileOps::validate_name(name),
+                Err(FileOpError::ReservedArchiveName(found)) if found == name
+            ));
+        }
+
+        for name in ["a.archive.notes", "a.archive.+1", "a.archive.١"] {
+            assert!(FileOps::validate_name(name).is_ok(), "{name:?}");
+        }
     }
 
     /// Two replaces of one name within the same second must not share an
@@ -832,6 +932,39 @@ mod replacement_metadata_tests {
     }
 
     #[tokio::test]
+    async fn rename_with_archive_preserves_source_provenance_on_archive_alias() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "before.txt", b"original").await;
+        set_singleton(&node, "before.txt", "origin", "node-alpha").await;
+        set_singleton(&node, "before.txt", "created", "1700000000").await;
+
+        // The source's recorded provenance, exactly as stored.
+        let source_tags = tags_of(&node, "before.txt").await;
+        assert_single_value(&source_tags, "origin", "node-alpha");
+        let source_created = values(&source_tags, "created");
+        assert!(!source_created.is_empty(), "{source_tags:?}");
+
+        let rename = node
+            .ops()
+            .rename("before.txt", "after.txt", true)
+            .await
+            .unwrap();
+        let archive = rename.archived_original.unwrap();
+
+        // #5383: the archive alias carries the source's recorded
+        // provenance, not an unknown origin.
+        let archive_tags = tags_of(&node, &archive).await;
+        assert_single_value(&archive_tags, "origin", "node-alpha");
+        assert_eq!(values(&archive_tags, "created"), source_created);
+
+        // The live name keeps its provenance too (tags move with it).
+        let live_tags = tags_of(&node, "after.txt").await;
+        assert_single_value(&live_tags, "origin", "node-alpha");
+        assert_eq!(values(&live_tags, "created"), source_created);
+
+        node.shutdown().await.unwrap();
+    }
+
     async fn rename_onto_existing_moves_replaced_metadata_and_refreshes_archive_identity() {
         let node = LocalNode::open(true).await.unwrap();
         seed_replacement_pair(&node).await;

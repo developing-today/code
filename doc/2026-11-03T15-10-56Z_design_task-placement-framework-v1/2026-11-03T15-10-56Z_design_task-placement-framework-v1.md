@@ -36,15 +36,15 @@ filed or already tracked.
 
 ## 1. The seven options (from #2022, unchanged)
 
-| # | Option | Cost pool | Supervision owner |
-|---|---|---|---|
-| O1 | **Muse** (Muse cron agent / worker shift) | Muse subscription tokens — the scarcest pool | Self (it is the supervisor class) |
-| O2 | **GitHub Action** | Actions minutes; no model pool unless the workflow calls one | Nobody in-loop; failures must be noticed |
-| O3 | **GitHub Action → Jules** | Jules account quota (~100 actions/day, Pro) + trivial Actions minutes | Muse manages schedule, reviews output after the fact |
-| O4 | **OpenCode session** (dispatcher/Muse-triggered) | Shared quota plans by route (see §3.1) | Dispatcher + babysitter rounds + Muse review |
-| O5 | **OpenCode scheduled task** | Same quota plans as O4; **zero Muse tokens** | Weakest in-loop; needs its own reporting path + babysitter (#2021) |
-| O6 | **Aster / Codex** | The large ChatGPT plan — **shared with O4/O5 OpenAI routes and O7** | Drew/Muse via Slack; no fleet telemetry |
-| O7 | **OpenClaw** | Shares the ChatGPT plan and other plans with OpenCode | Least instrumented; comms path is the #2023 design |
+| #   | Option                                           | Cost pool                                                             | Supervision owner                                                  |
+| --- | ------------------------------------------------ | --------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| O1  | **Muse** (Muse cron agent / worker shift)        | Muse subscription tokens — the scarcest pool                          | Self (it is the supervisor class)                                  |
+| O2  | **GitHub Action**                                | Actions minutes; no model pool unless the workflow calls one          | Nobody in-loop; failures must be noticed                           |
+| O3  | **GitHub Action → Jules**                        | Jules account quota (~100 actions/day, Pro) + trivial Actions minutes | Muse manages schedule, reviews output after the fact               |
+| O4  | **OpenCode session** (dispatcher/Muse-triggered) | Shared quota plans by route (see §3.1)                                | Dispatcher + babysitter rounds + Muse review                       |
+| O5  | **OpenCode scheduled task**                      | Same quota plans as O4; **zero Muse tokens**                          | Weakest in-loop; needs its own reporting path + babysitter (#2021) |
+| O6  | **Aster / Codex**                                | The large ChatGPT plan — **shared with O4/O5 OpenAI routes and O7**   | Drew/Muse via Slack; no fleet telemetry                            |
+| O7  | **OpenClaw**                                     | Shares the ChatGPT plan and other plans with OpenCode                 | Least instrumented; comms path is the #2023 design                 |
 
 ## 2. Decision table — apply in order, stop at the first matching rule
 
@@ -68,16 +68,16 @@ flowchart TD
     Q6 -- no --> R4[R4 default: OpenCode session O4]
 ```
 
-| Rule | Condition (first match wins) | Place on | Never use this rule when |
-|---|---|---|---|
-| **R1** | The work is deterministic and scriptable end-to-end (format checks, censuses, registry refreshes, quota probes) | **O2 GitHub Action** | The script needs a model call or a judgement call mid-run; or a `GITHUB_TOKEN` push must trigger downstream checks (the #2014 finding from #2022) |
-| **R2** | *(guard, applies before all rules below)* The work needs fleet secrets, Bitwarden/Supabase keys, the laptop, the sandbox, Tailscale, or local services — or touches `held` / `user/owned` / escalated items | **Never O3/O7**; continue to Q3 with O3 and O7 excluded | — (this is a hard exclusion, from #2020's never-fit rows) |
-| **R3** | Single-repo, recurring or one-off, fully self-contained, mechanically verifiable, cheap to reject (Actions version bumps, dependency updates in mainstream stacks, lint/dead-code sweeps, docs-drift fixes) | **O3 Jules** (scheduled for the recurring slice, ad-hoc otherwise) | The task is a cross-repo propagation set (Jules is single-repo); verification needs fleet Nix builds; anyone would need to answer a question mid-task (#2020 one-line rule) |
-| **R4** *(default)* | Implementation work: coding, investigation-with-tools, PR-shaped delivery, needing fleet context but not Drew's judgement | **O4 OpenCode session** via the dispatcher | A fresher rule above already matched; or every route pool for the required tier is at a **known** 100% (see §3.2 — then rotate tier or stop, never fall back to PAYG) |
-| **R5** | Recurring work with a stable, fully self-contained brief, a single route, and failure that is visible next round | **O5 OpenCode scheduled task** (OS timer + `opencode run`, per #2019; no native scheduler exists — upstream anomalyco/opencode#41906 is still open) | Judgement is needed at trigger time, cross-session coordination is required, or guaranteed escalation is required — a timer fires and forgets; stall detection stays with the babysitter (#2021) |
-| **R6** | The task *is* judgement: triage verdicts, placement decisions, synthesis, escalation handling, anything whose output is a decision someone acts on | **O1 Muse** | The task is volume implementation wearing a judgement costume — that is R4; every O1 placement taxes every other Muse task (#2022) |
-| **R7** | The deliverable is review depth or a second opinion (design critique, diff review at flagship depth) | **O6 Aster / Codex** | Fleet telemetry or queue claim/bind discipline is required — O6 has neither; remember O6 burn is O4/O7 ChatGPT capacity gone (§3.1) |
-| **R8** | The #2023 comms path is live for the channel in question (Slack leg first), the work is conversational/lightweight, and its failure is cheap and visible | **O7 OpenClaw** | Channels are inert for that path (the #1029 state at #2022's writing), the work must not disappear into an unmonitored channel, or it needs queue discipline O7 does not have |
+| Rule               | Condition (first match wins)                                                                                                                                                                                | Place on                                                                                                                                            | Never use this rule when                                                                                                                                                                         |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **R1**             | The work is deterministic and scriptable end-to-end (format checks, censuses, registry refreshes, quota probes)                                                                                             | **O2 GitHub Action**                                                                                                                                | The script needs a model call or a judgement call mid-run; or a `GITHUB_TOKEN` push must trigger downstream checks (the #2014 finding from #2022)                                                |
+| **R2**             | _(guard, applies before all rules below)_ The work needs fleet secrets, Bitwarden/Supabase keys, the laptop, the sandbox, Tailscale, or local services — or touches `held` / `user/owned` / escalated items | **Never O3/O7**; continue to Q3 with O3 and O7 excluded                                                                                             | — (this is a hard exclusion, from #2020's never-fit rows)                                                                                                                                        |
+| **R3**             | Single-repo, recurring or one-off, fully self-contained, mechanically verifiable, cheap to reject (Actions version bumps, dependency updates in mainstream stacks, lint/dead-code sweeps, docs-drift fixes) | **O3 Jules** (scheduled for the recurring slice, ad-hoc otherwise)                                                                                  | The task is a cross-repo propagation set (Jules is single-repo); verification needs fleet Nix builds; anyone would need to answer a question mid-task (#2020 one-line rule)                      |
+| **R4** _(default)_ | Implementation work: coding, investigation-with-tools, PR-shaped delivery, needing fleet context but not Drew's judgement                                                                                   | **O4 OpenCode session** via the dispatcher                                                                                                          | A fresher rule above already matched; or every route pool for the required tier is at a **known** 100% (see §3.2 — then rotate tier or stop, never fall back to PAYG)                            |
+| **R5**             | Recurring work with a stable, fully self-contained brief, a single route, and failure that is visible next round                                                                                            | **O5 OpenCode scheduled task** (OS timer + `opencode run`, per #2019; no native scheduler exists — upstream anomalyco/opencode#41906 is still open) | Judgement is needed at trigger time, cross-session coordination is required, or guaranteed escalation is required — a timer fires and forgets; stall detection stays with the babysitter (#2021) |
+| **R6**             | The task _is_ judgement: triage verdicts, placement decisions, synthesis, escalation handling, anything whose output is a decision someone acts on                                                          | **O1 Muse**                                                                                                                                         | The task is volume implementation wearing a judgement costume — that is R4; every O1 placement taxes every other Muse task (#2022)                                                               |
+| **R7**             | The deliverable is review depth or a second opinion (design critique, diff review at flagship depth)                                                                                                        | **O6 Aster / Codex**                                                                                                                                | Fleet telemetry or queue claim/bind discipline is required — O6 has neither; remember O6 burn is O4/O7 ChatGPT capacity gone (§3.1)                                                              |
+| **R8**             | The #2023 comms path is live for the channel in question (Slack leg first), the work is conversational/lightweight, and its failure is cheap and visible                                                    | **O7 OpenClaw**                                                                                                                                     | Channels are inert for that path (the #1029 state at #2022's writing), the work must not disappear into an unmonitored channel, or it needs queue discipline O7 does not have                    |
 
 **Tie-breakers.** (a) If two rules match, the earlier rule wins — the order
 above is deliberate: cheapest sufficient, most supervised first.
@@ -91,15 +91,15 @@ Specialist/Summit grade, and the review loop is Muse's.
 
 ### 3.1 Pool inventory (the facts the model runs on)
 
-| Pool | What draws on it | Notes |
-|---|---|---|
-| Muse subscription (Power) | O1 only | **Not a shared pool and not a session route** — the assistant's own plan; sessions never draw on it. Scarcest resource in the fleet; spend it on judgement (R6) |
-| Meta pool — Muse API High Usage plan | O4/O5 Claude routes | **One** pool, **one door**: the OpenCode `meta` provider. The OpenCode `muse` provider is a second door into the same pool and is disabled by Drew's order; the `muse` terminal program reaches the same plan via OAuth. Never describe any route as drawing on "the Muse subscription" |
-| ChatGPT plan (large) | O4/O5 OpenAI routes, **O6 Aster/Codex, O7 OpenClaw** | The most contended pool: three options share it, and only O4/O5 contention is visible to the dispatcher. O6/O7 burn must be treated as OpenCode capacity spent |
-| OpenCode Go / ClinePass / Open Design and similar plan routes | O4/O5 workhorse & specialist tiers | Workhorse default: **DeepSeek Flash on high**. Claude routes default Haiku/Sonnet (Opus low/medium; high only for very complex design). OpenAI routes default **Luna Max** (Sol medium only for genuinely complicated work). Astra is gated |
-| Jules account (~100 actions/day, Pro) | O3 (and Action→Jules triggers) | Shared across scheduled runs, ad-hoc sessions, Suggested Tasks (off until the pilot proves out, per #2020), and CI-Fixer retries on Jules' own PRs. Fleet governance cap from #2020: scheduled runs ≤ ~5/day |
-| GitHub Actions minutes | O2, O3 triggers | No model pool; the cost is minutes and silence risk (R1's caveat) |
-| DeepSeek direct (api.deepseek.com) | **Nothing routinely** | PAYG reserve for when every plan is walled. **Never funds:** a 402/quota error is a wall, never a balance fallback |
+| Pool                                                          | What draws on it                                     | Notes                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------- | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Muse subscription (Power)                                     | O1 only                                              | **Not a shared pool and not a session route** — the assistant's own plan; sessions never draw on it. Scarcest resource in the fleet; spend it on judgement (R6)                                                                                                                         |
+| Meta pool — Muse API High Usage plan                          | O4/O5 Claude routes                                  | **One** pool, **one door**: the OpenCode `meta` provider. The OpenCode `muse` provider is a second door into the same pool and is disabled by Drew's order; the `muse` terminal program reaches the same plan via OAuth. Never describe any route as drawing on "the Muse subscription" |
+| ChatGPT plan (large)                                          | O4/O5 OpenAI routes, **O6 Aster/Codex, O7 OpenClaw** | The most contended pool: three options share it, and only O4/O5 contention is visible to the dispatcher. O6/O7 burn must be treated as OpenCode capacity spent                                                                                                                          |
+| OpenCode Go / ClinePass / Open Design and similar plan routes | O4/O5 workhorse & specialist tiers                   | Workhorse default: **DeepSeek Flash on high**. Claude routes default Haiku/Sonnet (Opus low/medium; high only for very complex design). OpenAI routes default **Luna Max** (Sol medium only for genuinely complicated work). Astra is gated                                             |
+| Jules account (~100 actions/day, Pro)                         | O3 (and Action→Jules triggers)                       | Shared across scheduled runs, ad-hoc sessions, Suggested Tasks (off until the pilot proves out, per #2020), and CI-Fixer retries on Jules' own PRs. Fleet governance cap from #2020: scheduled runs ≤ ~5/day                                                                            |
+| GitHub Actions minutes                                        | O2, O3 triggers                                      | No model pool; the cost is minutes and silence risk (R1's caveat)                                                                                                                                                                                                                       |
+| DeepSeek direct (api.deepseek.com)                            | **Nothing routinely**                                | PAYG reserve for when every plan is walled. **Never funds:** a 402/quota error is a wall, never a balance fallback                                                                                                                                                                      |
 
 ### 3.2 Burn order and gates
 
@@ -134,19 +134,19 @@ Specialist/Summit grade, and the review loop is Muse's.
 Pool burn is only half the cost. Every option also charges a
 **supervision tax**, paid mostly in Muse tokens or Drew's attention:
 
-| Option | Supervision tax | Paid by |
-|---|---|---|
-| O1 Muse | ~0 (self-supervising) — but the *whole task cost* lands on the scarcest pool | Muse pool |
-| O2 Action | Near 0 until it fails silently; then diagnosis at full price | Muse / Drew, deferred |
-| O3 Jules | Schedule management (web-UI CRUD — API schedule CRUD is not established, #2020) + PR review of every output; never auto-merge until a schedule has a multi-week clean record | Muse (review), Drew (sign-in challenges) |
-| O4 OpenCode session | Dispatcher (15m cadence) + babysitter rounds (a stalled session waits ≤ ~20m, #2018 evidence via #2022) + Muse review of the PR | Muse tokens, continuously |
-| O5 OpenCode scheduled | No launch cost, but **no stall detection at all** — the babysitter function (#2021 design) or a reduced-cadence Muse pass must be budgeted, or failures surface only when a human notices | Muse tokens, reduced but non-zero |
-| O6 Aster/Codex | Tasking and result collection happen in Slack by hand; no telemetry, no claim discipline | Drew / Muse attention |
-| O7 OpenClaw | Highest uncertainty tax today: least instrumented, comms path still landing (#2023 follow-ups) | Drew / Muse attention |
+| Option                | Supervision tax                                                                                                                                                                           | Paid by                                  |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| O1 Muse               | ~0 (self-supervising) — but the _whole task cost_ lands on the scarcest pool                                                                                                              | Muse pool                                |
+| O2 Action             | Near 0 until it fails silently; then diagnosis at full price                                                                                                                              | Muse / Drew, deferred                    |
+| O3 Jules              | Schedule management (web-UI CRUD — API schedule CRUD is not established, #2020) + PR review of every output; never auto-merge until a schedule has a multi-week clean record              | Muse (review), Drew (sign-in challenges) |
+| O4 OpenCode session   | Dispatcher (15m cadence) + babysitter rounds (a stalled session waits ≤ ~20m, #2018 evidence via #2022) + Muse review of the PR                                                           | Muse tokens, continuously                |
+| O5 OpenCode scheduled | No launch cost, but **no stall detection at all** — the babysitter function (#2021 design) or a reduced-cadence Muse pass must be budgeted, or failures surface only when a human notices | Muse tokens, reduced but non-zero        |
+| O6 Aster/Codex        | Tasking and result collection happen in Slack by hand; no telemetry, no claim discipline                                                                                                  | Drew / Muse attention                    |
+| O7 OpenClaw           | Highest uncertainty tax today: least instrumented, comms path still landing (#2023 follow-ups)                                                                                            | Drew / Muse attention                    |
 
 **The model's one equation:** total placement cost =
-*pool burn (priced by scarcity and expiry, §3.2)* + *supervision tax
-(this table)*. R5 beats R4 on the first term (no Muse trigger cost) and
+_pool burn (priced by scarcity and expiry, §3.2)_ + _supervision tax
+(this table)_. R5 beats R4 on the first term (no Muse trigger cost) and
 loses on the second (weaker supervision); R3 beats both on fleet tokens
 entirely and loses on review attention per PR — which is why #2020's
 pilot criterion is reviewer minutes per PR (< 10), not correctness alone.
@@ -208,15 +208,15 @@ exception — handled explicitly, in this order:
 
 ## 5. Buildable items — every one filed or already tracked
 
-| # | Item | Status |
-|---|---|---|
-| B1 | Machine-readable decision table + **placement record** on fleet dispatches (option, rule, pool-read age, supervision owner); PoC on one dispatch path, reviewed before permanent rollout | **Filed as #4986** |
-| B2 | Unified fleet schedule registry across all three schedule surfaces (Muse cron, OpenCode timers, Jules) | **Filed as #4988** |
-| B3 | OpenCode scheduled-task pattern implementation (systemd timers + `opencode run`, per-job route, job registry, log surface) | Already tracked: **#2232** |
-| B4 | First Jules schedule pilot (weekly Actions version-bump sweep) | Already tracked: **#2265** (closed — outcome feeds prediction 3 in §3.4 at review) |
-| B5 | Scheduled OpenCode preliminary babysitter (the supervision O5 lacks) | Already tracked: **#2021** (design) |
-| B6 | OpenClaw comms path build-out (Slack leg first; gateway auth, tailnet route, session inventory) | Already tracked: **#1029**, **#2300**, **#2301**, **#2302**, channel-shape decision **#2170** |
-| B7 | Quota-plane measured placement (pools consume quota-current; automated pool decisions) | Already tracked: **#1157**, epic **#1149** — B1 builds the cross-option decision layer above this, not a duplicate of it |
+| #   | Item                                                                                                                                                                                     | Status                                                                                                                   |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| B1  | Machine-readable decision table + **placement record** on fleet dispatches (option, rule, pool-read age, supervision owner); PoC on one dispatch path, reviewed before permanent rollout | **Filed as #4986**                                                                                                       |
+| B2  | Unified fleet schedule registry across all three schedule surfaces (Muse cron, OpenCode timers, Jules)                                                                                   | **Filed as #4988**                                                                                                       |
+| B3  | OpenCode scheduled-task pattern implementation (systemd timers + `opencode run`, per-job route, job registry, log surface)                                                               | Already tracked: **#2232**                                                                                               |
+| B4  | First Jules schedule pilot (weekly Actions version-bump sweep)                                                                                                                           | Already tracked: **#2265** (closed — outcome feeds prediction 3 in §3.4 at review)                                       |
+| B5  | Scheduled OpenCode preliminary babysitter (the supervision O5 lacks)                                                                                                                     | Already tracked: **#2021** (design)                                                                                      |
+| B6  | OpenClaw comms path build-out (Slack leg first; gateway auth, tailnet route, session inventory)                                                                                          | Already tracked: **#1029**, **#2300**, **#2301**, **#2302**, channel-shape decision **#2170**                            |
+| B7  | Quota-plane measured placement (pools consume quota-current; automated pool decisions)                                                                                                   | Already tracked: **#1157**, epic **#1149** — B1 builds the cross-option decision layer above this, not a duplicate of it |
 
 **PoC decision.** This design calls for exactly one PoC: the placement
 record on a single dispatch path, inside B1, **after** this framework is

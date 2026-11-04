@@ -14,6 +14,7 @@
 //! canonical order. See [`fold`].
 
 pub mod actions;
+pub mod event;
 pub mod fold;
 pub mod friendship;
 pub mod log;

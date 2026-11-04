@@ -864,9 +864,7 @@ class ColdStore:
                     # recorded hash, and refuse instead of sealing a
                     # mismatch. The sealed size is the decoded size, not a
                     # third racy stat() of the live source.
-                    frame_hash, plain_size = self._decompress_and_hash_frame(
-                        frame_path
-                    )
+                    frame_hash, plain_size = self._decompress_and_hash_frame(frame_path)
                     if frame_hash != obj_hash:
                         raise ColdStoreError(
                             f"source {src} changed during pack: compressed"

@@ -172,6 +172,52 @@ in
           services.oc-password-sync.enable = true;
         };
       }
+      (
+        { config, ... }:
+        let
+          loginKeyringRules = config.security.pam.services.login.rules;
+        in
+        {
+          # GNOME Keyring unlock at graphical login (code#5477):
+          # the login password must reach pam_gnome_keyring in
+          # SDDM's own PAM stack, or the login keyring collection
+          # stays locked for the whole session and non-desktop
+          # contexts (SSH, agents, user services) stall reading
+          # keyring-held secrets (the gh token) on a prompter they
+          # can never answer. enableGnomeKeyring states the intent,
+          # but in this tree sddm's rule set is a custom delegation
+          # set (every phase includes/substacks login), into which
+          # the flag injects nothing - verified at eval: the
+          # generated pam.d/sddm is byte-identical with the flag on
+          # or off. So the keyring rules are added to sddm's stack
+          # explicitly, mirroring the login service's own keyring
+          # rules; module path and order are referenced from the
+          # login service, not copied, so they track nixpkgs.
+          security.pam.services.sddm.enableGnomeKeyring = true;
+          security.pam.services.sddm.rules = {
+            auth.gnome_keyring = {
+              enable = true;
+              control = "optional";
+              modulePath = loginKeyringRules.auth.gnome_keyring.modulePath;
+              order = loginKeyringRules.auth.gnome_keyring.order;
+            };
+            password.gnome_keyring = {
+              enable = true;
+              control = "optional";
+              modulePath = loginKeyringRules.password.gnome_keyring.modulePath;
+              order = loginKeyringRules.password.gnome_keyring.order;
+              settings.use_authtok = true;
+            };
+            session.gnome_keyring = {
+              enable = true;
+              control = "optional";
+              modulePath = loginKeyringRules.session.gnome_keyring.modulePath;
+              order = loginKeyringRules.session.gnome_keyring.order;
+              settings.auto_start = true;
+            };
+          };
+        }
+      )
       # KRdp remote desktop for this laptop (user service + package);
       # see the file for the one-time on-machine credential setup.
       ./amd-krdp.nix

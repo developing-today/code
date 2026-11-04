@@ -382,6 +382,7 @@ func (p *Pool) Acquire(ctx context.Context, rs config.ResolvedScope) (*Lease, er
 		if in := p.evictableLocked(legacy); in != nil {
 			p.removeLocked(in)
 			p.mu.Unlock()
+			p.forgetUpstreamSession(in)
 			_ = in.Client.Close()
 			p.mu.Lock()
 			continue
@@ -528,6 +529,7 @@ func (p *Pool) ReleaseKey(key string) int {
 	p.cond.Broadcast()
 	p.mu.Unlock()
 	p.stopped(in, "released")
+	p.forgetUpstreamSession(in)
 	_ = in.Client.Close()
 	return 1
 }
@@ -686,6 +688,20 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 		}
 	}
 	if cl == nil {
+		// A cold restart may find this instance's previous session
+		// persisted (#1415): resume it through the same calls the
+		// takeover path makes instead of initialising again.
+		var resumed *mcpclient.Client
+		resumed, tr, err = p.resumeUpstreamSession(sctx, tr, eff, rs, legacy, opts)
+		if err != nil {
+			_ = tr.Close()
+			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
+		}
+		if resumed != nil {
+			cl, source = resumed, mcpclient.SourceCache
+		}
+	}
+	if cl == nil {
 		cl, err = mcpclient.NewWithOptions(sctx, tr, opts)
 		if err == nil {
 			source = cl.Source
@@ -797,6 +813,12 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 		// take a call.
 		"readyMs": float64(time.Since(launched).Microseconds()) / 1000,
 	})
+	// Persist the upstream session for a cold restart (#1415): save the
+	// session this start established, and keep saving whenever the
+	// transport adopts a new session id mid-flight. Installed on the
+	// final transport, after every redial path above has settled.
+	p.installSessionPersistence(eff, rs.Key, legacy, ref, cl, tr)
+	p.saveUpstreamSession(eff, rs.Key, legacy, ref)
 	return in, nil
 }
 
@@ -1458,6 +1480,9 @@ type Hooks struct {
 	// Eras remembers each server configuration's era across starts. Nil
 	// means every start probes.
 	Eras EraStore
+	// Sessions persists legacy HTTP upstream sessions across daemon
+	// restarts (#1415). Nil means every cold start re-initialises.
+	Sessions SessionStore
 	// RequestLimits bounds each server's sampling and elicitation
 	// requests (#2192). The zero value means mcpclient's defaults,
 	// unless RequestLimitsSet marks it explicitly supplied.
@@ -1597,6 +1622,7 @@ func (p *Pool) ReapIdle(now time.Time) int {
 
 	for _, in := range stop {
 		p.stopped(in, "idle")
+		p.forgetUpstreamSession(in)
 		_ = in.Client.Close()
 	}
 	return len(stop)

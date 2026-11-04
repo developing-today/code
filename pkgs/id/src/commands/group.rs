@@ -119,7 +119,14 @@ fn quoted(string: &str) -> String {
             '\n' => rendered.push_str("\\n"),
             '\r' => rendered.push_str("\\r"),
             '\t' => rendered.push_str("\\t"),
-            c if crate::is_format_char(c) || (c.is_control() && (c as u32) < 0x20) => {
+            // Every character that can trigger quoting must be escaped, not
+            // only C0: DEL and the C1 controls are Cc too (#5448), and the
+            // line/paragraph separators act as line breaks to some consumers
+            // (the #3455 Phase 3b structure set, as in commands::text).
+            c if crate::is_format_char(c)
+                || c.is_control()
+                || matches!(c, '\u{2028}' | '\u{2029}') =>
+            {
                 push_unicode_escape(&mut rendered, c);
             }
             c => rendered.push(c),
@@ -622,6 +629,37 @@ mod tests {
             "subject=deadbeef name=tag value=\"\\u202e\" author=cafe event=beef"
         );
         assert!(!rendered.contains('\u{202e}'), "raw Cf must never render");
+    }
+
+    #[test]
+    fn test_del_c1_and_line_separators_are_quoted_and_escaped() {
+        // #5448: DEL and C1 are Cc beyond 0x1F, and U+2028/U+2029 are the
+        // #3455 structure separators; the pre-fix escape arm (< 0x20, Cf
+        // only) left all of them raw inside the quoted literal, while
+        // plain_field (commands::text) escapes each as \uXXXX.
+        for (c, esc) in [
+            ('\u{7f}', "007f"),
+            ('\u{85}', "0085"),
+            ('\u{9f}', "009f"),
+            ('\u{2028}', "2028"),
+            ('\u{2029}', "2029"),
+        ] {
+            let alone = text(&json!(c.to_string()));
+            assert_eq!(alone, format!("\"\\u{esc}\""), "alone {c:?}");
+            assert!(!alone.contains(c), "raw {c:?} remains in {alone}");
+            assert_eq!(
+                serde_json::from_str::<String>(&alone).expect("valid JSON literal"),
+                c.to_string()
+            );
+            let value = format!("a{c}b");
+            let embedded = text(&json!(value));
+            assert_eq!(embedded, format!("\"a\\u{esc}b\""), "embedded {c:?}");
+            assert!(!embedded.contains(c), "raw {c:?} remains in {embedded}");
+            assert_eq!(
+                serde_json::from_str::<String>(&embedded).expect("valid JSON literal"),
+                value
+            );
+        }
     }
 
     #[test]

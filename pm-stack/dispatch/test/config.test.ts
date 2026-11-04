@@ -31,8 +31,8 @@ describe("fleet config", () => {
   test("the allowlist default is exactly the six fleet repos", () => {
     expect([...FLEET_REPOS]).toEqual([
       "developing-today/code",
-      "developing-today/opencode",
-      "developing-today/openchamber",
+      "developing-today-forks/opencode",
+      "developing-today-forks/openchamber",
       "dezren39/nix",
       "developing-today/zettel",
       "dezren39/dezren39",
@@ -48,7 +48,9 @@ describe("fleet config", () => {
 
   test("SUPABASE_URL is used verbatim, minus a trailing slash", () => {
     expect(loadConfig({ SUPABASE_URL: "https://fixture.supabase.co" }).supabaseUrl).toBe("https://fixture.supabase.co");
-    expect(loadConfig({ SUPABASE_URL: "https://fixture.supabase.co/" }).supabaseUrl).toBe("https://fixture.supabase.co");
+    expect(loadConfig({ SUPABASE_URL: "https://fixture.supabase.co/" }).supabaseUrl).toBe(
+      "https://fixture.supabase.co",
+    );
   });
 
   test("every fleet repo has a queue and a session directory", () => {

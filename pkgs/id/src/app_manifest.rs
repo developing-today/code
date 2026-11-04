@@ -7,8 +7,90 @@
 //! so a symlinked folder cannot smuggle an external folder in as a
 //! local app. A symlink whose resolved target stays inside the apps
 //! root registers normally, under the symlink's own folder name.
-//! Symlinks *inside* a real app folder are explicitly out of scope
-//! here; they are owned by the Phase 4 audit (issue #4203).
+//! Symlinks *inside* a real app folder are dispositioned in the
+//! Phase 4 table below (issue #4203).
+//!
+//! # Phase 4 disposition table (issue #4203, audit of #4202)
+//!
+//! Every `AppManifest` field and every `discover_apps` behaviour,
+//! dispositioned against current code as: gated by a named rule,
+//! deliberately ungated with the reason, or routed to a named owner.
+//! "Gated" means `parse_app_manifest` (parse) or `discover_apps`
+//! (discovery) rejects or reports the item with a named error.
+//!
+//! | Item | Disposition |
+//! | --- | --- |
+//! | `app.id` | Gated (parse): kebab-case (`is_kebab_id`) and equal to the folder name. |
+//! | `app.name` | Gated (parse): non-blank only. Deliberately ungated beyond that: a display string no consumer keys on; padding is stored verbatim. |
+//! | `app.version` | Gated (parse): non-blank only. Deliberately ungated beyond that: no semver rule; no consumer parses it. |
+//! | `app.description` | Deliberately ungated: optional free display text; absent is legal. |
+//! | `program.kind` | Gated (parse): non-blank only. Vocabulary deliberately ungated: a free string with one checked-in value (`roc-world`); no enumeration until a second kind exists (required disposition 5). |
+//! | `program.source` | Gated (parse): exactly one of `source`/`module_hash`; non-empty relative path, every component a plain name. Gated (discovery): the named path must exist in the folder. |
+//! | `program.module_hash` | Gated (parse): exactly one of `source`/`module_hash`; 1 to 64 plain hex digits (the world-apply shape). |
+//! | `interfaces.cli.commands` | Gated (parse): at least one of `cli`/`web` must be present; a present `cli` needs at least one command; the one entry rule (non-blank, unpadded, no duplicates). |
+//! | `interfaces.web.mode` | Gated (parse): exactly `adapter` or `direct`. |
+//! | `interfaces.web.route` | Gated (parse): the web-path shape rule (`is_safe_web_path`). Gated (discovery): unique across the discovered set; first folder in sort order wins, the loser is a named error. Host-table collisions are gated at the binding layer (disposition 6). |
+//! | `interfaces.web.socket` | Gated (parse): the web-path shape rule when present. Gated (discovery): unique across the discovered set, same first-wins rule. |
+//! | `capabilities.request` | Gated (parse): the one entry rule. Vocabulary deliberately ungated: capability names are an open vocabulary; the gate guarantees only the exact-match shape (non-blank, unpadded, distinct). |
+//! | `resources.files` | Gated (parse): the one entry rule plus folder confinement: non-empty, relative, every component a plain name, no empty/`.`/`..` segment (`is_confined_relative_path`); glob segments are ordinary names. Empty `files = []` is deliberately legal (required disposition 2): the section is optional and packages nothing, and no consumer in this crate reads the list as a defect. |
+//! | Unknown fields, any level | Gated (parse): `deny_unknown_fields` on every struct; missing required fields fail the TOML parse. |
+//! | Root read (discovery) | Gated: a root that cannot be canonicalized or read, missing included, is one named error entry naming the root, and zero apps; a readable empty root is zero apps and zero errors, so the three states stay distinguishable. |
+//! | Entry filtering (discovery) | Immediate children only, no recursion. Non-directories and folders without `app.toml` are skipped silently, deliberately: not every folder is an app. An entry that errors while iterating is a named error, not a silent skip. |
+//! | Per-app error isolation (discovery) | Gated: parse failure, containment failure, missing `program.source`, and duplicate route/socket each become a named per-app error and never stop the other folders from registering. |
+//! | `program.source` existence check (discovery) | Existence only: `Path::exists` follows symlinks, including a symlink component inside the folder, and discovery never reads or executes through the path; see required disposition 1. |
+//! | Sort order (discovery) | Folders are sorted by path before scanning; registration order is sort order, which is what makes first-wins for route/socket (and the structural `app.id` rule) deterministic. |
+//!
+//! ## The six required dispositions (#4203)
+//!
+//! 1. **Symlinks inside a real app folder.** Discovery-side rule:
+//!    syntactic confinement only: `resources.files` entries and
+//!    `program.source` are component-checked strings, and the source
+//!    existence check follows symlinks without resolving or
+//!    containing the target, because discovery opens neither path.
+//!    Resolution confinement at read time belongs to the pack step,
+//!    which is the named owner of the pack-time half: no pack step
+//!    exists in this crate yet, and the one that is built (the
+//!    packaging design's pack step) must resolve each named file
+//!    inside the app folder before packaging or hashing it.
+//! 2. **Empty `files = []`.** Deliberately legal; see the
+//!    `resources.files` row. Recorded here so the posture is a
+//!    decision, not an accident.
+//! 3. **Route edge spellings.** Tightened in this audit:
+//!    `is_safe_web_path` now rejects empty segments, so route `/`
+//!    (no non-empty segment), a trailing slash (`/app/`), and
+//!    doubled separators (`/a//b`) all fail the manifest gate for
+//!    `route` and `socket` alike. Dot segments are rejected on the
+//!    same rule (#5427): `/a/./b`, `/./a`, and `/a/.` normalize onto
+//!    other paths, so they are alternate spellings, not new routes.
+//!    `/` is additionally a host-registered route (disposition 6). Ordinary spellings
+//!    (`/tic-tac-toe`, `/ws/world`) are unchanged.
+//! 4. **App-`id` uniqueness.** Structural, no extra check added:
+//!    `app.id` must equal the folder (entry) name, and one
+//!    directory entry has one name, so two discovered apps cannot
+//!    share an `id`. Two symlinks to one target cannot both
+//!    register either: the manifest `id` can equal only one
+//!    entry's name, and the other entry fails the id match with a
+//!    named error.
+//! 5. **`program.kind` vocabulary.** Disposition only; see the
+//!    `program.kind` row. No enumeration without a second kind.
+//! 6. **Uniqueness against the host's own routes.** Not a
+//!    discovery gate: the host route table is owned by the binding
+//!    layer, and the check lives there: `web::app_interface`
+//!    rejects a declared route or socket that exactly or
+//!    structurally collides with a host-registered route
+//!    (`HOST_RESERVED_ROUTES`, issues #4779 and #4795), the layer
+//!    the #2325 binding (PR #3894) created. Discovery keeps only
+//!    the cross-app uniqueness it can see. No follow-up is filed:
+//!    the gap #2325's scope left open was filed and landed as
+//!    #4779/#4795, so the disposition is covered today.
+//!
+//! Consumer note (audit evidence): at audit time the only caller
+//! of `discover_apps` is `commands::serve`, which logs each
+//! discovered app's `id` and path and warns per error; no code in
+//! this crate yet reads `resources.files`, executes
+//! `program.source`, or binds a discovered app's route, which is
+//! why the read/execute-time confinements above are assigned to
+//! the steps that will.
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -140,6 +222,12 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
     }
     if let Some(resources) = &manifest.resources {
         ensure_distinct_entries(&resources.files, "resources.files")?;
+        for entry in &resources.files {
+            ensure!(
+                is_confined_relative_path(entry),
+                "resources.files entry {entry:?} must be a relative path inside the app folder"
+            );
+        }
     }
     if let Some(program) = &manifest.program {
         ensure!(
@@ -175,12 +263,12 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
         );
         ensure!(
             is_safe_web_path(&web.route),
-            "interfaces.web.route must be an absolute path without traversal segments, whitespace, ? or #"
+            "interfaces.web.route must be an absolute path without traversal, empty or dot segments, whitespace, ? or #"
         );
         if let Some(socket) = &web.socket {
             ensure!(
                 is_safe_web_path(socket),
-                "interfaces.web.socket must be an absolute path without traversal segments, whitespace, ? or #"
+                "interfaces.web.socket must be an absolute path without traversal, empty or dot segments, whitespace, ? or #"
             );
         }
     }
@@ -339,6 +427,16 @@ fn is_safe_web_path(path: &str) -> bool {
         && !path.contains('?')
         && !path.contains('#')
         && !path.split('/').any(|segment| segment == "..")
+        // Phase 4 edge spellings (#4203, disposition 3): no empty
+        // segment, so `/` itself, a trailing slash, and doubled
+        // separators are rejected, not just traversal segments.
+        && !path.split('/').skip(1).any(|segment| segment.is_empty())
+        // Dot segments (#5427): a `.` segment is the remaining RFC 3986
+        // dot segment -- `/a/./b`, `/./a`, and `/a/.` pass the checks
+        // above but normalize onto `/a/b`, `/a`, and `/a/`, so one
+        // normalized path would pass as two distinct routes/sockets
+        // past the exact-string uniqueness checks downstream.
+        && !path.split('/').skip(1).any(|segment| segment == ".")
 }
 
 /// One consistent list-entry rule for manifest string lists
@@ -368,6 +466,28 @@ fn ensure_distinct_entries(entries: &[String], field: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Folder confinement for `[resources].files` entries (#4059): the design
+/// rule is that everything is relative to the app folder — no absolute
+/// paths, no references outside the folder. The check mirrors the
+/// `program.source` rule above: the entry must be non-empty and every
+/// path component must be a plain name, so a root, `.` or `..` component
+/// anywhere in the entry rejects it. Glob segments such as `**` are
+/// ordinary components and stay legal (`assets/**`, `web/templates/**`).
+fn is_confined_relative_path(entry: &str) -> bool {
+    // Segment-level, not only component-level: `Path::components`
+    // normalizes an internal `.` away (`a/./b` yields just `a`, `b`),
+    // so the raw segments are checked as well. An empty segment rejects
+    // doubled or trailing separators along with the empty entry itself.
+    !entry.is_empty()
+        && !Path::new(entry).is_absolute()
+        && Path::new(entry)
+            .components()
+            .all(|part| matches!(part, Component::Normal(_)))
+        && entry
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
 }
 
 fn is_kebab_id(id: &str) -> bool {
@@ -446,6 +566,56 @@ route = "/tic-tac-toe"
             "route = \"/tic-tac-toe\"\nsocket = \"/ws/world\"",
         );
         assert!(parse_app_manifest(&valid_socket, "tic-tac-toe").is_ok());
+    }
+
+    #[test]
+    fn web_route_edge_spellings_are_rejected() {
+        // Phase 4 disposition 3 (#4203): `/`, a trailing slash, and
+        // doubled separators fail the shape rule for route and socket.
+        for route in ["/", "/tic-tac-toe/", "/tic-tac-toe//x", "//tic-tac-toe"] {
+            let source =
+                MANIFEST.replace("route = \"/tic-tac-toe\"", &format!("route = {route:?}"));
+            let error = parse_app_manifest(&source, "tic-tac-toe").unwrap_err();
+            assert!(
+                error.to_string().contains("interfaces.web.route"),
+                "route {route:?} rejection names the field: {error:#}"
+            );
+        }
+        let trailing_socket = MANIFEST.replace(
+            "route = \"/tic-tac-toe\"",
+            "route = \"/tic-tac-toe\"\nsocket = \"/ws/world/\"",
+        );
+        let error = parse_app_manifest(&trailing_socket, "tic-tac-toe").unwrap_err();
+        assert!(error.to_string().contains("interfaces.web.socket"));
+    }
+
+    #[test]
+    fn test_web_route_dot_segments_are_rejected() {
+        // #5427: a `.` segment is an alternate spelling of the path
+        // without it (RFC 3986 remove_dot_segments), so it fails the
+        // shape rule for route and socket alike, while a dotted name
+        // that is not a whole segment stays legal.
+        for route in ["/./tic-tac-toe", "/tic-tac-toe/./x", "/tic-tac-toe/."] {
+            let source =
+                MANIFEST.replace("route = \"/tic-tac-toe\"", &format!("route = {route:?}"));
+            let error = parse_app_manifest(&source, "tic-tac-toe").unwrap_err();
+            assert!(
+                error.to_string().contains("interfaces.web.route"),
+                "route {route:?} rejection names the field: {error:#}"
+            );
+        }
+        let dot_socket = MANIFEST.replace(
+            "route = \"/tic-tac-toe\"",
+            "route = \"/tic-tac-toe\"\nsocket = \"/ws/./world\"",
+        );
+        let error = parse_app_manifest(&dot_socket, "tic-tac-toe").unwrap_err();
+        assert!(error.to_string().contains("interfaces.web.socket"));
+
+        let dotted_names = MANIFEST.replace(
+            "route = \"/tic-tac-toe\"",
+            "route = \"/tic-tac-toe\"\nsocket = \"/ws/world.min\"",
+        );
+        assert!(parse_app_manifest(&dotted_names, "tic-tac-toe").is_ok());
     }
 
     #[test]
@@ -623,6 +793,41 @@ commands = ["play"]
             assert!(
                 error.to_string().contains("resources.files"),
                 "resource-file validation error names the field: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unconfined_resource_files() {
+        // Folder confinement (#4059): [resources].files entries are paths
+        // the pack step will read, so absolute paths, parent traversal
+        // anywhere in the entry, and dot paths are rejected with an error
+        // naming the offending entry.
+        for entry in [
+            "/etc/passwd",
+            "../../etc/passwd",
+            "../secret",
+            "a/../../b",
+            ".",
+            "./assets",
+            "a/./b",
+            "",
+        ] {
+            let source = format!("{MANIFEST}\n[resources]\nfiles = [\"{entry}\"]\n");
+            let error = parse_app_manifest(&source, "tic-tac-toe").unwrap_err();
+            let message = error.to_string();
+            assert!(
+                message.contains("resources.files") && message.contains(entry),
+                "rejection of {entry:?} names the field and the entry: {message}"
+            );
+        }
+        // Confined entries — plain files, nested paths, and the design's
+        // glob shapes — stay accepted.
+        for entry in ["assets/logo.png", "web/templates/index.html", "assets/**"] {
+            let source = format!("{MANIFEST}\n[resources]\nfiles = [\"{entry}\"]\n");
+            assert!(
+                parse_app_manifest(&source, "tic-tac-toe").is_ok(),
+                "confined entry {entry:?} is accepted"
             );
         }
     }
