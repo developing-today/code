@@ -35,6 +35,34 @@ use comrak::nodes::{AstNode, ListDelimType, ListType, NodeValue};
 use comrak::{Arena, Options, format_commonmark, parse_document};
 use serde_json::{Value, json};
 
+/// Whether a URL is safe to preserve as an imported link.
+///
+/// Scheme-less references (including protocol-relative URLs) are allowed.
+/// Explicit schemes are limited to HTTP, HTTPS, and mailto. The probe mirrors
+/// browser URL handling by trimming leading C0/space characters and removing
+/// ASCII tabs/newlines before checking the scheme, without changing the URL we
+/// preserve when it is allowed.
+fn is_safe_link_url(url: &str) -> bool {
+    let probe: String = url
+        .trim_start_matches(|character: char| character <= ' ')
+        .chars()
+        .filter(|character| !matches!(character, '\t' | '\n' | '\r'))
+        .collect();
+    let Some(colon) = probe.find(':') else {
+        return true;
+    };
+    let first_reference_delimiter = probe
+        .find(|character| matches!(character, '/' | '?' | '#'))
+        .unwrap_or(probe.len());
+    if colon > first_reference_delimiter {
+        return true;
+    }
+    let scheme = &probe[..colon];
+    ["http", "https", "mailto"]
+        .iter()
+        .any(|allowed| scheme.eq_ignore_ascii_case(allowed))
+}
+
 /// Error type for markdown conversion.
 #[derive(Debug)]
 pub enum ConversionError {
@@ -2989,6 +3017,10 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
             if !link.title.is_empty() {
                 attrs["title"] = json!(link.title);
             }
+            // Reject executable/unknown schemes to prevent XSS via imported Markdown.
+            if !is_safe_link_url(link.url) {
+                attrs["href"] = json!("about:invalid");
+            }
             marks.push(Mark {
                 mark_type: "link",
                 attrs: Some(attrs),
@@ -3446,6 +3478,10 @@ fn linked_image_sequence<'a>(children: &[&'a AstNode<'a>]) -> Option<(Value, usi
     }
     let (href, link_title) = parse_anchor_tag(&html_inline_literal(children[0])?)?;
     let img = parse_img_tag(&html_inline_literal(children[1])?)?;
+    // Reject executable/unknown schemes in linked-image hrefs.
+    if !is_safe_link_url(&href) {
+        return None; // Drop the linked-image sequence to avoid storing an unsafe linkHref.
+    }
     let consumed = if children.len() >= 3
         && html_inline_literal(children[2]).is_some_and(|h| h.trim().eq_ignore_ascii_case("</a>"))
     {
@@ -3897,6 +3933,10 @@ fn parse_img_tag(html: &str) -> Option<Value> {
     let attr = |name: &str| parsed.get(name).map(String::as_str);
 
     let src = attr("src")?; // src is required
+    // Reject executable/unknown schemes in image src.
+    if !is_safe_link_url(src) {
+        return None;
+    }
     let mut attrs = json!({"src": src});
 
     if let Some(alt) = attr("alt") {
@@ -3943,6 +3983,10 @@ fn parse_anchor_tag(html: &str) -> Option<(String, Option<String>)> {
     if href.is_empty() {
         return None;
     }
+    // Reject executable/unknown schemes in raw HTML anchors.
+    if !is_safe_link_url(href) {
+        return None;
+    }
     let title = parsed.get("title").filter(|t| !t.is_empty()).cloned();
     Some((href.clone(), title))
 }
@@ -3950,6 +3994,10 @@ fn parse_anchor_tag(html: &str) -> Option<(String, Option<String>)> {
 /// Attach a wrapping anchor's link to an image node (#880/#893), in the
 /// same `linkHref`/`linkTitle` attrs the markdown `Image` arm produces.
 fn image_with_link(mut img: Value, href: &str, link_title: Option<&str>) -> Value {
+    // Reject executable/unknown schemes in linked-image linkHref.
+    if !is_safe_link_url(href) {
+        return img; // Drop the linkHref to avoid storing an unsafe URL.
+    }
     img["attrs"]["linkHref"] = json!(href);
     if let Some(title) = link_title {
         img["attrs"]["linkTitle"] = json!(title);
@@ -5669,6 +5717,57 @@ pub fn raw_text_to_prosemirror(text: &str) -> Value {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_markdown_url_scheme_allowlist() {
+        // Regression for #5745: executable schemes must be neutralized in imported Markdown.
+        for bad in ["javascript:alert(1)", "data:text/html,<script>alert(1)</script>", "vbscript:msgbox(1)"] {
+            let doc = markdown_to_prosemirror(&format!("Click [here]({bad})"));
+            let link = &doc["content"][0]["content"][0];
+            assert_eq!(link["type"], "text");
+            let marks = link["marks"].as_array().unwrap();
+            let link_mark = marks.iter().find(|m| m["type"] == "link").unwrap();
+            assert_eq!(link_mark["attrs"]["href"], "about:invalid");
+        }
+        // Safe schemes must remain unchanged.
+        for good in ["https://example.com", "http://example.com", "mailto:test@example.com"] {
+            let doc = markdown_to_prosemirror(&format!("Click [here]({good})"));
+            let link = &doc["content"][0]["content"][0];
+            assert_eq!(link["type"], "text");
+            let marks = link["marks"].as_array().unwrap();
+            let link_mark = marks.iter().find(|m| m["type"] == "link").unwrap();
+            assert_eq!(link_mark["attrs"]["href"], good);
+        }
+        // Relative/internal links must remain unchanged.
+        for rel in ["/path", "#section", "../parent"] {
+            let doc = markdown_to_prosemirror(&format!("Click [here]({rel})"));
+            let link = &doc["content"][0]["content"][0];
+            assert_eq!(link["type"], "text");
+            let marks = link["marks"].as_array().unwrap();
+            let link_mark = marks.iter().find(|m| m["type"] == "link").unwrap();
+            assert_eq!(link_mark["attrs"]["href"], rel);
+        }
+    }
+
+    #[test]
+    fn test_markdown_linked_image_url_scheme_allowlist() {
+        // Regression for #5745: linked images must also neutralize unsafe schemes.
+        for bad in ["javascript:alert(1)", "data:image/svg+xml,<script>alert(1)</script>"] {
+            let doc = markdown_to_prosemirror(&format!("![alt](img.png) [![alt](img.png)]({bad})"));
+            let content = doc["content"][0]["content"].as_array().unwrap();
+            let img = &content[1];
+            assert_eq!(img["type"], "image");
+            assert!(img["attrs"].get("linkHref").is_none());
+        }
+        // Safe schemes must remain unchanged.
+        for good in ["https://example.com", "http://example.com"] {
+            let doc = markdown_to_prosemirror(&format!("![alt](img.png) [![alt](img.png)]({good})"));
+            let content = doc["content"][0]["content"].as_array().unwrap();
+            let img = &content[1];
+            assert_eq!(img["type"], "image");
+            assert_eq!(img["attrs"]["linkHref"], good);
+        }
+    }
 
     #[test]
     fn test_empty_document() {
