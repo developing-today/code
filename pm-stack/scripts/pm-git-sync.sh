@@ -13,7 +13,9 @@
 #   dirty paths and do NOT pull. A human/agent resolves the dirt first;
 #   this service never stashes, commits, or discards anything.
 # - Otherwise git fetch + git pull --ff-only.
-# - If HEAD moved and a PM subtree changed, redeploy that service:
+# - Compare the current checkout with the persisted last-deployed HEAD,
+#   so a manual pull still triggers redeploys on the next run.
+# - If that range changed a PM subtree, redeploy that service:
 #   restart it, running its dependency step first when its dependency
 #   inputs changed (bun install for the aggregator, setup-deps for the
 #   projector).
@@ -47,6 +49,66 @@ if [ -n "$dirty" ]; then
 fi
 if ! git fetch origin --quiet; then
   echo "pm-git-sync: FAIL git fetch origin in $REPO"
+  exit 1
+fi
+
+# Keep the last fully deployed commit across invocations. HEAD may already
+# equal origin/main after a manual pull, so the current checkout alone is not
+# enough to decide whether redeploys are still owed.
+DEPLOYED_HEAD_FILE="$STATE_DIR/deployed-head"
+BOOTSTRAP=0
+persist_deployed_head() { # <commit>
+  local commit="$1" tmp
+  mkdir -p "$STATE_DIR" || return 1
+  tmp="$(mktemp "$STATE_DIR/.deployed-head.XXXXXX")" || return 1
+  if ! printf '%s\n' "$commit" >"$tmp" || ! mv -f "$tmp" "$DEPLOYED_HEAD_FILE"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  return 0
+}
+
+current="$(git rev-parse HEAD)"
+if [ -e "$DEPLOYED_HEAD_FILE" ] || [ -L "$DEPLOYED_HEAD_FILE" ]; then
+  if ! old="$(cat "$DEPLOYED_HEAD_FILE")"; then
+    echo "pm-git-sync: FAIL deployed-head baseline in $DEPLOYED_HEAD_FILE is unreadable or not a commit"
+    exit 1
+  fi
+  if ! resolved_old="$(git rev-parse --verify "${old}^{commit}" 2>/dev/null)" ||
+    [ "$resolved_old" != "$old" ]; then
+    echo "pm-git-sync: FAIL deployed-head baseline in $DEPLOYED_HEAD_FILE is unreadable or not a commit"
+    exit 1
+  fi
+else
+  # No marker means we cannot know whether HEAD was pulled before this
+  # version first ran. Check that state can be written, but do not create
+  # the baseline until a conservative full redeploy succeeds.
+  if ! mkdir -p "$STATE_DIR"; then
+    echo "pm-git-sync: FAIL could not create deployed-head state directory $STATE_DIR"
+    exit 1
+  fi
+  probe="$(mktemp "$STATE_DIR/.deployed-head-probe.XXXXXX")" || {
+    echo "pm-git-sync: FAIL cannot write deployed-head state in $STATE_DIR"
+    exit 1
+  }
+  if ! rm -f "$probe"; then
+    echo "pm-git-sync: FAIL cannot clean up deployed-head state probe in $STATE_DIR"
+    exit 1
+  fi
+  old="$current"
+  BOOTSTRAP=1
+fi
+
+remote="$(git rev-parse origin/main)"
+if [ "$current" != "$remote" ]; then
+  if ! git pull --ff-only origin main; then
+    echo "pm-git-sync: FAIL git pull --ff-only $current -> $remote in $REPO"
+    exit 1
+  fi
+fi
+new="$(git rev-parse HEAD)"
+if ! git merge-base --is-ancestor "$old" "$new"; then
+  echo "pm-git-sync: FAIL deployed-head baseline $old is not an ancestor of current HEAD $new"
   exit 1
 fi
 
@@ -128,8 +190,8 @@ owed_summary() { # prints owed unit names, one per line
   done
 }
 
-# finish <ok-message>: retry owed redeploys, then exit loudly while
-# any redeploy is still owed.
+# finish <ok-message>: retry owed redeploys, fail loudly while any remain,
+# and advance the deployed-head marker only after all redeploys succeed.
 finish() {
   retry_owed
   local owed
@@ -142,29 +204,34 @@ finish() {
     echo "pm-git-sync: FAIL redeploy(s) still owed for: $(echo "$owed" | tr '\n' ' ')"
     exit 1
   fi
+  if ! persist_deployed_head "$new"; then
+    echo "pm-git-sync: FAIL could not persist deployed-head baseline $new in $STATE_DIR"
+    exit 1
+  fi
   echo "$1"
   exit 0
 }
 
-old="$(git rev-parse HEAD)"
-new="$(git rev-parse origin/main)"
-if [ "$old" = "$new" ]; then
-  finish "pm-git-sync: ok clean main, up to date at $old"
+if [ "$old" = "$new" ] && [ "$BOOTSTRAP" -eq 0 ]; then
+  finish "pm-git-sync: ok clean main, up to date at $new"
 fi
-if ! git pull --ff-only origin main; then
-  echo "pm-git-sync: FAIL git pull --ff-only $old -> $new in $REPO"
-  exit 1
+if [ "$BOOTSTRAP" -eq 1 ]; then
+  echo "pm-git-sync: establishing deployed baseline at $new with a full redeploy"
+else
+  echo "pm-git-sync: updated deployed baseline $old -> $new"
 fi
-echo "pm-git-sync: updated $old -> $new"
 
 redeploy() { # <subtree> <unit> <dep-step-or-empty>
   local subtree="$1" unit="$2" dep="$3"
-  git diff --name-only "$old" "$new" -- "$subtree" | grep -q . || return 0
+  if [ "$BOOTSTRAP" -ne 1 ]; then
+    git diff --name-only "$old" "$new" -- "$subtree" | grep -q . || return 0
+  fi
   attempt_redeploy "$subtree" "$unit" "$dep" || true
 }
 
 # The aggregator installs with bun when its dependency inputs change.
-if git diff --name-only "$old" "$new" -- pm-stack/aggregator/package.json pm-stack/aggregator/bun.lock | grep -q .; then
+if [ "$BOOTSTRAP" -eq 1 ] ||
+  git diff --name-only "$old" "$new" -- pm-stack/aggregator/package.json pm-stack/aggregator/bun.lock | grep -q .; then
   agg_dep="$BUN install --silent"
 else
   agg_dep=""
@@ -174,7 +241,8 @@ redeploy pm-stack/aggregator pm-aggregator.service "$agg_dep"
 # The projector provisions @libsql/client via setup-deps.sh when its
 # package.json changes (bun install cannot reach the registry reliably
 # from this host; see pm-stack/projector/scripts/setup-deps.sh).
-if git diff --name-only "$old" "$new" -- pm-stack/projector/package.json | grep -q .; then
+if [ "$BOOTSTRAP" -eq 1 ] ||
+  git diff --name-only "$old" "$new" -- pm-stack/projector/package.json | grep -q .; then
   proj_dep="bash scripts/setup-deps.sh"
 else
   proj_dep=""

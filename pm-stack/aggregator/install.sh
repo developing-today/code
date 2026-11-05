@@ -31,6 +31,15 @@ UNIT_SRC="$SRC/../systemd/pm-aggregator.service"
 UNIT_DST="$HOME/.config/systemd/user/pm-aggregator.service"
 TAILNET_IP="${TAILNET_IP:-100.99.113.103}"
 
+copy_unit() { # <source> <destination>
+  local source="$1" destination="$2" name="${2##*/}"
+  if [ -L "$destination" ]; then
+    echo "$name is symlink-managed at $destination; skipping unit copy"
+  else
+    cp "$source" "$destination"
+  fi
+}
+
 mkdir -p "$STATE_DIR/snapshots" "$HOME/.config/systemd/user"
 chmod 700 "$STATE_DIR"
 
@@ -120,7 +129,7 @@ if [ "$CHANGED" -eq 1 ]; then
   } >"$ENV_FILE"
   chmod 600 "$ENV_FILE"
 
-  cp "$UNIT_SRC" "$UNIT_DST"
+  copy_unit "$UNIT_SRC" "$UNIT_DST"
 
   cd "$SRC"
   bun install --silent
@@ -167,8 +176,8 @@ systemctl --user is-active pm-aggregator.service
 GATHERER_SVC_SRC="$SRC/systemd/quota-gatherer.service"
 GATHERER_TMR_SRC="$SRC/systemd/quota-gatherer.timer"
 if [ -f "$GATHERER_SVC_SRC" ] && [ -f "$GATHERER_TMR_SRC" ]; then
-  cp "$GATHERER_SVC_SRC" "$HOME/.config/systemd/user/quota-gatherer.service"
-  cp "$GATHERER_TMR_SRC" "$HOME/.config/systemd/user/quota-gatherer.timer"
+  copy_unit "$GATHERER_SVC_SRC" "$HOME/.config/systemd/user/quota-gatherer.service"
+  copy_unit "$GATHERER_TMR_SRC" "$HOME/.config/systemd/user/quota-gatherer.timer"
   systemctl --user daemon-reload
   systemctl --user enable --now quota-gatherer.timer
   echo "quota-gatherer.timer: $(systemctl --user is-active quota-gatherer.timer)"

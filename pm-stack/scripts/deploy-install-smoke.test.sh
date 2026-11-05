@@ -112,14 +112,21 @@ printf 'systemctl %s\n' "$*" >>"${PM_TEST_COMMAND_LOG:?}"
 # Model ExecMainStartTimestampMonotonic: a value that changes on restart,
 # so installers that prove a fresh process start (ready-for-agent) can pass.
 start_ts_file="${PM_TEST_ROOT:?}/.systemctl-start-ts"
+main_pid_file="${PM_TEST_ROOT:?}/.systemctl-main-pid"
 case " $* " in
   *' restart '*)
     cur=1000
     if [[ -f "$start_ts_file" ]]; then cur="$(cat "$start_ts_file")"; fi
     printf '%s\n' "$((cur + 1000))" >"$start_ts_file"
+    pid=1000
+    if [[ -f "$main_pid_file" ]]; then pid="$(cat "$main_pid_file")"; fi
+    printf '%s\n' "$((pid + 1))" >"$main_pid_file"
     ;;
   *' show '*ExecMainStartTimestampMonotonic*)
     if [[ -f "$start_ts_file" ]]; then cat "$start_ts_file"; else printf '1000\n'; fi
+    ;;
+  *' show '*MainPID*)
+    if [[ -f "$main_pid_file" ]]; then cat "$main_pid_file"; else printf '1000\n'; fi
     ;;
   *' is-active '*|*' status '*) printf 'active\n' ;;
 esac
@@ -293,9 +300,9 @@ if "$BASH_BIN" -n "$READY_INSTALL"; then pass 'ready-for-agent/install.sh syntax
 
 # Build a minimal aggregator package copy so install.sh's hash/copy logic
 # runs entirely inside a disposable HOME. Side-effecting tools are stubbed.
-AGG_SRC="$TMP/aggregator-src"
 AGG_HOME="$TMP/aggregator-home"
-mkdir -p "$AGG_SRC" "$AGG_HOME/secrets" "$AGG_HOME/pm-stack/systemd"
+AGG_SRC="$AGG_HOME/git/code/pm-stack/aggregator"
+mkdir -p "$AGG_SRC" "$AGG_HOME/secrets" "$AGG_HOME/git/code/pm-stack/systemd"
 cp "$AGG_INSTALL" "$AGG_SRC/install.sh"
 printf '%s\n' '{"name":"smoke-aggregator","version":"1.0.0"}' >"$AGG_SRC/package.json"
 printf '%s\n' 'fake lockfile' >"$AGG_SRC/bun.lock"
@@ -308,7 +315,7 @@ printf '%s\n' '# fixture' >"$AGG_SRC/scripts/smoke.sh"
 printf '%s\n' '// fixture' >"$AGG_SRC/opencode-tools/smoke.ts"
 printf '%s\n' '[Service]' >"$AGG_SRC/systemd/quota-gatherer.service"
 printf '%s\n' '[Timer]' >"$AGG_SRC/systemd/quota-gatherer.timer"
-printf '%s\n' '[Service]' >"$AGG_HOME/pm-stack/systemd/pm-aggregator.service"
+printf '%s\n' '[Service]' >"$AGG_HOME/git/code/pm-stack/systemd/pm-aggregator.service"
 printf '%s\n' 'fake encrypted aggregator fixture' >"$AGG_HOME/secrets/pm-stack.sops.yaml"
 AGG_SOPS_LOG="$TMP/aggregator-sops.log"
 AGG_OUTPUT="$TMP/aggregator-install.out"
@@ -322,16 +329,16 @@ else
   cat "$AGG_OUTPUT"
   fail 'aggregator install smoke completes using temporary HOME and stubs'
 fi
-if contains "$AGG_HOME/pm-stack/aggregator/.env" 'KANEO_ADMIN_EMAIL=smoke-admin@example.invalid' &&
-  contains "$AGG_HOME/pm-stack/aggregator/.env" 'GRIST_API_KEY=fake-grist-key' &&
-  contains "$AGG_HOME/pm-stack/aggregator/.env" 'PM_AGG_BUILD_VERSION=smoke-build-v1'; then
+if contains "$AGG_HOME/.local/state/pm-aggregator/.env" 'KANEO_ADMIN_EMAIL=smoke-admin@example.invalid' &&
+  contains "$AGG_HOME/.local/state/pm-aggregator/.env" 'GRIST_API_KEY=fake-grist-key' &&
+  contains "$AGG_HOME/.local/state/pm-aggregator/.env" 'PM_AGG_BUILD_VERSION=smoke-build-v1'; then
   pass 'aggregator renders environment from stubbed SOPS fields'
 else
   fail 'aggregator renders environment from stubbed SOPS fields'
 fi
 if [[ -f "$AGG_HOME/.config/systemd/user/pm-aggregator.service" &&
   -f "$AGG_HOME/.config/systemd/user/quota-gatherer.service" &&
-  -f "$AGG_HOME/pm-stack/aggregator/.deploy-tree-hash" ]]; then
+  -f "$AGG_HOME/.local/state/pm-aggregator/.deploy-tree-hash" ]]; then
   pass 'aggregator copies package and unit files only under temporary HOME'
 else
   fail 'aggregator copies package and unit files only under temporary HOME'
@@ -349,13 +356,18 @@ READY_HOME="$TMP/ready-home"
 mkdir -p "$READY_ROOT/systemd" "$READY_HOME/.local/bin"
 cp "$READY_INSTALL" "$READY_ROOT/install.sh"
 printf '%s\n' '[Service]' >"$READY_ROOT/systemd/ready-for-agent.service"
+cat >"$READY_ROOT/apply-config.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'apply-config fixture\n' >>"${PM_TEST_COMMAND_LOG:?}"
+STUB
+chmod +x "$READY_ROOT/apply-config.sh"
 cat >"$READY_HOME/.local/bin/ready-for-agent" <<'FAKE'
 #!/usr/bin/env bash
 printf 'ready-for-agent 1.1.0\n'
 FAKE
 chmod +x "$READY_HOME/.local/bin/ready-for-agent"
 READY_OUTPUT="$TMP/ready-install.out"
-if env HOME="$READY_HOME" PATH="$STUB_BIN:$SYSTEM_PATH" \
+if env HOME="$READY_HOME" XDG_STATE_HOME="$READY_HOME/.local/state" PATH="$STUB_BIN:$SYSTEM_PATH" \
   PM_TEST_ROOT="$TMP" PM_TEST_COMMAND_LOG="$COMMAND_LOG" \
   "$BASH_BIN" "$READY_ROOT/install.sh" >"$READY_OUTPUT" 2>&1; then
   pass 'ready-for-agent install smoke completes using temporary HOME and stubs'
