@@ -379,19 +379,17 @@ export function filterEvents<T extends StreamEvent>(events: readonly T[], filter
       return aId !== null && bId !== null ? bId.localeCompare(aId) : b.index - a.index;
     })
     .map(({ event }) => event)
-    .filter(
-      (e) => {
-        const context = filter.itemContext?.get(normalizeRef(e.ref));
-        return (
-          (!filter.kind || eq(e.kind, filter.kind)) &&
-          (!refs.length || refs.some((ref) => normalizeRef(e.ref) === normalizeRef(ref))) &&
-          (!filter.actor || eq(e.actor, filter.actor)) &&
-          (!filter.project || Boolean(context?.project && eq(context.project, filter.project))) &&
-          (!filter.epic || Boolean(context?.epic && eq(context.epic, filter.epic))) &&
-          (!search || `${e.actor} ${e.kind} ${e.ref} ${e.summary}`.toLowerCase().includes(search))
-        );
-      },
-    );
+    .filter((e) => {
+      const context = filter.itemContext?.get(normalizeRef(e.ref));
+      return (
+        (!filter.kind || eq(e.kind, filter.kind)) &&
+        (!refs.length || refs.some((ref) => normalizeRef(e.ref) === normalizeRef(ref))) &&
+        (!filter.actor || eq(e.actor, filter.actor)) &&
+        (!filter.project || Boolean(context?.project && eq(context.project, filter.project))) &&
+        (!filter.epic || Boolean(context?.epic && eq(context.epic, filter.epic))) &&
+        (!search || `${e.actor} ${e.kind} ${e.ref} ${e.summary}`.toLowerCase().includes(search))
+      );
+    });
 }
 
 export interface EventPageCursor {
@@ -419,13 +417,15 @@ export function decodeEventCursor(value: string | null | undefined): EventPageCu
   try {
     const parsed: unknown = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
     if (
-      typeof parsed === "object" && parsed !== null &&
+      typeof parsed === "object" &&
+      parsed !== null &&
       typeof (parsed as EventPageCursor).at === "string" &&
       Number.isFinite(Date.parse((parsed as EventPageCursor).at)) &&
       typeof (parsed as EventPageCursor).id === "string" &&
       typeof (parsed as EventPageCursor).snapshotAt === "string" &&
       Number.isFinite(Date.parse((parsed as EventPageCursor).snapshotAt))
-    ) return parsed as EventPageCursor;
+    )
+      return parsed as EventPageCursor;
   } catch {
     // An invalid cursor starts a new first page; it never becomes a filter.
   }
@@ -443,23 +443,22 @@ export function pageEvents(
   // migrated v1 rows keep their original timestamp as `ingestedAt`,
   // including UTC offsets and missing fractional seconds, and string
   // order disagrees with instant order for those (Codex P2, PR #5266).
-  const snapshotAt = cursor?.snapshotAt ?? events.reduce(
-    (latest, event) => Date.parse(event.ingestedAt) > Date.parse(latest) ? event.ingestedAt : latest,
-    "1970-01-01T00:00:00.000Z",
-  );
+  const snapshotAt =
+    cursor?.snapshotAt ??
+    events.reduce(
+      (latest, event) => (Date.parse(event.ingestedAt) > Date.parse(latest) ? event.ingestedAt : latest),
+      "1970-01-01T00:00:00.000Z",
+    );
   const snapshotMs = Date.parse(snapshotAt);
-  const visible = events.filter((event) =>
-    Date.parse(event.ingestedAt) <= snapshotMs && (!cursor || compareEventOrder(event, cursor) > 0),
+  const visible = events.filter(
+    (event) => Date.parse(event.ingestedAt) <= snapshotMs && (!cursor || compareEventOrder(event, cursor) > 0),
   );
   const page = visible.slice(0, limit);
   const last = page.at(-1);
   return {
     events: page,
     snapshotAt,
-    nextCursor:
-      visible.length > limit && last
-        ? encodeEventCursor({ at: last.at, id: last.id, snapshotAt })
-        : null,
+    nextCursor: visible.length > limit && last ? encodeEventCursor({ at: last.at, id: last.id, snapshotAt }) : null,
   };
 }
 

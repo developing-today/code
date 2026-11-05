@@ -72,9 +72,7 @@ async function main(): Promise<void> {
     objectRef: digest.archiveRoute,
     url: digest.archiveRoute,
     title: `PM ${kind} digest — ${digest.date}`,
-    body: digest.sections
-      .map((s) => `${s.title}: ${s.items.length}${s.stale ? " (stale)" : ""}`)
-      .join(" · "),
+    body: digest.sections.map((s) => `${s.title}: ${s.items.length}${s.stale ? " (stale)" : ""}`).join(" · "),
   };
   let sent = 0;
   const now = new Date();

@@ -69,9 +69,7 @@ class AutoFormatWorkflowTest(unittest.TestCase):
             # A bare origin so the write pass can really push, and the
             # test can inspect the pushed commit afterwards.
             origin = root / "origin.git"
-            subprocess.run(
-                ["git", "init", "-q", "--bare", str(origin)], check=True
-            )
+            subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
             git("remote", "add", "origin", str(origin))
             git("push", "-q", "origin", "HEAD:main")
 
@@ -141,7 +139,15 @@ class AutoFormatWorkflowTest(unittest.TestCase):
             ).stdout.strip()
             pushed_tree = {}
             names = subprocess.run(
-                ["git", "--git-dir", str(origin), "ls-tree", "-r", "--name-only", "main"],
+                [
+                    "git",
+                    "--git-dir",
+                    str(origin),
+                    "ls-tree",
+                    "-r",
+                    "--name-only",
+                    "main",
+                ],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -248,9 +254,7 @@ class AutoFormatWorkflowTest(unittest.TestCase):
         self.assertEqual(nix_args, ["run", ".#format", "--", "parent.rs"])
         self.assertNotEqual(pushed_head, head)
         self.assertEqual(pushed_tree["child.rs"], "pub fn child() {}\n")
-        self.assertEqual(
-            pushed_tree["parent.rs"], "mod child;\n\npub fn parent() {}\n"
-        )
+        self.assertEqual(pushed_tree["parent.rs"], "mod child;\n\npub fn parent() {}\n")
         self.assertEqual(recorded_sha, pushed_head)
 
 

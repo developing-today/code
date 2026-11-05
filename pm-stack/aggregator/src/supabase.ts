@@ -53,7 +53,9 @@ export function getSupabaseClient(): Promise<SupabaseClient | null> {
       const token = await resolveBwsSecret("supabase.muse-dev2.access-token-muse-cli");
       if (!token) return null;
       const ref =
-        process.env.SUPABASE_PROJECT_REF ?? (await resolveBwsSecret("supabase.muse-dev2.project-ref")) ?? "keihfchslgjetkmnmzra";
+        process.env.SUPABASE_PROJECT_REF ??
+        (await resolveBwsSecret("supabase.muse-dev2.project-ref")) ??
+        "keihfchslgjetkmnmzra";
       return {
         ref,
         async query<T = Record<string, unknown>>(sql: string): Promise<T[]> {

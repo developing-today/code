@@ -2128,14 +2128,17 @@ function epicRollupHtml(rollup: EpicRollup): string {
 }
 
 export function eventTableHtml(events: readonly AuditEvent[]): string {
-  const rows = events.map((event) => {
-    const source = event.source.link
-      ? `<a href="${esc(event.source.link)}" rel="noopener">${esc(event.source.identity)}</a>`
-      : esc(event.source.identity);
-    const delay = Date.parse(event.ingestedAt) - Date.parse(event.at);
-    const ingested = Number.isFinite(delay) && delay > 0 ? `<span class="muted">(+${Math.round(delay / 1000)}s ingest)</span>` : "";
-    return `<tr><td>${esc(event.at)} ${ingested}</td><td>${esc(event.actor)} <span class="muted">(${esc(event.attribution.confidence)})</span></td><td>${esc(event.kind)}</td><td><code>${esc(event.ref)}</code></td><td>${esc(event.summary)}</td><td>${source}</td></tr>`;
-  }).join("\n");
+  const rows = events
+    .map((event) => {
+      const source = event.source.link
+        ? `<a href="${esc(event.source.link)}" rel="noopener">${esc(event.source.identity)}</a>`
+        : esc(event.source.identity);
+      const delay = Date.parse(event.ingestedAt) - Date.parse(event.at);
+      const ingested =
+        Number.isFinite(delay) && delay > 0 ? `<span class="muted">(+${Math.round(delay / 1000)}s ingest)</span>` : "";
+      return `<tr><td>${esc(event.at)} ${ingested}</td><td>${esc(event.actor)} <span class="muted">(${esc(event.attribution.confidence)})</span></td><td>${esc(event.kind)}</td><td><code>${esc(event.ref)}</code></td><td>${esc(event.summary)}</td><td>${source}</td></tr>`;
+    })
+    .join("\n");
   return `<div class="tblwrap"><table class="activity-events"><caption>Shared activity events</caption><thead><tr><th scope="col">When</th><th scope="col">Actor</th><th scope="col">Kind</th><th scope="col">Ref</th><th scope="col">Summary</th><th scope="col">Source</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No matching events; this does not establish complete coverage.</td></tr>'}</tbody></table></div>`;
 }
 
@@ -2381,7 +2384,7 @@ function quotaRefreshHtml(refresh?: import("./quota-refresh.ts").RefreshStatus):
     : refresh.stale
       ? `<span class="muted">quota data is older than five minutes</span>`
       : "";
-  return `<div class="card quota-refresh"><div>${marker || "<span class=\"muted\">quota data is fresh</span>"}</div><form method="post" action="/quota/refresh"><button type="submit">Refresh now</button></form></div>`;
+  return `<div class="card quota-refresh"><div>${marker || '<span class="muted">quota data is fresh</span>'}</div><form method="post" action="/quota/refresh"><button type="submit">Refresh now</button></form></div>`;
 }
 
 export function renderQuota(
@@ -6714,7 +6717,6 @@ function poolGraphHtml(items: ProjectPoolItem[], allW: ReturnType<typeof summari
   return `<h3>Blocked + depth graph</h3>${blockedHtml}${svg}`;
 }
 
-
 /** The #3973 per-epic dependency graph section of a project page
  * (design doc/2026-11-01T21-05-00Z_design_aggregator_dependency_graph_1257.md):
  * an epic selector with item/blocked counts, then per epic a summary +
@@ -6746,9 +6748,7 @@ function epicGraphSectionHtml(items: ProjectPoolItem[], selectorItems: ProjectPo
   // blocker lives in another Area count as blocked in the selector
   // while its section — resolving against the full pool — correctly
   // reported it unblocked.
-  const projectEpicRefs = new Set(
-    selectorItems.filter((i) => i.kind === "Epic").map((i) => i.ref),
-  );
+  const projectEpicRefs = new Set(selectorItems.filter((i) => i.kind === "Epic").map((i) => i.ref));
   const selector = epicSelector(items).filter((e) => projectEpicRefs.has(e.ref));
   if (!selector.length) {
     return `<h3>Per-epic dependency graph</h3><div class="banner">Dependency graph unavailable: no epic in this pool has items yet, so there is no per-epic graph to draw — this is an unavailable state, not an empty graph.</div>`;
@@ -6763,10 +6763,7 @@ function epicGraphSectionHtml(items: ProjectPoolItem[], selectorItems: ProjectPo
   return `<h3>Per-epic dependency graph</h3>${selectorHtml}${sections}`;
 }
 
-function epicGraphOneHtml(
-  items: ProjectPoolItem[],
-  entry: ReturnType<typeof epicSelector>[number],
-): string {
+function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epicSelector>[number]): string {
   const g = epicGraph(items, entry.ref);
   const heading = `<h4 id="${epicGraphAnchor(entry.ref)}">${esc(entry.title)} <span class="muted">(${esc(entry.ref)})</span></h4>`;
   if (g.status === "unavailable" || !g.epic) {
@@ -7285,9 +7282,7 @@ export function renderNotifications(view: NotificationsPageView, provenance: Pro
   const proposals = rollup.classes.filter((c) => c.proposal);
   const rows = rollup.classes
     .map((c) => {
-      const cells = c.weeks
-        .map((w) => `<td>${w.sent} sent · ${w.acted} acted (${pct(w.ratio)})</td>`)
-        .join("");
+      const cells = c.weeks.map((w) => `<td>${w.sent} sent · ${w.acted} acted (${pct(w.ratio)})</td>`).join("");
       return `<tr><td><strong>${esc(c.class)}</strong></td>${cells}<td>${c.sent} sent · ${c.acted} acted (${pct(c.ratio)})</td></tr>`;
     })
     .join("");

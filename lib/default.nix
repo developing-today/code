@@ -1166,7 +1166,12 @@ let
     in
     {
       packages = {
-        inherit (fleetPkgs) fleet fleet-serve fleet-connect fleet-brokers;
+        inherit (fleetPkgs)
+          fleet
+          fleet-serve
+          fleet-connect
+          fleet-brokers
+          ;
       }
       // pkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") {
         inherit (fleetPkgs) fleet-connect-static fleet-static;

@@ -111,10 +111,7 @@ async function rateLimited(limiter: RateLimit, key: string): Promise<boolean> {
 
 const NO_STORE = { "cache-control": "no-store" } as const;
 
-type BoundedBodyResult =
-  | { kind: "ok"; bytes: Uint8Array }
-  | { kind: "too-large" }
-  | { kind: "read-error" };
+type BoundedBodyResult = { kind: "ok"; bytes: Uint8Array } | { kind: "too-large" } | { kind: "read-error" };
 
 /** Read at most `maximum` bytes, cancelling the request as soon as it exceeds the cap. */
 async function readBoundedBody(request: Request, maximum: number): Promise<BoundedBodyResult> {

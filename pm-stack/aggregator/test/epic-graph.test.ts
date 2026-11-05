@@ -195,10 +195,7 @@ describe("epicGraph", () => {
   });
 
   test("members with no edges still return nodes (absence is data, not an error)", () => {
-    const pool = [
-      item({ number: 1, title: "Epic", kind: "Epic" }),
-      item({ number: 2, epicRef: R(1) }),
-    ];
+    const pool = [item({ number: 1, title: "Epic", kind: "Epic" }), item({ number: 2, epicRef: R(1) })];
     const g = epicGraph(pool, R(1));
     expect(g.status).toBe("ok");
     expect(g.nodes.length).toBe(2);
@@ -262,10 +259,7 @@ describe("renderProgramProject per-epic dependency graph (#3973)", () => {
   });
 
   test("an epic whose items carry no edges says not yet graphed and still lists items", () => {
-    const html = renderWith([
-      item({ number: 1, title: "Epic", kind: "Epic" }),
-      item({ number: 2, epicRef: R(1) }),
-    ]);
+    const html = renderWith([item({ number: 1, title: "Epic", kind: "Epic" }), item({ number: 2, epicRef: R(1) })]);
     expect(html).toContain("Not yet graphed: this epic's items carry no parent / blocked-by edges yet");
     expect(html).toContain("blocked by: none observed");
   });
@@ -339,7 +333,7 @@ describe("renderProgramProject per-epic dependency graph (#3973)", () => {
 
   test("dependency edges carry an arrowhead marker pointing at the blocker (Codex round-2)", () => {
     const html = renderWith(fixturePool());
-    expect(html).toContain("<marker id=\"dep-arrow-epic-graph-developing-today-code-1\"");
+    expect(html).toContain('<marker id="dep-arrow-epic-graph-developing-today-code-1"');
     expect(html).toContain('marker-end="url(#dep-arrow-epic-graph-developing-today-code-1)"');
     expect(html).toContain("with an arrowhead pointing at the blocker");
   });

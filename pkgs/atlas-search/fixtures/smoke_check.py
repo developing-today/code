@@ -29,6 +29,7 @@ no ATLAS_* inherited):
 
 Exits 0 with PASS lines, 1 with the first failure's detail.
 """
+
 import json
 import os
 import subprocess
@@ -45,7 +46,9 @@ def fail(msg: str) -> int:
     return 1
 
 
-def run(binary: Path, args: list, env_extra: dict, home: Path) -> subprocess.CompletedProcess:
+def run(
+    binary: Path, args: list, env_extra: dict, home: Path
+) -> subprocess.CompletedProcess:
     env = {"PATH": os.environ.get("PATH", ""), "HOME": str(home)}
     env.update(env_extra)
     return subprocess.run(
@@ -92,19 +95,34 @@ def main() -> int:
             except json.JSONDecodeError as e:
                 return fail(f"{name}: stdout not JSON: {e}")
             if got != cases[name]["envelope"]:
-                return fail(f"{name}: envelope differs from the recorded Python envelope")
-            print(f"smoke_check: PASS {name} (envelope byte-equal to the Python recording)")
+                return fail(
+                    f"{name}: envelope differs from the recorded Python envelope"
+                )
+            print(
+                f"smoke_check: PASS {name} (envelope byte-equal to the Python recording)"
+            )
 
         empty_model = tmp / "empty-model"
         empty_model.mkdir()
         r = run(
             binary,
-            ["search", QUERY, "--backend", "local", "--db", str(db), "--mode", "vector"],
+            [
+                "search",
+                QUERY,
+                "--backend",
+                "local",
+                "--db",
+                str(db),
+                "--mode",
+                "vector",
+            ],
             {"ATLAS_MODEL_DIR": str(empty_model)},
             home,
         )
         if r.returncode == 0:
-            return fail("ort probe: vector search unexpectedly succeeded with an empty model dir")
+            return fail(
+                "ort probe: vector search unexpectedly succeeded with an empty model dir"
+            )
         if "ONNX Runtime library not found" in r.stderr:
             return fail(
                 "ort probe: binary could not resolve the ONNX Runtime library: "
@@ -115,7 +133,9 @@ def main() -> int:
                 "ort probe: expected failure at the tokenizer (after runtime init), got: "
                 + r.stderr.strip()
             )
-        print("smoke_check: PASS ort load (runtime initialized; failure landed on the tokenizer)")
+        print(
+            "smoke_check: PASS ort load (runtime initialized; failure landed on the tokenizer)"
+        )
     return 0
 
 

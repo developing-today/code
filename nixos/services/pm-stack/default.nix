@@ -250,7 +250,10 @@ in
         pm-digest-daily = {
           Unit = {
             Description = "PM daily digest — generate + archive + deliver the day's digest (NixOS; runs from ~/git/code checkout, #1278)";
-            After = [ "network-online.target" "pm-aggregator.service" ];
+            After = [
+              "network-online.target"
+              "pm-aggregator.service"
+            ];
           };
           Service = {
             Type = "oneshot";
@@ -268,7 +271,10 @@ in
         pm-digest-weekly = {
           Unit = {
             Description = "PM weekly digest — generate + archive + deliver the week's roll-up (NixOS; runs from ~/git/code checkout, #1278)";
-            After = [ "network-online.target" "pm-aggregator.service" ];
+            After = [
+              "network-online.target"
+              "pm-aggregator.service"
+            ];
           };
           Service = {
             Type = "oneshot";

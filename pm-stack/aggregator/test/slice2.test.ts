@@ -192,7 +192,6 @@ describe("session hierarchy (#898 §5)", () => {
   });
 });
 
-
 describe("roadmap grains (#898 §3)", () => {
   test("month timeline places dated rows by month and keeps quarter grain", () => {
     const tl = monthTimeline(FIXTURE_ROADMAP);

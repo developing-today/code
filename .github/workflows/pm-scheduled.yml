@@ -30,7 +30,7 @@ on:
         required: false
         default: ""
       tasks:
-        description: "Explicit comma-separated task list (e.g. \"bolt,palette\"). When non-empty it is used verbatim and the slot table is not consulted."
+        description: 'Explicit comma-separated task list (e.g. "bolt,palette"). When non-empty it is used verbatim and the slot table is not consulted.'
         type: string
         required: false
         default: ""

@@ -65,7 +65,8 @@ ACTIVE_WINDOW_MS = 30 * 60 * 1000
 
 
 UUID_LANE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
 
 
 def is_candidate(row):
@@ -200,9 +201,7 @@ def summarize_cap(sessions, active_ids, now_ms):
     return len(roots), active, max(0, CAP - active)
 
 
-BROKER_URL = os.environ.get(
-    "REPO_QUEUE_BROKER_URL", "http://100.99.113.103:4801"
-)
+BROKER_URL = os.environ.get("REPO_QUEUE_BROKER_URL", "http://100.99.113.103:4801")
 BROKER_TOKEN_FILE = os.environ.get(
     "REPO_QUEUE_TOKEN_FILE",
     os.path.expanduser("~/.config/queue-broker/token"),

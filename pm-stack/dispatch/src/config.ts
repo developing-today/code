@@ -45,10 +45,7 @@ export const REPO_DIRS: Record<string, string> = {
  * openchamber since their move to developing-today-forks (the app is not
  * installed on that org yet — grants item G2) — dispatch skips issue
  * creation in all of those and returns a warning instead of failing. */
-export const APP_INSTALLED_REPOS: ReadonlySet<string> = new Set([
-  "developing-today/code",
-  "dezren39/nix",
-]);
+export const APP_INSTALLED_REPOS: ReadonlySet<string> = new Set(["developing-today/code", "dezren39/nix"]);
 
 export interface Config {
   port: number;

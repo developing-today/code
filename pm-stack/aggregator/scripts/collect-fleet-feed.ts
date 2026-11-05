@@ -543,7 +543,9 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
   // secret (the same resolve-by-name discipline as the token), else the
   // muse-dev2 project — never the retired muse-dev project.
   const ref =
-    process.env.SUPABASE_PROJECT_REF ?? (await resolveBwsSecret("supabase.muse-dev2.project-ref")) ?? "keihfchslgjetkmnmzra";
+    process.env.SUPABASE_PROJECT_REF ??
+    (await resolveBwsSecret("supabase.muse-dev2.project-ref")) ??
+    "keihfchslgjetkmnmzra";
   const fingerprint = await opencodeConfigFingerprint();
   // Cheap batch probe first (code#3332): the payload only changes on a
   // new import or a config change, so most ticks reuse the last good

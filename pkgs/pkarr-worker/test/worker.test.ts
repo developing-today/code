@@ -390,10 +390,7 @@ describe("DNS-over-HTTPS", () => {
       },
     } as Env["DOH_LIMITER"];
 
-    const response = await worker.fetch(
-      requestWithStream(`${BASE}/dns-query`, "POST", body.stream),
-      env,
-    );
+    const response = await worker.fetch(requestWithStream(`${BASE}/dns-query`, "POST", body.stream), env);
 
     expect(response.status).toBe(429);
     expect(order).toEqual(["limit"]);

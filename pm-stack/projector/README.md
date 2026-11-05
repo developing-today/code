@@ -74,21 +74,21 @@ local source you don't commit.
 
 ### Endpoints
 
-| Route                     | Method | Auth   | Purpose                                              |
-| ------------------------- | ------ | ------ | ---------------------------------------------------- |
-| `/health`                 | GET    | none   | ok + row counts                                      |
-| `/github/webhook`         | POST   | HMAC   | GitHub App webhook intake                            |
-| `/items?refs=a/b#1,c/d#2` | GET    | none   | items (or `?repo=`, `?state=`, `?kind=`, `?limit=`)  |
-| `/comments?refs=…`        | GET    | none   | unified comment stream, newest first                 |
-| `/comments?subject=…`     | GET    | none   | comment stream across everything linked to a subject |
-| `/links?subject=…`        | GET    | none   | registry rows (or `?ref=`)                           |
-| `/links`                  | POST   | bearer | create/update a link                                 |
-| `/links?subject=…&ref=…`  | DELETE | bearer | remove a link                                        |
-| `/subjects/<subject>`     | GET    | none   | joined view: links + live item state + activity      |
-| `/hot?after=<seq>&limit=<n>&high_water=<seq>` | GET | none | hot-list page (ascending, exclusive cursor) + issued `high_water` |
-| `/hot/checkpoints?consumer=<id>` | GET | none   | a consumer's acked checkpoint cursor                 |
-| `/hot/checkpoints`        | POST   | bearer | ack a checkpoint `{consumer, cursor, highWater}`     |
-| `/reconcile`              | POST   | bearer | trigger a reconciliation poll                        |
+| Route                                         | Method | Auth   | Purpose                                                           |
+| --------------------------------------------- | ------ | ------ | ----------------------------------------------------------------- |
+| `/health`                                     | GET    | none   | ok + row counts                                                   |
+| `/github/webhook`                             | POST   | HMAC   | GitHub App webhook intake                                         |
+| `/items?refs=a/b#1,c/d#2`                     | GET    | none   | items (or `?repo=`, `?state=`, `?kind=`, `?limit=`)               |
+| `/comments?refs=…`                            | GET    | none   | unified comment stream, newest first                              |
+| `/comments?subject=…`                         | GET    | none   | comment stream across everything linked to a subject              |
+| `/links?subject=…`                            | GET    | none   | registry rows (or `?ref=`)                                        |
+| `/links`                                      | POST   | bearer | create/update a link                                              |
+| `/links?subject=…&ref=…`                      | DELETE | bearer | remove a link                                                     |
+| `/subjects/<subject>`                         | GET    | none   | joined view: links + live item state + activity                   |
+| `/hot?after=<seq>&limit=<n>&high_water=<seq>` | GET    | none   | hot-list page (ascending, exclusive cursor) + issued `high_water` |
+| `/hot/checkpoints?consumer=<id>`              | GET    | none   | a consumer's acked checkpoint cursor                              |
+| `/hot/checkpoints`                            | POST   | bearer | ack a checkpoint `{consumer, cursor, highWater}`                  |
+| `/reconcile`                                  | POST   | bearer | trigger a reconciliation poll                                     |
 
 **Subjects** are external keys:
 

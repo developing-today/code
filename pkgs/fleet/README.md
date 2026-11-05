@@ -14,7 +14,7 @@ the dispatch domain — a thin client over pm-stack dispatch. Step 5
 over the live Atlas service, gated on the #5350 step-6 cutover.
 Step 6 (#5554) landed the secrets verb. With search in, every
 domain in the registry runs for real in the full build; the one
-remaining stub is the search *serve role* (`fleet serve search`):
+remaining stub is the search _serve role_ (`fleet serve search`):
 the atlas user unit still points at the standalone atlas-search
 service, and re-pointing it is tracked separately from this epic's
 client-surface step.
@@ -107,14 +107,14 @@ names (`repo-queue`, `queue-broker`, `secrets-broker`,
 `laptop-agent`, `atlas-search`, `laptop-agent-broker`) route to
 their domain through argv0.
 
-| nix attr              | profile | capabilities                                                        |
-| --------------------- | ------- | ------------------------------------------------------------------- |
-| `fleet`               | full    | all ten                                                            |
-| `fleet-serve`         | serve   | proxy-connect, proxy-serve, queue-broker, secrets-broker, search-serve |
-| `fleet-static`        | full    | all nine (musl static; the sandbox's artifact)              |
-| `fleet-connect`       | connect | proxy-connect (dynamic)                                             |
-| `fleet-connect-static`| connect | proxy-connect (musl static, runs anywhere)                          |
-| `fleet-brokers`       | —       | standalone repo-queue / queue-broker / secrets-broker (rollback)  |
+| nix attr               | profile | capabilities                                                           |
+| ---------------------- | ------- | ---------------------------------------------------------------------- |
+| `fleet`                | full    | all ten                                                                |
+| `fleet-serve`          | serve   | proxy-connect, proxy-serve, queue-broker, secrets-broker, search-serve |
+| `fleet-static`         | full    | all nine (musl static; the sandbox's artifact)                         |
+| `fleet-connect`        | connect | proxy-connect (dynamic)                                                |
+| `fleet-connect-static` | connect | proxy-connect (musl static, runs anywhere)                             |
+| `fleet-brokers`        | —       | standalone repo-queue / queue-broker / secrets-broker (rollback)       |
 
 Every package installs its binary as `bin/fleet`; the hyphen
 variants also get a `bin/fleet-serve` / `bin/fleet-connect` symlink
@@ -125,12 +125,12 @@ for side-by-side installs.
 A domain that cannot run answers on stderr and exits **69**
 (EX_UNAVAILABLE), with wording that says which layer said no:
 
-| case                        | wording                                                    |
-| --------------------------- | ---------------------------------------------------------- |
-| not compiled into this build| `this build does not include '<domain>'` + enabled list    |
-| narrowed out by argv0 name  | `invoked as 'fleet-connect', this build does not include …`|
-| disabled by config          | `'<domain>' is disabled by config on this host`            |
-| compiled in, not yet built  | `'<domain>' is included in this build but not implemented yet` |
+| case                         | wording                                                        |
+| ---------------------------- | -------------------------------------------------------------- |
+| not compiled into this build | `this build does not include '<domain>'` + enabled list        |
+| narrowed out by argv0 name   | `invoked as 'fleet-connect', this build does not include …`    |
+| disabled by config           | `'<domain>' is disabled by config on this host`                |
+| compiled in, not yet built   | `'<domain>' is included in this build but not implemented yet` |
 
 Usage errors exit 2. `fleet --help` always renders the full
 registry, marking each unavailable domain with the reason

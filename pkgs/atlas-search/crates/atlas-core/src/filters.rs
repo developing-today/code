@@ -690,7 +690,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(basic.since.as_deref(), Some("2026-10-31"));
-        assert_eq!(basic.where_clause(TURSO_SHAPE), dashed.where_clause(TURSO_SHAPE));
+        assert_eq!(
+            basic.where_clause(TURSO_SHAPE),
+            dashed.where_clause(TURSO_SHAPE)
+        );
         assert_eq!(
             basic.session_clauses("s2", "l2"),
             dashed.session_clauses("s2", "l2")
