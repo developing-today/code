@@ -42,6 +42,13 @@
 //! * A session with no datagrams in either direction for
 //!   [`RELAY_IDLE_TIMEOUT`] closes.
 //!
+//! The follow-up surface beside this module: `udp_forward`
+//! (the client shim wrapping plain UDP into these sessions)
+//! and two small bins — `fleet-connect-udp`, the standalone
+//! endpoint for hosts where the broker doesn't run (the
+//! laptop's dark deployment), and `fleet-udp-forward`, the
+//! shim. Neither bin is wired into any service by the code.
+//!
 //! There is deliberately **no target allowlist**: the listener
 //! binds loopback by default and is off unless configured, the
 //! same trust posture as the broker itself (a local capability,
