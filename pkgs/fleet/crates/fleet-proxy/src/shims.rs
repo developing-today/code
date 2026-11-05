@@ -21,7 +21,7 @@
 //! symlinks to the one local binary, nothing more.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use fleet_proxy_proto::ServiceInfo;
 
@@ -90,6 +90,15 @@ fn stamp_tools(stamp: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Whether `name` is a plain file name: a single normal path component,
+/// with no separator, no `.`/`..`, and no root. Every name in the fixed
+/// tool table qualifies; anything read back from a stamp that does not
+/// is not a name this crate ever wrote.
+fn is_plain_tool_name(name: &str) -> bool {
+    let mut components = Path::new(name).components();
+    matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
+}
+
 /// Sync `dir` to the shim set `services` advertises, linking each
 /// tool at `exe` (the local fleet binary — canonically resolved,
 /// so links don't chain through another symlink).
@@ -132,6 +141,17 @@ pub fn sync_shims(
     if let Some(old) = &old_stamp {
         for old_tool in stamp_tools(old) {
             if !tools.contains(&old_tool) {
+                // The stamp is data on disk, not proof of ownership: a
+                // name fleet wrote is always a plain file name from the
+                // fixed table, so anything else (a `../` escape, an
+                // absolute path) names a foreign file outside this dir
+                // and is never removed (#5778).
+                if !is_plain_tool_name(&old_tool) {
+                    warnings.push(format!(
+                        "stamp names {old_tool:?}, which is not a plain tool name; not removing anything for it"
+                    ));
+                    continue;
+                }
                 let link = dir.join(&old_tool);
                 if link.is_symlink() {
                     let _ = std::fs::remove_file(&link);
@@ -239,6 +259,28 @@ mod tests {
             std::fs::read(dir.path().join("repo-queue")).unwrap(),
             b"someone else's tool"
         );
+    }
+
+    #[test]
+    fn sync_never_removes_through_a_planted_stamp_name() {
+        // #5778: stamp entries that escape the shim dir (a `../` name, an
+        // absolute path) must not delete the symlinks they point at.
+        let outer = tempfile_dir::Dir::new();
+        let dir = outer.path().join("shims");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = outer.path().join("fleet");
+        std::fs::write(&exe, b"fake").unwrap();
+        let victim = outer.path().join("victim-link");
+        std::os::unix::fs::symlink(&exe, &victim).unwrap();
+        let stamp = format!(
+            "{{\"services\":{{}},\"tools\":[\"../victim-link\",\"{}\"],\"exe\":\"{}\"}}",
+            victim.display(),
+            exe.display()
+        );
+        std::fs::write(dir.join(STAMP_FILE), stamp).unwrap();
+        let sync = sync_shims(&dir, &map_of(&[]), &exe).unwrap();
+        assert!(victim.is_symlink(), "the outside symlink must survive");
+        assert_eq!(sync.warnings.len(), 2, "{:?}", sync.warnings);
     }
 }
 
