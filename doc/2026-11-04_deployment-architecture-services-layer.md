@@ -344,7 +344,13 @@ Ordered by pain already suffered. Each step is independently reversible
 (rollback = the old mechanism stays until the new one is proven, then is
 removed in the same change that proves it), and **none requires a system
 switch to land** — the only system-flake change in the whole program is
-adding the `deploy` package and the `deployTargets` output.
+adding the `deploy` package and the `deployTargets` output. One named
+exception to that additive-only claim: the M2 and M4 ownership handoffs
+below are deliberately *subtractive* system-flake changes — they remove
+(or durably override) the Home Manager declarations of the migrated
+units in the same change that proves each migration, because replacing
+a live unit file does not relinquish Home Manager's ownership of it
+(code#6251).
 
 **M1 — route-proxy (the hand unit that is broken today).**
 Define the route proxy as a services-layer target on the laptop; deploy
@@ -366,7 +372,17 @@ surface is the widest — the shim delegates to it). *Acceptance per
 daemon:* health endpoint OK on the new generation; one real client call
 end-to-end (a `fleet secrets get` by name, a queue round-trip, an agent
 exec batch) matches the old path's behavior; old unit files archived,
-not deleted, until M2 closes. This also completes code#5343 phase 3
+not deleted, until M2 closes; **an explicit Home Manager
+unit-ownership handoff** — the daemon's `systemd.user.services`
+declaration in `home/common/default.nix` is removed (or replaced by a
+durable override that survives activation) in the same change that
+proves the migration, since Home Manager replaces hand-installed units
+on activation and would otherwise restore the old broker binaries over
+the deployed generation; and **post-activation survival** — after the
+cutover, a subsequent ordinary Home Manager / system activation is run
+and the migrated daemon is verified to still serve from its deployed
+services-layer generation (health endpoint OK, unit not restored from
+the Home Manager declaration). This also completes code#5343 phase 3
 (declare the agent in Nix) in its corrected form: declared as a
 *service*, not as a switch passenger.
 
@@ -388,7 +404,18 @@ pm-git-sync's pull-and-restart. *Acceptance:* a gather tick and an
 aggregator read served from a deployed generation while the primary
 checkout is deliberately moved to a different rev — the running service
 does not notice; pm-git-sync retires or shrinks to a repo-keeping role
-with no service restarts. This is the largest step and deliberately
+with no service restarts; **an explicit Home Manager unit-ownership
+handoff** — the PM units' declarations under
+`home-manager.users` in `nixos/services/pm-stack/default.nix` are
+removed (or replaced by a durable override that survives activation)
+in the same change that proves the migration, since a later activation
+would otherwise restore the checkout-backed services over the deployed
+generations; and **post-activation survival** — after the cutover, a
+subsequent ordinary Home Manager / system activation is run and the
+migrated PM services are verified to still serve from their deployed
+generations. The future M4 implementation issue must carry this
+handoff + post-activation acceptance verbatim (noted on epic
+code#5765; source: code#6251). This is the largest step and deliberately
 last: it touches the fleet's own dashboard/queue surfaces.
 
 **Track C (parallel, Cloudflare):**
