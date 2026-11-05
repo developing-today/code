@@ -58,6 +58,48 @@ describe("shell contract validator", () => {
     expect(() => parseShellContract(badBound)).toThrow("chat.text: max_bytes must be a finite number");
   });
 
+  it("rejects malformed top-level fields when loading a contract (#4323)", () => {
+    const without = (key: string): Record<string, unknown> => {
+      const malformed = structuredClone(contract) as unknown as Record<string, unknown>;
+      delete malformed[key];
+      return malformed;
+    };
+
+    expect(() => parseShellContract(without("routing_fields"))).toThrow("routing_fields must be an array of strings");
+    expect(() => parseShellContract(without("projection"))).toThrow("projection must be an object");
+    expect(() => parseShellContract(without("max_frame_bytes"))).toThrow(
+      "max_frame_bytes must be a non-negative integer",
+    );
+
+    const stringRouting = structuredClone(contract) as unknown as Record<string, unknown>;
+    stringRouting.routing_fields = "world";
+    expect(() => parseShellContract(stringRouting)).toThrow("routing_fields must be an array of strings");
+
+    const mixedRouting = structuredClone(contract) as unknown as Record<string, unknown>;
+    mixedRouting.routing_fields = ["world", 7];
+    expect(() => parseShellContract(mixedRouting)).toThrow("routing_fields must be an array of strings");
+
+    const stringProjection = structuredClone(contract) as unknown as Record<string, unknown>;
+    stringProjection.projection = "world_state";
+    expect(() => parseShellContract(stringProjection)).toThrow("projection must be an object");
+
+    const withoutRedacted = structuredClone(contract) as unknown as Record<string, unknown>;
+    withoutRedacted.projection = {};
+    expect(() => parseShellContract(withoutRedacted)).toThrow("projection.redacted_keys must be an array of strings");
+
+    const mixedRedacted = structuredClone(contract) as unknown as Record<string, unknown>;
+    mixedRedacted.projection = { redacted_keys: ["seed", 7] };
+    expect(() => parseShellContract(mixedRedacted)).toThrow("projection.redacted_keys must be an array of strings");
+
+    const negativeCap = structuredClone(contract) as unknown as Record<string, unknown>;
+    negativeCap.max_frame_bytes = -1;
+    expect(() => parseShellContract(negativeCap)).toThrow("max_frame_bytes must be a non-negative integer");
+
+    const fractionalCap = structuredClone(contract) as unknown as Record<string, unknown>;
+    fractionalCap.max_frame_bytes = 1.5;
+    expect(() => parseShellContract(fractionalCap)).toThrow("max_frame_bytes must be a non-negative integer");
+  });
+
   it("returns violations instead of throwing for malformed field specs", () => {
     const malformedClient = withFieldType("client", "chat", "text", "u65");
     const clientCheck = checkClientFrame(malformedClient, { type: "chat", text: "hi" }, "joined");
