@@ -88,6 +88,17 @@ Right shape when **all** of these hold:
   when a direct or relay-assisted UDP path exists.
 - Both endpoints can connect outbound over 443 (directly or through their
   HTTP proxy), so the pair-by-two-outbound-WebSockets topology applies.
+- **The egress path permits WebSocket upgrades, not merely HTTPS
+  requests.** These are not the same capability: some proxies and
+  middleboxes pass ordinary HTTPS but block or break the WebSocket
+  upgrade. A network that allows HTTPS yet blocks WebSocket is *outside*
+  this component's supported environment — a real coverage gap in
+  exactly the restricted-network population #5671 targets, stated here
+  rather than papered over: such networks fall to #5671's remaining
+  tiers (HTTP CONNECT proxying to a broker, or a possible future
+  polling tier — see Alternatives), not to this relay. (The rendezvous
+  role is unaffected: it is plain HTTPS request/response and remains
+  reachable from such networks.)
 - The payload is already end-to-end encrypted between the true endpoints,
   so a blind frame forwarder satisfies the trust model (below).
 - Convenience/default reachability matters more than sovereignty for this
@@ -178,11 +189,16 @@ Ship order, if implementation is ever scheduled: rendezvous role first
   The two-outbound-WebSocket pairing is strictly more general for the
   fallback case. Rejected.
 - **HTTP request/response polling relay instead of WebSockets.**
-  Works everywhere, but interactive latency and request metering make it
-  a worse product and a more expensive one; WebSocket upgrade is plain
-  HTTPS and passes the same egress. Rejected except as a possible
-  future last-ditch tier *inside* #5671's ordering, which would be a
-  parent-level addition, not this component's choice.
+  Rejected *as this component's primary shape*, on latency and
+  request-metering cost for interactive traffic where WebSocket is
+  available — not on reachability: the earlier premise that a WebSocket
+  upgrade passes the same egress as ordinary HTTPS is false in general
+  (see the supported-environment criteria above), and polling is in
+  fact the *more* reachable shape on HTTPS-only, WebSocket-blocking
+  networks. Polling therefore stays a live candidate for a last-ditch
+  tier *inside* #5671's ordering covering that gap — a parent-level
+  addition, not this component's choice, and not foreclosed by
+  anything in this record.
 - **Folding this into the P7.2 Worker.** See [Not P7.2](#not-p72):
   different protocol, different trust posture, different scaling shape.
   Rejected; shared deployment plumbing only.
