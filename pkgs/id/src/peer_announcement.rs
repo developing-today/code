@@ -166,6 +166,36 @@ mod tests {
         assert!(SignedPeerAnnouncement::decode_frame(&trailing_second).is_none());
     }
 
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn signed_frames_refuse_any_trailing_suffix(
+            seed in any::<u8>(),
+            blob_count in any::<u64>(),
+            timestamp_secs in any::<u64>(),
+            suffix in proptest::collection::vec(any::<u8>(), 1..32),
+        ) {
+            // #6197 property form of the full-consumption invariant
+            // (oracle: the invariant itself, checked over generated
+            // announcements and arbitrary nonempty suffixes): the
+            // genuine frame round-trips and verifies, the suffixed
+            // frame never decodes.
+            let key = signing_key(seed);
+            let mut ann = announcement(&key);
+            ann.blob_count = blob_count;
+            ann.timestamp_secs = timestamp_secs;
+            let signed = SignedPeerAnnouncement::sign(ann.clone(), &key).unwrap();
+            let frame = signed.encode_frame().unwrap();
+            prop_assert_eq!(SignedPeerAnnouncement::decode_frame(&frame), Some(ann));
+            let mut suffixed = frame;
+            suffixed.extend_from_slice(&suffix);
+            prop_assert!(SignedPeerAnnouncement::decode_frame(&suffixed).is_none());
+        }
+    }
+
     #[test]
     fn signature_binds_every_claim_field_and_the_version() {
         let key = signing_key(2);

@@ -725,6 +725,31 @@ mod tests {
         assert_eq!(decode_frame(&trailing_second), None);
     }
 
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn frames_refuse_any_trailing_suffix(
+            node_byte in any::<u8>(),
+            ts in any::<u64>(),
+            suffix in proptest::collection::vec(any::<u8>(), 1..32),
+        ) {
+            // #6197 property form of the full-consumption invariant
+            // (oracle: the invariant itself, checked over generated
+            // heartbeats and arbitrary nonempty suffixes): the genuine
+            // frame round-trips, the suffixed frame never decodes.
+            let chan = channel("general");
+            let hb = heartbeat(key(node_byte), vec![chan], ts);
+            let frame = encode_frame(&hb);
+            prop_assert_eq!(decode_frame(&frame), Some(hb));
+            let mut suffixed = frame;
+            suffixed.extend_from_slice(&suffix);
+            prop_assert_eq!(decode_frame(&suffixed), None);
+        }
+    }
+
     #[test]
     fn duplicate_delivery_does_not_extend_expiry() {
         // A captured heartbeat re-delivered inside the freshness window is
