@@ -1053,6 +1053,11 @@ in
   # it via EnvironmentFile. The vibe provider resolves the key from the
   # server process env; the mistral provider's enrolled credential
   # (integration "mistral") remains its primary source.
+  # The same materializer also writes DEEPSEEK_API_KEY (Bitwarden
+  # deepseek.api-key, via agent-auth/deepseek-api-key) into the same
+  # EnvironmentFile: it keys the deepseek provider's official-API leg
+  # (deepseek/deepseek-flash, "1017") in the deepseek-flash-plan route
+  # (Drew, direct order, 2026-11-05).
   systemd.user.services.opencode.Service = {
     ExecStartPre = toString (
       pkgs.writeShellScript "opencode-mistral-key-materialize" ''
@@ -1060,6 +1065,7 @@ in
         umask 077
         mkdir -p "$HOME/.local/state/opencode"
         printf 'MISTRAL_API_KEY=%s\n' "$(cat /run/secrets/agent-auth/mistral-api-key)" > "$HOME/.local/state/opencode/mistral-api-key.env"
+        printf 'DEEPSEEK_API_KEY=%s\n' "$(cat /run/secrets/agent-auth/deepseek-api-key)" >> "$HOME/.local/state/opencode/mistral-api-key.env"
       ''
     );
     EnvironmentFile = "%h/.local/state/opencode/mistral-api-key.env";
