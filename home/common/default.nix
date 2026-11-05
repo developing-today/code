@@ -1044,6 +1044,27 @@ in
     };
   };
 
+  # MISTRAL_API_KEY for the opencode server (opencode#1653): the value
+  # lives in Bitwarden (mistral.api-key), mirrored into sops and decrypted
+  # to /run/secrets/agent-auth/mistral-api-key (nixos/agent-auth). It must
+  # never enter the Nix store, so an ExecStartPre materializes a
+  # systemd EnvironmentFile at every server start — the same pattern as
+  # openclaw-facade-auth-materialize in home/openclaw — and the unit reads
+  # it via EnvironmentFile. The vibe provider resolves the key from the
+  # server process env; the mistral provider's enrolled credential
+  # (integration "mistral") remains its primary source.
+  systemd.user.services.opencode.Service = {
+    ExecStartPre = toString (
+      pkgs.writeShellScript "opencode-mistral-key-materialize" ''
+        set -eu
+        umask 077
+        mkdir -p "$HOME/.local/state/opencode"
+        printf 'MISTRAL_API_KEY=%s\n' "$(cat /run/secrets/agent-auth/mistral-api-key)" > "$HOME/.local/state/opencode/mistral-api-key.env"
+      ''
+    );
+    EnvironmentFile = "%h/.local/state/opencode/mistral-api-key.env";
+  };
+
   services.mcpx = {
     # enable comes from the cascade (mkDefault at each layer).
     #
