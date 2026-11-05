@@ -22,7 +22,14 @@ events.ts): DATABASE-FIRST WITH SPILL TO OUTBOX.
                 each record is inserted with ignore-duplicates on its
                 stable id (so a retry after an ambiguous failure is
                 safe), landed lines are removed, failures stay with
-                _attempts/_last_error bookkeeping. Runs under the
+                _attempts/_last_error bookkeeping. A line that cannot
+                be parsed (or is not a JSON object) is NEVER dropped:
+                it is appended verbatim to quarantine.jsonl in the
+                state dir (raw line + timestamp + reason, fsync'd
+                before the outbox rewrite that removes it), counted
+                in pusher-health.json and the stdout summary, and a
+                run that quarantined a line is not a clean drain (it
+                does not set last_drain_ok_at). Runs under the
                 systemd user timer external-comms-pusher.timer
                 (every minute) and always rewrites
                 pusher-health.json — the visible surface a stewardship
@@ -53,6 +60,7 @@ STATE_DIR = os.environ.get(
     os.path.expanduser("~/.local/state/external-comms"))
 OUTBOX = os.path.join(STATE_DIR, "outbox.jsonl")
 HEALTH = os.path.join(STATE_DIR, "pusher-health.json")
+QUARANTINE = os.path.join(STATE_DIR, "quarantine.jsonl")
 LOCK = os.path.join(STATE_DIR, "pusher.lock")
 TABLE = "external_comms"
 TIMEOUT = 8  # seconds; a send-time caller must never hang on the ledger
@@ -137,7 +145,7 @@ def spill(rec):
         os.fsync(f.fileno())
 
 
-def write_health(**fields):
+def write_health(_remove=(), **fields):
     os.makedirs(STATE_DIR, exist_ok=True)
     health = {}
     if os.path.exists(HEALTH):
@@ -147,12 +155,29 @@ def write_health(**fields):
         except Exception:
             health = {}
     health.update(fields)
+    for k in _remove:
+        health.pop(k, None)
     health["updated_at"] = now_iso()
     tmp = HEALTH + ".tmp"
     with open(tmp, "w") as f:
         json.dump(health, f, indent=1)
     os.replace(tmp, HEALTH)
     return health
+
+
+def quarantine_line(raw, run_at, reason):
+    """Durably append one malformed outbox line to quarantine.jsonl.
+
+    Stores the exact raw line (minus its line terminator), the time and
+    the reason. fsync'd: callers must only drop the line from the outbox
+    after this returns. Raises on failure."""
+    os.makedirs(STATE_DIR, exist_ok=True)
+    entry = {"_quarantined_at": run_at, "_reason": reason,
+             "_raw": raw.rstrip("\n")}
+    with open(QUARANTINE, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def do_record(rec):
@@ -181,13 +206,17 @@ def do_push():
         return 0
     run_at = now_iso()
     pending, landed, last_error = [], 0, None
-    total_landed = 0
+    pending_raw = []  # malformed lines whose quarantine write failed
+    quarantined, last_quarantine_reason = 0, None
+    total_landed, total_quarantined = 0, 0
     if os.path.exists(HEALTH):
         try:
             with open(HEALTH) as f:
-                total_landed = json.load(f).get("total_landed", 0)
+                prev_health = json.load(f)
+            total_landed = prev_health.get("total_landed", 0)
+            total_quarantined = prev_health.get("total_quarantined", 0)
         except Exception:
-            total_landed = 0
+            total_landed, total_quarantined = 0, 0
     lines = []
     if os.path.exists(OUTBOX):
         with open(OUTBOX) as f:
@@ -198,10 +227,27 @@ def do_push():
         except Exception as e:
             base, key, last_error = None, None, f"db config: {e}"
         for ln in lines:
+            rec, malformed = None, None
             try:
                 rec = json.loads(ln)
-            except Exception:
-                continue  # unparseable line: drop, it can never land
+                if not isinstance(rec, dict):
+                    malformed = "not a JSON object"
+            except Exception as e:
+                malformed = f"json-decode: {e}"
+            if malformed is not None:
+                # NEVER SILENT: quarantine the exact line durably
+                # BEFORE the rewrite below removes it from the outbox.
+                # If the quarantine write itself fails, keep the raw
+                # line in the outbox for the next run instead.
+                try:
+                    quarantine_line(ln, run_at, malformed)
+                    quarantined += 1
+                    last_quarantine_reason = malformed
+                except Exception as qe:
+                    pending_raw.append(ln if ln.endswith("\n")
+                                       else ln + "\n")
+                    last_error = f"quarantine failed: {qe}"[:300]
+                continue
             if base is None:
                 rec["_attempts"] = rec.get("_attempts", 0) + 1
                 rec["_last_error"] = str(last_error)
@@ -221,16 +267,31 @@ def do_push():
         with open(tmp, "w") as f:
             for rec in pending:
                 f.write(json.dumps(rec) + "\n")
+            for ln in pending_raw:
+                f.write(ln)
         os.replace(tmp, OUTBOX)
     total_landed += landed
-    health = write_health(
+    total_quarantined += quarantined
+    pending_total = len(pending) + len(pending_raw)
+    health_fields = dict(
         last_run_at=run_at,
-        pending_count=len(pending),
+        pending_count=pending_total,
         last_error=last_error,
         total_landed=total_landed,
-        **({"last_drain_ok_at": run_at} if not pending else {}))
+        last_run_quarantined=quarantined,
+        total_quarantined=total_quarantined)
+    if quarantined:
+        health_fields["last_quarantine_at"] = run_at
+        health_fields["last_quarantine_reason"] = last_quarantine_reason
+        health_fields["last_lossy_drain_at"] = run_at
+    clean_drain = not pending_total and not quarantined
+    health = write_health(
+        _remove=("last_drain_ok_at",) if quarantined else (),
+        **health_fields,
+        **({"last_drain_ok_at": run_at} if clean_drain else {}))
     print(json.dumps({"pusher": "ran", "landed": landed,
-                      "pending": len(pending),
+                      "pending": pending_total,
+                      "quarantined": quarantined,
                       "last_error": last_error}))
     return 0
 
