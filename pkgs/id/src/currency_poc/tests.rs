@@ -1645,11 +1645,15 @@ fn live_crash_before_submission_resubmits_same_ids() {
 #[test]
 #[ignore = "requires the pinned tigerbeetle binary (TIGERBEETLE_POC_BINARY or PATH)"]
 fn live_same_request_twice_posts_once() {
-    // Codex review, PR #5072: resubmitting an already-posted linked
-    // chain must be an idempotent success, as with the in-memory
-    // backend — TigerBeetle reports Exists for the first leg and
+    // #4678: an identical execute() retry against a Posted record is
+    // refused explicitly — terminal intents are final, so the retry
+    // posts nothing a second time. The PR #5072 binding behaviour
+    // this test originally pinned (resubmitting an already-posted
+    // linked chain is an idempotent success at the backend:
+    // TigerBeetle reports Exists for the first leg and
     // LinkedEventFailed for the rest, which the binding translates
-    // back to per-leg Exists after verifying the stored legs.
+    // back to per-leg Exists after verifying the stored legs) is
+    // exercised directly through the backend below instead.
     let (_cluster, mut executor) = live_executor(30028);
     let first = executor.execute(&request()).expect("first execution posts");
     assert_eq!(first.state, IntentState::Posted);
@@ -1659,11 +1663,20 @@ fn live_same_request_twice_posts_once() {
         executor.backend.account_balance(LP_DST).unwrap(),
     );
 
-    let second = executor
+    let error = executor
         .execute(&request())
-        .expect("same-request retry is an idempotent success");
-    assert_eq!(second.state, IntentState::Posted);
-    assert_eq!(second.legs, first.legs);
+        .expect_err("same-request retry of a Posted conversion is refused (#4678)");
+    assert!(
+        format!("{error:#}").contains("Posted"),
+        "retry error names the terminal state: {error:#}"
+    );
+    let resubmitted = executor.backend.create_transfers(&first.legs);
+    assert!(
+        resubmitted
+            .iter()
+            .all(|result| matches!(result, Ok(()) | Err(TransferError::Exists))),
+        "backend resubmission of the posted chain stays idempotent: {resubmitted:?}"
+    );
     assert_eq!(
         executor.backend.account_balance(USER_SRC).unwrap(),
         balances_after_first.0,
@@ -1678,4 +1691,104 @@ fn live_same_request_twice_posts_once() {
         balances_after_first.2
     );
     assert_eq!(executor.backend.transfers_with_user_data_128(777).len(), 3);
+}
+
+// --- #4678: terminal intent states are final -------------------------
+
+#[test]
+fn submit_refuses_abandoned_record() {
+    // A record the recovery scanner abandoned must never reach the
+    // ledger via a direct submit: the refusal happens before any
+    // state write or ledger call.
+    let mut executor = executor();
+    let mut record = executor.prepare(&request()).expect("prepare");
+    record.state = IntentState::Abandoned;
+    executor.store.put(&record).expect("persist Abandoned");
+
+    let error = executor
+        .submit(&mut record)
+        .expect_err("submit must refuse an Abandoned record");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("777") && message.contains("Abandoned"),
+        "error names the conversion and its state: {message}"
+    );
+    assert_eq!(record.state, IntentState::Abandoned);
+    assert_eq!(
+        executor.store.get(777).unwrap().unwrap().state,
+        IntentState::Abandoned,
+        "the persisted record stays Abandoned"
+    );
+    for leg_id in [601, 602, 603] {
+        assert!(
+            executor.backend.lookup_transfer(leg_id).is_none(),
+            "no conversion leg may be posted for an Abandoned intent"
+        );
+    }
+}
+
+#[test]
+fn abandoned_intent_stays_abandoned_on_identical_execute_retry() {
+    // The #4678 resurrection path: prepare persists the intent, the
+    // scanner abandons it, and an identical execute() retry used to
+    // post the legs anyway. The retry must fail, the state must stay
+    // Abandoned, and no leg may reach the ledger.
+    let mut executor = executor();
+    let req = request();
+    executor.prepare(&req).expect("prepare");
+
+    let outcomes = reconcile(
+        &mut executor.backend,
+        &mut executor.store,
+        RecoveryPolicy::Abandon,
+    )
+    .expect("reconcile");
+    assert_eq!(outcomes, vec![(777, ReconcileOutcome::Abandoned)]);
+    assert_eq!(
+        executor.store.get(777).unwrap().unwrap().state,
+        IntentState::Abandoned
+    );
+
+    let error = executor
+        .execute(&req)
+        .expect_err("an identical retry must not resurrect an Abandoned intent");
+    assert!(
+        format!("{error:#}").contains("Abandoned"),
+        "retry error names the terminal state: {error:#}"
+    );
+    assert_eq!(
+        executor.store.get(777).unwrap().unwrap().state,
+        IntentState::Abandoned,
+        "the persisted record stays Abandoned after the retry"
+    );
+    for leg_id in [601, 602, 603] {
+        assert!(
+            executor.backend.lookup_transfer(leg_id).is_none(),
+            "no conversion leg may be posted by the retry"
+        );
+    }
+}
+
+#[test]
+fn execute_retry_on_posted_record_fails_explicitly() {
+    // Already-Posted execute behavior is deliberate: an identical
+    // retry fails explicitly (submit refuses terminal records) and
+    // changes nothing — no resubmission, no state change.
+    let mut executor = executor();
+    let req = request();
+    let posted = executor.execute(&req).expect("first execute");
+    assert_eq!(posted.state, IntentState::Posted);
+
+    let error = executor
+        .execute(&req)
+        .expect_err("a retry of a Posted conversion must fail explicitly");
+    assert!(
+        format!("{error:#}").contains("Posted"),
+        "retry error names the terminal state: {error:#}"
+    );
+    assert_eq!(
+        executor.store.get(777).unwrap().unwrap().state,
+        IntentState::Posted,
+        "the persisted record stays Posted after the retry"
+    );
 }
