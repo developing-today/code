@@ -38,8 +38,9 @@ the main-tier full check would file a breakage for it.
 Workflow names (`nix ci`, `id`, `mcpx`, `mcpx conformance`,
 `mcpx nix build`, `go modules build`, `identity build`,
 `map build`, `id bench`) are deliberately NOT renamed:
-`main-broken.yml` (the Phase 3 watcher) and `jules.yml` reference
-them by name in their `workflow_run` triggers. If branch rules
+`main-broken.yml` (the Phase 3 watcher) references them by name in
+its `workflow_run` trigger; `jules.yml` has no `workflow_run`
+trigger. If branch rules
 ever require checks by name, require the `basic`-prefixed names
 (plus `nix flake check` for `id`) — full main-tier jobs must
 never become merge requirements.
@@ -152,18 +153,20 @@ applicable, e.g. goreleaser).
 Standard block (design §4): group keyed by `run_id` for
 push-to-main, by `github.ref` otherwise, `cancel-in-progress: true`
 — PR/branch runs cancel on supersede; main runs are never
-cancelled. Exceptions: `jules.yml` (load-bearing cip=false, #304)
-and scheduled singleton/deploy workflows (cip=false) are NOT
-touched. Issue/PR management is NOT event-triggered: `repo-sweeper.yml`
+cancelled. Exceptions: scheduled singleton/deploy workflows
+(cip=false) are NOT touched. Issue/PR management is NOT
+event-triggered: `repo-sweeper.yml`
 runs every 15 minutes (`*/15 * * * *`, one live run: group
 `repo-sweeper`, `cancel-in-progress: true` — safe because the
 sweeper is schedule/dispatch-only) and performs the management
 duties in one deterministic pass. It replaced `auto-assign.yml`
 (assign the maintainer to open issues/PRs). Kept event-based,
-deliberately: `jules.yml` — a human applies the `jules` label
-and waits for Jules to start, and its `workflow_run` leg is
-the ci-failure-fix remediation chain (#304); a synchronous
-human-initiated handoff, not management bookkeeping. Never
+deliberately: `jules.yml` is retained because `main-broken.yml` and
+`repo-sweeper.yml` reference the path. The retained `jules` label
+starts remediation via `pm-dispatch`; Jules was decommissioned
+(#5098), and the old `workflow_run` ci-failure-fix leg is gone. This
+is a synchronous human-initiated handoff, not management
+bookkeeping. Never
 pair `queue: max` with a cancel-in-progress expression that
 can evaluate true for `issues`/`pull_request_target` events
 (a GitHub validation error, openchamber#84) — the sweeper
