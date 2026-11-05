@@ -168,6 +168,7 @@ pub mod chat_presence;
 pub mod cli;
 pub mod commands;
 pub use id_core::connectivity;
+pub mod conversion;
 pub mod currency;
 pub mod currency_poc;
 pub mod dht;
