@@ -229,7 +229,10 @@ impl HttpConn {
         // timeout and kill the connection; skipping them leaves
         // the stream exactly at the next response, so a keep-alive
         // exchange stays reusable.
-        let no_body = method.eq_ignore_ascii_case("HEAD") || matches!(status, 101 | 204 | 304);
+        // The method comparison is exact: HTTP methods are
+        // case-sensitive, so a lowercase `head` is a different
+        // method whose response does carry a body.
+        let no_body = method == "HEAD" || matches!(status, 101 | 204 | 304);
 
         // Body.
         let mut data = Vec::new();
@@ -712,6 +715,23 @@ mod tests {
         let (status, body) = get(&mut conn).unwrap();
         assert_eq!(status, 200);
         assert_eq!(body, b"{}");
+        assert!(conn.reusable());
+        server.join().unwrap();
+    }
+    #[test]
+    fn lowercase_head_is_a_different_method_and_reads_its_body() {
+        // HTTP methods are case-sensitive: only an actual HEAD
+        // suppresses the body read. A lowercase `head` request is
+        // an ordinary method token whose response body must be
+        // consumed, or it desyncs the pooled connection.
+        let (mut conn, server) = canned_conn(vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello".to_vec(),
+        ]);
+        let (status, body) = conn
+            .request("head", "/x", "127.0.0.1", "token", None)
+            .unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(body, b"hello");
         assert!(conn.reusable());
         server.join().unwrap();
     }
