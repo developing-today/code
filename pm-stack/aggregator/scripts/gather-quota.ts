@@ -124,6 +124,7 @@ import {
   GATHERER_SOURCE,
   entriesWithPoolSplits,
   entryFromResult,
+  entryHasMeasuredWindow,
   entryFromFileExport,
   entryFromTurso,
   lastKnownEntries,
@@ -491,20 +492,60 @@ async function runClinePass(tickIso: string): Promise<ProviderRun | null> {
 async function runMetaModule(quota: QuotaModule, tickIso: string): Promise<ProviderRun> {
   const t0 = Date.now();
   try {
+    // This explicit ask IS the OpenCode-side mechanism, in-process:
+    // it is the same fetch the OpenChamber CLI's quota subcommand
+    // runs for a named provider (`openchamber quota meta --json`,
+    // packages/web/bin/lib/commands-quota.js in the OpenChamber
+    // fork) — credentials asked from the OpenCode server
+    // (GET /api/credential, family 1), and an explicit ask is always
+    // fetched even when the provider is turned off in routing
+    // (the listing filter governs listing, never an explicit ask).
+    // The provider then reads Meta's own plan endpoint
+    // (POST https://api.meta.ai/muse-code/key) with the OpenCode
+    // `meta` credential, falling back to the Muse CLI account
+    // token in ~/.config/muse/auth.json when OpenCode holds only
+    // the minted inference key. OpenCode's internal route_attempt
+    // history is NOT a substitute: it meters tokens/cost, and Meta's
+    // plan percentage exists only on Meta's endpoint.
     const results = await quota.fetchQuotaForProviderInstances("meta");
     const entries = results.map((r) => entryFromResult(r, tickIso));
-    const anyOk = entries.some((e) => e.state === "ok");
-    const firstBad = entries.find((e) => e.state !== "ok");
-    return {
-      id: "meta",
-      state: anyOk ? "ok" : "error",
-      ms: Date.now() - t0,
-      entries,
-      ...(!anyOk && firstBad?.error ? { error: firstBad.error } : {}),
-    };
+    return finalizeRun("meta", entries, t0);
   } catch (err) {
     return {
       id: "meta",
+      state: "error",
+      ms: Date.now() - t0,
+      entries: [],
+      error: safeProviderReason(err instanceof Error ? err.message : String(err)),
+    };
+  }
+}
+
+/**
+ * The Command Code explicit ask: the Meta pattern, for the same
+ * reason. `commandcode` is disabled as a routing door in the
+ * OpenCode config (definitions kept, flipped off in
+ * disabled_providers), so the provider listing can drop
+ * `command-code` even though its credential and plan are live —
+ * and a provider absent from the listing produced no run at all:
+ * no error, no #1268 retention, just a silently missing row.
+ * Drew's read was "working" because an explicit ask always works:
+ * the module fetches a named provider even when routing turns it
+ * off (`openchamber quota command-code --json` is the CLI form).
+ * The read is the PLAN read (see keepCommandCodePlanWindows):
+ * monthly from the included-credits bucket, 5h/weekly from
+ * windowLimits — never the purchased/free credit balances.
+ * No outer timeout, mirroring runMetaModule.
+ */
+async function runCommandCodeModule(quota: QuotaModule, tickIso: string): Promise<ProviderRun> {
+  const t0 = Date.now();
+  try {
+    const results = await quota.fetchQuotaForProviderInstances("command-code");
+    const entries = results.map((r) => entryFromResult(r, tickIso));
+    return keepCommandCodePlanWindows(finalizeRun("command-code", entries, t0));
+  } catch (err) {
+    return {
+      id: "command-code",
       state: "error",
       ms: Date.now() - t0,
       entries: [],
@@ -523,23 +564,69 @@ interface ProviderRun {
   retained?: boolean;
 }
 
+/**
+ * Build a run from mapped entries, with the ok-but-null downgrade.
+ * A run whose entries are all "ok" yet carry NO measured window
+ * (every pctOfLimit null — Meta's active-but-no-subs_usage shape
+ * since 2026-11-03) is not a successful read: previously it passed
+ * as ok, so #1268 retention (which only fires on error runs) never
+ * engaged and quota-current.json published fresh null rows over the
+ * last good percentages. Downgrade it to an error run carrying the
+ * mapper's no-data reason, flip its entries to error so retention
+ * can replace them with last-known rows, and let the heartbeat say
+ * why. The entries' failureClass / lastSuccessAt (when the module
+ * provides them) ride along in the reason.
+ */
+function finalizeRun(id: string, entries: QuotaCurrentEntry[], t0: number): ProviderRun {
+  const anyOk = entries.some((e) => e.state === "ok");
+  const anyMeasured = entries.some((e) => entryHasMeasuredWindow(e));
+  if (anyOk && !anyMeasured) {
+    const reason =
+      entries.find((e) => e.error)?.error ??
+      "no-data: provider reported ok but no window carried a percentage";
+    for (const e of entries) {
+      if (e.state === "ok") e.state = "error";
+      if (!e.error) e.error = reason;
+    }
+    return { id, state: "error", ms: Date.now() - t0, entries, error: reason };
+  }
+  const firstBad = entries.find((e) => e.state !== "ok");
+  return {
+    id,
+    state: anyOk ? "ok" : "error",
+    ms: Date.now() - t0,
+    entries,
+    ...(!anyOk && firstBad?.error ? { error: firstBad.error } : {}),
+  };
+}
+
+/** Command Code plan windows (Drew's rule, 2026-11-01: Command Code
+ *  reads use PLAN, not BALANCE). The module's provider also returns
+ *  balance windows (purchased_credits / free_credits: label-only, no
+ *  percentage); those are balances, never quota, so they are stripped
+ *  from the entry's windows — the raw payload stays on entry.usage —
+ *  and no consumer or snapshot writer can mistake a balance for a
+ *  plan reading or read the plan windows as "empty" because the
+ *  first window is a balance. */
+const COMMAND_CODE_PLAN_WINDOWS = new Set(["5h", "weekly", "monthly"]);
+function keepCommandCodePlanWindows(run: ProviderRun): ProviderRun {
+  for (const entry of run.entries) {
+    entry.windows = entry.windows.filter((w) => COMMAND_CODE_PLAN_WINDOWS.has(w.name));
+  }
+  return run;
+}
+
 async function runProvider(quota: QuotaModule, id: string, tickIso: string): Promise<ProviderRun> {
   const t0 = Date.now();
   try {
     const results = await withTimeout(quota.fetchQuotaForProviderInstances(id), timeoutMs, id);
     const entries = results.map((r) => entryFromResult(r, tickIso));
-    // A provider is ok when at least one credential row answered;
-    // a failing row (e.g. Codex's token-sharing login, which OpenAI
-    // refuses by design) keeps its error on its own entry.
-    const anyOk = entries.some((e) => e.state === "ok");
-    const firstBad = entries.find((e) => e.state !== "ok");
-    return {
-      id,
-      state: anyOk ? "ok" : "error",
-      ms: Date.now() - t0,
-      entries,
-      ...(!anyOk && firstBad?.error ? { error: firstBad.error } : {}),
-    };
+    // A provider is ok when at least one credential row answered
+    // with a measured window; a failing row (e.g. Codex's
+    // token-sharing login, which OpenAI refuses by design) keeps its
+    // error on its own entry, and an ok-but-null row degrades the
+    // run (see finalizeRun).
+    return finalizeRun(id, entries, t0);
   } catch (err) {
     return {
       id,
@@ -789,6 +876,20 @@ async function main(): Promise<number> {
     const metaRun = await runMetaModule(quota, tickAt);
     if (metaIdx === -1) runs.push(metaRun);
     else runs[metaIdx] = metaRun;
+  }
+
+  // Command Code: exactly one run survives, mirroring Meta above.
+  // A listed run with a measured plan window wins (balance windows
+  // stripped); otherwise the explicit ask replaces or appends it,
+  // so a routing-disabled provider still gets its plan read.
+  const ccIdx = runs.findIndex((r) => r.id === "command-code");
+  if (ccIdx !== -1 && runs[ccIdx].entries.some((e) => e.state === "ok" && entryHasMeasuredWindow(e))) {
+    keepCommandCodePlanWindows(runs[ccIdx]);
+    console.log("quota-gatherer: command-code ok via provider listing - explicit module ask skipped");
+  } else {
+    const ccRun = await runCommandCodeModule(quota, tickAt);
+    if (ccIdx === -1) runs.push(ccRun);
+    else runs[ccIdx] = ccRun;
   }
 
   // The Claude auth source exposes an expiry timestamp. Persist only that

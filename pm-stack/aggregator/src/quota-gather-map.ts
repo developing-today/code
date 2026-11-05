@@ -30,6 +30,14 @@ export interface QuotaProviderResult {
   credentialLabel?: string;
   credentialExpiresAt?: number | string | null;
   credentialSource?: "claude-code" | "opencode" | "environment";
+  /** Provider-side failure classification (OpenChamber quota module:
+   *  e.g. meta's "no-data" / "unauthorized" / "exhausted"). Preserved
+   *  so an ok-but-null read can be told apart from a measurement. */
+  failureClass?: string;
+  /** Epoch ms of the provider's last successful read in-process, when
+   *  the module carries one (meta does); null = never succeeded. */
+  lastSuccessAt?: number | null;
+  quotaExhausted?: boolean;
 }
 
 interface RawWindow {
@@ -344,6 +352,10 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
   if (result.credentialSource) entry.credentialSource = result.credentialSource;
   if (result.planLabel) entry.planLabel = result.planLabel;
   if (result.error) entry.error = safeProviderReason(result.error);
+  if (typeof result.failureClass === "string" && result.failureClass !== "") entry.failureClass = result.failureClass;
+  if (typeof result.lastSuccessAt === "number" && Number.isFinite(result.lastSuccessAt) && result.lastSuccessAt > 0) {
+    entry.lastSuccessAt = new Date(result.lastSuccessAt).toISOString();
+  }
   if (result.usage != null) entry.usage = result.usage;
 
   const pushWindow = (name: string, raw: RawWindow | null | undefined): void => {
@@ -379,7 +391,36 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
       }
     }
   }
+  // Ok-but-null is NOT a measurement. A provider can answer ok:true
+  // with every window's percentage unknown — Meta's plan endpoint
+  // does exactly this on a 200 / is_subs_active:true response with no
+  // subs_usage (the provider's "post-roll empty state", meta.js in
+  // the OpenChamber quota module) — and since 2026-11-03 that shape
+  // has replaced Meta's last good percentage read (100% weekly,
+  // 2026-11-03T21:00Z) with fresh-looking null rows on every tick.
+  // Name it on the entry so the gatherer can degrade the run to an
+  // error and #1268 retention can keep the last-known rows, stale
+  // with this reason, instead of publishing null as current data.
+  if (result.ok && !entryHasMeasuredWindow(entry) && !entry.error) {
+    entry.error = `no-data: provider reported ok but no window carried a percentage${
+      entry.failureClass ? ` (failureClass=${entry.failureClass})` : ""
+    }${entry.lastSuccessAt ? ` (provider lastSuccessAt=${entry.lastSuccessAt})` : ""}`;
+  }
   return entry;
+}
+
+/**
+ * Whether an entry carries at least one measured window: a
+ * percentage window, or the CNY balance label that recordsFromEntries
+ * treats as a measurement in its own unit (#1052, the DeepSeek
+ * reserve — a label-only provider must not degrade on this rule).
+ * Plain USD/credit balance labels do NOT count: a balance is not a
+ * plan reading.
+ */
+export function entryHasMeasuredWindow(entry: QuotaCurrentEntry): boolean {
+  return entry.windows.some(
+    (w) => w.pctOfLimit != null || (w.valueLabel != null && /^¥\s*[\d,]+(?:\.\d+)?/.test(w.valueLabel.trim())),
+  );
 }
 
 /**
