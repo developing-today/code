@@ -1095,8 +1095,8 @@ let
       ))
     ];
 
-  # Flake checks for the laptop-backups shell suites (#1841): the seven
-  # suites in nixos/home drive the real backup and watchdog scripts with
+  # Flake checks for the laptop-backups shell suites (#1841): the suites
+  # in nixos/home drive the real backup and watchdog scripts with
   # stubbed systemctl/bws/journalctl/rclone, so each is a runCommandLocal
   # that copies nixos/home somewhere writable and runs one suite. Until
   # this wiring they ran only by hand on the laptop, so a regression in
@@ -1108,11 +1108,17 @@ let
     let
       pkgs = import inputs.nixpkgs-unstable { inherit system; };
       suites = [
+        "laptop-autocommit-in-progress"
+        "laptop-autocommit-merge-abort"
         "laptop-backups-watchdog"
+        "laptop-repo-keeper"
+        "laptop-untracked-review"
+        "openclaw-backup"
         "pm-dashboard-backup"
         "pm-dashboard-backup-copy"
         "pm-dashboard-backup-date"
         "pm-dashboard-backup-manifest"
+        "pm-dashboard-backup-pmp-links"
         "pm-dashboard-backup-prune"
         "pm-dashboard-backup-record"
       ];
@@ -1131,10 +1137,12 @@ let
                   pkgs.findutils
                   pkgs.gnugrep
                   pkgs.gnused
+                  pkgs.git
                   pkgs.gnutar
                   pkgs.gzip
                   pkgs.jq
                   pkgs.python3
+                  pkgs.sqlite
                   pkgs.util-linux
                   pkgs.zstd
                 ];
