@@ -1645,11 +1645,15 @@ fn live_crash_before_submission_resubmits_same_ids() {
 #[test]
 #[ignore = "requires the pinned tigerbeetle binary (TIGERBEETLE_POC_BINARY or PATH)"]
 fn live_same_request_twice_posts_once() {
-    // Codex review, PR #5072: resubmitting an already-posted linked
-    // chain must be an idempotent success, as with the in-memory
-    // backend — TigerBeetle reports Exists for the first leg and
+    // #4678: an identical execute() retry against a Posted record is
+    // refused explicitly — terminal intents are final, so the retry
+    // posts nothing a second time. The PR #5072 binding behaviour
+    // this test originally pinned (resubmitting an already-posted
+    // linked chain is an idempotent success at the backend:
+    // TigerBeetle reports Exists for the first leg and
     // LinkedEventFailed for the rest, which the binding translates
-    // back to per-leg Exists after verifying the stored legs.
+    // back to per-leg Exists after verifying the stored legs) is
+    // exercised directly through the backend below instead.
     let (_cluster, mut executor) = live_executor(30028);
     let first = executor.execute(&request()).expect("first execution posts");
     assert_eq!(first.state, IntentState::Posted);
@@ -1659,11 +1663,20 @@ fn live_same_request_twice_posts_once() {
         executor.backend.account_balance(LP_DST).unwrap(),
     );
 
-    let second = executor
+    let error = executor
         .execute(&request())
-        .expect("same-request retry is an idempotent success");
-    assert_eq!(second.state, IntentState::Posted);
-    assert_eq!(second.legs, first.legs);
+        .expect_err("same-request retry of a Posted conversion is refused (#4678)");
+    assert!(
+        format!("{error:#}").contains("Posted"),
+        "retry error names the terminal state: {error:#}"
+    );
+    let resubmitted = executor.backend.create_transfers(&first.legs);
+    assert!(
+        resubmitted
+            .iter()
+            .all(|result| matches!(result, Ok(()) | Err(TransferError::Exists))),
+        "backend resubmission of the posted chain stays idempotent: {resubmitted:?}"
+    );
     assert_eq!(
         executor.backend.account_balance(USER_SRC).unwrap(),
         balances_after_first.0,
