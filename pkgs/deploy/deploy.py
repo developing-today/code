@@ -79,45 +79,68 @@ def validate(registry):
             errors.append(f"{where}: package must be a non-empty string")
         if "entryPoint" in defn:
             ep = defn["entryPoint"]
-            if not isinstance(ep, str) or not ep or ep.startswith("/") or ".." in ep.split("/"):
-                errors.append(f"{where}: entryPoint must be a relative path inside the package")
+            if (
+                not isinstance(ep, str)
+                or not ep
+                or ep.startswith("/")
+                or ".." in ep.split("/")
+            ):
+                errors.append(
+                    f"{where}: entryPoint must be a relative path inside the package"
+                )
         if "args" in defn and not (
-            isinstance(defn["args"], list) and all(isinstance(a, str) for a in defn["args"])
+            isinstance(defn["args"], list)
+            and all(isinstance(a, str) for a in defn["args"])
         ):
             errors.append(f"{where}: args must be a list of strings")
         if "environment" in defn and not (
             isinstance(defn["environment"], dict)
-            and all(isinstance(k, str) and isinstance(v, str) for k, v in defn["environment"].items())
+            and all(
+                isinstance(k, str) and isinstance(v, str)
+                for k, v in defn["environment"].items()
+            )
         ):
             errors.append(f"{where}: environment must be an object of string -> string")
         if "secrets" in defn and not (
             isinstance(defn["secrets"], list)
             and all(isinstance(s, str) and s for s in defn["secrets"])
         ):
-            errors.append(f"{where}: secrets must be a list of secret names (names only, never values)")
+            errors.append(
+                f"{where}: secrets must be a list of secret names (names only, never values)"
+            )
         if "user" in defn and not (isinstance(defn["user"], str) and defn["user"]):
             errors.append(f"{where}: user must be a non-empty string")
         if "ports" in defn:
             ports = defn["ports"]
             if not (
                 isinstance(ports, list)
-                and all(isinstance(p, int) and not isinstance(p, bool) and 1 <= p <= 65535 for p in ports)
+                and all(
+                    isinstance(p, int) and not isinstance(p, bool) and 1 <= p <= 65535
+                    for p in ports
+                )
             ):
                 errors.append(f"{where}: ports must be a list of integers in 1..65535")
             elif len(set(ports)) != len(ports):
                 errors.append(f"{where}: ports must not repeat a port")
         if "restart" in defn and defn["restart"] not in RESTART_POLICIES:
-            errors.append(f"{where}: restart must be one of {', '.join(sorted(RESTART_POLICIES))}")
+            errors.append(
+                f"{where}: restart must be one of {', '.join(sorted(RESTART_POLICIES))}"
+            )
         if "healthCheck" in defn and defn["healthCheck"] is not None:
             hc = defn["healthCheck"]
-            if not (isinstance(hc, str) and (hc.startswith("http://") or hc.startswith("https://"))):
+            if not (
+                isinstance(hc, str)
+                and (hc.startswith("http://") or hc.startswith("https://"))
+            ):
                 errors.append(f"{where}: healthCheck must be an http(s) URL or null")
         if "targets" in defn and not (
             isinstance(defn["targets"], list)
             and defn["targets"]
             and all(isinstance(t, str) and t for t in defn["targets"])
         ):
-            errors.append(f"{where}: targets must be a non-empty list of host/class names")
+            errors.append(
+                f"{where}: targets must be a non-empty list of host/class names"
+            )
         if "class" in defn and defn["class"] not in CLASSES:
             errors.append(f"{where}: class must be one of {', '.join(sorted(CLASSES))}")
     return errors
@@ -145,15 +168,20 @@ def cmd_list(registry):
 def main(argv):
     args = list(argv)
     registry_path = os.environ.get("DEPLOY_REGISTRY")
-    while args and args[0] == "--registry":
-        if len(args) < 2:
+    # --registry may appear before or after the subcommand.
+    while "--registry" in args:
+        idx = args.index("--registry")
+        if idx + 1 >= len(args):
             print("deploy: --registry needs a path", file=sys.stderr)
             return 2
-        registry_path = args[1]
-        args = args[2:]
+        registry_path = args[idx + 1]
+        del args[idx : idx + 2]
     if not args:
         print(__doc__.splitlines()[0], file=sys.stderr)
-        print("usage: deploy [--registry PATH] list | <target> [rollback|status] [--dry-run]", file=sys.stderr)
+        print(
+            "usage: deploy [--registry PATH] list | <target> [rollback|status] [--dry-run]",
+            file=sys.stderr,
+        )
         return 2
     if args[0] != "list":
         print(
@@ -163,7 +191,10 @@ def main(argv):
         )
         return 2
     if registry_path is None:
-        print("deploy: no registry configured (build via the flake package, or pass --registry)", file=sys.stderr)
+        print(
+            "deploy: no registry configured (build via the flake package, or pass --registry)",
+            file=sys.stderr,
+        )
         return 2
     try:
         registry = load_registry(registry_path)
