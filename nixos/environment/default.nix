@@ -225,10 +225,13 @@ let
   # rewritten: several of these packages hard-code their own store path in Exec=,
   # which would launch the unwrapped binary straight from the store and silently
   # bypass the flag when started from a launcher rather than a shell.
-  scaleElectron2x =
-    pkg:
+  # The general form of scaleElectron2x: same wrapper (binaries
+  # wrapped, desktop entries repointed at the wrappers), with a
+  # caller-chosen flag set and derivation-name suffix.
+  wrapElectronWithFlags =
+    nameSuffix: flags: pkg:
     pkgs.symlinkJoin {
-      name = "${pkg.pname or pkg.name or "electron-app"}-scaled2x";
+      name = "${pkg.pname or pkg.name or "electron-app"}-${nameSuffix}";
       paths = [ pkg ];
       nativeBuildInputs = [ pkgs.makeWrapper ];
       postBuild = ''
@@ -238,7 +241,7 @@ let
           [ -x "$target" ] || continue
           rm "$bin"
           makeWrapper "$target" "$bin" \
-            --add-flags "--force-device-scale-factor=2"
+            --add-flags "${lib.concatStringsSep " " flags}"
         done
 
         if [ -d "$out/share/applications" ]; then
@@ -255,6 +258,8 @@ let
         mainProgram = pkg.meta.mainProgram or null;
       };
     };
+
+  scaleElectron2x = wrapElectronWithFlags "scaled2x" [ "--force-device-scale-factor=2" ];
 
   # OpenChamber's Electron GUI, built from the developing-today/openchamber fork.
   openchamber-desktop = inputs.openchamber.packages.${system}.openchamber-desktop;
@@ -482,7 +487,18 @@ in
       # MCP servers are npx/uvx/docker invocations that need a conventional
       # filesystem layout and break against a pure store path.
       (scaleElectron2x inputs.claude-desktop.packages.${system}.claude-desktop-fhs)
-      (scaleElectron2x inputs.helium.packages.${system}.helium)
+      # Helium additionally carries the CDP flags (code#5924): the
+      # DevTools protocol endpoint is how agents drive the browser --
+      # second only to structured APIs in the agent access hierarchy.
+      # Loopback-only bind; the tailnet path is a `tailscale serve`
+      # mapping created at activation (fleet convention: serve state
+      # is imperative), per
+      # doc/2026-11-04_remote-gui-access-runbook.md.
+      (wrapElectronWithFlags "scaled2x-cdp" [
+        "--force-device-scale-factor=2"
+        "--remote-debugging-address=127.0.0.1"
+        "--remote-debugging-port=19222"
+      ] inputs.helium.packages.${system}.helium)
       # chatgpt: the -remote-mobile-control variant rather than plain
       # `codex-desktop`. OpenAI's own Codex Remote requires the host to run the
       # macOS or Windows desktop app ("you can't set it up from the Codex CLI or
