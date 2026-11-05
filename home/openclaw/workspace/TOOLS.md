@@ -29,7 +29,7 @@ For real coding, spawn an ACP session instead of improvising: `/acp spawn openco
 ## Repos (the fleet of four — see FLEET.md)
 
 - `developing-today/code` — all new code lands here; this laptop's NixOS flake lives at its root (`~/code`).
-- `developing-today/opencode` — the OpenCode fork. `developing-today/openchamber` — OpenChamber. `dezren39/nix` — dezren39's nix config.
+- `developing-today-forks/opencode` — the OpenCode fork. `developing-today-forks/openchamber` — OpenChamber. `dezren39/nix` — dezren39's nix config.
 - Local checkouts: `~/code` (code), `~/git/openchamber-fork`, plus worktrees under `~/work/`.
 
 ## Nix rules on this machine

@@ -18,7 +18,7 @@ and writes the maintained artifact `doc/fleet/repo-universe.yaml`.
 
 Classification (defaults; overridable per repo, see below):
 
-- `owned`               owner is developing-today or dezren39 and the
+- `owned`               owner is developing-today, developing-today-forks or dezren39 and the
                         repo is not a GitHub fork.
 - `fork`                GitHub fork flag is set.
 - `archive-nested`      census-only repo whose clone lives inside
@@ -56,7 +56,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-OWNED_OWNERS = {"developing-today", "dezren39"}
+OWNED_OWNERS = {"developing-today", "developing-today-forks", "dezren39"}
 CLASSES = ("owned", "fork", "upstream-dependency", "archive-nested")
 WATCHES = ("issues", "inventory-only")
 
