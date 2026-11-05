@@ -34,6 +34,19 @@
 // response shapes when > 0, matching the sibling proxies'
 // opencode#394 contract; when the CLI reports none, the field is
 // omitted entirely rather than reporting a fabricated zero split.
+// Tool bridging (#2603): the agy CLI is text-only, so — exactly as in
+// antigravity-ls-proxy — a request carrying `tools` gets them rendered
+// into the prompt ([Available Tools] + the ```tool_call fenced-block
+// contract) and the reply text is mined for calls naming an offered
+// tool, which are returned as structured OpenAI `tool_calls` (finish
+// reason `tool_calls`) in both response shapes. Tool-carrying turns
+// always run stateless with the full flattened prompt: a resident
+// session worker holds its own history, so a delta prompt would drop
+// the tool definitions and the tool results the client posts back.
+// Streaming tool turns buffer the turn's text instead of forwarding
+// deltas live, so the fenced call syntax never leaks to the client as
+// reply content; the stripped content and the tool-call chunks are
+// emitted when the turn settles.
 // Failure semantics are unchanged from #678: a failed turn is an error
 // (502 non-stream, SSE error event + [DONE] stream), never a 'stop'
 // carrying partial output; a failed resume retries once as a fresh
@@ -426,9 +439,9 @@ const getSessionKey = (req, body) => {
   return { key: null, explicit: false, conversationId: null };
 };
 
-const formatPrompt = (messages) => {
+const formatPrompt = (messages, tools = []) => {
   if (!Array.isArray(messages) || messages.length === 0) return '';
-  if (messages.length === 1 && messages[0].role === 'user') {
+  if (messages.length === 1 && messages[0].role === 'user' && (!tools || tools.length === 0)) {
     return typeof messages[0].content === 'string'
       ? messages[0].content
       : JSON.stringify(messages[0].content);
@@ -445,23 +458,168 @@ const formatPrompt = (messages) => {
     parts.push(`[System Instructions]\n${sysText}`);
   }
 
+  // Tool definitions are forwarded to the text backend as a prompt
+  // block (#2603, the antigravity-ls-proxy bridging shape): the model
+  // is told each tool's name, description and parameter schema, and
+  // the exact fenced-block format extractToolCalls lifts back out of
+  // its reply.
+  if (Array.isArray(tools) && tools.length > 0) {
+    const toolsDesc = tools.map(t => {
+      const fn = t.function || t;
+      return `- ${fn.name}: ${fn.description || ''} (parameters: ${JSON.stringify(fn.parameters || {})})`;
+    }).join('\n');
+    parts.push(`[Available Tools]\n${toolsDesc}\n\n[Tool Calling]\nWhen you need to use a tool, emit each call as a fenced block in exactly this format, with nothing else inside the block:\n\`\`\`tool_call\n{"name": "<tool name>", "arguments": {<arguments as a JSON object>}}\n\`\`\`\nEmit one block per call. Never describe a call in prose instead of emitting its block. Any text outside the blocks is treated as your reply text.`);
+  }
+
   if (convoMessages.length > 0) {
     const convoText = convoMessages.map(m => {
-      const role = m.role === 'assistant' ? 'Assistant' : (m.role === 'user' ? 'User' : m.role);
+      let role = 'User';
+      if (m.role === 'assistant') role = 'Assistant';
+      else if (m.role === 'tool') role = `Tool Result (${m.name || m.tool_call_id || 'tool'})`;
+      else if (m.role === 'user') role = 'User';
+      else role = m.role;
+
       let text = '';
       if (typeof m.content === 'string') {
         text = m.content;
       } else if (Array.isArray(m.content)) {
         text = m.content.map(c => c.text || JSON.stringify(c)).join('\n');
-      } else {
+      } else if (m.content) {
         text = JSON.stringify(m.content);
       }
+
+      if (Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+        const calls = m.tool_calls.map(tc => {
+          const fn = tc.function || tc;
+          return `[Calls Tool: ${fn.name} with args ${fn.arguments || '{}'}]`;
+        }).join('\n');
+        text = text ? `${text}\n${calls}` : calls;
+      }
+
       return `${role}: ${text}`;
     }).join('\n\n');
     parts.push(convoText);
   }
 
   return parts.join('\n\n');
+};
+
+// --- Tool-call extraction ---------------------------------------------------
+// The agy CLI returns plain text, so models spell tool calls in text:
+// the canonical ```tool_call fenced JSON formatPrompt asks for,
+// Claude's <invoke> XML, or a fenced/bare JSON object. When a request
+// carries tools, lift every recognized call whose name matches an
+// offered tool into structured OpenAI tool_calls and strip the syntax
+// from the reply text (#2603). Without this, clients that require
+// structured tool_calls (e.g. OpenCode) receive the calls as inert
+// prose and execute nothing. (Ported from antigravity-ls-proxy, which
+// bridges the same text-only shape for the language server.)
+const coerceArgValue = (value) => {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+};
+
+const extractToolCalls = (text, tools) => {
+  if (!text || !Array.isArray(tools) || tools.length === 0) {
+    return { content: text, toolCalls: [] };
+  }
+  const validNames = new Set(tools.map(t => (t.function || t).name).filter(Boolean));
+  if (validNames.size === 0) return { content: text, toolCalls: [] };
+
+  const calls = [];
+  const spans = [];
+  const addCall = (name, args, start, end) => {
+    if (!validNames.has(name) || start < 0) return;
+    calls.push({ name, arguments: args && typeof args === 'object' ? args : {} });
+    spans.push([start, end]);
+  };
+
+  // Fenced blocks: ```tool_call {json} ``` — a plain ```json fence whose
+  // object names an offered tool counts too.
+  const fenceRe = /```(?:tool_call|json)?[ \t]*\n?([\s\S]*?)```/g;
+  for (const m of text.matchAll(fenceRe)) {
+    const inner = m[1].trim();
+    if (!inner.startsWith('{')) continue;
+    try {
+      const obj = JSON.parse(inner);
+      if (obj && typeof obj.name === 'string') {
+        addCall(obj.name, obj.arguments ?? obj.args ?? {}, m.index, m.index + m[0].length);
+      }
+    } catch {}
+  }
+
+  // Claude-style XML: <invoke name="x"><parameter name="y">v</parameter></invoke>
+  const invokeRe = /<invoke\s+name="([^"]+)"\s*>([\s\S]*?)<\/invoke>/g;
+  for (const m of text.matchAll(invokeRe)) {
+    const args = {};
+    for (const p of m[2].matchAll(/<parameter\s+name="([^"]+)"\s*>([\s\S]*?)<\/parameter>/g)) {
+      args[p[1]] = coerceArgValue(p[2].trim());
+    }
+    addCall(m[1], args, m.index, m.index + m[0].length);
+  }
+
+  // A reply that is one bare JSON object naming an offered tool.
+  if (calls.length === 0) {
+    const trimmed = text.trim();
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+      try {
+        const obj = JSON.parse(trimmed);
+        if (obj && typeof obj.name === 'string' && validNames.has(obj.name)) {
+          addCall(obj.name, obj.arguments ?? obj.args ?? {}, text.indexOf('{'), text.lastIndexOf('}') + 1);
+        }
+      } catch {}
+    }
+  }
+
+  if (calls.length === 0) return { content: text, toolCalls: [] };
+
+  spans.sort((a, b) => a[0] - b[0]);
+  let content = '';
+  let cursor = 0;
+  for (const [start, end] of spans) {
+    if (start < cursor) continue;
+    content += text.slice(cursor, start);
+    cursor = end;
+  }
+  content += text.slice(cursor);
+  content = content.replace(/<function_calls>|<\/function_calls>/g, '').replace(/\n{3,}/g, '\n\n').trim();
+
+  return {
+    content,
+    toolCalls: calls.map(c => ({
+      id: `call_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`,
+      type: 'function',
+      function: { name: c.name, arguments: JSON.stringify(c.arguments) }
+    }))
+  };
+};
+
+// Emit one streaming chunk per tool call (OpenAI delta.tool_calls shape).
+const writeToolCallChunks = (res, base, toolCalls) => {
+  toolCalls.forEach((tc, i) => {
+    const chunk = {
+      ...base,
+      choices: [{
+        index: 0,
+        delta: {
+          tool_calls: [{
+            index: i,
+            id: tc.id,
+            type: 'function',
+            function: { name: tc.function.name, arguments: tc.function.arguments }
+          }]
+        },
+        finish_reason: null
+      }]
+    };
+    res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+  });
 };
 
 // ---------------------------------------------------------------------------
@@ -916,11 +1074,21 @@ const server = http.createServer((req, res) => {
       }
       const { fullName } = resolved;
 
+      const tools = Array.isArray(body.tools) ? body.tools : [];
+      const hasTools = tools.length > 0;
+
       const sessionInfo = getSessionKey(req, body);
-      const isResuming = Boolean(sessionInfo.conversationId);
-      const prompt = isResuming
-        ? extractLatestUserPrompt(body.messages)
-        : formatPrompt(body.messages);
+      // Tool-carrying turns never resume a resident conversation and
+      // never send a delta prompt (#2603): the worker's own history
+      // would silently replace the client's, dropping the tool
+      // definitions and the tool results the client posts back. They
+      // run stateless with the full flattened prompt, tools included.
+      const isResuming = !hasTools && Boolean(sessionInfo.conversationId);
+      const prompt = hasTools
+        ? formatPrompt(body.messages, tools)
+        : isResuming
+          ? extractLatestUserPrompt(body.messages)
+          : formatPrompt(body.messages);
 
       if (!prompt.trim()) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -932,17 +1100,20 @@ const server = http.createServer((req, res) => {
       const created = Math.floor(Date.now() / 1000);
 
       let currentWorker = null;
+      let currentLk = null;
       let activeConversationId = sessionInfo.conversationId || null;
 
       res.on('close', () => {
         if (!res.writableEnded && currentWorker) {
-          const lk = sessionInfo.key ? `${fullName}|${sessionInfo.key}` : null;
-          retireWorker({ worker: currentWorker, lk });
+          retireWorker({ worker: currentWorker, lk: currentLk });
         }
       });
 
       const recordConversationId = (id) => {
-        if (!id) return;
+        // Stateless tool turns (#2603) must not bind the session key
+        // to their throwaway conversation: the next turn would try to
+        // resume it with a delta prompt and lose the tool context.
+        if (!id || hasTools) return;
         activeConversationId = id;
         if (sessionInfo.key) {
           sessionStore.set(sessionInfo.key, { conversationId: id, updatedAt: Date.now() });
@@ -968,14 +1139,18 @@ const server = http.createServer((req, res) => {
       const runJob = async () => {
         const attempt = async (targetConvId, promptText, allowRetry) => {
           const { worker, resumed, lk } = acquireWorker({
-            fullName, key: sessionInfo.key, conversationId: targetConvId
+            fullName, key: hasTools ? null : sessionInfo.key, conversationId: targetConvId
           });
           currentWorker = worker;
+          currentLk = lk;
           try { res.setHeader('X-Agy-Worker-Pid', String(worker.pid)); } catch {}
           if (worker.conversationId) activeConversationId = worker.conversationId;
 
           let streamedText = '';
-          const onDelta = stream ? (delta) => {
+          // Streaming tool turns buffer (onDelta null): the reply is
+          // mined for tool calls when the turn settles, and forwarding
+          // deltas live would leak the fenced call syntax as content.
+          const onDelta = stream && !hasTools ? (delta) => {
             streamedText += delta;
             ensureStreamHead();
             const chunk = {
@@ -1052,43 +1227,62 @@ const server = http.createServer((req, res) => {
           if (!lk) retireWorker({ worker, lk });
           if (currentWorker === worker) currentWorker = null;
 
+          // Tool bridging (#2603): mine the settled reply text for
+          // calls naming an offered tool. No-tools turns skip this
+          // entirely and keep the exact pre-#2603 shapes.
+          const extracted = hasTools
+            ? extractToolCalls(result.text, tools)
+            : { content: result.text, toolCalls: [] };
+          const toolCalls = extracted.toolCalls;
+          const finishReason = toolCalls.length > 0 ? 'tool_calls' : 'stop';
+          const usage = {
+            prompt_tokens: result.usage?.input_tokens || 0,
+            completion_tokens: result.usage?.output_tokens || 0,
+            total_tokens: result.usage?.total_tokens || 0,
+            ...(result.usage?.cache_read_tokens > 0 ? { prompt_tokens_details: { cached_tokens: result.usage.cache_read_tokens } } : {})
+          };
+
           if (stream) {
-            // Emit any response tail the result carried beyond the
-            // deltas already streamed (short replies can arrive whole
-            // in the result with no ACTIVE delta for the tail).
-            if (typeof result.text === 'string' && result.text.startsWith(streamedText) && result.text.length > streamedText.length) {
-              const suffix = result.text.slice(streamedText.length);
-              ensureStreamHead();
-              const chunk = {
-                id: reqId,
-                object: 'chat.completion.chunk',
-                created,
-                model: fullName,
-                conversation_id: activeConversationId,
-                choices: [{ index: 0, delta: { content: suffix }, finish_reason: null }]
-              };
-              res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-            }
             ensureStreamHead();
-            const finishChunk = {
+            const chunkBase = {
               id: reqId,
               object: 'chat.completion.chunk',
               created,
               model: fullName,
-              conversation_id: activeConversationId,
+              conversation_id: activeConversationId
+            };
+            if (hasTools) {
+              // Buffered turn: emit the stripped reply text (if any),
+              // then one tool-call chunk per call.
+              if (extracted.content) {
+                const chunk = {
+                  ...chunkBase,
+                  choices: [{ index: 0, delta: { content: extracted.content }, finish_reason: null }]
+                };
+                res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+              }
+              if (toolCalls.length > 0) writeToolCallChunks(res, chunkBase, toolCalls);
+            } else if (typeof result.text === 'string' && result.text.startsWith(streamedText) && result.text.length > streamedText.length) {
+              // Emit any response tail the result carried beyond the
+              // deltas already streamed (short replies can arrive whole
+              // in the result with no ACTIVE delta for the tail).
+              const suffix = result.text.slice(streamedText.length);
+              const chunk = {
+                ...chunkBase,
+                choices: [{ index: 0, delta: { content: suffix }, finish_reason: null }]
+              };
+              res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+            }
+            const finishChunk = {
+              ...chunkBase,
               choices: [
                 {
                   index: 0,
                   delta: {},
-                  finish_reason: 'stop'
+                  finish_reason: finishReason
                 }
               ],
-              usage: {
-                prompt_tokens: result.usage?.input_tokens || 0,
-                completion_tokens: result.usage?.output_tokens || 0,
-                total_tokens: result.usage?.total_tokens || 0,
-                ...(result.usage?.cache_read_tokens > 0 ? { prompt_tokens_details: { cached_tokens: result.usage.cache_read_tokens } } : {})
-              }
+              usage
             };
             res.write(`data: ${JSON.stringify(finishChunk)}\n\n`);
             res.write('data: [DONE]\n\n');
@@ -1112,22 +1306,22 @@ const server = http.createServer((req, res) => {
                   index: 0,
                   message: {
                     role: 'assistant',
-                    content: result.text
+                    content: toolCalls.length > 0 ? (extracted.content || null) : result.text,
+                    ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {})
                   },
-                  finish_reason: 'stop'
+                  finish_reason: finishReason
                 }
               ],
-              usage: {
-                prompt_tokens: result.usage?.input_tokens || 0,
-                completion_tokens: result.usage?.output_tokens || 0,
-                total_tokens: result.usage?.total_tokens || 0,
-                ...(result.usage?.cache_read_tokens > 0 ? { prompt_tokens_details: { cached_tokens: result.usage.cache_read_tokens } } : {})
-              }
+              usage
             }, null, 2));
           }
         };
 
-        await attempt(sessionInfo.conversationId, prompt, Boolean(sessionInfo.conversationId));
+        await attempt(
+          hasTools ? null : sessionInfo.conversationId,
+          prompt,
+          !hasTools && Boolean(sessionInfo.conversationId)
+        );
       };
 
       try {
