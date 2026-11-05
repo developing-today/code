@@ -22,6 +22,8 @@ import { commentKindCounts, CommentsStore, queuedComments, validateNewComment } 
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
 import { EventsStore, emitEvent, pageEvents } from "./events.ts";
+import { FreshnessStore, type FreshnessInput } from "./freshness.ts";
+import { createFreshnessIpcHandler } from "./freshness-ipc.ts";
 import {
   IngestionStore,
   WatchdogEpisodeStabilizer,
@@ -166,6 +168,7 @@ async function coverageSnapshot(
 const actionsStore = new ActionsStore(cfg.actionsFile);
 const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);
+const freshnessStore = new FreshnessStore(cfg.freshnessFile);
 const activityStore = new IngestionStore(cfg.activityFile);
 
 /** #1739: the event log's fire-and-forget sink for source-side
@@ -188,6 +191,13 @@ async function recordActivity(
 ): Promise<{ failed: number; failedIds: string[] }> {
   const result = await ingestActivity(activityStore, eventsStore, deliveries);
   return { failed: result.failed, failedIds: result.failedIds };
+}
+
+/** #3977: source freshness notices are not #1739 activity records.
+ *  This store is owned by the aggregator process; the projector and
+ *  collector reach it only through the loopback publisher listener. */
+async function recordFreshness(input: FreshnessInput): Promise<void> {
+  await freshnessStore.publish(input);
 }
 
 /** #3321: the source-gap sink for the live source's polling gaps
@@ -236,6 +246,7 @@ function pickSource(): Source {
         onEvent: recordStreamEvent,
         hasEvent: hasStreamEvent,
         onActivity: recordActivity,
+        onFreshness: recordFreshness,
         onSourceGap: recordSourceGap,
         seenActivityIds: (source) => activityStore.seenIds(source),
       })
@@ -2226,6 +2237,15 @@ const servers = cfg.hosts.map((hostname) =>
 for (const server of servers) {
   console.log(`aggregator listening on http://${server.hostname}:${server.port} (source: ${cfg.source})`);
 }
+
+// Cross-process publishers get a separate loopback-only listener; never
+// add this port to PM_AGG_HOSTS or expose it through the Cloudflare tunnel.
+const freshnessIpcServer = Bun.serve({
+  hostname: "127.0.0.1",
+  port: cfg.freshnessPort,
+  fetch: createFreshnessIpcHandler(freshnessStore),
+});
+console.log(`freshness publisher listening on http://${freshnessIpcServer.hostname}:${freshnessIpcServer.port}`);
 
 // Collector feeds are replaced on a ~5-minute cadence. Land their
 // snapshot records from a server-owned writer tick rather than from

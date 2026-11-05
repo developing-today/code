@@ -4,6 +4,7 @@
 // projection. Anything a reader cannot reach falls back to fixtures, and the
 // provenance strings say exactly which facet is live vs fixture-backed.
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import type { Config } from "../config.ts";
 import { applyBoardDonePolicy, isRetiredDoneTableTitle } from "../board-policy.ts";
@@ -25,6 +26,7 @@ import {
 import type { RepoCensus } from "../coverage.ts";
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
 import type { NewStreamEvent } from "../events.ts";
+import type { FreshnessInput } from "../freshness.ts";
 import {
   kaneoChangeDeliveries,
   maxUndatedSeqByCard,
@@ -700,6 +702,9 @@ export function liveSource(
       | boolean
       | { failed: number; failedIds?: string[] }
       | void;
+    /** Separate invalidation sink (#3977); complete Kaneo snapshots are
+     *  keyed by a stable content fingerprint, never added to #1739/#3321. */
+    onFreshness?: (input: FreshnessInput) => Promise<unknown> | unknown;
     // Kaneo polling-gap sink (#3321, Codex P2 on PR #5141): called
     // with (source, gapFrom, failureTime) while polls are failing or
     // partial, and with (source, gapFrom, null) on the first complete
@@ -738,6 +743,43 @@ export function liveSource(
   // In-memory on purpose: a restart re-baselines silently, and the
   // ingestion store's persisted seen set is the durable dedupe.
   let prevKaneoCards: Map<string, KaneoCardSnapshot> | null = null;
+  async function publishKaneoFreshness(board: readonly BoardItem[]): Promise<void> {
+    if (!opts?.onFreshness) return;
+    const cards = board
+      .filter((item) => item.source === "kaneo")
+      .map((item) => ({
+        id: item.id,
+        repo: item.repo,
+        title: item.title,
+        status: item.status,
+        priority: item.priority ?? null,
+        updatedAt: item.updatedAt ?? null,
+        kaneoUrl: item.kaneoUrl ?? null,
+        links: item.links.map((link) => `${link.relation}:${link.ref}`).sort(),
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const snapshot = JSON.stringify(cards);
+    const digest = createHash("sha256").update(snapshot).digest("hex");
+    const occurredAt = cards
+      .map((card) => card.updatedAt)
+      .filter((value): value is string => typeof value === "string" && Number.isFinite(Date.parse(value)))
+      .sort((a, b) => Date.parse(a) - Date.parse(b))
+      .at(-1);
+    try {
+      // Repeated complete polls use the same stable key. If the journal
+      // is unavailable, the next poll retries; no raw card payload is
+      // persisted and only canonical data is reread by consumers.
+      await opts.onFreshness({
+        eventId: `kaneo:${digest}`,
+        source: "kaneo",
+        scope: ["board"],
+        occurredAt: occurredAt ? new Date(occurredAt).toISOString() : null,
+        reason: "source-event",
+      });
+    } catch (err) {
+      console.error(`[freshness] WARNING: kaneo invalidation publish failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
   // #3321: per-card ingested-transition counters (the `seq` on
   // KaneoCardSnapshot), kept outside the snapshot map so a card that
   // leaves the board and later reappears resumes its count instead
@@ -1047,6 +1089,7 @@ export function liveSource(
           await enqueueKaneoIngestion(async () => {
             await seedKaneoSeqFromPersisted();
             await noteKaneoRecovered();
+            await publishKaneoFreshness(board);
             try {
               const cards: KaneoCardSnapshot[] = board
                 .filter((b) => b.source === "kaneo")

@@ -16,6 +16,43 @@ export interface ServerEnv extends Record<string, string | undefined> {
   GITHUB_APP_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
   GITHUB_TOKEN?: string;
+  /** Loopback-only pm-aggregator freshness publisher; absent in isolated tests. */
+  PM_AGG_FRESHNESS_URL?: string;
+}
+
+interface FreshnessNoticeInput {
+  eventId: string;
+  source: "github";
+  scope: string[];
+  occurredAt: string | null;
+  reason: "source-event";
+}
+
+function githubOccurredAt(payload: Record<string, any>): string | null {
+  const candidates = [
+    payload?.issue?.updated_at,
+    payload?.pull_request?.updated_at,
+    payload?.comment?.updated_at,
+    payload?.review?.submitted_at,
+    payload?.created_at,
+  ];
+  for (const value of candidates) {
+    if (typeof value === "string" && Number.isFinite(Date.parse(value))) return new Date(value).toISOString();
+  }
+  return null;
+}
+
+async function publishFreshness(env: ServerEnv, input: FreshnessNoticeInput): Promise<void> {
+  const url = env.PM_AGG_FRESHNESS_URL;
+  // Tests and standalone projector deployments can omit the local sink.
+  // The laptop unit configures it explicitly; no external route is enabled.
+  if (!url) return;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) throw new Error(`freshness publisher returned ${response.status}`);
 }
 
 function libsqlStore(db: Client): ProjectorStore {
@@ -121,6 +158,19 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
     }
     try {
       const result = await applyEvent(libsqlStore(db), event, payload, repos(env), deliveryId);
+      if (result.wrote && result.refs.length > 0) {
+        // Append before recording this delivery as applied. If the
+        // aggregator is unavailable, GitHub's retry re-applies the
+        // projection and retries the same stable delivery id; an
+        // already-applied row must never hide a missing invalidation.
+        await publishFreshness(env, {
+          eventId: `github:${deliveryId}`,
+          source: "github",
+          scope: [...new Set(result.refs)].slice(0, 100),
+          occurredAt: githubOccurredAt(payload),
+          reason: "source-event",
+        });
+      }
       await store.recordDelivery(db, {
         deliveryId,
         event,
