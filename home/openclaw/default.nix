@@ -122,7 +122,7 @@ in
       StartLimitBurst = 30;
     };
     Service = {
-      RestartSec = "5s";
+      RestartSec = lib.mkForce "5s"; # module default is 1s — the burst spacing that let 2026-11-04 happen
       # Materialize the facade credential at every gateway start
       # (opencode#1146 step 3): the opencode server password lives
       # in its service record — the same source oc-password-sync
