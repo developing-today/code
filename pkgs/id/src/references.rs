@@ -1692,15 +1692,16 @@ mod tests {
         let in_a = object(b"loc-order", Sigil::Topic, "Atlas Renamed", vec![], 1);
         let in_b = object(b"loc-order", Sigil::Topic, "Atlas", vec![], 1);
         assert_eq!(in_a.id, in_b.id);
+        let target_id = in_a.id;
         let fanout = FanOut::new(vec![
             store_index("a-store", vec![in_a]),
             store_index("b-store", vec![in_b]),
         ]);
-        let b_first = located_reference(in_a.id, "Atlas", &["b-store", "a-store"]);
+        let b_first = located_reference(target_id, "Atlas", &["b-store", "a-store"]);
         let located = fanout.render_located(&b_first);
         assert_eq!(located.rendered.state, RenderState::Resolved);
         assert_eq!(located.store, Some(StoreId("b-store".to_owned())));
-        let a_first = located_reference(in_a.id, "Atlas", &["a-store", "b-store"]);
+        let a_first = located_reference(target_id, "Atlas", &["a-store", "b-store"]);
         let located = fanout.render_located(&a_first);
         assert_eq!(located.rendered.state, RenderState::Renamed);
         assert_eq!(located.store, Some(StoreId("a-store".to_owned())));
