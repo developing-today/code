@@ -49,13 +49,13 @@ describe("page shell (Phase C)", () => {
     expect(html).toContain('data-init="$pmTheme = document.documentElement');
     expect(html).toContain("data-effect=\"document.documentElement.setAttribute('data-theme', $pmTheme)");
     expect(html).toContain("localStorage.setItem('pm-theme', $pmTheme)");
-    expect(html).toContain('data-on-click="$pmTheme = $pmTheme ===');
+    expect(html).toContain('data-on:click="$pmTheme = $pmTheme ===');
     expect(html).toContain('class="btn btn-ghost btn-sm theme-toggle"');
   });
 
   test("the pages dropdown navigates through Datastar, not an inline onchange", () => {
     expect(html).toContain('class="select select-bordered select-sm"');
-    expect(html).toContain('data-on-change="if (evt.target.value)');
+    expect(html).toContain('data-on:change="if (evt.target.value)');
     expect(html).not.toContain('onchange="if(this.value)');
   });
 
