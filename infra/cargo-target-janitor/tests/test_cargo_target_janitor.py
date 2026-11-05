@@ -188,9 +188,6 @@ class JanitorTests(unittest.TestCase):
         self.assertIn('"event": "plan"', log.read_text())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
     def test_owner_changed_when_worktree_switched_branch(self):
         target = self.make_target("task-43/pkgs/id/target")
         recorded = janitor.Target(target.resolve(), 10, 0, "queue/42-old", 42)
@@ -209,3 +206,7 @@ if __name__ == "__main__":
         target = self.make_target("target-42")
         recorded = janitor.Target(target.resolve(), 10, 0, None, 42)
         self.assertFalse(janitor.owner_changed(recorded, {}))
+
+
+if __name__ == "__main__":
+    unittest.main()
