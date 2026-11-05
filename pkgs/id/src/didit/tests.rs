@@ -591,6 +591,134 @@ fn supersede_is_order_independent() {
 }
 
 #[test]
+fn self_supersede_is_rejected_when_decoding() {
+    let valid = always(expectation(
+        0x72,
+        vec![dog_a()],
+        "fed",
+        Window::AtLeastOncePer {
+            period: Period::Day,
+        },
+    ));
+    let encoded = encode_expectation_body(&valid).expect("encode");
+    let mut items = match Value::decode(&encoded).expect("decode value") {
+        Value::Array(items) => items,
+        other => panic!("not an array: {other:?}"),
+    };
+    items[7] = Value::ByteString(valid.id.as_bytes().to_vec().into());
+    let invalid_body = Value::Array(items).encode();
+    assert!(matches!(
+        decode_expectation_body(&invalid_body),
+        Err(DiditError::Invalid(_))
+    ));
+
+    let mut self_superseding = valid;
+    self_superseding.supersedes = Some(self_superseding.id);
+    assert!(matches!(
+        encode_expectation_body(&self_superseding),
+        Err(DiditError::Invalid(_))
+    ));
+}
+
+fn supersede_cycle(ids: &[u8]) -> Vec<Expectation> {
+    let mut expectations: Vec<_> = ids
+        .iter()
+        .map(|byte| {
+            always(expectation(
+                *byte,
+                vec![dog_a()],
+                "fed",
+                Window::AtLeastOncePer {
+                    period: Period::Day,
+                },
+            ))
+        })
+        .collect();
+    for index in 0..expectations.len() {
+        let superseded = expectations[(index + 1) % expectations.len()].id;
+        expectations[index].supersedes = Some(superseded);
+    }
+    expectations
+}
+
+#[test]
+fn evaluator_rejects_a_self_supersede_cycle() {
+    let mut self_superseding = always(expectation(
+        0x73,
+        vec![dog_a()],
+        "fed",
+        Window::AtLeastOncePer {
+            period: Period::Day,
+        },
+    ));
+    self_superseding.supersedes = Some(self_superseding.id);
+    assert_eq!(
+        evaluate(&[self_superseding], &[], chicago(2026, 6, 15, 20, 0)).expect_err("cycle"),
+        EvalError::SupersedeCycle(vec![id(0x73)])
+    );
+}
+
+#[test]
+fn evaluator_rejects_a_two_expectation_supersede_cycle() {
+    let cycle = supersede_cycle(&[0x81, 0x80]);
+    assert_eq!(
+        evaluate(&cycle, &[], chicago(2026, 6, 15, 20, 0)).expect_err("cycle"),
+        EvalError::SupersedeCycle(vec![id(0x80), id(0x81)])
+    );
+}
+
+#[test]
+fn evaluator_rejects_a_three_expectation_supersede_cycle() {
+    let cycle = supersede_cycle(&[0x84, 0x82, 0x83]);
+    assert_eq!(
+        evaluate(&cycle, &[], chicago(2026, 6, 15, 20, 0)).expect_err("cycle"),
+        EvalError::SupersedeCycle(vec![id(0x82), id(0x83), id(0x84)])
+    );
+}
+
+#[test]
+fn evaluator_keeps_only_the_head_of_a_supersede_chain() {
+    let oldest = always(expectation(
+        0x87,
+        vec![dog_a()],
+        "fed",
+        Window::AtLeastOncePer {
+            period: Period::Day,
+        },
+    ));
+    let mut middle = always(expectation(
+        0x86,
+        vec![dog_a()],
+        "fed",
+        Window::AtLeastOncePer {
+            period: Period::Day,
+        },
+    ));
+    let mut head = always(expectation(
+        0x85,
+        vec![dog_a()],
+        "fed",
+        Window::AtLeastOncePer {
+            period: Period::Day,
+        },
+    ));
+    middle.supersedes = Some(oldest.id);
+    head.supersedes = Some(middle.id);
+    let verdicts = evaluate(
+        &[oldest, middle, head.clone()],
+        &[],
+        chicago(2026, 6, 15, 20, 0),
+    )
+    .expect("normal chain evaluates");
+    assert!(!verdicts.is_empty());
+    assert!(
+        verdicts
+            .iter()
+            .all(|verdict| verdict.expectation == head.id)
+    );
+}
+
+#[test]
 fn ends_at_stops_evaluation() {
     let mut ended = always(expectation(
         0x80,

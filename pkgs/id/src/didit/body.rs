@@ -523,12 +523,18 @@ pub struct Expectation {
 
 impl Expectation {
     /// Checks the rules every expectation body meets: non-empty distinct
-    /// subjects, a valid window and active window, and valid text.
+    /// subjects, a valid window and active window, valid text, and no
+    /// self-supersede.
     ///
     /// # Errors
     ///
     /// Returns [`DiditError::Invalid`] naming the rule that failed.
     pub fn check(&self) -> Result<(), DiditError> {
+        if self.supersedes == Some(self.id) {
+            return Err(DiditError::Invalid(
+                "an expectation cannot supersede itself".to_owned(),
+            ));
+        }
         check_subjects(&self.subjects, "expectation subjects")?;
         check_text(&self.act, "act", true)?;
         self.window.check()?;
