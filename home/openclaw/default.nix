@@ -436,11 +436,10 @@ in
             every = "30m";
             lightContext = true;
             isolatedSession = true;
-            # Defer while subagent/nested lanes are busy (upstream
-            # heartbeat docs recommend this on constrained hosts):
-            # a heartbeat that collides with fleet work on this laptop
-            # either steals the lane or dies on requests-in-flight.
-            skipWhenBusy = true;
+            # NOTE: heartbeat.skipWhenBusy (upstream-recommended on
+            # constrained hosts) cannot be expressed yet — the pinned
+            # nix-openclaw generated schema has no such option. Revisit
+            # after the nix-openclaw upgrade.
             activeHours = {
               start = "07:00";
               end = "23:00";
