@@ -849,6 +849,29 @@ fn cmd_enqueue(rest: &[String]) -> i32 {
     0
 }
 
+/// One `/list` row as the printed table cells, in column order
+/// (task, priority, status, age, dedupe_key, title). Pure so the
+/// claimed-list recovery contract (#5486) is unit-testable: the cells
+/// are built from exactly the identifying fields the broker returns.
+fn list_row_cells(r: &Value) -> Vec<String> {
+    vec![
+        format!("task {}", fmt_cell(r.get("id"))),
+        fmt_cell(r.get("priority")),
+        fmt_cell(r.get("status")),
+        age_str(&r.get("created_at").cloned().unwrap_or(Value::Null)),
+        fmt_cell(r.get("dedupe_key")),
+        truncate(&fmt_cell(r.get("title")), 72),
+    ]
+}
+
+/// Find a task row by id in a `/list` rows array — the recovery path a
+/// worker uses when a claim's own output was lost: `list --status
+/// claimed` must return the same task with its identifying fields.
+fn find_task_row(rows: &[Value], task_id: i64) -> Option<&Value> {
+    rows.iter()
+        .find(|r| r.get("id").and_then(|v| v.as_i64()) == Some(task_id))
+}
+
 fn cmd_list(rest: &[String]) -> i32 {
     let args = parse_args(rest, &["queue", "status", "limit", "not-before"], &[]);
     reject_extra_pos("list", &args, 0);
@@ -875,19 +898,7 @@ fn cmd_list(rest: &[String]) -> i32 {
         .iter()
         .map(|s| s.to_string())
         .collect();
-    let str_rows: Vec<Vec<String>> = rows
-        .iter()
-        .map(|r| {
-            vec![
-                format!("task {}", fmt_cell(r.get("id"))),
-                fmt_cell(r.get("priority")),
-                fmt_cell(r.get("status")),
-                age_str(&r.get("created_at").cloned().unwrap_or(Value::Null)),
-                fmt_cell(r.get("dedupe_key")),
-                truncate(&fmt_cell(r.get("title")), 72),
-            ]
-        })
-        .collect();
+    let str_rows: Vec<Vec<String>> = rows.iter().map(list_row_cells).collect();
     print_table(&cols, &str_rows);
     0
 }
@@ -904,14 +915,34 @@ fn cmd_claim(rest: &[String]) -> i32 {
         body["lane"] = json!(lane);
     }
     let resp = unwrap_ok(call("/claim", &body));
+    let (out, code) = claim_output(&resp);
+    if code != 0 {
+        eprint("repo-queue: no claimable task");
+    }
+    print_json(&out);
+    code
+}
+
+/// Exit code for a claim that found no task: nonzero, so an empty
+/// claim can never be mistaken for a successful one (#5486).
+const NO_CLAIM_EXIT: i32 = 5;
+
+/// Decode a `/claim` broker envelope into the (stdout value, exit
+/// code) pair `cmd_claim` emits. Pure so the wire/output contract is
+/// unit-testable without a broker. The oracle is the envelope shape
+/// itself (#5486): `{ok:true, row:{id,queue,status,dedupe_key,...}}`
+/// prints the row VERBATIM with exit 0 — the reported failure was an
+/// all-null row printed instead of the claimed task — while a null
+/// (or missing) row yields the distinct `{"task": null}` marker with
+/// NO_CLAIM_EXIT, a value carrying no id/queue/status/dedupe_key
+/// fields a caller could mistake for a task.
+fn claim_output(resp: &Value) -> (Value, i32) {
     let row = resp.get("row").cloned().unwrap_or(Value::Null);
     if row.is_null() {
-        eprint("repo-queue: no claimable task");
-        print_json(&json!({"task": Value::Null}));
-        return 5;
+        (json!({"task": Value::Null}), NO_CLAIM_EXIT)
+    } else {
+        (row, 0)
     }
-    print_json(&row);
-    0
 }
 
 fn cmd_lane(rest: &[String]) -> i32 {
@@ -1596,6 +1627,134 @@ mod tests {
             for (name, value) in expected {
                 prop_assert_eq!(args.get(name), Some(value.to_string()));
             }
+        }
+    }
+
+    // #5486 regression coverage: the broker envelope -> CLI output
+    // contract for claim, plus claimed-list recovery. Oracles are the
+    // envelope/row shapes the broker actually returns (queue_broker
+    // wraps RPC results as {ok:true, row:...} / {ok:true, rows:[...]}).
+
+    fn claimed_row_fixture() -> Value {
+        json!({
+            "id": 10811,
+            "queue": "repo-health-code-pilot",
+            "status": "claimed",
+            "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:5486",
+            "title": "Add repo-queue claim response-shape regression tests (#5486)",
+            "priority": 50,
+            "worker_id": "repo-worker-code",
+        })
+    }
+
+    #[test]
+    fn claim_success_envelope_prints_the_real_row() {
+        // The reported #5486 failure printed an all-null task row for
+        // a claim the broker had actually made. The row must come
+        // through verbatim: real id, queue, status, and dedupe_key.
+        let row = claimed_row_fixture();
+        let resp = json!({"ok": true, "row": row.clone()});
+        let (out, code) = claim_output(&resp);
+        assert_eq!(code, 0);
+        assert_eq!(out, row);
+        assert_eq!(out.get("id"), Some(&json!(10811)));
+        assert_eq!(out.get("queue"), Some(&json!("repo-health-code-pilot")));
+        assert_eq!(out.get("status"), Some(&json!("claimed")));
+        assert_eq!(
+            out.get("dedupe_key"),
+            Some(&json!(
+                "repo-health:v1:fix:developing-today/code:issue:5486"
+            ))
+        );
+        for field in ["id", "queue", "status", "dedupe_key"] {
+            assert!(
+                !out.get(field).expect(field).is_null(),
+                "claimed row field {field} must not be null"
+            );
+        }
+    }
+
+    #[test]
+    fn claim_null_row_is_a_distinguishable_nonzero_no_claim() {
+        // Both a null row and a missing row field are "no task
+        // claimable": nonzero exit, and the marker carries none of
+        // the fields that would make it look like a task row.
+        for resp in [json!({"ok": true, "row": Value::Null}), json!({"ok": true})] {
+            let (out, code) = claim_output(&resp);
+            assert_eq!(code, NO_CLAIM_EXIT);
+            assert_ne!(code, 0, "an empty claim must not exit as success");
+            assert_eq!(out, json!({"task": Value::Null}));
+            for field in ["id", "queue", "status", "dedupe_key"] {
+                assert!(
+                    out.get(field).is_none(),
+                    "no-claim marker must not carry task field {field}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn claimed_list_recovers_the_claimed_task() {
+        // After a successful claim, `list --status claimed` returns
+        // rows the worker can recover the same task from, with its
+        // identifying fields intact.
+        let row = claimed_row_fixture();
+        let other = json!({
+            "id": 9999,
+            "queue": "repo-health-code-pilot",
+            "status": "claimed",
+            "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:1",
+            "title": "some other claimed task",
+            "priority": 30,
+        });
+        let rows = vec![other, row];
+        let found = find_task_row(&rows, 10811).expect("claimed task must be recoverable by id");
+        assert_eq!(found.get("status"), Some(&json!("claimed")));
+        assert_eq!(
+            found.get("dedupe_key"),
+            Some(&json!(
+                "repo-health:v1:fix:developing-today/code:issue:5486"
+            ))
+        );
+        assert!(find_task_row(&rows, 424242).is_none());
+        // The printed cells carry the same identifying fields.
+        let cells = list_row_cells(found);
+        assert_eq!(cells.len(), 6);
+        assert_eq!(cells[0], "task 10811");
+        assert_eq!(cells[1], "50");
+        assert_eq!(cells[2], "claimed");
+        assert_eq!(
+            cells[4],
+            "repo-health:v1:fix:developing-today/code:issue:5486"
+        );
+        assert_eq!(
+            cells[5],
+            "Add repo-queue claim response-shape regression tests (#5486)"
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn claim_output_passes_any_non_null_row_through_verbatim(
+            id in 1i64..1_000_000,
+            priority in 0i64..100,
+            title in "[a-z ]{1,40}",
+        ) {
+            // Invariant (the #5486 oracle): whatever identifying
+            // fields a successful claim row carries reach stdout
+            // unchanged, with a success exit — no field is nulled,
+            // dropped, or re-keyed in decoding.
+            let row = json!({
+                "id": id,
+                "queue": "repo-health-code-pilot",
+                "status": "claimed",
+                "dedupe_key": format!("key-{id}"),
+                "title": title,
+                "priority": priority,
+            });
+            let (out, code) = claim_output(&json!({"ok": true, "row": row.clone()}));
+            prop_assert_eq!(code, 0);
+            prop_assert_eq!(out, row);
         }
     }
 }
