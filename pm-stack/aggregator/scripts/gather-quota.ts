@@ -404,7 +404,17 @@ function execSubcommand(argv: string[]): Promise<string> {
     execFile(
       argv[0],
       argv.slice(1),
-      { maxBuffer: 64 * 1024 * 1024, timeout: subcommandTimeoutMs, env: process.env },
+      {
+        maxBuffer: 64 * 1024 * 1024,
+        timeout: subcommandTimeoutMs,
+        env: process.env,
+        // Neutral cwd (the state dir): quota is a machine-level read,
+        // not a project read. From the aggregator's repo cwd the CLI
+        // does project discovery over the code repo's worktrees —
+        // minutes of CPU, and the first production tick died on it
+        // (240s exec cap, truncated stdout, #6127).
+        cwd: dirname(currentPath),
+      },
       (err, stdout) => {
         if (err && !stdout) {
           reject(err);
@@ -427,7 +437,7 @@ function parseSubcommandResults(stdout: string, label: string): QuotaProviderRes
   try {
     parsed = JSON.parse(stdout);
   } catch {
-    throw new Error(`opencode quota (${label}): unparseable output`);
+    throw new Error(`opencode quota (${label}): unparseable output (${stdout.length} bytes)`);
   }
   const arr = Array.isArray(parsed)
     ? parsed
