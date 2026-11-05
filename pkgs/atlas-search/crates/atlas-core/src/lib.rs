@@ -29,6 +29,7 @@
 pub mod backend;
 pub mod embed;
 pub mod error;
+pub mod eval;
 pub mod filters;
 pub mod fusion;
 pub mod local;
@@ -39,6 +40,10 @@ pub mod types;
 pub use backend::SearchBackend;
 pub use embed::{AtlasEmbedder, FixedEmbedder, QUERY_PROMPT, QueryEmbedder};
 pub use error::{Error, Result};
+pub use eval::{
+    EVAL_FORMAT, EvalData, EvalReport, MAX_GRADE, Metric, REPORT_FORMAT, Split, evaluate,
+    select_best_signal,
+};
 pub use filters::{Filters, Sensitivity};
 pub use fusion::{FusedEntry, RRF_K};
 pub use local::LocalBackend;
