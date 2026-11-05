@@ -21,12 +21,6 @@ name: mcpx test
 # vendorHash repair.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/mcpx/**"
-      - "!pkgs/mcpx/testdata/seeds/**"
-      - ".github/workflows/mcpx-test.yml"
   workflow_dispatch:
 
 concurrency:
@@ -106,8 +100,14 @@ jobs:
       - name: Unit tests (everything except internal/e2e)
         working-directory: pkgs/mcpx
         run: |
+          # Intentional word splitting: $pkgs is a newline-separated package list
+          # from go list and must split into separate go test arguments --
+          # quoting it would pass the whole list as a single bogus package name
+          # (per-line directive below; actionlint's prepended `set` line defeats
+          # a single block-top directive).
           pkgs=$(go list ./... | grep -v '/internal/e2e$')
           echo "unit packages:"; echo "$pkgs"
+          # shellcheck disable=SC2086
           go test $pkgs -count=1
 
   lint:

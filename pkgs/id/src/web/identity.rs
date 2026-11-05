@@ -64,6 +64,9 @@ const MAX_NAME_LENGTH: usize = 48;
 /// Maximum token age before it's considered expired (30 days in seconds).
 const TOKEN_MAX_AGE_SECS: u64 = 30 * 24 * 60 * 60;
 
+/// Maximum tolerated clock skew for a token issued in the future (5 minutes).
+const TOKEN_FUTURE_SKEW_SECS: u64 = 5 * 60;
+
 /// Default admission bound on registered web identities (#1766).
 ///
 /// Registration used to grow the identity store — the in-memory maps
@@ -523,8 +526,11 @@ impl IdentityStore {
         // Deserialize payload
         let payload: TokenPayload = serde_json::from_slice(payload_bytes).ok()?;
 
-        // Reject expired tokens (older than TOKEN_MAX_AGE_SECS)
+        // Reject tokens dated implausibly far in the future, then apply the age cap.
         let now = unix_timestamp();
+        if payload.created_at > now.saturating_add(TOKEN_FUTURE_SKEW_SECS) {
+            return None;
+        }
         if now.saturating_sub(payload.created_at) > TOKEN_MAX_AGE_SECS {
             return None;
         }
@@ -559,24 +565,13 @@ fn hex_encode(bytes: &[u8]) -> String {
 pub(super) fn sanitize_name(name: Option<String>) -> Option<String> {
     name.map(|name| {
         name.chars()
-            .filter(|ch| !ch.is_control() && !is_bidi_override_or_isolate(*ch))
+            .filter(|ch| !ch.is_control() && !crate::is_format_char(*ch))
             .take(MAX_NAME_LENGTH)
             .collect::<String>()
             .trim()
             .to_owned()
     })
     .filter(|name| !name.is_empty())
-}
-
-fn is_bidi_override_or_isolate(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{061c}'
-            | '\u{200e}'
-            | '\u{200f}'
-            | '\u{202a}'..='\u{202e}'
-            | '\u{2066}'..='\u{2069}'
-    )
 }
 
 /// Create a short display ID from a `client_id` (first 6 chars).
@@ -1023,6 +1018,10 @@ mod tests {
             sanitize_name(Some("Bob".to_owned())),
             Some("Bob".to_owned())
         );
+        assert_eq!(
+            sanitize_name(Some("Mary Jane-Smith".to_owned())),
+            Some("Mary Jane-Smith".to_owned())
+        );
 
         assert_eq!(
             sanitize_name(Some("A\n\t\u{001b}\u{202e}lice".to_owned())),
@@ -1033,8 +1032,12 @@ mod tests {
             Some("AB".to_owned())
         );
         assert_eq!(
+            sanitize_name(Some("a\u{200b}b\u{feff}c\u{00ad}d".to_owned())),
+            Some("abcd".to_owned())
+        );
+        assert_eq!(
             sanitize_name(Some("a\u{200d}b\u{200c}c".to_owned())),
-            Some("a\u{200d}b\u{200c}c".to_owned())
+            Some("abc".to_owned())
         );
         assert_eq!(
             sanitize_name(Some("こんにちは世界".to_owned())),
@@ -1078,13 +1081,16 @@ mod tests {
         // sets them decodes to the same bytes, so a token had up to
         // 16 alias strings that all verified. Decode refuses the
         // non-canonical spellings outright.
-        const ALPHABET: &[u8] =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
         let alias = |encoded: &str, mask: u32| -> String {
             let mut bytes = encoded.as_bytes().to_vec();
             let last = bytes.len() - 1;
             let value = ALPHABET.iter().position(|&c| c == bytes[last]).unwrap() as u32;
-            assert_eq!(value & mask, 0, "canonical encoding zeroes the trailing bits");
+            assert_eq!(
+                value & mask,
+                0,
+                "canonical encoding zeroes the trailing bits"
+            );
             bytes[last] = ALPHABET[(value | mask) as usize];
             String::from_utf8(bytes).unwrap()
         };
@@ -1142,8 +1148,7 @@ mod tests {
         // verify, while the canonical spelling still does. The token
         // byte length fixes the final group: %4==3 chars -> low 2 bits
         // unused, %4==2 chars -> low 4 bits unused.
-        const ALPHABET: &[u8] =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
         let store = IdentityStore::new_ephemeral();
         let (token, _) = store.register(Some("Alice".to_owned())).await.unwrap();
         assert!(store.verify_token(&token).await.is_some());
@@ -1155,7 +1160,11 @@ mod tests {
         let mut bytes = token.as_bytes().to_vec();
         let last = bytes.len() - 1;
         let value = ALPHABET.iter().position(|&c| c == bytes[last]).unwrap() as u32;
-        assert_eq!(value & mask, 0, "canonical spelling zeroes the trailing bits");
+        assert_eq!(
+            value & mask,
+            0,
+            "canonical spelling zeroes the trailing bits"
+        );
         bytes[last] = ALPHABET[(value | mask) as usize];
         let alias = String::from_utf8(bytes).unwrap();
         assert_ne!(alias, token);
@@ -1188,7 +1197,9 @@ mod tests {
         let mut handles = Vec::new();
         for i in 0..16 {
             let s = Arc::clone(&store);
-            handles.push(tokio::spawn(async move { s.register(Some(format!("racer-{i}"))).await }));
+            handles.push(tokio::spawn(async move {
+                s.register(Some(format!("racer-{i}"))).await
+            }));
         }
         let mut ok = 0;
         let mut refused = 0;
@@ -1391,6 +1402,30 @@ mod tests {
         // Expired token should be rejected
         assert!(store.verify_token(&expired_token).await.is_none());
         assert!(store.verify_token_client_id(&expired_token).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_future_dated_token_within_and_beyond_skew() {
+        let store = IdentityStore::new_ephemeral();
+        let (_, identity) = store.register(None).await.unwrap();
+        let now = unix_timestamp();
+
+        let within_skew = store
+            .create_token(
+                &identity.client_id,
+                now.saturating_add(TOKEN_FUTURE_SKEW_SECS - 60),
+            )
+            .unwrap();
+        assert!(store.verify_token(&within_skew).await.is_some());
+
+        let beyond_skew = store
+            .create_token(
+                &identity.client_id,
+                now.saturating_add(TOKEN_FUTURE_SKEW_SECS + 60),
+            )
+            .unwrap();
+        assert!(store.verify_token(&beyond_skew).await.is_none());
+        assert!(store.verify_token_client_id(&beyond_skew).is_none());
     }
 
     /// A token with the given payload and 64 signature bytes, in the wire format.

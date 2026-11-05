@@ -17,7 +17,13 @@ const health: HealthView = {
   bootAt: "2026-10-29T00:00:00Z",
   degraded: false,
   services: [],
-  feed: { generatedAt: null, fileMtime: null, ageMs: 60_000, sections: [] },
+  feed: {
+    generatedAt: null,
+    fileMtime: null,
+    ageMs: 60_000,
+    checkout: { state: "unknown", reason: "test fixture" },
+    sections: [],
+  },
   jobs: {
     orchestration: { state: "unknown" },
     collector: { generatedAt: null, fileMtime: null, ageMs: null },
@@ -26,6 +32,8 @@ const health: HealthView = {
   facets: null,
   itemsCoverage: null,
   comments: { pendingMessages: 0, pendingGithub: 0, total: 0 },
+  conflicts: null,
+  rfa: { state: "fixtures", detail: "fixtures mode — no live harness read", repositories: [], backends: [] },
 };
 
 const data: OverviewData = {

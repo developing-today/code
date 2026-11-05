@@ -171,23 +171,24 @@ describe("world page rejoin (ghost WebSocket, #1461)", () => {
 
   it("host view uses the admin header, shows an empty-program action, and blocks guest input", async () => {
     const realFetch = globalThis.fetch;
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
-      new Response(
-        JSON.stringify({
-          snapshot: {
-            world_id: "lobby",
-            current_sequence: 0,
-            active_module_hash: null,
-            participants: [],
-          },
-          view: null,
-          surface: null,
-          records_sequence: 0,
-          records: {},
-          next_after: null,
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      ),
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(
+          JSON.stringify({
+            snapshot: {
+              world_id: "lobby",
+              current_sequence: 0,
+              active_module_hash: null,
+              participants: [],
+            },
+            view: null,
+            surface: null,
+            records_sequence: 0,
+            records: {},
+            next_after: null,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
     );
     vi.stubGlobal("fetch", fetchMock);
     try {
@@ -199,7 +200,7 @@ describe("world page rejoin (ghost WebSocket, #1461)", () => {
       expect(fetchMock).toHaveBeenCalledOnce();
       const [url, options] = fetchMock.mock.calls[0];
       expect(String(url)).not.toContain("admin-secret");
-      expect((options?.headers as Record<string, string>)["x-world-admin-token"]).toBe("admin-secret");
+      expect((options?.headers as Record<string, string> | undefined)?.["x-world-admin-token"]).toBe("admin-secret");
       expect(q("[data-world-view]").textContent).toContain("No program is installed");
       expect(q<HTMLFormElement>("[data-world-chat-form]").hidden).toBe(true);
       expect(q<HTMLFormElement>("[data-world-input-form]").hidden).toBe(true);

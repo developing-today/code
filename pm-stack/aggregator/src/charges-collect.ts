@@ -11,6 +11,13 @@
 // Everything here is pure except the state the collector itself
 // passes in/out; file IO lives in collect-fleet-feed.ts, following
 // the same split as charges-match.ts (decisions here, state there).
+//
+// The charges contract (#3161) as it applies here: identity is the
+// shared rule stated in charges-match.ts — sameCharge below is its
+// hand-fed-vs-auto form — and delivery means surfaced keys are
+// persisted only for charges in a feed that was successfully
+// published, so an unmatched charge counts as shown only once it
+// was actually delivered.
 
 import {
   DEDUPE_WINDOW_DAYS,
@@ -64,12 +71,28 @@ function daysBetween(a: string, b: string): number {
 }
 
 /**
+ * Extract a card mask (e.g. "7535" from "Visa •7535", "•7535", or
+ * "Visa ending 7535") when present on a payment-method string.
+ * Returns undefined when no card mask is present (e.g. "card",
+ * "Link", empty/missing).
+ */
+export function extractCardMask(method: string | undefined | null): string | undefined {
+  if (typeof method !== "string" || !method.trim()) return undefined;
+  const m = /(?:[•*×xX#]|ending\s*)?\s*(\d{3,4})\b/i.exec(method);
+  return m ? m[1] : undefined;
+}
+
+/**
  * Does a hand-fed row describe the same charge as an auto-matched
  * row? Same amount, dates within the matcher's dedupe window, and
  * merchant/label token sequences that contain one another at whole-
  * token boundaries ("Meta PAYG spill" still matches the "Meta" alias
  * of a METAPAY charge). Conservative: a hand-fed row is only dropped
  * when an auto row plausibly IS that charge.
+ *
+ * When both rows carry known, conflicting card masks (e.g. Visa
+ * •7535 vs Visa •9545), they describe charges on different cards
+ * and are preserved as distinct evidence (#3123).
  */
 /**
  * Every token spelling a label answers to: its own, plus the
@@ -103,9 +126,23 @@ function containsTokenSequence(tokens: string[], sequence: string[]): boolean {
   return false;
 }
 
+/**
+ * The shared identity rule (#3161), hand-fed-vs-auto form: the two
+ * rows are the same charge only when amounts are equal, dates fall
+ * inside the dedupe window, and the merchant identity holds at
+ * token boundaries — token-sequence containment in either
+ * direction over the alias-expanded label token sequences (which
+ * preserves the documented METAPAY / "Meta PAYG spill" merge while
+ * excluding substring lookalikes). An empty normalized label never
+ * matches, and conflicting known card masks veto the merge;
+ * agreement or absence of a payment method does not block it.
+ */
 function sameCharge(handFed: ChargeRow, auto: ChargeRow): boolean {
   if (handFed.amountUsd !== auto.amountUsd) return false;
   if (daysBetween(handFed.at, auto.at) > DEDUPE_WINDOW_DAYS) return false;
+  const maskA = extractCardMask(handFed.method);
+  const maskB = extractCardMask(auto.method);
+  if (maskA && maskB && maskA !== maskB) return false;
   const aSet = labelTokenSequences(handFed.label);
   const bSet = labelTokenSequences(auto.label);
   if (!aSet.length || !bSet.length) return false;

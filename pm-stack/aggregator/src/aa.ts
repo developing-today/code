@@ -207,6 +207,33 @@ export interface OpencodeCoverageInputs {
 }
 
 /**
+ * Merge the runtime overlay (#4544: the sync-models-owned provider catalogs
+ * that live outside the tracked configured default and are layered over it
+ * via OPENCODE_CONFIG) into the base config text, returning the effective
+ * config as JSON text. Returns null when either side does not parse —
+ * callers fall back to the base text alone.
+ */
+export function mergeOpencodeConfigTexts(baseText: string, overlayText: string): string | null {
+  let base: unknown;
+  let overlay: unknown;
+  try {
+    base = JSON.parse(stripJsonComments(baseText));
+    overlay = JSON.parse(stripJsonComments(overlayText));
+  } catch {
+    return null;
+  }
+  if (typeof base !== "object" || base === null || typeof overlay !== "object" || overlay === null) return null;
+  const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+  const merge = (b: unknown, o: unknown): unknown => {
+    if (!isObj(b) || !isObj(o)) return o;
+    const out: Record<string, unknown> = { ...b };
+    for (const k of Object.keys(o)) out[k] = merge(b[k], o[k]);
+    return out;
+  };
+  return JSON.stringify(merge(base, overlay));
+}
+
+/**
  * Extract the provider catalog and the pooled leaf set from the repo's
  * .opencode/opencode.jsonc. Returns null when the file does not parse —
  * coverage is best-effort and its absence is stated, never guessed.
@@ -582,15 +609,15 @@ export interface AaPlanFact {
 }
 
 export const AA_PLAN_FACTS: Record<string, AaPlanFact> = {
-  "opencode-go.personal": {
-    plan: "OpenCode Go — Personal",
+  "opencode-go.drewrypope": {
+    plan: "OpenCode Go — drewrypope",
     multiplier: 6,
-    note: "$10/mo buys a $60/mo list-rate meter (6×); Flash promo cap $80 (≈8×). Cancelled — period ends 2026-11-02.",
+    note: "$10/mo buys a $60/mo list-rate meter (6×); Flash promo cap $80 (≈8×). Renamed from Personal 2026-11-03.",
   },
-  "opencode-go.lab": {
-    plan: "OpenCode Go — Lab",
+  "opencode-go.popesdrew": {
+    plan: "OpenCode Go — popesdrew",
     multiplier: 6,
-    note: "$10/mo buys a $60/mo list-rate meter (6×); Flash promo cap $80 (≈8×). Cancelled — period ends 2026-11-06.",
+    note: "$10/mo buys a $60/mo list-rate meter (6×); Flash promo cap $80 (≈8×). New account registered 2026-11-03, replacing Lab.",
   },
   "opencode-go": {
     plan: "OpenCode Go",
@@ -757,7 +784,7 @@ interface CatalogRate {
 /**
  * Group current prices by model: bands sorted by context floor, and a
  * lookup by full id plus one by bare model part (models.dev provider
- * slugs differ from fleet provider ids — "opencode-go.personal" vs
+ * slugs differ from fleet provider ids — "opencode-go.drewrypope" vs
  * "opencode-go" — so the model part is the reliable join key; the
  * coverage normalizer arbitrates collisions by keeping the first).
  */
@@ -1073,6 +1100,7 @@ export function aaSectionFromSupabase(
   raw: AaRawPayload,
   opencodeConfigText: string | null,
   generatedAt: string,
+  opencodeRuntimeText: string | null = null,
 ): AaSection | null {
   if (typeof raw.batch !== "string" || !Array.isArray(raw.rankings) || !Array.isArray(raw.configs)) return null;
   const rankings = raw.rankings.map(rankingFromRaw).filter((r): r is AaRanking => r !== null);
@@ -1093,9 +1121,15 @@ export function aaSectionFromSupabase(
   let coverage: AaCoverage | undefined;
   let catalog: AaCatalogEntry[] | undefined;
   if (opencodeConfigText) {
-    const inputs = parseOpencodeCoverageInputs(opencodeConfigText);
+    // #4544: coverage and the catalog are computed from the effective config
+    // (tracked default + runtime overlay) so the sync-owned providers'
+    // models stay visible after the split.
+    const effectiveText =
+      (opencodeRuntimeText ? mergeOpencodeConfigTexts(opencodeConfigText, opencodeRuntimeText) : null) ??
+      opencodeConfigText;
+    const inputs = parseOpencodeCoverageInputs(effectiveText);
     if (inputs) coverage = computeAaCoverage(measuredNames, inputs);
-    catalog = aaCatalogFromConfig(opencodeConfigText, { configs, rankings }, prices) ?? undefined;
+    catalog = aaCatalogFromConfig(effectiveText, { configs, rankings }, prices) ?? undefined;
   }
   return {
     status: "ok",
@@ -1133,7 +1167,11 @@ export function isAaSection(v: unknown): v is AaFeedSection {
       (r) =>
         typeof r === "object" &&
         r !== null &&
-        (typeof (r as { snapshotDate?: unknown }).snapshotDate === "string" ||
+        // #5289: snapshotDate is a date, not just a string — summarizeAa
+        // publishes these values verbatim as the batch's snapshot vintage,
+        // so gate them with isIsoDate like generatedAt above (date-only
+        // forms pass; impossible/non-ISO strings degrade the section).
+        (isIsoDate((r as { snapshotDate?: unknown }).snapshotDate) ||
           (r as { snapshotDate?: unknown }).snapshotDate === null),
     ) &&
     // #2415: summarizeAa iterates thresholds and the /aa renderer maps

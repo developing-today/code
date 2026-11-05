@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the PM weekly digest on Mondays at 07:05 local (pm-stack, #1278)
+
+[Timer]
+OnCalendar=Mon *-*-* 07:05:00
+RandomizedDelaySec=60
+Persistent=true
+Unit=digest-weekly.service
+
+[Install]
+WantedBy=timers.target

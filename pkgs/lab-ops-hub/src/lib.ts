@@ -1,3 +1,5 @@
+import { HTML5_ENTITIES, MAX_HTML5_ENTITY_KEY_LENGTH } from "./html5-entities.ts";
+
 // Pure helpers for Lab Ops Hub: crawl-target validation (#441), the
 // /api/budget computation (#442), and upload R2 key derivation (#2478).
 // Kept free of Worker bindings so they can be unit-tested with plain
@@ -515,98 +517,19 @@ export async function fileResponseForKey(
 //   whitespace collapsed — the same `" ".join` + `\s+` collapse app.py
 //   applies. Paired fixtures: test/extractor-fixtures.json, exercised by
 //   both test/extractor.test.ts and test/test_extractor_parity.py.
-const NAMED_ENTITIES: Record<string, string> = {
-  amp: "&",
-  lt: "<",
-  gt: ">",
-  quot: '"',
-  apos: "'",
-  nbsp: " ",
-  copy: "©",
-  reg: "®",
-  trade: "™",
-  hellip: "…",
-  mdash: "—",
-  ndash: "–",
-  lsquo: "‘",
-  rsquo: "’",
-  ldquo: "“",
-  rdquo: "”",
-  laquo: "«",
-  raquo: "»",
-  times: "×",
-  divide: "÷",
-  plusmn: "±",
-  deg: "°",
-  middot: "·",
-  bull: "•",
-  dagger: "†",
-  permil: "‰",
-  euro: "€",
-  pound: "£",
-  yen: "¥",
-  cent: "¢",
-  curren: "¤",
-  sect: "§",
-  para: "¶",
-  micro: "µ",
-  sup1: "¹",
-  sup2: "²",
-  sup3: "³",
-  frac12: "½",
-  frac14: "¼",
-  frac34: "¾",
-  iexcl: "¡",
-  iquest: "¿",
-  szlig: "ß",
-  agrave: "à",
-  aacute: "á",
-  acirc: "â",
-  atilde: "ã",
-  auml: "ä",
-  aring: "å",
-  aelig: "æ",
-  ccedil: "ç",
-  egrave: "è",
-  eacute: "é",
-  ecirc: "ê",
-  euml: "ë",
-  igrave: "ì",
-  iacute: "í",
-  icirc: "î",
-  iuml: "ï",
-  ntilde: "ñ",
-  ograve: "ò",
-  oacute: "ó",
-  ocirc: "ô",
-  otilde: "õ",
-  ouml: "ö",
-  ugrave: "ù",
-  uacute: "ú",
-  ucirc: "û",
-  uuml: "ü",
-  yacute: "ý",
-  yuml: "ÿ",
-  Agrave: "À",
-  Aacute: "Á",
-  Auml: "Ä",
-  Ccedil: "Ç",
-  Egrave: "È",
-  Eacute: "É",
-  Euml: "Ë",
-  Ntilde: "Ñ",
-  Ograve: "Ò",
-  Oacute: "Ó",
-  Ouml: "Ö",
-  Ugrave: "Ù",
-  Uacute: "Ú",
-  Uuml: "Ü",
-};
+// - <title> and <textarea> are RCDATA elements (#4008): content is
+//   character data (entities decoded, markup literal) up to the matching
+//   close tag — title data goes to title, textarea data to text.
+// - <iframe>, <xmp>, <noembed>, and <noframes> are raw-text elements
+//   (#4008): content is likewise literal up to the matching close tag
+//   (anchors inside never count), and HTMLParser reports it verbatim —
+//   no entity decoding — as ordinary character data.
 
 // HTML numeric character-reference normalization: the same remapping
 // html.unescape applies for the container's HTMLParser. C1 controls
 // 0x80-0x9F map to their Windows-1252 characters; NUL, surrogates, and
-// out-of-range values become U+FFFD.
+// out-of-range values become U+FFFD. Other invalid controls and Unicode
+// noncharacters are dropped, matching html.unescape.
 const NUMERIC_REF_REMAP: Record<number, number> = {
   0x80: 0x20ac,
   0x81: 0x0081,
@@ -642,23 +565,68 @@ const NUMERIC_REF_REMAP: Record<number, number> = {
   0x9f: 0x0178,
 };
 
-function normalizeNumericRef(code: number): number {
+function normalizeNumericRef(code: number): number | null {
   if (code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return 0xfffd;
+  if (
+    (code >= 0x1 && code <= 0x8) ||
+    code === 0xb ||
+    (code >= 0xe && code <= 0x1f) ||
+    code === 0x7f ||
+    (code >= 0xfdd0 && code <= 0xfdef) ||
+    (code & 0xffff) === 0xfffe ||
+    (code & 0xffff) === 0xffff
+  ) {
+    return null;
+  }
   return NUMERIC_REF_REMAP[code] ?? code;
 }
 
 export function decodeHtmlEntities(data: string): string {
-  return data.replace(/&(#(?:[xX][0-9a-fA-F]+|\d+)|[a-zA-Z][a-zA-Z0-9]*);/g, (whole, body: string) => {
-    if (body.startsWith("#")) {
-      const hex = body[1] === "x" || body[1] === "X";
-      const code = Number.parseInt(body.slice(hex ? 2 : 1), hex ? 16 : 10);
-      return String.fromCodePoint(normalizeNumericRef(code));
+  const decoded: string[] = [];
+  let copyFrom = 0;
+  let i = 0;
+  const numericReference = /&#([xX][0-9a-fA-F]+|\d+);?/y;
+  while (i < data.length) {
+    if (data[i] !== "&") {
+      i += 1;
+      continue;
     }
-    // Own-property lookup only: a plain index would resolve inherited
-    // Object properties (&constructor;, &toString;) to JavaScript
-    // functions, where HTMLParser leaves unknown names literal.
-    return Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, body) ? NAMED_ENTITIES[body] : whole;
-  });
+
+    if (data[i + 1] === "#") {
+      numericReference.lastIndex = i;
+      const numeric = numericReference.exec(data);
+      if (numeric) {
+        const body = numeric[1];
+        const hex = body[0] === "x" || body[0] === "X";
+        const code = Number.parseInt(body.slice(hex ? 1 : 0), hex ? 16 : 10);
+        const normalized = normalizeNumericRef(code);
+        decoded.push(data.slice(copyFrom, i), normalized === null ? "" : String.fromCodePoint(normalized));
+        i += numeric[0].length;
+        copyFrom = i;
+        continue;
+      }
+    } else {
+      let end = i + 1;
+      while (end < data.length && end - (i + 1) < MAX_HTML5_ENTITY_KEY_LENGTH && /[A-Za-z0-9;]/.test(data[end])) {
+        end += 1;
+      }
+      let matched = false;
+      for (let matchEnd = end; matchEnd > i + 1; matchEnd -= 1) {
+        const entity = HTML5_ENTITIES.get(data.slice(i + 1, matchEnd));
+        if (entity !== undefined) {
+          decoded.push(data.slice(copyFrom, i), entity);
+          i = matchEnd;
+          copyFrom = i;
+          matched = true;
+          break;
+        }
+      }
+      if (matched) continue;
+    }
+    i += 1;
+  }
+  decoded.push(data.slice(copyFrom));
+  return decoded.join("");
 }
 
 // A '/' marks a start tag self-closing only where a new attribute could
@@ -700,10 +668,12 @@ export function extractHtml(html: string): { title: string; links: number; text:
   let links = 0;
   const textChunks: string[] = [];
   let skipDepth = 0;
-  // Raw-text mode: script/style are HTMLParser CDATA elements, and
-  // HTMLParser likewise reports <title> content as raw character data
-  // (markup inside a title is literal and never counts as links).
-  let cdataTag: "script" | "style" | "title" | null = null;
+  // Raw-text modes: script/style are HTMLParser CDATA elements;
+  // <title>/<textarea> are RCDATA (character data, entities decoded,
+  // markup literal); <iframe>/<xmp>/<noembed>/<noframes> are raw text
+  // (character data verbatim). In every mode only the matching close
+  // tag is markup, so anchors inside never count as links (#4008).
+  let cdataTag: string | null = null;
 
   const handleData = (raw: string) => {
     if (raw === "") return;
@@ -711,9 +681,28 @@ export function extractHtml(html: string): { title: string; links: number; text:
     if (cdataTag === "title") title += data;
     else if (skipDepth === 0) textChunks.push(data);
   };
+  // Raw-text element data: HTMLParser reports it verbatim — no entity
+  // decoding — and the container Extractor appends it to text like any
+  // other character data.
+  const handleRawData = (raw: string) => {
+    if (raw === "") return;
+    if (skipDepth === 0) textChunks.push(raw);
+  };
+  const handleCdataData = (raw: string) => {
+    if (cdataTag === "iframe" || cdataTag === "xmp" || cdataTag === "noembed" || cdataTag === "noframes")
+      handleRawData(raw);
+    else handleData(raw);
+  };
   const handleStartTag = (tag: string, selfClosing: boolean) => {
-    if (tag === "title") {
-      if (!selfClosing) cdataTag = "title";
+    if (
+      tag === "title" ||
+      tag === "textarea" ||
+      tag === "iframe" ||
+      tag === "xmp" ||
+      tag === "noembed" ||
+      tag === "noframes"
+    ) {
+      if (!selfClosing) cdataTag = tag;
     } else if (tag === "a") links += 1;
     else if (tag === "script" || tag === "style") {
       skipDepth += 1;
@@ -732,11 +721,24 @@ export function extractHtml(html: string): { title: string; links: number; text:
       // HTMLParser CDATA mode: only the matching close tag is markup.
       const close = new RegExp(`</${cdataTag}(?=[\\s/>])`, "i").exec(html.slice(i));
       if (close === null) {
-        handleData(html.slice(i));
+        // EOF inside the element. For the #4008 elements (textarea and
+        // the raw-text four) the container never sees the tail:
+        // HTMLParser fed without close() — app.py only calls feed() —
+        // leaves an unterminated raw-text/RCDATA region unflushed, so
+        // its content is dropped, not delivered.
+        if (
+          cdataTag !== "textarea" &&
+          cdataTag !== "iframe" &&
+          cdataTag !== "xmp" &&
+          cdataTag !== "noembed" &&
+          cdataTag !== "noframes"
+        ) {
+          handleCdataData(html.slice(i));
+        }
         i = n;
         break;
       }
-      handleData(html.slice(i, i + close.index));
+      handleCdataData(html.slice(i, i + close.index));
       i += close.index;
       // Consume the close tag here, tolerantly: HTMLParser accepts
       // recoverable end tags carrying trailing attributes

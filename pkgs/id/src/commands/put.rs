@@ -154,9 +154,19 @@ pub async fn push_and_name(
     }
 }
 
+/// Trim a name typed at the forgiving CLI surface before FileOps sees it.
+///
+/// FileOps stores names verbatim and refuses padding (#4102 / design #4766
+/// Phase 3), so a stray leading or trailing space is treated as a typing slip
+/// here rather than failing the command.
+fn trim_surface_name(name: &str) -> &str {
+    name.trim()
+}
+
 /// Store `data` under `name`: on the local server if one is running, otherwise
 /// directly in the local stores (with the same metadata a server would record).
 async fn put_named(name: &str, data: Vec<u8>) -> Result<()> {
+    let name = trim_surface_name(name);
     if let Some(serve_info) = get_serve_info().await {
         let store = open_store(true).await?;
         let store_handle = store.as_store();
@@ -475,6 +485,14 @@ mod tests {
         ));
         // Invalid
         assert!(!is_node_id("not_a_node_id"));
+    }
+
+    #[test]
+    fn cli_put_name_is_trimmed_before_fileops() {
+        for input in [" report.txt", "report.txt ", "\treport.txt\n"] {
+            assert_eq!(trim_surface_name(input), "report.txt");
+        }
+        assert_eq!(trim_surface_name("my report.txt"), "my report.txt");
     }
 
     #[test]

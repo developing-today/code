@@ -149,6 +149,9 @@ fn signed(
         document: None,
         removes: None,
         note: None,
+        link: None,
+        checkpoint: None,
+        rotation: None,
     };
     sign(key, seq, backlink, None, ext).unwrap()
 }
@@ -337,6 +340,9 @@ fn present_event(
         document: None,
         removes: None,
         note: None,
+        link: None,
+        checkpoint: None,
+        rotation: None,
     };
     sign(key, seq, backlink, None, ext).unwrap()
 }
@@ -758,6 +764,9 @@ proptest! {
                     kind: "m".to_owned(),
                     group: None,
                     after: Vec::new(), tag: None, document: None, removes: None, note: None,
+                    link: None,
+                    checkpoint: None,
+                    rotation: None,
                 },
             )
             .encode();
@@ -802,6 +811,9 @@ fn print_ingest_seeds() {
                 document: None,
                 removes: None,
                 note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
             };
             sign(key, seq, backlink, None, ext).unwrap()
         };

@@ -425,6 +425,69 @@ class TestPack(ColdStoreTestBase):
         self.assertEqual(again["bundle_id"], result["bundle_id"])
         self.assertEqual(again["members"], 1)
 
+    def test_pack_refuses_when_source_changes_between_hash_and_compress(self):
+        # #2269 (Codex P1 on PR #923, discussion_r4372814010): pack()
+        # hashed the source and compressed it in two separate reads, so a
+        # file mutated between the passes was sealed with the old hash in
+        # the manifest and the new bytes in the bundle — upload
+        # verification (bundle md5/size) passed, and every future fetch
+        # rejected the restored bytes with a SHA-256 mismatch. pack()
+        # must now refuse instead of sealing a mismatched object.
+        old = b"original version of the file\n" * 20
+        new = b"MUTATED version -- different bytes, different length\n" * 20
+        src = self.write_src("racy.txt", old)
+        expected_hash = hashlib.sha256(old).hexdigest()
+        mutated_hash = hashlib.sha256(new).hexdigest()
+        self.assertNotEqual(expected_hash, mutated_hash)
+
+        real_compress = ColdStore._compress_to_frame
+
+        def mutate_then_compress(store_self, src_arg, frame_path):
+            Path(src_arg).write_bytes(new)
+            return real_compress(store_self, src_arg, frame_path)
+
+        with mock.patch.object(
+            ColdStore,
+            "_compress_to_frame",
+            autospec=True,
+            side_effect=mutate_then_compress,
+        ):
+            with self.assertRaisesRegex(
+                cold_store.ColdStoreError, "changed during pack.*NOT sealed"
+            ):
+                self.store.pack([str(src)])
+
+        # Nothing was sealed: no bundle/object/member rows carry the
+        # stale recorded hash, no bundle file or temp artifact remains,
+        # and the store still works for the (now stable) current bytes.
+        conn = self.store.db()
+        self.assertEqual(
+            conn.execute("SELECT count(*) AS n FROM bundles").fetchone()["n"], 0
+        )
+        self.assertEqual(
+            conn.execute(
+                "SELECT count(*) AS n FROM objects WHERE hash=?", (expected_hash,)
+            ).fetchone()["n"],
+            0,
+        )
+        self.assertEqual(
+            conn.execute("SELECT count(*) AS n FROM members").fetchone()["n"], 0
+        )
+        conn.close()
+        self.assertEqual(list(self.store.bundles_dir.glob("*.csb")), [])
+        self.assertFalse((self.store.bundles_dir / "bundle.tmp").exists())
+        self.assertFalse((self.store.bundles_dir / "frame.tmp").exists())
+
+        result = self.store.pack([str(src)])
+        self.assertEqual(result["members"], 1)
+        conn = self.store.db()
+        member = conn.execute("SELECT * FROM members").fetchone()
+        conn.close()
+        self.assertEqual(member["object_hash"], mutated_hash)
+        raw = Path(result["path"]).read_bytes()
+        frame = raw[member["offset"] : member["offset"] + member["length"]]
+        self.assertEqual(self.store.decompress_frame(frame), new)
+
 
 class TestUploadFetch(ColdStoreTestBase):
     def test_ensure_folders_idempotent(self):
@@ -2184,6 +2247,23 @@ class TestEvictScan(EvictTestBase):
         # a scan is a dry run: nothing deleted, nothing mutated
         self.assertEqual(self.s3.deleted, [])
         self.assertIn(self.keys["evict1"], self.s3.objects)
+
+
+class TestEvictScanGuards(EvictTestBase):
+    def test_negative_min_age_days_rejected(self):
+        # A negative age floor makes `now - last_modified < min_age`
+        # false for every object, silently disabling the age gate that
+        # keeps evict --apply from deleting brand-new objects (#5642).
+        with self.assertRaises(cold_store.ColdStoreError):
+            self.store.evict_scan(min_age_days=-1, keep_newest=2)
+
+    def test_negative_keep_newest_rejected(self):
+        with self.assertRaises(cold_store.ColdStoreError):
+            self.store.evict_scan(min_age_days=14, keep_newest=-1)
+
+    def test_zero_min_age_days_is_an_explicit_no_floor(self):
+        scan = self.scan_by_key(min_age_days=0, keep_newest=0)
+        self.assertEqual(scan[self.keys["young"]]["verdict"], "evictable")
 
 
 class TestOffsetLessLastModified(EvictTestBase):

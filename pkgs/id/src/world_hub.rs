@@ -140,6 +140,10 @@ pub struct WorldInfo {
     /// directory JSON ([`directory_json`]) names this field `loaded`, for what it
     /// means; `open` remains the session-wire name for this struct.
     pub open: bool,
+    /// How many sessions are live on this world right now (the hub's lease
+    /// count for the world; 0 for a stored world). This is a count only: the
+    /// directory never names who is present (#812 shape ruling, 2026-10-29).
+    pub presence: usize,
 }
 
 /// The JSON shape of a world directory listing: the shared serializer for the
@@ -147,11 +151,12 @@ pub struct WorldInfo {
 /// and the web UI's directory surface is expected to consume the same shape.
 ///
 /// The shape is `{ "default": <name>, "worlds": [{ "name": ..., "loaded": ...,
-/// "default": ... }] }`. The per-world field for [`WorldInfo::open`] is named
-/// `loaded`, because that is what the value means — the world is currently open
-/// in memory — and not open-to-join: a world with `loaded: false` is stored and
-/// opens when selected. No field here claims presence or joinability; presence
-/// counts are a separate, undesigned part of #812.
+/// "default": ..., "presence": ... }] }`. The per-world field for
+/// [`WorldInfo::open`] is named `loaded`, because that is what the value
+/// means — the world is currently open in memory — and not open-to-join: a
+/// world with `loaded: false` is stored and opens when selected. `presence`
+/// is the count of sessions live on the world right now (#812): a count
+/// only, never an identity — who is present is not directory data.
 #[must_use]
 pub fn directory_json(worlds: &[WorldInfo], default: &str) -> serde_json::Value {
     let worlds: Vec<serde_json::Value> = worlds
@@ -161,6 +166,7 @@ pub fn directory_json(worlds: &[WorldInfo], default: &str) -> serde_json::Value 
                 "name": world.name,
                 "loaded": world.open,
                 "default": world.name == default,
+                "presence": world.presence,
             })
         })
         .collect();
@@ -671,25 +677,29 @@ impl WorldHub {
     /// Worlds in storage plus any open ones, sorted by name.
     #[must_use]
     pub fn list(&self) -> Vec<WorldInfo> {
-        let mut names: std::collections::BTreeMap<String, bool> = self
+        let mut names: std::collections::BTreeMap<String, (bool, usize)> = self
             .inner
             .opener
             .as_ref()
             .map(|opener| opener.list())
             .unwrap_or_default()
             .into_iter()
-            .map(|name| (name, false))
+            .map(|name| (name, (false, 0)))
             .collect();
         if let Ok(slots) = self.inner.slots.lock() {
             for (name, slot) in slots.iter() {
                 if slot.service.get().is_some() {
-                    names.insert(name.clone(), true);
+                    names.insert(name.clone(), (true, slot.leases.load(Ordering::Acquire)));
                 }
             }
         }
         names
             .into_iter()
-            .map(|(name, open)| WorldInfo { name, open })
+            .map(|(name, (open, presence))| WorldInfo {
+                name,
+                open,
+                presence,
+            })
             .collect()
     }
 
@@ -1262,10 +1272,12 @@ mod tests {
             WorldInfo {
                 name: "lobby".to_owned(),
                 open: true,
+                presence: 2,
             },
             WorldInfo {
                 name: "attic".to_owned(),
                 open: false,
+                presence: 0,
             },
         ];
         let value = directory_json(&worlds, "lobby");
@@ -1275,6 +1287,8 @@ mod tests {
         assert_eq!(list[0]["name"], serde_json::json!("lobby"));
         assert_eq!(list[0]["loaded"], serde_json::json!(true));
         assert_eq!(list[0]["default"], serde_json::json!(true));
+        assert_eq!(list[0]["presence"], serde_json::json!(2));
+        assert_eq!(list[1]["presence"], serde_json::json!(0));
         assert_eq!(list[1]["name"], serde_json::json!("attic"));
         assert_eq!(list[1]["loaded"], serde_json::json!(false));
         assert_eq!(list[1]["default"], serde_json::json!(false));
@@ -1284,6 +1298,7 @@ mod tests {
             assert!(entry["name"].is_string());
             assert!(entry["loaded"].is_boolean());
             assert!(entry["default"].is_boolean());
+            assert!(entry["presence"].is_u64());
         }
         // An empty directory is a default with no worlds.
         let value = directory_json(&[], "lobby");

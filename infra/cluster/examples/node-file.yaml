@@ -1,0 +1,21 @@
+# Example TALM node file — one per node, kept in git under
+# infra/cluster/<cluster>/nodes/. Written initially by `talm template -i`
+# against the node in maintenance mode; the disk lines below the modeline
+# comments are the harvest (comments, not config). Everything under the
+# modeline is the per-node body: a strategic merge patch applied over the
+# shared cluster template on `talm apply`. A non-empty body pins the file
+# to exactly the one node in its modeline — that pinning is the point.
+#
+# talm: nodes=["10.0.0.11"], endpoints=["10.0.0.11"]
+# Discovered hardware (harvested 2026-01-01, example values):
+#   disk /dev/nvme0n1  serial=S6XNNG0R123456A        model="Samsung SSD 990 PRO 2TB"  size=2TB   transport=nvme
+#   disk /dev/sda      wwid=naa.5000cca2b1c0ffee     model="WDC WD160EDGZ"            size=16TB  transport=sata
+#   disk /dev/sdb      wwid=naa.5000cca2b1c0ffef     model="WDC WD160EDGZ"            size=16TB  transport=sata
+machine:
+  install:
+    # Boot disk: match by serial (or wwid) — unique per physical drive.
+    # Never match the boot disk by size or model alone: a replacement
+    # drive of a different model/size must fail loudly, and a same-size
+    # sibling must never be silently picked instead.
+    diskSelector:
+      serial: "S6XNNG0R123456A"

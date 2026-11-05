@@ -600,9 +600,20 @@ def main(argv=None):
             run_git(primary, "worktree", "prune")
 
     summary["kept_total"] = sum(summary["kept"].values())
-    log_path = os.path.join(state_dir, "runs", f"run-{ts}-{os.getpid()}.jsonl")
+    # The log name must be unique per run: ts has only second resolution,
+    # so same-second runs from one process (the gate suite drives main()
+    # in-process) would otherwise share a path and the later run would
+    # truncate the earlier run's audit log (#5716). Add the microsecond
+    # fraction and create exclusively, suffixing on any residual clash.
+    log_stamp = f"{ts}-{int((now - int(now)) * 1_000_000):06d}"
+    log_path = os.path.join(state_dir, "runs", f"run-{log_stamp}-{os.getpid()}.jsonl")
+    suffix = 2
+    while os.path.exists(log_path):
+        log_path = os.path.join(
+            state_dir, "runs", f"run-{log_stamp}-{os.getpid()}-{suffix}.jsonl")
+        suffix += 1
     try:
-        with open(log_path, "w") as fh:
+        with open(log_path, "x") as fh:
             for rec in records:
                 fh.write(json.dumps({"type": "decision", **rec}) + "\n")
             fh.write(json.dumps({"type": "summary", **summary}) + "\n")

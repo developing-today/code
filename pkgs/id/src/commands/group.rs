@@ -18,12 +18,15 @@ use clap::ValueEnum;
 use p2panda_core::Hash;
 use serde_json::{Map, Value, json};
 
-use crate::cli::{DelegateArgs, GroupCommand, GroupTemplate, RevokeArgs};
+use crate::cli::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, RevokeArgs};
 use crate::groups::actions::{Action, NewGroup};
 use crate::groups::log::{FILE_NAME, GroupLog, hash_from_hex, key_from_hex};
-use crate::groups::policy::{History, Join, OnMemberRemoved, Removal};
+use crate::groups::policy::{
+    History, Join, OnMemberRemoved, Removal, RemoveMode, RemoveSuccessor, SuccessorKind,
+    TransferOpts,
+};
 use crate::groups::warnings::{Evaluator, Observation, Warning, size_tier};
-use crate::groups::{Delegate, GroupView, Key, Outcome};
+use crate::groups::{Body, Delegate, GroupView, Key, MemberOp, Outcome};
 use crate::invites::Invitation;
 use crate::{KEY_FILE, load_or_create_keypair};
 
@@ -116,7 +119,14 @@ fn quoted(string: &str) -> String {
             '\n' => rendered.push_str("\\n"),
             '\r' => rendered.push_str("\\r"),
             '\t' => rendered.push_str("\\t"),
-            c if crate::is_format_char(c) || (c.is_control() && (c as u32) < 0x20) => {
+            // Every character that can trigger quoting must be escaped, not
+            // only C0: DEL and the C1 controls are Cc too (#5448), and the
+            // line/paragraph separators act as line breaks to some consumers
+            // (the #3455 Phase 3b structure set, as in commands::text).
+            c if crate::is_format_char(c)
+                || c.is_control()
+                || matches!(c, '\u{2028}' | '\u{2029}') =>
+            {
                 push_unicode_escape(&mut rendered, c);
             }
             c => rendered.push(c),
@@ -353,15 +363,75 @@ pub async fn cmd_group(path: Option<PathBuf>, json: bool, command: GroupCommand)
         GroupCommand::Remove {
             group,
             member,
+            mode,
+            successor_kind,
             successor,
         } => {
             let group = hash_from_hex(&group)?;
             let member = key_from_hex(&member)?;
-            let successor = successor.as_deref().map(key_from_hex).transpose()?;
-            let action = log.remove(author().await?, group, member, successor)?;
+            let selected_mode = mode.unwrap_or_else(|| {
+                if successor.is_some() || successor_kind.is_some() {
+                    GroupRemoveMode::Transfer
+                } else {
+                    GroupRemoveMode::ServerDefault
+                }
+            });
+            if selected_mode != GroupRemoveMode::Transfer
+                && (successor.is_some() || successor_kind.is_some())
+            {
+                bail!("--successor and --successor-kind require --mode transfer");
+            }
+            let successor_key = successor.as_deref().map(key_from_hex).transpose()?;
+            let remove_mode = match selected_mode {
+                GroupRemoveMode::ServerDefault => RemoveMode::ServerDefault,
+                GroupRemoveMode::Revoke => RemoveMode::Revoke,
+                GroupRemoveMode::KeepPrior => RemoveMode::KeepPrior,
+                GroupRemoveMode::ReassignToGroup => RemoveMode::ReassignToGroup,
+                GroupRemoveMode::Transfer => {
+                    let kind = successor_kind.unwrap_or(SuccessorKind::Member);
+                    let successor = match (kind, successor_key) {
+                        (SuccessorKind::Member, Some(key)) => RemoveSuccessor::Member(key),
+                        (SuccessorKind::Designated, Some(key)) => RemoveSuccessor::Designated(key),
+                        (SuccessorKind::Admin, None) => RemoveSuccessor::Admin,
+                        (SuccessorKind::Actor, None) => RemoveSuccessor::Actor,
+                        (SuccessorKind::Member | SuccessorKind::Designated, None) => {
+                            bail!("--successor is required for a member or designated successor")
+                        }
+                        (SuccessorKind::Admin | SuccessorKind::Actor, Some(_)) => {
+                            bail!("--successor is not used for an admin or actor successor")
+                        }
+                    };
+                    RemoveMode::Transfer(TransferOpts { successor })
+                }
+            };
+            let action = log.remove(author().await?, group, member, remove_mode)?;
+            let resolved_mode = log
+                .events()
+                .iter()
+                .find(|event| event.id == action.event)
+                .and_then(|event| match &event.body {
+                    Body::Member(MemberOp::Remove { mode, .. }) => Some(*mode),
+                    _ => None,
+                })
+                .unwrap_or(remove_mode);
             let mut fields = vec![("member", json!(hex(&member)))];
-            if let Some(successor) = successor {
-                fields.push(("successor", json!(hex(&successor))));
+            match resolved_mode {
+                RemoveMode::Revoke => fields.push(("mode", json!("revoke"))),
+                RemoveMode::KeepPrior => fields.push(("mode", json!("keep_prior"))),
+                RemoveMode::ReassignToGroup => {
+                    fields.push(("mode", json!("reassign_to_group")));
+                }
+                RemoveMode::ServerDefault => fields.push(("mode", json!("server_default"))),
+                RemoveMode::Transfer(opts) => {
+                    fields.push(("mode", json!("transfer")));
+                    fields.push(("successor_kind", json!(name_of(&opts.successor.kind()))));
+                    match opts.successor {
+                        RemoveSuccessor::Member(key) | RemoveSuccessor::Designated(key) => {
+                            fields.push(("successor", json!(hex(&key))));
+                        }
+                        RemoveSuccessor::Admin | RemoveSuccessor::Actor => {}
+                    }
+                }
             }
             print_action(json, "remove", fields, &action)
         }
@@ -562,6 +632,37 @@ mod tests {
     }
 
     #[test]
+    fn test_del_c1_and_line_separators_are_quoted_and_escaped() {
+        // #5448: DEL and C1 are Cc beyond 0x1F, and U+2028/U+2029 are the
+        // #3455 structure separators; the pre-fix escape arm (< 0x20, Cf
+        // only) left all of them raw inside the quoted literal, while
+        // plain_field (commands::text) escapes each as \uXXXX.
+        for (c, esc) in [
+            ('\u{7f}', "007f"),
+            ('\u{85}', "0085"),
+            ('\u{9f}', "009f"),
+            ('\u{2028}', "2028"),
+            ('\u{2029}', "2029"),
+        ] {
+            let alone = text(&json!(c.to_string()));
+            assert_eq!(alone, format!("\"\\u{esc}\""), "alone {c:?}");
+            assert!(!alone.contains(c), "raw {c:?} remains in {alone}");
+            assert_eq!(
+                serde_json::from_str::<String>(&alone).expect("valid JSON literal"),
+                c.to_string()
+            );
+            let value = format!("a{c}b");
+            let embedded = text(&json!(value));
+            assert_eq!(embedded, format!("\"a\\u{esc}b\""), "embedded {c:?}");
+            assert!(!embedded.contains(c), "raw {c:?} remains in {embedded}");
+            assert_eq!(
+                serde_json::from_str::<String>(&embedded).expect("valid JSON literal"),
+                value
+            );
+        }
+    }
+
+    #[test]
     fn test_format_char_in_name_is_quoted_and_escaped() {
         let rendered = row("a\u{202e}b", "v");
         assert!(rendered.contains("name=\"a\\u202eb\""));
@@ -578,7 +679,10 @@ mod tests {
             .map(|cp| char::from_u32(cp).expect("named Cf code point"))
             .collect();
         for c in named {
-            assert!(crate::is_format_char(c), "{c:?} must be in the shared Cf set");
+            assert!(
+                crate::is_format_char(c),
+                "{c:?} must be in the shared Cf set"
+            );
             // Cf-only (unquoted before the fix): quoted, escaped, round-trips.
             let alone = text(&json!(c.to_string()));
             assert_eq!(alone, format!("\"\\u{:04x}\"", c as u32), "Cf-only {c:?}");
@@ -595,7 +699,10 @@ mod tests {
                 format!("\"a\\u{:04x} b\"", c as u32),
                 "Cf-plus-space {c:?}"
             );
-            assert!(!with_space.contains(c), "raw Cf {c:?} remains in {with_space}");
+            assert!(
+                !with_space.contains(c),
+                "raw Cf {c:?} remains in {with_space}"
+            );
             assert_eq!(
                 serde_json::from_str::<String>(&with_space).expect("valid JSON literal"),
                 value

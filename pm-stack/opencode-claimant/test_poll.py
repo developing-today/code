@@ -118,11 +118,12 @@ class TestSummarizeCap(unittest.TestCase):
         self.assertEqual((live, active, room), (2, 1, poll.CAP - 1))
 
 
-
 class TestIsCandidate(unittest.TestCase):
     def row(self, **over):
-        r = {"progress": {"lane": "opencode", "stage": "handed_off"},
-             "lane_id": "code-a"}
+        r = {
+            "progress": {"lane": "opencode", "stage": "handed_off"},
+            "lane_id": "code-a",
+        }
         r.update(over)
         return r
 
@@ -133,25 +134,163 @@ class TestIsCandidate(unittest.TestCase):
         self.assertTrue(poll.is_candidate(self.row(lane_id=None)))
 
     def test_openchamber_lane_claim_is_never_candidate(self):
-        self.assertFalse(poll.is_candidate(
-            self.row(lane_id="8ac61616-3815-4e7b-b33d-840a3829154a")))
+        self.assertFalse(
+            poll.is_candidate(self.row(lane_id="8ac61616-3815-4e7b-b33d-840a3829154a"))
+        )
 
     def test_direct_lane_is_not_candidate(self):
-        self.assertFalse(poll.is_candidate(
-            self.row(progress={"lane": "direct"})))
+        self.assertFalse(poll.is_candidate(self.row(progress={"lane": "direct"})))
 
     def test_bound_session_is_not_candidate(self):
-        self.assertFalse(poll.is_candidate(
-            self.row(progress={"lane": "opencode", "session_id": "ses_1"})))
+        self.assertFalse(
+            poll.is_candidate(
+                self.row(progress={"lane": "opencode", "session_id": "ses_1"})
+            )
+        )
+
+    def test_launch_failed_reclaim_is_candidate_again(self):
+        # The #4758 recovery rule checkpoints stage "launch_failed"
+        # with the binding cleared; that recorded yield must make the
+        # task a launch candidate again or the reclaim strands it.
+        self.assertTrue(
+            poll.is_candidate(
+                self.row(progress={"lane": "opencode", "stage": "launch_failed"})
+            )
+        )
 
     def test_assigned_but_not_handed_off_is_not_candidate(self):
-        self.assertFalse(poll.is_candidate(
-            self.row(progress={"lane": "opencode", "stage": "verified"})))
-        self.assertFalse(poll.is_candidate(
-            self.row(progress={"lane": "opencode"})))
+        self.assertFalse(
+            poll.is_candidate(
+                self.row(progress={"lane": "opencode", "stage": "verified"})
+            )
+        )
+        self.assertFalse(poll.is_candidate(self.row(progress={"lane": "opencode"})))
 
     def test_unassigned_task_is_not_candidate(self):
         self.assertFalse(poll.is_candidate(self.row(progress={})))
+
+
+class TestParseLeaseMs(unittest.TestCase):
+    def test_zulu_lease_parses(self):
+        self.assertEqual(
+            poll.parse_lease_ms("2026-11-03T04:43:41Z"),
+            poll.parse_lease_ms("2026-11-03T04:43:41+00:00"),
+        )
+        self.assertGreater(poll.parse_lease_ms("2026-11-03T04:43:41Z"), 0)
+
+    def test_offset_lease_parses(self):
+        self.assertIsInstance(
+            poll.parse_lease_ms("2026-11-03T04:43:41.3139+00:00"), int
+        )
+
+    def test_unparseable_lease_is_none(self):
+        self.assertIsNone(poll.parse_lease_ms(None))
+        self.assertIsNone(poll.parse_lease_ms(""))
+        self.assertIsNone(poll.parse_lease_ms("not-a-date"))
+        self.assertIsNone(poll.parse_lease_ms(12345))
+
+
+EXPIRED = "2025-01-01T00:00:00Z"  # long before NOW
+FUTURE = "2027-01-01T00:00:00Z"  # long after NOW
+
+
+class TestIsStuckBound(unittest.TestCase):
+    def row(self, **over):
+        r = {
+            "progress": {
+                "lane": "opencode",
+                "session_id": "ses_x",
+                "stage": "handed_off",
+            },
+            "lease_until": EXPIRED,
+            "lane_id": "code-a",
+        }
+        r.update(over)
+        return r
+
+    def dead_session(self, **over):
+        s = {
+            "id": "ses_x",
+            "time": {"created": NOW - 90 * MIN, "updated": NOW - 31 * MIN},
+        }
+        s.update(over)
+        return s
+
+    def test_dead_bound_session_with_expired_lease_is_stuck(self):
+        self.assertTrue(
+            poll.is_stuck_bound(self.row(), self.dead_session(), set(), NOW)
+        )
+
+    def test_exactly_at_window_boundary_is_stuck(self):
+        s = self.dead_session()
+        s["time"]["updated"] = NOW - poll.ACTIVE_WINDOW_MS
+        self.assertTrue(poll.is_stuck_bound(self.row(), s, set(), NOW))
+
+    def test_recent_activity_vetoes(self):
+        s = self.dead_session()
+        s["time"]["updated"] = NOW - 1 * MIN
+        self.assertFalse(poll.is_stuck_bound(self.row(), s, set(), NOW))
+
+    def test_active_set_membership_vetoes(self):
+        self.assertFalse(
+            poll.is_stuck_bound(self.row(), self.dead_session(), {"ses_x"}, NOW)
+        )
+
+    def test_unknown_active_set_fails_closed(self):
+        self.assertFalse(
+            poll.is_stuck_bound(self.row(), self.dead_session(), None, NOW)
+        )
+
+    def test_terminal_markers_veto(self):
+        s = self.dead_session(outcome="failed")
+        self.assertFalse(poll.is_stuck_bound(self.row(), s, set(), NOW))
+        s = self.dead_session()
+        s["time"]["idle"] = NOW - 40 * MIN
+        self.assertFalse(poll.is_stuck_bound(self.row(), s, set(), NOW))
+
+    def test_unexpired_lease_vetoes(self):
+        self.assertFalse(
+            poll.is_stuck_bound(
+                self.row(lease_until=FUTURE), self.dead_session(), set(), NOW
+            )
+        )
+
+    def test_unparseable_lease_vetoes(self):
+        self.assertFalse(
+            poll.is_stuck_bound(
+                self.row(lease_until="garbage"), self.dead_session(), set(), NOW
+            )
+        )
+        self.assertFalse(
+            poll.is_stuck_bound(
+                self.row(lease_until=None), self.dead_session(), set(), NOW
+            )
+        )
+
+    def test_missing_session_is_the_gone_case_not_stuck(self):
+        self.assertFalse(poll.is_stuck_bound(self.row(), None, set(), NOW))
+
+    def test_child_session_vetoes(self):
+        self.assertFalse(
+            poll.is_stuck_bound(
+                self.row(), self.dead_session(parentID="ses_p"), set(), NOW
+            )
+        )
+
+    def test_unbound_or_direct_lane_is_not_stuck(self):
+        self.assertFalse(
+            poll.is_stuck_bound(
+                self.row(progress={"lane": "opencode"}), self.dead_session(), set(), NOW
+            )
+        )
+        self.assertFalse(
+            poll.is_stuck_bound(
+                self.row(progress={"lane": "direct", "session_id": "ses_x"}),
+                self.dead_session(),
+                set(),
+                NOW,
+            )
+        )
 
 
 if __name__ == "__main__":

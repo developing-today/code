@@ -1,11 +1,6 @@
 name: pm-stack tests
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pm-stack/**"
-      - ".github/workflows/pm-stack-tests.yml"
   workflow_dispatch:
 
 permissions:

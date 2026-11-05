@@ -266,7 +266,7 @@ describe("search panel integration", () => {
     const panel = container.querySelector(".search-panel");
     expect(panel?.getAttribute("role")).toBe("search");
     expect(panel?.getAttribute("aria-label")).toBe("Find and replace");
-    expect(container.querySelector("#replace-all")?.getAttribute("aria-label")).toBe("Replace all");
+    expect(container.querySelector("#replace-all")?.getAttribute("aria-label")).toBe("Replace all matches");
   });
 
   it("opening panel twice does not create duplicate panels", () => {

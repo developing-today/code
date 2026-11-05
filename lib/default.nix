@@ -583,6 +583,32 @@ let
                   actionlint
                 ];
               };
+
+              # Lean shell for the fleet build container and GHA job
+              # containers (dezren39/fleet, containers/fleet-build).
+              # Same motivation as mcpx-lint above: `default` is the
+              # whole monorepo workstation environment (Android SDK,
+              # clan, desktop tooling via nix-common.nix) and is far
+              # too heavy to warm into a shared CI image. This shell
+              # carries only the CI toolchains — the repo's pinned
+              # Rust toolchain, Go, Bun, Node, zig — plus basic tools,
+              # all from the same nixpkgs-unstable tree as `default`,
+              # so container CI and the workstation agree on versions.
+              # The fleet image warms THIS shell for this repo.
+              fleet = pkgs.mkShell {
+                packages = [
+                  nixCommon.rustToolchain
+                ]
+                ++ (with pkgs; [
+                  git
+                  jq
+                  ripgrep
+                  go_1_27
+                  bun
+                  nodejs
+                  zig
+                ]);
+              };
             }
           );
     };
@@ -1126,6 +1152,33 @@ let
     }
   );
 
+  # fleet multicall binary packages (pkgs/fleet; epic code#5412,
+  # step 1 code#5429). One workspace, capability variants as
+  # separate attrs; the connect-static flavor (musl) is only
+  # offered on Linux, where a static target makes sense.
+  make-fleet = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      fleetPkgs = pkgs.callPackage ../pkgs/fleet {
+        sourceRev = inputs.self.rev or "dirty";
+      };
+    in
+    {
+      packages = {
+        inherit (fleetPkgs)
+          fleet
+          fleet-serve
+          fleet-connect
+          fleet-brokers
+          ;
+      }
+      // pkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") {
+        inherit (fleetPkgs) fleet-connect-static fleet-static;
+      };
+    }
+  );
+
   make-mcpx-overlay = {
     overlays = {
       default = final: prev: {
@@ -1136,6 +1189,27 @@ let
       };
     };
   };
+
+  # The mcpx daemon modules (code#4801): the canonical module files
+  # live in pkgs/mcpx/modules; these outputs wrap them with this
+  # flake's own mcpx build as the package default. The opencode fork
+  # re-exports the same files defaulted to its build, and
+  # openchamber passes them through — the option set never forks.
+  make-mcpx-modules =
+    let
+      wrap =
+        module:
+        { lib, pkgs, ... }:
+        {
+          imports = [ module ];
+          services.mcpx.package = lib.mkDefault (pkgs.callPackage ../pkgs/mcpx/package.nix { });
+        };
+    in
+    {
+      nixosModules.mcpx = wrap ../pkgs/mcpx/modules/nixos.nix;
+      homeManagerModules.mcpx = wrap ../pkgs/mcpx/modules/home-manager.nix;
+      darwinModules.mcpx = wrap ../pkgs/mcpx/modules/darwin.nix;
+    };
 
   _self = merge [
     lib
@@ -1181,7 +1255,9 @@ let
         make-root-apps
         make-id
         make-mcpx-overlay
+        make-mcpx-modules
         make-laptop-backups-checks
+        make-fleet
         ;
     }
   ];

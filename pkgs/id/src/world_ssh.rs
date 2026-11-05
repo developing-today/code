@@ -39,8 +39,10 @@ use std::{
 use futures_lite::StreamExt;
 use russh::{
     Channel, ChannelId, ChannelOpenFailure, MethodKind, MethodSet, Pty,
-    keys::{Algorithm, PrivateKey, PublicKey, ssh_key::HashAlg, ssh_key::LineEnding},
-    server::{Auth, ChannelOpenHandle, Config, Handle, Handler, Msg, Server, Session},
+    keys::{Algorithm, PrivateKey, ssh_key::HashAlg, ssh_key::LineEnding},
+    server::{
+        Auth, ChannelOpenHandle, Config, Handle, Handler, Msg, Server, Session, VerifiedPublicKey,
+    },
 };
 use serde_json::json;
 use tokio::{
@@ -199,16 +201,62 @@ pub fn host_key_fingerprint(key: &PrivateKey) -> String {
 }
 
 /// The SSH host key, created on first use and reused on every later start.
+///
+/// First-run creation races are expected (a service and a CLI starting
+/// together): a reader that observes the winner's file mid-write retries
+/// the parse for a bounded window instead of failing on a partial PEM,
+/// and a creator that loses the `create_new` race reads the winner's key
+/// instead of propagating `AlreadyExists`. A file that still does not
+/// parse after the deadline is corrupt — it errors and is never
+/// regenerated, so a valid key is never replaced on a parse error.
 pub async fn load_or_create_host_key(path: &str) -> anyhow::Result<PrivateKey> {
     match tokio::fs::read_to_string(path).await {
-        Ok(pem) => Ok(PrivateKey::from_openssh(pem)?),
+        Ok(pem) => parse_host_key_after_creation_race(path, &pem).await,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)?;
             let pem = key.to_openssh(LineEnding::LF)?;
-            crate::store::write_private_file(path, pem.as_bytes()).await?;
-            Ok(key)
+            match crate::store::write_private_file(path, pem.as_bytes()).await {
+                Ok(()) => Ok(key),
+                Err(error)
+                    if error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists) =>
+                {
+                    // Another first start won the creation race. Keep its
+                    // key; never replace a key created after our first read.
+                    let pem = tokio::fs::read_to_string(path).await?;
+                    parse_host_key_after_creation_race(path, &pem).await
+                }
+                Err(error) => Err(error),
+            }
         }
         Err(error) => Err(error.into()),
+    }
+}
+
+/// Parse a host-key PEM, retrying briefly while a concurrent first start
+/// may still be writing the file. `first_pem` is the contents already
+/// read; retries re-read the file. Mirrors the 1-second creation-race
+/// window of `store::read_key_after_creation_race`, but parse-based: a
+/// PEM has no fixed length to wait for. After the deadline the parse
+/// error is returned as-is — the file is corrupt, not racing.
+async fn parse_host_key_after_creation_race(
+    path: &str,
+    first_pem: &str,
+) -> anyhow::Result<PrivateKey> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    let mut pem = first_pem.to_owned();
+    loop {
+        match PrivateKey::from_openssh(pem.as_str()) {
+            Ok(key) => return Ok(key),
+            Err(error) => {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(error.into());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                pem = tokio::fs::read_to_string(path).await?;
+            }
+        }
     }
 }
 
@@ -305,12 +353,12 @@ impl Handler for SshClient {
     async fn auth_publickey(
         &mut self,
         user: &str,
-        public_key: &PublicKey,
+        public_key: VerifiedPublicKey<'_>,
     ) -> Result<Auth, russh::Error> {
         let Some(world) = user.strip_prefix(EXPLORE_PREFIX) else {
             return Ok(Auth::reject());
         };
-        let Some(ed25519) = public_key.key_data().ed25519() else {
+        let Some(ed25519) = public_key.public_key.key_data().ed25519() else {
             return Ok(Auth::reject());
         };
         if self.permit.is_none() {
@@ -1826,6 +1874,81 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn test_concurrent_first_starts_converge_on_the_winners_host_key() {
+        // All callers line up behind a barrier so their first reads race
+        // the winner's create_new write: the losers must load the winner's
+        // key (via the AlreadyExists winner-read and/or the parse retry),
+        // never error and never end up with a different key.
+        for _round in 0..3 {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("ssh_host_key").display().to_string();
+            let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
+            let mut handles = Vec::new();
+            for _ in 0..8 {
+                let barrier = std::sync::Arc::clone(&barrier);
+                let path = path.clone();
+                handles.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    load_or_create_host_key(&path).await
+                }));
+            }
+            let mut fingerprints = Vec::new();
+            for handle in handles {
+                let key = handle.await.unwrap().unwrap();
+                fingerprints.push(host_key_fingerprint(&key));
+            }
+            assert!(
+                fingerprints.iter().all(|f| f == &fingerprints[0]),
+                "concurrent first starts diverged: {fingerprints:?}"
+            );
+            let on_disk = load_or_create_host_key(&path).await.unwrap();
+            assert_eq!(host_key_fingerprint(&on_disk), fingerprints[0]);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_a_partially_written_host_key_pem_is_retried_until_it_parses() {
+        // The interleaving from #3465: the reader observes the winner's
+        // file between create_new and the completed write. The partial
+        // PEM is already on disk before the load starts, so the first
+        // read deterministically sees it; the load must retry until the
+        // writer finishes, not fail with a parse error.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ssh_host_key");
+        let winner = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+        let pem = winner.to_openssh(LineEnding::LF).unwrap();
+        let pem_text = pem.as_str().to_owned();
+        tokio::fs::write(&path, &pem_text[..pem_text.len() / 2])
+            .await
+            .unwrap();
+        let completer_path = path.clone();
+        let completer = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::fs::write(&completer_path, pem_text).await.unwrap();
+        });
+        let loaded = load_or_create_host_key(path.to_str().unwrap())
+            .await
+            .unwrap();
+        completer.await.unwrap();
+        assert_eq!(host_key_fingerprint(&loaded), host_key_fingerprint(&winner));
+    }
+
+    #[tokio::test]
+    async fn test_an_unparseable_host_key_errors_and_is_never_regenerated() {
+        // Past the creation-race deadline a bad PEM is corrupt, not
+        // racing: the load errors and the file is left exactly as found.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ssh_host_key");
+        let garbage =
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nnot-a-key\n-----END OPENSSH PRIVATE KEY-----\n";
+        tokio::fs::write(&path, garbage).await.unwrap();
+        let result = load_or_create_host_key(path.to_str().unwrap()).await;
+        assert!(result.is_err(), "corrupt host key must error, not load");
+        let after = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(after, garbage, "corrupt host key must never be regenerated");
+    }
+
     async fn start(hub: WorldHub) -> (u16, tokio::task::JoinHandle<std::io::Result<()>>) {
         start_limited(hub, test_store(), MAX_CONNECTIONS).await
     }
@@ -3250,6 +3373,68 @@ mod tests {
             update.len(),
             initial.len()
         );
+        server.abort();
+    }
+
+    /// Proving test for tracker #796 item 9-6: an SSH `window-change`
+    /// request must reach the session as a resize and refit the shell view
+    /// to the new viewport size (drafted on #796 from task 6509; landed once
+    /// the ssh feature compiled again after #3962).
+    /// A program whose view is one fixed 4x2 ASCII screen.
+    struct FixedScreenSsh;
+
+    impl crate::world::WorldProgram for FixedScreenSsh {
+        fn view(&mut self, _viewer: &crate::world::Participant) -> anyhow::Result<Option<String>> {
+            Ok(Some(
+                r#"{"kind":"screen","version":1,"width":4,"height":2,"rows":["abcd","wxyz"]}"#
+                    .to_owned(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_window_change_refits_the_shell_view_to_the_new_size() {
+        let world = WorldHandle::spawn_with_program(
+            WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+            Box::new(FixedScreenSsh),
+        );
+        let (_, capability) = world
+            .issue(
+                "player".to_owned(),
+                crate::world::WorldScopes::from_names(["join", "input"]).unwrap(),
+            )
+            .await
+            .unwrap();
+        let hub = WorldHub::single(WorldService::new(world, Some("admin".to_owned())));
+        let (port, server) = start(hub).await;
+        let session = connect(port, capability.expose()).await;
+        let mut channel = shell(&session).await;
+        let mut terminal = vt100::Parser::new(24, 80, 0);
+        // The pty opens at 80x24, so the whole 4x2 screen is shown first.
+        read_until(&mut channel, &mut terminal, "wxyz").await;
+        assert!(terminal.screen().contents().contains("abcd"));
+
+        // A terminal window change must reach the session as a resize and
+        // refit the view: 2x1 keeps only the first two cells of row one.
+        channel.window_change(2, 1, 0, 0).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let contents = terminal.screen().contents();
+                if contents.contains("ab") && !contents.contains("wxyz") {
+                    break;
+                }
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => terminal.process(&data),
+                    Some(_) => {}
+                    None => panic!("shell closed before the refitted view"),
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for the refitted view");
+        let contents = terminal.screen().contents();
+        assert!(contents.contains("ab"), "{contents:?}");
+        assert!(!contents.contains("cd"), "{contents:?}");
         server.abort();
     }
 

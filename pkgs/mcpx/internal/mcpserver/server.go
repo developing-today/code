@@ -17,7 +17,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -34,6 +33,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/catalog"
 	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
 )
@@ -302,6 +302,15 @@ type Server struct {
 	// MCP is the same task its /v1 surface sees (issue #1555). Nil
 	// means the standalone behaviour: a private in-memory store.
 	TaskStore *taskStore
+
+	// TaskAudit, when set, is the audit seam a private task store
+	// (the TaskStore == nil path in tasks()) is wired with, so a
+	// standalone server's task lifecycle records reach a log instead
+	// of being silently dropped by the store's nil-Audit guard
+	// (#2500, Codex on PR #4743). An injected TaskStore is configured
+	// by its owner (the daemon wires its sink at construction), so
+	// this field is ignored then.
+	TaskAudit func(logging.Record)
 
 	// taskStore holds background requests.
 	taskStore *taskStore
@@ -2368,7 +2377,7 @@ func (s *Server) reapSessionsLocked() {
 
 func newSessionID() string {
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	if _, err := RandSource.Read(b[:]); err != nil {
 		return "sess-0"
 	}
 	return "sess-" + hex.EncodeToString(b[:])

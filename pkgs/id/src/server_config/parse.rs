@@ -138,6 +138,14 @@ pub enum ConfigError {
         /// The member's key.
         member: String,
     },
+    /// `[create]` lists the same user or group twice, so the repetition is a typo.
+    #[error("`{key}` is listed more than once in {list}")]
+    DuplicateCreate {
+        /// The key exactly as declared in the repeated entry.
+        key: String,
+        /// Which `[create]` list held the repetition.
+        list: &'static str,
+    },
 }
 
 #[derive(Deserialize)]
@@ -340,19 +348,31 @@ fn budget_policy(
             other => Ok(other),
         }
     };
-    if let Some(v) = checked("app_inbound_bytes_per_second", raw.app_inbound_bytes_per_second)? {
+    if let Some(v) = checked(
+        "app_inbound_bytes_per_second",
+        raw.app_inbound_bytes_per_second,
+    )? {
         policy.app_inbound[0] = BudgetLimit::bytes(1_000, v);
     }
     if let Some(v) = checked("app_inbound_bytes_per_hour", raw.app_inbound_bytes_per_hour)? {
         policy.app_inbound[1] = BudgetLimit::bytes(3_600_000, v);
     }
-    if let Some(v) = checked("app_outbound_bytes_per_second", raw.app_outbound_bytes_per_second)? {
+    if let Some(v) = checked(
+        "app_outbound_bytes_per_second",
+        raw.app_outbound_bytes_per_second,
+    )? {
         policy.app_outbound[0] = BudgetLimit::bytes(1_000, v);
     }
-    if let Some(v) = checked("app_outbound_bytes_per_hour", raw.app_outbound_bytes_per_hour)? {
+    if let Some(v) = checked(
+        "app_outbound_bytes_per_hour",
+        raw.app_outbound_bytes_per_hour,
+    )? {
         policy.app_outbound[1] = BudgetLimit::bytes(3_600_000, v);
     }
-    if let Some(v) = checked("per_peer_burst_bytes_per_minute", raw.per_peer_burst_bytes_per_minute)? {
+    if let Some(v) = checked(
+        "per_peer_burst_bytes_per_minute",
+        raw.per_peer_burst_bytes_per_minute,
+    )? {
         policy.per_peer[0] = BudgetLimit::bytes(60_000, v);
     }
     if let Some(v) = checked("per_peer_bytes_per_hour", raw.per_peer_bytes_per_hour)? {
@@ -462,11 +482,23 @@ fn create_rule(
     }
     let mut users = BTreeSet::new();
     for key in &rule.users {
-        users.insert(user_of(names, key, "[create].users")?);
+        let id = user_of(names, key, "[create].users")?;
+        if !users.insert(id) {
+            return Err(ConfigError::DuplicateCreate {
+                key: key.clone(),
+                list: "[create].users",
+            });
+        }
     }
     let mut groups = BTreeSet::new();
     for key in &rule.groups {
-        groups.insert(group_of(names, key, "[create].groups")?);
+        let id = group_of(names, key, "[create].groups")?;
+        if !groups.insert(id) {
+            return Err(ConfigError::DuplicateCreate {
+                key: key.clone(),
+                list: "[create].groups",
+            });
+        }
     }
     let floor = match &rule.min_role {
         None => Role::Pull,
@@ -1084,7 +1116,10 @@ mod tests {
         );
         assert_eq!(overrides[1].0, key(3));
         // The resolved override is the one the evaluator consults.
-        assert_eq!(parsed.budgets().limits_for_peer(&key(1)), overrides[0].1.as_slice());
+        assert_eq!(
+            parsed.budgets().limits_for_peer(&key(1)),
+            overrides[0].1.as_slice()
+        );
     }
 
     #[test]
@@ -1102,6 +1137,39 @@ mod tests {
             "[budgets]\n[[budgets.counterparty]]\npeer = \"nobody\"\nbytes_per_window = 5\nwindow_seconds = 60\n",
         );
         assert!(matches!(unknown, Err(ConfigError::UnknownKey { .. })));
+    }
+
+    #[test]
+    fn test_a_repeated_user_in_the_create_rule_is_refused_naming_it() {
+        assert!(matches!(
+            config(&format!("{TEAM}\n[create]\nusers = [\"ann\", \"bo\", \"ann\"]\n")),
+            Err(ConfigError::DuplicateCreate { ref key, list: "[create].users" }) if key == "ann"
+        ));
+    }
+
+    #[test]
+    fn test_a_repeated_group_in_the_create_rule_is_refused_naming_it() {
+        assert!(matches!(
+            config(&format!("{TEAM}\n[create]\nusers = [\"ann\"]\ngroups = [\"team\", \"team\"]\n")),
+            Err(ConfigError::DuplicateCreate { ref key, list: "[create].groups" }) if key == "team"
+        ));
+    }
+
+    #[test]
+    fn test_a_create_rule_without_repetition_is_unchanged() {
+        let parsed = config(&format!(
+            "{TEAM}\n[create]\nusers = [\"ann\", \"bo\"]\ngroups = [\"team\"]\n"
+        ))
+        .unwrap();
+        let team = parsed.group_id("team").unwrap();
+        assert_eq!(
+            parsed.create_rule(),
+            &CreateRule::Listed {
+                users: [key(1), key(2)].into_iter().collect(),
+                groups: std::iter::once(team).collect(),
+                floor: Role::Pull,
+            }
+        );
     }
 
     #[test]
