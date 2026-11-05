@@ -542,8 +542,13 @@ func callTool(r req) map[string]any {
 		_ = json.Unmarshal(r.Params, &m)
 		if tok, ok := m.Meta["progressToken"]; ok {
 			for i := 1; i <= 2; i++ {
+				// With a message, as every revision from 2025-03-26 defines
+				// it: relaying to a 2024-11-05 client is where the two
+				// schemas disagree, and the e2e revision-policy tests need
+				// the field that gets stripped (#307, #2212).
 				notify(map[string]any{"jsonrpc": "2.0", "method": "notifications/progress",
-					"params": map[string]any{"progressToken": tok, "progress": i, "total": 2}})
+					"params": map[string]any{"progressToken": tok, "progress": i, "total": 2,
+						"message": fmt.Sprintf("step %d of 2", i)}})
 			}
 		}
 		for _, lvl := range []string{"debug", "warning"} {
