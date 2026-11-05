@@ -6,7 +6,8 @@ import { join } from "node:path";
 // floor in the stylesheet. Static assertions, same style as nav.test.ts —
 // the rendered measurements live on issue #1180.
 const SRC = join(import.meta.dir, "..", "src");
-const renderSource = readFileSync(join(SRC, "render.ts"), "utf8");
+const renderSource =
+  readFileSync(join(SRC, "ui.css"), "utf8") + "\n" + readFileSync(join(SRC, "render.ts"), "utf8");
 
 function cssRule(selector: string): string {
   const start = renderSource.indexOf(`\n${selector} {`);
