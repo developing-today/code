@@ -2,6 +2,7 @@ package mcpserver_test
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -113,6 +114,38 @@ func TestMCPOnlyTrafficPicksUpRetentionChange(t *testing.T) {
 	}
 	if remaining := time.Until(*got.ExpiresAt); remaining > 10*time.Second {
 		t.Errorf("post-change task keeps the old retention: expires in %v, want the new 2s maxAge to bound it", remaining)
+	}
+}
+
+// Issue #6247, extras construction path: App.MCPServer injects the
+// store and the retention provider and *then* calls WithExtras, whose
+// reconstruction must preserve both — a provider dropped there leaves
+// the production server exactly as broken as before the fix.
+func TestRetentionSurvivesWithExtras(t *testing.T) {
+	store := tasks.New()
+	s := sharedStoreServer(store)
+
+	maxAge := time.Hour
+	s.TaskRetention = func() (time.Duration, time.Duration) { return 0, maxAge }
+	s = s.WithExtras([]mcpserver.Extra{{
+		Tool: mcpserver.Tool{Name: "extra_tool", Description: "an extra"},
+		Call: func(context.Context, json.RawMessage) (string, error) { return "ok", nil },
+	}})
+
+	maxAge = 2 * time.Second
+	id := startSharedTask(t, s)
+	if done := waitTask(t, s, id, terminal); done["status"] != "completed" {
+		t.Fatalf("task through the extras server: %v", done)
+	}
+	got, ok := store.Get(id)
+	if !ok {
+		t.Fatalf("task %s is not in the injected store after WithExtras", id)
+	}
+	if got.ExpiresAt == nil {
+		t.Fatalf("task %s has no retention deadline", id)
+	}
+	if remaining := time.Until(*got.ExpiresAt); remaining > 10*time.Second {
+		t.Errorf("extras server kept the old retention: expires in %v, want the new 2s maxAge", remaining)
 	}
 }
 

@@ -391,6 +391,14 @@ func (s *Server) WithExtras(extras []Extra) *Server {
 		// cannot detect a server that declared nothing.
 		Notify:             s.Notify,
 		Ask:                s.Ask,
+		// The task-store wiring comes along (#6247): dropping it here
+		// silently gave the extras server a private store and a nil
+		// retention provider, so the production MCPServer() path —
+		// which builds extras after injecting the daemon's store —
+		// lost both the shared store (#1555) and retention refresh.
+		TaskStore:     s.TaskStore,
+		TaskRetention: s.TaskRetention,
+		TaskAudit:     s.TaskAudit,
 		ExtrasOnly:         s.ExtrasOnly,
 		OwnInstructions:    s.OwnInstructions,
 		Instance:           s.Instance,
