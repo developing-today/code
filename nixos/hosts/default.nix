@@ -221,6 +221,10 @@ in
       # KRdp remote desktop for this laptop (user service + package);
       # see the file for the one-time on-machine credential setup.
       ./amd-krdp.nix
+      # Sunshine + Moonlight primary remote desktop (code#5924):
+      # VAAPI-pinned streaming host, Moonlight client, encoder
+      # watchdog. KRdp above remains the Plasma-side option.
+      ./amd-sunshine.nix
       ./amd-ipv4-preference.nix
       ./amd-openclaw-secrets.nix
     ];
