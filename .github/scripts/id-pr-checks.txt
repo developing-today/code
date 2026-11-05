@@ -29,6 +29,7 @@ taplo-check
 clippy-lint
 web-lint
 cargo-check
+production-line-limit
 test-unit
 test-shard-0
 test-shard-1

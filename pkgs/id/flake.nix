@@ -371,6 +371,31 @@
           };
           doc = mkCheck "doc" "doc";
           cargo-check = mkCheck "cargo-check" "cargo-check";
+          # F11.10 production module-size guard (#1438): runs the same
+          # repo-level guard and its synthetic-failure contract tests
+          # from the ID fast lane. The script is copied from the flake
+          # root's parent so the check does not depend on the separate
+          # production-line-guard workflow's path filters. No cargo or
+          # web build: this is a seconds-long bash/awk scan.
+          production-line-limit =
+            pkgs.runCommand "id-production-line-limit"
+              {
+                nativeBuildInputs = with pkgs; [
+                  gawk
+                  findutils
+                  gnugrep
+                ];
+              }
+              ''
+                root="$(mktemp -d)"
+                mkdir -p "$root/pkgs"
+                cp -r ${./.} "$root/pkgs/id"
+                cp -r ${../../.github} "$root/.github"
+                bash "$root/.github/scripts/check-production-line-limit.sh" "$root"
+                bash "$root/.github/scripts/check-production-line-limit.test.sh"
+                mkdir -p $out
+                echo "production-line-limit passed at $(date)" > $out/result.txt
+              '';
           crash-gate = mkCheck "crash-gate" "crash-gate";
           # PR-gate splits of crash-gate (#551): the aggregate above runs
           # every heavy full sweep serially (~15 min, the slowest PR
