@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
@@ -33,7 +34,7 @@ func TestTaskStoreUsesHotRetentionSettings(t *testing.T) {
 	if err := set.SetRuntime("tasks.ttl", "250ms"); err != nil {
 		t.Fatal(err)
 	}
-	if err := set.SetRuntime("tasks.maxAge", "2s"); err != nil {
+	if err := set.SetRuntime("tasks.maxAge", "50ms"); err != nil {
 		t.Fatal(err)
 	}
 	if s.TaskStore() != store {
@@ -45,5 +46,12 @@ func TestTaskStoreUsesHotRetentionSettings(t *testing.T) {
 	}
 	if task.TTL != 250 {
 		t.Fatalf("new task did not use hot tasks.ttl update: TTL=%dms", task.TTL)
+	}
+	if _, _, err := store.Result(context.Background(), task.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	terminal, ok := store.Get(task.TaskID)
+	if !ok || terminal.ExpiresAt == nil || terminal.ExpiresAt.After(terminal.LastUpdatedAt.Add(50*time.Millisecond)) {
+		t.Fatalf("new task did not use hot tasks.maxAge update: %+v", terminal)
 	}
 }
