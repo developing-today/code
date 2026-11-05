@@ -1846,7 +1846,9 @@ async function handler(req: Request): Promise<Response> {
   if (req.method === "POST" && path === "/api/quota/refresh") {
     const quota = await source.quota().catch(() => emptyQuotaView());
     const refresh = quotaRefresher.manual(quota);
-    return json({ requested: refresh.triggered, refresh });
+    // generatedAt is the client's poll baseline (#6125): the manual
+    // refresh is only done when quota-current.json advances past it.
+    return json({ requested: refresh.triggered, refresh, generatedAt: quota.gatherer?.generatedAt ?? null });
   }
   if (path === "/api/quota/service.json") {
     const id = url.searchParams.get("id") ?? "";

@@ -58,6 +58,7 @@ import type { NeedsDrewCensus } from "./needs-drew.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
 import type { NotificationRollup } from "./notifications.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
+import { providerDisplayNames } from "./provider-display.ts";
 import type { QueueView, QueueRow } from "./queue-view.ts";
 import type { HealthView, PageHealth } from "./health.ts";
 import {
@@ -2377,14 +2378,85 @@ function chargesStripHtml(usage: UsageView): string {
 /** Lazy-refresh strip (#1171): a visible "refreshing" marker while a
  *  gatherer run is in flight, plus the manual refresh-now control. Both
  *  use the same trigger path; neither blocks the page on provider calls. */
-function quotaRefreshHtml(refresh?: import("./quota-refresh.ts").RefreshStatus): string {
+function quotaRefreshHtml(
+  refresh?: import("./quota-refresh.ts").RefreshStatus,
+  generatedAt?: string | null,
+): string {
   if (!refresh) return "";
   const marker = refresh.refreshing
     ? `<span class="badge refreshing" data-quota-refreshing="true">refreshing — the quota gatherer is running; reload for updated data</span>`
     : refresh.stale
       ? `<span class="muted">quota data is older than five minutes</span>`
       : "";
-  return `<div class="card quota-refresh"><div>${marker || '<span class="muted">quota data is fresh</span>'}</div><form method="post" action="/quota/refresh"><button type="submit">Refresh now</button></form></div>`;
+  // Manual refresh (#6125): the button POSTs the manual trigger route
+  // (POST /api/quota/refresh -> quotaRefresher.manual -> the deployed
+  // quota-gatherer.service, whose read is the single `opencode quota`
+  // source), then polls /api/quota.json until quota-current.json's
+  // generatedAt advances. Success is never faked: an advanced file whose
+  // gatherer reported failure, a failed request, or a poll window with
+  // no advance all surface as a failure message. The form remains the
+  // no-JS path (POST /quota/refresh, same manual trigger, 303 back).
+  return `<div class="card quota-refresh" data-quota-generated-at="${esc(generatedAt ?? "")}"${refresh.refreshing ? ' data-quota-refreshing="true"' : ""}><div><span data-quota-refresh-status aria-live="polite">${marker || '<span class="muted">quota data is fresh</span>'}</span></div><form method="post" action="/quota/refresh"><button type="submit" data-quota-refresh-btn>Refresh quota</button></form></div>
+<script>
+(function () {
+  var strip = document.querySelector(".quota-refresh[data-quota-generated-at]");
+  if (!strip || strip.dataset.wired) return;
+  strip.dataset.wired = "1";
+  var btn = strip.querySelector("[data-quota-refresh-btn]");
+  var status = strip.querySelector("[data-quota-refresh-status]");
+  function say(text) { if (status) status.textContent = text; }
+  var MAX_POLLS = 72; // 72 x 5s = 6 min, the gatherer's MAX_REFRESH_MS bound.
+  function poll(baseline) {
+    var tries = 0;
+    var timer = setInterval(function () {
+      tries++;
+      fetch("/api/quota.json", { cache: "no-store" })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          var gen = data && data.gatherer ? data.gatherer.generatedAt : null;
+          if (gen && gen !== baseline) {
+            clearInterval(timer);
+            if (data.gatherer.ok === false) {
+              say("refresh failed — the quota gatherer ran but reported an error; the previous data is still shown");
+              if (btn) btn.disabled = false;
+            } else {
+              say("quota data updated — reloading…");
+              window.location.reload();
+            }
+          } else if (tries >= MAX_POLLS) {
+            clearInterval(timer);
+            say("refresh did not complete — quota data did not advance, so the gatherer may have failed; the previous data is still shown");
+            if (btn) btn.disabled = false;
+          }
+        })
+        .catch(function () { /* a transient poll error keeps polling until the cap */ });
+    }, 5000);
+  }
+  if (btn) {
+    btn.addEventListener("click", function (ev) {
+      ev.preventDefault();
+      btn.disabled = true;
+      say("refreshing — the quota gatherer is running…");
+      fetch("/api/quota/refresh", { method: "POST" })
+        .then(function (r) {
+          if (!r.ok) throw new Error("the refresh request failed (" + r.status + ")");
+          return r.json();
+        })
+        .then(function (res) {
+          poll((res && res.generatedAt) || strip.getAttribute("data-quota-generated-at") || "");
+        })
+        .catch(function (err) {
+          say("refresh failed — " + err.message);
+          btn.disabled = false;
+        });
+    });
+  }
+  if (strip.getAttribute("data-quota-refreshing") === "true") {
+    if (btn) btn.disabled = true;
+    poll(strip.getAttribute("data-quota-generated-at") || "");
+  }
+})();
+</script>`;
 }
 
 export function renderQuota(
@@ -2396,6 +2468,22 @@ export function renderQuota(
    *  manual refresh-now control. Absent means no request was made. */
   refresh?: import("./quota-refresh.ts").RefreshStatus,
 ): string {
+  // "-direct" display rule (#6125): judged over every provider name/id
+  // this surface renders — pool providers, pool ids, burn rows, the
+  // model-choice pool lists, and credential-lifecycle provider names.
+  // Display only; ids and keys below stay exactly as the view carries
+  // them.
+  const displayNames = providerDisplayNames([
+    ...view.pools.map((p) => p.provider),
+    ...view.pools.map((p) => p.id),
+    ...(view.burn ?? []).map((b) => b.provider),
+    ...(view.burn ?? []).map((b) => b.pool),
+    ...(view.choices
+      ? [...view.choices.hasHeadroom, ...view.choices.burnBeforeReset, ...view.choices.doNotStart]
+      : []),
+    ...(view.credentialLifecycle ?? []).map((c) => c.providerName),
+  ]);
+  const display = (name: string) => displayNames.get(name) ?? name;
   const credentialLifecycle = view.credentialLifecycle?.length
     ? `<h2>Credential lifecycle</h2><div class="card">${view.credentialLifecycle
         .map((credential) => {
@@ -2404,7 +2492,7 @@ export function renderQuota(
           const action = credential.userAction
             ? ` · <strong>user action:</strong> ${esc(credential.userAction.title)}`
             : "";
-          return `<div><strong>${esc(credential.providerName)} · ${esc(credential.label)}</strong> <span class="badge ${esc(credential.state)}">${esc(credential.state)}</span>${expiry}${reason}${action}</div>`;
+          return `<div><strong>${esc(display(credential.providerName))} · ${esc(credential.label)}</strong> <span class="badge ${esc(credential.state)}">${esc(credential.state)}</span>${expiry}${reason}${action}</div>`;
         })
         .join("")}</div>`
     : "";
@@ -2437,16 +2525,16 @@ export function renderQuota(
       const fresh = p.freshness
         ? `<div class="muted">gatherer · ${esc(p.freshness.state)} · measured ${fmtDate(p.freshness.measuredAt)} · ${esc(p.freshness.source)}${p.freshness.error ? ` · ${esc(p.freshness.error)}` : ""}</div>`
         : "";
-      return `<div class="card pool"><div><strong>${esc(p.provider)}</strong><br><span class="muted">${esc(p.plan)}</span><br><span class="badge ${esc(p.state)}">${esc(p.state)}${p.wallLiftsAt ? ` · lifts ${fmtDate(p.wallLiftsAt)}` : ""}</span>${p.burnTokensPerMin ? ` <span class="muted">${p.burnTokensPerMin} tok/min</span>` : ""}</div><div>${windows}${credRows}${sessions}${fresh}${p.note ? `<div class="muted">${esc(p.note)}</div>` : ""}</div></div>`;
+      return `<div class="card pool"><div><strong>${esc(display(p.provider))}</strong><br><span class="muted">${esc(p.plan)}</span><br><span class="badge ${esc(p.state)}">${esc(p.state)}${p.wallLiftsAt ? ` · lifts ${fmtDate(p.wallLiftsAt)}` : ""}</span>${p.burnTokensPerMin ? ` <span class="muted">${p.burnTokensPerMin} tok/min</span>` : ""}</div><div>${windows}${credRows}${sessions}${fresh}${p.note ? `<div class="muted">${esc(p.note)}</div>` : ""}</div></div>`;
     })
     .join("");
   const burn = view.burn
     .map(
       (b) =>
-        `<tr><td>${esc(b.provider)}</td><td>${esc(b.pool)}</td><td>${fmtDate(b.from)}</td><td>${fmtDate(b.to)}</td><td>${b.tokens.toLocaleString()}</td></tr>`,
+        `<tr><td>${esc(display(b.provider))}</td><td>${esc(display(b.pool))}</td><td>${fmtDate(b.from)}</td><td>${fmtDate(b.to)}</td><td>${b.tokens.toLocaleString()}</td></tr>`,
     )
     .join("");
-  const choices = (list: string[]) => (list.length ? list.map(esc).join(", ") : "—");
+  const choices = (list: string[]) => (list.length ? list.map((id) => esc(display(id))).join(", ") : "—");
   const burnAndChoices = `<h2>Burn between resets</h2><div class="tblwrap"><table><caption>Burn between resets</caption><tr><th scope="col">Provider</th><th scope="col">Pool</th><th scope="col">From</th><th scope="col">To</th><th scope="col">Tokens</th></tr>${burn || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>
 <h2>Model choice</h2><div class="tblwrap"><table><caption>Model choice rules</caption><tr><th scope="col">Rule</th><th scope="col">Pools</th></tr>
 <tr><td>Headroom for a new session</td><td>${choices(view.choices.hasHeadroom)}</td></tr>
@@ -2457,6 +2545,7 @@ export function renderQuota(
       "Quota + throughput",
       `<h1>Quota + throughput</h1><p class="muted">All pooled quotas, resets, and burn rates. Machine-first: the same data is at <a href="/api/quota.json">/api/quota.json</a>.</p>
 ${credentialLifecycle}
+${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
 <h2>Pools</h2>${pools}
 ${burnAndChoices}`,
       provenance,
@@ -2499,7 +2588,7 @@ ${burnAndChoices}`,
     `<h1>Usage &amp; billing</h1><p class="muted">Token quotas, PAYG dollars, and SaaS usage vs limits — from dated local records; every card carries its measured-at stamp, and stale cards dim. Machine-first: <a href="/api/quota.json">/api/quota.json</a>.</p>
 ${attentionStripHtml(usage)}
 ${credentialLifecycle}
-${quotaRefreshHtml(refresh)}
+${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
 <h2>Token quotas</h2>${pools}
 ${paygCardHtml(usage)}
 <h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}
@@ -3549,6 +3638,9 @@ export function renderTodayBody(
   queueStale = false,
 ): string {
   const walled = quota.pools.filter((p) => p.state === "walled");
+  // "-direct" display rule (#6125), judged over this view's pool set.
+  const poolDisplayNames = providerDisplayNames(quota.pools.map((p) => p.provider));
+  const displayPoolProvider = (name: string) => poolDisplayNames.get(name) ?? name;
   const alerts: string[] = [];
   const drewTotal = attention.drew.length + attention.drewExtra.length;
   if (drewTotal) {
@@ -3558,7 +3650,7 @@ export function renderTodayBody(
   }
   if (walled.length) {
     alerts.push(
-      `<div class="banner"><strong>Walled pools:</strong> ${walled.map((p) => esc(`${p.provider} (${p.plan})`)).join(", ")} — <a href="/quota">quota</a></div>`,
+      `<div class="banner"><strong>Walled pools:</strong> ${walled.map((p) => esc(`${displayPoolProvider(p.provider)} (${p.plan})`)).join(", ")} — <a href="/quota">quota</a></div>`,
     );
   }
   // #1139: the derived view's banner names the section's TRUE state —
@@ -3882,13 +3974,15 @@ export function deriveOverview(data: OverviewData): OverviewSummary {
     else if (item.status === "Done") row.done += 1;
     byRepo.set(item.repo, row);
   }
+  // "-direct" display rule (#6125), judged over this view's pool set.
+  const quotaDisplayNames = providerDisplayNames(data.quota.pools.map((pool) => pool.provider));
   const quota = data.quota.pools.map((pool) => {
     // #1134 review (Codex P2): derive from used/limit with the shared
     // helper — a window that carries `used` and `limit` but no explicit
     // `percent` must not silently drop out of the tightest-window figure.
     const percents = pool.windows.map((w) => windowPercent(w));
     return {
-      provider: pool.provider,
+      provider: quotaDisplayNames.get(pool.provider) ?? pool.provider,
       plan: pool.plan,
       state: pool.state,
       worstPercent: percents.length ? Math.max(...percents) : null,
