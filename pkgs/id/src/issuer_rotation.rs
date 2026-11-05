@@ -76,6 +76,45 @@ pub fn is_rotation_kind(kind: &str) -> bool {
     kind == ISSUER_ROTATION_KIND
 }
 
+/// Checks a rotation body against the kind of the event that carries
+/// it, running only the body-only stateless subset of
+/// [`IssuerRotation::validate`].
+///
+/// [`ChainExt::validate`](crate::chain::ChainExt) — which knows the
+/// event's kind but neither its author nor any currency definition —
+/// calls this at the header boundary, so a malformed rotation body is
+/// refused at sign/decode instead of signing, storing, and syncing as
+/// a fully valid event (#5706). The context-dependent rules stay out
+/// of this check by design: that a routine author is the *current*
+/// generation key, and that a recovery author is the key the
+/// definition committed (and not the key it replaces), need the
+/// event's verified author and the definition's recovery commitment,
+/// which only [`IssuerRotation::validate`] and [`fold_rotation_chain`]
+/// have.
+///
+/// # Errors
+///
+/// Returns [`RotationError::KindMismatch`] when the carrying event's
+/// kind is not [`ISSUER_ROTATION_KIND`]. Returns the body-rule error
+/// naming the first failed check otherwise: non-consecutive
+/// generations, the predecessor rule, an asserted compromise start on
+/// a routine rotation, or a successor proof that does not verify.
+pub fn check_rotation(kind: &str, rotation: &IssuerRotation) -> Result<(), RotationError> {
+    if !is_rotation_kind(kind) {
+        return Err(RotationError::KindMismatch {
+            kind: kind.to_owned(),
+        });
+    }
+    rotation.check_shape()?;
+    if rotation.mode == RotationMode::Routine && rotation.asserted_compromise_from.is_some() {
+        return Err(RotationError::AssertedCompromiseOnRoutine);
+    }
+    if !rotation.verify_successor_proof() {
+        return Err(RotationError::SuccessorProofInvalid);
+    }
+    Ok(())
+}
+
 /// Domain separator for the successor proof: the proof signs the
 /// canonical rotation fields under this domain and no other, so a
 /// signature made for any other purpose is never a successor proof.
@@ -277,6 +316,26 @@ impl IssuerRotation {
             .is_ok()
     }
 
+    /// The shape rules every validation path shares, needing nothing
+    /// beyond the body itself: generations are consecutive, and the
+    /// predecessor rule holds (only the initial transition out of
+    /// generation 0 names no previous rotation).
+    fn check_shape(&self) -> Result<(), RotationError> {
+        if self.to_generation != self.from_generation.wrapping_add(1)
+            || self.to_generation <= self.from_generation
+        {
+            return Err(RotationError::NonConsecutiveGeneration);
+        }
+        match (self.from_generation, self.previous_rotation) {
+            (0, Some(_)) => return Err(RotationError::UnexpectedPredecessor),
+            (_, None) if self.from_generation != 0 => {
+                return Err(RotationError::MissingPredecessor);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Checks this body against its event's verified author and the
     /// currency definition's recovery-key commitment.
     ///
@@ -297,18 +356,7 @@ impl IssuerRotation {
         author: &IssuerId,
         committed_recovery: Option<&Hash>,
     ) -> Result<(), RotationError> {
-        if self.to_generation != self.from_generation.wrapping_add(1)
-            || self.to_generation <= self.from_generation
-        {
-            return Err(RotationError::NonConsecutiveGeneration);
-        }
-        match (self.from_generation, self.previous_rotation) {
-            (0, Some(_)) => return Err(RotationError::UnexpectedPredecessor),
-            (_, None) if self.from_generation != 0 => {
-                return Err(RotationError::MissingPredecessor);
-            }
-            _ => {}
-        }
+        self.check_shape()?;
         match self.mode {
             RotationMode::Routine => {
                 if self.asserted_compromise_from.is_some() {
@@ -332,8 +380,13 @@ impl IssuerRotation {
 }
 
 /// Why a rotation body is invalid.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RotationError {
+    /// The carrying event's kind is not the issuer rotation kind.
+    KindMismatch {
+        /// The kind of the event.
+        kind: String,
+    },
     /// `to_generation` is not exactly `from_generation + 1`.
     NonConsecutiveGeneration,
     /// A transition out of generation 0 names a previous rotation.
@@ -359,6 +412,9 @@ pub enum RotationError {
 impl std::fmt::Display for RotationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::KindMismatch { kind } => {
+                write!(f, "a {kind:?} event carries an issuer rotation")
+            }
             Self::NonConsecutiveGeneration => {
                 write!(f, "rotation generation is not consecutive")
             }
@@ -735,6 +791,35 @@ mod tests {
 
     fn commitment() -> Hash {
         recovery_commitment(&issuer_id(&recovery_key()))
+    }
+
+    #[test]
+    fn check_rotation_accepts_well_formed_bodies_without_context() {
+        // A routine body passes on its own fields alone.
+        let routine = rotation(RotationMode::Routine, 0, None, &gen1_key(), None);
+        assert_eq!(check_rotation(ISSUER_ROTATION_KIND, &routine), Ok(()));
+        // A recovery body carrying an asserted compromise start also
+        // passes: the author and commitment rules are context, and
+        // check_rotation has neither — they stay in `validate`.
+        let recovery = rotation(
+            RotationMode::CompromiseRecovery,
+            0,
+            None,
+            &gen1_key(),
+            Some(event(3)),
+        );
+        assert_eq!(check_rotation(ISSUER_ROTATION_KIND, &recovery), Ok(()));
+    }
+
+    #[test]
+    fn check_rotation_refuses_the_wrong_kind() {
+        let routine = rotation(RotationMode::Routine, 0, None, &gen1_key(), None);
+        assert_eq!(
+            check_rotation("note.create", &routine),
+            Err(RotationError::KindMismatch {
+                kind: "note.create".to_owned(),
+            })
+        );
     }
 
     #[test]

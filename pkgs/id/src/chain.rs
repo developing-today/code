@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
 
 use crate::documents::{DocumentRef, is_document_kind, is_removal_kind};
-use crate::issuer_rotation::{IssuerRotation, is_rotation_kind};
+use crate::issuer_rotation::{IssuerRotation, check_rotation, is_rotation_kind};
 use crate::note_links::{NoteLinkOp, check_note_link_op, is_note_link_kind};
 use crate::notes::{NoteOp, check_note_op, is_note_kind};
 use crate::session_checkpoint::{SessionCheckpoint, check_session_checkpoint, is_checkpoint_kind};
@@ -223,6 +223,8 @@ impl ChainExt {
     /// any kind that is not a tag or a document kind must not.
     /// A session checkpoint kind must carry a session checkpoint that passes
     /// [`check_session_checkpoint`], and any other kind must carry none.
+    /// A rotation kind must carry an issuer rotation that passes
+    /// [`check_rotation`], and any other kind must carry none.
     pub fn validate(&self) -> Result<(), ChainError> {
         if self.after.len() > MAX_AFTER {
             return Err(ChainError::TooManyAfter(self.after.len()));
@@ -363,7 +365,10 @@ impl ChainExt {
                     self.kind
                 )));
             }
-            (true, Some(_)) => {}
+            (true, Some(rotation)) => {
+                check_rotation(&self.kind, rotation)
+                    .map_err(|err| ChainError::Extension(err.to_string()))?;
+            }
         }
         Ok(())
     }
@@ -499,6 +504,8 @@ mod tests {
     use p2panda_core::Extensions;
 
     use super::*;
+    use crate::currency::issuer_id;
+    use crate::issuer_rotation::{ISSUER_ROTATION_KIND, RotationMode};
 
     /// The test key: the 32 bytes 00 through 1f. It is not a real key.
     fn key() -> SigningKey {
@@ -588,6 +595,143 @@ mod tests {
     /// Signs any extension as sequence 0 with no body, the way `sign` would.
     fn sign_raw<E: Extensions>(ext: E) -> Vec<u8> {
         Header::<E>::builder().build(&key(), ext).encode()
+    }
+
+    /// The successor key for the rotation tests: the 32 bytes of 9s.
+    fn successor_key() -> SigningKey {
+        SigningKey::from_bytes(&[9; 32])
+    }
+
+    /// A rotation extension carrying `rotation` on the rotation kind.
+    fn rotation_ext(rotation: IssuerRotation) -> ChainExt {
+        ChainExt {
+            rotation: Some(rotation),
+            ..ext(ISSUER_ROTATION_KIND, None, vec![])
+        }
+    }
+
+    /// A well-formed routine rotation out of generation 0, proven by
+    /// its successor. `key()` authors it; the successor is
+    /// [`successor_key`].
+    fn proven_rotation() -> IssuerRotation {
+        let successor = successor_key();
+        let mut rotation = IssuerRotation::unsigned(
+            RotationMode::Routine,
+            issuer_id(&key()),
+            hash(42),
+            0,
+            None,
+            issuer_id(&successor),
+            None,
+        );
+        rotation
+            .prove_successor(&successor)
+            .expect("prove successor");
+        rotation
+    }
+
+    #[test]
+    fn test_rotation_well_formed_signs_and_decodes() {
+        let rotation = proven_rotation();
+        let event = sign(&key(), 0, None, None, rotation_ext(rotation.clone()))
+            .expect("a well-formed rotation is signed");
+        assert_eq!(decode(&event.bytes).unwrap(), event);
+        assert_eq!(event.header.extensions.rotation, Some(rotation));
+    }
+
+    #[test]
+    fn test_rotation_malformed_bodies_are_refused_at_sign_and_decode() {
+        // Non-consecutive generations: 0 -> 2, proven as built, so only
+        // the generation rule can refuse it.
+        let successor = successor_key();
+        let mut skipped = proven_rotation();
+        skipped.to_generation = 2;
+        skipped
+            .prove_successor(&successor)
+            .expect("prove successor");
+
+        // A generation-0 predecessor: the initial transition names a
+        // previous rotation.
+        let mut predecessor = IssuerRotation::unsigned(
+            RotationMode::Routine,
+            issuer_id(&key()),
+            hash(42),
+            0,
+            Some(hash(1)),
+            issuer_id(&successor),
+            None,
+        );
+        predecessor
+            .prove_successor(&successor)
+            .expect("prove successor");
+
+        // A later transition naming no predecessor.
+        let mut missing_predecessor = IssuerRotation::unsigned(
+            RotationMode::Routine,
+            issuer_id(&key()),
+            hash(42),
+            1,
+            None,
+            issuer_id(&successor),
+            None,
+        );
+        missing_predecessor
+            .prove_successor(&successor)
+            .expect("prove successor");
+
+        // A routine rotation asserting a compromise start, which only
+        // recovery rotations may carry.
+        let mut asserted = IssuerRotation::unsigned(
+            RotationMode::Routine,
+            issuer_id(&key()),
+            hash(42),
+            0,
+            None,
+            issuer_id(&successor),
+            Some(hash(2)),
+        );
+        asserted
+            .prove_successor(&successor)
+            .expect("prove successor");
+
+        // A zeroed successor proof, never countersigned.
+        let zeroed = IssuerRotation::unsigned(
+            RotationMode::Routine,
+            issuer_id(&key()),
+            hash(42),
+            0,
+            None,
+            issuer_id(&successor),
+            None,
+        );
+
+        // A successor proof made by a key that is not the successor.
+        let mut forged_proof = proven_rotation();
+        forged_proof
+            .prove_successor(&key())
+            .expect("prove with the wrong key");
+
+        for (name, rotation) in [
+            ("non-consecutive generation", skipped),
+            ("generation-0 predecessor", predecessor),
+            ("missing predecessor", missing_predecessor),
+            ("routine asserted compromise", asserted),
+            ("zeroed successor proof", zeroed),
+            ("forged successor proof", forged_proof),
+        ] {
+            let ext = rotation_ext(rotation);
+            assert!(
+                matches!(
+                    sign(&key(), 0, None, None, ext.clone()),
+                    Err(ChainError::Extension(_))
+                ),
+                "{name}: sign refuses the malformed rotation"
+            );
+            // A header signed outside `sign` with the same body is
+            // refused at decode too.
+            let forged = sign_raw(ext);
+            assert!(decode(&forged).is_err(), "{name}: decode refuses it");
+        }
     }
 
     #[test]
