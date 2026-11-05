@@ -441,7 +441,32 @@
           "name": "Mistral Large"
         },
         "mistral-small-latest": {
-          "name": "Mistral Small"
+          "name": "Mistral Small",
+          // Variants declared 2026-11-05: the models.dev catalog
+          // attests none/high (reasoning effort) for this model id on
+          // the Mistral wire this provider clones — the same variants
+          // the "mistral" provider's catalog entry carries. Declaring
+          // them is load-bearing, not cosmetic: a provider-route
+          // group's variant set is the intersection of its legs'
+          // producible variants, so an empty list here emptied
+          // mistral-plan's variant set entirely — and because a
+          // route's offered variants are likewise an intersection
+          // across its targets, seating mistral-plan in
+          // deepseek-flash-plan collapsed that pool's variant set and
+          // broke every pinned-variant session on it (Variant
+          // unavailable: low/high) until these were declared.
+          "variants": {
+            "none": {
+              "options": {
+                "reasoning_effort": "none"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
         },
         "codestral-latest": {
           "name": "Codestral"
@@ -1881,7 +1906,18 @@
             "variants": { "xhigh": "high", "max": "high" }
           },
           "commandcode/deepseek/deepseek-v4.1-flash",
-          "mistral-plan/mistral-small-latest",
+          {
+            "model": "mistral-plan/mistral-small-latest",
+            // Variant remap: the pool's effort rungs map onto the two
+            // variants both mistral-plan legs can produce (none /
+            // high — see the vibe-direct model note). The remap keys
+            // are what let the pool keep offering its rungs with this
+            // member seated; the values keep the plan leg in front at
+            // every rung (a #low draw runs the group at "none", a
+            // #high draw at "high", both producible by vibe-direct
+            // first and the API leg alike).
+            "variants": { "low": "none", "medium": "high", "high": "high", "xhigh": "high", "max": "high" }
+          },
           "deepseek/deepseek-flash"
         ],
         "selection": "round-robin",
