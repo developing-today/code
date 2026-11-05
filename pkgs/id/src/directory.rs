@@ -262,6 +262,27 @@ pub enum DirectoryEntry {
         /// Request IDs the removal voids. Empty for a removal that needs no request.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         requests: Vec<String>,
+        /// Hash of the signed removal artifact this entry was applied
+        /// with, when it was applied from one (#5624). Absent for a
+        /// local removal (no artifact exists) and for entries journaled
+        /// before this field was recorded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artifact: Option<String>,
+    },
+    /// A friend-removal artifact was stored without an effect (#5624):
+    /// the pair had no friendship or pending request it could end.
+    /// Journaled at receipt so recovery can tell a processed artifact
+    /// from an interrupted removal whose journal entry was lost.
+    FriendRemovalNoted {
+        /// One side of the pair the removal names.
+        a: String,
+        /// The other side of the pair the removal names.
+        b: String,
+        /// Request IDs the stored removal artifact names.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        requests: Vec<String>,
+        /// Hash of the signed removal artifact that was noted.
+        artifact: String,
     },
 }
 
@@ -413,9 +434,15 @@ pub struct Directory {
     /// Friend-removal journal entries seen during replay, in journal
     /// order (#5624): recovery matches stored removal artifacts against
     /// them to tell an already-applied removal from one whose journal
-    /// entry was lost to a crash. Only replay fills this; it is not
-    /// directory state.
-    journaled_removals: Vec<(String, String, Vec<String>)>,
+    /// entry was lost to a crash. The fourth element is the hash of the
+    /// artifact the entry was applied with, when it was applied from
+    /// one. Only replay fills this; it is not directory state.
+    journaled_removals: Vec<(String, String, Vec<String>, Option<String>)>,
+    /// Hashes of removal artifacts replay saw journaled as stored
+    /// without an effect (`FriendRemovalNoted`, #5624): recovery must
+    /// never apply them against state formed after they were stored.
+    /// Only replay fills this; it is not directory state.
+    noted_removal_artifacts: Vec<String>,
 }
 
 impl Default for Directory {
@@ -451,6 +478,7 @@ impl Directory {
             next_group: 1,
             journal: None,
             journaled_removals: Vec::new(),
+            noted_removal_artifacts: Vec::new(),
         }
     }
 
@@ -466,19 +494,27 @@ impl Directory {
         let mut directory = Self::replay(path)?;
         directory.artifacts = ArtifactLog::open(&artifact_path(path))?;
         directory.journal = Some(path.to_path_buf());
-        let removals: Vec<(String, String, Vec<String>)> = directory
+        let removals: Vec<(String, String, Vec<String>, String)> = directory
             .artifacts
             .all()
             .filter_map(|artifact| match artifact.parsed_for_replay() {
-                Ok(Some(Kind::FriendRemove(removal))) => {
-                    Some((removal.a, removal.b, removal.requests))
-                }
+                Ok(Some(Kind::FriendRemove(removal))) => Some((
+                    removal.a,
+                    removal.b,
+                    removal.requests,
+                    artifact.hash.clone(),
+                )),
                 _ => None,
             })
             .collect();
-        for (a, b, requests) in removals {
-            let journaled = directory.take_journaled_removal(&a, &b, &requests);
-            if let Some(entry) = directory.friend_removal_effect(&a, &b, &requests, journaled) {
+        for (a, b, requests, hash) in removals {
+            if directory.noted_removal_artifacts.contains(&hash) {
+                continue;
+            }
+            let journaled = directory.take_journaled_removal(&a, &b, &requests, &hash);
+            if let Some(entry) =
+                directory.friend_removal_effect(&a, &b, &requests, journaled, &hash)
+            {
                 directory.apply(&entry)?;
             }
         }
@@ -534,10 +570,24 @@ impl Directory {
             directory
                 .apply_replay(&entry)
                 .with_context(|| format!("directory journal line {} is refused", number + 1))?;
-            if let DirectoryEntry::FriendRemoved { a, b, requests } = &entry {
-                directory
-                    .journaled_removals
-                    .push((a.clone(), b.clone(), requests.clone()));
+            match &entry {
+                DirectoryEntry::FriendRemoved {
+                    a,
+                    b,
+                    requests,
+                    artifact,
+                } => {
+                    directory.journaled_removals.push((
+                        a.clone(),
+                        b.clone(),
+                        requests.clone(),
+                        artifact.clone(),
+                    ));
+                }
+                DirectoryEntry::FriendRemovalNoted { artifact, .. } => {
+                    directory.noted_removal_artifacts.push(artifact.clone());
+                }
+                _ => {}
             }
         }
         Ok(directory)
@@ -574,25 +624,47 @@ impl Directory {
             directory
                 .apply_replay(&entry)
                 .with_context(|| format!("directory journal line {} is refused", number + 1))?;
-            if let DirectoryEntry::FriendRemoved { a, b, requests } = &entry {
-                directory
-                    .journaled_removals
-                    .push((a.clone(), b.clone(), requests.clone()));
+            match &entry {
+                DirectoryEntry::FriendRemoved {
+                    a,
+                    b,
+                    requests,
+                    artifact,
+                } => {
+                    directory.journaled_removals.push((
+                        a.clone(),
+                        b.clone(),
+                        requests.clone(),
+                        artifact.clone(),
+                    ));
+                }
+                DirectoryEntry::FriendRemovalNoted { artifact, .. } => {
+                    directory.noted_removal_artifacts.push(artifact.clone());
+                }
+                _ => {}
             }
         }
         let artifacts = ArtifactLog::open_read_only(&artifact_path(path))?;
-        let removals: Vec<(String, String, Vec<String>)> = artifacts
+        let removals: Vec<(String, String, Vec<String>, String)> = artifacts
             .all()
             .filter_map(|artifact| match artifact.parsed_for_replay() {
-                Ok(Some(Kind::FriendRemove(removal))) => {
-                    Some((removal.a, removal.b, removal.requests))
-                }
+                Ok(Some(Kind::FriendRemove(removal))) => Some((
+                    removal.a,
+                    removal.b,
+                    removal.requests,
+                    artifact.hash.clone(),
+                )),
                 _ => None,
             })
             .collect();
-        for (a, b, requests) in removals {
-            let journaled = directory.take_journaled_removal(&a, &b, &requests);
-            if let Some(entry) = directory.friend_removal_effect(&a, &b, &requests, journaled) {
+        for (a, b, requests, hash) in removals {
+            if directory.noted_removal_artifacts.contains(&hash) {
+                continue;
+            }
+            let journaled = directory.take_journaled_removal(&a, &b, &requests, &hash);
+            if let Some(entry) =
+                directory.friend_removal_effect(&a, &b, &requests, journaled, &hash)
+            {
                 directory.apply_replay(&entry)?;
             }
         }
@@ -848,6 +920,7 @@ impl Directory {
             a: me.to_owned(),
             b: other.to_owned(),
             requests: self.friendship_requests(me, other),
+            artifact: None,
         };
         self.apply(&entry)?;
         Ok(entry)
@@ -1607,6 +1680,7 @@ impl Directory {
             a: me,
             b: other.to_owned(),
             requests: stored,
+            artifact: Some(artifact.hash.clone()),
         };
         self.store_artifact(&artifact, Some(&entry))?;
         Ok(artifact)
@@ -1710,6 +1784,7 @@ impl Directory {
                         a: removal.a,
                         b: removal.b,
                         requests: entry_requests,
+                        artifact: Some(artifact.hash.clone()),
                     })
                 } else if removal.requests.is_empty() {
                     // #5624: a pending legacy request cannot be named by
@@ -1725,6 +1800,7 @@ impl Directory {
                             a: removal.a,
                             b: removal.b,
                             requests: legacy,
+                            artifact: Some(artifact.hash.clone()),
                         })
                     }
                 } else {
@@ -1733,6 +1809,21 @@ impl Directory {
             }
             _ => None,
         };
+        // #5624: a removal artifact stored without an effect is noted
+        // in the journal alongside it, so recovery can tell it apart
+        // from an interrupted removal (artifact stored, journal entry
+        // lost to a crash): the noted artifact was fully processed
+        // when it arrived and must never be applied against state
+        // formed afterwards.
+        let effect = effect.or_else(|| match artifact.parsed() {
+            Ok(Some(Kind::FriendRemove(removal))) => Some(DirectoryEntry::FriendRemovalNoted {
+                a: removal.a,
+                b: removal.b,
+                requests: removal.requests,
+                artifact: artifact.hash.clone(),
+            }),
+            _ => None,
+        });
         self.store_artifact(artifact, effect.as_ref())
     }
 
@@ -2055,7 +2146,7 @@ impl Directory {
                     self.friend_requests.insert(pair(from, to), request.clone());
                 }
             }
-            DirectoryEntry::FriendRemoved { a, b, requests } => {
+            DirectoryEntry::FriendRemoved { a, b, requests, .. } => {
                 let requests = self.pair_bound_requests(a, b, requests);
                 let was_friends = self.friends.remove(&pair(a, b));
                 ensure!(was_friends || !requests.is_empty(), "not friends");
@@ -2063,6 +2154,12 @@ impl Directory {
                 self.requests
                     .retain(|(from, to), _| pair(from, to) != pair(a, b));
                 self.removed_requests.extend(requests.iter().cloned());
+            }
+            DirectoryEntry::FriendRemovalNoted { .. } => {
+                // A record that a removal artifact was stored without
+                // an effect (#5624); it changes no directory state.
+                // Replay collects the artifact hash from the journal
+                // line into `noted_removal_artifacts`.
             }
         }
         Ok(())
@@ -2102,35 +2199,62 @@ impl Directory {
     /// artifact with no entry was stored by a removal that crashed
     /// before journaling — recovery must still apply it — while an
     /// artifact with an entry was already applied and may only be
-    /// re-applied where it still names current state. The producer's
-    /// entry carries the pair's stored IDs verbatim, so it may hold
-    /// noncanonical IDs the artifact cannot name (#3146); a receiver's
-    /// entry holds the pair-bound subset of the artifact's IDs. An
-    /// empty artifact's entry carries the pair's stored IDs at apply
-    /// time — any set — so correspondence for it is by pair and
-    /// journal order alone. Entries are consumed one per artifact.
-    fn take_journaled_removal(&mut self, a: &str, b: &str, artifact_requests: &[String]) -> bool {
+    /// re-applied where it still names current state.
+    ///
+    /// Entries journaled by current code carry the hash of the
+    /// artifact they were applied with, and correspondence is by that
+    /// hash alone. A local removal (`remove_friend_as`) journals an
+    /// entry carrying no artifact hash, and an artifact must never
+    /// consume it: however similar their requests look, the entry
+    /// belongs to a different removal than the artifact. Entries
+    /// journaled before hashes were recorded carry no hash either, so
+    /// for them correspondence falls back to the request sets: the
+    /// producer's entry carries the pair's stored IDs verbatim, so it
+    /// may hold noncanonical IDs the artifact cannot name (#3146); a
+    /// receiver's entry holds the pair-bound subset of the artifact's
+    /// IDs. An empty artifact does not correspond to a hashless entry
+    /// by pair alone — a hashless empty entry is also exactly what a
+    /// local removal of an ID-less friendship journals, so pair-only
+    /// matching would let an interrupted removal consume a local
+    /// removal's entry and resurrect the friendship it targeted.
+    /// Entries are consumed one per artifact.
+    fn take_journaled_removal(
+        &mut self,
+        a: &str,
+        b: &str,
+        artifact_requests: &[String],
+        artifact_hash: &str,
+    ) -> bool {
+        if let Some(index) = self
+            .journaled_removals
+            .iter()
+            .position(|(_, _, _, entry_artifact)| entry_artifact.as_deref() == Some(artifact_hash))
+        {
+            self.journaled_removals.remove(index);
+            return true;
+        }
+        if artifact_requests.is_empty() {
+            return false;
+        }
         use std::collections::BTreeSet;
         let target = pair(a, b);
         let artifact_set: BTreeSet<&str> = artifact_requests.iter().map(String::as_str).collect();
-        let position = self
-            .journaled_removals
-            .iter()
-            .position(|(ja, jb, jrequests)| {
-                if pair(ja, jb) != target {
-                    return false;
-                }
-                if artifact_requests.is_empty() {
-                    return true;
-                }
-                let journal_set: BTreeSet<&str> = jrequests.iter().map(String::as_str).collect();
-                journal_set == artifact_set
-                    || journal_set.is_subset(&artifact_set)
-                    || (artifact_set.is_subset(&journal_set)
-                        && journal_set
-                            .difference(&artifact_set)
-                            .all(|id| !artifact::is_friend_request_id(id)))
-            });
+        let position =
+            self.journaled_removals
+                .iter()
+                .position(|(ja, jb, jrequests, entry_artifact)| {
+                    if entry_artifact.is_some() || pair(ja, jb) != target {
+                        return false;
+                    }
+                    let journal_set: BTreeSet<&str> =
+                        jrequests.iter().map(String::as_str).collect();
+                    journal_set == artifact_set
+                        || journal_set.is_subset(&artifact_set)
+                        || (artifact_set.is_subset(&journal_set)
+                            && journal_set
+                                .difference(&artifact_set)
+                                .all(|id| !artifact::is_friend_request_id(id)))
+                });
         match position {
             Some(index) => {
                 self.journaled_removals.remove(index);
@@ -2167,6 +2291,7 @@ impl Directory {
         b: &str,
         artifact_requests: &[String],
         journaled: bool,
+        artifact_hash: &str,
     ) -> Option<DirectoryEntry> {
         let bound = self.pair_bound_requests(a, b, artifact_requests);
         if self.are_friends(a, b) {
@@ -2191,6 +2316,7 @@ impl Directory {
                     a: a.to_owned(),
                     b: b.to_owned(),
                     requests: self.friendship_requests(a, b),
+                    artifact: Some(artifact_hash.to_owned()),
                 });
             }
             if !formed_by.is_some_and(|id| artifact_requests.contains(id)) {
@@ -2200,6 +2326,7 @@ impl Directory {
                 a: a.to_owned(),
                 b: b.to_owned(),
                 requests: bound,
+                artifact: Some(artifact_hash.to_owned()),
             });
         }
         if !bound.is_empty() {
@@ -2225,6 +2352,7 @@ impl Directory {
                 a: a.to_owned(),
                 b: b.to_owned(),
                 requests: bound,
+                artifact: Some(artifact_hash.to_owned()),
             });
         }
         if artifact_requests.is_empty() {
@@ -2234,6 +2362,7 @@ impl Directory {
                     a: a.to_owned(),
                     b: b.to_owned(),
                     requests: legacy,
+                    artifact: Some(artifact_hash.to_owned()),
                 });
             }
         }
@@ -2933,6 +3062,90 @@ mod tests {
 
         // Lose the removal's journal line (the crash window in
         // store_artifact: artifact appended, journal entry not).
+        let text = std::fs::read_to_string(&path).unwrap();
+        let kept: String = text
+            .lines()
+            .rev()
+            .skip(1)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|line| format!("{line}\n"))
+            .collect();
+        std::fs::write(&path, kept).unwrap();
+
+        let replayed = Directory::replay_read_only(&path).unwrap();
+        assert!(!replayed.are_friends(&ann, &bo));
+        drop(replayed);
+
+        let reopened = Directory::open(&path).unwrap();
+        assert!(!reopened.are_friends(&ann, &bo));
+    }
+
+    #[test]
+    fn a_stored_no_effect_removal_does_not_end_a_later_id_less_friendship_on_reopen() {
+        // #5624 (Codex P2 on the fix PR): a removal artifact received
+        // for a pair this server never befriended is stored without an
+        // effect. If the pair later forms an ID-less friendship, the
+        // stored artifact must not be mistaken for an interrupted
+        // removal of it — receipt journals a FriendRemovalNoted entry
+        // for exactly this distinction.
+        let mut producer = Directory::new();
+        let (ann, ann_credential) = account(&mut producer, "Ann");
+        let (bo, _bo_credential) = account(&mut producer, "Bo");
+        producer.request_friend_as(&ann, &bo).unwrap();
+        producer.accept_friend_as(&bo, &ann).unwrap();
+        let removal = producer.remove_friend(&ann_credential, &bo).unwrap();
+        assert!(
+            matches!(removal.parsed().unwrap(), Some(Kind::FriendRemove(r)) if r.requests.is_empty())
+        );
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("directory.jsonl");
+        let mut receiver = Directory::open(&path).unwrap();
+        assert_eq!(receiver.receive_artifact(&removal).unwrap(), Stored::New);
+        receiver.request_friend_as(&ann, &bo).unwrap();
+        receiver.accept_friend_as(&bo, &ann).unwrap();
+        assert!(receiver.are_friends(&ann, &bo));
+        drop(receiver);
+
+        let replayed = Directory::replay_read_only(&path).unwrap();
+        assert!(replayed.are_friends(&ann, &bo));
+        drop(replayed);
+
+        let reopened = Directory::open(&path).unwrap();
+        assert!(reopened.are_friends(&ann, &bo));
+    }
+
+    #[test]
+    fn an_interrupted_removal_is_not_defeated_by_an_earlier_local_removal_on_reopen() {
+        // #5624 (Codex P2 on the fix PR): remove_friend_as journals a
+        // removal entry but stores no artifact. When the pair later
+        // re-forms an ID-less friendship and a signed removal of it is
+        // interrupted (artifact stored, journal entry lost), recovery
+        // must not let the artifact consume the earlier local entry:
+        // correspondence is by the hash of the artifact an entry was
+        // journaled with, and the local entry carries none.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("directory.jsonl");
+        let mut directory = Directory::open(&path).unwrap();
+        let (ann, ann_credential) = account(&mut directory, "Ann");
+        let (bo, _bo_credential) = account(&mut directory, "Bo");
+        directory.request_friend_as(&ann, &bo).unwrap();
+        directory.accept_friend_as(&bo, &ann).unwrap();
+        directory.remove_friend_as(&ann, &bo).unwrap();
+        assert!(!directory.are_friends(&ann, &bo));
+        directory.request_friend_as(&ann, &bo).unwrap();
+        directory.accept_friend_as(&bo, &ann).unwrap();
+        assert!(directory.are_friends(&ann, &bo));
+        directory.remove_friend(&ann_credential, &bo).unwrap();
+        assert!(!directory.are_friends(&ann, &bo));
+        drop(directory);
+
+        // Lose the signed removal's journal line (the crash window in
+        // store_artifact: artifact appended, journal entry not). The
+        // earlier local removal's entry is now the only removal entry
+        // left in the journal.
         let text = std::fs::read_to_string(&path).unwrap();
         let kept: String = text
             .lines()
