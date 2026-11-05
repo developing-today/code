@@ -13,7 +13,7 @@
 //!
 //! Everything binds `--bind` (default 127.0.0.1) and talks to
 //! the CONNECT-UDP endpoint at `--proxy` (default
-//! 127.0.0.1:3131). Config-gated in the only way a shim can
+//! 127.0.0.1:3132). Config-gated in the only way a shim can
 //! be: nothing runs it unless a host deliberately starts it.
 
 use std::net::{IpAddr, SocketAddr};
@@ -22,7 +22,7 @@ use std::process::ExitCode;
 use fleet_proxy::EXIT_USAGE;
 use fleet_proxy::udp_forward::{Forward, parse_map, parse_port_set};
 
-const DEFAULT_PROXY: &str = "127.0.0.1:3131";
+const DEFAULT_PROXY: &str = "127.0.0.1:3132";
 const USAGE: &str = "usage: fleet-udp-forward [--proxy <addr>] [--bind <ip>] \
                      (--map <lport>=<host>:<rport>... | --target <host> --ports <set>)";
 
