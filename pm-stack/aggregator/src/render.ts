@@ -6462,6 +6462,12 @@ ${trackedTable(live.tracked)}${poolSectionHtml}`;
 
 const POOL_ITEM_CAP = 24;
 
+/** Render a graph ref as a link only when it satisfies the shared ref rule. */
+function poolRefLink(ref: RefKey): string {
+  const label = esc(ref);
+  return isValidRef(ref) ? `<a href="${esc(refUrl(ref))}">${label}</a>` : label;
+}
+
 /** The #2400 graph section of a project page: blocked weight + longest
  * blocked chain and the depth-graph SVG, from the part-1 edge contract
  * (#2399). Graceful absence is explicit: a pool with no effort labels
@@ -6478,7 +6484,7 @@ function poolGraphHtml(items: ProjectPoolItem[], allW: ReturnType<typeof summari
   const blocked = blockedSummary(items);
   const chainHtml =
     blocked.longestChain.length >= 2
-      ? ` · longest blocked chain: ${blocked.longestChain.map((r) => `<a href="${esc(refUrl(r))}">${esc(r)}</a>`).join(" → ")} (${blocked.longestChain.length - 1} link${blocked.longestChain.length === 2 ? "" : "s"})`
+      ? ` · longest blocked chain: ${blocked.longestChain.map(poolRefLink).join(" → ")} (${blocked.longestChain.length - 1} link${blocked.longestChain.length === 2 ? "" : "s"})`
       : "";
   const blockedHtml = blocked.blockedCount
     ? `<p class="muted"><strong>Blocked weight: ${blocked.blockedWeight}</strong> across ${blocked.blockedCount} open item${blocked.blockedCount === 1 ? "" : "s"} waiting on an unresolved blocker${blocked.blockedUnsizedCount ? ` (${blocked.blockedUnsizedCount} of them unsized — counted, never zero-weighted)` : ""}${chainHtml}.</p>`
@@ -6588,9 +6594,9 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
     ? `<ul class="epic-graph-list">${ranked
         .map(
           (r) => {
-            const blockerItems = r.blockers.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>`);
+            const blockerItems = r.blockers.map((b) => poolRefLink(b));
             const contributingItems = r.contributingItems.length > 0
-              ? `<br><span class="muted">Contributing downstream epics: ${r.contributingItems.map((ci) => `<a href="${esc(refUrl(ci))}">${esc(ci)}</a>`).join(", ")}</span>`
+              ? `<br><span class="muted">Contributing downstream epics: ${r.contributingItems.map((ci) => poolRefLink(ci)).join(", ")}</span>`
               : "";
             return `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.downstreamCount} distinct downstream open epic item${r.downstreamCount === 1 ? "" : "s"} via ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${blockerItems.join(", ")}${contributingItems}</li>`;
           },
@@ -6635,7 +6641,8 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
         : n.epic
           ? `<rect x="${x - 6}" y="${y - 6}" width="12" height="12" fill="${n.state === "open" ? "#8957e5" : "#6e7781"}" stroke="#0d1117" stroke-width="1.5"/>`
           : `<circle cx="${x}" cy="${y}" r="6" fill="${n.state === "open" ? "#bf8700" : "#6e7781"}" stroke="#0d1117" stroke-width="1.5"/>`;
-      return `${shape}<a href="${esc(n.issueUrl)}"><text x="${x + 11}" y="${y + 4}" font-size="11" fill="currentColor">${esc(label)}</text></a>`;
+      const nodeLabel = `<text x="${x + 11}" y="${y + 4}" font-size="11" fill="currentColor">${esc(label)}</text>`;
+      return `${shape}${isValidRef(n.ref) ? `<a href="${esc(n.issueUrl)}">${nodeLabel}</a>` : nodeLabel}`;
     })
     .join("");
   const svg = g.edges.length
@@ -6648,13 +6655,14 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
         ? "not in this pool / status unknown — unresolved"
         : `issue ${esc(n.state ?? "unknown")}`;
       const blockedBy = n.blockers.length
-        ? `blocked by: ${n.blockers.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>${unresolvedOf(b) ? " (unresolved)" : " (resolved)"}`).join(", ")}`
+        ? `blocked by: ${n.blockers.map((b) => `${poolRefLink(b)}${unresolvedOf(b) ? " (unresolved)" : " (resolved)"}`).join(", ")}`
         : "blocked by: none observed";
       const blocks = n.dependents.length
-        ? `blocks: ${n.dependents.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>`).join(", ")}`
+        ? `blocks: ${n.dependents.map(poolRefLink).join(", ")}`
         : "blocks: none observed";
       const name = n.title ? `${esc(n.title)}` : "(outside this pool — no title in this feed)";
-      return `<li><a href="${esc(n.issueUrl)}">${esc(n.ref)}</a> ${name} — ${stateText}; ${blockedBy}; ${blocks}</li>`;
+      const nodeRef = isValidRef(n.ref) ? `<a href="${esc(n.issueUrl)}">${esc(n.ref)}</a>` : esc(n.ref);
+      return `<li>${nodeRef} ${name} — ${stateText}; ${blockedBy}; ${blocks}</li>`;
     })
     .join("")}</ul>`;
 

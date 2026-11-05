@@ -16,6 +16,7 @@
 //   hold, is "unavailable" — never an empty success.
 
 import type { ProjectPoolItem, RefKey } from "./model.ts";
+import { isValidRef } from "./model.ts";
 import { buildEpicRollups } from "./epics.ts";
 import { effortWeight, modeOf } from "./weights.ts";
 
@@ -257,9 +258,9 @@ export function epicGraph(
   const externalRefs = new Set<RefKey>();
   const collectRefs = (item: ProjectPoolItem) => {
     const targets = [
-      ...(item.parentRef !== undefined ? [item.parentRef] : []),
-      ...(item.blockedBy ?? []),
-      ...(item.blocks ?? []),
+      ...(isValidRef(item.parentRef) ? [item.parentRef] : []),
+      ...(item.blockedBy ?? []).filter(isValidRef),
+      ...(item.blocks ?? []).filter(isValidRef),
     ];
     for (const target of targets) {
       if (memberSet.has(target)) continue;
@@ -298,9 +299,13 @@ export function epicGraph(
   };
   for (const { item } of shown) {
     if (!item) continue;
-    if (item.parentRef !== undefined) addEdge(item.parentRef, item.ref, "hierarchy");
-    for (const blocker of item.blockedBy ?? []) addEdge(item.ref, blocker, "dependency");
-    for (const blocked of item.blocks ?? []) addEdge(blocked, item.ref, "dependency");
+    if (isValidRef(item.parentRef)) addEdge(item.parentRef, item.ref, "hierarchy");
+    for (const blocker of item.blockedBy ?? []) {
+      if (isValidRef(blocker)) addEdge(item.ref, blocker, "dependency");
+    }
+    for (const blocked of item.blocks ?? []) {
+      if (isValidRef(blocked)) addEdge(blocked, item.ref, "dependency");
+    }
   }
 
   // Hierarchy layout, same discipline as depthLayout: DFS from roots
@@ -332,7 +337,7 @@ export function epicGraph(
   // Summaries cover the FULL member set, before the node cap: a member
   // hidden by the cap is still blocked, still counted, still ranked.
   const unresolvedBlockersOf = (item: ProjectPoolItem): RefKey[] =>
-    (item.blockedBy ?? []).filter((b) => {
+    (item.blockedBy ?? []).filter(isValidRef).filter((b) => {
       const blocker = byRef.get(b);
       return blocker === undefined || blocker.state === "open";
     });
@@ -427,8 +432,8 @@ export function epicGraph(
       unresolved: false,
       epic: item.kind === "Epic",
       mode: modeOf(item.labels),
-      blockers: [...(item.blockedBy ?? [])],
-      dependents: [...(item.blocks ?? [])],
+      blockers: (item.blockedBy ?? []).filter(isValidRef),
+      dependents: (item.blocks ?? []).filter(isValidRef),
       depth: pos.depth,
       row: pos.row,
     };
