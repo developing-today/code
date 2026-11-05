@@ -24,7 +24,7 @@ Prints one JSON object:
                                               # null = server unreadable
     "active_root_sessions": int | null,      # roots still active
                                               # (see is_active_root)
-    "cap": 12,
+    "cap": 20,
     "cap_room": int | null                   # CAP - active roots;
                                               # null when count unknown
   }
@@ -51,7 +51,7 @@ QUEUES = [
     "repo-health-openchamber-pilot",
     "repo-health-nix-pilot",
 ]
-CAP = 12
+CAP = 20
 # A root session counts toward the cap only while it is active: no
 # terminal marker and recent activity. GET /api/session returns every
 # finished-but-unarchived session forever (50 roots at the #3026 gate
