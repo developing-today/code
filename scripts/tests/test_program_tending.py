@@ -22,7 +22,8 @@ import program_tending as pt
 
 class ProgramTendingScaffoldTest(unittest.TestCase):
     def test_run_log_covers_all_five_sections(self):
-        log = pt.run(["developing-today/code"])
+        with mock.patch.object(pt, "_gh_api", return_value=[]):
+            log = pt.run(["developing-today/code"])
         self.assertEqual(
             [s["section"] for s in log["sections"]],
             ["epics", "roadmaps", "projects", "stalled-prs", "loose-ends"],
@@ -35,7 +36,8 @@ class ProgramTendingScaffoldTest(unittest.TestCase):
         self.assertTrue(all(s["status"] == "no-action" for s in log["sections"]))
 
     def test_hard_stops_named_in_log(self):
-        log = pt.run(["developing-today/code"])
+        with mock.patch.object(pt, "_gh_api", return_value=[]):
+            log = pt.run(["developing-today/code"])
         for stop in ("held", "user/owned", "do-not-merge", "do-not-auto-edit"):
             self.assertIn(stop, log["hard_stops"])
 
@@ -47,8 +49,10 @@ class ProgramTendingScaffoldTest(unittest.TestCase):
 
     def test_cli_run_prints_valid_log(self):
         buf = io.StringIO()
-        with redirect_stdout(buf):
-            self.assertEqual(pt.main(["--run", "--repo", "developing-today/code"]), 0)
+        with mock.patch.object(pt, "_gh_api", return_value=[]), redirect_stdout(buf):
+            self.assertEqual(
+                pt.main(["--run", "--repo", "developing-today/code"]), 0
+            )
         log = json.loads(buf.getvalue())
         self.assertEqual(log["job"], "program-tending")
         self.assertEqual(len(log["sections"]), 5)
@@ -67,15 +71,22 @@ class ProgramTendingScaffoldTest(unittest.TestCase):
         self.assertIn("scripts/program_tending.py", text)
 
     def test_script_runs_isolated(self):
-        proc = subprocess.run(
+        bootstrap = "\n".join(
             [
-                sys.executable,
-                "-I",
-                str(SCRIPT_DIR / "program_tending.py"),
-                "--run",
-                "--repo",
-                "developing-today/code",
-            ],
+                "import runpy",
+                "import sys",
+                "from unittest import mock",
+                "response = mock.MagicMock()",
+                "response.__enter__.return_value = response",
+                "response.read.return_value = b'[]'",
+                "response.headers.get.return_value = ''",
+                "sys.argv = ['program_tending.py', '--run', '--repo', 'developing-today/code']",
+                "with mock.patch('urllib.request.urlopen', return_value=response):",
+                f"    runpy.run_path({str(SCRIPT_DIR / 'program_tending.py')!r}, run_name='__main__')",
+            ]
+        )
+        proc = subprocess.run(
+            [sys.executable, "-I", "-c", bootstrap],
             capture_output=True,
             text=True,
             timeout=120,
