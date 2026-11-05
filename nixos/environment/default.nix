@@ -294,6 +294,49 @@ let
     };
   };
 
+  # Firefox-family with structural WebDriver BiDi (code#5924
+  # follow-up): Firefox and Zen have no CDP -- their remote
+  # protocol is WebDriver BiDi, started by --remote-debugging-port
+  # in current Firefox (verified against the installed
+  # Firefox 159.0: "WebDriver BiDi listening on ws://127.0.0.1"
+  # + a session.status round trip). Fleet port convention, one
+  # table for every browser remote endpoint, loopback-only:
+  #   19222 Helium CDP        19225 Firefox BiDi
+  #   19223 Brave/Chrome CDP  19226 Zen BiDi
+  #   19224 Chromium CDP      19227 Zen Twilight BiDi (darwin only)
+  # The remote agent binds 127.0.0.1 by itself, and its default
+  # policy is kept deliberately: foreign Host headers get 400
+  # and Origin-bearing upgrade requests get no WebSocket, so
+  # web content on this machine cannot hijack the socket. Local
+  # agent tooling (no Origin) works as-is; a caller that needs
+  # an Origin passes --remote-allow-origins itself -- caller
+  # args follow wrapper flags. Same bin-only wrapper shape as
+  # chromiumCdp: both packages' desktop files use bare
+  # `Exec=firefox` / `Exec=zen-beta`, resolved through PATH, so
+  # wrapping bin/ covers shell and launcher launches alike.
+  firefoxBidi = wrapFirefoxBidi "firefox" pkgs.firefox 19225;
+  wrapFirefoxBidi = name: pkg: port:
+    pkgs.symlinkJoin {
+      name = "${pkg.name}-bidi";
+      paths = [ pkg ];
+      nativeBuildInputs = [ pkgs.makeWrapper ];
+      postBuild = ''
+        for bin in "$out"/bin/*; do
+          [ -L "$bin" ] || continue
+          target=$(readlink -f "$bin")
+          [ -x "$target" ] || continue
+          rm "$bin"
+          makeWrapper "$target" "$bin" \
+            --add-flags "--remote-debugging-port=${toString port}"
+        done
+      '';
+      meta = (pkg.meta or { }) // {
+        mainProgram = pkg.meta.mainProgram or null;
+      };
+    };
+
+  zenBidi = wrapFirefoxBidi "zen" inputs.zen-browser.packages.${system}.default 19226;
+
   # OpenChamber's Electron GUI, built from the developing-today/openchamber fork.
   openchamber-desktop = inputs.openchamber.packages.${system}.openchamber-desktop;
 
@@ -506,7 +549,7 @@ in
       nix-output-monitor.packages.${system}.default
       ssh-to-age.packages.${system}.default
       nix-search.packages.${system}.default
-      zen-browser.packages.${system}.default
+      zenBidi # zen + structural WebDriver BiDi on 127.0.0.1:19226 (code#5924)
       #hyprland-qtutils.packages.${system}.hyprland-qtutils
       clan-core.packages.${system}.clan-cli
       opencode.packages.${system}.opencode
@@ -1283,6 +1326,7 @@ in
       #beekeeper-studio # electron 31 eol
       #cypress # electron 37 eol: insecure in this nixpkgs
       chromiumCdp # chromium + structural CDP on 127.0.0.1:19224 (code#5924); nixos-unstable channel: cached (master chromium is not)
+      firefoxBidi # firefox + structural WebDriver BiDi on 127.0.0.1:19225 (code#5924); also the HM programs.firefox package (home/common)
       inputs.nixpkgs-unstable.legacyPackages.${system}.chromedriver
       playwright-driver
       direnv

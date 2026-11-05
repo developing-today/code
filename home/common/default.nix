@@ -191,6 +191,32 @@ let
       mainProgram = pkgs.brave.meta.mainProgram or null;
     };
   };
+  # Firefox with structural WebDriver BiDi (code#5924 follow-up):
+  # Firefox has no CDP; --remote-debugging-port starts its
+  # WebDriver BiDi remote agent (binds 127.0.0.1 itself; default
+  # Host/Origin policy kept -- see nixos/environment for the full
+  # port table: 19225 Firefox BiDi, 19226 Zen BiDi). Home-manager
+  # installs this as the programs.firefox package below; the
+  # NixOS side installs the same wrapper via
+  # environment.systemPackages (nixos/environment firefoxBidi).
+  firefoxBidi = pkgs.symlinkJoin {
+    name = "${pkgs.firefox.name}-bidi";
+    paths = [ pkgs.firefox ];
+    nativeBuildInputs = [ pkgs.makeWrapper ];
+    postBuild = ''
+      for bin in "$out"/bin/*; do
+        [ -L "$bin" ] || continue
+        target=$(readlink -f "$bin")
+        [ -x "$target" ] || continue
+        rm "$bin"
+        makeWrapper "$target" "$bin" \
+          --add-flags "--remote-debugging-port=19225"
+      done
+    '';
+    meta = (pkgs.firefox.meta or { }) // {
+      mainProgram = pkgs.firefox.meta.mainProgram or null;
+    };
+  };
   # The environment the mcpx daemon runs with (services.mcpx.environment
   # below; the module renders it into the unit).
   mcpxEnvironment = {
@@ -1378,6 +1404,7 @@ in
     #eza.enable = true;
     firefox = {
       enable = true;
+      package = firefoxBidi; # structural WebDriver BiDi on 127.0.0.1:19225 (code#5924)
       # pin legacy path explicitly; default changed to xdg.configHome in 26.05
       configPath = ".mozilla/firefox";
       policies = {
