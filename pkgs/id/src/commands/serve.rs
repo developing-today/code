@@ -1538,7 +1538,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             replace_defaults,
             no_default_bootstrap,
             no_default_topic,
-        );
+        )?;
 
         let dtt_topic_id = TopicId::new(config.topic.clone());
 
