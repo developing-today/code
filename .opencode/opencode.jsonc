@@ -390,15 +390,19 @@
       // Credential: MISTRAL_API_KEY in the server unit's environment
       // (vibe-auth resolution: config -> env -> ~/.vibe/.env -> keyring).
       // Models are declared HERE: models.dev has no vibe entry, so
-      // sync-models cannot maintain this catalog. Only the default
-      // preset's limit was verified from the binary; the rest are the
+      // sync-models cannot maintain this catalog. The entries are the
       // preset ids + names from Vibe's own catalog (opencode#1653).
+      // NO "limit" blocks here: the v1 provider schema requires
+      // "output" alongside "context" in a model limit, and an entry
+      // that fails schema decode is dropped WHOLE at config
+      // normalization — a context-only limit on the default model is
+      // exactly what kept vibe-direct out of the provider catalog
+      // (2026-11-04→05, opencode#1146). The verified context (262144)
+      // already rides in the provider's own preset (opencode#1661,
+      // vibe.ts MODELS) and reaches the runtime model from there.
       "models": {
         "mistral-vibe-cli-latest": {
-          "name": "Mistral Medium 3.5",
-          "limit": {
-            "context": 262144
-          }
+          "name": "Mistral Medium 3.5"
         },
         "mistral-medium-latest": {
           "name": "Mistral Medium"
