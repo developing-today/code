@@ -557,3 +557,111 @@ writes cost ~1 s/row through the single writer.
 3. Cache DB in the internal tier (§3.1): shared query-embedding cache is
    the one new always-on write path into a core-adjacent DB — async and
    best-effort by design; confirm acceptable.
+
+## 9. Addendum (2026-11-04, later) — Supabase placement audit: what moves out of Postgres
+
+Added the same day, answering Drew's follow-up question (17:00 CST):
+*is there anything in Supabase that would be appropriate to move out,
+to get a cleaner definition of what belongs in Postgres vs what
+belongs in Turso/D1?* Answer: yes — most of it, by volume. This section
+extends §7 without changing any of its placements (Phase A Supabase as
+system of record; Phase B lab Kubernetes Postgres; the small managed
+fallback subset on Supabase + Neon; Turso for corpus and staging).
+
+**Method.** Bounded, read-only inventory of the `muse-dev2` Supabase
+project on 2026-11-04 via the Management API (`information_schema`,
+`pg_tables`, `pg_stat_user_tables`, `pg_class`): no writes, no locks,
+no row scans of live tables. Counters are `n_live_tup` estimates;
+`pg_stat` counters (inserts/updates/scans) cover the window since the
+stats reset on 2026-10-29 (the 2026-10-30 cutover era), i.e. roughly
+six days of fleet operation. Totals were verified with a second,
+independent read: **120 tables, ~473k live rows, ~345 MB of relation
+size (358 MB database)**. Two structural facts drive the placements:
+foreign keys exist only in `agent` (8), `ainventory` (8), `alerts`
+(2), `engineering` (2) and `ideas` (1) — the sheet-derived domain
+schemas have none — and RLS is enabled broadly but carries only 2
+actual policies (both in `cron`); real access is the service-role /
+PostgREST contract the queue-broker already uses, which is exactly
+§7's portable core.
+
+### 9.1 The placement rule
+
+Data belongs in Postgres only if it is original, multi-writer
+transactional state whose correctness depends on relational
+integrity, atomic cross-row updates, or the PostgREST/service-role
+contract — queue and alert state and small relational cores — and
+that Postgres is, per §7, Supabase in Phase A and the lab Kubernetes
+Postgres in Phase B, with only the small named fallback subset (fleet
+config, queue state, provider registry, alert state) continuously
+replicated to managed Postgres (Supabase + Neon). Everything else
+follows its shape out of Postgres: append-only streams, mirrored or
+derived analytics, raw staging rows, and search/query corpora belong
+in Turso, partitioned per §4's staging/core tiers, because they are
+rebuildable or single-writer appends that never needed cross-row
+transactions and only pay Postgres's costs; tiny, read-mostly,
+edge-shaped configuration and KV-style state (a handful of rows, no
+joins, no transactions) belongs in D1; and anything that is a
+duplicate snapshot, an empty shell, or a Supabase platform schema
+belongs nowhere — it is retired or left behind, never migrated. New
+data is placed by this rule at creation, and no table migrates for
+its own sake.
+
+### 9.2 Placement table (every schema/table group)
+
+Counts are live-row estimates and total relation size at audit time.
+Classes: **KEEP** = stays in Postgres; **→ Turso** / **→ D1** =
+migration candidate (design-level only in this pass — no data moves);
+**RETIRE** = dead/duplicate/platform, no migration.
+
+| Group (schema.tables) | Tables | Live rows | Size | Class | Reason |
+|---|---|---|---|---|---|
+| `agent` queue core: `tasks`, `leases`, `workers`, `lanes`, `checkpoints`, `watermarks`, `repo_task_lane_ledger`, `repo_snapshots`, `token_expirations` | 9 | 9,652 | 39.8 MB | KEEP | The fleet queue itself: `tasks` alone shows 89,846 updates against 7,162 inserts and `leases` churns 21k inserts/deletes — multi-writer transactional state with 8 FKs, PostgREST/service-role consumers (queue-broker), and §7 names queue state in the managed fallback subset. |
+| `ainventory` relational core: `models`, `provider_policies`, `notes`, `price_events`, `benchmark_results`, `measurement_events` | 6 | 1,994 | 2.7 MB | KEEP | Small original relational core holding ainventory's 8 FKs and feeding its views (`v_current_measurements`, `v_current_prices`, `v_rankings`, `v_threshold_metrics`); provider registry is also named in §7's fallback subset. |
+| `alerts`: `incidents`, `incident_events`, `notification_sends`, `push_subscriptions` | 4 | 18 | 0.2 MB | KEEP | Alert state is explicitly named in §7's managed fallback subset; tiny, transactional (notification sends, incident lifecycle, 2 FKs). |
+| `cron`: `job`, `job_run_details` | 2 | 12,559 | 2.3 MB | KEEP | pg_cron platform tables (the only 2 RLS policies in the project are here); they live and die with the Postgres instance, they are not fleet data to place. |
+| `agent` append streams: `events`, `quota_records` | 2 | 166,965 | ~69 MB | → Turso | Append-only ledgers: `events` is 159k inserts / 0 updates in the window, `quota_records` is periodic plan/quota snapshots (jsonb payload, insert-only) — the §7 Phase A "high-write append ledgers" shape, staging-tier natives. |
+| `agent` mirror + stats: 20 `mirror_*` tables (`mirror_sessions`, `mirror_agent_agents`, `mirror_scheduler_job_runs`, token/session/run `*_daily`/`*_hourly` aggregates, `mirror_export_state`, …) | 20 | 171,236 | 136.9 MB | → Turso | Mirrored, derived analytics copied from Muse's local stores — rebuildable from source, aggregate-upsert shaped (e.g. token-usage daily: 200k updates re-aggregating 27k rows), no FK or transaction need; the single largest block in the project. |
+| `ainventory` staging: `sheet_rows`, `ingest_batches` | 2 | 84,599 | 43.3 MB | → Turso | Raw sheet-ingest staging: 84.6k jsonb row blobs keyed by import batch — §4 staging-tier data, partitioned by ingest batch/work unit, merge-on-close. |
+| Sheet-domain staging: `sheet_rows` + `ingest_batches` in `automation`, `engineering`, `finance`, `home`, `research` | 10 | 3,962 | 3.5 MB | → Turso | Same raw-staging shape as ainventory's, one copy per domain; staging belongs with the staging tier, not the system of record. |
+| Sheet-domain curated rows: `events` in `automation`, `engineering`, `finance`, `home`, `research`, plus `engineering.records` and `ideas.ideas` | 7 | 8,385 | 9.6 MB | → Turso | Sheet-derived, dedupe-keyed query/search corpus: zero FKs in the domain schemas, insert-mostly, read by scan — corpus-shaped under §7, not transactional state. (`ideas.ideas` counted here: 554 rows, sheet-mirrored with `mirrored_at`.) |
+| `ci.events` | 1 | 10,952 | 31.8 MB | → Turso | Append-only CI webhook ledger (10,957 inserts, 0 updates, ~2.9 KB jsonb payload/row); the fastest-growing table by bytes and a pure stream. Its `recent_failures` view is a scan query, portable to the Turso side. |
+| Ingest source registries: `sources` in `ainventory`, `automation`, `engineering`, `finance`, `home`, `research`, `ideas` | 7 | 52 | 0.3 MB | → D1 | Tiny read-mostly ingest configuration (1–42 rows per domain, no transactions, no joins that matter) — KV/config-shaped state that does not need a relational engine. Moves only together with its domain's ingest pipeline. |
+| `public.muse_notes` | 1 | 2 | 0.03 MB | → D1 | Two-row standalone notes table with no FKs, no views, and no evidenced relational consumer — KV-style state, the cleanest D1 shape in the project. Low priority: move opportunistically, not as its own project. |
+| `agent` mirror history + empty shells: `mirror_history_*` (5) + `mirror_agent_sessions`, `mirror_scheduler_job_definitions`, `mirror_tool_stats_daily` (all 0 live rows) | 8 | 2,440 | 3.4 MB | RETIRE | `mirror_history_*` are duplicate snapshots of the live `mirror_*` tables (2,440 rows, 0 index scans — nothing reads them); the other three are empty shells that never accumulated a row. Delete after a final export; do not migrate. |
+| Supabase platform schemas: `auth` (27), `storage` (10), `realtime` (3), `vault` (1) | 41 | 253 | 1.6 MB | RETIRE | Platform-owned, and empty of fleet data — `auth.users`, `storage.objects`, `storage.buckets`, `vault.secrets` all hold 0 rows; the 253 rows are the platform's own `schema_migrations`. §7 already places Supabase-specific machinery outside the portable core: on any Postgres move these are left behind, never migrated. |
+
+**Counts per class:** KEEP in Postgres **21 tables / 24,223 rows**
+(11,664 rows excluding the pg_cron platform log) · CANDIDATE → Turso
+**42 tables / 446,099 rows (~295 MB — 94% of all live rows)** ·
+CANDIDATE → D1 **8 tables / 54 rows** · RETIRE **49 tables / 2,693
+rows**. The cleaner definition the question asked for: the
+Postgres-proper fleet core is ~11.7k rows of queue, alert, and
+registry state; everything else in the project is streams, mirrors,
+staging, corpus, config, or platform.
+
+### 9.3 What this does *not* change
+
+Nothing in §§1–8 moves: Supabase remains the Phase A system of
+record for the KEEP set, the lab Kubernetes Postgres remains the
+Phase B home for it, the managed fallback subset stays deliberately
+small (this audit confirms it is — the whole KEEP set fits in
+~45 MB), and Turso's corpus/staging tiers are unchanged. The
+→ Turso / → D1 rows above are design-level recommendations only;
+each gets its own design issue in this repo — #5690 (`agent`
+append streams), #5691 (`agent` mirror analytics), #5692
+(sheet-derived domains), #5693 (`ci.events`), #5695 (D1 config
+candidates, gated on §9.4 Q2) — and no data moves in this pass. The `agent.events` move in particular must be sequenced
+behind a consumer audit — at 54M cumulative index scans since
+2026-10-29 it is the heaviest-read table in the project — and
+not treated as a lift-and-shift.
+
+### 9.4 Open questions for Drew
+
+1. `agent` mirror tables: their source of truth is Muse's local
+   stores — confirm the mirror's purpose is analytics/reporting
+   (safe for Turso) and not a backup of record; if it is a backup,
+   the Turso copy needs the §7 nightly cold-store export kept.
+2. D1 candidates are deliberately small (54 rows total): confirm
+   D1 is wanted at all for config of this size, versus folding the
+   `sources` registries into the Turso staging tier with their
+   domains and keeping D1 for genuinely edge-consumed state only.
