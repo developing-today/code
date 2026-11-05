@@ -62,16 +62,20 @@ describe("renewOpenDesignSession", () => {
   });
 
   test("a dead stored session is renewed from the browser cookie, validated before storing", async () => {
-    let written: OpenDesignCredentialLike | null = null;
-    let validated: OpenDesignCredentialLike | null = null;
+    // Holder object, not bare lets: TS narrows closure-assigned lets to
+    // their initializer at the expect() sites below (TS2339 on never).
+    const captured: {
+      written: OpenDesignCredentialLike | null;
+      validated: OpenDesignCredentialLike | null;
+    } = { written: null, validated: null };
     const state = await renewOpenDesignSession(
       baseDeps({
-        readCredential: () => written ?? stored,
+        readCredential: () => captured.written ?? stored,
         writeCredential: (value: OpenDesignCredentialLike) => {
-          written = value;
+          captured.written = value;
         },
         validateCredential: async (candidate: OpenDesignCredentialLike) => {
-          validated = candidate;
+          captured.validated = candidate;
         },
         fetchSession: async (cred: OpenDesignCredentialLike) =>
           cred.cookie.includes("fresh-token") ? { expiresAt: "2026-11-12T02:00:00.000Z" } : null,
@@ -81,9 +85,9 @@ describe("renewOpenDesignSession", () => {
       }) as never,
     );
     expect(state.status).toBe("renewed");
-    expect(validated?.cookie).toContain("fresh-token");
-    expect(written?.cookie).toContain("fresh-token");
-    expect(written?.workspaceId).toBe("ws1");
+    expect(captured.validated?.cookie).toContain("fresh-token");
+    expect(captured.written?.cookie).toContain("fresh-token");
+    expect(captured.written?.workspaceId).toBe("ws1");
     expect(state.horizonHours).toBe(168);
   });
 
