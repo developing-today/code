@@ -61,7 +61,7 @@ jobs:
 
       - name: Run Codebase Innovation & Review Agent via pm-dispatch
         id: dispatch
-        uses: developing-today/code/.github/actions/pm-dispatch-start@main
+        uses: ./.github/actions/pm-dispatch-start
         with:
           title: "Daily codebase innovation & maintenance"
           prompt: >-
