@@ -600,31 +600,38 @@ clone (`~/git/code`) and writes its outputs under
 
 Each tick:
 
-- imports the OpenChamber quota module in-process (from the laptop's
-  OpenChamber checkout) and fetches every configured provider
-  per-credential, with credentials read **directly from OpenCode's
-  credential store** (`opencode.db`, read-only) — no OpenCode server
-  needs to be listening. One provider failing or exceeding the 15s
-  cap degrades only its own rows.
-- ingests laptop **file exports** in the Meta Phase-1 convention
-  (#1301): a producer's `latest.json` (today: Meta,
-  `~/atlas/meta-quota-export/latest.json`) maps onto the same
-  contract; a failure-status document or a file older than 30
-  minutes is an error entry, never zeros.
-- writes **`quota-current.json`** — the latest-state contract
+- runs the OpenDesign session keeper (Drew's provider browser-auth
+  auto-renewal rule): the one browser-session credential in the
+  system is read, slid, or re-captured over CDP before it is used,
+  with its horizon recorded in `opendesign-renewal.json`. The keeper
+  maintains a credential; it is not a quota source.
+- invokes the ONE quota source - the opencode fork's quota
+  subcommand, `opencode quota --json` (#6125/#6127) - whose
+  per-provider quota functions live in the providers that own the
+  credentials. A second invocation asks explicitly for the
+  route-disabled live pools (`meta`, `command-code`), which a named
+  ask always fetches. The gatherer fetches no provider itself and
+  imports no quota module; a provider failing degrades only its own
+  rows, and #1268 retention keeps last-known rows for errored runs.
+- writes **`quota-current.json`** - the latest-state contract
   (`QuotaCurrentFile` in `src/model.ts`: per provider/credential,
   windows carrying value, % of limit, reset, measured-at, source,
-  state) — and `quota-gatherer-heartbeat.json` (tick time,
-  per-provider state/duration; the heartbeat also rides inside
+  state; the file's `source` is `opencode-quota`) - and
+  `quota-gatherer-heartbeat.json` (tick time, per-provider
+  state/duration; the heartbeat also rides inside
   quota-current.json), both in the aggregator state directory beside
   `fleet-feed.json`.
-- appends §4 snapshot records for windows whose value **moved**
+- appends S4 snapshot records for windows whose value **moved**
   since the last appended record, directly to the snapshot store
   (`SnapshotStore.append` dedupes; change-tracking state in
   `quota-gatherer-state.json`). Setting `USAGE_SNAPSHOT_OUTBOX_PATH`
   reroutes records to the writers' outbox instead.
+- appends one Supabase `agent.quota_records` row per pool entry to
+  muse-dev2 (source `opencode-quota`), so the readings land in
+  Supabase on the same tick as the dashboard file. Fail-soft: a sink
+  failure is logged and never fails the tick.
 
-Fail-soft: a module-import or credential-store failure writes a
+Fail-soft: a subcommand failure or unparseable output writes a
 heartbeat with the error, exits non-zero, and leaves the previous
 `quota-current.json` untouched. **Remaining hop:** the aggregator
 does not read `quota-current.json` yet — `Source` pickup (freshness

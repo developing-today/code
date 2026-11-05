@@ -107,7 +107,7 @@ export function serviceIdFor(providerId: string): string {
   }
 }
 
-export const GATHERER_SOURCE = "openchamber-quota";
+export const GATHERER_SOURCE = "opencode-quota";
 
 /**
  * Split pool service ids the gatherer emits alongside the combined rows
