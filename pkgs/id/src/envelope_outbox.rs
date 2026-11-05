@@ -861,6 +861,7 @@ mod tests {
             kind: "note".to_owned(),
             body: serde_json::Value::Null,
             after: Vec::new(),
+            format_version: None,
             hash: "00".to_owned(),
             signature: "00".to_owned(),
         };

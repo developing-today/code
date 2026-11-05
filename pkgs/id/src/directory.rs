@@ -1584,7 +1584,7 @@ impl Directory {
         let declared = HomeDeclared { account, servers };
         // Refuse here what receipt would refuse (#3187): the same check
         // `SignedArtifact::parsed` runs, before anything is signed.
-        artifact::check_home_declared(&declared.account, &declared, false)?;
+        artifact::check_home_declared(&declared.account, &declared, artifact::ParseMode::Strict)?;
         self.publish(credential, &Kind::HomeDeclared(declared), Vec::new())
     }
 
@@ -1650,10 +1650,23 @@ impl Directory {
     /// Fails with a [`Refusal`] for an artifact that does not verify, extends
     /// the chain wrongly, or breaks a directory rule.
     pub fn receive_artifact(&mut self, artifact: &SignedArtifact) -> Result<Stored> {
-        let effect = match artifact.parsed()? {
+        self.receive_artifact_with_outcome(artifact)
+            .map(|(stored, _legacy_note)| stored)
+    }
+
+    pub(crate) fn receive_artifact_with_outcome(
+        &mut self,
+        artifact: &SignedArtifact,
+    ) -> Result<(Stored, Option<artifact::LegacyArtifactNote>)> {
+        let mut next = self.clone();
+        let (stored, parsed, legacy_note) = next.artifacts.insert_received(artifact.clone())?;
+        if stored == Stored::Duplicate {
+            return Ok((stored, legacy_note));
+        }
+        let effect = match parsed {
             Some(Kind::FriendRemove(removal)) => {
-                let requests = self.pair_bound_requests(&removal.a, &removal.b, &removal.requests);
-                if self.are_friends(&removal.a, &removal.b) || !requests.is_empty() {
+                let requests = next.pair_bound_requests(&removal.a, &removal.b, &removal.requests);
+                if next.are_friends(&removal.a, &removal.b) || !requests.is_empty() {
                     Some(DirectoryEntry::FriendRemoved {
                         a: removal.a,
                         b: removal.b,
@@ -1665,7 +1678,18 @@ impl Directory {
             }
             _ => None,
         };
-        self.store_artifact(artifact, effect.as_ref())
+        if let Some(entry) = effect.as_ref() {
+            next.change(entry)?;
+            next.ensure_admins()?;
+        }
+        if let Some(path) = &self.journal {
+            artifact::append(&artifact_path(path), artifact)?;
+            if let Some(entry) = effect.as_ref() {
+                Self::append(path, entry)?;
+            }
+        }
+        *self = next;
+        Ok((stored, legacy_note))
     }
 
     fn store_artifact(
@@ -2734,7 +2758,7 @@ mod tests {
         let request = requests[0].clone();
         drop(home);
 
-        let legacy = SignedArtifact::sign_unchecked(
+        let legacy = SignedArtifact::sign_legacy_unchecked(
             &key_of(&ann_credential),
             1,
             "",
