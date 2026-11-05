@@ -20,6 +20,7 @@
 //! binaries under their historical names (src/bin/) — the
 //! migration's standing rollback inventory (design note §7).
 
+pub mod bin_args;
 pub mod log;
 
 #[cfg(feature = "client")]
