@@ -936,7 +936,6 @@ impl HostedBindingService {
         iroh_id: &IrohId,
     ) -> Result<Challenge, CeremonyError> {
         let now = self.now();
-        self.prune_expired_one_time_state(now);
         let log = self
             .challenge_issued_at
             .entry(session_sub.to_owned())
@@ -946,6 +945,11 @@ impl HostedBindingService {
             return Err(CeremonyError::RateLimited);
         }
         log.push(now);
+        // Sweep only after the rate-limit check (#5644, Codex P2 on
+        // PR #6319): a caller who is already rate-limited must not be
+        // able to trigger repeated full-map cleanup on the rejection
+        // path.
+        self.prune_expired_one_time_state(now);
 
         let mut rng = rand::rng();
         let mut nonce = [0u8; 32];
