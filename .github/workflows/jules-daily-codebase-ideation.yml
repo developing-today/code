@@ -57,10 +57,30 @@ jobs:
           if missing:
               sys.exit("declared workflow_dispatch inputs never referenced: " + ", ".join(missing))
           print("all declared dispatch inputs are wired or explicitly ignored:", ", ".join(names) or "none")
+
+          lines = text.splitlines()
+          step_name = "      - name: Run Codebase Innovation & Review Agent via pm-dispatch"
+          step_start = next((i for i, line in enumerate(lines) if line == step_name), None)
+          if step_start is None:
+              sys.exit("pm-dispatch step is missing")
+          step_end = next(
+              (i for i in range(step_start + 1, len(lines)) if lines[i].startswith("      - name:")),
+              len(lines),
+          )
+          step = "\n".join(lines[step_start:step_end])
+          default_branch_guard = "if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
+          if default_branch_guard not in step:
+              sys.exit("pm-dispatch must be limited to the repository's default branch")
+          should_dispatch = lambda ref, default_branch: ref == f"refs/heads/{default_branch}"
+          if not should_dispatch("refs/heads/main", "main") or should_dispatch("refs/heads/feature", "main"):
+              sys.exit("default-branch dispatch guard examples failed")
+          print("pm-dispatch default-branch guard is present and rejects feature refs")
           PYEOF2
 
       - name: Run Codebase Innovation & Review Agent via pm-dispatch
         id: dispatch
+        # Feature-ref workflow_dispatch runs can verify setup without starting production work.
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         uses: ./.github/actions/pm-dispatch-start
         with:
           title: "Daily codebase innovation & maintenance"
