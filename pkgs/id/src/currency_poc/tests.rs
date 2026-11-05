@@ -312,6 +312,66 @@ fn unterminated_chain_does_not_block_terminated_chains() {
 }
 
 #[test]
+fn linked_chain_with_exists_head_leg_posts_nothing_new() {
+    // #6170: parity with TigerBeetle (and the tb_ledger compensation
+    // contract, PR #5072). TigerBeetle breaks a linked chain on ANY
+    // non-Created status: a mixed chain whose head leg is an
+    // idempotent `Exists` resubmission and whose later legs are new
+    // posts NOTHING new \u2014 the head reports `Exists`, the new legs
+    // report `LinkedEventFailed`, and no balances move. The
+    // whole-chain identical resubmit is the one exception: it stays
+    // per-leg `Exists` (the surface the tb_ledger binding presents
+    // after verifying every stored leg), and also moves nothing.
+    let mut ledger = funded_ledger();
+    let leg601 = Transfer {
+        linked: true,
+        ..funding_transfer(601, USER_SRC, LP_SRC, 100, SRC)
+    };
+    let leg602 = funding_transfer(602, LP_SRC, FEE, 100, SRC);
+    let results = ledger.create_transfers(&[leg601.clone(), leg602.clone()]);
+    assert_eq!(results, vec![Ok(()), Ok(())]);
+    let user_after_chain = ledger.account_balance(USER_SRC).unwrap();
+    let lp_after_chain = ledger.account_balance(LP_SRC).unwrap();
+    let fee_after_chain = ledger.account_balance(FEE).unwrap();
+    assert_eq!(user_after_chain.debits_posted, 100);
+    assert_eq!(lp_after_chain.credits_posted, 100);
+    assert_eq!(fee_after_chain.credits_posted, 100);
+
+    // Mixed chain: leg 601 byte-identical (an `Exists` resubmission),
+    // legs 603/604 genuinely new.
+    let leg603 = Transfer {
+        linked: true,
+        ..funding_transfer(603, LP_SRC, USER_SRC, 50, SRC)
+    };
+    let leg604 = funding_transfer(604, USER_SRC, FEE, 50, SRC);
+    let results = ledger.create_transfers(&[leg601.clone(), leg603, leg604]);
+    assert_eq!(
+        results,
+        vec![
+            Err(TransferError::Exists),
+            Err(TransferError::LinkedEventFailed),
+            Err(TransferError::LinkedEventFailed),
+        ]
+    );
+    assert!(ledger.lookup_transfer(603).is_none());
+    assert!(ledger.lookup_transfer(604).is_none());
+    assert_eq!(ledger.account_balance(USER_SRC).unwrap(), user_after_chain);
+    assert_eq!(ledger.account_balance(LP_SRC).unwrap(), lp_after_chain);
+    assert_eq!(ledger.account_balance(FEE).unwrap(), fee_after_chain);
+
+    // Control: the whole-chain identical resubmit stays all-`Exists`
+    // and moves nothing.
+    let results = ledger.create_transfers(&[leg601, leg602]);
+    assert_eq!(
+        results,
+        vec![Err(TransferError::Exists), Err(TransferError::Exists)]
+    );
+    assert_eq!(ledger.account_balance(USER_SRC).unwrap(), user_after_chain);
+    assert_eq!(ledger.account_balance(LP_SRC).unwrap(), lp_after_chain);
+    assert_eq!(ledger.account_balance(FEE).unwrap(), fee_after_chain);
+}
+
+#[test]
 fn crash_after_submission_recovers_without_double_posting() {
     // #2063 §4: crash between submission and the Posted state write.
     // The legs are in the ledger; the record still says Submitted.
