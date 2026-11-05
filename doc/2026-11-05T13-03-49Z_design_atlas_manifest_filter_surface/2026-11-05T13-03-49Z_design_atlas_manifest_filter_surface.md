@@ -102,10 +102,24 @@ SQL fragment of its own:
 | `scalar_in` | one value per row in a label column | `l.kind`, `s.client` |
 | `json_list` | JSON list text in a label column | `l.topics`, `l.projects` |
 | `timestamp_range` | timestamp column, `since`/`until` pair | `s.created_at` |
+| `generic_list` | one row per (session, dimension key) in the generic label store, value = JSON list text | — (new in phase 2) |
 
 A new dimension is a new manifest row of an existing shape. A new
 *shape* is a code change — deliberately: shapes are where SQL is born,
 and SQL stays code (§6).
+
+The `generic_list` shape is what makes "new dimension" mean what §1
+promised. If every dimension needed its own label *column*, a new
+dimension would still need a code/DDL change and the manifest would
+only ever expose pre-existing columns — the release coupling this
+design exists to remove, kept. So phases 2–4 include one generic,
+code-built label store: a table keyed by (session, dimension) whose
+value is a JSON list, written by the classification pass for every
+manifest-declared `generic_list` dimension. The dimension *key* is
+data; the store, its shapes, and its query construction are code,
+once. Today's `topics`/`projects` columns may stay as `json_list`
+or migrate into the generic store — an implementation choice that
+changes no semantics.
 
 ## 5. Match semantics, and the #5375 interaction
 
@@ -113,11 +127,20 @@ Each dimension declares `exact` or `pattern`:
 
 - **`exact` is the default and the only semantics a manifest may assume
   silently.** For `scalar_in`, `IN (...)` as today. For `json_list`,
-  element equality: the value is matched as one JSON element, with
+  element equality — and element equality is a statement about
+  *decoded* JSON, so the construction has two steps, both required:
+  (1) JSON-encode the requested value, so the value `a", "b` becomes
+  the element text `"a\", \"b"` and can never line up with the two
+  elements `"a"`, `"b"`; (2) match that encoded element text with
   `LIKE` metacharacters (`%`, `_`, `\`) escaped and an explicit
-  `ESCAPE` clause — i.e. exactly the fix #5375 specifies. The `"`
-  boundary-crossing case in #5375 is closed by construction, because
-  the escaped pattern can only match a whole quoted element.
+  `ESCAPE` clause. Escaping alone — without the encode step — does
+  NOT enforce element equality (the encoded-form requirement is the
+  part of #5375's fix that is easy to miss: #5375's own probes show
+  the boundary-crossing match, and a pattern built from the raw value
+  reproduces it). A `json_each` decoded-element comparison is an
+  equally valid implementation of the same semantics; the invariant
+  the phase-1 tests must pin is *decoded element equality*, not any
+  particular SQL spelling.
 - **`pattern` is an explicit per-dimension opt-in** for dimensions
   whose values are meant to be globbed. Pattern values are translated
   (glob `*`/`?` → `LIKE`, everything else escaped) — a raw user `LIKE`
@@ -143,12 +166,19 @@ could carry. The design holds #5410's hard constraint by construction:
    `Sensitivity`, the ceiling clamp, and `allowed()` stay in
    `filters.rs`, untouched. A manifest row naming a sensitivity or
    ceiling dimension is a validation error (§7), not a feature.
-2. **Dimensions bind to an allowlist, in code.** `label_column` in a
-   manifest row must name one of the code-known label columns/tables
-   for its shape (today: `kind`, `client`, `topics`, `projects`,
-   `created_at`, and future label columns added by code). An unknown
-   binding fails validation. The manifest can declare a dimension the
-   code doesn't know how to store *only* by being rejected.
+2. **Dimensions bind to an allowlist, in code.** A manifest row's
+   binding is its *shape* plus, for the column shapes, one of the
+   code-known label columns (today: `kind`, `client`, `topics`,
+   `projects`, `created_at`). For `generic_list` the binding is the
+   generic label store itself and the dimension key is data — that
+   is the point of the shape (§4) — but the key space is still
+   fenced: dimension keys are validated against a code-side pattern
+   and a reserved-name list (no key may collide with the built-in
+   dimensions, and no key in the sensitivity namespace exists at
+   all, per point 1). An unknown shape, an unknown column, or a
+   reserved key fails validation. What a manifest can never bind is
+   a new *storage mechanism*: stores and shapes are code, keys and
+   columns-from-the-allowlist are data.
 3. **A manifest can narrow or extend the non-sensitivity surface; it
    can never widen visibility.** The ceiling clause is emitted first,
    from code, in both branch builders, exactly as today
@@ -192,9 +222,10 @@ could carry. The design holds #5410's hard constraint by construction:
 1. **#5375 escaping patch** — §5 `exact` semantics in the current
   hand-coded builder; parity fixtures updated deliberately.
 2. **Manifest schema + loader in atlas-core**, with today's surface
-  expressed as the built-in manifest. Acceptance test: SQL emitted
-  under the built-in manifest is byte-identical to today's (the parity
-  fixtures are the oracle).
+  expressed as the built-in manifest, plus the generic label store
+  (§4 `generic_list`) and its query construction. Acceptance test:
+  SQL emitted under the built-in manifest is byte-identical to
+  today's (the parity fixtures are the oracle).
 3. **Generic dimensions end-to-end:** atlas-proto `FilterSpec` gains a
   dimension map (the four named fields remain as aliases for one
   release), the CLI generates its flags from the loaded surface
@@ -204,8 +235,10 @@ could carry. The design holds #5410's hard constraint by construction:
   metadata.
 5. **Manifest writer** in the classification/publish pass, same
   transaction as the labels (§3); first real consumer: one new
-  dimension (e.g. source-app) declared by manifest only, no binary
-  change — the acceptance demonstration for the whole design.
+  `generic_list` dimension (e.g. source-app) declared by manifest
+  only — dimension key, classification values, and filter surface
+  all data, no binary change — the acceptance demonstration for the
+  whole design.
 
 Each phase is independently shippable and independently revertible;
 phases 2–4 change no visible behaviour with a built-in manifest in
