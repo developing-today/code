@@ -949,6 +949,92 @@ mod tests {
         assert_eq!(again.metrics.sent_operations, 0);
     }
 
+    /// #2414, mirrored for the log sync tally: a range session under the
+    /// LogSync protocol counts an arrival it stores but does not apply as
+    /// voided. The shape matches the event store range test: a content event
+    /// naming a voided group operation, by an author who is not a member of
+    /// the group at that position, is kept without applying.
+    #[tokio::test]
+    async fn test_a_range_session_counts_a_stored_but_unapplied_arrival_as_voided() {
+        use crate::membership::AuthId;
+        use crate::membership::body::encode_body;
+        use p2panda_auth::Access;
+        use p2panda_auth::group::{GroupAction, GroupMember};
+
+        fn gauth(who: u8) -> AuthId {
+            AuthId::Key(*key(who).verifying_key().as_bytes())
+        }
+        fn ext(group: Option<Hash>, after: Vec<Hash>, kind: &str) -> ChainExt {
+            ChainExt {
+                kind: kind.to_owned(),
+                group,
+                after,
+                tag: None,
+                document: None,
+                removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+            }
+        }
+        let create_body = encode_body(&GroupAction::Create {
+            initial_members: [b'A', b'B', b'C']
+                .iter()
+                .map(|who| (GroupMember::Individual(gauth(*who)), Access::manage()))
+                .collect(),
+        })
+        .unwrap();
+        let create = sign(&key(b'A'), 0, None, Some(&create_body), ext(None, Vec::new(), "group.op")).unwrap();
+        let grp = create.id;
+        let op_body = encode_body(&GroupAction::Add {
+            member: GroupMember::Individual(gauth(b'E')),
+            access: Access::manage(),
+        })
+        .unwrap();
+        let op = sign(&key(b'D'), 0, None, Some(&op_body), ext(Some(grp), vec![grp], "group.op")).unwrap();
+        let target = sign(&key(b'D'), 1, Some(op.id), None, ext(Some(grp), vec![op.id], "message")).unwrap();
+
+        let (_da, store_a) = open();
+        let (_db, store_b) = open();
+        for store in [&store_a, &store_b] {
+            let created = store.ingest(&create.bytes, Some(&create_body), 0).unwrap();
+            assert!(matches!(created, Ingest::Accepted { .. }), "{created:?}");
+            let voided = store.ingest(&op.bytes, Some(&op_body), 0).unwrap();
+            assert!(matches!(voided, Ingest::Voided { .. }), "{voided:?}");
+        }
+        let held = store_a.ingest(&target.bytes, None, 0).unwrap();
+        assert!(matches!(held, Ingest::Voided { .. }), "{held:?}");
+
+        let (server, _router, mut results) =
+            responder_support(&store_a, Arc::new(LogAndRange)).await;
+        let client = endpoint().await;
+        // Synced before, with no difference: the rule picks range.
+        let synced = Estimate {
+            chains: 1,
+            difference: 0,
+            last_completed_sync_ms: Some(1),
+        };
+        assert_eq!(choose(&synced), SyncMethod::Range);
+        let outcome = sync_with(
+            &client,
+            loopback(&server),
+            &store_b,
+            group(9),
+            &synced,
+            DEADLINE,
+        )
+        .await
+        .unwrap();
+        let answered = results.recv().await.unwrap().unwrap();
+
+        assert_eq!(outcome.method, SyncMethod::Range);
+        assert_eq!(answered.method, SyncMethod::Range);
+        assert_eq!(outcome.received.voided, 1, "B stores the target without applying it: {:?}", outcome.received);
+        assert_eq!(outcome.received.accepted, 0, "{:?}", outcome.received);
+        assert_eq!(outcome.received.refused, 0, "{:?}", outcome.received);
+        assert_eq!(answered.received.voided, 0, "{:?}", answered.received);
+    }
+
     /// Issue #1302: on a failed bulk session, read the responder's own
     /// session result (bounded, so a still-running responder cannot hang
     /// the test) and render it next to the client's error. `SyncError`
