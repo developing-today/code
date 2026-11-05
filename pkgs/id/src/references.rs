@@ -835,11 +835,13 @@ impl FanOut {
                 .find(|store| store.object(&reference.target_id).is_some());
         }
         for hint in &reference.locator_hints {
-            let Some(store) = self.stores.iter().find(|store| store.store() == hint) else {
-                continue;
-            };
-            if store.object(&reference.target_id).is_some() {
-                return Some(store);
+            // Every index carrying the hinted store id is examined, in
+            // fan-out order: an earlier index with the same id that does
+            // not hold the target does not shadow a later one that does.
+            for store in &self.stores {
+                if store.store() == hint && store.object(&reference.target_id).is_some() {
+                    return Some(store);
+                }
             }
         }
         None
@@ -1753,6 +1755,23 @@ mod tests {
             Some(Hash::digest(b"loc-pinned-rev-3"))
         );
     }
+    #[test]
+    fn locator_fetch_checks_every_index_carrying_a_hinted_store_id() {
+        // Two indexes share one store id; only the second holds the
+        // target. The hint must reach the second index -- the first
+        // index carrying the id does not shadow it (CodeRabbit
+        // finding on PR #5932).
+        let doc = object(b"loc-dup-id", Sigil::Topic, "Atlas", vec![], 1);
+        let fanout = FanOut::new(vec![
+            store_index("b-store", vec![]),
+            store_index("b-store", vec![doc.clone()]),
+        ]);
+        let reference = located_reference(doc.id, "Atlas", &["b-store"]);
+        let located = fanout.render_located(&reference);
+        assert_eq!(located.rendered.state, RenderState::Resolved);
+        assert_eq!(located.store, Some(StoreId("b-store".to_owned())));
+    }
+
     // ---- Locator-selection property coverage (Codex P1 on PR #5932) ----
     //
     // The locator_fetch_* tests above are hand-written examples. The
