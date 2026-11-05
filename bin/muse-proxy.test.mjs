@@ -1217,3 +1217,132 @@ test('exec disconnect: client disconnect kills the child via the shared helper (
   await pending;
   await waitForCondition(() => !pidAlive(pid));
 });
+
+// ---------------------------------------------------------------------------
+// Tools doctrine (code#6117, opencode#1708): a tools-carrying chat request
+// must never silently degrade to the warm/exec vendor-CLI fallback — those
+// paths flatten the conversation to a prompt, run the Muse CLI with its
+// OWN tools, and return only final text. Such requests are direct-or-error.
+// ---------------------------------------------------------------------------
+
+const TOOLS_BODY = {
+  messages: [{ role: 'user', content: 'weather in Osseo?' }],
+  tools: [{ type: 'function', function: { name: 'get_weather', description: 'Get weather', parameters: { type: 'object', properties: { city: { type: 'string' } } } } }]
+};
+
+const postChatRaw = async (port, body) => fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body)
+});
+
+const stubLogText = (logFile) => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf-8') : '');
+
+test('tools gate: tools-carrying request with no direct credential is a loud 502, never the CLI fallback (code#6117)', async (t) => {
+  const meta = await startMetaStub('chat');
+  t.after(() => meta.close());
+  // Warm deliberately enabled: the gate must skip warm AND exec.
+  const { port, stop, logFile } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url, MUSE_PROXY_WARM: '1' });
+  t.after(stop);
+
+  const res = await postChatRaw(port, TOOLS_BODY);
+  assert.equal(res.status, 502, 'a tools-carrying request must not be answered by the vendor CLI');
+  const body = JSON.parse(await res.text());
+  assert.equal(body.error.code, 'tools_fallback_ineligible');
+  assert.match(body.error.message, /client tools/);
+  assert.match(body.error.message, /fallback is ineligible/);
+  const stubLog = stubLogText(logFile);
+  assert.ok(!stubLog.includes('--prompt-file'), 'no muse exec invocation for a tools-carrying request');
+  assert.ok(!stubLog.includes('START'), 'no muse serve session started for a tools-carrying request');
+  assert.equal(meta.requests.length, 0, 'no credential means no exchange attempt');
+});
+
+test('tools gate: tools-carrying request with direct disabled (MUSE_PROXY_DIRECT=0) is a loud 502 (code#6117)', async (t) => {
+  const { port, stop, logFile } = await startProxy({ MUSE_PROXY_DIRECT: '0' });
+  t.after(stop);
+
+  const res = await postChatRaw(port, TOOLS_BODY);
+  assert.equal(res.status, 502);
+  const body = JSON.parse(await res.text());
+  assert.equal(body.error.code, 'tools_fallback_ineligible');
+  assert.ok(!stubLogText(logFile).includes('--prompt-file'), 'exec never runs for a tools-carrying request');
+});
+
+test('tools gate: an attestation denial on a tools-carrying request is a loud 502, not a CLI-door fallback (code#6117)', async (t) => {
+  const meta = await startMetaStub('attest');
+  t.after(() => meta.close());
+  const { port, stop, home, logFile } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const res = await postChatRaw(port, TOOLS_BODY);
+  assert.equal(res.status, 502, 'attestation denial must not reroute a tools-carrying request to the CLI door');
+  const body = JSON.parse(await res.text());
+  assert.equal(body.error.code, 'tools_fallback_ineligible');
+  assert.ok(!stubLogText(logFile).includes('--prompt-file'), 'the CLI door never took over');
+});
+
+test('tools gate: history-only tool loop (tool_calls + tool result, no tools array) is also gated (code#6117)', async (t) => {
+  const { port, stop, logFile } = await startProxy();
+  t.after(stop);
+
+  const res = await postChatRaw(port, {
+    messages: [
+      { role: 'user', content: 'weather in Osseo?' },
+      { role: 'assistant', content: '', tool_calls: [{ id: 'call_0', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Osseo"}' } }] },
+      { role: 'tool', tool_call_id: 'call_0', content: 'sunny' },
+      { role: 'user', content: 'and tomorrow?' }
+    ]
+  });
+  assert.equal(res.status, 502);
+  const body = JSON.parse(await res.text());
+  assert.equal(body.error.code, 'tools_fallback_ineligible');
+  assert.ok(!stubLogText(logFile).includes('--prompt-file'), 'exec never runs mid-tool-loop');
+});
+
+test('tools gate: direct mode still serves a tools-carrying request with real tool calls (code#6117)', async (t) => {
+  const meta = await startMetaStub('chat');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const res = await postChatRaw(port, TOOLS_BODY);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('x-muse-proxy-path'), 'direct', 'the serving path is surfaced');
+  const plain = JSON.parse(await res.text());
+  assert.deepEqual(plain.choices[0].message.tool_calls, [{
+    id: 'call_123',
+    type: 'function',
+    function: { name: 'get_weather', arguments: '{"city":"Osseo"}' }
+  }], 'the direct path returns real client tool calls');
+  assert.equal(plain.choices[0].finish_reason, 'tool_calls');
+});
+
+test('tools gate: text-only requests keep the exec fallback and surface the serving path (code#6117)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+
+  const res = await postChatRaw(port, { messages: [{ role: 'user', content: 'hi' }] });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('x-muse-proxy-path'), 'exec');
+  const plain = JSON.parse(await res.text());
+  assert.equal(plain.choices[0].message.content, 'Hello world', 'exec stub answer proves the CLI fallback still serves text-only requests');
+});
+
+test('tools gate: /v1/responses with tools and no direct credential is a loud 404 and never touches the CLI (code#6117)', async (t) => {
+  const { port, stop, logFile } = await startProxy();
+  t.after(stop);
+
+  const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'muse-spark-1.3',
+      input: [{ role: 'user', content: 'hi' }],
+      tools: [{ type: 'function', name: 'get_weather', parameters: { type: 'object' } }]
+    })
+  });
+  assert.equal(res.status, 404, 'the Responses route is direct-only: no credential, no route, no fallback');
+  assert.ok(!stubLogText(logFile).includes('--prompt-file'), 'exec never runs for a Responses tools request');
+});
