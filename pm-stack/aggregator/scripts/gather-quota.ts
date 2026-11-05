@@ -494,9 +494,10 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
     if (!listedOk) byProvider.set(id, askGroup);
     else if (!askOk) {
       console.log(`quota-gatherer: ${id} ok via listing — explicit ask's error row dropped`);
-    } else {
-      byProvider.set(id, askGroup);
     }
+    // Both ok: the listing group stands — it is the canonical,
+    // credential-keyed enumeration; the ask exists to rescue a
+    // missing or errored listing group, not to override a good one.
   }
 
   const runs: ProviderRun[] = [];
