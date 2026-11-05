@@ -668,16 +668,15 @@ in
   # it with:
   #   install -m600 /dev/null ~/.config/openchamber/ui-password
   #   printf '%s' 'your-password' > ~/.config/openchamber/ui-password
-  # Fleet proxies (#2104): automatic user services, one per proxy, each
-  # WantedBy default.target so it starts with the user session. ExecStart
-  # runs the same checkout entry points the proxy-supervisor ran
-  # (~/code/bin/*.mjs and the *-start.sh wrappers, via /run/current-system
-  # node/bash, exactly as the supervisor's systemd-run invocations did),
-  # so a proxy's code is the live checkout build, not a nix-store copy.
-  # The proxy-supervisor's process ownership is retired in the same
-  # change (its timer/service/config are removed below the proxy units):
-  # exactly one owner per canonical port. Consumers (openchamber,
-  # openclaw-gateway) Wants these units with Wants+After soft semantics.
+  # Fleet proxies (#2104): Home Manager manages the per-proxy
+  # service/socket units. Most services are WantedBy default.target;
+  # codex-proxy is socket-activated by codex-proxy.socket, which is
+  # WantedBy sockets.target. ExecStart runs the same checkout entry
+  # points the proxy-supervisor ran (~/code/bin/*.mjs and the *-start.sh
+  # wrappers, via /run/current-system node/bash), so a proxy's code is
+  # the live checkout build, not a nix-store copy. The supervisor's
+  # process ownership is retired: current Home Manager units/sockets own
+  # their ports, and consumers declare their own unit dependencies.
   # Clef door retired 2026-11-04 (opencode#1410): the OpenChamber
   # classifier's endpoint file (~/.config/openchamber/
   # classifier-endpoint.json) names the in-fork facade's
@@ -762,14 +761,16 @@ in
 
   # Proxy supervisor retired (#2104, 2026-10-28): the proxy-supervisor
   # oneshot service, its 2-minute timer, and the supervisor config that
-  # used to live here are removed. The per-proxy units in this file are
-  # now the automatic services (Install.WantedBy default.target) and the
-  # sole owners of the canonical ports; nothing may respawn the old
-  # transient fps-* units. bin/proxy-supervise.mjs remains in the repo
-  # as history, uninvoked. Its endpoint bookkeeping
-  # (~/.local/state/<proxy>/endpoint.json) is likewise retired: the
-  # files on disk are stale records with no writer, and service state
-  # is read from the units themselves (systemctl --user show).
+  # used to live here are removed. Home Manager's per-proxy service/socket
+  # units own the active proxy ports; most services start from
+  # default.target, while the Codex socket starts from sockets.target.
+  # Nothing may respawn the old transient fps-* units.
+  # bin/proxy-supervise.mjs remains in the repo
+  # as history, uninvoked. The supervisor's endpoint reconciliation is
+  # retired, but proxy processes still publish their own
+  # ~/.local/state/<proxy>/endpoint.json while listening and remove the
+  # record on exit. These are live per-proxy endpoint records; service
+  # state itself is read from the units (systemctl --user show).
   # The supervisor's hash-keyed A/B roll behaviour is deliberately NOT
   # reproduced: a switch that changes a unit's ExecStart restarts that
   # proxy, per the normal flake service pattern (cf. mcpx/openchamber).
