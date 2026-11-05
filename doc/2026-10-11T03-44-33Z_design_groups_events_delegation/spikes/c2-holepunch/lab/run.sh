@@ -21,9 +21,19 @@ set -euo pipefail
 
 LAB=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(dirname "$LAB")
-export NFT=${NFT:-/nix/store/66dl0246qv0avvzid7xkj85xqdlrx78a-nftables-1.1.7/bin/nft}
-export RELAY_BIN=${RELAY_BIN:-/home/user/work/spikes/tools/bin/iroh-relay}
-export C2_BIN=${C2_BIN:-/home/user/work/spikes/target/debug/c2-holepunch}
+export NFT=${NFT:-$(command -v nft || true)}
+export RELAY_BIN=${RELAY_BIN:-$(command -v iroh-relay || true)}
+export C2_BIN=${C2_BIN:-$ROOT/target/debug/c2-holepunch}
+for variable in NFT RELAY_BIN C2_BIN; do
+	value=${!variable}
+	resolved=$(command -v "$value" || true)
+	if [ -z "$resolved" ]; then
+		echo "$variable must name an executable; run the documented nix c2-lab entry point" >&2
+		exit 127
+	fi
+	printf -v "$variable" '%s' "$resolved"
+done
+export NFT RELAY_BIN C2_BIN
 
 if [ "${1:-}" != "--inner" ]; then
 	nat=${1:?usage: run.sh cone|restricted|symmetric [TAG] [WINDOW]}
@@ -44,7 +54,7 @@ N0=${N0:-on}
 STANDIN=${STANDIN:-off}
 NAME="$NAT-$TAG"
 [ "$NAT_B" = "$NAT" ] || NAME="$NAT-vs-$NAT_B-$TAG"
-LOGS="$ROOT/logs"
+LOGS=${LOGS:-"$ROOT/logs"}
 mkdir -p "$LOGS"
 STATE=$(mktemp -d /tmp/c2-run.XXXXXX)
 export STATE PORT NAT NAT_B
