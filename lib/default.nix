@@ -1137,10 +1137,12 @@ let
                   pkgs.findutils
                   pkgs.gnugrep
                   pkgs.gnused
+                  pkgs.git
                   pkgs.gnutar
                   pkgs.gzip
                   pkgs.jq
                   pkgs.python3
+                  pkgs.sqlite
                   pkgs.util-linux
                   pkgs.zstd
                 ];
