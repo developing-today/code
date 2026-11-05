@@ -17,6 +17,19 @@
 // below). Warm/exec remain the fallback when direct never got an
 // upstream response. MUSE_PROXY_DIRECT=0 disables direct mode.
 //
+// Tools doctrine (code#6117, opencode#1708): the warm/exec paths are
+// vendor-CLI doors — the conversation is flattened to a prompt and the
+// Muse CLI answers with its OWN tools, returning only final text
+// (finish_reason "stop"). They cannot emit client tool calls, so a
+// request that carries client tools is NEVER eligible for them: it is
+// served by the direct (wire-emulation) path or fails loudly with a
+// 502 naming the limitation. Conforming warm/exec is not possible —
+// the CLI's serve/exec surfaces expose no wire tool-call emission for
+// arbitrary client tools (their end state is the facade migration,
+// opencode#1155) — so direct-or-error is the floor. Text-only requests
+// keep the warm/exec reliability fallback, and every chat response
+// records the serving path in the X-Muse-Proxy-Path header.
+//
 // Auth is the CLI's own OAuth login (~/.config/muse/auth.json). META_API_KEY
 // must NOT be set for the child: the CLI binary states it takes priority over
 // the account login, and the Model API key is a separate pay-as-you-go wallet
@@ -169,6 +182,26 @@ const formatPrompt = (messages) => {
   }
 
   return parts.join('\n\n');
+};
+
+// A request "carries tools" when the client offers tools, forces a tool
+// choice, or its history already contains tool calls / tool results
+// (a tool loop in progress). Any of those makes the vendor-CLI
+// warm/exec fallback ineligible — see the tools-doctrine note at the
+// top of this file.
+const requestCarriesTools = (body) => {
+  if (Array.isArray(body.tools) && body.tools.length > 0) return true;
+  const tc = body.tool_choice;
+  if (tc === 'required') return true;
+  if (tc && typeof tc === 'object' && (tc.type === 'function' || tc.type === 'tool')) return true;
+  if (Array.isArray(body.messages)) {
+    for (const m of body.messages) {
+      if (!m || typeof m !== 'object') continue;
+      if (m.role === 'tool') return true;
+      if (Array.isArray(m.tool_calls) && m.tool_calls.length > 0) return true;
+    }
+  }
+  return false;
 };
 
 // Child env: inherit, but strip META_API_KEY (it outranks the OAuth login)
@@ -1690,6 +1723,8 @@ const server = http.createServer((req, res) => {
       // answers when it can; any upstream response is final. Only a
       // no-response outcome returns false and the warm/exec paths
       // below take over unchanged.
+      const carriesTools = requestCarriesTools(body);
+      res.setHeader('X-Muse-Proxy-Path', 'direct');
       if (DIRECT_ENABLED) {
         let directHandled = false;
         try {
@@ -1704,9 +1739,29 @@ const server = http.createServer((req, res) => {
         if (res.writableEnded) return;
       }
 
+      // Tools gate (code#6117): the warm/exec vendor-CLI fallback
+      // flattens the conversation to a prompt and can only return
+      // final text — it can never emit the client's tool calls. A
+      // tools-carrying request that direct mode could not serve
+      // (no credential, direct disabled, exchange/upstream transport
+      // failure, or an attestation denial) fails loudly here instead
+      // of silently degrading to CLI agency under the client's tools.
+      if (carriesTools) {
+        console.warn('[muse-proxy] tools-carrying request refused: direct path unavailable and the warm/exec vendor-CLI fallback cannot emit client tool calls');
+        writeJsonBody(res, 502, {
+          error: {
+            message: 'muse-proxy: this request carries client tools, which only the direct (Meta Responses wire-emulation) path can serve with real tool calls. The direct path is unavailable for this request and the warm/exec vendor-CLI fallback is ineligible for tools-carrying requests (it would silently substitute the Muse CLI\'s own tools and return text only), so no fallback was attempted.',
+            type: 'tools_fallback_ineligible',
+            code: 'tools_fallback_ineligible'
+          }
+        });
+        return;
+      }
+
       // Warm path first (#480): a persistent serve host + MSP session
       // answers when it can; any failure before the response is committed
       // returns false and the exec path below takes over unchanged.
+      res.setHeader('X-Muse-Proxy-Path', 'warm');
       if (WARM_ENABLED) {
         let warmHandled = false;
         try {
@@ -1721,6 +1776,7 @@ const server = http.createServer((req, res) => {
         if (res.writableEnded) return;
       }
 
+      res.setHeader('X-Muse-Proxy-Path', 'exec');
       // Prompt goes in via --prompt-file (no argv length/escaping concerns)
       const promptFile = path.join(WORKDIR, `prompt-${crypto.randomUUID()}.txt`);
       fs.writeFileSync(promptFile, prompt, 'utf-8');
