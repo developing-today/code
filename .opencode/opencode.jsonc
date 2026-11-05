@@ -650,6 +650,14 @@
 
       }
     },
+    // meta (Meta API, PAYG key door into the same single Meta pool):
+    // WIRED BUT DISABLED (Drew, direct order 2026-11-04) — the definition
+    // below is complete (api.meta.ai; the key resolves from the auth
+    // store / META_API_KEY) and "meta" stays in disabled_providers
+    // above. Drew: "$150 available as of today" (2026-11-04) on the
+    // PAYG key. Sometime later we might enable it and use those tokens:
+    // enable deliberately, by deleting the disabled_providers line
+    // only — usage past the plan bills PAYG against that balance.
     "meta": {
       "npm": "@ai-sdk/openai",
       "name": "Meta Model API",
