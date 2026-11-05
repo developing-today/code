@@ -104,6 +104,44 @@ func TestATerminatedSessionLeavesNoPersistedRecord(t *testing.T) {
 	}
 }
 
+func TestRemovedServerTerminatesAndForgetsPersistedSessions(t *testing.T) {
+	events := lifecycleCapture(t, "upstream.session.terminated", "upstream.session.leftToExpire")
+	up := newSessionUpstream(t)
+	store := pool.OpenSessionFile(filepath.Join(t.TempDir(), pool.UpstreamSessionsFile))
+	p := sessionPool(t, httpServerCfg(up.URL), store)
+	pingThrough(t, p, "k")
+
+	p.CleanupRemovedSessionRecords()
+	if _, ok := store.Get("remote", "k", false); ok {
+		t.Fatal("removed server's persisted session survived reload cleanup")
+	}
+	up.mu.Lock()
+	deletes := up.deletes
+	up.mu.Unlock()
+	if deletes != 1 {
+		t.Fatalf("upstream received %d DELETEs, want one best-effort termination", deletes)
+	}
+	if got := events("upstream.session.terminated"); len(got) != 1 {
+		t.Fatalf("termination events = %v, want one successful event", got)
+	}
+}
+
+func TestUnconfiguredSessionRecordIsRemovedAndLeftToExpire(t *testing.T) {
+	events := lifecycleCapture(t, "upstream.session.leftToExpire")
+	store := pool.OpenSessionFile(filepath.Join(t.TempDir(), pool.UpstreamSessionsFile))
+	if err := store.Put(pool.UpstreamSessionRecord{Server: "gone", Key: "k", SessionID: "sess-orphan"}); err != nil {
+		t.Fatal(err)
+	}
+
+	pool.DiscardUnconfiguredSessionRecords(store, map[string]bool{})
+	if _, ok := store.Get("gone", "k", false); ok {
+		t.Fatal("record for a server absent from the live config survived cleanup")
+	}
+	if got := events("upstream.session.leftToExpire"); len(got) != 1 {
+		t.Fatalf("left-to-expire events = %v, want one", got)
+	}
+}
+
 // A record whose config fingerprint no longer matches the live config is
 // discarded: the restart initialises fresh and no error is surfaced.
 func TestAColdRestartDiscardsARecordWhoseConfigChanged(t *testing.T) {

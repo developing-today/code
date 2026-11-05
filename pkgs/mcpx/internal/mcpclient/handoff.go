@@ -253,6 +253,15 @@ func (c *Client) HTTPSession() (HTTPHandoff, bool) {
 // SessionState is the protocol state a resumed client needs, without a handshake.
 func (c *Client) SessionState() Session { return c.session() }
 
+// MarkResumedSession arms the first application-request recovery for a
+// successfully probed cold-restored session. The probe itself is not the
+// caller's first request; after that request succeeds or gets one recovery
+// attempt, later 404s keep the session's ordinary behavior.
+func (c *Client) MarkResumedSession() {
+	c.resumedSession.Store(true)
+	c.resumedFirstRequest.Store(true)
+}
+
 func (c *Client) session() Session {
 	c.mu.Lock()
 	defer c.mu.Unlock()
