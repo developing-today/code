@@ -461,7 +461,25 @@ impl SignedArtifact {
     /// failure (#3196) — and with [`Refusal::Unauthenticated`] if the hash
     /// or signature does not check out.
     pub fn verify(&self) -> Result<()> {
-        Self::check_after(&self.after)?;
+        self.verify_mode(false)
+    }
+
+    /// [`Self::verify`] for history a log already holds (trusted local
+    /// replay only): the duplicate-`after` rule (#3196) postdates logs
+    /// the producer path legitimately wrote, so replay does not apply
+    /// it - mirroring how replay skips the duplicate-request rule in
+    /// `parsed_for_replay`. Authenticity (hash, signature, canonical
+    /// author) and the other frontier rules (count, well-formed hashes)
+    /// stay strict in both modes: a corrupt or forged line still fails
+    /// to reopen. Fresh receipt and remote receipt always use
+    /// [`Self::verify`]; this leniency is never a remote policy (#5625,
+    /// coordinating with the #4459 format cutoff).
+    pub(crate) fn verify_for_replay(&self) -> Result<()> {
+        self.verify_mode(true)
+    }
+
+    fn verify_mode(&self, replay: bool) -> Result<()> {
+        Self::check_after_mode(&self.after, replay)?;
         self.check_authenticity()
             .map_err(|error| Refusal::Unauthenticated(format!("{error:#}")).into())
     }
@@ -472,6 +490,10 @@ impl SignedArtifact {
     /// twice. Receipt refuses a duplicate rather than deduplicating it, so
     /// what the signer supplied stays visible (#3231).
     fn check_after(after: &[String]) -> Result<()> {
+        Self::check_after_mode(after, false)
+    }
+
+    fn check_after_mode(after: &[String], replay: bool) -> Result<()> {
         if after.len() > MAX_AFTER {
             return Err(forbidden(format!(
                 "an artifact names at most {MAX_AFTER} artifacts before it"
@@ -480,12 +502,18 @@ impl SignedArtifact {
         if after.iter().any(|hash| !is_hash(hash)) {
             return Err(forbidden("an artifact names a malformed hash in after"));
         }
-        let mut seen = HashSet::with_capacity(after.len());
-        for hash in after {
-            if !seen.insert(hash) {
-                return Err(forbidden(format!(
-                    "an artifact names {hash} twice in after"
-                )));
+        // The duplicate rule is the #3196 addition: in replay mode a
+        // frontier stored before it is grandfathered (see
+        // [`Self::verify_for_replay`]); construction and fresh receipt
+        // refuse a duplicate rather than deduplicating it.
+        if !replay {
+            let mut seen = HashSet::with_capacity(after.len());
+            for hash in after {
+                if !seen.insert(hash) {
+                    return Err(forbidden(format!(
+                        "an artifact names {hash} twice in after"
+                    )));
+                }
             }
         }
         Ok(())
@@ -621,7 +649,10 @@ impl SignedArtifact {
                 if body.media_type.is_empty() || body.media_type.len() > 128 {
                     return Err(forbidden("a document names its media type"));
                 }
-                if !is_nfc(&body.media_type) {
+                // The NFC rule (#3192) postdates logs the producer
+                // path legitimately wrote; replay grandfathers it
+                // (#5625), fresh receipt stays strict.
+                if mode != ParseMode::Replay && !is_nfc(&body.media_type) {
                     return Err(forbidden("a document's media type is not NFC"));
                 }
                 let size = serde_json::to_vec(&body.content)
@@ -642,13 +673,15 @@ impl SignedArtifact {
                 if body.name.is_empty() || body.name.len() > 64 {
                     return Err(forbidden("a tag's name is 1 to 64 bytes"));
                 }
-                if !is_nfc(&body.name) {
+                if mode != ParseMode::Replay && !is_nfc(&body.name) {
                     return Err(forbidden("a tag's name is not NFC"));
                 }
                 if body.value.as_ref().is_some_and(|value| value.len() > 256) {
                     return Err(forbidden("a tag's value is at most 256 bytes"));
                 }
-                if body.value.as_ref().is_some_and(|value| !is_nfc(value)) {
+                if mode != ParseMode::Replay
+                    && body.value.as_ref().is_some_and(|value| !is_nfc(value))
+                {
                     return Err(forbidden("a tag's value is not NFC"));
                 }
                 Ok(Some(Kind::Tag(body)))
@@ -773,7 +806,10 @@ impl ArtifactLog {
         frame_check: bool,
         mode: ParseMode,
     ) -> Result<InsertOutcome> {
-        artifact.verify()?;
+        match mode {
+            ParseMode::Replay => artifact.verify_for_replay()?,
+            ParseMode::Strict | ParseMode::LegacyReceive => artifact.verify()?,
+        }
         let (kind, legacy_note) = match mode {
             ParseMode::Strict => (artifact.parsed()?, None),
             ParseMode::Replay => (artifact.parsed_for_replay()?, None),
@@ -1688,6 +1724,88 @@ mod tests {
 
         let reopened = ArtifactLog::open(&path).unwrap();
         assert_eq!(reopened.head_seq(&public(1)), 1);
+    }
+
+    #[test]
+    fn a_legacy_log_with_a_duplicate_after_frontier_still_replays() {
+        // #5625: stored before the duplicate-after rule (#3196), when
+        // sign_after accepted a repeated frontier hash. Fresh receipt
+        // (verify / insert) still refuses it; trusted local replay
+        // (open / open_read_only) reopens the log that already holds it.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE);
+        let mut log = ArtifactLog::default();
+        let first = log.sign(&key(1), &document("first")).unwrap();
+        log.insert(first.clone()).unwrap();
+        let legacy = sign_raw_after(
+            &key(1),
+            2,
+            &first.hash,
+            &document("second"),
+            vec![first.hash.clone(), first.hash.clone()],
+        );
+        assert!(legacy.verify().is_err());
+        assert!(ArtifactLog::default().insert(legacy.clone()).is_err());
+        append(&path, &first).unwrap();
+        append(&path, &legacy).unwrap();
+
+        let reopened = ArtifactLog::open(&path).unwrap();
+        assert_eq!(reopened.head_seq(&public(1)), 2);
+        let read_only = ArtifactLog::open_read_only(&path).unwrap();
+        assert_eq!(read_only.head_seq(&public(1)), 2);
+
+        // Authenticity stays strict in replay: the same log with a
+        // forged hash line does not reopen.
+        let mut forged = legacy.clone();
+        forged.hash = format!("{:064x}", 9_u64);
+        let bad_path = dir.path().join("forged.jsonl");
+        append(&bad_path, &first).unwrap();
+        append(&bad_path, &forged).unwrap();
+        assert!(ArtifactLog::open(&bad_path).is_err());
+        assert!(ArtifactLog::open_read_only(&bad_path).is_err());
+    }
+
+    #[test]
+    fn a_legacy_log_with_non_nfc_document_and_tag_fields_still_replays() {
+        // #5625: stored before the NFC rules (#3192), when the producer
+        // path passed media_type / tag text through the then-lenient
+        // parser. Fresh receipt still refuses each shape; replay
+        // grandfathers exactly those three fields.
+        let dir = TempDir::new().unwrap();
+        let cases: Vec<Kind> = vec![
+            Kind::Document(Document {
+                media_type: "application/jso\u{301}n".to_owned(),
+                content: json!({ "text": "ok" }),
+            }),
+            Kind::Tag(Tag {
+                subject: public(2),
+                name: "e\u{301}".to_owned(),
+                value: None,
+            }),
+            Kind::Tag(Tag {
+                subject: public(2),
+                name: "author".to_owned(),
+                value: Some("e\u{301}".to_owned()),
+            }),
+        ];
+        for (index, kind) in cases.into_iter().enumerate() {
+            let legacy = sign_kind_unchecked(&key(1), &kind);
+            assert!(legacy.parsed().is_err(), "case {index}");
+            assert!(
+                ArtifactLog::default().insert(legacy.clone()).is_err(),
+                "case {index}"
+            );
+            assert!(
+                matches!(legacy.parsed_for_replay(), Ok(Some(_))),
+                "case {index}"
+            );
+            let path = dir.path().join(format!("legacy-{index}.jsonl"));
+            append(&path, &legacy).unwrap();
+            let reopened = ArtifactLog::open(&path).unwrap();
+            assert_eq!(reopened.head_seq(&public(1)), 1, "case {index}");
+            let read_only = ArtifactLog::open_read_only(&path).unwrap();
+            assert_eq!(read_only.head_seq(&public(1)), 1, "case {index}");
+        }
     }
 
     #[test]

@@ -24,7 +24,7 @@ Prints one JSON object:
                                               # null = server unreadable
     "active_root_sessions": int | null,      # roots still active
                                               # (see is_active_root)
-    "cap": 12,
+    "cap": 36,
     "cap_room": int | null                   # CAP - active roots;
                                               # null when count unknown
   }
@@ -51,7 +51,7 @@ QUEUES = [
     "repo-health-openchamber-pilot",
     "repo-health-nix-pilot",
 ]
-CAP = 12
+CAP = 36
 # A root session counts toward the cap only while it is active: no
 # terminal marker and recent activity. GET /api/session returns every
 # finished-but-unarchived session forever (50 roots at the #3026 gate
@@ -310,6 +310,8 @@ def main():
                         "lease_until": r.get("lease_until"),
                         "lane_id": r.get("lane_id"),
                         "issue_number": prog.get("issue_number"),
+                        "dedupe_key": r.get("dedupe_key"),
+                        "title": r.get("title"),
                     }
                 )
             session_id = prog.get("session_id")
