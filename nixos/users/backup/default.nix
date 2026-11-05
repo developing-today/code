@@ -33,7 +33,7 @@
       "beep"
     ];
     packages = with pkgs; [
-      firefox
+      # firefox comes from environment.systemPackages as firefoxBidi (structural BiDi, code#5924)
       kdePackages.kate
     ];
   };
