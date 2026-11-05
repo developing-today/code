@@ -3,7 +3,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, symlink } from "node:fs/promises";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -242,4 +245,54 @@ test("documents: page-not-ready is a distinct status/exit and recovery is record
   assert.equal("windows" in bad, false);
   const plain = failureDocument({ attemptedAt: "2026-11-05T12:00:00.000Z", status: "session-expired", detail: "HTTP 401" });
   assert.equal("recovery" in plain, false);
+});
+
+// ---------- Entry-point guard (issue #6343) ----------
+// Regression: the re-homed exporter guarded main() with the raw-path
+// comparison `import.meta.url === pathToFileURL(process.argv[1]).href`,
+// so any symlinked invocation silently skipped main() and exited 0 —
+// the #2350 bug, restored by the #6333 re-home. The guard now resolves
+// symlinks on both sides (realpathSync, mirroring
+// supabase-quota-export.mjs / cloudflare-quota-export.mjs). Oracle: a run
+// against an unreachable CDP port must produce the cdp-unavailable
+// failure document with exit 4, identically for direct and symlinked
+// invocation; a silent exit 0 is the counterexample.
+
+const execFileAsync = promisify(execFile);
+const EXPORTER_PATH = fileURLToPath(new URL("./meta-quota-export.mjs", import.meta.url));
+
+async function runExporter(entryPath, outDir) {
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      process.execPath,
+      [entryPath, "--cdp-port", "1", "--out-dir", outDir],
+      { timeout: 30000 },
+    );
+    return { code: 0, stdout, stderr };
+  } catch (err) {
+    return { code: err.code, stdout: err.stdout ?? "", stderr: err.stderr ?? "" };
+  }
+}
+
+async function assertCdpUnavailableRun(entryPath, label) {
+  const base = await mkdtemp(join(tmpdir(), `meta-exporter-entry-${label}-`));
+  const outDir = join(base, "out");
+  const r = await runExporter(entryPath, outDir);
+  assert.equal(r.code, 4, `${label} invocation must exit 4, got ${r.code} (stderr: ${r.stderr})`);
+  assert.match(r.stderr, /cdp-unavailable/);
+  const latest = JSON.parse(await readFile(join(outDir, "latest.json"), "utf8"));
+  assert.equal(latest.status, "cdp-unavailable");
+  const history = await readFile(join(outDir, "history.jsonl"), "utf8");
+  assert.equal(JSON.parse(history.trim()).status, "cdp-unavailable");
+}
+
+test("entry-point guard: direct invocation runs main (cdp-unavailable, exit 4)", async () => {
+  await assertCdpUnavailableRun(EXPORTER_PATH, "direct");
+});
+
+test("entry-point guard: symlinked invocation runs main, matching direct (#6343)", async () => {
+  const base = await mkdtemp(join(tmpdir(), "meta-exporter-entry-link-"));
+  const linkPath = join(base, "meta-quota-export-link.mjs");
+  await symlink(EXPORTER_PATH, linkPath);
+  await assertCdpUnavailableRun(linkPath, "symlink");
 });
