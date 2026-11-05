@@ -29,13 +29,17 @@ let configurePromise: Promise<boolean> | null = null;
 export function ensurePushConfigured(): Promise<boolean> {
   if (configured) return Promise.resolve(true);
   if (!configurePromise) {
-    configurePromise = (async () => {
+    const attempt = (async () => {
       const priv = await resolveBwsSecret(VAPID_PRIVATE_KEY_SECRET);
       if (!priv) return false;
       webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, priv);
       configured = true;
       return true;
     })().catch(() => false);
+    configurePromise = attempt;
+    void attempt.then((ok) => {
+      if (!ok && configurePromise === attempt) configurePromise = null;
+    });
   }
   return configurePromise;
 }
