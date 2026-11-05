@@ -579,6 +579,135 @@ func TestRetentionAcrossReopenRunsFromCompletion(t *testing.T) {
 	}
 }
 
+func completedTask(t *testing.T, st *tasks.Store, ttl int64, runtime time.Duration) tasks.Task {
+	t.Helper()
+	task, err := st.Start(tasks.UnboundRequestor, ttl, func(context.Context) (any, *tasks.Fault) {
+		time.Sleep(runtime)
+		return "done", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.Result(context.Background(), task.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	return task
+}
+
+func TestPublicItemReadRenewsTerminalRetentionButInternalReadsDoNot(t *testing.T) {
+	st := tasks.New()
+	task := completedTask(t, st, 500, 0)
+	initial, ok := st.Get(task.TaskID)
+	if !ok || initial.ExpiresAt == nil || initial.LastTouched == nil {
+		t.Fatalf("terminal metadata missing: %+v", initial)
+	}
+	initialExpiry, initialTouch := *initial.ExpiresAt, *initial.LastTouched
+
+	time.Sleep(300 * time.Millisecond)
+	if _, ok := st.Get(task.TaskID); !ok {
+		t.Fatal("internal Get lost a live task")
+	}
+	_ = st.List()
+	if _, _, err := st.Result(context.Background(), task.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	still, ok := st.Get(task.TaskID)
+	if !ok || !still.ExpiresAt.Equal(initialExpiry) || !still.LastTouched.Equal(initialTouch) {
+		t.Fatalf("internal reads renewed retention: before=%+v after=%+v", initial, still)
+	}
+
+	read, ok := st.Read(task.TaskID)
+	if !ok || read.ExpiresAt == nil || !read.ExpiresAt.After(initialExpiry) || !read.LastTouched.After(initialTouch) {
+		t.Fatalf("public item read did not renew retention: %+v", read)
+	}
+	time.Sleep(250 * time.Millisecond) // past the original expiry, before the renewed one
+	if _, ok := st.Get(task.TaskID); !ok {
+		t.Fatal("task expired at its pre-touch deadline")
+	}
+}
+
+func TestTaskMaxAgeStartsAtTerminalTransitionAndReadCannotReviveExpiry(t *testing.T) {
+	st := tasks.New()
+	st.Configure(500*time.Millisecond, 250*time.Millisecond)
+	task := completedTask(t, st, 500, 300*time.Millisecond)
+	terminal, ok := st.Get(task.TaskID)
+	if !ok || terminal.ExpiresAt == nil {
+		t.Fatalf("long-running task was not retained at completion: %+v", terminal)
+	}
+	if !terminal.ExpiresAt.After(time.Now()) {
+		t.Fatalf("maxAge was anchored at creation, not terminal transition: %+v", terminal)
+	}
+	if terminal.ExpiresAt.After(terminal.LastUpdatedAt.Add(250 * time.Millisecond)) {
+		t.Fatalf("expiry exceeded terminal-time maxAge ceiling: %+v", terminal)
+	}
+
+	// A separate short-lived result proves that a late public read cannot
+	// bring an already-expired terminal result back into the store.
+	short := tasks.New()
+	shortTask := completedTask(t, short, 100, 0)
+	snap, _ := short.Get(shortTask.TaskID)
+	time.Sleep(time.Until(*snap.ExpiresAt) + 20*time.Millisecond)
+	if _, ok := short.Read(shortTask.TaskID); ok {
+		t.Fatal("a read revived an expired result")
+	}
+	if _, ok := short.Get(shortTask.TaskID); ok {
+		t.Fatal("expired result remains in the store")
+	}
+}
+
+func TestPublicItemReadNeverShortensPromisedRetention(t *testing.T) {
+	st := tasks.New()
+	st.Configure(2*time.Second, 5*time.Second)
+	task := completedTask(t, st, 2_000, 0)
+	initial, ok := st.Get(task.TaskID)
+	if !ok || initial.ExpiresAt == nil {
+		t.Fatalf("terminal task has no expiry: %+v", initial)
+	}
+	promised := *initial.ExpiresAt
+
+	// A live configuration change may lower the maxAge. It must not revoke
+	// an expiry already promised to this task.
+	st.Configure(2*time.Second, 50*time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
+	read, ok := st.Read(task.TaskID)
+	if !ok || read.ExpiresAt == nil || !read.ExpiresAt.Equal(promised) {
+		t.Fatalf("touch shortened the promised expiry: got %+v, want %v", read, promised)
+	}
+}
+
+func TestTaskTouchMetadataPersistsAcrossReopen(t *testing.T) {
+	dbPath := t.TempDir() + "/tasks.db"
+	st1, err := tasks.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st1.Configure(700*time.Millisecond, time.Second)
+	task := completedTask(t, st1, 700, 0)
+	time.Sleep(400 * time.Millisecond)
+	touched, ok := st1.Read(task.TaskID)
+	if !ok || touched.ExpiresAt == nil || touched.LastTouched == nil {
+		t.Fatalf("touch failed: %+v", touched)
+	}
+	wantExpiry, wantTouch := *touched.ExpiresAt, *touched.LastTouched
+	if err := st1.Close(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(400 * time.Millisecond) // past the original expiry, before the renewed expiry
+
+	st2, err := tasks.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st2.Close()
+	got, ok := st2.Get(task.TaskID)
+	if !ok || got.ExpiresAt == nil || got.LastTouched == nil {
+		t.Fatalf("touched task did not survive reopen: %+v", got)
+	}
+	if got.ExpiresAt.UnixMilli() != wantExpiry.UnixMilli() || got.LastTouched.UnixMilli() != wantTouch.UnixMilli() {
+		t.Fatalf("touch metadata changed across reopen: got=%+v want expiry=%v touch=%v", got, wantExpiry, wantTouch)
+	}
+}
+
 func TestAStartDeadlineCancelsWaitingWork(t *testing.T) {
 	// The askTTL shape (#1653 ruling 3): StartWithDeadline bounds the
 	// work itself through the ordinary cancel path, so a parked call

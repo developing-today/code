@@ -76,6 +76,7 @@ type Defaults struct {
 		EventSubscriberBuf   int    `json:"eventSubscriberBuffer"`
 		StreamReconnect      string `json:"streamReconnect"`
 		TaskTTL              string `json:"taskTTL"`
+		TaskMaxAge           string `json:"taskMaxAge"`
 		TaskResultWait       string `json:"taskResultWait"`
 		StatsTop             int    `json:"statsTop"`
 		RegistryLimit        int    `json:"registryLimit"`
@@ -551,9 +552,14 @@ var (
 	EventSubscriberBuf = builtin.Plumbing.EventSubscriberBuf
 	StreamReconnect    = mustDur(builtin.Plumbing.StreamReconnect, "plumbing.streamReconnect")
 	TaskTTL            = mustDur(builtin.Plumbing.TaskTTL, "plumbing.taskTTL")
-	TaskResultWait     = mustDur(builtin.Plumbing.TaskResultWait, "plumbing.taskResultWait")
-	StatsTop           = builtin.Plumbing.StatsTop
-	RegistryLimit      = builtin.Plumbing.RegistryLimit
+	// TaskMaxAge is the absolute ceiling on terminal-result retention under
+	// the touch-on-read convention (docs/decisions/0006-ttl-touch-on-read.md):
+	// renewal by use can never push retention past the terminal transition
+	// plus this duration.
+	TaskMaxAge     = mustDur(builtin.Plumbing.TaskMaxAge, "plumbing.taskMaxAge")
+	TaskResultWait = mustDur(builtin.Plumbing.TaskResultWait, "plumbing.taskResultWait")
+	StatsTop       = builtin.Plumbing.StatsTop
+	RegistryLimit  = builtin.Plumbing.RegistryLimit
 	// HandoffRetryInterval is how often a takeover re-checks pools that were
 	// busy with in-flight calls.
 	HandoffRetryInterval = mustDur(builtin.Plumbing.HandoffRetryInterval, "plumbing.handoffRetryInterval")

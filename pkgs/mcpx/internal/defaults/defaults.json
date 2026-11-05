@@ -98,6 +98,7 @@
     "eventSubscriberBuffer": 256,
     "streamReconnect": "2s",
     "taskTTL": "10m",
+    "taskMaxAge": "1h",
     "taskResultWait": "2m",
     "statsTop": 20,
     "registryLimit": 20,

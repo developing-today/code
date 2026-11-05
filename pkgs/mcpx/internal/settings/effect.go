@@ -56,6 +56,7 @@ var EffectProbes = map[string]string{
 	"registry.pageSize":          "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
 	"registry.maxPages":          "TestTheRegistryPageCapSaysItStoppedEarly",
 	"paths.configFile":           "TestPathsConfigFileChangesWhichConfigLoads",
+	"tasks.maxAge":               "TestTasksMaxAgeIsReachableFromEnvironment",
 	"deps.source":                "TestDepsSourceNoneDropsTheManifestLayer",
 	"deps.manifest":              "TestDepsManifestNamesTheManifestResolutionReads",
 	"deps.packages":              "TestDepsPackagesPinContradictingTheManifestFailsTheRun",

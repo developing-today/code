@@ -625,6 +625,12 @@ func (s *Server) taskStore() *tasks.Store {
 			}
 		}
 	})
+	// Retention settings are hot: refresh them on access so runtime updates
+	// affect new tasks and subsequent item/result reads without replacing the
+	// shared store.
+	if s.set != nil {
+		s.tasks.Configure(s.set.Duration("tasks.ttl"), s.set.Duration("tasks.maxAge"))
+	}
 	return s.tasks
 }
 
@@ -669,7 +675,7 @@ func (s *Server) handleTaskGet(w http.ResponseWriter, r *http.Request) {
 	store := s.taskStore()
 	id := r.PathValue("id")
 	store.RecordRetrieval("v1", "tasks/get", id)
-	t, ok := store.Get(id)
+	t, ok := store.Read(id)
 	if !ok {
 		writeErr(w, http.StatusNotFound, tasks.ErrNoTask{ID: id})
 		return
@@ -692,7 +698,7 @@ func (s *Server) handleTaskResult(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), wait)
 	defer cancel()
 
-	result, fault, err := store.Result(ctx, id)
+	result, fault, err := store.ReadResult(ctx, id)
 	switch {
 	case err != nil:
 		var missing tasks.ErrNoTask
