@@ -40,7 +40,7 @@ impl Invite {
             "an invite name cannot contain control characters"
         );
         ensure!(
-            !name.chars().any(crate::petname::is_format_char),
+            !name.chars().any(crate::is_format_char),
             "an invite name cannot contain format characters"
         );
         let name = name.trim();
