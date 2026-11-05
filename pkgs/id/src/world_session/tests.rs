@@ -1074,6 +1074,7 @@ mod tests {
             view_revision: 0,
             base_view_revision: None,
             patch: None,
+            resume_token: None,
         })
         .unwrap();
         assert!(view.contains("\"type\":\"view\""));
@@ -1094,6 +1095,7 @@ mod tests {
             view_revision: 1,
             base_view_revision: None,
             patch: None,
+            resume_token: None,
         })
         .unwrap();
         assert!(encoded.contains("\"data\":\"{\\\"kind\\\":\\\"screen\\\""));
@@ -2260,5 +2262,247 @@ mod tests {
             reading.next().await.unwrap()["message"],
             "world event rejected"
         );
+    }
+
+    #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    mod resume_tests {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        use super::*;
+        use crate::world::{Participant, WorldCore, WorldHandle, WorldLimits, WorldScopes};
+
+        /// A 2x1 screen whose contents the test advances with `step`.
+        struct StepScreen(Arc<AtomicU64>);
+
+        impl crate::world::WorldProgram for StepScreen {
+            fn view(&mut self, _viewer: &Participant) -> anyhow::Result<Option<String>> {
+                let step = self.0.load(Ordering::Relaxed);
+                Ok(Some(format!(
+                    r#"{{"kind":"screen","version":1,"width":2,"height":1,"rows":["{step:02}"]}}"#
+                )))
+            }
+        }
+
+        fn screen_of(frame: &serde_json::Value) -> crate::world_presentation::ScreenSurface {
+            let surface = serde_json::from_value::<crate::world_presentation::WorldSurface>(
+                frame["surface"].clone(),
+            )
+            .expect("a full view carries a typed surface");
+            match surface {
+                crate::world_presentation::WorldSurface::Screen(screen) => screen,
+                other => panic!("expected a screen surface, got {other:?}"),
+            }
+        }
+
+        async fn next_view(peer: &mut Peer) -> serde_json::Value {
+            loop {
+                let frame = peer.next().await.expect("a frame");
+                if frame["type"] == "view" {
+                    return frame;
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn retained_resume_token_is_a_catch_up_patch_with_full_view_parity() {
+            let step = Arc::new(AtomicU64::new(0));
+            let world = WorldHandle::spawn_with_program(
+                WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+                Box::new(StepScreen(Arc::clone(&step))),
+            );
+            let svc = WorldService::new(world.clone(), None);
+            let scopes = WorldScopes::from_names(["join", "input"]).unwrap();
+            let (_, capability) = world.issue("player".to_owned(), scopes).await.unwrap();
+            let (_, writer) = world
+                .issue("writer".to_owned(), WorldScopes::GUEST)
+                .await
+                .unwrap();
+
+            let mut first = Peer::connect(svc.clone(), SessionConfig::default());
+            first
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                }))
+                .await;
+            assert_eq!(first.next().await.unwrap()["type"], "snapshot");
+            let opening = next_view(&mut first).await;
+            let mut applied = screen_of(&opening);
+            assert!(opening["patch"].is_null(), "the first frame is a full view");
+            assert!(
+                opening["resume_token"].is_string(),
+                "a patch-aware session receives a resume token"
+            );
+
+            // A redraw under a known viewport refreshes the retained baseline.
+            step.store(1, Ordering::Relaxed);
+            first
+                .say(serde_json::json!({"type": "resize", "width": 2, "height": 1}))
+                .await;
+            let resized = next_view(&mut first).await;
+            assert!(resized["patch"].is_null(), "a resize resets to a full view");
+            applied = screen_of(&resized);
+            assert_eq!(applied.width, 2);
+            let token = resized["resume_token"].as_str().unwrap().to_owned();
+            let base_revision = resized["view_revision"].as_u64().unwrap();
+
+            // A reconnect that presents the token resumes with a catch-up patch.
+            step.store(2, Ordering::Relaxed);
+            let mut resumed = Peer::connect(svc.clone(), SessionConfig::default());
+            resumed
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                    "resume_token": token,
+                }))
+                .await;
+            assert_eq!(resumed.next().await.unwrap()["type"], "snapshot");
+            let catch_up = next_view(&mut resumed).await;
+            assert!(
+                !catch_up["patch"].is_null(),
+                "a retained token yields a patch, not a snapshot: {catch_up}"
+            );
+            assert_eq!(
+                catch_up["base_view_revision"].as_u64().unwrap(),
+                base_revision
+            );
+            applied = serde_json::from_value::<crate::world_presentation::ScreenPatch>(
+                catch_up["patch"].clone(),
+            )
+            .unwrap()
+            .apply(&applied)
+            .expect("the catch-up patch applies to its base");
+
+            // Parity: the resumed client holds exactly a full-frame client's screen.
+            let mut fresh = Peer::connect(svc, SessionConfig::default());
+            fresh
+                .say(serde_json::json!({"type": "join", "capability": capability.expose()}))
+                .await;
+            assert_eq!(fresh.next().await.unwrap()["type"], "snapshot");
+            let full = next_view(&mut fresh).await;
+            assert!(full["patch"].is_null());
+            assert_eq!(
+                applied,
+                screen_of(&full),
+                "patched client matches a full-frame client"
+            );
+        }
+
+        #[tokio::test]
+        async fn unknown_resume_tokens_fall_back_to_a_full_view() {
+            let world = WorldHandle::spawn_with_program(
+                WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+                Box::new(StepScreen(Arc::new(AtomicU64::new(0)))),
+            );
+            let svc = WorldService::new(world.clone(), None);
+            let (_, capability) = world.issue("player", WorldScopes::GUEST).await.unwrap();
+
+            let tokens = ["", "deadbeef", "00000000000000000000000000000000"]
+                .into_iter()
+                .map(str::to_owned)
+                .chain(std::iter::once(
+                    "x".repeat(crate::world_session::MAX_RESUME_TOKEN_BYTES + 1),
+                ));
+            for token in tokens {
+                let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+                peer.say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                    "resume_token": token,
+                }))
+                .await;
+                assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+                let view = next_view(&mut peer).await;
+                assert!(view["patch"].is_null(), "a miss sends a full view: {view}");
+                assert!(view["surface"].is_object());
+                assert!(
+                    view["resume_token"].is_string(),
+                    "a full view issues a fresh token"
+                );
+            }
+        }
+
+        /// A 3x1 program: its default view is 3x1, a 2x1 viewport fits it to 2x1.
+        struct WideScreen;
+
+        impl crate::world::WorldProgram for WideScreen {
+            fn view(&mut self, _viewer: &Participant) -> anyhow::Result<Option<String>> {
+                Ok(Some(
+                    r#"{"kind":"screen","version":1,"width":3,"height":1,"rows":["abc"]}"#
+                        .to_owned(),
+                ))
+            }
+        }
+
+        #[tokio::test]
+        async fn a_wrong_viewport_resume_token_falls_back_to_a_full_view() {
+            let world = WorldHandle::spawn_with_program(
+                WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+                Box::new(WideScreen),
+            );
+            let svc = WorldService::new(world.clone(), None);
+            let (_, capability) = world.issue("player", WorldScopes::GUEST).await.unwrap();
+
+            // The token is issued for the 2x1 viewport this session resized to.
+            let mut first = Peer::connect(svc.clone(), SessionConfig::default());
+            first
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                }))
+                .await;
+            assert_eq!(first.next().await.unwrap()["type"], "snapshot");
+            assert!(next_view(&mut first).await["patch"].is_null());
+            first
+                .say(serde_json::json!({"type": "resize", "width": 2, "height": 1}))
+                .await;
+            let resized = next_view(&mut first).await;
+            assert_eq!(screen_of(&resized).width, 2);
+            let token = resized["resume_token"].as_str().unwrap().to_owned();
+
+            // Reconnecting without that viewport asks for the default 3x1
+            // view: the retained baseline is the wrong shape, so it is a miss.
+            let mut resumed = Peer::connect(svc, SessionConfig::default());
+            resumed
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                    "resume_token": token,
+                }))
+                .await;
+            assert_eq!(resumed.next().await.unwrap()["type"], "snapshot");
+            let view = next_view(&mut resumed).await;
+            assert!(
+                view["patch"].is_null(),
+                "a wrong-viewport token gets a full view: {view}"
+            );
+            assert_eq!(screen_of(&view).width, 3);
+            assert!(
+                view["resume_token"].is_string(),
+                "the full view issues a token for the new viewport"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_resume_token_never_bypasses_join_authorization() {
+            let mut peer = Peer::connect(service(None), SessionConfig::default());
+            peer.say(serde_json::json!({
+                "type": "join",
+                "capability": "not-a-capability",
+                "screen_patches": true,
+                "resume_token": "deadbeef",
+            }))
+            .await;
+            let frame = peer.next().await.unwrap();
+            assert_eq!(frame["type"], "error");
+            assert!(frame.get("view").is_none());
+            assert!(peer.next().await.is_none());
+        }
     }
 }
