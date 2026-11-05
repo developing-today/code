@@ -1215,6 +1215,14 @@ let
       dupFieldRegistry = pkgs.writeText "deploy-targets-dup-field.json" ''
         {"svc": {"ports": "notalist", "ports": []}}
       '';
+      # Unhashable restart/class values (issue #6388): arrays/objects
+      # where validate() expects a string. validate() must report
+      # them by field, not crash with a TypeError, and one
+      # crashing-shape service must not suppress another service's
+      # ordinary field reports.
+      unhashableRegistry = pkgs.writeText "deploy-targets-unhashable.json" ''
+        {"bad": {"class": ["systemd"], "restart": ["always"]}, "other": {"class": {"x": 1}, "restart": "sometimes"}}
+      '';
     in
     {
       packages.deploy = deployPkgs.deploy;
@@ -1263,6 +1271,19 @@ let
           fi
           grep -q "duplicate key 'ports'" dup-field-err.txt
           test ! -s dup-field-out.txt
+          if ${deployPkgs.deploy}/bin/deploy list --registry ${unhashableRegistry} > unhash-out.txt 2> unhash-err.txt; then
+            echo "deploy list accepted a registry with unhashable restart/class values" >&2
+            exit 1
+          fi
+          grep -q "service 'bad': restart must be one of" unhash-err.txt
+          grep -q "service 'bad': class must be one of" unhash-err.txt
+          grep -q "service 'other': class must be one of" unhash-err.txt
+          grep -q "service 'other': restart must be one of" unhash-err.txt
+          if grep -q "Traceback" unhash-err.txt; then
+            echo "deploy list crashed with a traceback on unhashable values" >&2
+            exit 1
+          fi
+          test ! -s unhash-out.txt
           mkdir -p $out
           cp err.txt $out/errors.txt
         '';
