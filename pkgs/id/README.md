@@ -107,6 +107,7 @@ id id                   # Print local node ID
 id key export backup.idkey    # Export with a hidden passphrase prompt
 id key import backup.idkey    # Import; existing identities require --replace
 id peers                # List discovered peers
+id peers --abuse        # Per-peer frame/byte abuse counters, by direction
 ```
 
 ## Client-only boundary

@@ -353,6 +353,12 @@ pub enum MetaRequest {
     /// Lets clients give an actionable error instead of an opaque failure when
     /// a write is refused.
     Whoami,
+    /// Read the node's per-(local node, remote endpoint) frame/byte abuse
+    /// counters, split by direction, plus the policy rates that produced them.
+    ///
+    /// Read-only. A node with no abuse evaluator attached answers
+    /// [`MetaResponse::Error`].
+    AbuseCounters,
 }
 
 impl MetaRequest {
@@ -480,6 +486,54 @@ pub enum MetaResponse {
         /// Human-readable reason.
         message: String,
     },
+    /// Response to [`MetaRequest::AbuseCounters`].
+    AbuseCounters {
+        /// One row per (local node, remote endpoint), already sorted by
+        /// local node then remote endpoint.
+        rows: Vec<AbuseCountersRow>,
+        /// The policy rates the counters are charged against, or `None`
+        /// when the node exposes counters without a policy view.
+        policy: Option<AbusePolicyView>,
+    },
+}
+
+/// One row of [`MetaResponse::AbuseCounters`]: the frame and byte counters
+/// admitted for one (local node, remote endpoint) pair, split by direction.
+///
+/// `unattributed` holds traffic admitted through a check that does not know
+/// its direction; it is never guessed into `inbound` or `outbound`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AbuseCountersRow {
+    /// The local node's ID (32-byte verifying key).
+    pub local: [u8; 32],
+    /// The remote endpoint's ID (32-byte verifying key).
+    pub remote: [u8; 32],
+    /// Frames admitted inbound.
+    pub inbound_frames: u64,
+    /// Bytes admitted inbound.
+    pub inbound_bytes: u64,
+    /// Frames admitted outbound.
+    pub outbound_frames: u64,
+    /// Bytes admitted outbound.
+    pub outbound_bytes: u64,
+    /// Frames admitted without a known direction.
+    pub unattributed_frames: u64,
+    /// Bytes admitted without a known direction.
+    pub unattributed_bytes: u64,
+}
+
+/// The authorized token-bucket policy rates shown alongside
+/// [`AbuseCountersRow`]s.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AbusePolicyView {
+    /// Authorized frames admitted per second.
+    pub frames_per_sec: u64,
+    /// Authorized frame burst.
+    pub frame_burst: u64,
+    /// Authorized bytes admitted per second.
+    pub bytes_per_sec: u64,
+    /// Authorized byte burst.
+    pub byte_burst: u64,
 }
 
 impl MetaResponse {
@@ -524,6 +578,9 @@ pub struct MetaProtocol {
     /// How long a `Put` waits for a blob that is still arriving (see
     /// [`FileOps::with_blob_wait`]). Zero for in-process use.
     pub blob_wait: std::time::Duration,
+    /// The node's abuse evaluator, when this surface exposes it. `None`
+    /// answers [`MetaRequest::AbuseCounters`] with an error instead.
+    pub abuse: Option<Arc<std::sync::Mutex<crate::abuse::AbuseEvaluator>>>,
 }
 
 impl MetaProtocol {
@@ -536,6 +593,7 @@ impl MetaProtocol {
         tag_store: Arc<TagStore>,
         access: AccessPolicy,
         node_id: EndpointId,
+        abuse: Option<Arc<std::sync::Mutex<crate::abuse::AbuseEvaluator>>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             store: store.clone(),
@@ -544,6 +602,7 @@ impl MetaProtocol {
             access,
             node_id,
             blob_wait: DEFAULT_BLOB_WAIT,
+            abuse,
         })
     }
 
@@ -720,6 +779,44 @@ impl MetaProtocol {
                 can_write: self.access.can_write(remote),
                 open_writes: self.access.is_open(),
             },
+            MetaRequest::AbuseCounters => {
+                let Some(abuse) = &self.abuse else {
+                    return MetaResponse::Error {
+                        message: "abuse counters are not exposed by this node".to_owned(),
+                    };
+                };
+                let Ok(guard) = abuse.lock() else {
+                    return MetaResponse::Error {
+                        message: "abuse counters are unavailable: the evaluator lock is poisoned"
+                            .to_owned(),
+                    };
+                };
+                let rows = guard
+                    .counters()
+                    .snapshot_directional()
+                    .into_iter()
+                    .map(|((local, remote), counters)| AbuseCountersRow {
+                        local,
+                        remote,
+                        inbound_frames: counters.inbound.frames,
+                        inbound_bytes: counters.inbound.bytes,
+                        outbound_frames: counters.outbound.frames,
+                        outbound_bytes: counters.outbound.bytes,
+                        unattributed_frames: counters.unattributed.frames,
+                        unattributed_bytes: counters.unattributed.bytes,
+                    })
+                    .collect();
+                let policy = &guard.policy().authorized;
+                MetaResponse::AbuseCounters {
+                    rows,
+                    policy: Some(AbusePolicyView {
+                        frames_per_sec: policy.frames_per_sec,
+                        frame_burst: policy.frame_burst,
+                        bytes_per_sec: policy.bytes_per_sec,
+                        byte_burst: policy.byte_burst,
+                    }),
+                }
+            }
         }
     }
 
@@ -932,6 +1029,7 @@ mod tests {
             Arc::clone(node.tags()),
             AccessPolicy::open(),
             server_id,
+            None,
         );
         let handler = DeadlineMetaProtocol { protocol, deadline };
         let router = Router::builder(endpoint.clone())
@@ -1274,6 +1372,74 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_meta_request_abuse_counters_serialization() {
+        let req = MetaRequest::AbuseCounters;
+        let bytes = postcard::to_allocvec(&req).unwrap();
+        let decoded: MetaRequest = postcard::from_bytes(&bytes).unwrap();
+        assert!(matches!(decoded, MetaRequest::AbuseCounters));
+    }
+
+    #[test]
+    fn test_meta_response_abuse_counters_serialization() {
+        let resp = MetaResponse::AbuseCounters {
+            rows: vec![AbuseCountersRow {
+                local: [1u8; 32],
+                remote: [2u8; 32],
+                inbound_frames: 3,
+                inbound_bytes: 300,
+                outbound_frames: 4,
+                outbound_bytes: 400,
+                unattributed_frames: 5,
+                unattributed_bytes: 500,
+            }],
+            policy: Some(AbusePolicyView {
+                frames_per_sec: 100,
+                frame_burst: 180,
+                bytes_per_sec: 1_048_576,
+                byte_burst: 2_097_152,
+            }),
+        };
+        let bytes = postcard::to_allocvec(&resp).unwrap();
+        let decoded: MetaResponse = postcard::from_bytes(&bytes).unwrap();
+        match decoded {
+            MetaResponse::AbuseCounters { rows, policy } => {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].local, [1u8; 32]);
+                assert_eq!(rows[0].remote, [2u8; 32]);
+                assert_eq!(rows[0].inbound_frames, 3);
+                assert_eq!(rows[0].inbound_bytes, 300);
+                assert_eq!(rows[0].outbound_frames, 4);
+                assert_eq!(rows[0].outbound_bytes, 400);
+                assert_eq!(rows[0].unattributed_frames, 5);
+                assert_eq!(rows[0].unattributed_bytes, 500);
+                let view = policy.expect("policy");
+                assert_eq!(view.frames_per_sec, 100);
+                assert_eq!(view.frame_burst, 180);
+                assert_eq!(view.bytes_per_sec, 1_048_576);
+                assert_eq!(view.byte_burst, 2_097_152);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_meta_response_abuse_counters_empty_serialization() {
+        let resp = MetaResponse::AbuseCounters {
+            rows: vec![],
+            policy: None,
+        };
+        let bytes = postcard::to_allocvec(&resp).unwrap();
+        let decoded: MetaResponse = postcard::from_bytes(&bytes).unwrap();
+        match decoded {
+            MetaResponse::AbuseCounters { rows, policy } => {
+                assert!(rows.is_empty());
+                assert!(policy.is_none());
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
     // ========================================================================
     // Wire format
     // ========================================================================
@@ -1352,6 +1518,7 @@ mod tests {
             (MetaRequest::MigrateTags, 11),
             (MetaRequest::ListPeers, 12),
             (MetaRequest::Whoami, 13),
+            (MetaRequest::AbuseCounters, 14),
         ];
         for (req, idx) in &requests {
             let bytes = postcard::to_allocvec(req).unwrap();
@@ -1387,6 +1554,13 @@ mod tests {
                 13,
             ),
             (MetaResponse::Error { message: s }, 14),
+            (
+                MetaResponse::AbuseCounters {
+                    rows: vec![],
+                    policy: None,
+                },
+                15,
+            ),
         ];
         for (resp, idx) in &responses {
             let bytes = postcard::to_allocvec(resp).unwrap();
@@ -1441,6 +1615,7 @@ mod tests {
             MetaRequest::SearchTags { query: s },
             MetaRequest::ListPeers,
             MetaRequest::Whoami,
+            MetaRequest::AbuseCounters,
         ] {
             assert!(!req.is_write(), "{req:?} is read-only");
         }
@@ -2108,6 +2283,7 @@ mod tests {
             Arc::clone(node.tags()),
             AccessPolicy::restricted([owner]),
             eid(9),
+            None,
         );
 
         // Reads are public.
@@ -2194,6 +2370,7 @@ mod tests {
             Arc::clone(node.tags()),
             AccessPolicy::restricted([eid(1)]),
             eid(9),
+            None,
         );
         match proto.handle(&eid(1), MetaRequest::Whoami).await {
             MetaResponse::Whoami {
