@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"sync"
@@ -179,6 +180,47 @@ func TestRemoveUnknownIsNoOp(t *testing.T) {
 	}
 }
 
+// TestWatchSessionRemovesOnSessionEnd covers the ProgramHandler waiter
+// lifecycle: the watcher is spawned before wish runs the program, so it
+// must deregister off the session context — never p.Wait(), whose channel
+// Run initializes only after the handler returns.
+func TestWatchSessionRemovesOnSessionEnd(t *testing.T) {
+	a := &app{}
+	p := &fakeProg{}
+
+	a.mu.Lock()
+	a.progs = append(a.progs, p)
+	a.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		a.watchSession(ctx, p)
+		close(done)
+	}()
+
+	a.mu.RLock()
+	n := len(a.progs)
+	a.mu.RUnlock()
+	if n != 1 {
+		cancel()
+		t.Fatalf("registry has %d programs while session is live, want 1", n)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("watchSession did not return after session context ended")
+	}
+
+	a.mu.RLock()
+	n = len(a.progs)
+	a.mu.RUnlock()
+	if n != 0 {
+		t.Fatalf("registry has %d programs after session end, want 0", n)
+	}
+}
 func TestRegistryConcurrentRegisterSendRemove(t *testing.T) {
 	a := &app{}
 	var wg sync.WaitGroup
