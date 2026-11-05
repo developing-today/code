@@ -609,8 +609,8 @@ Each tick:
   subcommand, `opencode quota --json` (#6125/#6127) - whose
   per-provider quota functions live in the providers that own the
   credentials. A second invocation asks explicitly for the
-  route-disabled live pools (`meta`, `command-code`), which a named
-  ask always fetches. The gatherer fetches no provider itself and
+  route-disabled live pools (`meta`, `command-code`, `deepseek`, `mistral`),
+  which a named ask always fetches. The gatherer fetches no provider itself and
   imports no quota module; a provider failing degrades only its own
   rows, and #1268 retention keeps last-known rows for errored runs.
 - writes **`quota-current.json`** - the latest-state contract

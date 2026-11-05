@@ -152,7 +152,9 @@ const OBSERVED_BY = "quota-gatherer";
  * subcommand's 30s per-provider cap under the full listing's
  * concurrency (opencode#1729); the small explicit ask gives it
  * room, and its result replaces the listing's timed-out one.
- * Remove it here when the cap is raised.) */
+ * Remove it here when the cap is raised.
+ * Note: deepseek and mistral are explicitly asked providers alongside
+ * meta and command-code, as documented in README.md. */
 const EXPLICIT_ASK_PROVIDERS = ["meta", "command-code", "deepseek", "mistral"];
 
 async function writeAtomic(path: string, text: string): Promise<void> {
