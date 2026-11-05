@@ -166,6 +166,7 @@ pub struct InMemoryLedger {
     accounts: HashMap<AccountId, Account>,
     balances: HashMap<AccountId, AccountBalance>,
     transfers: HashMap<TransferId, Transfer>,
+    failed_transfers: HashMap<TransferId, TransferError>,
     transfer_order: Vec<TransferId>,
 }
 
@@ -183,6 +184,11 @@ impl InMemoryLedger {
         staged: &mut HashMap<AccountId, AccountBalance>,
         staged_transfers: &HashMap<TransferId, Transfer>,
     ) -> Result<(), TransferError> {
+        // Check if this transfer ID was previously recorded as failed
+        if let Some(error) = self.failed_transfers.get(&transfer.id) {
+            return Err(*error);
+        }
+        
         if let Some(existing) = self.transfers.get(&transfer.id) {
             return if existing == transfer {
                 Err(TransferError::Exists)
@@ -378,6 +384,21 @@ impl LedgerBackend for InMemoryLedger {
                     }
                 }
                 Some((failing_offset, error)) => {
+                    // Record failed transfer IDs for IdAlreadyFailed behavior.
+                    // When a transfer fails for its own reason (validation/balance
+                    // errors), TigerBeetle remembers the ID and refuses resubmission.
+                    // We record the specific error so that future submissions of these IDs
+                    // return the same error.
+                    // Only record failures that are transfer-level errors (not chain-level failures).
+                    if !matches!(
+                        error,
+                        TransferError::LinkedEventFailed | TransferError::LinkedEventChainOpen
+                    ) {
+                        for transfer in chain {
+                            self.failed_transfers.insert(transfer.id, error);
+                        }
+                    }
+                    
                     // The chain broke at the first non-`Created` leg in
                     // chain order: an earlier `Exists` leg (TigerBeetle
                     // breaks on it before ever reaching the hard
