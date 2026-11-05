@@ -93,8 +93,7 @@ fn direct_roundtrip(url: &str, path: &str, body: &Value) -> Result<Value, String
     }
     let token_file = std::env::var("REPO_QUEUE_TOKEN_FILE")
         .unwrap_or_else(|_| format!("{}/.config/queue-broker/token", home()));
-    let token = std::fs::read_to_string(&token_file)
-        .map_err(|e| format!("cannot read queue-broker token file {token_file}: {e}"))?;
+    let token = crate::token_file::load_token_file(&token_file)?;
     let token = token.trim();
     let payload = serde_json::to_vec(body).unwrap();
     let mut s = TcpStream::connect(hostport)

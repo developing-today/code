@@ -297,6 +297,11 @@ fn json_response(status: u16, body: Value) -> Response<std::io::Cursor<Vec<u8>>>
 }
 
 fn token_ok(req: &tiny_http::Request, expected: &str) -> bool {
+    // #6320 defence in depth: an empty expected token never authenticates,
+    // not even against an empty X-Agent-Token header.
+    if expected.is_empty() {
+        return false;
+    }
     req.headers()
         .iter()
         .find(|h| h.field.as_str().to_ascii_lowercase() == "x-agent-token")
@@ -310,15 +315,10 @@ pub fn run() -> i32 {
     let home = std::env::var("HOME").expect("HOME unset");
     let token_file = std::env::var("SECRETS_BROKER_TOKEN_FILE")
         .unwrap_or_else(|_| format!("{home}/.config/secrets-broker/token"));
-    let token = std::fs::read_to_string(&token_file)
-        .map(|t| t.trim().to_string())
-        .unwrap_or_else(|_| {
-            crate::log::info(
-                "secrets-broker",
-                &format!("cannot read token file {token_file}"),
-            );
-            std::process::exit(3);
-        });
+    let token = crate::token_file::load_token_file(&token_file).unwrap_or_else(|e| {
+        crate::log::info("secrets-broker", &e);
+        std::process::exit(3);
+    });
     let ttl_s: u64 = std::env::var("SECRETS_BROKER_TTL_S")
         .ok()
         .and_then(|v| v.parse().ok())
