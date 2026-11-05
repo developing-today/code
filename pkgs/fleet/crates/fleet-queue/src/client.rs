@@ -1347,6 +1347,7 @@ pub fn run(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn pos(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
@@ -1425,5 +1426,125 @@ mod tests {
             .expect("well-formed invocation parses");
         assert_eq!(args.get("queue"), Some("alpha".to_string()));
         assert_eq!(args.get_i64("limit").unwrap_or(20), 20);
+    }
+
+    /// One spelling of a value flag: `--flag value` or `--flag=value`.
+    fn flag_tokens(flag: &str, value: &str, inline: bool) -> Vec<String> {
+        if inline {
+            vec![format!("--{flag}={value}")]
+        } else {
+            vec![format!("--{flag}"), value.to_string()]
+        }
+    }
+
+    // Property-based coverage of the #5939 parser invariants (the
+    // oracle is the invariant itself; the fixed examples above stay
+    // as smoke coverage). Per the repo testing doctrine, parsers get
+    // PBT: a generator hammers spellings and positions no example
+    // list would enumerate.
+
+    proptest! {
+        #[test]
+        fn duplicate_flags_rejected_in_any_spelling_and_position(
+            flag in prop_oneof![Just("queue"), Just("worker")],
+            inline1 in any::<bool>(),
+            inline2 in any::<bool>(),
+            v1 in "[a-z]{1,4}",
+            v2 in "[a-z]{1,4}",
+            lead in proptest::collection::vec("[a-z]{1,3}", 0..3),
+            mid in proptest::collection::vec("[a-z]{1,3}", 0..3),
+        ) {
+            let mut rest: Vec<String> = lead;
+            rest.extend(flag_tokens(flag, &v1, inline1));
+            rest.extend(mid);
+            rest.extend(flag_tokens(flag, &v2, inline2));
+            let err = parse_args_inner(&rest, &["queue", "worker"], &[])
+                .err()
+                .expect("a repeated flag must be rejected wherever it appears");
+            prop_assert!(
+                err.contains(&format!("--{flag}")),
+                "error names the flag: {}",
+                err
+            );
+        }
+
+        #[test]
+        fn bool_with_any_inline_value_rejected(
+            v in prop_oneof![
+                Just("true".to_string()),
+                Just("false".to_string()),
+                "[a-z]{0,5}",
+                "[0-9]{1,3}",
+            ],
+        ) {
+            let err = parse_args_inner(&pos(&[&format!("--dry-run={v}")]), &[], &["dry-run"])
+                .err()
+                .expect("a boolean with an inline value must be rejected");
+            prop_assert!(err.contains("--dry-run"), "error names the flag: {}", err);
+        }
+
+        #[test]
+        fn bare_bool_accepted_in_any_position(
+            lead in proptest::collection::vec("[a-z]{1,3}", 0..3),
+            tail in proptest::collection::vec("[a-z]{1,3}", 0..3),
+        ) {
+            let mut rest: Vec<String> = lead;
+            rest.push("--dry-run".to_string());
+            rest.extend(tail);
+            let args = parse_args_inner(&rest, &["queue"], &["dry-run"])
+                .ok()
+                .expect("a bare boolean parses wherever it appears");
+            prop_assert!(args.has("dry-run"));
+        }
+
+        #[test]
+        fn numeric_flag_roundtrips_every_i64(n in any::<i64>()) {
+            prop_assert_eq!(parse_i64_flag("limit", &n.to_string()), Ok(n));
+        }
+
+        #[test]
+        fn non_numeric_flag_value_rejected_for_any_spelling(
+            s in "[a-z][a-z0-9]{0,6}",
+        ) {
+            // A leading letter can never spell an i64, so the oracle
+            // is decidable for every generated string.
+            let err = parse_i64_flag("limit", &s)
+                .err()
+                .expect("a non-numeric value must be rejected");
+            prop_assert!(err.contains("--limit"), "error names the flag: {}", err);
+            prop_assert!(err.contains(&s), "error names the value: {}", err);
+        }
+
+        #[test]
+        fn distinct_flags_all_preserved(
+            use_queue in any::<bool>(),
+            use_worker in any::<bool>(),
+            use_lane in any::<bool>(),
+            inline in any::<bool>(),
+            vq in "[a-z]{1,4}",
+            vw in "[a-z]{1,4}",
+            vl in "[a-z]{1,4}",
+        ) {
+            let mut rest: Vec<String> = Vec::new();
+            let mut expected: Vec<(&str, &str)> = Vec::new();
+            if use_queue {
+                rest.extend(flag_tokens("queue", &vq, inline));
+                expected.push(("queue", &vq));
+            }
+            if use_worker {
+                rest.extend(flag_tokens("worker", &vw, inline));
+                expected.push(("worker", &vw));
+            }
+            if use_lane {
+                rest.extend(flag_tokens("lane", &vl, inline));
+                expected.push(("lane", &vl));
+            }
+            let args = parse_args_inner(&rest, &["queue", "worker", "lane"], &[])
+                .ok()
+                .expect("distinct flags are never rejected");
+            for (name, value) in expected {
+                prop_assert_eq!(args.get(name), Some(value.to_string()));
+            }
+        }
     }
 }
