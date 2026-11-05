@@ -305,8 +305,10 @@ impl LocalEvents {
         self.record(SET_KIND, Some(op), None, None, None, &[])
     }
 
-    /// Clears every live claim named `name` on `subject`, whoever set it. Nothing to clear is an
-    /// error.
+    /// Clears every live claim named `name` on `subject`, whoever set it, by recording
+    /// `tag.clear` markers naming them. Nothing to clear is an error. A marker hides a claim
+    /// in the default view only when this node's key authored the claim or is an admin of the
+    /// group owning the subject (#2090); the markers are recorded either way.
     ///
     /// One `tag.clear` event names at most [`MAX_CLEAR_CLAIMS`] claims, so a name with more live
     /// claims than that is cleared by several events, in the order [`EventStore::tag_claims`]
@@ -399,7 +401,7 @@ impl LocalEvents {
         Ok((count, event))
     }
 
-    /// The live claims on `subject`, sorted by claim ID.
+    /// The live claims on `subject` in the default view, sorted by claim ID.
     ///
     /// # Errors
     ///
@@ -905,9 +907,19 @@ mod tests {
     fn test_clear_spanning_more_authors_than_the_cap_clears_exactly_its_claims() {
         // Regression for #1736: 40 authors hold a claim named "topic" on the
         // subject -- more distinct authors than MAX_AFTER, so the clear must
-        // split by author. Exactly those claims are removed: a claim with a
-        // different name on the same subject, and a same-name claim on a
-        // different subject, both survive.
+        // split by author. The markers name exactly those claims, and each
+        // named claim sits in its marker's causal past, which is what removes
+        // a claim in the fold (crate::tag_claims). A claim with a different
+        // name on the same subject, and a same-name claim on a different
+        // subject, are named by no marker.
+        //
+        // The view the claims are read through is role-aware (#2090, the
+        // owner decision on #185): the default view hides a claim only when
+        // the marker's poster is the claim's author or an admin of the group
+        // owning the subject. The clearing node here (key 0) is neither, and
+        // the subject has no owning group, so its markers do not hide the
+        // claims in tags_on -- the naming and causal-past assertions are the
+        // part #1736 broke, and they are what this test pins.
         let dir = tempfile::TempDir::new().unwrap();
         let subject = id(201);
         let other_subject = id(202);
@@ -919,9 +931,58 @@ mod tests {
         let mut events = LocalEvents::open(dir.path(), key(0)).unwrap();
         let (cleared, _) = events.clear_tag(subject, "topic").unwrap();
         assert_eq!(cleared, 40);
-        let remaining = events.tags_on(subject).unwrap();
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].name, "other");
+
+        let (entries, parents) = events.log().unwrap();
+        let mut claim_author: HashMap<Hash, AuthorKey> = HashMap::new();
+        let mut topic_claims: HashSet<Hash> = HashSet::new();
+        for entry in entries.values() {
+            if let Entry::Set {
+                id,
+                author,
+                subject: on,
+                name,
+                ..
+            } = entry
+            {
+                claim_author.insert(*id, *author);
+                if *on == subject && name == "topic" {
+                    topic_claims.insert(*id);
+                }
+            }
+        }
+        assert_eq!(topic_claims.len(), 40);
+        let mut named: HashSet<Hash> = HashSet::new();
+        let mut markers = 0usize;
+        for entry in entries.values() {
+            let Entry::Clear { id, claims, .. } = entry else {
+                continue;
+            };
+            markers += 1;
+            // One marker names claims of at most MAX_AFTER distinct authors:
+            // the split respects the same cap as the frontier it rides on.
+            let authors: HashSet<AuthorKey> =
+                claims.iter().map(|claim| claim_author[claim]).collect();
+            assert!(authors.len() <= MAX_AFTER, "a marker spans {authors:?}");
+            // Each named claim sits in this marker's causal past.
+            let seen = parents
+                .get(id)
+                .map(|named_parents| crate::tag_claims::causal_past(named_parents, &parents))
+                .unwrap_or_default();
+            for claim in claims {
+                assert!(named.insert(*claim), "a claim is named by two markers");
+                assert!(
+                    seen.contains(claim),
+                    "a named claim is outside its marker's causal past"
+                );
+            }
+        }
+        // The clear split, and together the markers name exactly the 40
+        // "topic" claims on the subject -- nothing else.
+        assert!(markers > 1, "the clear did not split: {markers} marker(s)");
+        assert_eq!(named, topic_claims);
+        // The default view (#2090): this poster's markers hide nothing, so
+        // every claim on the subject is still listed.
+        assert_eq!(events.tags_on(subject).unwrap().len(), 41);
         assert_eq!(events.tags_on(other_subject).unwrap().len(), 1);
     }
 
