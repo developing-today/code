@@ -5916,7 +5916,6 @@ mod tests {
             "[open](JaVaScRiPt:alert(1))",
             "[open](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)",
             "[open](vbscript:msgbox(1))",
-            "[open](java\tscript:alert(1))",
             "[open](  javascript:alert(1))",
             "[open](unknown-scheme:payload)",
         ] {
@@ -5949,6 +5948,28 @@ mod tests {
             let (first, second) = two_saves(&saved);
             assert_eq!(first, second, "no fixpoint after sanitize for {md}");
         }
+    }
+
+    #[test]
+    fn test_link_tab_obfuscated_destination_forms_no_link() {
+        // #5745: a literal TAB inside a Markdown link destination is
+        // rejected by Comrak's destination grammar, so the source
+        // stays literal text and no link node — hence no href at
+        // all — is produced; there is nothing executable to render.
+        // TAB-obfuscated hrefs that arrive through the raw-HTML or
+        // ProseMirror-JSON paths (where no Comrak destination parse
+        // happens) are covered by the sanitizer's tab-stripping probe
+        // and the save-direction test below.
+        let doc = markdown_to_prosemirror("[open](java\tscript:alert(1))");
+        let para_content = doc["content"][0]["content"].as_array().unwrap();
+        assert!(
+            para_content.iter().all(|n| {
+                n["marks"].as_array().is_none_or(|marks| {
+                    marks.iter().all(|mark| mark["type"] != "link")
+                })
+            }),
+            "tab-obfuscated destination produced a link mark: {para_content:?}"
+        );
     }
 
     #[test]
@@ -5997,6 +6018,24 @@ mod tests {
                     "type": "text",
                     "text": "click",
                     "marks": [{"type": "link", "attrs": {"href": "javascript:alert(1)"}}]
+                }]
+            }]
+        });
+        let saved = prosemirror_to_markdown(&doc).unwrap();
+        assert_eq!(saved, "[click](#)\n");
+
+        // Same path with a TAB-obfuscated scheme: the sanitizer strips
+        // TAB/LF/CR before reading the scheme, so this is neutralized
+        // too (a Markdown destination could never carry it — Comrak
+        // rejects it — but raw ProseMirror JSON can).
+        let doc = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "click",
+                    "marks": [{"type": "link", "attrs": {"href": "java\tscript:alert(1)"}}]
                 }]
             }]
         });
