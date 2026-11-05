@@ -219,6 +219,20 @@ test("attemptBoundedRestart: restarts once, then the persisted bound skips", asy
   assert.equal(calls, 1);
 });
 
+test("attemptBoundedRestart: a failed restart still persists the cooldown bound", async () => {
+  const outDir = await mkdtemp(join(tmpdir(), "meta-exporter-restart-fail-"));
+  let calls = 0;
+  const restart = async () => { calls += 1; throw new Error("restart boom"); };
+  const first = await attemptBoundedRestart({ outDir, now: new Date("2026-11-05T12:00:00.000Z"), restart });
+  assert.equal(first.result, "restart-failed");
+  assert.equal(calls, 1);
+  const state = JSON.parse(await readFile(join(outDir, ".helium-restart.json"), "utf8"));
+  assert.equal(state.lastRestartAt, "2026-11-05T12:00:00.000Z");
+  const second = await attemptBoundedRestart({ outDir, now: new Date("2026-11-05T12:05:00.000Z"), restart });
+  assert.equal(second.result, "skipped-cooldown");
+  assert.equal(calls, 1);
+});
+
 test("documents: page-not-ready is a distinct status/exit and recovery is recorded", () => {
   assert.notEqual(PAGE_NOT_READY_EXIT, 5);
   const recovery = { action: "restart", unit: "helium-cdp.service", at: "2026-11-05T12:00:00.000Z", result: "restarted" };

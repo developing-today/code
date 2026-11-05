@@ -296,7 +296,14 @@ async function fetchPaygBalance(cdpBase) {
     if (!frame?.webSocketDebuggerUrl) return null;
     const client = await connectWs(frame.webSocketDebuggerUrl);
     try {
-      const text = await evaluate(client, "document.body ? document.body.innerText : ''");
+      // Bound the read (Codex review on PR #6333): a frame that accepts
+      // CDP but never answers Runtime.evaluate must not hang the whole
+      // export — withTimeout resolves null, which parses to a null
+      // (absent) balance, never an invented one.
+      const text = await withTimeout(
+        evaluate(client, "document.body ? document.body.innerText : ''"),
+        10000,
+      );
       return parsePaygBalance(text);
     } finally {
       client.close();
@@ -416,16 +423,20 @@ export async function attemptBoundedRestart({ outDir, now = new Date(), restart 
     return { action: "restart", unit: HELIUM_UNIT, at, result: "skipped-cooldown", lastRestartAt: last };
   }
   const doRestart = restart ?? (() => execFileAsync("systemctl", ["--user", "restart", HELIUM_UNIT]));
-  try {
-    await doRestart();
-  } catch (e) {
-    return { action: "restart", unit: HELIUM_UNIT, at, result: "restart-failed", detail: e.message };
-  }
+  // Persist the attempt BEFORE calling restart (Codex review on
+  // PR #6333): a restart that rejects or times out must still obey the
+  // once-per-interval bound — callers such as the Meta session keeper
+  // can re-invoke the exporter independently of its timer.
   if (statePath) {
     try {
       await mkdir(outDir, { recursive: true });
       await writeFile(statePath, `${JSON.stringify({ lastRestartAt: at })}\n`, "utf8");
     } catch { /* the record in the export document still stands */ }
+  }
+  try {
+    await doRestart();
+  } catch (e) {
+    return { action: "restart", unit: HELIUM_UNIT, at, result: "restart-failed", detail: e.message };
   }
   return { action: "restart", unit: HELIUM_UNIT, at, result: "restarted" };
 }
@@ -497,6 +508,14 @@ export async function run({ cdpPort = 19222, outDir, teamId = DEFAULT_TEAM_ID, p
           `helium-cdp wedged: ${secondProbe.detail}; still not ready after a bounded ${HELIUM_UNIT} restart`,
           recovery,
         );
+      }
+      // The pre-restart target list is stale (Codex review on
+      // PR #6333): its dev.meta.ai entry carries the old debugger URL.
+      // Re-fetch before selecting or creating the console page.
+      try {
+        targets = await httpJson(`${cdpBase}/json/list`);
+      } catch (e) {
+        throw new ExportError("cdp-unavailable", 4, `CDP ${cdpBase}/json/list unreachable after restart: ${e.message}`, recovery);
       }
     } else {
       throw new ExportError(
