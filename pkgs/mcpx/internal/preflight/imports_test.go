@@ -55,6 +55,9 @@ func TestParseGraphFindsEveryMissingSpecifier(t *testing.T) {
 	if len(g.LocalFiles) != 2 {
 		t.Errorf("local files for the dynamic scan: %v", g.LocalFiles)
 	}
+	if len(g.Edges) != 3 || g.Edges[1].Resolved != "/work/present.ts" {
+		t.Errorf("resolved file edges must be retained for Resolve: %+v", g.Edges)
+	}
 }
 
 func TestReportGraphReportsAllMissingInOnePass(t *testing.T) {
