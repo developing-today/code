@@ -275,7 +275,9 @@
           let
             hasParams = (builtins.length (recipe.parameters or [ ])) > 0;
             script = if hasParams then ''just ${name} "$@"'' else "just ${name}";
-            description = recipe.doc or name;
+            # The or-default catches a missing doc attr but not an explicit null
+            # (just-recipes.json emits "doc": null) -- coalesce both (#5651).
+            description = if (recipe.doc or null) == null then name else recipe.doc;
           in
           mkApp (mkScript name script) { inherit description; };
 
