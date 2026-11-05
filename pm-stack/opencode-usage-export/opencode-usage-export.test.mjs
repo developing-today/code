@@ -75,6 +75,52 @@ async function fakeHome() {
 const defaultDb = (home) => join(home, ".local/share/opencode/opencode.db");
 const chamberDb = (home) => join(home, ".local/share/openchamber/opencode.db");
 
+async function assertInvalidHoursOption(option, valueArgs) {
+  const { home, outDir } = await fakeHome();
+  const { exitCode, doc } = await run({
+    home,
+    now: NOW,
+    argv: [...valueArgs, "--out-dir", outDir],
+  });
+  assert.notEqual(exitCode, 0);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, new RegExp(option));
+  assert.equal(doc.sessions, undefined);
+  const latest = JSON.parse(await readFile(join(outDir, "latest.json"), "utf8"));
+  assert.equal(latest.status, "invalid-argument");
+  assert.match(latest.detail, new RegExp(option));
+}
+
+for (const option of ["--window-hours", "--fresh-hours"]) {
+  for (const value of ["banana", "NaN", "Infinity", "-Infinity", "0", "-1"]) {
+    test(`${option} rejects invalid value ${value} before reading a store`, async () => {
+      await assertInvalidHoursOption(option, [option, value]);
+    });
+  }
+  test(`${option} rejects a missing value before the next option`, async () => {
+    await assertInvalidHoursOption(option, [option]);
+  });
+}
+
+test("positive finite hour options preserve normal export behavior", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), {
+    sessions: [
+      { id: "ses_recent" },
+      { id: "ses_old", updated: NOW - 48 * HOUR, created: NOW - 49 * HOUR },
+    ],
+  });
+  const { exitCode, doc } = await run({
+    home,
+    now: NOW,
+    argv: ["--out-dir", outDir, "--window-hours", "12", "--fresh-hours", "24"],
+  });
+  assert.equal(exitCode, 0);
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.windowHours, 12);
+  assert.deepEqual(doc.sessions.map((session) => session.id), ["ses_recent"]);
+});
+
 test("fresh export covers a known session with model, tokens, cost, parentage", async () => {
   const { home, outDir } = await fakeHome();
   await makeStore(defaultDb(home), {
