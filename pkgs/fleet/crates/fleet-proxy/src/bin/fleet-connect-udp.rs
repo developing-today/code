@@ -17,6 +17,24 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    // The argument surface comes first (#6134): --help/-h print
+    // the usage and exit 0, and any other argument is a usage
+    // error — both without loading config or binding anything,
+    // so an accidental argument vector can never start the
+    // endpoint. Bare invocation is unchanged.
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    match fleet_proxy::connect_udp::classify_bin_args(&argv) {
+        fleet_proxy::connect_udp::BinArgs::Help => {
+            println!("{}", fleet_proxy::connect_udp::CONNECT_UDP_USAGE);
+            return ExitCode::SUCCESS;
+        }
+        fleet_proxy::connect_udp::BinArgs::UsageError(arg) => {
+            eprintln!("fleet-connect-udp: unknown argument {arg:?}");
+            eprintln!("{}", fleet_proxy::connect_udp::CONNECT_UDP_USAGE);
+            return ExitCode::from(fleet_proxy::EXIT_USAGE as u8);
+        }
+        fleet_proxy::connect_udp::BinArgs::Run => {}
+    }
     let config = match fleet_config::Config::load() {
         Ok(c) => c,
         Err(e) => {
