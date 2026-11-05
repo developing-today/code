@@ -34,3 +34,8 @@ required-features = ["serve"]
 # else (§2's mechanical-incapability rule).
 default = ["serve"]
 serve = []
+
+[dev-dependencies]
+# Property-based tests for the fleet-udp-forward parser invariants
+# (#6139), the same proptest version pkgs/id uses.
+proptest = "1.12"
