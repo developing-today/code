@@ -20,6 +20,7 @@
 //! content, execute game packages, replay turns, or fetch attachment/game payloads.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{self, Write};
 
 use anyhow::{Context, Result, bail, ensure};
 use ed25519_dalek::{SigningKey, VerifyingKey};
@@ -560,11 +561,11 @@ impl BoardObject {
                         is_public_key(&participant.author),
                         "game participant is not a canonical Ed25519 key"
                     );
-                    validate_token_name(&participant.role)?;
+                    validate_game_role(&participant.role)?;
                     ensure!(
                         participant_roles
                             .insert((participant.author.as_str(), participant.role.as_str())),
-                        "duplicate game participant role"
+                        "duplicate game participant (author, role) assignment"
                     );
                 }
                 validate_game_data("game configuration", &value.configuration)?;
@@ -1644,21 +1645,57 @@ fn validate_text(name: &str, value: &str, allow_empty: bool) -> Result<()> {
     Ok(())
 }
 
+struct SerializedSizeLimit {
+    limit: usize,
+    written: usize,
+    exceeded: bool,
+}
+
+impl Write for SerializedSizeLimit {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if buffer.len() > self.limit.saturating_sub(self.written) {
+            self.exceeded = true;
+            return Err(io::Error::other("serialized value exceeds its size limit"));
+        }
+        self.written += buffer.len();
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 fn validate_game_data(name: &str, value: &serde_json::Value) -> Result<()> {
-    ensure!(
-        serde_json::to_vec(value)?.len() <= MAX_GAME_DATA_BYTES,
-        "{name} is at most {MAX_GAME_DATA_BYTES} serialized bytes"
-    );
-    Ok(())
+    let mut writer = SerializedSizeLimit {
+        limit: MAX_GAME_DATA_BYTES,
+        written: 0,
+        exceeded: false,
+    };
+    match serde_json::to_writer(&mut writer, value) {
+        Ok(()) => Ok(()),
+        Err(_) if writer.exceeded => {
+            bail!("{name} is at most {MAX_GAME_DATA_BYTES} serialized bytes")
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn validate_token_name(value: &str) -> Result<()> {
+    validate_ascii_identifier("theme token name", value, 64)
+}
+
+fn validate_game_role(value: &str) -> Result<()> {
+    validate_ascii_identifier("game role identifier", value, 64)
+}
+
+fn validate_ascii_identifier(name: &str, value: &str, max_bytes: usize) -> Result<()> {
     ensure!(
-        (1..=64).contains(&value.len())
+        (1..=max_bytes).contains(&value.len())
             && value.bytes().all(|byte| byte.is_ascii_lowercase()
                 || byte.is_ascii_digit()
                 || b"-_.".contains(&byte)),
-        "theme token name must be 1-64 lower-case ASCII letters, digits, '-', '_' or '.'"
+        "{name} must be 1-{max_bytes} lower-case ASCII letters, digits, '-', '_' or '.'"
     );
     Ok(())
 }
@@ -3322,6 +3359,23 @@ mod tests {
             SignedBoardObject::from_artifact(signed.artifact.clone()).unwrap(),
             signed
         );
+
+        let mut duplicate = maximum.clone();
+        duplicate.participants[1] = duplicate.participants[0].clone();
+        let duplicate_error =
+            SignedBoardObject::sign(&author, 2, "", BoardObject::GamePost(duplicate)).unwrap_err();
+        assert!(
+            duplicate_error
+                .to_string()
+                .contains("duplicate game participant (author, role) assignment")
+        );
+
+        let mut invalid_role = maximum.clone();
+        invalid_role.participants[0].role = "Player One".to_owned();
+        let role_error =
+            SignedBoardObject::sign(&author, 3, "", BoardObject::GamePost(invalid_role))
+                .unwrap_err();
+        assert!(role_error.to_string().contains("game role identifier"));
 
         let mut empty_version = maximum;
         empty_version.package.version.clear();
