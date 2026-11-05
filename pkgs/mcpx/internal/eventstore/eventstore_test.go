@@ -173,6 +173,11 @@ func TestCallStatsAgreeWithLogstore(t *testing.T) {
 		{"fff", "search", 30, false},
 		{"codedb", "defs", 40, true},
 		{"codedb", "defs", 15, true},
+		// Equal totals whose Server+Tool concatenations collide ("a"+"bc"
+		// == "ab"+"c"): the tie-break must compare Server, then Tool, as
+		// separate fields, or the row order depends on map iteration (#3136).
+		{"a", "bc", 10, true},
+		{"ab", "c", 10, true},
 	}
 
 	// The hand-written dimension, over logstore's records.

@@ -28,6 +28,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { DashAuthor } from "./model.ts";
+import { isIsoDate } from "./validate.ts";
 
 /** The cross-cutting filter dimensions a saved view pins (#1276). */
 export interface ViewFilters {
@@ -83,6 +84,22 @@ export function validateViewName(n: unknown): string | null {
   if (typeof n !== "string") return null;
   const name = n.trim();
   return name !== "" && name.length <= 120 ? name : null;
+}
+
+function isSavedView(value: unknown): value is SavedView {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const view = value as Record<string, unknown>;
+  return (
+    typeof view.id === "string" &&
+    view.id.length > 0 &&
+    validateViewName(view.name) !== null &&
+    typeof view.owner === "string" &&
+    view.owner.length > 0 &&
+    validateViewFilters(view.filters).ok &&
+    typeof view.isDefault === "boolean" &&
+    isIsoDate(view.createdAt) &&
+    isIsoDate(view.updatedAt)
+  );
 }
 
 let counter = 0;
@@ -195,9 +212,12 @@ export class ViewsStore {
       if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as ViewsFile).views)) {
         throw new Error("store file does not have the expected { views: [...] } shape");
       }
-      this.views = (parsed as ViewsFile).views.filter(
-        (v) => typeof v === "object" && v !== null && typeof (v as SavedView).id === "string",
-      );
+      const rows = (parsed as { views: unknown[] }).views;
+      const malformedIndex = rows.findIndex((view) => !isSavedView(view));
+      if (malformedIndex !== -1) {
+        throw new Error(`view row ${malformedIndex} does not have the expected SavedView shape`);
+      }
+      this.views = rows.filter(isSavedView);
     } catch (err) {
       this.views = [];
       await this.quarantine(`is unparseable (${err instanceof Error ? err.message : String(err)})`);

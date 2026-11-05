@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""test_drain_queue.py — regression tests for #3219 ack discipline
-and the #3326 owner allowlist.
+"""test_drain_queue.py — regression tests for #3219 ack discipline,
+the #3326 owner allowlist, and #3476 pagination.
 
 Drives the real drain_queue.main() with a stub Worker and a stub
 fetch_mirrors.fetch_repo, against a temp backup root:
@@ -49,6 +49,8 @@ class Harness:
         self.fetch_results = fetch_results  # repo -> "ok"|"fail"|"missing"
         self.fetch_calls = []
         self.ack_calls = []
+        self.queue_paths = []
+        self.queue_pages = None
         self._saved = (
             drain_queue.worker_req,
             drain_queue.load_config,
@@ -69,6 +71,9 @@ class Harness:
         if path.endswith("/ack"):
             self.ack_calls.append(payload["ids"])
             return {}
+        self.queue_paths.append(path)
+        if self.queue_pages is not None:
+            return self.queue_pages[path]
         return {"events": self.events}
 
     def _fetch_repo(self, root, repo, state):
@@ -295,5 +300,143 @@ check(
     == drain_queue.CHRONIC_DRAIN_FAILURES - 1,
 )
 check("foreign-chronic: no DRAIN-CHRONIC", "DRAIN-CHRONIC" not in h.fetch_log())
+
+
+# 14. cursor pagination reaches healthy events beyond 500 retained failures;
+#     only the successful repository is acked.
+failing_events = [ev(f"failed-{i}", "owner/failing") for i in range(500)]
+healthy_event = ev("healthy-later", "owner/healthy")
+h = Harness(
+    [],
+    ["owner/failing", "owner/healthy"],
+    {"owner/failing": "fail", "owner/healthy": "ok"},
+)
+h.queue_pages = {
+    "/queue": {
+        "events": failing_events,
+        "cursor": "page two/+",
+        "list_complete": False,
+    },
+    "/queue?cursor=page+two%2F%2B": {
+        "events": [healthy_event],
+        "cursor": None,
+        "list_complete": True,
+    },
+}
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc = h.run()
+check("pagination: exit 0", rc == 0)
+check(
+    "pagination: requests both cursor pages",
+    h.queue_paths == ["/queue", "/queue?cursor=page+two%2F%2B"],
+)
+check("pagination: healthy later repo fetched", "owner/healthy" in h.fetch_calls)
+check(
+    "pagination: all retained failures stay unacked", h.acked_ids() == ["healthy-later"]
+)
+summary = json.loads(buf.getvalue().strip().splitlines()[-1])
+check("pagination: all 501 events handled in one run", summary["events"] == 501)
+
+
+# 15. multi-page backlog: acks are batched under the Worker KV ceiling.
+# 1,200 ackable (unplanned) events must arrive as bounded /queue/ack
+# requests — never one request over the 1,000-KV-operation limit.
+h = Harness([ev(f"bulk-{i}", f"owner/bulk-{i}") for i in range(1200)], [], {})
+check("ack batching: exit 0", h.run() == 0)
+check("ack batching: every event acked", len(h.acked_ids()) == 1200)
+check(
+    "ack batching: no request exceeds the batch bound",
+    all(len(call) <= drain_queue.ACK_BATCH_SIZE for call in h.ack_calls),
+)
+check("ack batching: backlog split across multiple requests", len(h.ack_calls) == 3)
+
+
+# 16. non-dict repository.owner (#3331): a string/list/number/bool owner is
+#     not a container — event_owner must not raise; with no other owner
+#     source it yields None and the event is dropped + acked, never fetched
+for bad_owner in ("dezren39", ["dezren39"], 42, True):
+    check(
+        f"string-owner shape {type(bad_owner).__name__}: event_owner is None",
+        drain_queue.event_owner({"repository": {"owner": bad_owner}}) is None,
+    )
+h = Harness(
+    [
+        {
+            "id": "e14",
+            "event": "push",
+            "ts": iso_age(60),
+            "repository": {"owner": "dezren39"},
+        }
+    ],
+    ["owner/repo"],
+    {},
+)
+check("string-owner: exit 0", h.run() == 0)
+check("string-owner: event acked", h.acked_ids() == ["e14"])
+check(
+    "string-owner: DRAIN-DROP logged",
+    "DRAIN-DROP foreign owner=unknown repo=unknown delivery=e14" in h.fetch_log(),
+)
+check("string-owner: no fetch attempted", h.fetch_calls == [])
+
+# 15. non-dict installation.account (#3331): same guard on the fallback
+#     source — no raise, owner undeterminable, event dropped + acked
+for bad_account in ("dezren39", 42):
+    check(
+        f"string-account shape {type(bad_account).__name__}: event_owner is None",
+        drain_queue.event_owner(
+            {"repo": "repo", "installation": {"account": bad_account}}
+        )
+        is None,
+    )
+h = Harness(
+    [
+        {
+            "id": "e15",
+            "event": "push",
+            "ts": iso_age(60),
+            "repo": "repo",
+            "installation": {"account": "dezren39"},
+        }
+    ],
+    ["owner/repo"],
+    {},
+)
+check("string-account: exit 0", h.run() == 0)
+check("string-account: event acked", h.acked_ids() == ["e15"])
+check(
+    "string-account: DRAIN-DROP logged",
+    "DRAIN-DROP foreign owner=unknown repo=repo delivery=e15" in h.fetch_log(),
+)
+check("string-account: no fetch attempted", h.fetch_calls == [])
+
+# 16. a malformed non-dict-owner event first must not poison the drain:
+#     the valid planned event behind it is still fetched + acked, exit 0
+h = Harness(
+    [
+        {
+            "id": "e16a",
+            "event": "push",
+            "ts": iso_age(60),
+            "repository": {"owner": "dezren39"},
+        },
+        ev("e16b", "owner/repo"),
+    ],
+    ["owner/repo"],
+    {"owner/repo": "ok"},
+)
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc = h.run()
+check("after-malformed: exit 0", rc == 0)
+check("after-malformed: both events acked", h.acked_ids() == ["e16a", "e16b"])
+check("after-malformed: valid event fetched", h.fetch_calls == ["owner/repo"])
+check(
+    "after-malformed: malformed DRAIN-DROP logged",
+    "DRAIN-DROP foreign owner=unknown repo=unknown delivery=e16a" in h.fetch_log(),
+)
+summary = json.loads(buf.getvalue().strip().splitlines()[-1])
+check("after-malformed: drop counted in summary", summary.get("dropped_foreign") == 1)
 
 print(f"\n{sum(1 for _, ok in PASS if ok)}/{len(PASS)} checks passed")

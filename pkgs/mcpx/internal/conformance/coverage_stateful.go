@@ -15,11 +15,24 @@ func init() {
 		S("ext-tasks-notifications-via-listen", "mcpserver.TestSubscriptionsListen/2026-07-28/subscriptions/taskIds-without-the-extension-is-32021", "mcpserver.TestListenDeliversTaskStatusNotifications@2026-07-28", "mcpserver.TestListenReportsATaskThatAlreadyFinished@2026-07-28"),
 		S("ext-tasks-durable-before-response", "mcpserver.TestInjectedStoreKeepsMCPTasksAcrossReopen@2026-07-28"),
 		S("tasks-unidentified-no-list", "mcpserver.TestTasksPerEra/2025-11-25/tasks/another-connection-cannot-list-or-read-it"),
-		// The tasks-rate-limit and tasks-resource-limits gaps were retired
-		// by #2498 (Phase 1 of #2497): the store's limits are covered by
-		// the internal/tasks tests below.
+		// Phase 1 of #2497 (#2498, merged in PR #2869) retired the rate-limit
+		// and resource-limit gaps; the store's limits are covered below.
 		S("tasks-rate-limit", "tasks.TestAdmitCountsAgainstThePerMinuteWindow@all"),
 		S("tasks-resource-limits", "tasks.TestStartClampsTTLToTheStoreMax@all", "tasks.TestStartRefusesBeyondThePerRequestorCap@all", "tasks.TestNewIDIs128Bit@all"),
+		// Phase 2 of #2497 (#2499, merged in PR #3699) retired the honest-
+		// ending gaps; the status-message and cancellation contracts are
+		// covered by the store tests below.
+		S("tasks-failed-status-message", "tasks.TestAToolResultThatIsItselfAnErrorIsAFailedTask@all", "tasks.TestIsErrorStatusMessageUsesFirstTextAndFallsBack@all"),
+		S("ext-tasks-cancel-cooperative", "tasks.TestCancellingStopsTheWorkAndStands@all", "tasks.TestCooperativeCancellationHandshake@all", "tasks.TestFaultWithinCancelGraceKeepsItsFailure@all", "tasks.TestCancelGraceExpiryWinsOverLateResult@all", "tasks.TestCancelGraceCompletionOrExpiryWinsAtMostOnce@all"),
+		// Phase 3 of #2497 (#2500): audit is covered on the shared store and
+		// both retrieval surfaces; the unbound model is asserted in docs.
+		S("tasks-audit",
+			"tasks.TestTaskAuditLogsCreationAndTerminalMetadataOnly@all",
+			"tasks.TestTaskAuditLogsLimitRefusalsWithRequestorAndLimit@all",
+			"mcpserver.TestStartTaskAuditsMCPTaskCreationAndTerminal@all",
+			"mcpserver.TestTaskRetrievalAuditIsDebugAndMetadataOnly@all",
+			"daemon.TestV1TaskRetrievalAuditIsDebugAndMetadataOnly@all"),
+		S("tasks-document-unbound", "conformance.TestTaskVisibilityDocumentation@all"),
 		C("caching-ttl-zero-stale", "pool.TestPoolCacheTTLZeroStale@2026-07-28", "mcpclient.TestListToolsWithHintsAggregatesPages@2026-07-28"),
 		C("caching-ttl-positive-fresh", "pool.TestPoolCacheTTLPositiveFresh@2026-07-28", "pool.TestPoolCacheTTLPositiveExpires@2026-07-28"),
 		C("caching-ttl-absent-zero", "pool.TestPoolCacheTTLAbsentStale@2026-07-28", "mcpclient.TestListPromptsWithHintsAbsent@2026-07-28"),
@@ -118,11 +131,11 @@ func init() {
 			"caching-ttl-not-poll",
 		),
 	)
+	// The get-implies-list item remains a documented open question, not a
+	// behavior change: unbound tasks stay reachable by ID and omitted from
+	// owner-scoped lists. A separate owner-bound listing API can be considered
+	// later; this phase only documents the existing access model.
 	registerGaps(
-		Gap{ID: "tasks-get-implies-list", Side: Server, Issue: "#1554", Why: "a task started on a connection without an identity can be read by tasks/get and is never listed"},
-		Gap{ID: "tasks-failed-status-message", Side: Server, Issue: "#1554", Why: "a task failed by an isError tool result carries no statusMessage"},
-		Gap{ID: "tasks-document-unbound", Side: Server, Issue: "#1554", Why: "nothing user-facing documents that an unowned task is reachable by anyone holding its id"},
-		Gap{ID: "tasks-audit", Side: Server, Issue: "#1554", Why: "task creation, completion and retrieval are not logged"},
-		Gap{ID: "ext-tasks-cancel-cooperative", Side: Server, Issue: "#1554", Why: "tasks/cancel forces the cancelled status rather than letting the work reach its own terminal status"},
+		Gap{ID: "tasks-get-implies-list", Side: Server, Issue: "#2497", Why: "documentation-only disposition: unbound tasks remain reachable by ID and omitted from owner-scoped lists; open question is whether a separate owner-bound listing API is needed"},
 	)
 }

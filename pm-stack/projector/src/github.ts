@@ -67,10 +67,26 @@ async function importRsaKey(der: Uint8Array): Promise<CryptoKey> {
   }
 }
 
+function parsePositiveDecimalId(raw: string, envName: string): number {
+  if (!/^[0-9]+$/.test(raw)) {
+    throw new Error(`Invalid ${envName} ${JSON.stringify(raw)}; expected a positive decimal integer`);
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`Invalid ${envName} ${JSON.stringify(raw)}; expected a positive decimal integer`);
+  }
+  return value;
+}
+
 export async function appJwt(env: Record<string, string | undefined>): Promise<string> {
   const appId = env.GITHUB_APP_ID;
   const rawKey = env.GITHUB_APP_PRIVATE_KEY;
   if (!appId || !rawKey) throw new Error("github_app_credentials_missing");
+  // Validate the app id's shape before signing: a mistyped id otherwise
+  // produces a correctly signed JWT that GitHub rejects downstream, and the
+  // failure surfaces as a misleading credentials problem. Same rule as
+  // GITHUB_APP_INSTALL_ID (parseConfiguredInstallId).
+  parsePositiveDecimalId(appId, "GITHUB_APP_ID");
   const b64 = decodePem(rawKey);
   const der = Uint8Array.from(Buffer.from(b64, "base64"));
   const key = await importRsaKey(der);
@@ -91,15 +107,7 @@ const discoveredInstallations = new Map<string, number>();
 
 function parseConfiguredInstallId(raw: string | undefined): number | undefined {
   if (raw === undefined || raw === "") return undefined;
-
-  if (!/^[0-9]+$/.test(raw)) {
-    throw new Error(`Invalid GITHUB_APP_INSTALL_ID ${JSON.stringify(raw)}; expected a positive decimal integer`);
-  }
-  const installId = Number(raw);
-  if (!Number.isSafeInteger(installId) || installId <= 0) {
-    throw new Error(`Invalid GITHUB_APP_INSTALL_ID ${JSON.stringify(raw)}; expected a positive decimal integer`);
-  }
-  return installId;
+  return parsePositiveDecimalId(raw, "GITHUB_APP_INSTALL_ID");
 }
 
 /**

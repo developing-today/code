@@ -335,6 +335,8 @@ pub struct Tag {
     pub value: Option<TagValue>,
     /// Content hash of the entry data.
     pub hash: Hash,
+    /// Length in bytes of the entry data referenced by `hash`.
+    pub len: u64,
     /// Entry timestamp (microseconds since epoch, from iroh-docs).
     pub timestamp: u64,
     /// Author who wrote this entry.
@@ -845,6 +847,44 @@ impl TagStore {
         Ok(())
     }
 
+    /// Set a tag whose entry payload already exists in the blob store,
+    /// referencing it by content hash instead of writing new bytes.
+    ///
+    /// Both α and Ω entries will reference the given content hash, so the
+    /// payload is preserved exactly. Used when moving or copying tags
+    /// between subjects, where recreating the tag with new data would
+    /// silently drop the original payload.
+    pub async fn set_tag_hash(
+        &self,
+        ns: &NamespacePair,
+        subject: &[u8],
+        key: &[u8],
+        value: Option<&[u8]>,
+        hash: Hash,
+        size: u64,
+    ) -> Result<()> {
+        let alpha_key = encode_alpha_key(subject, key, value);
+        let omega_key = encode_omega_key(subject, key, value);
+
+        ns.alpha
+            .set_hash(self.author, alpha_key, hash, size)
+            .await
+            .context("writing α entry")?;
+        ns.omega
+            .set_hash(self.author, omega_key, hash, size)
+            .await
+            .context("writing Ω entry")?;
+
+        self.emit(TagEvent::Set {
+            ns: self.ns_name(ns),
+            subject: String::from_utf8_lossy(subject).into_owned(),
+            key: String::from_utf8_lossy(key).into_owned(),
+            value: value.map(|v| String::from_utf8_lossy(v).into_owned()),
+        });
+
+        Ok(())
+    }
+
     /// Delete a specific tag from both α and Ω.
     ///
     /// Deletes entries matching the exact `(subject, key, value|null)` tuple.
@@ -986,17 +1026,38 @@ impl TagStore {
         from: &[u8],
         to: &[u8],
     ) -> Result<usize> {
+        self.transfer_all_tags_except(ns, from, to, &[]).await
+    }
+
+    /// Transfer tags to another subject, dropping tags whose keys are excluded.
+    ///
+    /// Each non-excluded tag is copied to `to` by content hash, so its entry
+    /// payload is preserved exactly, then all tags are deleted from `from`.
+    /// Excluded tags are discarded rather than left on the old subject.
+    /// Returns the number of tags copied.
+    pub async fn transfer_all_tags_except(
+        &self,
+        ns: &NamespacePair,
+        from: &[u8],
+        to: &[u8],
+        excluded_keys: &[&[u8]],
+    ) -> Result<usize> {
         let tags = self.get_tags(ns, from).await?;
-        let count = tags.len();
+        let mut count = 0;
         for tag in &tags {
-            self.set_tag(
+            if excluded_keys.iter().any(|key| *key == tag.key.as_bytes()) {
+                continue;
+            }
+            self.set_tag_hash(
                 ns,
                 to,
                 &tag.key,
                 tag.value.as_ref().map(TagValue::as_bytes),
-                b"",
+                tag.hash,
+                tag.len,
             )
             .await?;
+            count += 1;
         }
         self.del_all_tags(ns, from).await?;
 
@@ -1019,12 +1080,13 @@ impl TagStore {
         let tags = self.get_tags(ns, from).await?;
         let count = tags.len();
         for tag in &tags {
-            self.set_tag(
+            self.set_tag_hash(
                 ns,
                 to,
                 &tag.key,
                 tag.value.as_ref().map(TagValue::as_bytes),
-                b"",
+                tag.hash,
+                tag.len,
             )
             .await?;
         }
@@ -1405,6 +1467,7 @@ fn entry_to_tag_alpha(entry: &iroh_docs::Entry) -> Result<Tag> {
         key,
         value,
         hash: entry.content_hash(),
+        len: entry.content_len(),
         timestamp: entry.timestamp(),
         author: entry.author(),
     })
@@ -1418,6 +1481,7 @@ fn entry_to_tag_omega(entry: &iroh_docs::Entry) -> Result<Tag> {
         key,
         value,
         hash: entry.content_hash(),
+        len: entry.content_len(),
         timestamp: entry.timestamp(),
         author: entry.author(),
     })
@@ -1587,9 +1651,7 @@ fn parse_single_term(s: &str) -> Result<SearchTerm, SearchQueryError> {
         // silently widening the search (unquoted `name:` / `:value`
         // keep their key-only / value-only meaning).
         if left == "\"\"" || right == "\"\"" {
-            return Err(SearchQueryError::EmptyQuotedComponent {
-                term: s.to_owned(),
-            });
+            return Err(SearchQueryError::EmptyQuotedComponent { term: s.to_owned() });
         }
         let key = strip_quotes(&left);
         let value = strip_quotes(&right);
@@ -2674,7 +2736,11 @@ mod tests {
         ];
         for sep in [" ", "\t", "\n", "\r\n", "\u{00A0}"] {
             let query = format!("name:foo{sep}bar{sep}baz:");
-            assert_eq!(parse_search_query(&query).unwrap(), expected, "separator {sep:?}");
+            assert_eq!(
+                parse_search_query(&query).unwrap(),
+                expected,
+                "separator {sep:?}"
+            );
         }
     }
 

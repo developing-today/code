@@ -13,6 +13,8 @@
 // gatherer change; a provider whose usage is not window-shaped keeps
 // its raw usage on the entry and yields no windows (never zeros).
 import type { QuotaCurrentEntry, QuotaCurrentWindow, SnapshotRecord } from "./model.ts";
+import { safeProviderReason } from "./credential-lifecycle.ts";
+import { isIsoDate } from "./validate.ts";
 
 /** The subset of a quota-module result the mapper reads. */
 export interface QuotaProviderResult {
@@ -26,6 +28,16 @@ export interface QuotaProviderResult {
   planLabel?: string;
   credentialId?: string;
   credentialLabel?: string;
+  credentialExpiresAt?: number | string | null;
+  credentialSource?: "claude-code" | "opencode" | "environment";
+  /** Provider-side failure classification (OpenChamber quota module:
+   *  e.g. meta's "no-data" / "unauthorized" / "exhausted"). Preserved
+   *  so an ok-but-null read can be told apart from a measurement. */
+  failureClass?: string;
+  /** Epoch ms of the provider's last successful read in-process, when
+   *  the module carries one (meta does); null = never succeeded. */
+  lastSuccessAt?: number | null;
+  quotaExhausted?: boolean;
 }
 
 interface RawWindow {
@@ -53,28 +65,161 @@ export function normalizeResetAt(v: unknown): string | null {
 
 /**
  * Hub pool/snapshot service id for a provider result. Mirrors
- * POOL_SPECS (src/quota-extract.ts) where a pool exists, so gatherer
- * records continue the series the dated-read writers started.
- * OpenCode Go answers one combined row today (the module has no
- * per-credential fetch for it), so it lands under the bare id until
- * the module splits workspaces.
+ * POOL_SPECS (src/quota-extract.ts) where a pool exists. Pool ids are
+ * the OpenCode config provider ids (2026-11-03 alignment — see the
+ * POOL NAMING note in quota-extract.ts), so a renamed pool starts a
+ * NEW snapshot series under its config name; the pre-rename series
+ * stays in the store under the old colon id, unrewritten.
+ * OpenCode Go answers one row per workspace credential (the module's
+ * per-credential fetch); each row lands under the bare id, and
+ * entriesWithPoolSplits below ALSO files attributable rows under
+ * their split pool ids. Antigravity's per-model windows likewise keep
+ * their flattened names here; the pool grouping is a split-row step.
  */
 export function serviceIdFor(providerId: string): string {
   switch (providerId) {
     case "claude":
       return "anthropic:claude-pro";
     case "codex":
-      return "openai:codex";
+      return "openai.main";
     case "cline-pass":
-      return "cline-pass:cline-pass";
+      return "cline-pass";
+    case "command-code":
+      return "commandcode";
     case "deepseek":
-      return "deepseek:api";
+      return "deepseek";
+    case "meta":
+      return "meta";
+    case "opendesign":
+      return "opendesign";
     default:
       return providerId;
   }
 }
 
 export const GATHERER_SOURCE = "openchamber-quota";
+
+/**
+ * Split pool service ids the gatherer emits alongside the combined rows
+ * (#1331, epic #1149). The combined rows — bare `opencode-go` (one entry
+ * per workspace credential) and the per-model `antigravity` windows —
+ * keep working for existing consumers; the split rows carry the SAME
+ * readings under the pool ids the /quota overlay maps
+ * (overlayQuotaCurrent keys pools by entry serviceId, so a split row
+ * lands on its hub pool with freshness + values on the 15-minute tick).
+ * These MUST mirror POOL_SPECS (src/quota-extract.ts) — the overlay side
+ * of this contract.
+ */
+export const GO_DREWRYPOPE_SERVICE_ID = "opencode-go.drewrypope";
+export const GO_POPESDREW_SERVICE_ID = "opencode-go.popesdrew";
+export const ANTIGRAVITY_GEMINI_SERVICE_ID = "antigravity-direct.gemini";
+export const ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID = "antigravity-direct.claude-gpt";
+
+/**
+ * Which split Go pool a per-workspace entry belongs to, from the
+ * credential's human label. OpenCode credential labels are user-set; on
+ * the fleet laptop the Go accounts are labeled "drewrypope" and "popesdrew"
+ * (the "Home" workspace was removed 2026-11-03 and has no hub pool). Org ids are opaque per-machine strings, so they
+ * cannot name pools — the label is the only stable gatherer-side
+ * signal. Unmatched entries yield null: no fabricated pool row, the
+ * combined row still carries the reading.
+ */
+export function goPoolServiceId(entry: QuotaCurrentEntry): string | null {
+  const label = entry.credentialLabel?.trim().toLowerCase();
+  if (label === "drewrypope") return GO_DREWRYPOPE_SERVICE_ID;
+  if (label === "popesdrew") return GO_POPESDREW_SERVICE_ID;
+  return null;
+}
+
+/**
+ * Antigravity model -> hub pool. Mirrors poolFor in
+ * scripts/collect-fleet-feed.ts (the hub's burn-attribution rule):
+ * gemini-prefixed models burn the Gemini pool, everything else the
+ * Claude+GPT pool. Quota grouping must use the same rule, or burn and
+ * quota would disagree about which pool a model draws from.
+ */
+function antigravityPoolForModel(model: string): string {
+  return model.startsWith("gemini") ? ANTIGRAVITY_GEMINI_SERVICE_ID : ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID;
+}
+
+/**
+ * Derive one pool row per Antigravity hub pool from a single provider
+ * entry's flattened "<model>:<window>" windows. Each pool row carries,
+ * per window name, the hottest (max pctOfLimit) reading in its group —
+ * a spent model can never hide behind a fresh sibling — with that
+ * window's own stamps. Candidate windows are name-sorted and
+ * replacement is strict-greater, so ties resolve deterministically
+ * regardless of the module's model order. Label-only windows (no
+ * pctOfLimit) and non-model windows (no "<model>:" prefix) stay
+ * combined-only; an empty group yields no row — never a zero.
+ */
+function antigravityPoolRows(entry: QuotaCurrentEntry): QuotaCurrentEntry[] {
+  if (entry.state === "unconfigured") return [];
+  if (entry.state !== "ok") {
+    // A failed provider read lapses both pools loudly — history
+    // retained, no stale % presented as current — instead of leaving
+    // the pools on their dated reads with no signal the source died.
+    return [ANTIGRAVITY_GEMINI_SERVICE_ID, ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID].map((serviceId) => ({
+      ...entry,
+      serviceId,
+    }));
+  }
+  type Win = QuotaCurrentEntry["windows"][number];
+  const best = new Map<string, Map<string, Win>>();
+  const candidates = [...entry.windows].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  for (const w of candidates) {
+    const sep = w.name.lastIndexOf(":");
+    if (sep <= 0 || sep === w.name.length - 1) continue;
+    if (w.pctOfLimit == null) continue;
+    const pool = antigravityPoolForModel(w.name.slice(0, sep));
+    const winName = w.name.slice(sep + 1);
+    let group = best.get(pool);
+    if (!group) {
+      group = new Map<string, Win>();
+      best.set(pool, group);
+    }
+    const cur = group.get(winName);
+    if (!cur || (w.pctOfLimit ?? -1) > (cur.pctOfLimit ?? -1)) group.set(winName, w);
+  }
+  const rows: QuotaCurrentEntry[] = [];
+  for (const pool of [...best.keys()].sort()) {
+    const group = best.get(pool)!;
+    if (group.size === 0) continue;
+    rows.push({
+      ...entry,
+      serviceId: pool,
+      windows: [...group.entries()]
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([winName, w]) => ({ ...w, name: winName })),
+    });
+  }
+  return rows;
+}
+
+/**
+ * Append the split pool rows (#1331) to one tick's entries. Pure and
+ * additive: every input entry is returned verbatim first and split rows
+ * follow, so the combined rows keep working for existing consumers
+ * while the snapshot writer also sees the pool-level series. Go lapse
+ * states (#1118) stay representable: an errored workspace row splits
+ * into a pool-level error, and retained last-known rows (#1268) split
+ * into stale-classified pool rows via their preserved
+ * retainedFromFailedTick stamp.
+ */
+export function entriesWithPoolSplits(entries: readonly QuotaCurrentEntry[]): QuotaCurrentEntry[] {
+  const out = [...entries];
+  for (const entry of entries) {
+    if (entry.providerId === "opencode-go") {
+      // Unconfigured rows are host state, not pool state: the pools keep
+      // their dated reads until a real read (ok or error) arrives.
+      const serviceId = goPoolServiceId(entry);
+      if (serviceId && entry.state !== "unconfigured") out.push({ ...entry, serviceId });
+    } else if (entry.providerId === "antigravity") {
+      out.push(...antigravityPoolRows(entry));
+    }
+  }
+  return out;
+}
 
 /**
  * The file-export convention (Meta Phase 1, #1301 — the pattern
@@ -99,11 +244,15 @@ export interface FileExportDoc {
 const FILE_EXPORT_WINDOW_SECONDS: Record<string, number> = { "5h": 18_000, weekly: 604_800 };
 
 /**
- * Map one file-export document onto a quota-current entry (v1
- * producer: Meta, service meta:high-usage, ~/atlas/meta-quota-export/
- * latest.json on the laptop). `doc` null = the file could not be
- * read or parsed; `stale` = its mtime is past the staleness bound.
- * Both are error entries — never zeros.
+ * Map one file-export document onto a quota-current entry. The v1
+ * producer was Meta (service meta, ~/atlas/meta-quota-
+ * export/latest.json on the laptop) — retired 2026-11-03 when the
+ * gatherer began asking the OpenCode quota module for Meta
+ * directly (PR #5040); the mapper stays as the #1301 convention's
+ * tested shape for the next producer the module cannot reach.
+ * `doc` null = the file could not be read or parsed; `stale` = its
+ * mtime is past the staleness bound. Both are error entries — never
+ * zeros.
  */
 export function entryFromFileExport(
   doc: FileExportDoc | null,
@@ -112,7 +261,7 @@ export function entryFromFileExport(
   const entry: QuotaCurrentEntry = {
     providerId: "meta",
     providerName: "Meta",
-    serviceId: "meta:high-usage",
+    serviceId: "meta",
     state: "error",
     measuredAt: opts.fileMtimeIso ?? new Date(0).toISOString(),
     source: doc?.source ?? "file-export",
@@ -137,7 +286,7 @@ export function entryFromFileExport(
   entry.measuredAt = measuredAt;
   for (const w of doc.windows ?? []) {
     const pct = num(w.usedPct);
-    if (!w.name || pct == null) continue;
+    if (!w.name || pct == null || pct < 0 || pct > 100) continue;
     entry.windows.push({
       name: w.name,
       value: pct,
@@ -155,7 +304,7 @@ export function entryFromFileExport(
     });
   }
   const labelWindow = (name: string, usd: number | null | undefined): void => {
-    if (typeof usd !== "number" || !Number.isFinite(usd)) return;
+    if (typeof usd !== "number" || !Number.isFinite(usd) || usd < 0) return;
     entry.windows.push({
       name,
       value: null,
@@ -175,10 +324,11 @@ export function entryFromFileExport(
 
 /** Map one provider result onto a quota-current entry. */
 export function entryFromResult(result: QuotaProviderResult, tickIso: string): QuotaCurrentEntry {
-  const measuredAt =
-    typeof result.fetchedAt === "number" && Number.isFinite(result.fetchedAt)
-      ? new Date(result.fetchedAt).toISOString()
-      : tickIso;
+  let measuredAt = tickIso;
+  if (typeof result.fetchedAt === "number" && Number.isFinite(result.fetchedAt) && result.fetchedAt > 0) {
+    const fetchedDate = new Date(result.fetchedAt);
+    if (Number.isFinite(fetchedDate.getTime())) measuredAt = fetchedDate.toISOString();
+  }
   const state: QuotaCurrentEntry["state"] = result.ok ? "ok" : result.configured ? "error" : "unconfigured";
   const entry: QuotaCurrentEntry = {
     providerId: result.providerId,
@@ -187,16 +337,30 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
     state,
     measuredAt,
     source: GATHERER_SOURCE,
+    credentialWatch: true,
     windows: [],
   };
   if (result.credentialId) entry.credentialId = result.credentialId;
   if (result.credentialLabel) entry.credentialLabel = result.credentialLabel;
+  const expiry = result.credentialExpiresAt;
+  if (typeof expiry === "number" && Number.isFinite(expiry)) {
+    const date = new Date(expiry);
+    if (Number.isFinite(date.getTime())) entry.credentialExpiresAt = date.toISOString();
+  } else if (isIsoDate(expiry)) {
+    entry.credentialExpiresAt = new Date(expiry).toISOString();
+  }
+  if (result.credentialSource) entry.credentialSource = result.credentialSource;
   if (result.planLabel) entry.planLabel = result.planLabel;
-  if (result.error) entry.error = result.error;
+  if (result.error) entry.error = safeProviderReason(result.error);
+  if (typeof result.failureClass === "string" && result.failureClass !== "") entry.failureClass = result.failureClass;
+  if (typeof result.lastSuccessAt === "number" && Number.isFinite(result.lastSuccessAt) && result.lastSuccessAt > 0) {
+    entry.lastSuccessAt = new Date(result.lastSuccessAt).toISOString();
+  }
   if (result.usage != null) entry.usage = result.usage;
 
   const pushWindow = (name: string, raw: RawWindow | null | undefined): void => {
     const pct = num(raw?.usedPercent);
+    if (pct != null && (pct < 0 || pct > 100)) return;
     entry.windows.push({
       name,
       value: pct,
@@ -227,7 +391,36 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
       }
     }
   }
+  // Ok-but-null is NOT a measurement. A provider can answer ok:true
+  // with every window's percentage unknown — Meta's plan endpoint
+  // does exactly this on a 200 / is_subs_active:true response with no
+  // subs_usage (the provider's "post-roll empty state", meta.js in
+  // the OpenChamber quota module) — and since 2026-11-03 that shape
+  // has replaced Meta's last good percentage read (100% weekly,
+  // 2026-11-03T21:00Z) with fresh-looking null rows on every tick.
+  // Name it on the entry so the gatherer can degrade the run to an
+  // error and #1268 retention can keep the last-known rows, stale
+  // with this reason, instead of publishing null as current data.
+  if (result.ok && !entryHasMeasuredWindow(entry) && !entry.error) {
+    entry.error = `no-data: provider reported ok but no window carried a percentage${
+      entry.failureClass ? ` (failureClass=${entry.failureClass})` : ""
+    }${entry.lastSuccessAt ? ` (provider lastSuccessAt=${entry.lastSuccessAt})` : ""}`;
+  }
   return entry;
+}
+
+/**
+ * Whether an entry carries at least one measured window: a
+ * percentage window, or the CNY balance label that recordsFromEntries
+ * treats as a measurement in its own unit (#1052, the DeepSeek
+ * reserve — a label-only provider must not degrade on this rule).
+ * Plain USD/credit balance labels do NOT count: a balance is not a
+ * plan reading.
+ */
+export function entryHasMeasuredWindow(entry: QuotaCurrentEntry): boolean {
+  return entry.windows.some(
+    (w) => w.pctOfLimit != null || (w.valueLabel != null && /^¥\s*[\d,]+(?:\.\d+)?/.test(w.valueLabel.trim())),
+  );
 }
 
 /**
@@ -426,6 +619,15 @@ export const TURSO_SOURCE = "turso-api";
 const gb = (bytes: number): number => Math.round((bytes / 1e9) * 1e6) / 1e6;
 const pct3 = (used: number, limit: number): number => Math.round((used / limit) * 100 * 1000) / 1000;
 
+/** Turso usage counts are counts: a negative value is impossible, so it is
+ * treated exactly like a metric the response does not carry (#2553) — the
+ * window is omitted, never published negative. Local to entryFromTurso:
+ * the shared num() keeps its semantics for the other mappers. */
+const numNonNegative = (v: unknown): number | null => {
+  const n = num(v);
+  return n !== null && n < 0 ? null : n;
+};
+
 /**
  * Map one Turso usage + subscription read onto a quota-current
  * entry (serviceId "turso", the SaaS card's snapshot id, so the
@@ -465,10 +667,15 @@ export function entryFromTurso(
     return entry;
   }
   const periodEnd = sub?.current_billing_period_end ?? sub?.current_period_end ?? sub?.period_end ?? sub?.ends_at;
-  const periodStart = sub?.current_billing_period_start ?? sub?.current_period_start ?? sub?.period_start ?? sub?.starts_at;
+  const periodStart =
+    sub?.current_billing_period_start ?? sub?.current_period_start ?? sub?.period_start ?? sub?.starts_at;
   const resetsAt = normalizeResetAt(periodEnd);
-  const startMs = typeof periodStart === "string" ? Date.parse(periodStart) : Number.NaN;
-  const endMs = typeof periodEnd === "string" ? Date.parse(periodEnd) : Number.NaN;
+  // Gate both stamps with isIsoDate before Date.parse (#5091): Date.parse
+  // rolls impossible dates (2026-02-30 -> Mar 2) and parses non-ISO strings
+  // timezone-dependently, so a malformed period would silently publish a
+  // window length days off. A present-but-invalid stamp yields null.
+  const startMs = isIsoDate(periodStart) ? Date.parse(periodStart) : Number.NaN;
+  const endMs = isIsoDate(periodEnd) ? Date.parse(periodEnd) : Number.NaN;
   const windowSeconds =
     Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs ? Math.round((endMs - startMs) / 1000) : null;
 
@@ -486,9 +693,9 @@ export function entryFromTurso(
       state: "ok",
     });
   };
-  const databases = num(usage.databases);
+  const databases = numNonNegative(usage.databases);
   push("databases", databases, TURSO_LIMITS.databases, databases ?? 0, `${databases} / ${TURSO_LIMITS.databases}`);
-  const storageBytes = num(usage.storage_bytes);
+  const storageBytes = numNonNegative(usage.storage_bytes);
   push(
     "storage",
     storageBytes,
@@ -496,7 +703,7 @@ export function entryFromTurso(
     storageBytes == null ? 0 : gb(storageBytes),
     `${storageBytes == null ? "?" : gb(storageBytes)} GB / 5 GB`,
   );
-  const rowsRead = num(usage.rows_read);
+  const rowsRead = numNonNegative(usage.rows_read);
   push(
     "rows-read",
     rowsRead,
@@ -504,7 +711,7 @@ export function entryFromTurso(
     rowsRead ?? 0,
     `${rowsRead?.toLocaleString("en-US")} / ${TURSO_LIMITS.rowsRead.toLocaleString("en-US")}`,
   );
-  const rowsWritten = num(usage.rows_written);
+  const rowsWritten = numNonNegative(usage.rows_written);
   push(
     "rows-written",
     rowsWritten,
@@ -512,7 +719,7 @@ export function entryFromTurso(
     rowsWritten ?? 0,
     `${rowsWritten?.toLocaleString("en-US")} / ${TURSO_LIMITS.rowsWritten.toLocaleString("en-US")}`,
   );
-  const bytesSynced = num(usage.bytes_synced);
+  const bytesSynced = numNonNegative(usage.bytes_synced);
   push(
     "sync",
     bytesSynced,

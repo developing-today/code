@@ -57,6 +57,26 @@ export function parseOrderedListStart(raw: string | null): number {
 }
 
 /**
+ * Parse an <img> `width`/`height` attribute into the image node's
+ * width/height attr (#2010). Only a plain non-negative decimal integer
+ * that fits in a safe integer is preserved (0 included); anything else
+ * — malformed text, fractions, negatives, units/percentages, hex or
+ * scientific notation, empty, an absent attribute, or an
+ * unrepresentable magnitude — is dropped to null at parse time. The
+ * bare Number() this replaces let NaN through and reinterpreted values
+ * like "0x10" as 16, while the markdown codec reads dimensions as u64,
+ * so invalid dimensions were silently dropped (or invented) on save
+ * instead of being rejected where the paste happened.
+ */
+export function parseImageDimension(raw: string | null): number | null {
+  if (raw === null) return null;
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const n = Number(trimmed);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+/**
  * Full schema with list support and GFM extensions for rich/markdown/plain modes.
  * Extends prosemirror-schema-basic with strikethrough mark, task list nodes, and table nodes.
  */
@@ -130,6 +150,10 @@ export const richSchema = new Schema({
       attrs: {
         order: { default: 1, validate: "number" },
         tight: { default: true },
+        // #1380: mirror the codec's delimiter attr ("period"/"paren",
+        // default period) so paren-style lists are not rewritten on
+        // save; undeclared, it was dropped on editor load.
+        delimiter: { default: "period" },
       },
     })
     .update("image", {
@@ -160,8 +184,8 @@ export const richSchema = new Schema({
               src: el.getAttribute("src"),
               alt: el.getAttribute("alt"),
               title: el.getAttribute("title"),
-              width: el.getAttribute("width") ? Number(el.getAttribute("width")) : null,
-              height: el.getAttribute("height") ? Number(el.getAttribute("height")) : null,
+              width: parseImageDimension(el.getAttribute("width")),
+              height: parseImageDimension(el.getAttribute("height")),
               linkHref: anchor?.getAttribute("href") ?? null,
               linkTitle: anchor?.getAttribute("title") ?? null,
             };
@@ -191,7 +215,13 @@ export const richSchema = new Schema({
         // depends on it so multi-block task items do not fuse on save.
         // #997: ordered task lists carry their start in `order` (null for
         // bullet task lists), mirroring the markdown codec's attrs.order.
-        attrs: { tight: { default: true }, order: { default: null } },
+        // #1380: ordered task lists also carry `delimiter`, mirroring
+        // the codec (default period, as in ordered_list above).
+        attrs: {
+          tight: { default: true },
+          order: { default: null },
+          delimiter: { default: "period" },
+        },
         parseDOM: [
           {
             tag: "ul",
@@ -214,9 +244,11 @@ export const richSchema = new Schema({
               // reflection admits fractional/negative/hex starts the u64
               // markdown codec cannot represent).
               const el = dom as HTMLOListElement;
-              if (el.classList.contains("contains-task-list")) return { order: parseOrderedListStart(el.getAttribute("start")) };
+              if (el.classList.contains("contains-task-list"))
+                return { order: parseOrderedListStart(el.getAttribute("start")) };
               const firstLi = el.querySelector("li");
-              if (firstLi?.querySelector('input[type="checkbox"]')) return { order: parseOrderedListStart(el.getAttribute("start")) };
+              if (firstLi?.querySelector('input[type="checkbox"]'))
+                return { order: parseOrderedListStart(el.getAttribute("start")) };
               return false;
             },
           },
@@ -320,6 +352,69 @@ export const richSchema = new Schema({
         ],
         toDOM(node) {
           return ["span", { "data-html-inline": node.attrs.html as string }, node.attrs.html as string];
+        },
+      },
+      // #1369: YAML front matter block (`---` delimiter only; TOML
+      // `+++` is out of scope) carried verbatim in `text`; the markdown
+      // codec reads/writes it. Atom leaf, never a heading/paragraph.
+      front_matter: {
+        group: "block",
+        atom: true,
+        selectable: false,
+        attrs: { text: { default: "" } },
+        parseDOM: [
+          {
+            tag: "pre[data-front-matter]",
+            getAttrs(dom) {
+              return { text: (dom as HTMLElement).dataset.frontMatter ?? "" };
+            },
+          },
+        ],
+        toDOM(node) {
+          return ["pre", { "data-front-matter": node.attrs.text as string }];
+        },
+      },
+      // #1347: footnote reference atom carrying `label`; the markdown
+      // codec reads/writes it (markdown.rs). Display shows the
+      // reference as inert text — never rendered as live markup.
+      footnote_reference: {
+        inline: true,
+        group: "inline",
+        atom: true,
+        selectable: true,
+        attrs: { label: { default: "" } },
+        parseDOM: [
+          {
+            tag: "span[data-footnote-reference]",
+            getAttrs(dom) {
+              return { label: (dom as HTMLElement).dataset.footnoteReference ?? "" };
+            },
+          },
+        ],
+        toDOM(node) {
+          const label = node.attrs.label as string;
+          return ["span", { "data-footnote-reference": label }, `[^${label}]`];
+        },
+      },
+      // #1347: footnote definition block carrying `label` plus block
+      // children (paragraphs, lists, code blocks per #1031); the
+      // markdown codec reads/writes it. The label travels in the data
+      // attribute only — children render normally.
+      footnote_definition: {
+        group: "block",
+        content: "block+",
+        defining: true,
+        attrs: { label: { default: "" } },
+        parseDOM: [
+          {
+            tag: "div[data-footnote-definition]",
+            getAttrs(dom) {
+              return { label: (dom as HTMLElement).dataset.footnoteDefinition ?? "" };
+            },
+          },
+        ],
+        toDOM(node) {
+          return ["div", { "data-footnote-definition": node.attrs.label as string }, 0];
         },
       },
     }),

@@ -13,6 +13,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
 use crate::Refusal;
+pub use crate::is_format_char;
 
 const MAX_PETNAME_CHARS: usize = 64;
 const FINGERPRINT_CHARS: usize = 6;
@@ -233,38 +234,6 @@ fn looks_like(name: &str) -> anyhow::Error {
     Refusal::Conflict(format!("that name looks too much like {name}")).into()
 }
 
-/// Whether `c` is a Unicode format character (general category Cf):
-/// zero-width spaces and joiners, bidi controls and isolates, the word
-/// joiner, soft hyphen, and the rest of the category. Rust's
-/// `char::is_control` covers only category Cc, and Cf characters are
-/// invisible or reorder the text around them, so a name carrying one
-/// can render exactly like another name. Ranges are the Cf set of
-/// Unicode 16. Shared with the other name boundaries (invite names,
-/// #1770) so every surface refuses the same set.
-pub fn is_format_char(c: char) -> bool {
-    matches!(c,
-        '\u{00AD}'
-        | '\u{0600}'..='\u{0605}'
-        | '\u{06DD}'
-        | '\u{070F}'
-        | '\u{0890}'..='\u{0891}'
-        | '\u{08E2}'
-        | '\u{180E}'
-        | '\u{200B}'..='\u{200F}'
-        | '\u{202A}'..='\u{202E}'
-        | '\u{2060}'..='\u{2064}'
-        | '\u{2066}'..='\u{206F}'
-        | '\u{FEFF}'
-        | '\u{FFF9}'..='\u{FFFB}'
-        | '\u{110BD}'
-        | '\u{110CD}'
-        | '\u{13430}'..='\u{1343F}'
-        | '\u{1BCA0}'..='\u{1BCA3}'
-        | '\u{1D173}'..='\u{1D182}'
-        | '\u{E0001}'
-        | '\u{E0020}'..='\u{E007F}')
-}
-
 /// The name with every format character (category Cf) removed, for the
 /// comparison path: a petname stored before Cf was refused, or an
 /// alleged name carrying Cf, must compare by what it renders as.
@@ -305,13 +274,17 @@ pub fn fold(name: &str) -> String {
     strip_format_chars(name).to_lowercase()
 }
 
-/// The name with look-alike characters mapped to one form, so `PayPa1` and
-/// `PayPal` compare equal. The fold lowercases first, so capital `I` lands
-/// in the `i` class and maps to `l` with `1` and `|` (#2069); `8` maps to
-/// `b`, symmetric with the other mapped digits.
+/// The name's UTS #39 confusable skeleton, plus the petname-specific ASCII
+/// look-alike rules, so cross-script look-alikes and `PayPa1`/`PayPal` compare
+/// equal. The fold lowercases first, so capital `I` lands in the `i` class and
+/// maps to `l` with `1` and `|` (#2069); `8` maps to `b`, symmetric with the
+/// other mapped digits.
 #[must_use]
 pub fn skeleton(name: &str) -> String {
-    let mapped: String = fold(name)
+    let folded = fold(name);
+    let unicode_skeleton: String = unicode_security::skeleton(&folded).collect();
+    let folded_skeleton = fold(&unicode_skeleton);
+    let mapped: String = folded_skeleton
         .chars()
         .map(|c| match c {
             '0' => 'o',
@@ -447,6 +420,86 @@ mod tests {
         let error = store.set(OWNER, CAROL, "PayPa1", alleged).unwrap_err();
         assert!(matches!(refusal(&error), Some(Refusal::Conflict(_))));
         assert!(store.get(OWNER, CAROL).is_none());
+    }
+
+    #[test]
+    fn test_cross_script_confusables_are_refused_for_petnames_and_alleged_names() {
+        for (latin, confusable) in [
+            ("Alice", "Аlice"),
+            ("PayPal", "Pаypal"),
+            ("Bob", "Bоb"),
+            ("Peter", "Pеter"),
+            ("Carol", "Сarol"),
+            ("bob", "bοb"),
+        ] {
+            let mut store = Petnames::new();
+            store.set(OWNER, ALICE, latin, []).unwrap();
+            let error = store.set(OWNER, BOB, confusable, []).unwrap_err();
+            assert!(
+                matches!(refusal(&error), Some(Refusal::Conflict(_))),
+                "{confusable:?} should not mimic the existing petname {latin:?}"
+            );
+
+            let mut store = Petnames::new();
+            let error = store
+                .set(OWNER, BOB, confusable, [(ALICE, latin)])
+                .unwrap_err();
+            assert!(
+                matches!(refusal(&error), Some(Refusal::Conflict(_))),
+                "{confusable:?} should not mimic the alleged name {latin:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ascii_confusable_controls_remain_refused() {
+        for (latin, confusable) in [("PayPal", "PayPa1"), ("mum", "rnurn"), ("Mom", "M0m")] {
+            let mut store = Petnames::new();
+            store.set(OWNER, ALICE, latin, []).unwrap();
+            let error = store.set(OWNER, BOB, confusable, []).unwrap_err();
+            assert!(
+                matches!(refusal(&error), Some(Refusal::Conflict(_))),
+                "{confusable:?} should remain confusable with {latin:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_unrelated_and_single_script_cyrillic_petnames_are_accepted() {
+        let mut store = Petnames::new();
+        store.set(OWNER, ALICE, "Иван", []).unwrap();
+        store.set(OWNER, BOB, "Dana", []).unwrap();
+        assert_eq!(store.get(OWNER, ALICE), Some("Иван"));
+        assert_eq!(store.get(OWNER, BOB), Some("Dana"));
+    }
+
+    #[test]
+    fn test_legacy_cross_script_petname_collisions_get_fingerprints() {
+        let contacts = [
+            Contact {
+                id: ALICE,
+                alleged: "Alice",
+                petname: Some("PayPal"),
+            },
+            Contact {
+                id: BOB,
+                alleged: "Bob",
+                petname: Some("Pаypal"),
+            },
+        ];
+        assert_eq!(
+            labels(&contacts),
+            vec![
+                Label::SharedPetname {
+                    name: "PayPal".to_owned(),
+                    fingerprint: "aa11aa".to_owned(),
+                },
+                Label::SharedPetname {
+                    name: "Pаypal".to_owned(),
+                    fingerprint: "bb22bb".to_owned(),
+                },
+            ]
+        );
     }
 
     #[test]
@@ -741,6 +794,7 @@ mod tests {
             "Pay\u{200B}Pal",
             "Pay\u{202A}Pal",
             "Pay\u{202E}Pal",
+            "Pay\u{061C}Pal",
             "Pay\u{2060}Pal",
             "Pay\u{FEFF}Pal",
             "Pay\u{00AD}Pal",
@@ -749,6 +803,7 @@ mod tests {
             "Pay\u{FFF9}Pal",
             "Pay\u{E0001}Pal",
             "Pay\u{E0041}Pal",
+            "Pay\u{1D17A}Pal",
         ] {
             assert!(normalize_name(bad).is_err(), "{bad:?} must be refused");
         }

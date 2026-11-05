@@ -1,6 +1,8 @@
-import { SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { env as testBindings, runInDurableObject, SELF } from "cloudflare:test";
+import { describe, expect, it, vi } from "vitest";
+import worker, { type Env } from "../src/index";
 import { parseDnsMessage, signableBytes, z32Decode, z32Encode } from "../src/pkarr";
+import { retentionMilliseconds } from "../src/retention";
 import { buildRelayPayload, dnsPacketWithTxt, dnsQuery, keypairFromSeed } from "./helpers";
 
 const BASE = "https://pkarr.test";
@@ -26,6 +28,80 @@ async function put(key: string, payload: Uint8Array): Promise<Response> {
 
 async function get(key: string): Promise<Response> {
   return SELF.fetch(`${BASE}/pkarr/${key}`);
+}
+
+function mockStore(retentionSeconds: string | undefined) {
+  let payload: Uint8Array | null = null;
+  const alarms: number[] = [];
+  const store = {
+    async putPacket(value: Uint8Array) {
+      payload = value;
+      const now = Date.now();
+      alarms.push(now + retentionMilliseconds(retentionSeconds, now));
+      return "stored" as const;
+    },
+    async getPacket() {
+      return payload;
+    },
+  };
+  return { store, alarms };
+}
+
+function testEnv(store: ReturnType<typeof mockStore>["store"], retentionSeconds: string | undefined): Env {
+  const allow = { limit: async () => ({ success: true }) };
+  return {
+    ORIGIN,
+    RETENTION_SECONDS: retentionSeconds as string,
+    DNS_TTL: "30",
+    PUT_LIMITER: allow,
+    GET_LIMITER: allow,
+    DOH_LIMITER: allow,
+    PKARR_STORE: {
+      idFromName: (name: string) => name,
+      get: () => store,
+    } as unknown as Env["PKARR_STORE"],
+  } as unknown as Env;
+}
+
+function requestWithStream(
+  url: string,
+  method: string,
+  body: ReadableStream<Uint8Array>,
+  headers: Record<string, string> = {},
+): Request {
+  return new Request(url, {
+    method,
+    headers,
+    body,
+    duplex: "half",
+  } as RequestInit);
+}
+
+function endlessByteStream(chunkSize: number, onPull?: () => void) {
+  let pulls = 0;
+  let cancelled = false;
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        pulls++;
+        onPull?.();
+        controller.enqueue(new Uint8Array(chunkSize));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  return {
+    stream,
+    get pulls() {
+      return pulls;
+    },
+    get cancelled() {
+      return cancelled;
+    },
+  };
 }
 
 describe("z32 codec", () => {
@@ -57,6 +133,52 @@ describe("signable bytes", () => {
   });
 });
 
+describe("RETENTION_SECONDS", () => {
+  it.each([
+    { label: "missing", setting: undefined, expectedMilliseconds: 604_800_000 },
+    { label: "zero", setting: "0", expectedMilliseconds: 604_800_000 },
+    { label: "negative", setting: "-1", expectedMilliseconds: 604_800_000 },
+    { label: "unit suffix", setting: "7d", expectedMilliseconds: 604_800_000 },
+    { label: "whitespace", setting: "  ", expectedMilliseconds: 604_800_000 },
+    { label: "scientific notation", setting: "1e9", expectedMilliseconds: 604_800_000 },
+    { label: "fractional seconds", setting: "3600.5", expectedMilliseconds: 604_800_000 },
+    { label: "plus sign", setting: "+3600", expectedMilliseconds: 604_800_000 },
+    { label: "out-of-range value", setting: "8640000000000", expectedMilliseconds: 604_800_000 },
+    { label: "seven-day default", setting: "604800", expectedMilliseconds: 604_800_000 },
+    { label: "valid decimal seconds", setting: "3600", expectedMilliseconds: 3_600_000 },
+  ])(
+    "$label still supports PUT then GET and schedules the expected retention",
+    async ({ setting, expectedMilliseconds }) => {
+      const now = 1_800_000_000_000;
+      const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
+      try {
+        const { store, alarms } = mockStore(setting);
+        const env = testEnv(store, setting);
+        const kp = keypair(25);
+        const key = z32(kp.publicKey);
+        const payload = buildRelayPayload(kp, TS, dnsPacketWithTxt(`_iroh.${key}`, "retention-test"));
+
+        const putResponse = await worker.fetch(
+          new Request(`${BASE}/pkarr/${key}`, {
+            method: "PUT",
+            headers: { "content-type": "application/x-pkarr-signed-packet" },
+            body: payload,
+          }),
+          env,
+        );
+        expect(putResponse.status).toBe(204);
+
+        const getResponse = await worker.fetch(new Request(`${BASE}/pkarr/${key}`), env);
+        expect(getResponse.status).toBe(200);
+        expect(new Uint8Array(await getResponse.arrayBuffer())).toEqual(payload);
+        expect(alarms).toEqual([now + expectedMilliseconds]);
+      } finally {
+        nowSpy.mockRestore();
+      }
+    },
+  );
+});
+
 describe("pkarr HTTP relay", () => {
   it("publishes and resolves a signed packet verbatim", async () => {
     const kp = keypair(11);
@@ -68,6 +190,13 @@ describe("pkarr HTTP relay", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("application/x-pkarr-signed-packet");
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(payload);
+
+    const bindings = testBindings as unknown as Env;
+    const stub = bindings.PKARR_STORE.get(bindings.PKARR_STORE.idFromName(key));
+    const alarmAt = await runInDurableObject(stub, (_instance, state) => state.storage.getAlarm());
+    expect(alarmAt).not.toBeNull();
+    expect(alarmAt! - Date.now()).toBeGreaterThan(604_790_000);
+    expect(alarmAt! - Date.now()).toBeLessThanOrEqual(604_800_000);
   });
 
   it("returns 404 for an unknown key", async () => {
@@ -97,6 +226,34 @@ describe("pkarr HTTP relay", () => {
     const payload = buildRelayPayload(kp, TS, new Uint8Array(1001).fill(7));
     expect(payload.length).toBe(1073);
     expect((await put(key, payload)).status).toBe(413);
+  });
+
+  it("rejects an over-cap declared Content-Length before reading a PUT body", async () => {
+    const key = z32(keypair(26).publicKey);
+    const body = endlessByteStream(1);
+    const response = await worker.fetch(
+      requestWithStream(`${BASE}/pkarr/${key}`, "PUT", body.stream, {
+        "content-length": String(1073),
+      }),
+      testEnv(mockStore(undefined).store, undefined),
+    );
+
+    expect(response.status).toBe(413);
+    expect(body.pulls).toBe(0);
+    expect(body.cancelled).toBe(true);
+  });
+
+  it("cancels a streamed PUT as soon as its body exceeds the cap", async () => {
+    const key = z32(keypair(27).publicKey);
+    const body = endlessByteStream(600);
+    const response = await worker.fetch(
+      requestWithStream(`${BASE}/pkarr/${key}`, "PUT", body.stream),
+      testEnv(mockStore(undefined).store, undefined),
+    );
+
+    expect(response.status).toBe(413);
+    expect(body.pulls).toBe(2);
+    expect(body.cancelled).toBe(true);
   });
 
   it("accepts a packet at exactly 1000 bytes", async () => {
@@ -194,6 +351,51 @@ describe("DNS-over-HTTPS", () => {
     if (typeof parsed === "string") throw new Error(parsed);
     expect(parsed.flags & 0x000f).toBe(5); // REFUSED
     expect((await doh(new Uint8Array([1, 2, 3]))).status).toBe(400);
+  });
+
+  it("rejects an over-cap declared Content-Length before reading a DoH POST body", async () => {
+    const body = endlessByteStream(1);
+    const response = await worker.fetch(
+      requestWithStream(`${BASE}/dns-query`, "POST", body.stream, {
+        "content-length": String(4097),
+      }),
+      testEnv(mockStore(undefined).store, undefined),
+    );
+
+    expect(response.status).toBe(413);
+    expect(body.pulls).toBe(0);
+    expect(body.cancelled).toBe(true);
+  });
+
+  it("cancels a streamed DoH POST as soon as its body exceeds the cap", async () => {
+    const body = endlessByteStream(2048);
+    const response = await worker.fetch(
+      requestWithStream(`${BASE}/dns-query`, "POST", body.stream),
+      testEnv(mockStore(undefined).store, undefined),
+    );
+
+    expect(response.status).toBe(413);
+    expect(body.pulls).toBe(3);
+    expect(body.cancelled).toBe(true);
+  });
+
+  it("checks the DoH limiter before reading a POST body", async () => {
+    const order: string[] = [];
+    const body = endlessByteStream(1, () => order.push("read"));
+    const env = testEnv(mockStore(undefined).store, undefined);
+    env.DOH_LIMITER = {
+      limit: async () => {
+        order.push("limit");
+        return { success: false };
+      },
+    } as Env["DOH_LIMITER"];
+
+    const response = await worker.fetch(requestWithStream(`${BASE}/dns-query`, "POST", body.stream), env);
+
+    expect(response.status).toBe(429);
+    expect(order).toEqual(["limit"]);
+    expect(body.pulls).toBe(0);
+    expect(body.cancelled).toBe(true);
   });
 });
 

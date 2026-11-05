@@ -25,7 +25,7 @@ use crate::chain::{ChainExt, Event, MAX_AFTER, sign};
 use crate::documents::{DOCUMENT_KIND, DocumentRef, REMOVAL_KIND};
 use crate::event_store::{EventStore, Ingest};
 use crate::notes::{
-    AppliedNote, CREATE_KIND as NOTE_CREATE_KIND, NoteOp, NoteRecord,
+    AppliedNote, CREATE_KIND as NOTE_CREATE_KIND, NoteFoldError, NoteOp, NoteRecord,
     REVISE_KIND as NOTE_REVISE_KIND, check_note_op, fold_notes,
 };
 use crate::search::{Hit, ValueMatch, search_store};
@@ -169,6 +169,45 @@ pub struct Published {
 
 /// Every applied event's entry by ID, and every applied event's parents by ID.
 type Log = (HashMap<Hash, Entry>, HashMap<Hash, Vec<Hash>>);
+
+/// Folds store note events while quarantining malformed remote revisions.
+///
+/// Unknown/foreign-parent revisions are removed first. If the remaining same-note graph is
+/// cyclic, remove a revision identified by the strict fold and repeat so its dependents are
+/// quarantined too; unrelated healthy notes remain readable.
+fn fold_remote_notes(
+    mut applied: Vec<AppliedNote>,
+) -> std::result::Result<Vec<NoteRecord>, NoteFoldError> {
+    loop {
+        let owners: HashMap<Hash, Hash> = applied
+            .iter()
+            .map(|event| match &event.op {
+                NoteOp::Create { .. } => (event.id, event.id),
+                NoteOp::Revise { note, .. } => (event.id, *note),
+            })
+            .collect();
+        let before = applied.len();
+        applied.retain(|event| match &event.op {
+            NoteOp::Create { .. } => true,
+            NoteOp::Revise { note, parents, .. } => {
+                owners.get(note) == Some(note)
+                    && parents
+                        .iter()
+                        .all(|parent| owners.get(parent) == Some(note))
+            }
+        });
+        if applied.len() != before {
+            continue;
+        }
+
+        match fold_notes(&applied) {
+            Err(NoteFoldError::CyclicParent { revision, .. }) => {
+                applied.retain(|event| event.id != revision);
+            }
+            result => return result,
+        }
+    }
+}
 
 /// The event store, and the key the node signs its events with.
 #[derive(Debug)]
@@ -490,39 +529,11 @@ impl LocalEvents {
                 _ => None,
             })
             .collect();
-        // Quarantine invalid remote revisions (PR #3908 Codex P1): ingest
-        // applies a signed note.revise after checking only its shape, so a
-        // peer can land a revision naming an unknown note or parent, and
-        // the strict fold would then fail every note query in the store --
-        // notes(), note_history(), and revise_note() with it. Drop,
-        // repeatedly (a revision that names a dropped one as parent goes
-        // too), every revise whose note has no create here or whose
-        // parents are not revisions of that note. The events stay in the
-        // store; valid notes fold exactly as before.
-        let mut applied = applied;
-        loop {
-            let owners: HashMap<Hash, Hash> = applied
-                .iter()
-                .map(|event| match &event.op {
-                    NoteOp::Create { .. } => (event.id, event.id),
-                    NoteOp::Revise { note, .. } => (event.id, *note),
-                })
-                .collect();
-            let before = applied.len();
-            applied.retain(|event| match &event.op {
-                NoteOp::Create { .. } => true,
-                NoteOp::Revise { note, parents, .. } => {
-                    owners.get(note) == Some(note)
-                        && parents
-                            .iter()
-                            .all(|parent| owners.get(parent) == Some(note))
-                }
-            });
-            if applied.len() == before {
-                break;
-            }
-        }
-        Ok(fold_notes(&applied)?)
+        // Ingest checks only a revision's shape, not whether its note graph
+        // can be folded. Quarantine invalid remote revisions so one bad event
+        // cannot disable notes(), note_history(), or revise_note() for the
+        // healthy notes in this store. The events stay in the store.
+        Ok(fold_remote_notes(applied)?)
     }
 
     /// The note `note`: its revisions in ID order and its current heads.
@@ -710,6 +721,9 @@ impl LocalEvents {
             document,
             removes,
             note,
+            link: None,
+            checkpoint: None,
+            rotation: None,
         };
         let event = sign(&self.key, chain.next_seq, chain.head, None, ext)?;
         match self.store.ingest(&event.bytes, now_ms())? {
@@ -936,9 +950,11 @@ mod tests {
         assert_eq!(record.heads, vec![merged]);
         assert_eq!(record.revisions.len(), 4);
         // A parent that is not a revision of this note is refused before signing.
-        assert!(events
-            .revise_note(note, "text/markdown", b"bad", &[id(222)])
-            .is_err());
+        assert!(
+            events
+                .revise_note(note, "text/markdown", b"bad", &[id(222)])
+                .is_err()
+        );
     }
 
     #[test]
@@ -966,6 +982,9 @@ mod tests {
                     content: DocumentRef::for_bytes("text/markdown", b"bogus").unwrap(),
                     parents: vec![id(223)],
                 }),
+                link: None,
+                checkpoint: None,
+                rotation: None,
             },
         )
         .unwrap();
@@ -975,9 +994,61 @@ mod tests {
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].id, note);
         assert!(events.note_history(note).is_ok());
-        assert!(events
-            .revise_note(note, "text/markdown", b"second", &[note])
-            .is_ok());
+        assert!(
+            events
+                .revise_note(note, "text/markdown", b"second", &[note])
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_cyclic_remote_revisions_do_not_disable_healthy_notes() {
+        fn applied_create(byte: u8) -> AppliedNote {
+            AppliedNote {
+                id: id(byte),
+                author: [1; 32],
+                op: NoteOp::Create {
+                    content: DocumentRef::for_bytes("text/markdown", b"note").unwrap(),
+                },
+            }
+        }
+
+        fn applied_revise(event: u8, note: u8, parents: &[u8]) -> AppliedNote {
+            AppliedNote {
+                id: id(event),
+                author: [1; 32],
+                op: NoteOp::Revise {
+                    note: id(note),
+                    content: DocumentRef::for_bytes("text/markdown", b"revision").unwrap(),
+                    parents: parents.iter().map(|parent| id(*parent)).collect(),
+                },
+            }
+        }
+
+        for cyclic in [
+            vec![applied_revise(21, 20, &[21])],
+            vec![applied_revise(21, 20, &[22]), applied_revise(22, 20, &[21])],
+            vec![
+                applied_revise(21, 20, &[22]),
+                applied_revise(22, 20, &[23]),
+                applied_revise(23, 20, &[21]),
+            ],
+        ] {
+            let mut events = vec![
+                applied_create(10),
+                applied_revise(11, 10, &[10]),
+                applied_create(20),
+            ];
+            events.extend(cyclic);
+            events.push(applied_revise(24, 20, &[21]));
+
+            let notes = fold_remote_notes(events).unwrap();
+            assert_eq!(notes.len(), 2);
+            assert_eq!(notes[0].id, id(10));
+            assert_eq!(notes[0].revisions.len(), 2);
+            assert_eq!(notes[1].id, id(20));
+            assert_eq!(notes[1].revisions.len(), 1);
+        }
     }
 
     #[test]
@@ -1085,11 +1156,13 @@ mod tests {
         );
         // The returned ID is the final chunk's, the one that completes the clear.
         assert_eq!(chunks.last().unwrap().0, event);
-        assert!(events
-            .tags_on(subject)
-            .unwrap()
-            .iter()
-            .all(|claim| claim.name != "topic"));
+        assert!(
+            events
+                .tags_on(subject)
+                .unwrap()
+                .iter()
+                .all(|claim| claim.name != "topic")
+        );
         // Other names, and the same name on other subjects, are untouched.
         assert_eq!(events.tags_on(subject).unwrap().len(), 1);
         assert_eq!(events.tags_on(other_subject).unwrap().len(), 1);

@@ -12,8 +12,7 @@ name: identity build
 # vets both variants whenever the module changes.
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read

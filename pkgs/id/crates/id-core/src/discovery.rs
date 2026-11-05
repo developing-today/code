@@ -101,6 +101,10 @@ pub struct Defaults {
     pub topic: Option<String>,
     /// Topic secret from the `[topic_secret]` section (first non-comment line).
     pub topic_secret: Option<String>,
+    /// Web listener addresses from the `[web_bindings]` section (#2145),
+    /// kept as raw `IP:PORT` strings: parsing and validation happen at
+    /// serve startup, where a malformed line fails startup naming the line.
+    pub web_bindings: Vec<String>,
 }
 
 /// Parses a `defaults.conf`-formatted string into a [`Defaults`] struct.
@@ -136,6 +140,7 @@ pub struct Defaults {
 /// ```
 pub fn parse_defaults(conf: &str) -> Defaults {
     let mut bootstrap = Vec::new();
+    let mut web_bindings: Vec<String> = Vec::new();
     let mut topic: Option<String> = None;
     let mut topic_secret: Option<String> = None;
 
@@ -153,6 +158,7 @@ pub fn parse_defaults(conf: &str) -> Defaults {
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
             current_section = Some(match &trimmed[1..trimmed.len() - 1] {
                 "bootstrap" => "bootstrap",
+                "web_bindings" => "web_bindings",
                 "topic" => "topic",
                 "topic_secret" => "topic_secret",
                 _ => "unknown",
@@ -164,6 +170,9 @@ pub fn parse_defaults(conf: &str) -> Defaults {
         match current_section {
             Some("bootstrap") => {
                 bootstrap.push(trimmed.to_owned());
+            }
+            Some("web_bindings") => {
+                web_bindings.push(trimmed.to_owned());
             }
             Some("topic") if topic.is_none() => {
                 topic = Some(trimmed.to_owned());
@@ -179,6 +188,7 @@ pub fn parse_defaults(conf: &str) -> Defaults {
         bootstrap,
         topic,
         topic_secret,
+        web_bindings,
     }
 }
 
@@ -317,11 +327,18 @@ pub const STALE_THRESHOLD: Duration = Duration::from_secs(120);
 /// Set to 60 seconds. Peers older than [`STALE_THRESHOLD`] are removed.
 pub const STALE_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Maximum number of peer identities retained by one discovery table.
+pub const MAX_PEERS: usize = 1_000;
+
+/// Maximum UTF-8 byte length retained for a peer's advertised name.
+pub const MAX_PEER_NAME_BYTES: usize = 256;
+
 // ============================================================================
 // Types
 // ============================================================================
 
-/// A peer's presence announcement, broadcast over the gossip channel.
+/// A peer's presence claim. Gossip carries it inside the id crate's signed,
+/// versioned envelope; this plain structure is also nested in `/iroh-meta/3`.
 ///
 /// Serialized with [postcard](https://docs.rs/postcard) for compact binary
 /// encoding. Typical size: ~50-100 bytes depending on name length.
@@ -347,10 +364,8 @@ pub const STALE_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 ///     timestamp_secs: 1700000000,
 /// };
 ///
-/// // Serialize for gossip broadcast
-/// let bytes = postcard::to_allocvec(&announcement).unwrap();
-/// let decoded: PeerAnnouncement = postcard::from_bytes(&bytes).unwrap();
-/// assert_eq!(decoded.blob_count, 42);
+/// // Gossip senders wrap this claim in a signed, versioned envelope.
+/// assert_eq!(announcement.blob_count, 42);
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PeerAnnouncement {
@@ -379,9 +394,10 @@ pub struct PeerInfo {
 
 /// Thread-safe in-memory peer table.
 ///
-/// Collects [`PeerAnnouncement`] messages from the gossip channel and
-/// tracks peer liveness. Provides methods to query known peers and
-/// prune stale entries.
+/// Collects authenticated [`PeerAnnouncement`] messages from the gossip
+/// channel and tracks peer liveness. Callers must verify the signed gossip
+/// envelope before calling [`update`](Self::update). Provides methods to
+/// query known peers and prune stale entries.
 ///
 /// This type is cheaply cloneable (backed by `Arc`) and safe to share
 /// across async tasks.
@@ -452,8 +468,19 @@ impl PeerDiscovery {
     ///   deterministically — the most recent arrival wins.
     ///
     /// An announcement that passes both checks replaces the stored one
-    /// (or inserts a new peer), stamped with the local arrival time.
+    /// (or inserts a new peer), stamped with the local arrival time. The table
+    /// retains at most [`MAX_PEERS`]: a new identity may replace the oldest
+    /// stale entry (ties break by endpoint-ID bytes); if every entry is fresh,
+    /// the new identity is refused. Names longer than [`MAX_PEER_NAME_BYTES`]
+    /// are refused. Existing identities can always refresh.
     pub fn update(&self, announcement: PeerAnnouncement) {
+        if announcement
+            .name
+            .as_ref()
+            .is_some_and(|name| name.len() > MAX_PEER_NAME_BYTES)
+        {
+            return;
+        }
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
@@ -469,11 +496,29 @@ impl PeerDiscovery {
             {
                 return;
             }
+
+            let now = Instant::now();
+            if !peers.contains_key(&node_id) && peers.len() >= MAX_PEERS {
+                let victim = peers
+                    .iter()
+                    .filter(|(_, info)| now.duration_since(info.last_seen) >= STALE_THRESHOLD)
+                    .min_by(|(left_id, left), (right_id, right)| {
+                        left.last_seen
+                            .cmp(&right.last_seen)
+                            .then_with(|| left_id.as_bytes().cmp(right_id.as_bytes()))
+                    })
+                    .map(|(id, _)| *id);
+                let Some(victim) = victim else {
+                    return;
+                };
+                peers.remove(&victim);
+            }
+
             peers.insert(
                 node_id,
                 PeerInfo {
                     announcement,
-                    last_seen: Instant::now(),
+                    last_seen: now,
                 },
             );
         }
@@ -511,8 +556,8 @@ impl PeerDiscovery {
 
     /// Removes peers that haven't been seen for longer than `max_age`.
     ///
-    /// Call this periodically (every [`STALE_CHECK_INTERVAL`]) to keep
-    /// the peer table from growing unboundedly.
+    /// Call this periodically (every [`STALE_CHECK_INTERVAL`]) to discard
+    /// peers that have not been heard from or successfully probed.
     pub fn remove_stale(&self, max_age: Duration) {
         if let Ok(mut peers) = self.peers.write() {
             let now = Instant::now();
@@ -529,11 +574,36 @@ impl PeerDiscovery {
             return Vec::new();
         };
         let now = Instant::now();
-        peers
+        let mut stale: Vec<_> = peers
             .values()
             .filter(|info| now.duration_since(info.last_seen) >= STALE_THRESHOLD)
             .cloned()
-            .collect()
+            .collect();
+        stale.sort_by(|left, right| {
+            left.announcement
+                .node_id
+                .as_bytes()
+                .cmp(right.announcement.node_id.as_bytes())
+        });
+        stale
+    }
+
+    /// Removes `node_id` only if it is still older than `max_age`.
+    ///
+    /// This is used after a bounded probe batch: a concurrent announcement or
+    /// successful probe can refresh the peer while its network probe is in flight.
+    pub fn remove_if_stale(&self, node_id: &EndpointId, max_age: Duration) -> bool {
+        let Ok(mut peers) = self.peers.write() else {
+            return false;
+        };
+        let now = Instant::now();
+        let should_remove = peers
+            .get(node_id)
+            .is_some_and(|info| now.duration_since(info.last_seen) >= max_age);
+        if should_remove {
+            peers.remove(node_id);
+        }
+        should_remove
     }
 
     /// Refreshes the `last_seen` timestamp for a peer, preventing it from
@@ -579,6 +649,12 @@ mod tests {
         key_bytes[0] = seed;
         let secret = iroh_base::SecretKey::from_bytes(&key_bytes);
         secret.public()
+    }
+
+    fn make_node_id_from_index(index: u64) -> EndpointId {
+        let mut key_bytes = [0u8; 32];
+        key_bytes[..8].copy_from_slice(&index.to_be_bytes());
+        iroh_base::SecretKey::from_bytes(&key_bytes).public()
     }
 
     fn now_secs() -> u64 {
@@ -750,6 +826,18 @@ mod tests {
             Some("peer-1-updated".to_owned())
         );
         assert_eq!(peers[0].announcement.blob_count, 20);
+    }
+
+    #[test]
+    fn test_discovery_refuses_oversized_peer_names() {
+        let discovery = PeerDiscovery::new();
+        discovery.update(PeerAnnouncement {
+            node_id: make_node_id(88),
+            name: Some("x".repeat(MAX_PEER_NAME_BYTES + 1)),
+            blob_count: 1,
+            timestamp_secs: now_secs(),
+        });
+        assert_eq!(discovery.count(), 0);
     }
 
     #[test]
@@ -943,10 +1031,121 @@ mod tests {
     }
 
     #[test]
+    fn test_peer_table_cap_evicts_oldest_stale_with_endpoint_id_tie_break() {
+        let discovery = PeerDiscovery::new();
+        let now = now_secs();
+        for index in 1..=u64::try_from(MAX_PEERS).unwrap() {
+            discovery.update(PeerAnnouncement {
+                node_id: make_node_id_from_index(index),
+                name: None,
+                blob_count: index,
+                timestamp_secs: now,
+            });
+        }
+
+        let first = make_node_id_from_index(1);
+        let second = make_node_id_from_index(2);
+        let tied_stale_time = Instant::now() - (STALE_THRESHOLD + Duration::from_secs(2));
+        {
+            let mut peers = discovery.peers.write().unwrap();
+            peers.get_mut(&first).unwrap().last_seen = tied_stale_time;
+            peers.get_mut(&second).unwrap().last_seen = tied_stale_time;
+        }
+        let expected_victim = [first, second]
+            .into_iter()
+            .min_by(|left, right| left.as_bytes().cmp(right.as_bytes()))
+            .unwrap();
+        let new_id = make_node_id_from_index(u64::try_from(MAX_PEERS).unwrap() + 1);
+
+        discovery.update(PeerAnnouncement {
+            node_id: new_id,
+            name: Some("new".to_owned()),
+            blob_count: 1,
+            timestamp_secs: now,
+        });
+
+        assert_eq!(discovery.count(), MAX_PEERS);
+        assert!(discovery.peers.read().unwrap().contains_key(&new_id));
+        assert!(
+            !discovery
+                .peers
+                .read()
+                .unwrap()
+                .contains_key(&expected_victim)
+        );
+        let other_stale = if expected_victim == first {
+            second
+        } else {
+            first
+        };
+        assert!(discovery.peers.read().unwrap().contains_key(&other_stale));
+    }
+
+    #[test]
+    fn test_peer_table_cap_keeps_fresh_entries_and_allows_existing_refresh() {
+        let discovery = PeerDiscovery::new();
+        let now = now_secs();
+        for index in 1..=u64::try_from(MAX_PEERS).unwrap() {
+            discovery.update(PeerAnnouncement {
+                node_id: make_node_id_from_index(index),
+                name: None,
+                blob_count: index,
+                timestamp_secs: now,
+            });
+        }
+        let new_id = make_node_id_from_index(u64::try_from(MAX_PEERS).unwrap() + 1);
+        discovery.update(PeerAnnouncement {
+            node_id: new_id,
+            name: Some("refused".to_owned()),
+            blob_count: 1,
+            timestamp_secs: now,
+        });
+        assert_eq!(discovery.count(), MAX_PEERS);
+        assert!(!discovery.peers.read().unwrap().contains_key(&new_id));
+
+        let existing_id = make_node_id_from_index(1);
+        discovery.update(PeerAnnouncement {
+            node_id: existing_id,
+            name: Some("refreshed".to_owned()),
+            blob_count: 2,
+            timestamp_secs: now + 1,
+        });
+        let peers = discovery.all_peers();
+        let existing = peers
+            .iter()
+            .find(|peer| peer.announcement.node_id == existing_id)
+            .unwrap();
+        assert_eq!(existing.announcement.name.as_deref(), Some("refreshed"));
+        assert_eq!(discovery.count(), MAX_PEERS);
+    }
+
+    #[test]
+    fn test_remove_if_stale_preserves_a_peer_refreshed_during_probe() {
+        let discovery = PeerDiscovery::new();
+        let node_id = make_node_id(77);
+        {
+            let mut peers = discovery.peers.write().unwrap();
+            peers.insert(
+                node_id,
+                PeerInfo {
+                    announcement: make_announcement(77, Some("peer"), 5),
+                    last_seen: Instant::now() - (STALE_THRESHOLD + Duration::from_secs(1)),
+                },
+            );
+        }
+
+        assert!(discovery.refresh(&node_id));
+        assert!(!discovery.remove_if_stale(&node_id, STALE_THRESHOLD));
+        assert_eq!(discovery.count(), 1);
+    }
+
+    #[test]
     fn test_constants() {
         assert_eq!(ANNOUNCE_INTERVAL, Duration::from_secs(30));
         assert_eq!(STALE_THRESHOLD, Duration::from_secs(120));
         assert_eq!(STALE_CHECK_INTERVAL, Duration::from_secs(60));
+        assert_eq!(MAX_PEERS, 1_000);
+        assert_eq!(MAX_PEER_NAME_BYTES, 256);
         assert_eq!(DEFAULT_TOPIC, "id-peer-discovery-v1");
         assert_eq!(DEFAULT_TOPIC_SECRET, b"id-public-discovery-v1");
     }
@@ -972,6 +1171,30 @@ my-secret
         assert_eq!(d.bootstrap, vec!["abc123", "def456"]);
         assert_eq!(d.topic.as_deref(), Some("my-topic"));
         assert_eq!(d.topic_secret.as_deref(), Some("my-secret"));
+    }
+
+    #[test]
+    fn test_parse_defaults_web_bindings() {
+        // #2145: [web_bindings] lines are collected raw, in order;
+        // comments and other sections do not leak in.
+        let conf = r"
+[web_bindings]
+127.0.0.1:3000
+# a comment
+192.0.2.10:3001
+
+[topic]
+my-topic
+";
+        let d = parse_defaults(conf);
+        assert_eq!(d.web_bindings, vec!["127.0.0.1:3000", "192.0.2.10:3001"]);
+        assert_eq!(d.topic.as_deref(), Some("my-topic"));
+    }
+
+    #[test]
+    fn test_parse_defaults_no_web_bindings_section() {
+        let d = parse_defaults("");
+        assert!(d.web_bindings.is_empty());
     }
 
     #[test]
