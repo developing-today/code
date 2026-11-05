@@ -16,8 +16,8 @@
 //! or claims global erasure. It also adds signed, portable themes a board applies by reference
 //! ([`Board::theme_ref`]), and [`BoardGraph::compose_view`] projects the
 //! three-layer view (personal filter / board view / host view) under the
-//! transparency rule: hidden is never erased. It does not render markup,
-//! serve content, or fetch attachment/game payloads.
+//! transparency rule: hidden is never erased. It does not render markup, serve
+//! content, execute game packages, replay turns, or fetch attachment/game payloads.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -37,6 +37,10 @@ pub const MAX_BOARD_REFERENCES: usize = 128;
 pub const MAX_THEME_TOKENS: usize = 64;
 /// Largest design-token value accepted in a theme.
 pub const MAX_THEME_TOKEN_VALUE_BYTES: usize = 512;
+/// Largest number of assigned participants in one game post.
+pub const MAX_GAME_PARTICIPANTS: usize = 32;
+/// Largest serialized configuration or genesis state accepted by a game post.
+pub const MAX_GAME_DATA_BYTES: usize = 16 * 1024;
 
 /// A canonical lower-case SHA-256 artifact/content hash.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -74,13 +78,61 @@ impl<'de> Deserialize<'de> for ArtifactHash {
 }
 
 /// Typed reference to a signed game-post object; game execution is out of scope.
-/// In v1, the target must be a same-board `BoardObject::Post`. If a dedicated
-/// game-post object kind is added, update the graph's kind check with it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GamePostRef {
-    /// Hash of the immutable signed object represented in the board graph.
+    /// Hash of the immutable `BoardObject::GamePost` in the board graph.
     pub object: ArtifactHash,
+}
+
+/// Immutable package identity pinned by a game post.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GamePackageRef {
+    /// SHA-256 hash of the package bytes. A new package build has a new hash.
+    pub hash: ArtifactHash,
+    /// Human-facing package version associated with the pinned bytes.
+    pub version: String,
+}
+
+/// Play mode supported by playable posts in v1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GameMode {
+    /// Players submit signed turns asynchronously against a pinned frontier.
+    AsyncTurns,
+}
+
+/// One author assigned to a package-defined game role.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GameParticipant {
+    /// Canonical Ed25519 public key of the assigned author.
+    pub author: String,
+    /// Canonical role identifier understood by the pinned game package.
+    pub role: String,
+}
+
+/// Signed metadata for a package-pinned playable post.
+///
+/// This object records the immutable package reference, package-specific
+/// configuration and initial state, and the authors assigned to package-defined
+/// roles. It is data, not executable code; accepting it does not run the package.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GamePost {
+    /// Board root hash.
+    pub board: ArtifactHash,
+    /// Immutable package bytes and their human-facing version.
+    pub package: GamePackageRef,
+    /// The v1 play mode.
+    pub mode: GameMode,
+    /// Package-defined configuration, carried as data.
+    pub configuration: serde_json::Value,
+    /// Authors assigned to package-defined roles.
+    pub participants: Vec<GameParticipant>,
+    /// Package-specific initial state, carried as data.
+    pub genesis: serde_json::Value,
 }
 
 /// Stable identity root for one public board.
@@ -362,6 +414,8 @@ pub enum BoardObject {
     Tombstone(Tombstone),
     /// Signed portable theme.
     Theme(Theme),
+    /// Package-pinned playable game post metadata.
+    GamePost(GamePost),
     /// Signed opt-in host listing / withdrawal.
     BoardListing(BoardListing),
 }
@@ -382,6 +436,7 @@ impl BoardObject {
             Self::Supersede(_) => "supersede",
             Self::Tombstone(_) => "tombstone",
             Self::Theme(_) => "theme",
+            Self::GamePost(_) => "game_post",
             Self::BoardListing(_) => "board_listing",
         }
     }
@@ -400,6 +455,7 @@ impl BoardObject {
             Self::Supersede(value) => Some(&value.board),
             Self::Tombstone(value) => Some(&value.board),
             Self::BoardListing(value) => Some(&value.board),
+            Self::GamePost(value) => Some(&value.board),
         }
     }
 
@@ -486,6 +542,33 @@ impl BoardObject {
                     unique.len() == value.assets.len(),
                     "duplicate theme asset reference"
                 );
+            }
+            Self::GamePost(value) => {
+                validate_text("game package version", &value.package.version, false)?;
+                ensure!(
+                    value.package.version.len() <= 128,
+                    "game package version is at most 128 bytes"
+                );
+                ensure!(
+                    !value.participants.is_empty()
+                        && value.participants.len() <= MAX_GAME_PARTICIPANTS,
+                    "a game post assigns 1 to {MAX_GAME_PARTICIPANTS} participants"
+                );
+                let mut participant_roles = BTreeSet::new();
+                for participant in &value.participants {
+                    ensure!(
+                        is_public_key(&participant.author),
+                        "game participant is not a canonical Ed25519 key"
+                    );
+                    validate_token_name(&participant.role)?;
+                    ensure!(
+                        participant_roles
+                            .insert((participant.author.as_str(), participant.role.as_str())),
+                        "duplicate game participant role"
+                    );
+                }
+                validate_game_data("game configuration", &value.configuration)?;
+                validate_game_data("game genesis state", &value.genesis)?;
             }
             Self::BoardListing(value) => {
                 ensure!(
@@ -649,8 +732,11 @@ impl BoardGraph {
                     self.require_scoped(attachment, &value.board, "attachment")?;
                 }
                 if let Some(embed_ref) = &value.embed_ref {
-                    self.require_scoped(&embed_ref.object, &value.board, "post")?;
+                    self.require_scoped(&embed_ref.object, &value.board, "game_post")?;
                 }
+            }
+            BoardObject::GamePost(value) => {
+                self.require_board(&value.board)?;
             }
             BoardObject::Attachment(value) => {
                 self.require_board(&value.board)?;
@@ -1558,6 +1644,14 @@ fn validate_text(name: &str, value: &str, allow_empty: bool) -> Result<()> {
     Ok(())
 }
 
+fn validate_game_data(name: &str, value: &serde_json::Value) -> Result<()> {
+    ensure!(
+        serde_json::to_vec(value)?.len() <= MAX_GAME_DATA_BYTES,
+        "{name} is at most {MAX_GAME_DATA_BYTES} serialized bytes"
+    );
+    Ok(())
+}
+
 fn validate_token_name(value: &str) -> Result<()> {
     ensure!(
         (1..=64).contains(&value.len())
@@ -1654,6 +1748,39 @@ mod tests {
                 body: body.to_owned(),
                 attachments: Vec::new(),
                 embed_ref: Some(GamePostRef { object: embed_ref }),
+            }),
+        )
+        .unwrap()
+    }
+
+    fn game_post_object(
+        author: &SigningKey,
+        opponent: &SigningKey,
+        board: ArtifactHash,
+    ) -> SignedBoardObject {
+        SignedBoardObject::sign(
+            author,
+            1,
+            "",
+            BoardObject::GamePost(GamePost {
+                board,
+                package: GamePackageRef {
+                    hash: ArtifactHash::new("e".repeat(64)).unwrap(),
+                    version: "0.1.0".to_owned(),
+                },
+                mode: GameMode::AsyncTurns,
+                configuration: serde_json::json!({"board_size": 3}),
+                participants: vec![
+                    GameParticipant {
+                        author: hex_encode(&author.verifying_key().to_bytes()),
+                        role: "x".to_owned(),
+                    },
+                    GameParticipant {
+                        author: hex_encode(&opponent.verifying_key().to_bytes()),
+                        role: "o".to_owned(),
+                    },
+                ],
+                genesis: serde_json::json!("---------"),
             }),
         )
         .unwrap()
@@ -1785,7 +1912,7 @@ mod tests {
     }
 
     #[test]
-    fn post_embed_ref_must_name_a_same_board_post() {
+    fn signed_game_post_is_verified_and_post_embed_ref_is_board_scoped() {
         let creator = key(6);
         let other = key(7);
         let mut graph = BoardGraph::default();
@@ -1793,6 +1920,15 @@ mod tests {
         let thread_hash = graph
             .insert(thread(&creator, root_hash.clone(), "main"))
             .unwrap();
+
+        let signed_game = game_post_object(&creator, &other, root_hash.clone());
+        signed_game.verify().unwrap();
+        let decoded = SignedBoardObject::from_artifact(signed_game.artifact.clone()).unwrap();
+        assert_eq!(decoded, signed_game);
+
+        let mut tampered = signed_game.artifact.clone();
+        tampered.body["data"]["package"]["version"] = serde_json::Value::String("9.9.9".to_owned());
+        assert!(SignedBoardObject::from_artifact(tampered).is_err());
 
         let missing = ArtifactHash::new("a".repeat(64)).unwrap();
         assert!(
@@ -1819,12 +1955,13 @@ mod tests {
                 .is_err()
         );
 
-        let foreign_root = graph.insert(board(&other)).unwrap();
-        let foreign_thread = graph
-            .insert(thread(&other, foreign_root.clone(), "foreign"))
-            .unwrap();
-        let foreign_post = graph
-            .insert(post(&other, foreign_root, foreign_thread, "foreign target"))
+        let ordinary_post = graph
+            .insert(post(
+                &creator,
+                root_hash.clone(),
+                thread_hash.clone(),
+                "not a game post",
+            ))
             .unwrap();
         assert!(
             graph
@@ -1832,29 +1969,50 @@ mod tests {
                     &creator,
                     root_hash.clone(),
                     thread_hash.clone(),
-                    foreign_post,
+                    ordinary_post,
+                    "wrong object type",
+                ))
+                .is_err()
+        );
+
+        let foreign_root = graph.insert(board(&other)).unwrap();
+        let foreign_game = graph
+            .insert(game_post_object(&other, &creator, foreign_root.clone()))
+            .unwrap();
+        assert!(
+            graph
+                .insert(post_with_embed_ref(
+                    &creator,
+                    root_hash.clone(),
+                    thread_hash.clone(),
+                    foreign_game,
                     "cross-board embed",
                 ))
                 .is_err()
         );
 
-        let local_post = graph
-            .insert(post(
-                &creator,
-                root_hash.clone(),
-                thread_hash.clone(),
-                "local target",
-            ))
-            .unwrap();
-        graph
+        let local_game = graph.insert(signed_game).unwrap();
+        let embedded_post = graph
             .insert(post_with_embed_ref(
                 &creator,
-                root_hash,
+                root_hash.clone(),
                 thread_hash,
-                local_post,
+                local_game.clone(),
                 "valid embed",
             ))
             .unwrap();
+
+        let mut replica = BoardGraph::default();
+        let report = replica.replicate_board_from(&graph, &root_hash).unwrap();
+        assert_eq!(report.status.state, ReplicaState::Complete);
+        assert!(replica.get(&local_game).is_some());
+        assert!(
+            replica
+                .compose_view(&root_hash, &ViewLayers::default())
+                .unwrap()
+                .objects
+                .contains(&embedded_post)
+        );
     }
 
     #[test]
