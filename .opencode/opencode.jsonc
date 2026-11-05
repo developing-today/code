@@ -228,12 +228,14 @@
   // OPENCODE_CONFIG — see code#4544. Everything else here is deliberate config.
   "provider": {
     "claude-code": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Claude Code (CLI proxy)",
-      "options": {
-        "baseURL": "http://127.0.0.1:{env:CLAUDE_CODE_PROXY_PORT:-18749}/v1",
-        "apiKey": "claude-code-local"
-      },
+      // 2026-11-05 (code#6117, opencode#1749): repointed from the CLI proxy
+      // (:18749, @ai-sdk/openai-compatible) to the in-fork native claude-code
+      // provider - same provider id, native wire emulation of the Claude Code
+      // CLI, credential read in place from ~/.claude/.credentials.json; no
+      // baseURL/apiKey (the provider owns auth). STILL in disabled_providers:
+      // re-enabling stays a separate deliberate step.
+      "npm": "@opencode/ai/providers/claude-code",
+      "name": "Claude Code (native wire emulation)",
       "models": {
         "claude-haiku-5-5": {
           "name": "Haiku 5.5 (Claude Code)",
@@ -939,12 +941,15 @@
       "name": "OpenCode Go (popesdrew)"
     },
     "commandcode": {
-          "npm": "@ai-sdk/openai-compatible",
-          "name": "Command Code (CLI proxy)",
-          "options": {
-                "baseURL": "http://127.0.0.1:{env:COMMANDCODE_PROXY_PORT:-18748}/v1",
-                "apiKey": "commandcode-local"
-          },
+          // 2026-11-05 (code#6117, opencode#1749): repointed from the CLI proxy
+          // (:18748, @ai-sdk/openai-compatible) to the in-fork native commandcode
+          // provider - same provider id, native wire emulation of the Command
+          // Code CLI (/alpha/generate), credential read in place from
+          // ~/.commandcode/auth.json; no baseURL/apiKey (the provider owns
+          // auth). STILL in disabled_providers: re-enabling stays a separate
+          // deliberate step.
+          "npm": "@opencode/ai/providers/commandcode",
+          "name": "Command Code (native wire emulation)",
           "models": {
                 "deepseek/deepseek-v4-pro": {
                       "name": "DeepSeek v4 Pro (Command Code)"
