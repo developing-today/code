@@ -410,6 +410,12 @@ pub struct Directory {
     artifacts: ArtifactLog,
     next_group: u64,
     journal: Option<PathBuf>,
+    /// Friend-removal journal entries seen during replay, in journal
+    /// order (#5624): recovery matches stored removal artifacts against
+    /// them to tell an already-applied removal from one whose journal
+    /// entry was lost to a crash. Only replay fills this; it is not
+    /// directory state.
+    journaled_removals: Vec<(String, String, Vec<String>)>,
 }
 
 impl Default for Directory {
@@ -444,6 +450,7 @@ impl Directory {
             artifacts: ArtifactLog::default(),
             next_group: 1,
             journal: None,
+            journaled_removals: Vec::new(),
         }
     }
 
@@ -470,7 +477,8 @@ impl Directory {
             })
             .collect();
         for (a, b, requests) in removals {
-            if let Some(entry) = directory.friend_removal_effect(&a, &b, &requests) {
+            let journaled = directory.take_journaled_removal(&a, &b, &requests);
+            if let Some(entry) = directory.friend_removal_effect(&a, &b, &requests, journaled) {
                 directory.apply(&entry)?;
             }
         }
@@ -526,6 +534,11 @@ impl Directory {
             directory
                 .apply_replay(&entry)
                 .with_context(|| format!("directory journal line {} is refused", number + 1))?;
+            if let DirectoryEntry::FriendRemoved { a, b, requests } = &entry {
+                directory
+                    .journaled_removals
+                    .push((a.clone(), b.clone(), requests.clone()));
+            }
         }
         Ok(directory)
     }
@@ -561,6 +574,11 @@ impl Directory {
             directory
                 .apply_replay(&entry)
                 .with_context(|| format!("directory journal line {} is refused", number + 1))?;
+            if let DirectoryEntry::FriendRemoved { a, b, requests } = &entry {
+                directory
+                    .journaled_removals
+                    .push((a.clone(), b.clone(), requests.clone()));
+            }
         }
         let artifacts = ArtifactLog::open_read_only(&artifact_path(path))?;
         let removals: Vec<(String, String, Vec<String>)> = artifacts
@@ -573,7 +591,8 @@ impl Directory {
             })
             .collect();
         for (a, b, requests) in removals {
-            if let Some(entry) = directory.friend_removal_effect(&a, &b, &requests) {
+            let journaled = directory.take_journaled_removal(&a, &b, &requests);
+            if let Some(entry) = directory.friend_removal_effect(&a, &b, &requests, journaled) {
                 directory.apply_replay(&entry)?;
             }
         }
@@ -2077,6 +2096,50 @@ impl Directory {
             .collect()
     }
 
+    /// Consume the journal entry a stored removal artifact was
+    /// applied with, if replay saw one (#5624). `store_artifact`
+    /// appends the artifact first and the journal entry second, so an
+    /// artifact with no entry was stored by a removal that crashed
+    /// before journaling — recovery must still apply it — while an
+    /// artifact with an entry was already applied and may only be
+    /// re-applied where it still names current state. The producer's
+    /// entry carries the pair's stored IDs verbatim, so it may hold
+    /// noncanonical IDs the artifact cannot name (#3146); a receiver's
+    /// entry holds the pair-bound subset of the artifact's IDs. An
+    /// empty artifact's entry carries the pair's stored IDs at apply
+    /// time — any set — so correspondence for it is by pair and
+    /// journal order alone. Entries are consumed one per artifact.
+    fn take_journaled_removal(&mut self, a: &str, b: &str, artifact_requests: &[String]) -> bool {
+        use std::collections::BTreeSet;
+        let target = pair(a, b);
+        let artifact_set: BTreeSet<&str> = artifact_requests.iter().map(String::as_str).collect();
+        let position = self
+            .journaled_removals
+            .iter()
+            .position(|(ja, jb, jrequests)| {
+                if pair(ja, jb) != target {
+                    return false;
+                }
+                if artifact_requests.is_empty() {
+                    return true;
+                }
+                let journal_set: BTreeSet<&str> = jrequests.iter().map(String::as_str).collect();
+                journal_set == artifact_set
+                    || journal_set.is_subset(&artifact_set)
+                    || (artifact_set.is_subset(&journal_set)
+                        && journal_set
+                            .difference(&artifact_set)
+                            .all(|id| !artifact::is_friend_request_id(id)))
+            });
+        match position {
+            Some(index) => {
+                self.journaled_removals.remove(index);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The journal entry a friend-removal artifact should produce
     /// against the current state, if any (#5624). Recovery scans every
     /// stored artifact, including ones already journaled, so a removal
@@ -2089,6 +2152,12 @@ impl Directory {
     /// - a removal naming requests that do not include the current
     ///   formed-by ID targeted an earlier formation of the pair and
     ///   leaves a later friendship (legacy or canonical) standing;
+    /// - an artifact with no journal entry is an interrupted removal
+    ///   (see [`Self::take_journaled_removal`]): the state it targeted
+    ///   is the current state, so an empty artifact also ends a
+    ///   friendship formed with no request ID at all, which a journaled
+    ///   empty artifact must leave standing (it cannot be told apart
+    ///   from a newer ID-less friendship the removal predates);
     /// - with no friendship, pair-bound named requests cancel pending
     ///   requests as before, and an empty-request artifact cancels the
     ///   pair's locally held legacy pending IDs.
@@ -2097,6 +2166,7 @@ impl Directory {
         a: &str,
         b: &str,
         artifact_requests: &[String],
+        journaled: bool,
     ) -> Option<DirectoryEntry> {
         let bound = self.pair_bound_requests(a, b, artifact_requests);
         if self.are_friends(a, b) {
@@ -2105,13 +2175,16 @@ impl Directory {
                 // The legacy signature ends only a friendship it could
                 // have targeted: one formed by a noncanonical request
                 // ID (#5624). A friendship formed by a canonical request
-                // is not its target, and a friendship formed with no
-                // request ID at all (the local request_friend_as flow)
-                // cannot be told apart from a newer ID-less friendship
-                // the removal predates, so recovery leaves both standing
-                // - the same skip the scan has always applied to ID-less
-                // formations.
-                if !formed_by.is_some_and(|id| !artifact::is_friend_request_id(id)) {
+                // is not its target (its removal artifact would name
+                // the ID). A friendship formed with no request ID at
+                // all (the local request_friend_as flow) is a target
+                // only when the artifact is unjournaled — an interrupted
+                // removal of exactly this friendship; a journaled empty
+                // artifact predates any newer ID-less friendship and
+                // leaves it standing.
+                let legacy_formed = formed_by.is_some_and(|id| !artifact::is_friend_request_id(id));
+                let interrupted_id_less = !journaled && formed_by.is_none();
+                if !legacy_formed && !interrupted_id_less {
                     return None;
                 }
                 return Some(DirectoryEntry::FriendRemoved {
@@ -2833,6 +2906,279 @@ mod tests {
 
         let reopened = Directory::open(&path).unwrap();
         assert!(!reopened.are_friends(&ann, &bo));
+    }
+
+    #[test]
+    fn an_interrupted_removal_of_an_id_less_friendship_is_recovered_on_reopen() {
+        // #5624 (Codex P2 on the fix PR): a friendship formed through
+        // the local request_friend_as flow has no formed-by ID, and its
+        // signed removal artifact names no requests. If the process
+        // crashes after store_artifact appends the artifact but before
+        // it appends the journal entry, recovery must not resurrect
+        // the friendship: the artifact has no journaled counterpart,
+        // which is what tells it apart from an already-journaled
+        // historical removal that a newer ID-less friendship must
+        // survive.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("directory.jsonl");
+        let mut directory = Directory::open(&path).unwrap();
+        let (ann, ann_credential) = account(&mut directory, "Ann");
+        let (bo, _bo_credential) = account(&mut directory, "Bo");
+        directory.request_friend_as(&ann, &bo).unwrap();
+        directory.accept_friend_as(&bo, &ann).unwrap();
+        assert!(directory.are_friends(&ann, &bo));
+        directory.remove_friend(&ann_credential, &bo).unwrap();
+        assert!(!directory.are_friends(&ann, &bo));
+        drop(directory);
+
+        // Lose the removal's journal line (the crash window in
+        // store_artifact: artifact appended, journal entry not).
+        let text = std::fs::read_to_string(&path).unwrap();
+        let kept: String = text
+            .lines()
+            .rev()
+            .skip(1)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|line| format!("{line}\n"))
+            .collect();
+        std::fs::write(&path, kept).unwrap();
+
+        let replayed = Directory::replay_read_only(&path).unwrap();
+        assert!(!replayed.are_friends(&ann, &bo));
+        drop(replayed);
+
+        let reopened = Directory::open(&path).unwrap();
+        assert!(!reopened.are_friends(&ann, &bo));
+    }
+
+    /// Property coverage for #5624, per the repo testing doctrine
+    /// (AGENTS.md: state machines, replication, and ID formats get
+    /// property tests with a named oracle; examples do not replace
+    /// them). Oracles: `artifact::is_friend_request_id` for the
+    /// admission shape, and the live directory itself for recovery —
+    /// reopening and read-only replay must reproduce the exact state
+    /// the journal and artifact log were written from.
+    mod property_tests {
+        use super::*;
+        use ed25519_dalek::Signer as _;
+        use proptest::prelude::*;
+
+        fn canonical_id(n: u32) -> String {
+            format!(
+                "{:08x}{:08x}{:08x}{:08x}",
+                n,
+                n.wrapping_mul(0x9e37_79b9),
+                n ^ 0xa5a5_a5a5,
+                !n
+            )
+        }
+
+        fn id_strategy() -> impl Strategy<Value = String> {
+            prop_oneof![
+                any::<u32>().prop_map(canonical_id),
+                any::<u32>().prop_map(|n| format!("r{}", n % 1000)),
+                any::<u32>().prop_map(|n| canonical_id(n).to_uppercase()),
+                any::<u32>().prop_map(|n| canonical_id(n)[..31].to_owned()),
+                any::<u32>().prop_map(|n| format!("{}a", canonical_id(n))),
+                any::<u32>().prop_map(|n| format!("g{}", &canonical_id(n)[1..])),
+            ]
+        }
+
+        fn strip_last_journal_line(path: &std::path::Path) {
+            let text = std::fs::read_to_string(path).unwrap();
+            let kept: String = text
+                .lines()
+                .rev()
+                .skip(1)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .map(|line| format!("{line}\n"))
+                .collect();
+            std::fs::write(path, kept).unwrap();
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(48))]
+
+            #[test]
+            fn admission_accepts_exactly_the_canonical_id_shape(id in id_strategy()) {
+                let mut home = Directory::new();
+                let mut away = Directory::new();
+                let (ann, ann_credential) = account(&mut home, "Ann");
+                let (bo, _bo_credential) = account(&mut away, "Bo");
+                let (mut envelope, _) = home
+                    .prepare_request_friend(&ann_credential, &bo, "away", 1)
+                    .unwrap();
+                envelope.id = id.clone();
+                let key = key_of(&ann_credential);
+                let body = serde_json::to_vec(&envelope.body()).unwrap();
+                envelope.signature = hex_encode(&key.sign(&body).to_bytes());
+                prop_assert!(envelope.verify().is_ok());
+                let received = away.receive(&envelope, "away", 1);
+                if artifact::is_friend_request_id(&id) {
+                    prop_assert!(received.is_ok(), "canonical id {id} refused");
+                    let pending = away.pending_id(&ann, &bo);
+                    prop_assert_eq!(pending.as_deref(), Some(id.as_str()));
+                } else {
+                    prop_assert!(received.is_err(), "noncanonical id {id} admitted");
+                    prop_assert!(
+                        away.requests.is_empty(),
+                        "noncanonical id {id} persisted state"
+                    );
+                }
+            }
+
+            #[test]
+            fn a_durable_removal_is_recovered_after_its_journal_entry_is_lost(
+                kind in 0u8..3,
+                n in any::<u32>(),
+            ) {
+                let dir = TempDir::new().unwrap();
+                let path = dir.path().join("directory.jsonl");
+                let mut directory = Directory::open(&path).unwrap();
+                let (ann, ann_credential) = account(&mut directory, "Ann");
+                let (bo, _bo_credential) = account(&mut directory, "Bo");
+                let id: Option<String> = match kind {
+                    0 => Some(canonical_id(n)),
+                    1 => Some(format!("r{}", n % 1000)),
+                    _ => None,
+                };
+                directory
+                    .apply(&DirectoryEntry::FriendRequested {
+                        from: ann.clone(),
+                        to: bo.clone(),
+                        id: id.clone(),
+                    })
+                    .unwrap();
+                directory
+                    .apply(&DirectoryEntry::FriendAccepted {
+                        from: ann.clone(),
+                        to: bo.clone(),
+                        request: id.clone(),
+                        id: None,
+                    })
+                    .unwrap();
+                prop_assert!(directory.are_friends(&ann, &bo));
+                directory.remove_friend(&ann_credential, &bo).unwrap();
+                drop(directory);
+                strip_last_journal_line(&path);
+
+                let replayed = Directory::replay_read_only(&path).unwrap();
+                prop_assert!(!replayed.are_friends(&ann, &bo));
+                if let Some(id) = &id {
+                    prop_assert!(replayed.removed_requests.contains(id));
+                }
+                drop(replayed);
+
+                let reopened = Directory::open(&path).unwrap();
+                prop_assert!(!reopened.are_friends(&ann, &bo));
+            }
+
+            #[test]
+            fn reopen_and_read_only_replay_reproduce_live_state(
+                ops in prop::collection::vec(
+                    (0u8..5, 0u8..2, 0u8..3, any::<u32>()),
+                    0..14,
+                ),
+            ) {
+                let dir = TempDir::new().unwrap();
+                let path = dir.path().join("directory.jsonl");
+                let mut directory = Directory::open(&path).unwrap();
+                let (ann, ann_credential) = account(&mut directory, "Ann");
+                let (bo, _bo_credential) = account(&mut directory, "Bo");
+                let (cy, _cy_credential) = account(&mut directory, "Cy");
+                let others = [bo.clone(), cy.clone()];
+                for (op, pair_idx, kind, n) in ops {
+                    let other = &others[pair_idx as usize];
+                    // Canonical and ID-less formations only: successive
+                    // legacy formations are the one sequence the
+                    // journal cannot order (see the trade-off recorded
+                    // on PR #6239), so they are covered by the targeted
+                    // examples above instead of this invariant.
+                    let generated = match kind {
+                        0 => Some(canonical_id(n)),
+                        1 => None,
+                        _ => Some(canonical_id(n.wrapping_add(1))),
+                    };
+                    match op {
+                        0 => {
+                            let _ = directory.apply(&DirectoryEntry::FriendRequested {
+                                from: ann.clone(),
+                                to: other.clone(),
+                                id: generated.clone(),
+                            });
+                            let _ = directory.apply(&DirectoryEntry::FriendAccepted {
+                                from: ann.clone(),
+                                to: other.clone(),
+                                request: generated,
+                                id: None,
+                            });
+                        }
+                        1 => {
+                            let _ = directory.apply(&DirectoryEntry::FriendRequested {
+                                from: ann.clone(),
+                                to: other.clone(),
+                                id: None,
+                            });
+                            let _ = directory.apply(&DirectoryEntry::FriendAccepted {
+                                from: ann.clone(),
+                                to: other.clone(),
+                                request: None,
+                                id: None,
+                            });
+                        }
+                        2 => {
+                            let _ = directory.remove_friend(&ann_credential, other);
+                        }
+                        3 => {
+                            let _ = directory.remove_friend_as(&ann, other);
+                        }
+                        _ => {
+                            let _ = directory.apply(&DirectoryEntry::FriendRequested {
+                                from: ann.clone(),
+                                to: other.clone(),
+                                id: generated,
+                            });
+                        }
+                    }
+                }
+                let snapshot = (
+                    directory.friends.clone(),
+                    directory.friend_requests.clone(),
+                    directory.requests.clone(),
+                    directory.removed_requests.clone(),
+                );
+                drop(directory);
+
+                let replayed = Directory::replay_read_only(&path).unwrap();
+                prop_assert_eq!(
+                    &snapshot,
+                    &(
+                        replayed.friends.clone(),
+                        replayed.friend_requests.clone(),
+                        replayed.requests.clone(),
+                        replayed.removed_requests.clone(),
+                    ),
+                    "read-only replay diverged from live state"
+                );
+                drop(replayed);
+
+                let reopened = Directory::open(&path).unwrap();
+                prop_assert_eq!(
+                    &snapshot,
+                    &(
+                        reopened.friends.clone(),
+                        reopened.friend_requests.clone(),
+                        reopened.requests.clone(),
+                        reopened.removed_requests.clone(),
+                    ),
+                    "writer reopen diverged from live state"
+                );
+            }
+        }
     }
 
     #[test]
