@@ -1236,6 +1236,14 @@ let
               mkdir -p $out
               cp list.txt $out/list.txt
             '';
+        deploy-dupkeys-property = pkgs.runCommandLocal "check-deploy-dupkeys-property"
+          {
+            nativeBuildInputs = [ pkgs.python3 ];
+          }
+          ''
+            python3 ${../pkgs/deploy/test_dupkeys_property.py} ${../pkgs/deploy/deploy.py}
+            mkdir -p $out
+          '';
         deploy-list-malformed = pkgs.runCommandLocal "check-deploy-list-malformed" { } ''
           if ${deployPkgs.deploy}/bin/deploy list --registry ${badRegistry} > out.txt 2> err.txt; then
             echo "deploy list accepted a malformed registry" >&2
