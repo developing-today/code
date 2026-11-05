@@ -469,6 +469,22 @@ struct Args {
 }
 
 fn parse_args(rest: &[String], flags: &[&str], bools: &[&str]) -> Args {
+    match parse_args_inner(rest, flags, bools) {
+        Ok(args) => args,
+        Err(msg) => die(2, &msg),
+    }
+}
+
+/// Pure core of `parse_args`, returning the usage error instead of
+/// exiting so the rejection shapes are unit-testable (#5939).
+///
+/// Duplicate and contradictory flags are usage errors, never silent
+/// last-wins: repeating a value flag used to retarget an invocation
+/// (e.g. `--queue a --queue b` recorded queue=b), and a boolean given
+/// an inline value (`--dry-run=false`) used to be read as `true` —
+/// a real enqueue silently became a dry run that enqueued nothing
+/// and exited 0.
+fn parse_args_inner(rest: &[String], flags: &[&str], bools: &[&str]) -> Result<Args, String> {
     let mut pos = Vec::new();
     let mut opts = Map::new();
     let mut i = 0;
@@ -479,7 +495,15 @@ fn parse_args(rest: &[String], flags: &[&str], bools: &[&str]) -> Args {
                 Some((n, v)) => (n.to_string(), Some(v.to_string())),
                 None => (long.to_string(), None),
             };
+            if opts.contains_key(&name) {
+                return Err(format!("argument --{name}: duplicate flag"));
+            }
             if bools.contains(&name.as_str()) {
+                if let Some(v) = inline {
+                    return Err(format!(
+                        "argument --{name}: boolean flag takes no value (got ={v})"
+                    ));
+                }
                 opts.insert(name, Value::Bool(true));
                 i += 1;
             } else if flags.contains(&name.as_str()) {
@@ -490,17 +514,17 @@ fn parse_args(rest: &[String], flags: &[&str], bools: &[&str]) -> Args {
                     opts.insert(name, Value::String(rest[i + 1].clone()));
                     i += 2;
                 } else {
-                    die(2, &format!("argument --{name}: expected one argument"));
+                    return Err(format!("argument --{name}: expected one argument"));
                 }
             } else {
-                die(2, &format!("unrecognized argument: --{name}"));
+                return Err(format!("unrecognized argument: --{name}"));
             }
         } else {
             pos.push(a.clone());
             i += 1;
         }
     }
-    Args { pos, opts }
+    Ok(Args { pos, opts })
 }
 
 impl Args {
@@ -514,7 +538,13 @@ impl Args {
         self.opts.contains_key(name)
     }
     fn get_i64(&self, name: &str) -> Option<i64> {
-        self.get(name).and_then(|s| s.parse().ok())
+        match self.get(name) {
+            None => None,
+            Some(s) => match parse_i64_flag(name, &s) {
+                Ok(n) => Some(n),
+                Err(msg) => die(2, &msg),
+            },
+        }
     }
     fn pos_i64(&self, idx: usize, what: &str) -> i64 {
         match self.pos.get(idx).and_then(|s| s.parse::<i64>().ok()) {
@@ -541,6 +571,15 @@ fn reject_extra_pos(verb: &str, args: &Args, expected: usize) {
 /// The first positional past `expected`, if any.
 fn extra_positional(pos: &[String], expected: usize) -> Option<&str> {
     pos.get(expected).map(|s| s.as_str())
+}
+
+/// Parse a numeric flag's value (#5939): a non-numeric value is a
+/// usage error naming the flag and the value — the same treatment
+/// `pos_i64` gives positionals — never a silent default (a mistyped
+/// `--limit abc` used to fall back to 20 without a word).
+fn parse_i64_flag(name: &str, raw: &str) -> Result<i64, String> {
+    raw.parse::<i64>()
+        .map_err(|_| format!("argument --{name}: invalid int value {raw:?}"))
 }
 
 fn default_queue() -> String {
@@ -1328,5 +1367,63 @@ mod tests {
             Some("b.json")
         );
         assert_eq!(extra_positional(&pos(&["123", "456"]), 1), Some("456"));
+    }
+
+    #[test]
+    fn duplicate_value_flag_is_a_usage_error() {
+        // #5939: last-wins used to silently retarget the invocation.
+        let err = parse_args_inner(&pos(&["--queue", "a", "--queue", "b"]), &["queue"], &[])
+            .err()
+            .expect("duplicate --queue must be rejected");
+        assert!(err.contains("--queue"), "error names the flag: {err}");
+        // Inline and separate forms of the same flag also collide.
+        assert!(parse_args_inner(&pos(&["--queue=a", "--queue", "b"]), &["queue"], &[]).is_err());
+    }
+
+    #[test]
+    fn duplicate_bool_flag_is_a_usage_error() {
+        let err = parse_args_inner(&pos(&["--dry-run", "--dry-run"]), &[], &["dry-run"])
+            .err()
+            .expect("duplicate --dry-run must be rejected");
+        assert!(err.contains("--dry-run"), "error names the flag: {err}");
+    }
+
+    #[test]
+    fn bool_flag_with_inline_value_is_a_usage_error() {
+        // #5939: --dry-run=false used to be read as true.
+        for raw in ["--dry-run=false", "--dry-run=true"] {
+            let err = parse_args_inner(&pos(&[raw]), &[], &["dry-run"])
+                .err()
+                .expect("bool with inline value must be rejected");
+            assert!(err.contains("--dry-run"), "error names the flag: {err}");
+        }
+        // A bare boolean keeps working.
+        let args = parse_args_inner(&pos(&["--dry-run"]), &[], &["dry-run"])
+            .ok()
+            .expect("bare bool parses");
+        assert!(args.has("dry-run"));
+    }
+
+    #[test]
+    fn non_numeric_numeric_flag_is_a_usage_error() {
+        // #5939: get_i64 used parse().ok(), so --limit abc silently
+        // fell back to the caller's default.
+        let err = parse_i64_flag("limit", "abc")
+            .err()
+            .expect("non-numeric --limit must be rejected");
+        assert!(err.contains("--limit"), "error names the flag: {err}");
+        assert!(err.contains("abc"), "error names the value: {err}");
+        assert_eq!(parse_i64_flag("limit", "20"), Ok(20));
+    }
+
+    #[test]
+    fn well_formed_invocation_is_unchanged() {
+        // Control (#5939 acceptance): list --queue alpha records
+        // queue=alpha and the absent --limit defaults at the call site.
+        let args = parse_args_inner(&pos(&["--queue", "alpha"]), &["queue", "limit"], &[])
+            .ok()
+            .expect("well-formed invocation parses");
+        assert_eq!(args.get("queue"), Some("alpha".to_string()));
+        assert_eq!(args.get_i64("limit").unwrap_or(20), 20);
     }
 }
