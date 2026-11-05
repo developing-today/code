@@ -303,6 +303,16 @@ type Server struct {
 	// means the standalone behaviour: a private in-memory store.
 	TaskStore *taskStore
 
+	// TaskRetention, when set, supplies the current tasks.ttl /
+	// tasks.maxAge retention settings and is consulted on every
+	// task-store access, so a /v1/settings change reaches MCP task
+	// traffic without an intervening /v1 task request (#6247). A
+	// function, because the settings are hot: a value copied here
+	// would never follow a change (the MaxCompletions pattern). The
+	// daemon wires it when it injects its store; nil keeps the
+	// store's construction-time configuration.
+	TaskRetention func() (ttl, maxAge time.Duration)
+
 	// TaskAudit, when set, is the audit seam a private task store
 	// (the TaskStore == nil path in tasks()) is wired with, so a
 	// standalone server's task lifecycle records reach a log instead
