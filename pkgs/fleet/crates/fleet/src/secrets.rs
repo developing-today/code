@@ -25,6 +25,40 @@ const EXIT_OK: i32 = 0;
 const EXIT_USAGE: i32 = 2;
 const EXIT_UNRESOLVED: i32 = 3;
 
+/// Write one line to a writer, classifying the outcome (#5569).
+/// A broken pipe means the downstream consumer closed early
+/// (`fleet secrets list | head`): that is a quiet, successful exit
+/// for a Unix filter, not an error. Every other write error stays
+/// loud. `println!` must not be used for streamed output: it panics
+/// on EPIPE.
+#[derive(Debug, PartialEq, Eq)]
+enum LineWrite {
+    Written,
+    BrokenPipe,
+    Failed(std::io::ErrorKind),
+}
+
+fn write_line(w: &mut impl std::io::Write, line: &str) -> LineWrite {
+    match writeln!(w, "{line}") {
+        Ok(()) => LineWrite::Written,
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => LineWrite::BrokenPipe,
+        Err(e) => LineWrite::Failed(e.kind()),
+    }
+}
+
+/// Print `text` (a single value) to stdout; broken pipe is a quiet
+/// success (#5569), other write errors are loud.
+fn print_value(text: &str) -> i32 {
+    let mut out = std::io::stdout().lock();
+    match write_line(&mut out, text) {
+        LineWrite::Written | LineWrite::BrokenPipe => EXIT_OK,
+        LineWrite::Failed(kind) => {
+            eprintln!("fleet secrets: failed writing to stdout: {kind}");
+            EXIT_UNRESOLVED
+        }
+    }
+}
+
 fn usage() -> i32 {
     eprintln!("usage: fleet secrets <command> [args...]");
     eprintln!();
@@ -87,10 +121,7 @@ fn cmd_get(config: &Config, args: &[String]) -> i32 {
     }
     let name = &args[0];
     match Resolver::default_chain(config).resolve(name) {
-        Ok(value) => {
-            println!("{}", value.expose());
-            EXIT_OK
-        }
+        Ok(value) => print_value(value.expose()),
         Err(e) => {
             eprintln!("fleet secrets: {e}");
             EXIT_UNRESOLVED
@@ -113,8 +144,17 @@ fn cmd_list(config: &Config, args: &[String]) -> i32 {
     };
     match source.list_names() {
         Ok(names) => {
-            for name in names {
-                println!("{name}");
+            let mut out = std::io::stdout().lock();
+            for name in &names {
+                match write_line(&mut out, name) {
+                    LineWrite::Written => {}
+                    // Downstream closed early (`| head`): quiet exit.
+                    LineWrite::BrokenPipe => return EXIT_OK,
+                    LineWrite::Failed(kind) => {
+                        eprintln!("fleet secrets: failed writing to stdout: {kind}");
+                        return EXIT_UNRESOLVED;
+                    }
+                }
             }
             EXIT_OK
         }
@@ -151,6 +191,39 @@ mod tests {
         for form in [args(&["--help"]), args(&["-h"]), args(&["--help", "x"])] {
             assert_eq!(leaf_help_usage("list", &form), Some(LIST_USAGE));
         }
+    }
+
+    struct FailingWriter(std::io::ErrorKind);
+
+    impl std::io::Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from(self.0))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn write_line_maps_broken_pipe_to_quiet_outcome() {
+        let mut w = FailingWriter(std::io::ErrorKind::BrokenPipe);
+        assert_eq!(write_line(&mut w, "name"), LineWrite::BrokenPipe);
+    }
+
+    #[test]
+    fn write_line_keeps_other_errors_loud() {
+        let mut w = FailingWriter(std::io::ErrorKind::StorageFull);
+        assert_eq!(
+            write_line(&mut w, "name"),
+            LineWrite::Failed(std::io::ErrorKind::StorageFull)
+        );
+    }
+
+    #[test]
+    fn write_line_reports_success() {
+        let mut w: Vec<u8> = Vec::new();
+        assert_eq!(write_line(&mut w, "name"), LineWrite::Written);
+        assert_eq!(String::from_utf8(w).unwrap(), "name\n");
     }
 
     #[test]
