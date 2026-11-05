@@ -149,7 +149,12 @@ fn is_hash(text: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn is_friend_request_id(text: &str) -> bool {
+/// The canonical friend-request ID shape: 16 bytes as 32 lowercase
+/// hexadecimal characters. This is the shape the envelope producer mints
+/// (`Envelope::signed` in directory.rs) and the shape the `friend_remove`
+/// receipt contract (#3146) requires; directory.rs reuses this predicate
+/// at friend-request admission (#5624) so the two never drift.
+pub(crate) fn is_friend_request_id(text: &str) -> bool {
     text.len() == 32
         && text
             .bytes()

@@ -1487,6 +1487,19 @@ impl Directory {
             Forbidden,
             "envelope is for another server"
         );
+        // #5624: a friend request's ID is persisted verbatim and later
+        // named by friend_remove artifacts, whose receipt contract
+        // (#3146) only accepts the canonical shape the producer mints
+        // (16 bytes as 32 lowercase hex). Refuse a noncanonical ID here,
+        // before it can be persisted and strand the friendship.
+        if matches!(envelope.kind, EnvelopeKind::FriendRequest) {
+            refuse_unless!(
+                artifact::is_friend_request_id(&envelope.id),
+                Forbidden,
+                "friend request ID {} is not 32 lowercase hexadecimal characters",
+                envelope.id
+            );
+        }
         if self.seen.contains(&envelope.id) {
             return Ok(Received::Duplicate);
         }
@@ -1552,18 +1565,29 @@ impl Directory {
     /// Fails for an invalid credential or when the two are not friends.
     pub fn remove_friend(&mut self, credential: &str, other: &str) -> Result<SignedArtifact> {
         let (me, key) = self.authenticate(credential)?;
+        let stored = self.friendship_requests(&me, other);
+        // #5624 legacy path: a request ID persisted before admission
+        // validation may be noncanonical. The signed artifact carries
+        // only canonical IDs, so the #3146 receipt contract is not
+        // weakened and receiving servers still apply the removal (the
+        // friendship itself ends by pair, not by request ID). The local
+        // entry below carries every stored ID verbatim, so the legacy
+        // IDs are voided in `removed_requests` exactly like canonical
+        // ones instead of making the removal unrepresentable.
         let removal = FriendRemove {
             a: me.clone(),
             b: other.to_owned(),
-            requests: self.friendship_requests(&me, other),
+            requests: stored
+                .iter()
+                .filter(|id| artifact::is_friend_request_id(id))
+                .cloned()
+                .collect(),
         };
-        let artifact = self
-            .artifacts
-            .sign(&key, &Kind::FriendRemove(removal.clone()))?;
+        let artifact = self.artifacts.sign(&key, &Kind::FriendRemove(removal))?;
         let entry = DirectoryEntry::FriendRemoved {
             a: me,
             b: other.to_owned(),
-            requests: removal.requests,
+            requests: stored,
         };
         self.store_artifact(&artifact, Some(&entry))?;
         Ok(artifact)
@@ -2529,6 +2553,106 @@ mod tests {
             matches!(stale.downcast_ref::<Refusal>(), Some(Refusal::Conflict(_))),
             "{stale:#}"
         );
+    }
+
+    #[test]
+    fn a_friend_request_with_a_noncanonical_id_is_refused_and_never_persisted() {
+        // #5624 regression: the oracle is the canonical shape the producer
+        // mints - 16 bytes as 32 lowercase hex (`is_friend_request_id`).
+        let mut home = Directory::new();
+        let mut away = Directory::new();
+        let (ann, ann_credential) = account(&mut home, "Ann");
+        let (bo, _bo_credential) = account(&mut away, "Bo");
+        // Craft a correctly signed friend request whose ID is "r1": start
+        // from a genuine envelope, swap the ID, and re-sign the body, so
+        // only the ID shape is wrong.
+        let (mut envelope, _) = home
+            .prepare_request_friend(&ann_credential, &bo, "away", 1)
+            .unwrap();
+        envelope.id = "r1".to_owned();
+        let key = key_of(&ann_credential);
+        let body = serde_json::to_vec(&envelope.body()).unwrap();
+        envelope.signature = hex_encode(&key.sign(&body).to_bytes());
+        assert!(envelope.verify().is_ok());
+        let refused = away.receive(&envelope, "away", 1).unwrap_err();
+        assert!(
+            matches!(
+                refused.downcast_ref::<Refusal>(),
+                Some(Refusal::Forbidden(_))
+            ),
+            "{refused:#}"
+        );
+        // Nothing was persisted: no pending request is held, and the same
+        // pair can still go through the genuine flow afterwards.
+        assert!(away.requests.is_empty());
+        let (request, _) = home
+            .request_friend(&ann_credential, &bo, "away", 1)
+            .unwrap();
+        away.receive(&request, "away", 1).unwrap();
+        assert_eq!(
+            away.pending_id(&ann, &bo).as_deref(),
+            Some(request.id.as_str())
+        );
+    }
+
+    #[test]
+    fn a_friendship_formed_by_a_legacy_noncanonical_request_can_be_removed() {
+        // #5624 regression: state persisted before admission validation -
+        // a request whose ID is "r1" was applied directly (the path legacy
+        // journal entries take) and accepted, forming the friendship.
+        let mut directory = Directory::new();
+        let (ann, ann_credential) = account(&mut directory, "Ann");
+        let (bo, _bo_credential) = account(&mut directory, "Bo");
+        directory
+            .apply(&DirectoryEntry::FriendRequested {
+                from: ann.clone(),
+                to: bo.clone(),
+                id: Some("r1".to_owned()),
+            })
+            .unwrap();
+        directory
+            .apply(&DirectoryEntry::FriendAccepted {
+                from: ann.clone(),
+                to: bo.clone(),
+                request: Some("r1".to_owned()),
+                id: None,
+            })
+            .unwrap();
+        assert!(directory.are_friends(&ann, &bo));
+
+        // Before the fix this failed: the signed removal named "r1" and
+        // the artifact receipt contract (#3146) refused it on insert,
+        // stranding the friendship.
+        let removal = directory.remove_friend(&ann_credential, &bo).unwrap();
+        assert!(!directory.are_friends(&ann, &bo));
+        // The stored ID was carried verbatim into the local removal entry
+        // and voided.
+        assert!(directory.removed_requests.contains("r1"));
+        // The signed artifact stays inside the #3146 contract: it parses
+        // strictly and names no noncanonical ID, so receiving servers can
+        // still apply it and end the friendship by pair.
+        let Some(Kind::FriendRemove(body)) = removal.parsed().unwrap() else {
+            panic!("removal artifact did not parse as a friend removal");
+        };
+        assert!(
+            body.requests
+                .iter()
+                .all(|id| artifact::is_friend_request_id(id))
+        );
+
+        // A pending (never accepted) legacy request is removable too.
+        let (cy, cy_credential) = account(&mut directory, "Cy");
+        let (di, _di_credential) = account(&mut directory, "Di");
+        directory
+            .apply(&DirectoryEntry::FriendRequested {
+                from: cy.clone(),
+                to: di.clone(),
+                id: Some("r2".to_owned()),
+            })
+            .unwrap();
+        directory.remove_friend(&cy_credential, &di).unwrap();
+        assert!(directory.removed_requests.contains("r2"));
+        assert!(directory.pending_id(&cy, &di).is_none());
     }
 
     #[test]
