@@ -66,13 +66,11 @@ in
     };
   };
 
-  # Start after the provider proxies + mcpx it depends on. The proxies
-  # are owned by the proxy-supervisor (transient fps-* units on the
-  # canonical ports), so the gateway must not Want the manual per-proxy
-  # units: a gateway restart would re-pull them, and the manual
-  # commandcode-proxy unit crash-loops on its already-taken port (#883).
-  # The gateway reaches the proxies by port, not by unit; only mcpx and
-  # the opencode-route proxy are real unit dependencies.
+  # Home Manager owns the per-proxy service/socket units; OpenClaw
+  # reaches provider proxies by loopback port. The After entries below
+  # only order units if they are already starting; they do not pull
+  # proxies into the gateway's start transaction. Wants starts mcpx and
+  # the embedding service alongside the gateway.
   # Stable local embedding endpoint for memory-lancedb (#1300 phase 1):
   # a dedicated llama-server on a FIXED loopback port, reusing the
   # llama.cpp build and the Qwen3-Embedding-0.6B GGUF that OpenCode's
@@ -99,7 +97,6 @@ in
       After = [
         "openclaw-embedding.service"
         "commandcode-proxy.service"
-        "agy-proxy.service"
         "codex-proxy.service"
         "mcpx.service"
       ];
