@@ -1187,6 +1187,60 @@ let
     }
   );
 
+  # deploy registry + CLI (pkgs/deploy; issue #5766 slice 1):
+  # deployTargets merges this repo's service definitions (design
+  # 2026-11-04 section 3); the checks pin the packet's acceptance --
+  # `deploy list` enumerates the real registry and refuses a malformed one.
+  make-deploy = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      deployPkgs = pkgs.callPackage ../pkgs/deploy {
+        sourceRev = inputs.self.rev or "dirty";
+      };
+      badRegistry = pkgs.writeText "deploy-targets-malformed.json" (
+        builtins.toJSON {
+          broken = {
+            entryPoint = 3;
+            ports = [ 70000 ];
+          };
+        }
+      );
+    in
+    {
+      packages.deploy = deployPkgs.deploy;
+      deployTargets = deployPkgs.deployTargets;
+      checks = {
+        deploy-list =
+          pkgs.runCommandLocal "check-deploy-list"
+            {
+              nativeBuildInputs = [ pkgs.gnugrep ];
+            }
+            ''
+              ${deployPkgs.deploy}/bin/deploy list > list.txt
+              cat list.txt
+              grep -q "queue-broker" list.txt
+              grep -q "secrets-broker" list.txt
+              grep -q "session-proxy" list.txt
+              grep -q "mcpx" list.txt
+              grep -q "laptop" list.txt
+              mkdir -p $out
+              cp list.txt $out/list.txt
+            '';
+        deploy-list-malformed = pkgs.runCommandLocal "check-deploy-list-malformed" { } ''
+          if ${deployPkgs.deploy}/bin/deploy list --registry ${badRegistry} > out.txt 2> err.txt; then
+            echo "deploy list accepted a malformed registry" >&2
+            exit 1
+          fi
+          grep -q "entryPoint" err.txt
+          grep -q "ports" err.txt
+          mkdir -p $out
+          cp err.txt $out/errors.txt
+        '';
+      };
+    }
+  );
+
   make-mcpx-overlay = {
     overlays = {
       default = final: prev: {
@@ -1266,6 +1320,7 @@ let
         make-mcpx-modules
         make-laptop-backups-checks
         make-fleet
+        make-deploy
         ;
     }
   ];
