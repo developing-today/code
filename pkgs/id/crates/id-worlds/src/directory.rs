@@ -1622,7 +1622,7 @@ impl Directory {
         let declared = HomeDeclared { account, servers };
         // Refuse here what receipt would refuse (#3187): the same check
         // `SignedArtifact::parsed` runs, before anything is signed.
-        artifact::check_home_declared(&declared.account, &declared, false)?;
+        artifact::check_home_declared(&declared.account, &declared, artifact::ParseMode::Strict)?;
         self.publish(credential, &Kind::HomeDeclared(declared), Vec::new())
     }
 
@@ -1688,16 +1688,42 @@ impl Directory {
     /// Fails with a [`Refusal`] for an artifact that does not verify, extends
     /// the chain wrongly, or breaks a directory rule.
     pub fn receive_artifact(&mut self, artifact: &SignedArtifact) -> Result<Stored> {
-        let effect = match artifact.parsed()? {
+        self.receive_artifact_with_outcome(artifact)
+            .map(|(stored, _legacy_note)| stored)
+    }
+
+    pub(crate) fn receive_artifact_with_outcome(
+        &mut self,
+        artifact: &SignedArtifact,
+    ) -> Result<(Stored, Option<artifact::LegacyArtifactNote>)> {
+        let mut next = self.clone();
+        let (stored, parsed, legacy_note) = next.artifacts.insert_received(artifact.clone())?;
+        if stored == Stored::Duplicate {
+            return Ok((stored, legacy_note));
+        }
+        // Preserve the #5624 distinction between a removal artifact that
+        // was fully processed with no effect and one whose journal entry
+        // was lost. `parsed` is the already-validated receive result, so
+        // this also works for a version-scoped legacy receipt.
+        let no_effect_removal = match parsed.as_ref() {
+            Some(Kind::FriendRemove(removal)) => Some(DirectoryEntry::FriendRemovalNoted {
+                a: removal.a.clone(),
+                b: removal.b.clone(),
+                requests: removal.requests.clone(),
+                artifact: artifact.hash.clone(),
+            }),
+            _ => None,
+        };
+        let effect = match parsed {
             Some(Kind::FriendRemove(removal)) => {
-                let requests = self.pair_bound_requests(&removal.a, &removal.b, &removal.requests);
-                if self.are_friends(&removal.a, &removal.b) || !requests.is_empty() {
+                let requests = next.pair_bound_requests(&removal.a, &removal.b, &removal.requests);
+                if next.are_friends(&removal.a, &removal.b) || !requests.is_empty() {
                     // #5624: a legacy removal artifact names no requests
                     // at all; void the pair's stored IDs locally exactly
                     // like the producer's own entry does, instead of
                     // leaving the legacy formed-by ID unrecorded.
                     let entry_requests = if requests.is_empty() && removal.requests.is_empty() {
-                        self.friendship_requests(&removal.a, &removal.b)
+                        next.friendship_requests(&removal.a, &removal.b)
                     } else {
                         requests
                     };
@@ -1713,7 +1739,7 @@ impl Directory {
                     // cancels this pair's locally held legacy pending
                     // IDs; a canonical pending request is untouched (a
                     // removal of it would name it).
-                    let legacy = self.legacy_pair_requests(&removal.a, &removal.b);
+                    let legacy = next.legacy_pair_requests(&removal.a, &removal.b);
                     if legacy.is_empty() {
                         None
                     } else {
@@ -1730,22 +1756,21 @@ impl Directory {
             }
             _ => None,
         };
-        // #5624: a removal artifact stored without an effect is noted
-        // in the journal alongside it, so recovery can tell it apart
-        // from an interrupted removal (artifact stored, journal entry
-        // lost to a crash): the noted artifact was fully processed
-        // when it arrived and must never be applied against state
-        // formed afterwards.
-        let effect = effect.or_else(|| match artifact.parsed() {
-            Ok(Some(Kind::FriendRemove(removal))) => Some(DirectoryEntry::FriendRemovalNoted {
-                a: removal.a,
-                b: removal.b,
-                requests: removal.requests,
-                artifact: artifact.hash.clone(),
-            }),
-            _ => None,
-        });
-        self.store_artifact(artifact, effect.as_ref())
+        // A no-effect removal is journaled as noted, preserving replay's
+        // knowledge that it was processed at receipt rather than lost.
+        let effect = effect.or(no_effect_removal);
+        if let Some(entry) = effect.as_ref() {
+            next.change(entry)?;
+            next.ensure_admins()?;
+        }
+        if let Some(path) = &self.journal {
+            artifact::append(&artifact_path(path), artifact)?;
+            if let Some(entry) = effect.as_ref() {
+                Self::append(path, entry)?;
+            }
+        }
+        *self = next;
+        Ok((stored, legacy_note))
     }
 
     fn store_artifact(
@@ -3893,7 +3918,7 @@ mod tests {
         let request = requests[0].clone();
         drop(home);
 
-        let legacy = SignedArtifact::sign_unchecked(
+        let legacy = SignedArtifact::sign_legacy_unchecked(
             &key_of(&ann_credential),
             1,
             "",
