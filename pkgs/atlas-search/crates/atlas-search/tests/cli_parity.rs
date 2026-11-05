@@ -143,6 +143,27 @@ fn cli_search_envelopes_match_python() {
 }
 
 #[test]
+fn cli_rejects_expand_above_limit_before_backend_work() {
+    let db = std::env::temp_dir()
+        .join(format!("atlas-cli-parity-{}-missing", std::process::id()))
+        .join("missing.db");
+    let out = run_bin(
+        &db,
+        &["search", "query", "--backend", "local", "--expand", "101"],
+    );
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--expand must be between 0 and 100"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("missing.db"),
+        "backend was reached: {stderr}"
+    );
+}
+
+#[test]
 fn cli_get_chunk_matches_python() {
     let db = build_fixture_db("getchunk");
     let exp = expectations();
