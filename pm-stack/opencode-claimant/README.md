@@ -25,7 +25,7 @@ worker sessions it launches run on the standing OpenCode server
 - `poll.py` — read-only candidate discovery the prompt runs each fire:
   claimed tasks whose `progress.lane` is `opencode` with no bound
   `session_id` (across the four repo-health queues), plus the live
-  root-session count for the 20-session cap. It cannot mutate anything.
+  root-session count for the 36-session cap. It cannot mutate anything.
 - `install.mjs` — idempotent installer: merges the task definition
   (stable id `f1b4a33b-14d5-4a69-9ad6-d221e42e3ac9`) into the laptop's
   code-project OpenChamber store, preserving all other tasks, with a

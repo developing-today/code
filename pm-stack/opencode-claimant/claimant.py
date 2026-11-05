@@ -33,7 +33,7 @@ QUEUES = [
     "repo-health-openchamber-pilot",
     "repo-health-nix-pilot",
 ]
-CAP = 20
+CAP = 36
 ACTIVE_WINDOW_MS = 30 * 60 * 1000  # 30 minutes
 OPENCODE_URL = os.environ.get("OPENCODE_URL", "http://127.0.0.1:13420")
 AUTH_FILE = os.environ.get(
@@ -311,7 +311,7 @@ def discover_candidates_and_stuck():
         "stuck_bound": [...],
         "live_root_sessions": int | None,
         "active_root_sessions": int | None,
-        "cap": 20,
+        "cap": 36,
         "cap_room": int | None
     }
     """
