@@ -46,6 +46,7 @@ var implementedEffectProbes = map[string]string{
 	"registry.limit":             "TestRegistryLimitReachesTheCLI",
 	"registry.maxPages":          "TestTheRegistryPageCapSaysItStoppedEarly",
 	"registry.url":               "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
+	"tasks.maxAge":               "TestTasksMaxAgeIsReachableFromEnvironment",
 }
 
 // effectProbeFuncs anchors every declared probe name to the actual
@@ -70,6 +71,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestStateDirectoryIsReachableAsASetting":        TestStateDirectoryIsReachableAsASetting,
 	"TestStrictUnknownKeysRefusesATypo":              TestStrictUnknownKeysRefusesATypo,
 	"TestTheRegistryPageCapSaysItStoppedEarly":       TestTheRegistryPageCapSaysItStoppedEarly,
+	"TestTasksMaxAgeIsReachableFromEnvironment":      TestTasksMaxAgeIsReachableFromEnvironment,
 }
 
 func TestEffectProbeDeclarationsMatchTheProbesThatExist(t *testing.T) {

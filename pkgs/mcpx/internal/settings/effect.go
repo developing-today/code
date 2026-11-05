@@ -56,6 +56,7 @@ var EffectProbes = map[string]string{
 	"registry.pageSize":          "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
 	"registry.maxPages":          "TestTheRegistryPageCapSaysItStoppedEarly",
 	"paths.configFile":           "TestPathsConfigFileChangesWhichConfigLoads",
+	"tasks.maxAge":               "TestTasksMaxAgeIsReachableFromEnvironment",
 }
 
 // EffectExemptions maps a setting path to the reason no effect probe
@@ -196,7 +197,6 @@ var EffectExemptions = map[string]string{
 	"events.history":                     "daemon event buffer/reconnect behaviour: needs disconnect/reconnect timing the harness does not drive",
 	"events.reconnect":                   "daemon event buffer/reconnect behaviour: needs disconnect/reconnect timing the harness does not drive",
 	"tasks.ttl":                          "task lifecycle timing: its effect is a ttl or wait bound, observable only across time passage",
-	"tasks.maxAge":                       "task lifecycle timing: its effect is a ttl or wait bound, observable only across time passage",
 	"tasks.resultWait":                   "task lifecycle timing: its effect is a ttl or wait bound, observable only across time passage",
 	"daemon.idleExit":                    "daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically",
 	"serve.mode":                         "serve mode selection: needs a client driving the alternate mode end-to-end, which no fixture does",

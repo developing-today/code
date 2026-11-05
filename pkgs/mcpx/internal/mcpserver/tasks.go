@@ -57,9 +57,6 @@ func wantsTask(params json.RawMessage) (bool, int64) {
 		return false, 0
 	}
 	ttl := p.Task.TTL
-	if ttl <= 0 {
-		ttl = tasks.DefaultTTL()
-	}
 	return true, ttl
 }
 
@@ -338,7 +335,7 @@ func (s *Server) askTask(ctx context.Context, req request, peer Peer) (*response
 		}
 	}
 
-	t := s.tasks().Start(tasks.DefaultTTL(), func(tctx context.Context) (any, *tasks.Fault) {
+	t := s.tasks().Start(0, func(tctx context.Context) (any, *tasks.Fault) {
 		return s.driveAsked(tctx, req, peer, callID)
 	})
 	s.mu.Lock()
@@ -462,8 +459,22 @@ func detailedTask(t Task) map[string]any {
 // tasks/get answers and what notifications/tasks carries, which the SEP says
 // are identical. A terminal task inlines its result or error.
 func (s *Server) detailedNow(ctx context.Context, id string) (map[string]any, bool) {
+	return s.detailed(ctx, id, false)
+}
+
+func (s *Server) detailedReadNow(ctx context.Context, id string) (map[string]any, bool) {
+	return s.detailed(ctx, id, true)
+}
+
+func (s *Server) detailed(ctx context.Context, id string, touch bool) (map[string]any, bool) {
 	st := s.tasks()
-	snap, ok := st.Get(id)
+	var snap Task
+	var ok bool
+	if touch {
+		snap, ok = st.Read(id)
+	} else {
+		snap, ok = st.Get(id)
+	}
 	if !ok {
 		return nil, false
 	}
@@ -556,14 +567,14 @@ func (s *Server) handleTask(ctx context.Context, c *Conn, req request, peer Peer
 		return reply(out)
 
 	case "tasks/get":
-		snap, ok := st.Get(p.TaskID)
+		snap, ok := st.Read(p.TaskID)
 		if !ok {
 			return missing()
 		}
 		return reply(snap)
 
 	case "tasks/result":
-		result, fault, err := st.Result(ctx, p.TaskID)
+		result, fault, err := st.ReadResult(ctx, p.TaskID)
 		switch {
 		case err != nil:
 			var gone tasks.ErrNoTask
@@ -617,7 +628,7 @@ func (s *Server) handleModernTask(ctx context.Context, req request, id string, m
 	st := s.tasks()
 	switch req.Method {
 	case "tasks/get":
-		out, ok := s.detailedNow(ctx, id)
+		out, ok := s.detailedReadNow(ctx, id)
 		if !ok {
 			return missing()
 		}

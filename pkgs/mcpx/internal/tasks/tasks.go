@@ -39,11 +39,12 @@ type Task struct {
 	// ExpiresAt is the effective deadline of the task under the
 	// touch-on-read convention (docs/decisions/0006-ttl-touch-on-read.md):
 	// the earlier of the idle deadline (lastTouched + ttl) and the
-	// absolute ceiling (createdAt + maxAge).
-	ExpiresAt time.Time `json:"expiresAt"`
+	// absolute ceiling (terminal transition + maxAge). Nonterminal tasks
+	// have no result-retention deadline and serialize this as null.
+	ExpiresAt *time.Time `json:"expiresAt"`
 	// LastTouched is when the task was last looked at: its creation,
 	// or the latest item read that renewed it.
-	LastTouched time.Time `json:"lastTouched"`
+	LastTouched *time.Time `json:"lastTouched"`
 	// TTLRemainingMs is ExpiresAt minus the moment this representation
 	// was produced, in milliseconds, never negative. It is the shared
 	// vocabulary every expiring mcpx representation carries beside its
@@ -72,14 +73,13 @@ type Task struct {
 	OnCancel func(ctx context.Context, reason string) `json:"-"`
 }
 
-// deadline is the effective expiry under the touch-on-read convention:
-// the earlier of the idle deadline (lastTouched + ttl) and the absolute
-// ceiling (created + maxAge). Renewal by use is the default; the ceiling
-// is what keeps an item from living forever.
-func deadline(created, lastTouched time.Time, ttl, maxAge time.Duration) time.Time {
+// deadline is the effective result-retention expiry: the earlier of the
+// idle deadline (lastTouched + ttl) and the absolute ceiling (terminalAt +
+// maxAge). A task's execution is never bounded by this deadline.
+func deadline(terminalAt, lastTouched time.Time, ttl, maxAge time.Duration) time.Time {
 	d := lastTouched.Add(ttl)
 	if maxAge > 0 {
-		if ceiling := created.Add(maxAge); ceiling.Before(d) {
+		if ceiling := terminalAt.Add(maxAge); ceiling.Before(d) {
 			d = ceiling
 		}
 	}
@@ -88,7 +88,7 @@ func deadline(created, lastTouched time.Time, ttl, maxAge time.Duration) time.Ti
 
 // refreshTTLRemaining restamps TTLRemainingMs against now.
 func (t *Task) refreshTTLRemaining(now time.Time) {
-	if t.ExpiresAt.IsZero() {
+	if t.ExpiresAt == nil {
 		t.TTLRemainingMs = 0
 		return
 	}
@@ -97,6 +97,20 @@ func (t *Task) refreshTTLRemaining(now time.Time) {
 		ms = 0
 	}
 	t.TTLRemainingMs = ms
+}
+
+func snapshot(t *Task, now time.Time) Task {
+	out := *t
+	if t.ExpiresAt != nil {
+		expires := *t.ExpiresAt
+		out.ExpiresAt = &expires
+	}
+	if t.LastTouched != nil {
+		lastTouched := *t.LastTouched
+		out.LastTouched = &lastTouched
+	}
+	out.refreshTTLRemaining(now)
+	return out
 }
 
 // Statuses, from the specification.
@@ -202,7 +216,13 @@ func IDFrom(ctx context.Context) string {
 }
 
 // New builds an empty store.
-func New() *Store { return &Store{tasks: map[string]*Task{}} }
+func New() *Store {
+	return &Store{
+		tasks:  map[string]*Task{},
+		ttl:    defaults.TaskTTL,
+		maxAge: defaults.TaskMaxAge,
+	}
+}
 
 // Open opens or creates a persistent SQLite-backed task store.
 func Open(dbPath string) (*Store, error) {
@@ -213,10 +233,8 @@ func Open(dbPath string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening task db: %w", err)
 	}
-	st := &Store{
-		tasks: map[string]*Task{},
-		db:    db,
-	}
+	st := New()
+	st.db = db
 	if err := st.initDB(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -233,6 +251,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at_ms  INTEGER NOT NULL,
     updated_at_ms  INTEGER NOT NULL,
     ttl_ms         INTEGER NOT NULL,
+    last_touched_ms INTEGER NOT NULL DEFAULT 0,
+    expires_ms      INTEGER NOT NULL DEFAULT 0,
     poll_interval  INTEGER NOT NULL,
     result_json    TEXT,
     fault_json     TEXT
@@ -240,12 +260,47 @@ CREATE TABLE IF NOT EXISTS tasks (
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("initializing tasks schema: %w", err)
 	}
+	if err := ensureTaskColumn(s.db, "last_touched_ms"); err != nil {
+		return err
+	}
+	if err := ensureTaskColumn(s.db, "expires_ms"); err != nil {
+		return err
+	}
 	return s.loadTasksFromDB()
+}
+
+func ensureTaskColumn(db *sql.DB, name string) error {
+	rows, err := db.Query("PRAGMA table_info(tasks)")
+	if err != nil {
+		return fmt.Errorf("reading tasks schema: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var column, kind string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &column, &kind, &notNull, &defaultValue, &primaryKey); err != nil {
+			return fmt.Errorf("reading tasks schema row: %w", err)
+		}
+		if column == name {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("reading tasks schema rows: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("closing tasks schema rows: %w", err)
+	}
+	if _, err := db.Exec("ALTER TABLE tasks ADD COLUMN " + name + " INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return fmt.Errorf("adding tasks.%s: %w", name, err)
+	}
+	return nil
 }
 
 func (s *Store) loadTasksFromDB() error {
 	rows, err := s.db.Query(`
-SELECT task_id, status, status_message, created_at_ms, updated_at_ms, ttl_ms, poll_interval, result_json, fault_json
+SELECT task_id, status, status_message, created_at_ms, updated_at_ms, ttl_ms, last_touched_ms, expires_ms, poll_interval, result_json, fault_json
 FROM tasks`)
 	if err != nil {
 		return fmt.Errorf("querying stored tasks: %w", err)
@@ -260,10 +315,10 @@ FROM tasks`)
 
 	for rows.Next() {
 		var id, status, statusMsg string
-		var createdMs, updatedMs, ttlMs, pollInterval int64
+		var createdMs, updatedMs, ttlMs, lastTouchedMs, expiresMs, pollInterval int64
 		var resultJSON, faultJSON sql.NullString
 
-		if err := rows.Scan(&id, &status, &statusMsg, &createdMs, &updatedMs, &ttlMs, &pollInterval, &resultJSON, &faultJSON); err != nil {
+		if err := rows.Scan(&id, &status, &statusMsg, &createdMs, &updatedMs, &ttlMs, &lastTouchedMs, &expiresMs, &pollInterval, &resultJSON, &faultJSON); err != nil {
 			continue
 		}
 
@@ -280,6 +335,15 @@ FROM tasks`)
 			PollInterval:  pollInterval,
 			done:          make(chan struct{}),
 		}
+		lastTouched := time.UnixMilli(lastTouchedMs)
+		if lastTouchedMs <= 0 {
+			lastTouched = updatedAt
+			if !Terminal(status) {
+				lastTouched = createdAt
+			}
+		}
+		t.LastTouched = &lastTouched
+		needsUpdate := false
 
 		if resultJSON.Valid && resultJSON.String != "" {
 			var res any
@@ -299,21 +363,38 @@ FROM tasks`)
 			t.StatusMessage = "daemon restarted before task completion"
 			t.fault = &Fault{Code: -32603, Message: t.StatusMessage}
 			t.LastUpdatedAt = now
-			toUpdate = append(toUpdate, t)
+			lastTouched = now
+			t.LastTouched = &lastTouched
+			needsUpdate = true
 		}
 
 		// Retention runs from the terminal transition, which the row's
 		// updated_at_ms records; a row that was still working at shutdown
 		// became terminal just above, at load time (its LastUpdatedAt).
-		expiresAtMs := t.LastUpdatedAt.UnixMilli() + ttlMs
+		expiresAt := time.UnixMilli(expiresMs)
+		if expiresMs <= 0 {
+			expiresAt = deadline(t.LastUpdatedAt, *t.LastTouched, time.Duration(ttlMs)*time.Millisecond, s.maxAge)
+			t.ExpiresAt = &expiresAt
+			needsUpdate = true
+		} else {
+			t.ExpiresAt = &expiresAt
+		}
+		expiresAtMs := expiresAt.UnixMilli()
 		if expiresAtMs <= nowMs {
+			if t.timer != nil {
+				t.timer.Stop()
+			}
 			toDelete = append(toDelete, id)
 			continue
 		}
 
 		close(t.done)
 		s.tasks[t.TaskID] = t
+		t.refreshTTLRemaining(now)
 		s.armExpiryLocked(t, time.Duration(expiresAtMs-nowMs)*time.Millisecond)
+		if needsUpdate {
+			toUpdate = append(toUpdate, t)
+		}
 	}
 
 	for _, id := range toDelete {
@@ -344,12 +425,14 @@ func (s *Store) saveTaskLocked(t *Task) {
 	}
 
 	query := `
-INSERT INTO tasks (task_id, status, status_message, created_at_ms, updated_at_ms, ttl_ms, poll_interval, result_json, fault_json)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO tasks (task_id, status, status_message, created_at_ms, updated_at_ms, ttl_ms, last_touched_ms, expires_ms, poll_interval, result_json, fault_json)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(task_id) DO UPDATE SET
   status = excluded.status,
   status_message = excluded.status_message,
   updated_at_ms = excluded.updated_at_ms,
+  last_touched_ms = excluded.last_touched_ms,
+  expires_ms = excluded.expires_ms,
   result_json = excluded.result_json,
   fault_json = excluded.fault_json;`
 
@@ -360,10 +443,19 @@ ON CONFLICT(task_id) DO UPDATE SET
 		t.CreatedAt.UnixMilli(),
 		t.LastUpdatedAt.UnixMilli(),
 		t.TTL,
+		unixMilli(t.LastTouched),
+		unixMilli(t.ExpiresAt),
 		t.PollInterval,
 		resJSON,
 		faultJSON,
 	)
+}
+
+func unixMilli(t *time.Time) int64 {
+	if t == nil {
+		return 0
+	}
+	return t.UnixMilli()
 }
 
 func (s *Store) deleteFromDBLocked(id string) {
@@ -427,6 +519,10 @@ func (s *Store) armExpiryLocked(t *Task, d time.Duration) {
 		if !ok || cur != t || !Terminal(cur.Status) {
 			return
 		}
+		if cur.ExpiresAt != nil && time.Now().Before(*cur.ExpiresAt) {
+			s.armExpiryLocked(cur, time.Until(*cur.ExpiresAt))
+			return
+		}
 		delete(s.tasks, id)
 		s.deleteFromDBLocked(id)
 	})
@@ -435,7 +531,12 @@ func (s *Store) armExpiryLocked(t *Task, d time.Duration) {
 // armRetentionLocked starts t's full retention clock (its TTL) from now.
 // Called with s.mu held, at the moment t reaches a terminal state.
 func (s *Store) armRetentionLocked(t *Task) {
-	s.armExpiryLocked(t, time.Duration(t.TTL)*time.Millisecond)
+	now := t.LastUpdatedAt
+	t.LastTouched = &now
+	expires := deadline(t.LastUpdatedAt, now, time.Duration(t.TTL)*time.Millisecond, s.maxAge)
+	t.ExpiresAt = &expires
+	t.refreshTTLRemaining(time.Now())
+	s.armExpiryLocked(t, time.Until(expires))
 }
 
 // Start runs fn in the background and returns its handle at once. The
@@ -452,19 +553,25 @@ func (s *Store) Start(ttl int64, fn func(ctx context.Context) (any, *Fault)) Tas
 // if Cancel had been called, and its retention clock starts from that
 // cancellation. A zero deadline leaves the work unbounded.
 func (s *Store) StartWithDeadline(ttl int64, deadline time.Duration, fn func(ctx context.Context) (any, *Fault)) Task {
-	if ttl <= 0 {
-		ttl = DefaultTTL()
-	}
 	now := time.Now()
 	ctx, cancel := context.WithCancel(context.Background())
-	poll := s.PollInterval
+	s.mu.Lock()
+	configuredTTL, poll := s.ttl, s.PollInterval
+	s.mu.Unlock()
+	if ttl <= 0 {
+		if configuredTTL <= 0 {
+			configuredTTL = defaults.TaskTTL
+		}
+		ttl = configuredTTL.Milliseconds()
+	}
 	if poll <= 0 {
 		poll = defaults.TaskPollInterval
 	}
 	t := &Task{
 		TaskID: NewID(), Status: Working,
 		CreatedAt: now, LastUpdatedAt: now,
-		TTL: ttl, PollInterval: poll.Milliseconds(),
+		LastTouched: &now,
+		TTL:         ttl, PollInterval: poll.Milliseconds(),
 		cancel: cancel, done: make(chan struct{}),
 	}
 	ctx = context.WithValue(ctx, idKey{}, t.TaskID)
@@ -511,8 +618,8 @@ func (s *Store) finish(t *Task, result any, fault *Fault) bool {
 	if fault != nil {
 		t.Status, t.fault = Failed, fault
 		t.StatusMessage = fault.Message
-		s.saveTaskLocked(t)
 		s.armRetentionLocked(t)
+		s.saveTaskLocked(t)
 		return true
 	}
 	t.Status, t.result = Completed, result
@@ -523,8 +630,8 @@ func (s *Store) finish(t *Task, result any, fault *Fault) bool {
 			t.Status = Failed
 		}
 	}
-	s.saveTaskLocked(t)
 	s.armRetentionLocked(t)
+	s.saveTaskLocked(t)
 	return true
 }
 
@@ -534,7 +641,7 @@ func (s *Store) List() []Task {
 	defer s.mu.Unlock()
 	out := make([]Task, 0, len(s.tasks))
 	for _, t := range s.tasks {
-		out = append(out, *t)
+		out = append(out, snapshot(t, time.Now()))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
 	return out
@@ -548,7 +655,47 @@ func (s *Store) Get(id string) (Task, bool) {
 	if !ok {
 		return Task{}, false
 	}
-	return *t, true
+	return snapshot(t, time.Now()), true
+}
+
+// Read returns a public item snapshot and renews terminal-result retention.
+// Nonterminal tasks record the touch but have no result-retention deadline.
+func (s *Store) Read(id string) (Task, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tasks[id]
+	if !ok || !s.touchLocked(t, time.Now()) {
+		return Task{}, false
+	}
+	return snapshot(t, time.Now()), true
+}
+
+func (s *Store) touchLocked(t *Task, now time.Time) bool {
+	if Terminal(t.Status) {
+		if t.ExpiresAt == nil {
+			s.armRetentionLocked(t)
+		}
+		if !now.Before(*t.ExpiresAt) {
+			if t.timer != nil {
+				t.timer.Stop()
+			}
+			delete(s.tasks, t.TaskID)
+			s.deleteFromDBLocked(t.TaskID)
+			return false
+		}
+		expires := deadline(t.LastUpdatedAt, now, time.Duration(t.TTL)*time.Millisecond, s.maxAge)
+		if expires.Before(*t.ExpiresAt) {
+			expires = *t.ExpiresAt
+		}
+		t.ExpiresAt = &expires
+		t.LastTouched = &now
+		s.armExpiryLocked(t, time.Until(expires))
+	} else {
+		t.LastTouched = &now
+	}
+	t.refreshTTLRemaining(now)
+	s.saveTaskLocked(t)
+	return true
 }
 
 // SetStatus lets a running call report progress, and is how a call waiting
@@ -631,8 +778,8 @@ func (s *Store) CancelWithReason(id string, reason string) (Task, bool) {
 		if t.StatusMessage == "" && reason != "" {
 			t.StatusMessage = reason
 		}
-		s.saveTaskLocked(t)
 		s.armRetentionLocked(t)
+		s.saveTaskLocked(t)
 		onCancel = t.OnCancel
 		cancel = t.cancel
 	}
@@ -682,6 +829,17 @@ func (s *Store) Result(ctx context.Context, id string) (any, *Fault, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	cur, stillPresent := s.tasks[id]
+	if !stillPresent || cur != t || (t.ExpiresAt != nil && !time.Now().Before(*t.ExpiresAt)) {
+		if stillPresent && cur == t {
+			if t.timer != nil {
+				t.timer.Stop()
+			}
+			delete(s.tasks, id)
+			s.deleteFromDBLocked(id)
+		}
+		return nil, nil, ErrNoTask{ID: id}
+	}
 	if t.fault != nil {
 		return nil, t.fault, nil
 	}
@@ -689,4 +847,21 @@ func (s *Store) Result(ctx context.Context, id string) (any, *Fault, error) {
 		return nil, &Fault{Code: -32603, Message: "the task was cancelled"}, nil
 	}
 	return t.result, nil, nil
+}
+
+// ReadResult is the public result-read path. Result itself remains a
+// non-touching primitive for internal polling and notification machinery.
+func (s *Store) ReadResult(ctx context.Context, id string) (any, *Fault, error) {
+	result, fault, err := s.Result(ctx, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	s.mu.Lock()
+	t, ok := s.tasks[id]
+	if !ok || !s.touchLocked(t, time.Now()) {
+		s.mu.Unlock()
+		return nil, nil, ErrNoTask{ID: id}
+	}
+	s.mu.Unlock()
+	return result, fault, nil
 }

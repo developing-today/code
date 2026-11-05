@@ -510,9 +510,13 @@ func (s *Server) taskStore() *tasks.Store {
 		}
 		if s.set != nil {
 			s.tasks.PollInterval = s.set.Duration("protoTasks.pollInterval")
-			s.tasks.Configure(s.set.Duration("tasks.ttl"), s.set.Duration("tasks.maxAge"))
 		}
 	})
+	// These settings are hot. Reconfigure the shared store on access so a
+	// runtime override affects newly-created tasks and subsequent touches.
+	if s.set != nil {
+		s.tasks.Configure(s.set.Duration("tasks.ttl"), s.set.Duration("tasks.maxAge"))
+	}
 	return s.tasks
 }
 
@@ -521,7 +525,7 @@ func (s *Server) handleTasksList(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleTaskGet(w http.ResponseWriter, r *http.Request) {
-	t, ok := s.taskStore().Get(r.PathValue("id"))
+	t, ok := s.taskStore().Read(r.PathValue("id"))
 	if !ok {
 		writeErr(w, http.StatusNotFound, tasks.ErrNoTask{ID: r.PathValue("id")})
 		return
@@ -537,7 +541,7 @@ func (s *Server) handleTaskResult(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), wait)
 	defer cancel()
 
-	result, fault, err := s.taskStore().Result(ctx, r.PathValue("id"))
+	result, fault, err := s.taskStore().ReadResult(ctx, r.PathValue("id"))
 	switch {
 	case err != nil:
 		var missing tasks.ErrNoTask

@@ -796,6 +796,11 @@ func TestAToolCallCanRunAsATask(t *testing.T) {
 	if !strings.Contains(string(b), `"completed"`) {
 		t.Errorf("the task should be completed: %s", b)
 	}
+	for _, field := range []string{`"expiresAt"`, `"lastTouched"`, `"ttlRemainingMs"`} {
+		if !strings.Contains(string(b), field) {
+			t.Errorf("the task representation should include %s: %s", field, b)
+		}
+	}
 }
 
 func TestATaskCanBeListedAndCancelled(t *testing.T) {

@@ -1,6 +1,12 @@
 package daemon
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/dezren39/mcpx/internal/tasks"
+)
 
 // Issue #1555: TaskStore is how internal/cli shares the daemon's one
 // store with the MCP surface, so it must return the same instance the
@@ -12,5 +18,29 @@ func TestTaskStoreAccessorReturnsTheOneStore(t *testing.T) {
 	}
 	if s.TaskStore() != s.TaskStore() {
 		t.Fatal("TaskStore() must not create a second store")
+	}
+}
+
+func TestTaskStoreUsesHotRetentionSettings(t *testing.T) {
+	sch, err := settings.New(settings.Registry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := settings.NewSet(sch)
+	s := &Server{set: set}
+	store := s.TaskStore()
+
+	if err := set.SetRuntime("tasks.ttl", "250ms"); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.SetRuntime("tasks.maxAge", "2s"); err != nil {
+		t.Fatal(err)
+	}
+	if s.TaskStore() != store {
+		t.Fatal("a hot settings update replaced the shared task store")
+	}
+	task := store.Start(0, func(context.Context) (any, *tasks.Fault) { return "done", nil })
+	if task.TTL != 250 {
+		t.Fatalf("new task did not use hot tasks.ttl update: TTL=%dms", task.TTL)
 	}
 }
