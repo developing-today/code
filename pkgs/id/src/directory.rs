@@ -2101,23 +2101,45 @@ impl Directory {
         let bound = self.pair_bound_requests(a, b, artifact_requests);
         if self.are_friends(a, b) {
             let formed_by = self.friend_requests.get(&pair(a, b));
-            if !artifact_requests.is_empty()
-                && !formed_by.is_some_and(|id| artifact_requests.contains(id))
-            {
+            if artifact_requests.is_empty() {
+                // The legacy signature ends only a friendship it could
+                // have targeted: one formed by a noncanonical request,
+                // or formed with no request ID at all. A friendship
+                // formed by a canonical request is not the target of a
+                // legacy removal already in the log - that removal ended
+                // the formation it named nothing for - so this one stands.
+                if formed_by.is_some_and(|id| artifact::is_friend_request_id(id)) {
+                    return None;
+                }
+                return Some(DirectoryEntry::FriendRemoved {
+                    a: a.to_owned(),
+                    b: b.to_owned(),
+                    requests: self.friendship_requests(a, b),
+                });
+            }
+            if !formed_by.is_some_and(|id| artifact_requests.contains(id)) {
                 return None;
             }
-            let requests = if artifact_requests.is_empty() {
-                self.friendship_requests(a, b)
-            } else {
-                bound
-            };
             return Some(DirectoryEntry::FriendRemoved {
                 a: a.to_owned(),
                 b: b.to_owned(),
-                requests,
+                requests: bound,
             });
         }
         if !bound.is_empty() {
+            // Applying a removal clears every pending request for the
+            // pair, so a stored removal may only be (re)applied against
+            // pending state it actually names. A pair holding a newer
+            // pending request the artifact does not name keeps it; the
+            // named IDs were already voided by the removal's own
+            // journal entry when it first applied.
+            let pending: Vec<String> = [self.pending_id(a, b), self.pending_id(b, a)]
+                .into_iter()
+                .flatten()
+                .collect();
+            if !pending.is_empty() && !pending.iter().any(|id| bound.contains(id)) {
+                return None;
+            }
             return Some(DirectoryEntry::FriendRemoved {
                 a: a.to_owned(),
                 b: b.to_owned(),
@@ -2861,6 +2883,119 @@ mod tests {
 
         let reopened = Directory::open(&path).unwrap();
         assert!(reopened.are_friends(&ann, &bo));
+    }
+
+    #[test]
+    fn a_newer_canonical_friendship_survives_an_older_legacy_removal_in_replay() {
+        // #5624 (Codex P2 + CodeRabbit on the fix PR): the pair forms a
+        // friendship through a legacy noncanonical request and removes
+        // it - the artifact names no requests - then befriends again
+        // through a canonical request. Recovery scans every stored
+        // artifact, including the already-journaled legacy removal; the
+        // empty-request legacy signature must not end the newer
+        // canonical friendship or void its request ID.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("directory.jsonl");
+        let mut directory = Directory::open(&path).unwrap();
+        let (ann, ann_credential) = account(&mut directory, "Ann");
+        let (bo, _bo_credential) = account(&mut directory, "Bo");
+        directory
+            .apply(&DirectoryEntry::FriendRequested {
+                from: ann.clone(),
+                to: bo.clone(),
+                id: Some("r1".to_owned()),
+            })
+            .unwrap();
+        directory
+            .apply(&DirectoryEntry::FriendAccepted {
+                from: ann.clone(),
+                to: bo.clone(),
+                request: Some("r1".to_owned()),
+                id: None,
+            })
+            .unwrap();
+        assert!(directory.are_friends(&ann, &bo));
+        directory.remove_friend(&ann_credential, &bo).unwrap();
+        assert!(!directory.are_friends(&ann, &bo));
+        let canonical = "0123456789abcdef0123456789abcdef".to_owned();
+        directory
+            .apply(&DirectoryEntry::FriendRequested {
+                from: ann.clone(),
+                to: bo.clone(),
+                id: Some(canonical.clone()),
+            })
+            .unwrap();
+        directory
+            .apply(&DirectoryEntry::FriendAccepted {
+                from: ann.clone(),
+                to: bo.clone(),
+                request: Some(canonical.clone()),
+                id: None,
+            })
+            .unwrap();
+        assert!(directory.are_friends(&ann, &bo));
+        drop(directory);
+
+        let replayed = Directory::replay_read_only(&path).unwrap();
+        assert!(replayed.are_friends(&ann, &bo));
+        assert!(!replayed.removed_requests.contains(&canonical));
+        drop(replayed);
+
+        let reopened = Directory::open(&path).unwrap();
+        assert!(reopened.are_friends(&ann, &bo));
+        assert!(!reopened.removed_requests.contains(&canonical));
+    }
+
+    #[test]
+    fn a_newer_pending_request_survives_an_older_canonical_removal_in_replay() {
+        // #5624 (Codex P2 on the fix PR): the pair's canonical pending
+        // request is removed - the artifact names it - and the pair
+        // later creates a new pending request. Applying a removal
+        // clears every pending request for the pair, so re-applying
+        // the stored removal during recovery would silently cancel
+        // the newer request the artifact does not name.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("directory.jsonl");
+        let mut directory = Directory::open(&path).unwrap();
+        let (ann, ann_credential) = account(&mut directory, "Ann");
+        let (bo, _bo_credential) = account(&mut directory, "Bo");
+        let first = "0123456789abcdef0123456789abcdef".to_owned();
+        directory
+            .apply(&DirectoryEntry::FriendRequested {
+                from: ann.clone(),
+                to: bo.clone(),
+                id: Some(first.clone()),
+            })
+            .unwrap();
+        directory.remove_friend(&ann_credential, &bo).unwrap();
+        assert!(directory.pending_id(&ann, &bo).is_none());
+        assert!(directory.removed_requests.contains(&first));
+        let second = "fedcba9876543210fedcba9876543210".to_owned();
+        directory
+            .apply(&DirectoryEntry::FriendRequested {
+                from: ann.clone(),
+                to: bo.clone(),
+                id: Some(second.clone()),
+            })
+            .unwrap();
+        assert_eq!(
+            directory.pending_id(&ann, &bo).as_deref(),
+            Some(second.as_str())
+        );
+        drop(directory);
+
+        let replayed = Directory::replay_read_only(&path).unwrap();
+        assert_eq!(
+            replayed.pending_id(&ann, &bo).as_deref(),
+            Some(second.as_str())
+        );
+        drop(replayed);
+
+        let reopened = Directory::open(&path).unwrap();
+        assert_eq!(
+            reopened.pending_id(&ann, &bo).as_deref(),
+            Some(second.as_str())
+        );
     }
 
     #[test]
