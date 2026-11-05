@@ -174,10 +174,23 @@ def quarantine_line(raw, run_at, reason):
     os.makedirs(STATE_DIR, exist_ok=True)
     entry = {"_quarantined_at": run_at, "_reason": reason,
              "_raw": raw.rstrip("\n")}
-    with open(QUARANTINE, "a") as f:
-        f.write(json.dumps(entry) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
+    # Roll a failed append back to its starting offset: a partial
+    # (unterminated) prefix left in quarantine.jsonl would merge with
+    # the next successful entry into one invalid JSON line, making
+    # that record unrecoverable even though it counted as quarantined.
+    offset = os.path.getsize(QUARANTINE) if os.path.exists(QUARANTINE) else 0
+    try:
+        with open(QUARANTINE, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception:
+        try:
+            with open(QUARANTINE, "r+") as f:
+                f.truncate(offset)
+        except Exception:
+            pass
+        raise
 
 
 def do_record(rec):

@@ -11,6 +11,7 @@ Run: python3 -m unittest test_push_quarantine -v   (from this dir)
 """
 import json
 import os
+import random
 import subprocess
 import sys
 import tempfile
@@ -101,6 +102,94 @@ class PushCase(unittest.TestCase):
         self.assertEqual(quarantine[0]["_raw"], "[1, 2]")
         self.assertEqual(quarantine[0]["_reason"], "not a JSON object")
         self.assertEqual(outbox, [])
+
+
+class GeneratedConservationCase(unittest.TestCase):
+    """Property-style coverage (repo testing doctrine): the oracle is
+    the conservation invariant — every nonblank outbox line ends the
+    run either pending in the outbox (valid records, DB refused) or
+    preserved verbatim in quarantine (malformed / non-object lines);
+    nothing is lost and nothing is double-counted."""
+
+    def test_generated_mixed_batches_preserve_every_line(self):
+        rng = random.Random(6154)
+        case = PushCase()
+        case.setUp = lambda: None
+        lines, want_quarantined, want_valid_ids = [], [], []
+        for i in range(120):
+            kind = rng.randrange(4)
+            if kind == 0:
+                rec = dict(VALID, id=f"gen-{i}")
+                lines.append(json.dumps(rec))
+                want_valid_ids.append(f"gen-{i}")
+            elif kind == 1:
+                full = json.dumps(dict(VALID, id=f"gen-{i}"))
+                cut = rng.randrange(1, len(full))
+                lines.append(full[:cut])  # proper prefix: never valid
+                want_quarantined.append(full[:cut])
+            elif kind == 2:
+                val = rng.choice([[1, 2], 42, "str", None, True])
+                lines.append(json.dumps(val))
+                want_quarantined.append(json.dumps(val))
+            else:
+                junk = "x" + "".join(rng.choice("abcdefghij")
+                                     for _ in range(rng.randrange(1, 30)))
+                lines.append(junk)
+                want_quarantined.append(junk)
+        rng.shuffle(lines)
+        summary, health, quarantine, outbox = case.run_push(lines)
+        self.assertEqual(summary["quarantined"], len(want_quarantined))
+        self.assertEqual(summary["pending"], len(want_valid_ids))
+        self.assertEqual(summary["quarantined"] + summary["pending"],
+                         len(lines))
+        self.assertEqual(sorted(q["_raw"] for q in quarantine),
+                         sorted(want_quarantined))
+        kept = [json.loads(ln) for ln in outbox]
+        self.assertEqual(sorted(r["id"] for r in kept),
+                         sorted(want_valid_ids))
+        self.assertTrue(all(r["_attempts"] == 1 for r in kept))
+        self.assertEqual(health["total_quarantined"],
+                         len(want_quarantined))
+
+
+class QuarantineRollbackCase(unittest.TestCase):
+    """A quarantine append that fails mid-write (disk full) must roll
+    back to its starting offset, so the next successful entry is a
+    clean JSONL line rather than a merge with an unterminated prefix."""
+
+    def test_failed_append_rolls_back_to_starting_offset(self):
+        import importlib.machinery
+        import importlib.util
+        state = tempfile.mkdtemp(prefix="extcomms-rollback-")
+        os.environ["EXTERNAL_COMMS_STATE_DIR"] = state
+        loader = importlib.machinery.SourceFileLoader("rec_ext_send",
+                                                      SCRIPT)
+        spec = importlib.util.spec_from_loader("rec_ext_send", loader)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod.quarantine_line('{"good"', "2026-11-05T00:00:00+00:00",
+                            "json-decode: seed")
+        with open(mod.QUARANTINE) as f:
+            before = f.read()
+        real_fsync = os.fsync
+
+        def boom(fd):
+            raise OSError("disk full (simulated)")
+
+        os.fsync = boom
+        try:
+            with self.assertRaises(OSError):
+                mod.quarantine_line(TORN, "2026-11-05T00:01:00+00:00",
+                                    "json-decode: torn")
+        finally:
+            os.fsync = real_fsync
+        with open(mod.QUARANTINE) as f:
+            self.assertEqual(f.read(), before)
+        mod.quarantine_line(TORN, "2026-11-05T00:02:00+00:00",
+                            "json-decode: torn")
+        with open(mod.QUARANTINE) as f:
+            entries = [json.loads(ln) for ln in f if ln.strip()]
+        self.assertEqual(entries[-1]["_raw"], TORN)
 
 
 if __name__ == "__main__":
