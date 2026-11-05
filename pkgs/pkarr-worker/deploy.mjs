@@ -31,6 +31,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parseArgs } from "./deploy-args.mjs";
+import { workerExists } from "./worker-exists.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const WORKER = "pkarr";
@@ -87,7 +88,14 @@ const message = `deploy ${sha} via nix run .#pkarr-deploy`;
 // `cf deploy`, which creates the Worker's first version (with the
 // same tag/message) and its first deployment in one step. Every
 // later deploy uses the versions flow below.
-const bootstrapping = !workerExists();
+const bootstrapping = !workerExists(WORKER, () =>
+  execFileSync("cf", ["-q", "workers", "get", WORKER], {
+    cwd: here,
+    env,
+    encoding: "utf8",
+    stdio: ["inherit", "pipe", "pipe"],
+  }),
+);
 if (bootstrapping) {
   const deployArgs = ["deploy", "--worker", WORKER, "--tag", tag, "--message", message];
   if (dryRun) deployArgs.push("--dry-run");
@@ -131,20 +139,6 @@ if (bootstrapping) {
 }
 reportLive();
 console.log(`live: ${WORKER_URL} at version ${version.id} (${tag})`);
-
-function workerExists() {
-  try {
-    execFileSync("cf", ["-q", "workers", "get", WORKER], {
-      cwd: here,
-      env,
-      encoding: "utf8",
-      stdio: ["inherit", "pipe", "pipe"],
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 function createDeployment(versionId) {
   const versions = JSON.stringify([{ version_id: versionId, percentage: 100 }]);
