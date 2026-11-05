@@ -303,6 +303,9 @@ describe("opencode v2 mapper", () => {
       true,
     );
     expect(mapped!.tokensBySession.has("undefined")).toBe(false);
+    // The null/id-less sessions plus malformed permission/form/message
+    // containers are dropped and counted, never silently swallowed (#2543).
+    expect(mapped!.droppedElements).toBe(5);
     expect(mapped!.entries.find((entry) => entry.sessionId === "ses_broken")?.messageCount).toBe(0);
     expect(mapped!.entries.find((entry) => entry.sessionId === "ses_valid_sibling")?.messageCount).toBe(2);
   });

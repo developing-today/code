@@ -22,7 +22,7 @@
 
 import type { QuotaCurrentEntry } from "./model.ts";
 import { entryFromFileExport, type FileExportDoc } from "./quota-gather-map.ts";
-import { isRecord } from "./validate.ts";
+import { isFiniteNumber, isNonEmptyString, isRecord } from "./validate.ts";
 
 export type AdapterFailureStatus = "session-expired" | "unparseable" | "transport-unavailable" | "fetch-failed";
 export type AdapterStatus = "ok" | AdapterFailureStatus;
@@ -277,10 +277,8 @@ export function collectFileExportAdapter(opts: {
       return retainedOutcome("unparseable", previous, now, "ok", "file-export drift: window element is not an object");
     }
     if (
-      typeof w.name !== "string" ||
-      w.name.length === 0 ||
-      typeof w.usedPct !== "number" ||
-      !Number.isFinite(w.usedPct)
+      !isNonEmptyString(w.name) ||
+      !isFiniteNumber(w.usedPct)
     ) {
       return retainedOutcome(
         "unparseable",
