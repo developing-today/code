@@ -100,6 +100,7 @@ import {
   SESSION_SOURCE_LABELS,
   countedEstimate,
   refsInText,
+  isValidRef,
   refUrl,
 } from "./model.ts";
 import { PAGES, groupedPages, primaryGroupedPages, manifestRouteFor, pageByRoute } from "./pages.ts";
@@ -2800,7 +2801,16 @@ function tierItemCard(
   const action = item.recommendedAction
     ? `<br><span class="muted">Recommended: ${esc(item.recommendedAction)}</span>`
     : "";
-  const ref = item.ref ? `<br><a href="${esc(refUrl(item.ref))}">${esc(item.ref)}</a>` : "";
+  // A tier item's ref is only sometimes a GitHub ref: tracked-goal items
+  // carry their goal id (e.g. "goal_…"), and refUrl throws on those — one
+  // such item 500ed the whole Needs-you render (phase-b inventory,
+  // 2026-11-05). Non-GitHub refs render as plain code, never a link.
+  const refLink = item.ref
+    ? isValidRef(item.ref)
+      ? `<a href="${esc(refUrl(item.ref))}">${esc(item.ref)}</a>`
+      : `<code>${esc(item.ref)}</code>`
+    : "";
+  const ref = item.ref ? `<br>${refLink}` : "";
   const cmt = counts ? commentBadge(tierItemObjectRef(item), counts) : "";
   const badges = actionBadgesHtml(act?.actions);
   // #1291: on Needs User cards, the item's own contract renders — the
@@ -2831,7 +2841,7 @@ function tierItemCard(
   // carries a gh: ref, and every card expands inline to its full
   // detail — source, state, since/lastSeenAt, horizon, blockedBy,
   // the question payload, and the recorded action history.
-  const titleHtml = item.ref ? `<a href="${esc(refUrl(item.ref))}">${esc(item.title)}</a>` : esc(item.title);
+  const titleHtml = item.ref && isValidRef(item.ref) ? `<a href="${esc(refUrl(item.ref))}">${esc(item.title)}</a>` : esc(item.title);
   const questionPayload = item.questions?.length
     ? `<dt>Questions</dt><dd>${item.questions
         .map(
@@ -2842,7 +2852,7 @@ function tierItemCard(
     : item.question
       ? `<dt>Question</dt><dd>“${esc(item.question)}”</dd>`
       : "";
-  const detail = `<details class="carddetail"><summary>Details &amp; history</summary><dl><dt>Source</dt><dd>${esc(item.source)} · ${esc(item.kind)}${item.state ? ` · state ${esc(item.state)}` : ""}</dd><dt>Since</dt><dd>${esc(fmtDate(item.since))}</dd><dt>Last seen</dt><dd>${esc(fmtDate(item.lastSeenAt))}</dd>${item.horizon ? `<dt>Horizon</dt><dd>${esc(item.horizon)}</dd>` : ""}<dt>Ref</dt><dd><code>${esc(objectRef)}</code>${item.ref ? ` · <a href="${esc(refUrl(item.ref))}">${esc(item.ref)}</a>` : ""}</dd>${item.blockedBy?.length ? `<dt>Blocked by</dt><dd>${item.blockedBy.map((d) => esc(`${d.task} (${d.status}${d.workerLabel ? `, ${d.workerLabel}` : ""})`)).join("; ")}</dd>` : ""}${questionPayload}</dl>${actionHistoryHtml(act?.actions)}</details>`;
+  const detail = `<details class="carddetail"><summary>Details &amp; history</summary><dl><dt>Source</dt><dd>${esc(item.source)} · ${esc(item.kind)}${item.state ? ` · state ${esc(item.state)}` : ""}</dd><dt>Since</dt><dd>${esc(fmtDate(item.since))}</dd><dt>Last seen</dt><dd>${esc(fmtDate(item.lastSeenAt))}</dd>${item.horizon ? `<dt>Horizon</dt><dd>${esc(item.horizon)}</dd>` : ""}<dt>Ref</dt><dd><code>${esc(objectRef)}</code>${item.ref ? ` · ${refLink}` : ""}</dd>${item.blockedBy?.length ? `<dt>Blocked by</dt><dd>${item.blockedBy.map((d) => esc(`${d.task} (${d.status}${d.workerLabel ? `, ${d.workerLabel}` : ""})`)).join("; ")}</dd>` : ""}${questionPayload}</dl>${actionHistoryHtml(act?.actions)}</details>`;
   const commentBox =
     act?.identities && act.commentOpts ? cardCommentHtml(objectRef, item.ref, act.comments, act.commentOpts) : "";
   return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><div class="attention-card-header"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span>${isUserTier ? whyUserBadge(item) : ""}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""} <strong>${titleHtml}</strong>${cmt}${badges}</div><br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${extBody}${ref}${controls}${detail}${commentBox}</div>`;
