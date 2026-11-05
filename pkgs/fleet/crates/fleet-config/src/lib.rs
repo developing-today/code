@@ -38,6 +38,13 @@ pub const DEFAULT_TARGET_HOST: &str = "100.99.113.103";
 /// `HTTPS_PROXY` — fixed by the tunnel setup, as in
 /// laptop-proxy-connect.py (the URL's own port is not used).
 pub const DEFAULT_EGRESS_PROXY_PORT: u16 = 3130;
+
+/// Default listen address for the CONNECT-UDP endpoint
+/// (RFC 9298 spike, #6109) when `[proxy] connect_udp` enables
+/// it: loopback only, one port above the runtime egress
+/// proxy's 3130. The endpoint is a local capability, never a
+/// LAN surface, until a future cutover decides otherwise.
+pub const DEFAULT_CONNECT_UDP_LISTEN: &str = "127.0.0.1:3131";
 /// `[search]` — the search domain's routing view (step 5, #5433).
 /// All optional: the Q3 host default needs no config at all (the
 /// serving host's `service.json` marks the laptop seat). `via` is
@@ -105,6 +112,15 @@ pub struct ProxyConfig {
     /// (a broker running on the target host itself; also the
     /// hermetic-test mode). Default false — today's topology.
     pub direct: Option<bool>,
+    /// Whether the broker also serves CONNECT-UDP (RFC 9298,
+    /// #6109) on [`Config::connect_udp_listen`]. Default false:
+    /// a spike capability that merges dark — nothing listens
+    /// anywhere unless a host's config deliberately opts in,
+    /// and opting in is a separate act from landing the code.
+    pub connect_udp: Option<bool>,
+    /// Listen address for the CONNECT-UDP endpoint when
+    /// enabled (default [`DEFAULT_CONNECT_UDP_LISTEN`]).
+    pub connect_udp_listen: Option<String>,
     /// The routing table the broker advertises in its hello
     /// (§4: the services map IS the routing table). Empty means the
     /// built-in table ([`Config::services`]).
@@ -313,6 +329,20 @@ impl Config {
         self.proxy.direct.unwrap_or(false)
     }
 
+    /// Whether the CONNECT-UDP endpoint is enabled (#6109).
+    /// Absent means disabled: the capability merges dark.
+    pub fn connect_udp_enabled(&self) -> bool {
+        self.proxy.connect_udp.unwrap_or(false)
+    }
+
+    /// The CONNECT-UDP endpoint's listen address.
+    pub fn connect_udp_listen(&self) -> &str {
+        self.proxy
+            .connect_udp_listen
+            .as_deref()
+            .unwrap_or(DEFAULT_CONNECT_UDP_LISTEN)
+    }
+
     /// The routing table: config's `[proxy] services`, or the
     /// built-in table matching today's live system — 4799 the
     /// (Python) laptop-agent daemon, 4800/4801 the fleet broker
@@ -426,6 +456,27 @@ mod tests {
         let cfg = Config::load_from(PathBuf::from("/nonexistent/fleet.toml").as_path()).unwrap();
         assert!(cfg.domain_enabled("queue"));
         assert_eq!(cfg.idle_exit_secs(), DEFAULT_IDLE_EXIT_SECS);
+    }
+
+    #[test]
+    fn connect_udp_is_dark_by_default() {
+        // #6109: the spike capability must not listen anywhere
+        // a config has not deliberately enabled it.
+        let cfg = Config::load_from(PathBuf::from("/nonexistent/fleet.toml").as_path()).unwrap();
+        assert!(!cfg.connect_udp_enabled());
+        assert_eq!(cfg.connect_udp_listen(), DEFAULT_CONNECT_UDP_LISTEN);
+        let (_dir, path) = write_temp("[proxy]\nconnect_udp = false\n");
+        let cfg = Config::load_from(&path).unwrap();
+        assert!(!cfg.connect_udp_enabled());
+    }
+
+    #[test]
+    fn connect_udp_opt_in_parses() {
+        let (_dir, path) =
+            write_temp("[proxy]\nconnect_udp = true\nconnect_udp_listen = \"127.0.0.1:9999\"\n");
+        let cfg = Config::load_from(&path).unwrap();
+        assert!(cfg.connect_udp_enabled());
+        assert_eq!(cfg.connect_udp_listen(), "127.0.0.1:9999");
     }
 
     #[test]
