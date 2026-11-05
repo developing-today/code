@@ -1,0 +1,8 @@
+[Unit]
+Description=External-comms ledger pusher — drain the send-time outbox into Supabase agent.external_comms
+After=network-online.target secrets-broker.service
+Wants=secrets-broker.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/git/code/pm-stack/external-comms/record-external-send push
