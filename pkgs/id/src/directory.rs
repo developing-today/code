@@ -575,7 +575,17 @@ impl Directory {
             .collect();
         for (a, b, requests) in removals {
             let formed_by = directory.friend_requests.get(&pair(&a, &b));
-            if directory.are_friends(&a, &b) && formed_by.is_some_and(|id| requests.contains(id)) {
+            // #5624: a removal of a friendship formed by a legacy
+            // noncanonical request cannot name that request - the #3146
+            // contract refuses it in an artifact - so the producer's
+            // artifact carries canonical IDs only and the formed-by match
+            // above can never succeed for it. A friendship still formed
+            // by a noncanonical ID is exactly the legacy state such an
+            // artifact removes, so apply it by pair like writer `open`.
+            let legacy_formed = formed_by.is_some_and(|id| !artifact::is_friend_request_id(id));
+            if directory.are_friends(&a, &b)
+                && (legacy_formed || formed_by.is_some_and(|id| requests.contains(id)))
+            {
                 directory.apply_replay(&DirectoryEntry::FriendRemoved { a, b, requests })?;
             }
         }
@@ -2653,6 +2663,58 @@ mod tests {
         directory.remove_friend(&cy_credential, &di).unwrap();
         assert!(directory.removed_requests.contains("r2"));
         assert!(directory.pending_id(&cy, &di).is_none());
+    }
+
+    #[test]
+    fn a_legacy_removal_takes_effect_on_read_only_replay_when_its_journal_entry_is_lost() {
+        // #5624 (Codex P2 on the fix PR): the producer's removal artifact
+        // for a legacy-formed friendship names no request ID, and
+        // read-only replay only applied removals naming the formed-by ID,
+        // so a replica kept the friendship. Seed legacy state in a
+        // journaled directory, remove, then lose the removal's journal
+        // line (crash between storing the artifact and journaling).
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("directory.jsonl");
+        let mut directory = Directory::open(&path).unwrap();
+        let (ann, ann_credential) = account(&mut directory, "Ann");
+        let (bo, _bo_credential) = account(&mut directory, "Bo");
+        directory
+            .apply(&DirectoryEntry::FriendRequested {
+                from: ann.clone(),
+                to: bo.clone(),
+                id: Some("r1".to_owned()),
+            })
+            .unwrap();
+        directory
+            .apply(&DirectoryEntry::FriendAccepted {
+                from: ann.clone(),
+                to: bo.clone(),
+                request: Some("r1".to_owned()),
+                id: None,
+            })
+            .unwrap();
+        directory.remove_friend(&ann_credential, &bo).unwrap();
+        assert!(!directory.are_friends(&ann, &bo));
+        drop(directory);
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let kept: String = text
+            .lines()
+            .rev()
+            .skip(1)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|line| format!("{line}\n"))
+            .collect();
+        std::fs::write(&path, kept).unwrap();
+
+        let replayed = Directory::replay_read_only(&path).unwrap();
+        assert!(!replayed.are_friends(&ann, &bo));
+        drop(replayed);
+
+        let reopened = Directory::open(&path).unwrap();
+        assert!(!reopened.are_friends(&ann, &bo));
     }
 
     #[test]
