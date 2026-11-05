@@ -390,14 +390,25 @@
       // Credential: MISTRAL_API_KEY in the server unit's environment
       // (vibe-auth resolution: config -> env -> ~/.vibe/.env -> keyring).
       // Models are declared HERE: models.dev has no vibe entry, so
-      // sync-models cannot maintain this catalog. Only the default
-      // preset's limit was verified from the binary; the rest are the
+      // sync-models cannot maintain this catalog. The entries are the
       // preset ids + names from Vibe's own catalog (opencode#1653).
+      // A model "limit" here must carry "output" alongside
+      // "context": the v1 provider schema requires both, and an
+      // entry that fails schema decode is dropped WHOLE at config
+      // normalization — a context-only limit on the default model
+      // is exactly what kept vibe-direct out of the provider catalog
+      // until code#5934 (2026-11-04→05, opencode#1146). The default
+      // model's limit below restores the binary-verified context
+      // (262144, opencode#1661's preset); its "output" is the fork's
+      // config-model default (32000), NOT a binary-verified figure.
+      // The other models declare no limit and take that same
+      // default (200000/32000) until someone verifies theirs.
       "models": {
         "mistral-vibe-cli-latest": {
           "name": "Mistral Medium 3.5",
           "limit": {
-            "context": 262144
+            "context": 262144,
+            "output": 32000
           }
         },
         "mistral-medium-latest": {
@@ -639,6 +650,14 @@
 
       }
     },
+    // meta (Meta API, PAYG key door into the same single Meta pool):
+    // WIRED BUT DISABLED (Drew, direct order 2026-11-04) — the definition
+    // below is complete (api.meta.ai; the key resolves from the auth
+    // store / META_API_KEY) and "meta" stays in disabled_providers
+    // above. Drew: "$150 available as of today" (2026-11-04) on the
+    // PAYG key. Sometime later we might enable it and use those tokens:
+    // enable deliberately, by deleting the disabled_providers line
+    // only — usage past the plan bills PAYG against that balance.
     "meta": {
       "npm": "@ai-sdk/openai",
       "name": "Meta Model API",

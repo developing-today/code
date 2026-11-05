@@ -8,11 +8,15 @@ permissions:
 
 jobs:
   test:
-    name: aggregator + projector
+    name: aggregator + projector + python suites
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
 
@@ -36,3 +40,29 @@ jobs:
         run: |
           bash pm-stack/scripts/seed-smoke.test.sh
           bash pm-stack/scripts/deploy-install-smoke.test.sh
+
+      # Python suites for #5951: pm-stack/opencode-claimant/test_poll.py
+      # (36 tests, the #3026 claimant session-cap gate) and
+      # pm-stack/grist/test_update_choice_options.py (7 tests) were run
+      # by no workflow. Both files are named explicitly and asserted to
+      # exist first, so a green run cannot be a silently skipped suite;
+      # any failure in either suite fails the job.
+      - name: Test claimant and grist Python suites
+        run: |
+          fail=0
+          for t in pm-stack/opencode-claimant/test_poll.py pm-stack/grist/test_update_choice_options.py; do
+            if [ ! -f "$t" ]; then
+              echo "::error::Missing suite file $t — the pm-stack Python suites were not run in full."
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          python3 -m unittest pm-stack/opencode-claimant/test_poll.py || fail=1
+          python3 -m unittest discover -s pm-stack/grist -p 'test_*.py' || fail=1
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::pm-stack Python suites: at least one suite failed (see above)."
+            exit 1
+          fi
+          echo "pm-stack Python suites: test_poll.py + grist discovery passed."

@@ -11,7 +11,29 @@ import tempfile
 import unittest
 
 SEED = Path(__file__).with_name("seed.sh")
-ORIGINAL = Path(sys.argv.pop(1)).resolve() if len(sys.argv) > 1 else None
+
+
+def _original_from_argv():
+    """The optional original seed.sh to compare against (#5943).
+
+    Only a direct script run may take the path from argv: under a
+    test runner (the unittest module form, discover, pytest) the
+    argv belongs to the runner, and its first argument (a test
+    name, a flag, a path) is not a script to execute. Runner runs get
+    no comparison; a leading-dash argument is a unittest flag and is
+    likewise left alone for unittest.main() to consume.
+    """
+    if __name__ != "__main__" or len(sys.argv) <= 1:
+        return None
+    if sys.argv[1].startswith("-"):
+        return None
+    candidate = Path(sys.argv.pop(1)).resolve()
+    if not candidate.is_file():
+        raise SystemExit(f"test_seed: original seed script not found: {candidate}")
+    return candidate
+
+
+ORIGINAL = _original_from_argv()
 
 
 class SeedTest(unittest.TestCase):

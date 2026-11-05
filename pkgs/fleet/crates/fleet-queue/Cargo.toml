@@ -44,3 +44,9 @@ required-features = ["queue-broker"]
 name = "secrets-broker"
 path = "src/bin/secrets-broker.rs"
 required-features = ["secrets-broker"]
+
+
+[dev-dependencies]
+# Property-based tests for the client parser invariants (#5939),
+# the same proptest version pkgs/id uses.
+proptest = "1.12"

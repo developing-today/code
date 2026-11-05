@@ -81,3 +81,26 @@ never silently picked.
 - **Deduplicate replicated targets in the candidate list:** rejected for display
   (provenance is information), accepted for _choice_: ambiguity is counted in
   distinct targets, not in candidate rows.
+
+## Locator fetch (second slice, #5927)
+
+Implemented in `pkgs/id/src/references.rs` (`FanOut::fetch_located` /
+`FanOut::render_located`), queue task 9828.
+
+- **Hints are the locator contract.** When a stored reference records locator
+  hints, only those stores are consulted, in hint order; the first hinted store
+  holding the target for the viewer decides — resolved, renamed, or cleared. A
+  tombstone in the first holding store is an answer, not an absence to skip
+  past. A reference with no hints (the markdown degradation carries none) is
+  fetched against the viewer's store set in fan-out order.
+- **States stay distinct across the boundary.** Resolved / renamed / cleared
+  mean exactly what the single-store `render` means; the fourth state,
+  unresolved-for-viewer, covers both "no hinted store holds it" and "a hinted
+  store holds it but this viewer may not see it" — deliberately
+  indistinguishable, rendered from the stored surface alone, naming no store,
+  so an inaccessible target leaks no candidate, claimant, or existence
+  information (fan-out contract rule 6, extended to fetch).
+- **Pins are unaffected.** The fetch follows the stable logical ID; an
+  exact-revision pin stays on the reference and does not change which object
+  is fetched (the per-store indexes hold the logical object, not its revision
+  chain). Hosted-store search remains out of scope, as scoped on #5927.
