@@ -380,7 +380,7 @@ html[data-theme="light"] th { background: #f6f8fa; }
 html[data-theme="light"] .banner { color: #9a6700; }
 html[data-theme="light"] .banner.drew { color: #cf222e; }
 html[data-theme="light"] .chips a, html[data-theme="light"] .fchip, html[data-theme="light"] .qchip, html[data-theme="light"] .hchip, html[data-theme="light"] .xchip { background: #f6f8fa; color: #1f2328; border-color: #d1d9e0; }
-html[data-theme="light"] /* The tray chip background lightens above, html[data-theme="light"] .hchip button { color: #1f2328; }
+html[data-theme="light"] .hchip button { color: #1f2328; }
 html[data-theme="light"] .chips a.active { color: #0969da; }
 html[data-theme="light"] .fchip.stale, html[data-theme="light"] .fchip.absent, html[data-theme="light"] .qblock .qremaining { color: #9a6700; }
 html[data-theme="light"] .fchip.invalid, html[data-theme="light"] .cform .err, html[data-theme="light"] .aform .err { color: #cf222e; }
@@ -392,9 +392,7 @@ html[data-theme="light"] .dot.off, html[data-theme="light"] .dot.unknown { backg
 html[data-theme="light"] .dot.fixtures { background: transparent; border-color: #8250df; }
 html[data-theme="light"] .cmt { background: #f6f8fa; border-left-color: #d1d9e0; }
 html[data-theme="light"] .cov, html[data-theme="light"] .cform, html[data-theme="light"] .actbox, html[data-theme="light"] .skel { background: #f6f8fa; border-color: #d1d9e0; }
-html[data-theme="light"] /* Charts keep their authored dark surface in light mode: the SVG
-     foregrounds are generated for dark (model labels #c9d1d9, html[data-theme="light"] the
-     Pareto frontier #e6edf3), html[data-theme="light"] .chart { background: #0d1117; border-color: #30363d; color: #e6edf3; }
+html[data-theme="light"] .chart { background: #0d1117; border-color: #30363d; color: #e6edf3; }
 html[data-theme="light"] .chart .muted { color: #8b949e; }
 html[data-theme="light"] .chart .xpl-ctl button, html[data-theme="light"] .chart .xpl-ctl select { background: #161b22; color: #e6edf3; border-color: #30363d; }
 html[data-theme="light"] .chart .xpl-ctl button.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
@@ -419,6 +417,8 @@ html[data-theme="light"] .obj .n { color: #0969da; }
 html[data-theme="light"] .foot { border-top-color: #d1d9e0; }
 html[data-theme="light"] .qblock { border-top-color: #d1d9e0; }
 html[data-theme="light"] .cbox { border-top-color: #d1d9e0; }
+html[data-theme="light"] .navsearch input, html[data-theme="light"] .search-page-form input { background: #ffffff; color: #1f2328; border-color: #d1d9e0; }
+html[data-theme="light"] .navsearch button, html[data-theme="light"] .search-page-form button { background: #eaeef2; color: #1f2328; border-color: #d1d9e0; }
 html[data-theme="dark"] body { background: #0e1117; color: #e6edf3; }
 html[data-theme="dark"] nav { background: #161b22; border-bottom-color: #30363d; }
 html[data-theme="dark"] .card { background: #161b22; border-color: #30363d; }
