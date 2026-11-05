@@ -865,28 +865,3 @@ internal are exempt. Probe matrix for every covered site — keys
 "toString", and an ordinary key: the entry exists as an own property with
 its value, a JSON round-trip preserves it, and neither the container's
 prototype nor Object.prototype moves or gains own properties.
-
-## Styling (Tailwind + DaisyUI)
-
-The dashboard's stylesheet is built with Tailwind CSS v4 + DaisyUI v5.
-The source is `src/ui.css`: the Tailwind/DaisyUI imports and theme
-config first, then the legacy component rules (every page builder emits
-the same semantic class hooks -- `card`, `badge`, `nav`, `aform`, ... --
-and the test suite pins many of those rules, so treat them as contract),
-then the explicit-theme and modern-refinement layers. The page shell
-(`layout()` in `src/render.ts`) links the build; it never inlines CSS.
-
-To change styles:
-
-1. Edit `src/ui.css`.
-2. Run `bun run build:css` (uses the `@tailwindcss/cli` devDependency).
-3. Commit BOTH `src/ui.css` and the regenerated `src/assets/app.css` --
-   the build output is a committed static asset served at
-   `/assets/app.css`, so the pm-git-sync deploy needs no build step.
-
-Theming: `<html data-theme="dark">` is the default (the historic dark
-look); the navbar's theme toggle is Datastar-driven (a `$pmTheme`
-signal + effect) and persists the choice to `localStorage` under
-`pm-theme`; a tiny inline bootstrap in the head applies the stored
-choice before the stylesheet loads, so there is no flash of the wrong
-theme.
