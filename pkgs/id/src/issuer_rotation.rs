@@ -613,8 +613,33 @@ pub fn fold_rotation_chain(
             // compromised key active under a new generation number.
             .filter(|(_, _, rotation)| rotation.successor_key != current_key)
             .collect();
-        candidates.sort_by_key(|(_, event_id, _)| *event_id);
-        candidates.dedup_by_key(|(_, event_id, _)| *event_id);
+        // Order and deduplicate on the candidate's full content —
+        // event id, author, and the rotation body — never on the
+        // event id alone. Distinct bodies can share one event id,
+        // and an id-only dedup keeps whichever arrived first, so the
+        // fold would depend on input order and break the determinism
+        // contract above. With the full tuple as the key, identical
+        // duplicates still collapse to one, while distinct same-id
+        // candidates both survive to the fork handling below (a
+        // single recovery resolves them, otherwise the chain
+        // conflicts) — a function of the input multiset, never of
+        // its listing order. The oracle is permutation invariance:
+        // every listing of the same multiset folds identically.
+        candidates.sort_by_key(|(author, event_id, rotation)| {
+            (
+                *event_id,
+                *author,
+                match rotation.mode {
+                    RotationMode::Routine => 0u8,
+                    RotationMode::CompromiseRecovery => 1u8,
+                },
+                rotation.successor_key,
+                rotation.successor_proof,
+                rotation.asserted_compromise_from,
+                rotation.to_generation,
+            )
+        });
+        candidates.dedup_by(|a, b| *a == *b);
         match candidates.as_slice() {
             [] => break,
             [(_, event_id, rotation)] => {
@@ -656,9 +681,16 @@ pub fn fold_rotation_chain(
                     chain.keys.push(rotation.successor_key);
                     chain.transitions.push(event_id);
                 } else {
+                    // The status names the competing transitions by
+                    // event id; distinct candidates can share one id
+                    // (above), so list each id once. `many` is sorted
+                    // by event id first, so a plain dedup suffices.
+                    let mut candidate_ids: Vec<Hash> =
+                        many.iter().map(|(_, event_id, _)| *event_id).collect();
+                    candidate_ids.dedup();
                     chain.status = ChainStatus::Conflicted {
                         generation: generation + 1,
-                        candidates: many.iter().map(|(_, event_id, _)| *event_id).collect(),
+                        candidates: candidate_ids,
                     };
                     break;
                 }
@@ -940,6 +972,162 @@ mod tests {
                 assert!(candidates.contains(&event(2)));
             }
             other => panic!("expected a conflicted chain, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_event_id_with_distinct_routine_bodies_conflicts_in_either_order() {
+        // Two distinct, individually valid routine bodies sharing
+        // one event id: neither may be picked by arrival order. The
+        // design (§3.2 rule 5) prescribes a conflict for two valid
+        // transitions claiming the same predecessor.
+        let first = rotation(RotationMode::Routine, 0, None, &gen1_key(), None);
+        let rival = rotation(RotationMode::Routine, 0, None, &gen2_key(), None);
+        let forward = fold_rotation_chain(
+            &issuer_id(&gen0_key()),
+            &currency(),
+            Some(&commitment()),
+            &[
+                (issuer_id(&gen0_key()), event(1), first.clone()),
+                (issuer_id(&gen0_key()), event(1), rival.clone()),
+            ],
+        );
+        let reversed = fold_rotation_chain(
+            &issuer_id(&gen0_key()),
+            &currency(),
+            Some(&commitment()),
+            &[
+                (issuer_id(&gen0_key()), event(1), rival),
+                (issuer_id(&gen0_key()), event(1), first),
+            ],
+        );
+        assert_eq!(forward, reversed);
+        assert_eq!(forward.active_generation(), 0);
+        assert_eq!(
+            forward.status,
+            ChainStatus::Conflicted {
+                generation: 1,
+                candidates: vec![event(1)],
+            }
+        );
+    }
+
+    #[test]
+    fn duplicate_event_id_recovery_resolves_regardless_of_order() {
+        // A routine body and a recovery body sharing one event id:
+        // the single committed-key recovery resolves the fork in
+        // either listing order (§3.4), instead of the survivor being
+        // whichever body happened to be listed first.
+        let routine = rotation(RotationMode::Routine, 0, None, &gen1_key(), None);
+        let recovery = rotation(
+            RotationMode::CompromiseRecovery,
+            0,
+            None,
+            &gen2_key(),
+            Some(event(50)),
+        );
+        let forward = fold_rotation_chain(
+            &issuer_id(&gen0_key()),
+            &currency(),
+            Some(&commitment()),
+            &[
+                (issuer_id(&gen0_key()), event(1), routine.clone()),
+                (issuer_id(&recovery_key()), event(1), recovery.clone()),
+            ],
+        );
+        let reversed = fold_rotation_chain(
+            &issuer_id(&gen0_key()),
+            &currency(),
+            Some(&commitment()),
+            &[
+                (issuer_id(&recovery_key()), event(1), recovery),
+                (issuer_id(&gen0_key()), event(1), routine),
+            ],
+        );
+        assert_eq!(forward, reversed);
+        assert_eq!(forward.status, ChainStatus::Settled);
+        assert_eq!(forward.active_generation(), 1);
+        assert_eq!(forward.active_key(), &issuer_id(&gen2_key()));
+        assert_eq!(forward.recoveries.len(), 1);
+        assert_eq!(forward.recoveries[0].event_id, event(1));
+    }
+
+    #[test]
+    fn identical_duplicate_candidate_still_counts_once() {
+        let first = rotation(RotationMode::Routine, 0, None, &gen1_key(), None);
+        let entry = (issuer_id(&gen0_key()), event(1), first);
+        let chain = fold_rotation_chain(
+            &issuer_id(&gen0_key()),
+            &currency(),
+            Some(&commitment()),
+            &[entry.clone(), entry],
+        );
+        assert_eq!(chain.status, ChainStatus::Settled);
+        assert_eq!(chain.active_generation(), 1);
+        assert_eq!(chain.transitions, vec![event(1)]);
+    }
+
+    #[test]
+    fn fold_is_permutation_invariant_with_duplicate_event_ids() {
+        // Property test; the oracle is permutation invariance of
+        // the fold. The multiset mixes three distinct bodies under
+        // one event id (two routine rivals and one recovery) plus
+        // an identical duplicate of the recovery: every listing
+        // must fold to the same chain, settled through the
+        // recovery exactly once.
+        let routine_a = rotation(RotationMode::Routine, 0, None, &gen1_key(), None);
+        let routine_b = rotation(RotationMode::Routine, 0, None, &gen2_key(), None);
+        let recovery = rotation(
+            RotationMode::CompromiseRecovery,
+            0,
+            None,
+            &gen3_key(),
+            Some(event(50)),
+        );
+        let inputs = vec![
+            (issuer_id(&gen0_key()), event(1), routine_a),
+            (issuer_id(&gen0_key()), event(1), routine_b),
+            (issuer_id(&recovery_key()), event(1), recovery),
+        ];
+        let inputs = {
+            let mut with_dup = inputs.clone();
+            with_dup.push(inputs[2].clone());
+            with_dup
+        };
+        let expected = fold_rotation_chain(
+            &issuer_id(&gen0_key()),
+            &currency(),
+            Some(&commitment()),
+            &inputs,
+        );
+        assert_eq!(expected.status, ChainStatus::Settled);
+        assert_eq!(expected.active_key(), &issuer_id(&gen3_key()));
+        assert_eq!(expected.transitions, vec![event(1)]);
+        assert_eq!(expected.recoveries.len(), 1);
+        fn permutations<T: Clone>(items: &[T]) -> Vec<Vec<T>> {
+            if items.len() <= 1 {
+                return vec![items.to_vec()];
+            }
+            let mut out = Vec::new();
+            for i in 0..items.len() {
+                let mut rest = items.to_vec();
+                let head = rest.remove(i);
+                for mut tail in permutations(&rest) {
+                    let mut perm = vec![head.clone()];
+                    perm.append(&mut tail);
+                    out.push(perm);
+                }
+            }
+            out
+        }
+        for perm in permutations(&inputs) {
+            let chain = fold_rotation_chain(
+                &issuer_id(&gen0_key()),
+                &currency(),
+                Some(&commitment()),
+                &perm,
+            );
+            assert_eq!(chain, expected);
         }
     }
 
