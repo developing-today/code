@@ -199,24 +199,46 @@ let
   # installs this as the programs.firefox package below; the
   # NixOS side installs the same wrapper via
   # environment.systemPackages (nixos/environment firefoxBidi).
-  firefoxBidi = pkgs.symlinkJoin {
-    name = "${pkgs.firefox.name}-bidi";
-    paths = [ pkgs.firefox ];
-    nativeBuildInputs = [ pkgs.makeWrapper ];
-    postBuild = ''
-      for bin in "$out"/bin/*; do
-        [ -L "$bin" ] || continue
-        target=$(readlink -f "$bin")
-        [ -x "$target" ] || continue
-        rm "$bin"
-        makeWrapper "$target" "$bin" \
-          --add-flags "--remote-debugging-port=19225"
-      done
-    '';
-    meta = (pkgs.firefox.meta or { }) // {
-      mainProgram = pkgs.firefox.meta.mainProgram or null;
-    };
-  };
+  firefoxBidi =
+    let
+      wrapBidi =
+        pkg:
+        let
+          joined = pkgs.symlinkJoin {
+            name = "${pkg.name}-bidi";
+            paths = [ pkg ];
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            postBuild = ''
+              for bin in "$out"/bin/*; do
+                [ -L "$bin" ] || continue
+                target=$(readlink -f "$bin")
+                [ -x "$target" ] || continue
+                rm "$bin"
+                makeWrapper "$target" "$bin" \
+                  --add-flags "--remote-debugging-port=19225"
+              done
+            '';
+            meta = (pkg.meta or { }) // {
+              mainProgram = pkg.meta.mainProgram or null;
+            };
+          };
+        in
+        joined
+        // {
+          # home-manager's firefox module (mkFirefoxModule) treats a
+          # wrapped package as reconfigurable only through its
+          # `override`: it probes `lib.functionArgs package.override`
+          # for `cfg` / `appDataDir` and calls it with an override
+          # function merging cfg, extraPolicies and pkcs11Modules.
+          # A bare symlinkJoin has no `override`, which broke the HM
+          # evaluation of main in code#6156. Forward the underlying
+          # package's override -- re-applying the BiDi wrap to its
+          # result, with the override's exact function-args shape --
+          # so the module behaves exactly as it does for pkgs.firefox.
+          override = lib.setFunctionArgs (args: wrapBidi (pkg.override args)) (lib.functionArgs pkg.override);
+        };
+    in
+    wrapBidi pkgs.firefox;
   # The environment the mcpx daemon runs with (services.mcpx.environment
   # below; the module renders it into the unit).
   mcpxEnvironment = {
