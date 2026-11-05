@@ -41,7 +41,8 @@ pub use backend::SearchBackend;
 pub use embed::{AtlasEmbedder, FixedEmbedder, QUERY_PROMPT, QueryEmbedder};
 pub use error::{Error, Result};
 pub use eval::{
-    EVAL_FORMAT, EvalData, EvalReport, Metric, REPORT_FORMAT, Split, evaluate, select_best_signal,
+    EVAL_FORMAT, EvalData, EvalReport, MAX_GRADE, Metric, REPORT_FORMAT, Split, evaluate,
+    select_best_signal,
 };
 pub use filters::{Filters, Sensitivity};
 pub use fusion::{FusedEntry, RRF_K};

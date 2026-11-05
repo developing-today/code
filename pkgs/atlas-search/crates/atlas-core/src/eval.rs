@@ -31,8 +31,12 @@
 //!   only by [`evaluate`]; [`select_best_signal`] refuses test-split
 //!   reports, so parameter selection cannot silently tune on held-out
 //!   qrels (#5741 acceptance).
-//! - Grades are unsigned integers; a doc is *relevant* iff grade ≥ 1.
-//!   Unjudged docs in a ranking score as grade 0.
+//! - Grades are unsigned integers in `0..=MAX_GRADE` (30); a doc is
+//!   *relevant* iff grade ≥ 1. Unjudged docs in a ranking score as
+//!   grade 0. The cap keeps the `2^grade - 1` gain finite and exact:
+//!   an unbounded `u32` grade could overflow the gain to infinity
+//!   (grade 1024) and turn nDCG into NaN, so validation rejects
+//!   larger grades instead of scoring them.
 //! - A run that has no entry for a query scores that query as an
 //!   empty ranking (all metrics 0) — an incomplete run is penalized,
 //!   never silently skipped.
@@ -48,8 +52,9 @@
 //! queries with no relevant doc are counted in `queries_total` and
 //! listed per-query with zero metrics, but excluded from the means
 //! (the standard convention: their recall/MRR are undefined, not 0).
-//! Each per-query record preserves the run's top-100 doc ids so any
-//! reported metric can be recomputed from the report alone.
+//! Each per-query record preserves the run's top-1000 doc ids and
+//! the query's judged grades, so any reported metric (nDCG@10,
+//! Recall@100/1000, MRR@10) can be recomputed from the report alone.
 //!
 //! Reports are deterministic: signals, queries, and classes are
 //! processed in sorted order, and every reported float passes through
@@ -67,6 +72,12 @@ use crate::types::round6;
 pub const EVAL_FORMAT: &str = "atlas-eval/v1";
 /// The report format version emitted by [`evaluate`].
 pub const REPORT_FORMAT: &str = "atlas-eval-report/v1";
+
+/// The largest relevance grade the format accepts. Gains are
+/// `2^grade - 1` in `f64`; the cap keeps every gain finite and the
+/// `grade as i32` exponent cast exact for any accepted input, with
+/// wide headroom over real graded-relevance schemes (typically 0-4).
+pub const MAX_GRADE: u32 = 30;
 
 /// Which split of the eval set a query belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -100,7 +111,7 @@ pub struct Qrel {
     pub query: String,
     /// The judged doc/chunk id.
     pub doc: String,
-    /// Relevance grade; relevant iff ≥ 1.
+    /// Relevance grade (`0..=MAX_GRADE`); relevant iff ≥ 1.
     pub grade: u32,
 }
 
@@ -134,8 +145,8 @@ impl EvalData {
     ///
     /// Fails on malformed JSON or any validation rule in the module
     /// docs (wrong format version, duplicate query ids, qrels naming
-    /// unknown queries, duplicate qrels, duplicate docs in a ranking,
-    /// duplicate signal names).
+    /// unknown queries, duplicate qrels, grades above `MAX_GRADE`,
+    /// duplicate docs in a ranking, duplicate signal names).
     pub fn from_json(text: &str) -> Result<Self> {
         let data: EvalData = serde_json::from_str(text)
             .map_err(|e| Error::fatal(format!("eval input is not valid atlas-eval JSON: {e}")))?;
@@ -167,6 +178,14 @@ impl EvalData {
                 return Err(Error::fatal(format!(
                     "qrel names unknown query {:?}",
                     qrel.query
+                )));
+            }
+            if qrel.grade > MAX_GRADE {
+                return Err(Error::fatal(format!(
+                    "qrel grade {} for query {:?} doc {:?} exceeds the supported \
+                     maximum {MAX_GRADE} (larger grades overflow the 2^grade \
+                     gain calculation)",
+                    qrel.grade, qrel.query, qrel.doc
                 )));
             }
             if !qrel_keys.insert((qrel.query.as_str(), qrel.doc.as_str())) {
@@ -251,7 +270,8 @@ impl Metric {
     }
 }
 
-/// Per-query metric detail, with the run's top-100 preserved.
+/// Per-query metric detail, with the evidence needed to recompute
+/// the metrics from the report alone preserved alongside them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PerQuery {
     /// Query id.
@@ -269,9 +289,14 @@ pub struct PerQuery {
     pub recall1000: f64,
     /// Reciprocal rank of the first relevant doc within the top 10.
     pub mrr10: f64,
-    /// The run's top-100 doc ids for this query, preserved so the
-    /// metrics above can be recomputed from the report alone.
-    pub top100: Vec<String>,
+    /// The run's top-1000 doc ids for this query, preserved so the
+    /// metrics above (including Recall@1000) can be recomputed from
+    /// the report alone.
+    pub top1000: Vec<String>,
+    /// The query's judged grades (doc id -> grade), preserved for
+    /// the same recomputation: without them nDCG and the recall hits
+    /// cannot be rechecked from the report alone.
+    pub grades: BTreeMap<String, u32>,
 }
 
 /// One signal's scores within a split.
@@ -453,7 +478,8 @@ pub fn evaluate(data: &EvalData, split: Split) -> Result<EvalReport> {
                 recall100: round6(raw.recall100),
                 recall1000: round6(raw.recall1000),
                 mrr10: round6(raw.mrr10),
-                top100: ranking.iter().take(100).cloned().collect(),
+                top1000: ranking.iter().take(1000).cloned().collect(),
+                grades: grades.clone(),
             });
         }
         signals.push(SignalReport {
@@ -597,8 +623,8 @@ mod tests {
         assert_eq!(signal.overall.ndcg10, 0.898354);
         assert_eq!(signal.per_class["code"].ndcg10, 0.796708);
         assert_eq!(signal.per_class["documentation"].ndcg10, 1.0);
-        // The per-query top-100 is preserved for recomputation.
-        assert_eq!(signal.per_query[0].top100, ranking(&["d2", "d1"]));
+        // The per-query top-1000 is preserved for recomputation.
+        assert_eq!(signal.per_query[0].top1000, ranking(&["d2", "d1"]));
     }
 
     // Oracle: the split labels in the input. Dev evaluation must not
@@ -675,6 +701,10 @@ mod tests {
         unknown_qrel["qrels"][0]["query"] = serde_json::json!("nope");
         assert!(EvalData::from_json(&unknown_qrel.to_string()).is_err());
 
+        let mut huge_grade = base.clone();
+        huge_grade["qrels"][0]["grade"] = serde_json::json!(1024);
+        assert!(EvalData::from_json(&huge_grade.to_string()).is_err());
+
         let mut dup_qrel = base.clone();
         dup_qrel["qrels"] = serde_json::json!([
             {"query": "q1", "doc": "d1", "grade": 1},
@@ -698,7 +728,43 @@ mod tests {
         assert_eq!(signal.queries_scored, 1);
         assert_eq!(signal.overall.ndcg10, 0.0);
         assert_eq!(signal.overall.recall1000, 0.0);
-        assert!(signal.per_query[0].top100.is_empty());
+        assert!(signal.per_query[0].top1000.is_empty());
+    }
+
+    // Oracle: the report's own preserved evidence. A relevant doc
+    // at rank 120 must survive in the per-query record (top-1000,
+    // not top-100) together with the judged grades, and recomputing
+    // the metrics from that record alone must reproduce the reported
+    // values (Codex finding on PR #6262: report-only recomputation
+    // was impossible when only the top 100 was kept and the qrels
+    // were dropped).
+    #[test]
+    fn report_preserves_evidence_for_recomputation() {
+        let mut docs: Vec<String> = (0..150).map(|i| format!("x{i}")).collect();
+        docs[49] = "rel-a".to_owned();
+        docs[119] = "rel-b".to_owned();
+        let results = serde_json::Value::Array(docs.iter().map(|d| serde_json::json!(d)).collect());
+        let d = data(serde_json::json!({
+            "format": "atlas-eval/v1",
+            "queries": [{"id": "q1", "class": "code", "split": "dev"}],
+            "qrels": [
+                {"query": "q1", "doc": "rel-a", "grade": 2},
+                {"query": "q1", "doc": "rel-b", "grade": 1}
+            ],
+            "runs": [{"signal": "dense", "results": {"q1": results}}]
+        }));
+        let report = evaluate(&d, Split::Dev).unwrap();
+        let pq = &report.signals[0].per_query[0];
+        assert_eq!(pq.top1000.len(), 150);
+        assert_eq!(pq.grades.len(), 2);
+        assert_eq!(pq.recall100, 0.5);
+        assert_eq!(pq.recall1000, 1.0);
+        // Recompute from the preserved record alone.
+        let (_, m) = query_metrics(&pq.top1000, &pq.grades);
+        assert!((m.ndcg10 - pq.ndcg10).abs() < 1e-6, "ndcg recompute");
+        assert!((m.recall100 - pq.recall100).abs() < 1e-12);
+        assert!((m.recall1000 - pq.recall1000).abs() < 1e-12);
+        assert!((m.mrr10 - pq.mrr10).abs() < 1e-12);
     }
 
     // Deterministic xorshift for the invariant sweep (no new dev
