@@ -684,6 +684,15 @@ mod tests {
     // substantially more contention than a focused local invocation.
     const DEADLINE: Duration = SESSION_DEADLINE;
 
+    /// The bulk page-transfer test moves 210 events (three chains of 70) across four 64-event
+    /// pages, so its session does several times the work the production deadline is sized for.
+    /// Unloaded it takes ~39 s against `SESSION_DEADLINE` — 1.5x headroom — and under heavy
+    /// parallel load (load average ~30-43) the session once got no scheduler time at all before
+    /// the deadline expired, failing the test with zero events accepted (#4057). Scale the
+    /// deadline to this test's work instead of the machine's mood: 3x production leaves ~4.6x
+    /// headroom over the unloaded runtime, and a genuine hang still fails the test in minutes.
+    const BULK_DEADLINE: Duration = Duration::from_secs(SESSION_DEADLINE.as_secs() * 3);
+
     fn key(n: u8) -> SigningKey {
         SigningKey::from_bytes(&[n; 32])
     }
@@ -799,6 +808,7 @@ mod tests {
         support: Arc<dyn SyncSupport>,
         gate: PullGate,
         results: mpsc::UnboundedSender<Result<Outcome, SyncError>>,
+        deadline: Duration,
     }
 
     impl ProtocolHandler for Capture {
@@ -811,7 +821,7 @@ mod tests {
                     conn.remote_id(),
                     send,
                     recv,
-                    DEADLINE,
+                    self.deadline,
                 )
                 .await;
                 let _ = self.results.send(result);
@@ -832,6 +842,32 @@ mod tests {
         responder_gated(store, testing::open_gate()).await
     }
 
+    /// Serves `store` on loopback with both sides of each session bounded by `deadline`. Only the
+    /// bulk page-transfer test needs this: it outruns [`DEADLINE`] under suite-wide contention
+    /// (#4057), so it scales the deadline to its own work size.
+    async fn responder_with_deadline(
+        store: &SharedEventStore,
+        deadline: Duration,
+    ) -> (
+        Endpoint,
+        Router,
+        mpsc::UnboundedReceiver<Result<Outcome, SyncError>>,
+    ) {
+        let ep = endpoint().await;
+        let (results, rx) = mpsc::unbounded_channel();
+        let handler = Capture {
+            store: store.clone(),
+            support: Arc::new(LogSyncOnly),
+            gate: testing::open_gate(),
+            results,
+            deadline,
+        };
+        let router = Router::builder(ep.clone())
+            .accept(SYNC_ALPN, handler)
+            .spawn();
+        (ep, router, rx)
+    }
+
     /// Serves `store` on loopback under `gate`.
     async fn responder_gated(
         store: &SharedEventStore,
@@ -848,6 +884,7 @@ mod tests {
             support: Arc::new(LogSyncOnly),
             gate,
             results,
+            deadline: DEADLINE,
         };
         let router = Router::builder(ep.clone())
             .accept(SYNC_ALPN, handler)
@@ -871,6 +908,7 @@ mod tests {
             support,
             gate: testing::open_gate(),
             results,
+            deadline: DEADLINE,
         };
         let router = Router::builder(ep.clone())
             .accept(SYNC_ALPN, handler)
@@ -984,7 +1022,8 @@ mod tests {
         let mut attempt = 0;
         let (outcome, answered) = loop {
             attempt += 1;
-            let (server, router, mut results) = responder(&store_a).await;
+            let (server, router, mut results) =
+                responder_with_deadline(&store_a, BULK_DEADLINE).await;
             let client = endpoint().await;
             match sync_with(
                 &client,
@@ -992,7 +1031,7 @@ mod tests {
                 &store_b,
                 topic,
                 &bootstrap(),
-                DEADLINE,
+                BULK_DEADLINE,
             )
             .await
             {
