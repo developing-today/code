@@ -548,7 +548,12 @@ in
                 dimensions = 1024; # Qwen3-Embedding-0.6B hidden size
               };
               autoRecall = true;
-              autoCapture = false;
+              # Auto-capture ON (2026-11-05): phase 1 (#1300) shipped
+              # with capture off while recall proved out; the standard
+              # advanced lancedb setup runs both, and Shed's memory
+              # only compounds if Drew's messages are captured as they
+              # land. The plugin filters (length, markup) still apply.
+              autoCapture = true;
             };
           };
         };
