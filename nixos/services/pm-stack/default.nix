@@ -342,7 +342,15 @@ in
             # EnvironmentFile in ExecStart, exactly as the hand-written
             # unit relied on.
             EnvironmentFile = "${stackDir}/tunnel.env";
-            ExecStart = "${cloudflared} tunnel --no-autoupdate run --token \${TUNNEL_TOKEN}";
+            # --protocol http2 (#5647): the default QUIC transport kept
+            # dropping on this host's network path - cloudflared logged
+            # "failed to accept QUIC stream: timeout: no recent network
+            # activity" and re-registered (2026-11-05 11:36Z), and while
+            # its connections were down Cloudflare's edge answered
+            # pm-dispatch callers with 502 ("error code: 502") even
+            # though pm-dispatch itself was healthy. HTTP/2 runs over
+            # TCP and does not depend on the UDP path QUIC needs.
+            ExecStart = "${cloudflared} tunnel --no-autoupdate --protocol http2 run --token \${TUNNEL_TOKEN}";
             Restart = "on-failure";
             RestartSec = 5;
           };
