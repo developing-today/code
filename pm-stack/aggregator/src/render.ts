@@ -3590,12 +3590,19 @@ function reconciledInProgress(data: OverviewData): OverviewInProgressItem[] {
     for (const task of goal.linedUp) {
       if (task.status !== "in-progress") continue;
       if (task.ref) {
-        signal(task.ref, "active-session", task.title);
+        // #6205: a lined-up ref is feed data, not necessarily a GitHub
+        // ref (goal ids, bare numbers). Signaling an invalid ref makes
+        // ensure() fall back to refUrl(), whose parseRef throws and
+        // kills the whole overview — skip refs the shared rule rejects.
+        if (isValidRef(task.ref)) signal(task.ref, "active-session", task.title);
         continue;
       }
       for (const ref of refsInText(task.title)) signal(ref, "active-session", task.title);
       for (const match of task.title.matchAll(/([\w.-]+\/[\w.-]+)#(\d+)/g)) {
-        signal(`${match[1]}#${match[2]}`, "active-session", task.title);
+        const ref = `${match[1]}#${match[2]}`;
+        // #6205: same guard for title-scraped refs — \d+ admits
+        // numbers parseRef rejects as unsafe integers.
+        if (isValidRef(ref)) signal(ref, "active-session", task.title);
       }
     }
   }
