@@ -902,11 +902,12 @@ func writeText(w http.ResponseWriter, code int, s string) {
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{
-		"status":   "ok",
-		"version":  s.version,
-		"pid":      os.Getpid(),
-		"uptime":   time.Since(s.started).Truncate(time.Second).String(),
-		"endpoint": s.endpoint,
+		"status":               "ok",
+		"version":              s.version,
+		"pid":                  os.Getpid(),
+		"uptime":               time.Since(s.started).Truncate(time.Second).String(),
+		"endpoint":             s.endpoint,
+		"operationFingerprint": api.OperationFingerprint(),
 	})
 }
 
@@ -916,7 +917,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		cfgPath = cfg.Path
 	}
 	writeJSON(w, 200, map[string]any{
-		"version": s.version,
+		"version":              s.version,
+		"operationFingerprint": api.OperationFingerprint(),
 		// #1877: this daemon's instance identity, so an `mcpx serve`
 		// shim backed by this daemon can report the DAEMON's identity
 		// (not the shim process's) to its host.

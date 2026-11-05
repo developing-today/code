@@ -18,7 +18,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { DaemonClient, renderExec } from "./daemon.ts"
-import { buildRequest, OpError, OPS } from "./ops.gen.ts"
+import { buildRequest, OPERATION_FINGERPRINT, OpError, OPS } from "./ops.gen.ts"
 
 type Seen = { method: string; path: string; type: string | null; body: Uint8Array }
 
@@ -36,6 +36,12 @@ const fake = (reply: (s: Seen) => Response = () => Response.json({ ok: true })) 
     unix: socket,
     async fetch(req) {
       const url = new URL(req.url)
+      // Every generated operation first verifies the daemon's operation-table
+      // fingerprint. Answer that handshake without recording it, so `seen`
+      // stays the list of operations the test is asserting about.
+      if (url.pathname === "/v1/health") {
+        return Response.json({ status: "ok", operationFingerprint: OPERATION_FINGERPRINT })
+      }
       const s: Seen = {
         method: req.method,
         path: url.pathname + url.search,
