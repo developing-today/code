@@ -374,9 +374,6 @@ class TestWrapperContract(unittest.TestCase):
         self._check_copy("pkgs/id", COPIES["pkgs/id"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 import contextlib
 import http.server
 import threading
@@ -678,3 +675,7 @@ class TestHttpsContext(unittest.TestCase):
                 ctx = mod["https_context"]()
                 self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
                 self.assertTrue(ctx.check_hostname)
+
+
+if __name__ == "__main__":
+    unittest.main()

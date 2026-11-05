@@ -3220,9 +3220,6 @@ class TestD1ResponseShapes(ColdStoreTestBase):
                     self.store.sync_manifest()
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 
 class TestResumableUploadStalls(ColdStoreTestBase):
     """#2797: a 308 whose Range stops advancing must not loop forever,
@@ -3287,3 +3284,7 @@ class TestResumableUploadStalls(ColdStoreTestBase):
         self.assertEqual(result, "file-x")
         starts = [int(p.split(" ")[1].split("-")[0]) for p in puts]
         self.assertEqual(starts, [0, 100, 200, 300, 400, 500, 600, 700, 800, 900])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
