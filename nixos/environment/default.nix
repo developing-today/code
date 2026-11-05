@@ -261,7 +261,40 @@ let
 
   scaleElectron2x = wrapElectronWithFlags "scaled2x" [ "--force-device-scale-factor=2" ];
 
-  # OpenChamber's Electron GUI, built from the developing-today-forks/openchamber fork.
+  # Chromium with structural CDP (code#5924 follow-up): the fleet
+  # Chromium entries must always expose the DevTools endpoint on
+  # loopback -- 19224 (convention: 19222 Helium, 19223 Brave,
+  # 19224 Chromium). wrapElectronWithFlags cannot be reused here:
+  # the wrapped chromium package symlinks share/applications into
+  # chromium-unwrapped's tree, and the helper's in-place desktop
+  # rewrite fails on the read-only target. No rewrite is needed:
+  # chromium's desktop file uses a bare `Exec=chromium`, resolved
+  # through PATH, so wrapping bin/ covers shell and launcher
+  # launches alike. Wrapper flags precede caller args, so
+  # automation passing its own --remote-debugging-port
+  # (playwright/puppeteer via mcpx) still wins.
+  chromiumPkg = inputs.nixpkgs-unstable.legacyPackages.${system}.chromium;
+  chromiumCdp = pkgs.symlinkJoin {
+    name = "${chromiumPkg.name}-cdp";
+    paths = [ chromiumPkg ];
+    nativeBuildInputs = [ pkgs.makeWrapper ];
+    postBuild = ''
+      for bin in "$out"/bin/*; do
+        [ -L "$bin" ] || continue
+        target=$(readlink -f "$bin")
+        [ -x "$target" ] || continue
+        rm "$bin"
+        makeWrapper "$target" "$bin" \
+          --add-flags "--remote-debugging-address=127.0.0.1" \
+          --add-flags "--remote-debugging-port=19224"
+      done
+    '';
+    meta = (chromiumPkg.meta or { }) // {
+      mainProgram = chromiumPkg.meta.mainProgram or null;
+    };
+  };
+
+  # OpenChamber's Electron GUI, built from the developing-today/openchamber fork.
   openchamber-desktop = inputs.openchamber.packages.${system}.openchamber-desktop;
 
   # OpenChamber CLI/server built from the developing-today-forks/openchamber fork.
@@ -1249,7 +1282,7 @@ in
       # Testing and development tools
       #beekeeper-studio # electron 31 eol
       #cypress # electron 37 eol: insecure in this nixpkgs
-      inputs.nixpkgs-unstable.legacyPackages.${system}.chromium # nixos-unstable channel: cached (master chromium is not)
+      chromiumCdp # chromium + structural CDP on 127.0.0.1:19224 (code#5924); nixos-unstable channel: cached (master chromium is not)
       inputs.nixpkgs-unstable.legacyPackages.${system}.chromedriver
       playwright-driver
       direnv

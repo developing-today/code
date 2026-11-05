@@ -153,6 +153,44 @@ let
       install -Dm755 ${opencodeWrapper} $out/bin/opencode
     '';
   };
+
+  # Brave with structural CDP (code#5924 follow-up): Brave is
+  # Chromium-family, so it takes the same --remote-debugging flags
+  # as Helium (19222) and system Chromium (19224); Brave gets
+  # 19223, loopback-only. Same wrapper shape as
+  # wrapElectronWithFlags in nixos/environment (binaries wrapped,
+  # desktop entries repointed at the wrappers) so every launch
+  # path -- shell or launcher -- carries the flags. Caller-passed
+  # flags come after wrapper flags and win.
+  braveCdp = pkgs.symlinkJoin {
+    name = "${pkgs.brave.name}-cdp";
+    paths = [ pkgs.brave ];
+    nativeBuildInputs = [ pkgs.makeWrapper ];
+    postBuild = ''
+      for bin in "$out"/bin/*; do
+        [ -L "$bin" ] || continue
+        target=$(readlink -f "$bin")
+        [ -x "$target" ] || continue
+        rm "$bin"
+        makeWrapper "$target" "$bin" \
+          --add-flags "--remote-debugging-address=127.0.0.1" \
+          --add-flags "--remote-debugging-port=19223"
+      done
+
+      if [ -d "$out/share/applications" ]; then
+        for f in "$out"/share/applications/*.desktop; do
+          [ -e "$f" ] || continue
+          src=$(readlink -f "$f")
+          base=$(basename "$f")
+          rm "$f"
+          sed "s|${pkgs.brave}/bin/|$out/bin/|g" "$src" > "$out/share/applications/$base"
+        done
+      fi
+    '';
+    meta = (pkgs.brave.meta or { }) // {
+      mainProgram = pkgs.brave.meta.mainProgram or null;
+    };
+  };
   # The environment the mcpx daemon runs with (services.mcpx.environment
   # below; the module renders it into the unit).
   mcpxEnvironment = {
@@ -1892,7 +1930,7 @@ in
         bluez
         bluez-tools
         bottom
-        brave
+        braveCdp # brave + structural CDP on 127.0.0.1:19223 (code#5924)
         brig
         brightnessctl
         brillo
