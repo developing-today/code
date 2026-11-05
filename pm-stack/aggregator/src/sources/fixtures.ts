@@ -190,8 +190,12 @@ const ROADMAP_LINKS: Record<string, RefKey[]> = {
   "PM stack — projector + link registry (Turso)": [`${CODE}#901`],
   "PM stack — aggregator UI (cross-repo WIP board + roadmap view)": [`${CODE}#902`, `${OPENCHAMBER}#210`],
   "Hardware inventory + firmware/BMC audit": [`${NIX}#512`],
-  "Repo fleet — developing-today/opencode": [`${OPENCODE}#365`, `${OPENCODE}#371`],
-  "Repo fleet — developing-today/openchamber": [`${OPENCHAMBER}#214`],
+  // Keep the dated roadmap title; the tracked issues now live under the fork owner.
+  "Repo fleet — developing-today/opencode": [
+    "developing-today-forks/opencode#365",
+    "developing-today-forks/opencode#371",
+  ],
+  "Repo fleet — developing-today/openchamber": ["developing-today-forks/openchamber#214"],
 };
 
 type SeedRow = { Title: string; Area: string; Status: string; Horizon: string; Source: string; Notes: string };
