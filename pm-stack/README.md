@@ -61,6 +61,36 @@ everything else is host-independent so the stack can move to the
 Kubernetes cluster later (the same values map onto a Secret + the
 upstream Helm chart's env).
 
+## Sandbox posture and alignment
+
+The sandbox is for Muse sessions, SSH, and web browsing only. It is not a
+PM-stack host: do not start or enable servers, proxies, containers, or
+service timers there. PM-stack services and the fleet-feed collector run
+on the laptop host `amd`; the old sandbox kill-collector timer has been
+retired, and its script refuses to run unless `hostname -s` is `amd`.
+
+To align a sandbox checkout with the laptop's repository source, preserve
+local work and fast-forward from `origin/main` (never reset or force a
+checkout):
+
+```bash
+cd ~/git/code
+git status --short --branch
+git fetch origin
+git switch main
+git merge --ff-only origin/main
+git rev-parse HEAD
+```
+
+Compare that commit with the laptop's `git -C ~/git/code rev-parse HEAD`
+using `~/tools/laptop-ssh.sh`. If the checkout has local changes or
+cannot fast-forward, stop and preserve them for reconciliation; do not
+reset it. Refresh repo-managed configuration from the aligned checkout,
+but keep runtime deployment on the laptop: do not run `deploy.sh`, an
+`install.sh`, `nixos-rebuild`, or any `systemctl enable/start` command on
+the sandbox. Keep copied configuration source-aligned; do not copy
+runtime state or rendered secret files as part of this alignment step.
+
 ## GitHub Project #4 conventions
 
 The org Project **Developing Today** (#4) is the portfolio map; issues and
@@ -118,7 +148,7 @@ instead). Changing `AUTH_SECRET` signs everyone out; changing
 `POSTGRES_PASSWORD` after first initialisation breaks the database
 login until the database password is changed to match.
 
-## Bring it up (first time, on the host)
+## Bring it up (first time, on laptop host `amd` only)
 
 ```bash
 # 1. Check out this repo (or copy this directory + ../secrets) and cd in
