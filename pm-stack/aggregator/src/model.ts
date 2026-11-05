@@ -1334,6 +1334,12 @@ export interface QuotaCurrentEntry {
   /** Provenance class for the provider's credential source; never a credential value. */
   credentialSource?: "claude-code" | "opencode" | "environment";
   planLabel?: string;
+  /** Provider-side failure classification, when the quota module
+   *  carries one (e.g. meta's "no-data"); never a credential value. */
+  failureClass?: string;
+  /** ISO time of the provider's last successful read, when the quota
+   *  module carries one; lets readers age a degraded row honestly. */
+  lastSuccessAt?: string;
   state: "ok" | "error" | "unconfigured";
   measuredAt: string;
   /** #1268: ISO time of the tick that retained this entry from the
