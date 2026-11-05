@@ -407,7 +407,18 @@ function execSubcommand(argv: string[]): Promise<string> {
       {
         maxBuffer: 64 * 1024 * 1024,
         timeout: subcommandTimeoutMs,
-        env: process.env,
+        env: {
+          ...process.env,
+          // The standing runtime config is the CLI's fast,
+          // deterministic config resolution. Interactive shells on
+          // this host carry OPENCODE_CONFIG_PATH; the systemd unit
+          // does not, and without it the CLI's default discovery
+          // takes minutes (project scan) — the first production
+          // ticks died on exactly that (opencode#1729). Respect an
+          // explicitly set value; otherwise name the standing file.
+          OPENCODE_CONFIG_PATH:
+            process.env.OPENCODE_CONFIG_PATH ?? join(HOME, ".local/state/opencode/opencode-runtime.jsonc"),
+        },
         // Neutral cwd (the state dir): quota is a machine-level read,
         // not a project read. From the aggregator's repo cwd the CLI
         // does project discovery over the code repo's worktrees —
