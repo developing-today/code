@@ -372,6 +372,57 @@
       // zero-traffic window on :18751.
       // "models": maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
     },
+    "mistral": {
+      "npm": "@opencode/ai/providers/mistral",
+      "name": "Mistral API (drewrypope)"
+      // Credential: the enrolled server credential (integration
+      // "mistral", Bitwarden mistral.api-key); MISTRAL_API_KEY is also
+      // materialized into the server unit's environment (home/common).
+      // "models": maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
+    },
+    "vibe-direct": {
+      "npm": "@opencode/ai/providers/vibe",
+      "name": "Mistral Vibe Direct (native wire clone)",
+      // 2026-11-04 (opencode#1653, PR #1661): native in-fork emulation of
+      // the mistral-vibe binary — same Mistral wire, Vibe's presets and
+      // the attribution stamp (metadata.call_source "vibe_code", the
+      // metering key for the Vibe quota marts). No vibe subprocess.
+      // Credential: MISTRAL_API_KEY in the server unit's environment
+      // (vibe-auth resolution: config -> env -> ~/.vibe/.env -> keyring).
+      // Models are declared HERE: models.dev has no vibe entry, so
+      // sync-models cannot maintain this catalog. Only the default
+      // preset's limit was verified from the binary; the rest are the
+      // preset ids + names from Vibe's own catalog (opencode#1653).
+      "models": {
+        "mistral-vibe-cli-latest": {
+          "name": "Mistral Medium 3.5",
+          "limit": {
+            "context": 262144
+          }
+        },
+        "mistral-medium-latest": {
+          "name": "Mistral Medium"
+        },
+        "mistral-large-latest": {
+          "name": "Mistral Large"
+        },
+        "mistral-small-latest": {
+          "name": "Mistral Small"
+        },
+        "codestral-latest": {
+          "name": "Codestral"
+        },
+        "ministral-14b-latest": {
+          "name": "Ministral 14B"
+        },
+        "ministral-8b-latest": {
+          "name": "Ministral 8B"
+        },
+        "ministral-3b-latest": {
+          "name": "Ministral 3B"
+        }
+      }
+    },
     // "openai": model catalog maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
     // "openai-codex": retired 2026-11-03 -- definition deleted after its
     // route legs were re-seated onto openai-plan (see the note at
@@ -1640,6 +1691,19 @@
         "providers": ["openai.main", "openai.alternate"],
         "selection": "weighted",
         "weights": { "openai.main": 2, "openai.alternate": 1 }
+      },
+      // mistral-plan (2026-11-04, Drew): the Mistral pair as ONE
+      // provider route — vibe-direct attempted first on every dispatch
+      // (the Vibe-attributed leg: metadata.call_source "vibe_code"),
+      // the plain Mistral API provider the reserve; the API leg serves
+      // only when vibe-direct fails or is demoted. Both legs resolve
+      // the same Bitwarden mistral.api-key credential (the vibe leg via
+      // MISTRAL_API_KEY in the server environment, the API leg via the
+      // enrolled "mistral" integration credential). Change the leg
+      // order HERE, in this providers list, and nowhere else.
+      "mistral-plan": {
+        "providers": ["vibe-direct", "mistral"],
+        "selection": "ordered"
       },
       // opencode-go-plans (2026-11-03, Drew): the OpenCode Go plans as
       // ONE virtual provider (provider routes, opencode#1132). Consumers
