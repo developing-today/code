@@ -21,6 +21,7 @@
 //! migration's standing rollback inventory (design note §7).
 
 pub mod log;
+pub mod token_file;
 
 #[cfg(feature = "client")]
 pub mod client;
