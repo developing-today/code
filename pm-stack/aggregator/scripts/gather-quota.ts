@@ -144,8 +144,11 @@ const OBSERVED_BY = "quota-gatherer";
  * kept, flipped off), so a listing can omit them even though their
  * credentials and plans are live pools. A named ask always fetches.
  * (Meta: route-only pool, #6079. Command Code: disabled door, live
- * plan — its read is the PLAN read; see keepCommandCodePlanWindows.) */
-const EXPLICIT_ASK_PROVIDERS = ["meta", "command-code"];
+ * plan — its read is the PLAN read; see keepCommandCodePlanWindows.
+ * DeepSeek: named ask resolves it but the subcommand's listing
+ * currently omits it — opencode#1729; remove it here when the
+ * listing and the named ask agree on the configured set.) */
+const EXPLICIT_ASK_PROVIDERS = ["meta", "command-code", "deepseek"];
 
 async function writeAtomic(path: string, text: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
