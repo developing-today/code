@@ -22,6 +22,17 @@
 //! any allocation for them, and status/header/chunk-size lines are
 //! read with the [`MAX_LINE_BYTES`] bound instead of accumulating
 //! without limit.
+//!
+//! Body existence is decided by the request method and the status
+//! class before the framing headers are consulted (#5921): a
+//! response to a HEAD request and a 101, 204, or 304 response
+//! never carry a body, whatever Content-Length or
+//! Transfer-Encoding claim, and a 1xx interim response (except
+//! 101) is consumed and discarded — the response that follows
+//! it is the final one. Reading a body that by definition never
+//! arrives would stall the exchange until the tunnel read
+//! timeout; returning a 1xx as final would leave the real
+//! response in the stream to desync the pooled connection.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -195,6 +206,77 @@ impl HttpConn {
         }
         self.writer.flush()?;
 
+        // Response head(s). A 1xx interim response (except 101)
+        // is not the answer: its head is consumed and the reader
+        // continues to the final response (#5921). Returning the
+        // interim head as final would leave the real response in
+        // the stream, to be parsed as the next exchange's response
+        // on this pooled connection.
+        let (status, content_length, chunked, close_after) = loop {
+            let head = self.read_response_head()?;
+            if (100..200).contains(&head.0) && head.0 != 101 {
+                continue;
+            }
+            break head;
+        };
+
+        // Body existence is decided before the framing headers
+        // (#5921, RFC 9112 section 6.3): a response to a HEAD request
+        // and a 101, 204, or 304 response never carry a body,
+        // whatever Content-Length or Transfer-Encoding claim —
+        // a 304 may even carry the Content-Length of the cached
+        // 200. Reading for those bytes would stall until the read
+        // timeout and kill the connection; skipping them leaves
+        // the stream exactly at the next response, so a keep-alive
+        // exchange stays reusable.
+        let no_body = method.eq_ignore_ascii_case("HEAD") || matches!(status, 101 | 204 | 304);
+
+        // Body.
+        let mut data = Vec::new();
+        if !no_body {
+            if chunked {
+                self.read_chunked(&mut data)?;
+            } else if let Some(len) = content_length {
+                // len <= MAX_RESPONSE_BODY_BYTES was enforced while
+                // parsing the header, before this allocation.
+                data.resize(len, 0);
+                self.reader.read_exact(&mut data).map_err(|e| {
+                    self.reusable = false;
+                    HttpError::Io(e)
+                })?;
+            } else if close_after {
+                // Close-delimited body: still peer-sized, so read
+                // with the same cap (the connection is dead either
+                // way).
+                self.reader
+                    .by_ref()
+                    .take((MAX_RESPONSE_BODY_BYTES + 1) as u64)
+                    .read_to_end(&mut data)
+                    .map_err(HttpError::Io)?;
+                if data.len() > MAX_RESPONSE_BODY_BYTES {
+                    self.reusable = false;
+                    return Err(HttpError::Malformed(format!(
+                        "close-delimited body exceeds {MAX_RESPONSE_BODY_BYTES}-byte response body cap"
+                    )));
+                }
+                self.reusable = false;
+                return Ok((status, data));
+            }
+        }
+        // No length, no chunking, keep-alive: the body is empty by
+        // the only reading HTTP/1.1 allows here.
+        if close_after {
+            self.reusable = false;
+        }
+        Ok((status, data))
+    }
+
+    /// Read one response head: the status line and the header
+    /// block. Returns the status, the validated Content-Length
+    /// (if any), whether the body is chunked, and whether the
+    /// peer sent `Connection: close`. Zero bytes before the
+    /// status line means the pooled connection was stale.
+    fn read_response_head(&mut self) -> Result<(u16, Option<usize>, bool, bool), HttpError> {
         // Status line. Zero bytes read = stale pooled connection.
         let mut status_line = String::new();
         let n = self.read_line_bounded(&mut status_line)?;
@@ -264,42 +346,7 @@ impl HttpConn {
                 _ => {}
             }
         }
-
-        // Body.
-        let mut data = Vec::new();
-        if chunked {
-            self.read_chunked(&mut data)?;
-        } else if let Some(len) = content_length {
-            // len <= MAX_RESPONSE_BODY_BYTES was enforced while
-            // parsing the header, before this allocation.
-            data.resize(len, 0);
-            self.reader.read_exact(&mut data).map_err(|e| {
-                self.reusable = false;
-                HttpError::Io(e)
-            })?;
-        } else if close_after {
-            // Close-delimited body: still peer-sized, so read with
-            // the same cap (the connection is dead either way).
-            self.reader
-                .by_ref()
-                .take((MAX_RESPONSE_BODY_BYTES + 1) as u64)
-                .read_to_end(&mut data)
-                .map_err(HttpError::Io)?;
-            if data.len() > MAX_RESPONSE_BODY_BYTES {
-                self.reusable = false;
-                return Err(HttpError::Malformed(format!(
-                    "close-delimited body exceeds {MAX_RESPONSE_BODY_BYTES}-byte response body cap"
-                )));
-            }
-            self.reusable = false;
-            return Ok((status, data));
-        }
-        // No length, no chunking, keep-alive: the body is empty by
-        // the only reading HTTP/1.1 allows here.
-        if close_after {
-            self.reusable = false;
-        }
-        Ok((status, data))
+        Ok((status, content_length, chunked, close_after))
     }
 
     fn read_chunked(&mut self, out: &mut Vec<u8>) -> Result<(), HttpError> {
@@ -564,5 +611,108 @@ mod tests {
         let err = get(&mut conn).unwrap_err();
         assert!(matches!(err, HttpError::Malformed(_)), "{err}");
         assert!(!conn.reusable());
+    }
+    #[test]
+    fn head_response_with_content_length_is_bodyless_and_stays_reusable() {
+        // #5921: a HEAD response carries the Content-Length of the
+        // GET it mirrors, but no body bytes ever follow. The reader
+        // must not wait for them, and the pooled connection must
+        // parse the next exchange cleanly.
+        let (mut conn, server) = canned_conn(vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n".to_vec(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".to_vec(),
+        ]);
+        let (status, body) = conn
+            .request("HEAD", "/x", "127.0.0.1", "token", None)
+            .unwrap();
+        assert_eq!(status, 200);
+        assert!(body.is_empty());
+        assert!(conn.reusable());
+        let (status, body) = get(&mut conn).unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(body, b"{}");
+        assert!(conn.reusable());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn no_content_204_with_content_length_is_bodyless_and_stays_reusable() {
+        // #5921: a 204 never carries a body, whatever its headers
+        // claim; the next pooled exchange must parse cleanly.
+        let (mut conn, server) = canned_conn(vec![
+            b"HTTP/1.1 204 No Content\r\nContent-Length: 5\r\n\r\n".to_vec(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".to_vec(),
+        ]);
+        let (status, body) = get(&mut conn).unwrap();
+        assert_eq!(status, 204);
+        assert!(body.is_empty());
+        assert!(conn.reusable());
+        let (status, body) = get(&mut conn).unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(body, b"{}");
+        assert!(conn.reusable());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn not_modified_304_with_cached_content_length_is_bodyless() {
+        // #5921: a 304 may legitimately carry the Content-Length
+        // of the cached 200 response (RFC 9110 section 15.4.5) and
+        // still has no body of its own.
+        let (mut conn, server) = canned_conn(vec![
+            b"HTTP/1.1 304 Not Modified\r\nContent-Length: 5\r\n\r\n".to_vec(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".to_vec(),
+        ]);
+        let (status, body) = get(&mut conn).unwrap();
+        assert_eq!(status, 304);
+        assert!(body.is_empty());
+        assert!(conn.reusable());
+        let (status, body) = get(&mut conn).unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(body, b"{}");
+        assert!(conn.reusable());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn no_body_status_with_chunked_transfer_encoding_is_bodyless() {
+        // #5921: Transfer-Encoding must not resurrect a body on a
+        // no-body status either — no chunks follow a 204.
+        let (mut conn, server) = canned_conn(vec![
+            b"HTTP/1.1 204 No Content\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".to_vec(),
+        ]);
+        let (status, body) = get(&mut conn).unwrap();
+        assert_eq!(status, 204);
+        assert!(body.is_empty());
+        assert!(conn.reusable());
+        let (status, body) = get(&mut conn).unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(body, b"{}");
+        assert!(conn.reusable());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn interim_103_is_consumed_and_the_final_response_is_returned() {
+        // #5921: a 1xx interim response is not the final answer.
+        // Returning it would leave the real response in the stream
+        // to desync the next exchange on the pooled connection.
+        let (mut conn, server) = canned_conn(vec![
+            b"HTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"
+                .to_vec(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".to_vec(),
+        ]);
+        let (status, body) = get(&mut conn).unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(body, b"hello");
+        assert!(conn.reusable());
+        // Nothing of the final response remains in the stream:
+        // the next pooled exchange parses cleanly.
+        let (status, body) = get(&mut conn).unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(body, b"{}");
+        assert!(conn.reusable());
+        server.join().unwrap();
     }
 }
