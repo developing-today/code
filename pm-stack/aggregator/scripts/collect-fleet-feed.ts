@@ -72,9 +72,10 @@
 // fallback default: the muse-dev2 project),
 // AA_OPENCODE_CONFIG_PATH (default: the repo's .opencode/opencode.jsonc).
 import { execFile } from "node:child_process";
-import { access, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { access, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dnsSectionFromRegister, dnsSectionFromRegisterJson, parseDnsRegister } from "../src/dns.ts";
 import { aaAbsent, aaSectionFromSupabase, isAaSection, type AaRawPayload } from "../src/aa.ts";
@@ -113,10 +114,100 @@ import { REPOS } from "../src/model.ts";
 import type { RepoCensus } from "../src/coverage.ts";
 import { parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
+import type { FreshnessInput } from "../src/freshness.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
 const HIDDEN = join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files");
+
+export type FleetFeedPublication = Readonly<{
+  /** Absolute destination path that was replaced. */
+  path: string;
+  /** SHA-256 of the exact UTF-8 bytes published. */
+  sha256: string;
+  /** Number of UTF-8 bytes published. */
+  sizeBytes: number;
+}>;
+
+type PublicationTempFile = {
+  writeFile(contents: string): Promise<void>;
+  close(): Promise<void>;
+};
+
+/** File operations are injectable so failure cleanup can be exercised without platform-specific permissions. */
+export type FleetFeedPublicationFileOps = {
+  openTemp(path: string): Promise<PublicationTempFile>;
+  rename(from: string, to: string): Promise<void>;
+  unlink(path: string): Promise<void>;
+};
+
+const publicationFileOps: FleetFeedPublicationFileOps = {
+  async openTemp(path) {
+    const file = await open(path, "wx");
+    return {
+      async writeFile(contents) {
+        await file.writeFile(contents, { encoding: "utf8" });
+      },
+      close: () => file.close(),
+    };
+  },
+  rename,
+  unlink,
+};
+
+/**
+ * Publish one complete feed atomically. The returned metadata exists only
+ * after the same-directory rename succeeds, so callers can safely use it
+ * as the basis for a post-publication freshness invalidation.
+ */
+export async function publishFleetFeed(
+  outputPath: string,
+  contents: string,
+  fileOps: FleetFeedPublicationFileOps = publicationFileOps,
+): Promise<FleetFeedPublication> {
+  const path = resolve(outputPath);
+  const tempPath = join(dirname(path), "." + basename(path) + "." + process.pid + "." + randomUUID() + ".tmp");
+  let tempCreated = false;
+  try {
+    const tempFile = await fileOps.openTemp(tempPath);
+    tempCreated = true;
+    try {
+      await tempFile.writeFile(contents);
+    } finally {
+      await tempFile.close();
+    }
+    await fileOps.rename(tempPath, path);
+  } catch (error) {
+    if (tempCreated) await fileOps.unlink(tempPath).catch(() => {});
+    throw error;
+  }
+
+  return {
+    path,
+    sha256: createHash("sha256").update(contents, "utf8").digest("hex"),
+    sizeBytes: Buffer.byteLength(contents, "utf8"),
+  };
+}
+
+/** The notice is submitted only after the atomic replacement succeeds.
+ *  The generation + digest identity makes a retried notice idempotent. */
+export async function publishFleetFeedWithInvalidation(
+  outputPath: string,
+  contents: string,
+  generatedAt: string,
+  notify: (input: FreshnessInput) => Promise<unknown>,
+  fileOps: FleetFeedPublicationFileOps = publicationFileOps,
+): Promise<FleetFeedPublication> {
+  const publication = await publishFleetFeed(outputPath, contents, fileOps);
+  await notify({
+    eventId: `fleet-feed:${generatedAt}:${publication.sha256}`,
+    source: "fleet-feed",
+    scope: ["feed"],
+    occurredAt: Number.isFinite(Date.parse(generatedAt)) ? new Date(generatedAt).toISOString() : null,
+    reason: "source-event",
+  });
+  return publication;
+}
 
 // Strict operator-argument contract (#3352, #3509): the only accepted
 // forms are no arguments or one documented separated `--out <path>`.
@@ -870,7 +961,16 @@ async function main(): Promise<void> {
     ...(coverage ? { coverage } : {}),
     aa,
   });
-  await writeFile(outPath, JSON.stringify(feed, null, 2));
+  const freshnessUrl = process.env.PM_AGG_FRESHNESS_URL ?? "http://127.0.0.1:4871/publish";
+  await publishFleetFeedWithInvalidation(outPath, JSON.stringify(feed, null, 2), feed.generatedAt, async (input) => {
+    const response = await fetch(freshnessUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) throw new Error(`freshness publisher returned ${response.status}`);
+  });
   const withReads = pools.filter((p) => p.windows.length > 0).length;
   console.log(
     `collector: wrote ${outPath} — ${pools.length} pools (${withReads} with reads), ${attention.length} sessions (${sessionSource})` +
@@ -889,4 +989,4 @@ async function main(): Promise<void> {
   );
 }
 
-await main();
+if (import.meta.main) await main();

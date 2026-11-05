@@ -115,6 +115,7 @@ in
             WorkingDirectory = "${repo}/pm-stack/projector";
             ExecStart = "${bun} run src/index.ts";
             EnvironmentFile = "${projState}/.env";
+            Environment = [ "PM_AGG_FRESHNESS_URL=http://127.0.0.1:4871/publish" ];
             Restart = "on-failure";
             RestartSec = 5;
           };
@@ -156,6 +157,10 @@ in
               # (pre-switch) unit resolves them identically.
               "PM_AGG_EVENTS_FILE=${aggState}/events.json"
               "PM_AGG_VIEWS_FILE=${aggState}/views.json"
+              # Freshness notices are a separate bounded store; the
+              # publisher listener binds only to loopback on this port.
+              "PM_AGG_FRESHNESS_FILE=${aggState}/freshness.json"
+              "PM_AGG_FRESHNESS_PORT=4871"
               # The activity-ingestion store (#3321) is runtime state
               # too: left at its cwd default its first persisted
               # delivery created activity-ingestion.json inside this
@@ -292,6 +297,7 @@ in
               "BWS_BIN=/run/current-system/sw/bin/bws"
               "BWS_ACCESS_TOKEN_FILE=${home}/.config/bws/access-token"
               "FLEET_FEED_OUT=${aggState}/fleet-feed.json"
+              "PM_AGG_FRESHNESS_URL=http://127.0.0.1:4871/publish"
               "QUOTA_VIEW_PATH=${home}/hatch-personal/workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md"
               "QUOTA_REGISTRY_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"
               "ORCHESTRATION_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/orchestration.json"

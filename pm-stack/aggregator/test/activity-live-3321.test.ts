@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import { liveSource } from "../src/sources/live.ts";
 import type { ActivityDelivery } from "../src/activity.ts";
+import type { FreshnessInput } from "../src/freshness.ts";
 
 const FEED = {
   version: 1,
@@ -34,6 +35,7 @@ async function makeSource(
       | boolean
       | { failed: number; failedIds?: string[] };
     onSourceGap?: (source: string, from: string, to: string | null) => void;
+    onFreshness?: (input: FreshnessInput) => Promise<unknown> | unknown;
     seenActivityIds?: (source: string) => Promise<readonly string[]> | readonly string[];
   },
 ) {
@@ -98,6 +100,30 @@ function installFetch(state: HarnessState): () => void {
 }
 
 describe("live kaneo activity (#3321, PR #5141 codex)", () => {
+  test("complete board snapshots publish a stable payload-free freshness invalidation", async () => {
+    const state: HarnessState = { cardStatus: { p1: "in-progress", p2: "in-progress" }, failProjects: new Set(), failAll: false };
+    const restore = installFetch(state);
+    const notices: FreshnessInput[] = [];
+    try {
+      const src = await makeSource(state, { onFreshness: (input) => notices.push(input) });
+      await src.board();
+      state.cardStatus.p1 = "in-review";
+      await src.board();
+      await src.board(); // same accepted snapshot retries with the same key
+      expect(notices).toHaveLength(3);
+      expect(notices[0]!.eventId).not.toBe(notices[1]!.eventId);
+      expect(notices[1]!.eventId).toBe(notices[2]!.eventId);
+      expect(notices[0]).toMatchObject({ source: "kaneo", scope: ["board"], reason: "source-event" });
+      expect(Object.keys(notices[0]!).sort()).toEqual(["eventId", "occurredAt", "reason", "scope", "source"]);
+
+      state.failProjects.add("p2");
+      await src.board(); // partial polls do not claim a complete snapshot
+      expect(notices).toHaveLength(3);
+    } finally {
+      restore();
+    }
+  });
+
   test("unacknowledged deliveries are retried with the same id; the undated cycle advances seq", async () => {
     const state: HarnessState = {
       cardStatus: { p1: "in-progress", p2: "in-progress" },
