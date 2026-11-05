@@ -110,15 +110,22 @@ describe("entryFromTurso (#2553)", () => {
     expect(entry.windows.every((w) => (w.value ?? 0) >= 0)).toBe(true);
   });
 
-  test("out-of-range derived percents are omitted while valid siblings survive", () => {
+  test("over-limit derived percents publish while valid siblings survive (#6227 supersedes the [0,100] drop)", () => {
+    // #2553's [0,100] drop treated a count over its limit as bad
+    // data; #6227 showed it is the normal over-limit state (live
+    // 2026-11-05: storage ~147%, rows-read ~165% of Starter limits)
+    // and dropping it erased exactly the state the card must show.
+    // The boundary that remains: every published pct is finite
+    // and >= 0 (negative counts are covered by the sibling test).
     const entry = entryFromTurso(
       { organization: { usage: { databases: 101, rows_read: 120 } } } as never,
       null,
       { measuredAt: "2026-10-29T15:00:00Z" },
     );
     expect(entry.state).toBe("ok");
-    expect(entry.windows.map((w) => w.name)).toEqual(["rows-read"]);
-    expect(entry.windows.every((w) => w.pctOfLimit !== null && w.pctOfLimit >= 0 && w.pctOfLimit <= 100)).toBe(true);
+    expect(entry.windows.map((w) => w.name)).toEqual(["databases", "rows-read"]);
+    expect(entry.windows.find((w) => w.name === "databases")?.pctOfLimit).toBe(101);
+    expect(entry.windows.every((w) => w.pctOfLimit !== null && Number.isFinite(w.pctOfLimit) && w.pctOfLimit >= 0)).toBe(true);
   });
 });
 
