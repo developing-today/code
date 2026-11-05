@@ -1753,4 +1753,223 @@ mod tests {
             Some(Hash::digest(b"loc-pinned-rev-3"))
         );
     }
+    // ---- Locator-selection property coverage (Codex P1 on PR #5932) ----
+    //
+    // The locator_fetch_* tests above are hand-written examples. The
+    // locator contract also has invariants that must hold for EVERY
+    // store layout and hint list, so they are stated here as
+    // properties checked against a small selection model (the
+    // oracle): the answering store is the first store in hint order
+    // -- or in fan-out order when the reference carries no hints --
+    // whose copy of the target is visible to this viewer (live or
+    // cleared); hidden and absent copies never answer, and stores
+    // the hints do not name cannot affect a hinted fetch at all.
+    use proptest::prelude::*;
+
+    /// One store's placement of the property-test target.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Placement {
+        Absent,
+        LiveSame,
+        LiveRenamed,
+        Cleared,
+        Hidden,
+    }
+
+    const PLACEMENTS: [Placement; 5] = [
+        Placement::Absent,
+        Placement::LiveSame,
+        Placement::LiveRenamed,
+        Placement::Cleared,
+        Placement::Hidden,
+    ];
+
+    const PROP_STORES: [&str; 3] = ["a-store", "b-store", "c-store"];
+    const PROP_SURFACE: &str = "Atlas";
+
+    fn prop_fanout(placements: &[Placement; 3]) -> (FanOut, Hash) {
+        let target = object(b"loc-prop-target", Sigil::Topic, PROP_SURFACE, vec![], 1);
+        let target_id = target.id;
+        let mut stores = Vec::new();
+        for (i, placement) in placements.iter().enumerate() {
+            let decoy = object(b"loc-prop-decoy", Sigil::Topic, "Decoy", vec![], 3);
+            let mut index = store_index(PROP_STORES[i], vec![decoy]);
+            match placement {
+                Placement::Absent => {}
+                Placement::LiveSame => index.add(target.clone()),
+                Placement::LiveRenamed => {
+                    let mut renamed = target.clone();
+                    renamed.title = "Atlas Revised".to_owned();
+                    index.add(renamed);
+                }
+                Placement::Cleared => {
+                    index.add(target.clone());
+                    assert!(index.clear(&target_id));
+                }
+                Placement::Hidden => {
+                    let mut hidden = target.clone();
+                    hidden.title = "Zephyr".to_owned();
+                    index.add(hidden);
+                    index.hide(&target_id);
+                }
+            }
+            stores.push(index);
+        }
+        (FanOut::new(stores), target_id)
+    }
+
+    /// The selection model: which store answers, and with which
+    /// placement. Visible means live or cleared; hidden copies are
+    /// indistinguishable from absent ones and never answer.
+    fn prop_model(placements: &[Placement; 3], hints: &[usize]) -> Option<(usize, Placement)> {
+        let visible = |p: Placement| {
+            matches!(
+                p,
+                Placement::LiveSame | Placement::LiveRenamed | Placement::Cleared
+            )
+        };
+        if hints.is_empty() {
+            return (0..3).find_map(|i| visible(placements[i]).then_some((i, placements[i])));
+        }
+        hints
+            .iter()
+            .filter(|&&h| h < 3)
+            .find_map(|&i| visible(placements[i]).then_some((i, placements[i])))
+    }
+
+    fn prop_fetch_tuple(
+        fanout: &FanOut,
+        reference: &Reference,
+    ) -> Option<(StoreId, Hash, bool, String)> {
+        fanout.fetch_located(reference).map(|(store, object)| {
+            (
+                store.clone(),
+                object.id,
+                object.cleared,
+                object.title.clone(),
+            )
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn locator_selection_matches_the_model(
+            placement_idx in proptest::collection::vec(0usize..5, 3),
+            hint_idx in proptest::collection::vec(0usize..4, 0..5),
+        ) {
+            let placements: [Placement; 3] = [
+                PLACEMENTS[placement_idx[0]],
+                PLACEMENTS[placement_idx[1]],
+                PLACEMENTS[placement_idx[2]],
+            ];
+            let (fanout, target_id) = prop_fanout(&placements);
+            let hint_names: Vec<String> = hint_idx
+                .iter()
+                .map(|&h| {
+                    if h < 3 {
+                        PROP_STORES[h].to_owned()
+                    } else {
+                        "gone-store".to_owned()
+                    }
+                })
+                .collect();
+            let hint_refs: Vec<&str> = hint_names.iter().map(String::as_str).collect();
+            let reference = located_reference(target_id, PROP_SURFACE, &hint_refs);
+
+            let model = prop_model(&placements, &hint_idx);
+            // Fetch: the model names the answering store and its copy.
+            let expected_fetch = model.map(|(i, placement)| {
+                let title = match placement {
+                    Placement::LiveRenamed => "Atlas Revised".to_owned(),
+                    _ => PROP_SURFACE.to_owned(),
+                };
+                (
+                    StoreId(PROP_STORES[i].to_owned()),
+                    target_id,
+                    placement == Placement::Cleared,
+                    title,
+                )
+            });
+            prop_assert_eq!(prop_fetch_tuple(&fanout, &reference), expected_fetch);
+            // Render: same answering store; the state follows the
+            // copy that store holds.
+            let located = fanout.render_located(&reference);
+            let (want_store, want_state, want_label, want_text) = match model {
+                Some((i, Placement::LiveSame)) => (
+                    Some(StoreId(PROP_STORES[i].to_owned())),
+                    RenderState::Resolved,
+                    Some(PROP_SURFACE.to_owned()),
+                    format!("#{}", PROP_SURFACE),
+                ),
+                Some((i, Placement::LiveRenamed)) => (
+                    Some(StoreId(PROP_STORES[i].to_owned())),
+                    RenderState::Renamed,
+                    Some("Atlas Revised".to_owned()),
+                    format!("#{}", PROP_SURFACE),
+                ),
+                Some((i, Placement::Cleared)) => (
+                    Some(StoreId(PROP_STORES[i].to_owned())),
+                    RenderState::Cleared,
+                    None,
+                    format!("#{} (cleared)", PROP_SURFACE),
+                ),
+                _ => (
+                    None,
+                    RenderState::Unresolved,
+                    None,
+                    format!("#{} (unresolved)", PROP_SURFACE),
+                ),
+            };
+            prop_assert_eq!(located.store, want_store);
+            prop_assert_eq!(located.rendered.state, want_state);
+            prop_assert_eq!(located.rendered.current_label, want_label);
+            prop_assert_eq!(located.rendered.text, want_text);
+
+            // Invariant: a hidden copy is indistinguishable from an
+            // absent one -- swapping every Hidden placement for
+            // Absent changes neither the fetch nor the render.
+            let mut absent_swapped = placements;
+            for placement in &mut absent_swapped {
+                if *placement == Placement::Hidden {
+                    *placement = Placement::Absent;
+                }
+            }
+            let (swapped_fanout, _) = prop_fanout(&absent_swapped);
+            prop_assert_eq!(
+                prop_fetch_tuple(&swapped_fanout, &reference),
+                prop_fetch_tuple(&fanout, &reference)
+            );
+            prop_assert_eq!(
+                swapped_fanout.render_located(&reference),
+                fanout.render_located(&reference)
+            );
+
+            // Invariant: when the reference carries hints, stores
+            // the hints do not name cannot affect the outcome --
+            // scrambling every unhinted store's placement changes
+            // neither the fetch nor the render.
+            if !hint_idx.is_empty() {
+                let mut scrambled_idx = placement_idx.clone();
+                for (i, idx) in scrambled_idx.iter_mut().enumerate() {
+                    if !hint_idx.contains(&i) {
+                        *idx = (*idx + 2) % 5;
+                    }
+                }
+                let scrambled: [Placement; 3] = [
+                    PLACEMENTS[scrambled_idx[0]],
+                    PLACEMENTS[scrambled_idx[1]],
+                    PLACEMENTS[scrambled_idx[2]],
+                ];
+                let (scrambled_fanout, _) = prop_fanout(&scrambled);
+                prop_assert_eq!(
+                    prop_fetch_tuple(&scrambled_fanout, &reference),
+                    prop_fetch_tuple(&fanout, &reference)
+                );
+                prop_assert_eq!(
+                    scrambled_fanout.render_located(&reference),
+                    fanout.render_located(&reference)
+                );
+            }
+        }
+    }
 }
