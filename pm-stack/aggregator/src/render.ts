@@ -451,15 +451,17 @@ export function pageDropdown(active: string): string {
       return `<optgroup label="${esc(group.title)}">${options}</optgroup>`;
     })
     .join("");
-  return `<select aria-label="Go to page" class="select select-bordered select-sm" data-on-change="if (evt.target.value) { window.location.href = evt.target.value; }"><option value="">Pages ▾</option>${groups}</select>`;
+  return `<select aria-label="Go to page" class="select select-bordered select-sm" data-on:change="if (evt.target.value) { window.location.href = evt.target.value; }"><option value="">Pages ▾</option>${groups}</select>`;
 }
 
 export function themeToggle(): string {
-  // Datastar-first theme toggle (Phase C): a $pmTheme signal seeded from
+  // Datastar-first theme toggle (Phase C): the vendored Datastar v1 binds
+  // data-on:<event> (colon form) for handlers — the dash form does not bind
+  // clicks (verified live against the vendored bundle). A $pmTheme signal seeded from
   // the <html data-theme> the inline bootstrap set (stored choice or the
   // dark default); the effect is the single writer of data-theme +
   // localStorage, and the click handler only flips the signal.
-  return `<span class="theme-toggle-wrap" data-signals="{ pmTheme: 'dark' }" data-init="$pmTheme = document.documentElement.getAttribute('data-theme') || 'dark'" data-effect="document.documentElement.setAttribute('data-theme', $pmTheme); try { localStorage.setItem('pm-theme', $pmTheme); } catch (e) {}"><button type="button" class="btn btn-ghost btn-sm theme-toggle" data-on-click="$pmTheme = $pmTheme === 'dark' ? 'light' : 'dark'" aria-label="Toggle between dark and light theme" title="Toggle dark / light theme">◐ <span data-text="$pmTheme === 'dark' ? 'Dark' : 'Light'"></span></button></span>`;
+  return `<span class="theme-toggle-wrap" data-signals="{ pmTheme: 'dark' }" data-init="$pmTheme = document.documentElement.getAttribute('data-theme') || 'dark'" data-effect="document.documentElement.setAttribute('data-theme', $pmTheme); try { localStorage.setItem('pm-theme', $pmTheme); } catch (e) {}"><button type="button" class="btn btn-ghost btn-sm theme-toggle" data-on:click="$pmTheme = $pmTheme === 'dark' ? 'light' : 'dark'" aria-label="Toggle between dark and light theme" title="Toggle dark / light theme">◐ <span data-text="$pmTheme === 'dark' ? 'Dark' : 'Light'"></span></button></span>`;
 }
 
 function globalSearch(): string {
