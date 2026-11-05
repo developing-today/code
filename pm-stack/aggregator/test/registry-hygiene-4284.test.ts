@@ -109,4 +109,28 @@ describe("both producers still emit gate-accepted records (#4284)", () => {
     expect(isSessionRecord(fromLaunch)).toBe(true);
     expect(fromLaunch.taskRefs).toEqual([]);
   });
+
+  test("oversized URLs in session fields do not poison task refs (#4890)", () => {
+    const fromEntry = recordFromSessionEntry({
+      sessionId: "ses_oversized_refs",
+      source: "opencode-sandbox",
+      title:
+        "bad https://github.com/developing-today/code/issues/99999999999999999999 " +
+        "good https://github.com/developing-today/code/issues/123",
+      pr:
+        "bad https://github.com/developing-today/code/pull/9007199254740992 " +
+        "good https://github.com/developing-today/code/pull/124",
+      branch:
+        "bad https://github.com/developing-today/code/issues/99999999999999999999 " +
+        "good https://github.com/developing-today/code/pull/125",
+      lastActivityAt: "2026-11-02T00:00:00Z",
+    });
+
+    expect(fromEntry.taskRefs.sort()).toEqual([
+      "developing-today/code#123",
+      "developing-today/code#124",
+      "developing-today/code#125",
+    ]);
+    expect(isSessionRecord(fromEntry)).toBe(true);
+  });
 });
