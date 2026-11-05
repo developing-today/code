@@ -41,10 +41,21 @@ pub const DEFAULT_EGRESS_PROXY_PORT: u16 = 3130;
 
 /// Default listen address for the CONNECT-UDP endpoint
 /// (RFC 9298 spike, #6109) when `[proxy] connect_udp` enables
-/// it: loopback only, one port above the runtime egress
-/// proxy's 3130. The endpoint is a local capability, never a
-/// LAN surface, until a future cutover decides otherwise.
-pub const DEFAULT_CONNECT_UDP_LISTEN: &str = "127.0.0.1:3131";
+/// it: loopback only. The endpoint is a local capability,
+/// never a LAN surface, until a future cutover decides
+/// otherwise.
+///
+/// Port history (pm-stack/PORTS.md is the authoritative
+/// registry): the original default was 3131, one above the
+/// runtime egress proxy's 3130. The dark unit deployed on
+/// amd on 2026-11-05 binds 3132 from its own config
+/// (`~/.config/fleet/connect-udp.toml`) because 3131 was
+/// believed — wrongly — to be the pm Pad service's port
+/// (Pad is on 7777; the 3131 story was stale). The default
+/// moved to 3132 to match the deployed unit, so code truth
+/// and the one live deployment agree; 3131 is retired and
+/// must not be re-claimed without updating the registry.
+pub const DEFAULT_CONNECT_UDP_LISTEN: &str = "127.0.0.1:3132";
 /// `[search]` — the search domain's routing view (step 5, #5433).
 /// All optional: the Q3 host default needs no config at all (the
 /// serving host's `service.json` marks the laptop seat). `via` is
