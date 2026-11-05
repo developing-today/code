@@ -2,7 +2,7 @@
   "schema_version": 1,
   "audit": {
     "tree_commit": "8295e70cbd240c912f60cdec24c1aafcd373e224",
-    "actions_api_audited_at": "2026-11-05T18:39:34Z",
+    "actions_api_audited_at": "2026-11-05T18:58:12Z",
     "source": "GitHub Actions workflows API",
     "workflow_count": 55,
     "states": {
@@ -66,7 +66,7 @@
     5935, 5942, 5946, 5952, 5992, 5993, 6065, 6082, 6084, 6085, 6091, 6092,
     6093, 6099, 5582, 5937, 5945, 5951, 6034, 6081, 6090, 6094, 6095, 6178, 6179
   ],
-  "uncovered_count": 43,
+  "uncovered_count": 46,
   "uncovered_count_definition": "Number of suite rows whose status is uncovered or uncovered-in-fact; mapped rows do not assert the five-rule contract is fully proven.",
   "suites": [
     {
@@ -213,6 +213,21 @@
       "reason": "Non-default workspace member; no CI, flake, check-all, or just recipe runs the transcript suite."
     },
     {
+      "id": "id.bench.compare-script",
+      "paths": [".github/scripts/id-bench-compare.test.sh"],
+      "invocation": "bash .github/scripts/id-bench-compare.test.sh",
+      "venue": {
+        "workflow": ".github/workflows/id-bench.yml",
+        "job_step": "Test the compare script",
+        "state": "disabled_manually",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "related_issues": [1619],
+      "reason": "The registered id-bench workflow is disabled_manually."
+    },
+    {
       "id": "mcpx.go.unit",
       "paths": ["pkgs/mcpx/**/*.go"],
       "path_excludes": ["pkgs/mcpx/internal/e2e/**"],
@@ -254,6 +269,35 @@
       "status": "uncovered-in-fact",
       "phase3_issue": 6187,
       "reason": "Non-gating flake-detection venue is disabled (#1973)."
+    },
+    {
+      "id": "mcpx.scripts.gotest-report",
+      "paths": ["pkgs/mcpx/scripts/test_gotest_report.py"],
+      "invocation": "cd pkgs/mcpx && python3 scripts/test_gotest_report.py",
+      "venue": {
+        "workflow": ".github/workflows/mcpx.yml",
+        "job_step": "test / Unit and end-to-end tests",
+        "state": "disabled_manually",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "reason": "The registered mcpx workflow is disabled_manually."
+    },
+    {
+      "id": "mcpx.scripts.affected-untracked",
+      "paths": ["pkgs/mcpx/scripts/tests/test_affected_untracked.py"],
+      "invocation": "python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_affected_untracked.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/mcpx-test.yml",
+        "job_step": "Affected-test selector regressions",
+        "state": "disabled_manually",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "related_issues": [3320],
+      "reason": "The registered mcpx-test workflow is disabled_manually."
     },
     {
       "id": "mcpx.plugin.v1",
@@ -766,6 +810,19 @@
       "status": "uncovered-in-fact",
       "phase3_issue": 6187,
       "reason": "Only registered workflow is manually disabled."
+    },
+    {
+      "id": "ci.production-line-limit",
+      "paths": [".github/scripts/check-production-line-limit.test.sh"],
+      "invocation": "bash .github/scripts/check-production-line-limit.test.sh",
+      "venue": {
+        "workflow": ".github/workflows/production-line-guard.yml",
+        "job_step": "Guard contract tests (#1411)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [1411]
     },
     {
       "id": "bin.node-tests",
