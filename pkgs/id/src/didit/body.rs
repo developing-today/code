@@ -56,6 +56,12 @@ pub const MAX_SUBJECTS: usize = 512;
 /// The most per-subject detail entries one record may carry.
 pub const MAX_DETAILS: usize = 512;
 
+/// The most aliases one entity may carry.
+pub const MAX_ALIASES: usize = 512;
+
+/// The most hours spans one hours window may list.
+pub const MAX_HOURS_SPANS: usize = 512;
+
 /// Nesting limit for a body's CBOR. Bodies are shallow by construction.
 const RECURSION_LIMIT: u16 = 8;
 
@@ -92,10 +98,17 @@ impl Entity {
     /// # Errors
     ///
     /// Returns [`DiditError::Invalid`] for an empty or over-long text field,
-    /// text that is not NFC, or a repeated alias.
+    /// text that is not NFC, a repeated alias, or more aliases than
+    /// [`MAX_ALIASES`].
     pub fn check(&self) -> Result<(), DiditError> {
         check_text(&self.kind, "kind", true)?;
         check_text(&self.name, "name", true)?;
+        if self.aliases.len() > MAX_ALIASES {
+            return Err(DiditError::Invalid(format!(
+                "entity aliases has {} entries, the most is {MAX_ALIASES}",
+                self.aliases.len()
+            )));
+        }
         let mut seen = HashSet::new();
         for alias in &self.aliases {
             check_text(alias, "alias", false)?;
@@ -475,6 +488,12 @@ impl ActiveWindow {
                     return Err(DiditError::Invalid(
                         "an hours window lists no spans".to_owned(),
                     ));
+                }
+                if hours.len() > MAX_HOURS_SPANS {
+                    return Err(DiditError::Invalid(format!(
+                        "hours spans has {} entries, the most is {MAX_HOURS_SPANS}",
+                        hours.len()
+                    )));
                 }
                 for span in hours {
                     span.check()?;
