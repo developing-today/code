@@ -23,7 +23,7 @@ improvise the steps by hand. Inside a fire, claimant.py launches
 distinct candidates in parallel under a bounded pool and a
 single-instance lock; exactly-once stays anchored on the atomic DB
 bind. (History: the cap was 12 until 2026-11-05, when the
-binding-rate fix raised it to 20 to match demonstrated headroom;
+binding-rate fix raised it first to 20, then to 36 the same day (at 20, scheduled lane-runner waves of ~39 roots at load ~4/16 cores still left the claimant cap_room 0; 36 sits above the observed wave size while keeping total roots within ~2x the census-proven level);
 claimant.py itself was committed the same day - before that it
 existed only as an untracked file in the laptop primary checkout,
 which is part of why the standing claimant never went live.)
@@ -55,7 +55,7 @@ Never claim, bind, launch, or mutate a task in shadow mode.
   created-but-never-prompted and dead (step 1's recovery rule, #4758).
   Retain the candidate list from the start of each fire; a task recovered
   during supervision is eligible on the next fire, not this one.
-- Concurrency cap: **20** active root sessions across the fleet. Count
+- Concurrency cap: **36** active root sessions across the fleet. Count
   with poll.py (OpenCode server `GET /api/session` on
   http://127.0.0.1:13420, root sessions only; poll.py counts a root as
   active only with no terminal marker — `time.idle`/`outcome` — and
@@ -145,7 +145,7 @@ Never claim, bind, launch, or mutate a task in shadow mode.
    shows 0 claimed-with-lane-opencode unbound candidates (poll.py
    returns an empty candidate list), end the fire quietly.
 3. CAP: if poll.py reports `cap_room` 0 (active root sessions at the
-   20 cap) or null (server unreadable), end the fire; record the
+   36 cap) or null (server unreadable), end the fire; record the
    saturation in the fire log (step 6).
 4. For each candidate, highest queue priority first, while cap room
    remains:
@@ -248,7 +248,7 @@ queue task and issue>, "model": {"id": <route model>,
 - Never work a task yourself; you claim/bind/launch/record only.
 - Never launch for a task whose issue carries `held`, `user/owned`,
   `do-not-merge`, or `do-not-auto-edit` — skip and log it.
-- Never exceed the 20-session cap, never double-bind a task, never
+- Never exceed the 36-session cap, never double-bind a task, never
   bind a session id you did not just create.
 - No credential value ever enters a prompt, log, or task record; the queue
   CLI and poll.py reach the queue-broker with the broker's client
