@@ -536,6 +536,15 @@ in
           copilot.enabled = true;
           "memory-lancedb" = {
             enabled = true;
+            # Conversation access for the plugin's typed hooks. Without
+            # this, the gateway blocks memory-lancedb's before_prompt_build
+            # (autoRecall injection) and agent_end (autoCapture) hooks —
+            # observed live 2026-11-05: the plugin initialized against an
+            # empty LanceDB (0 memories) while both hooks were blocked,
+            # so the memory slot has been decorative since the Nov 4
+            # deployment. This flag is upstream's per-plugin consent for
+            # exactly that access.
+            hooks.allowConversationAccess = true;
             config = {
               embedding = {
                 # Direct OpenAI-compatible path against the fixed local
