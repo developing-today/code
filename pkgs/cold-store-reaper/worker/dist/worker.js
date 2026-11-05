@@ -643,6 +643,32 @@ function jsonResponse(obj, status = 200) {
 function errorResponse(message, status) {
   return jsonResponse({ error: message }, status);
 }
+async function readFrameFromStream(body, offset, frameLength) {
+  const reader = body?.getReader();
+  if (!reader) return new Uint8Array();
+  const frame = new Uint8Array(frameLength);
+  let position = 0;
+  let copied = 0;
+  try {
+    while (copied < frameLength) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunkStart = position;
+      position += value.byteLength;
+      const start = Math.max(offset, chunkStart);
+      const end = Math.min(offset + frameLength, position);
+      if (start < end) {
+        frame.set(value.subarray(start - chunkStart, end - chunkStart), copied);
+        copied += end - start;
+      }
+    }
+    if (copied === frameLength) await reader.cancel().catch(() => {
+    });
+  } finally {
+    reader.releaseLock();
+  }
+  return copied === frameLength ? frame : frame.slice(0, copied);
+}
 async function sha256Hex(bytes) {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -722,10 +748,7 @@ var BundleFlight = class {
     if (resp.status !== 206 && resp.status !== 200) {
       throw new HttpError(502, `drive range download failed (HTTP ${resp.status})`);
     }
-    let frame = new Uint8Array(await resp.arrayBuffer());
-    if (resp.status === 200) {
-      frame = frame.slice(offset, offset + frame_length);
-    }
+    const frame = resp.status === 200 ? await readFrameFromStream(resp.body, offset, frame_length) : new Uint8Array(await resp.arrayBuffer());
     if (frame.length !== frame_length) {
       throw new HttpError(
         502,

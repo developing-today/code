@@ -40,6 +40,36 @@ function errorResponse(message, status) {
   return jsonResponse({ error: message }, status);
 }
 
+// Drive sometimes ignores Range and streams the whole bundle. Discard the
+// prefix and retain only the requested frame; cancel at its end so neither
+// the bundle tail nor an ArrayBuffer copy is kept in memory.
+async function readFrameFromStream(body, offset, frameLength) {
+  const reader = body?.getReader();
+  if (!reader) return new Uint8Array();
+
+  const frame = new Uint8Array(frameLength);
+  let position = 0;
+  let copied = 0;
+  try {
+    while (copied < frameLength) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunkStart = position;
+      position += value.byteLength;
+      const start = Math.max(offset, chunkStart);
+      const end = Math.min(offset + frameLength, position);
+      if (start < end) {
+        frame.set(value.subarray(start - chunkStart, end - chunkStart), copied);
+        copied += end - start;
+      }
+    }
+    if (copied === frameLength) await reader.cancel().catch(() => {});
+  } finally {
+    reader.releaseLock();
+  }
+  return copied === frameLength ? frame : frame.slice(0, copied);
+}
+
 async function sha256Hex(bytes) {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)]
@@ -132,12 +162,10 @@ export class BundleFlight {
     if (resp.status !== 206 && resp.status !== 200) {
       throw new HttpError(502, `drive range download failed (HTTP ${resp.status})`);
     }
-    let frame = new Uint8Array(await resp.arrayBuffer());
-    if (resp.status === 200) {
-      // Drive ignored the Range header and sent the whole bundle: slice out
-      // exactly the member's frame before doing anything with it.
-      frame = frame.slice(offset, offset + frame_length);
-    }
+    const frame =
+      resp.status === 200
+        ? await readFrameFromStream(resp.body, offset, frame_length)
+        : new Uint8Array(await resp.arrayBuffer());
     if (frame.length !== frame_length) {
       throw new HttpError(
         502,
