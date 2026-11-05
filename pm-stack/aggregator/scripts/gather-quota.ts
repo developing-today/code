@@ -99,7 +99,6 @@
 //      token + project ref resolved by name via the resolveBwsSecret
 //      plumbing: supabase.muse-dev2.access-token-muse-cli /
 //      supabase.muse-dev2.project-ref).
-import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { access, appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -120,27 +119,22 @@ import { SnapshotStore, isSnapshotRecord, snapshotKey } from "../src/snapshots.t
 import { safeProviderReason } from "../src/credential-lifecycle.ts";
 import { renewOpenDesignSession, type OpenDesignCredentialLike } from "../src/opendesign-renewal.ts";
 import { renewMetaSession } from "../src/meta-renewal.ts";
+import { resolveLibDir as resolveOpenChamberLib, type ResolvedOpenChamberLib } from "../src/openchamber-lib.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
 const HIDDEN = join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files");
 
-/** The OpenDesign keeper's credential-store accessors live in the
- * OpenChamber lib (the managed store's home). Store plumbing for ONE
- * credential the keeper maintains — never a quota reading path: all
- * readings come from the subcommand (see the header). */
-function resolveLibDir(): string {
-  const candidates = [
+/** Candidate checkouts for the OpenDesign keeper's managed credential
+ * store. All are validated before use; quota readings still come only
+ * from the opencode subcommand. */
+function openChamberLibCandidates(): string[] {
+  return [
     process.env.OPENCHAMBER_LIB_DIR,
     join(HOME, "git/devtoday-openchamber/packages/web/server/lib"),
     join(HOME, "git/openchamber-fork/packages/web/server/lib"),
   ].filter((d): d is string => typeof d === "string" && d !== "");
-  for (const dir of candidates) {
-    if (existsSync(join(dir, "quota/index.js"))) return dir;
-  }
-  return candidates[0];
 }
-const libDir = resolveLibDir();
 const currentPath = process.env.QUOTA_CURRENT_PATH ?? join(PKG, "quota-current.json");
 const heartbeatPath = process.env.QUOTA_HEARTBEAT_PATH ?? join(PKG, "quota-gatherer-heartbeat.json");
 const statePath = process.env.QUOTA_GATHERER_STATE_PATH ?? join(PKG, "quota-gatherer-state.json");
@@ -259,15 +253,6 @@ async function resolveBwsSecret(key: string): Promise<string | null> {
   }
 }
 
-/** Managed-credential accessors for the OpenDesign keeper (libDir). */
-interface OpenDesignCredentialsModule {
-  readManagedCredential: (providerId: string) => OpenDesignCredentialLike | null;
-  writeManagedCredential: (providerId: string, value: OpenDesignCredentialLike) => unknown;
-}
-interface OpenDesignProviderModule {
-  fetchOpenDesignQuota: (credential: OpenDesignCredentialLike) => Promise<unknown>;
-}
-
 /**
  * The OpenDesign session keeper run. Runs before the subcommand so a
  * credential renewed this tick is the one the tick's OpenDesign read
@@ -277,11 +262,10 @@ interface OpenDesignProviderModule {
  * reaches any output). Fail-soft: any error is logged and the tick
  * proceeds with the stored credential as-is.
  */
-async function runOpenDesignRenewal(tickAt: string): Promise<void> {
+async function runOpenDesignRenewal(tickAt: string, lib: ResolvedOpenChamberLib): Promise<void> {
   if (process.env.OPENDESIGN_RENEWAL_DISABLED === "1") return;
   try {
-    const credentials = (await import(join(libDir, "quota/credentials/providers.js"))) as unknown as OpenDesignCredentialsModule;
-    const provider = (await import(join(libDir, "quota/providers/opendesign.js"))) as unknown as OpenDesignProviderModule;
+    const { credentials, provider } = lib;
     const state = await renewOpenDesignSession({
       readCredential: () => credentials.readManagedCredential("opendesign"),
       writeCredential: (value) => {
@@ -646,9 +630,20 @@ async function main(): Promise<number> {
   const started = Date.now();
   const tickAt = new Date(started).toISOString();
 
+  let openChamberLib: ResolvedOpenChamberLib;
+  try {
+    openChamberLib = await resolveOpenChamberLib(openChamberLibCandidates());
+  } catch (err) {
+    return failTick(
+      tickAt,
+      started,
+      `OpenChamber lib resolution failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   // The OpenDesign keeper runs first: a session renewed this tick is
   // the one the subcommand's OpenDesign read uses.
-  await runOpenDesignRenewal(tickAt);
+  await runOpenDesignRenewal(tickAt, openChamberLib);
   await runMetaRenewal(tickAt);
 
   // The single source: every reading this tick comes from the
