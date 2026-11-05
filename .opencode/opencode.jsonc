@@ -101,6 +101,13 @@
   // 2026-10-25. Per the switchboard rule this flip is the whole job;
   // its full definition stays in the provider block, and deleting
   // the line re-enables it if the direct door is ever wanted.
+  // 2026-11-05 (Drew, direct order — supersedes the 2026-10-30 note
+  // above for this seat): "deepseek" LEAVES the list. The official-API
+  // door is re-enabled to serve one seat: deepseek/deepseek-flash
+  // ("1017") joins the deepseek-flash-plan route as its API leg under a
+  // weighted 2:1 plan:API split (see that route). The NEVER-FUNDS
+  // default stands for every other route; this seat is Drew's named
+  // exception, sized at the minority share of one pool.
   // 2026-10-30 (Drew, direct order): "meta" joins the list below.
   // The direct api.meta.ai door is dead by Meta's design — the plan
   // API key returns 403 client_attestation_denied from any
@@ -150,7 +157,6 @@
     "github-copilot",
     "openrouter",
     "cloudflare-workers-ai",
-    "deepseek",
     "claude-code",
     "meta",
     "commandcode"
@@ -558,7 +564,28 @@
           "name": "DeepSeek V4 Flash Vision Exp"
         },
         "deepseek-flash": {
-          "name": "DeepSeek V4.1 Flash 1017"
+          "name": "DeepSeek V4.1 Flash 1017",
+          "limit": {
+            "context": 1048576,
+            "output": 393216
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            }
+          }
         },
         "deepseek-v4-flash": {
           "name": "DeepSeek V4 Flash"
@@ -1779,6 +1806,21 @@
         // credits/mo — its boosted Flash allowance is small, the free
         // routes are its durable value; issue #1328 D4).
         // 2026-11-03 (Drew): opendesign/deepseek-v4-flash leaf REMOVED from this pool — the dotted deepseek-v4.1-flash leaf exists in the same opendesign catalog, so the older v4 leaf is dead weight.
+        // 2026-11-05 (Drew, direct order): the official-API leg joins —
+        // deepseek/deepseek-flash (the model named "1017" in the deepseek
+        // provider) is seated as this pool's second serving route beside
+        // the plan doors, and selection becomes "weighted" with an
+        // aggregate 2:1 plan:API split. The plan leaves keep their tuned
+        // proportions (Go 6, ClinePass 1, OpenDesign 1, Command Code 0.5;
+        // total 8.5) and the API leaf carries half the plan total (4.25),
+        // so the plan doors draw ~2/3 of new sessions and the API door
+        // ~1/3 (weighted draws are proportional; sessions stay sticky).
+        // The deepseek provider is re-enabled in the switchboard for
+        // this seat, keyed by DEEPSEEK_API_KEY (nixos/agent-auth +
+        // home/common materializer). Both legs were probe-verified
+        // responding before this landed: the API leg by a direct
+        // completion on deepseek-flash, the plan legs by the pool's
+        // standing live traffic.
         "targets": [
           {
             "model": "opencode-go-plans/deepseek-v4.1-flash",
@@ -1792,13 +1834,17 @@
             "model": "opendesign/deepseek-v4.1-flash",
             "variants": { "xhigh": "high", "max": "high" }
           },
-          "commandcode/deepseek/deepseek-v4.1-flash"
+          "commandcode/deepseek/deepseek-v4.1-flash",
+          "deepseek/deepseek-flash"
         ],
-        "selection": "round-robin",
+        "selection": "weighted",
         "autonomy": "rules",
         "weights": {
           "opencode-go-plans/deepseek-v4.1-flash": 6,
-          "commandcode/deepseek/deepseek-v4.1-flash": 0.5
+          "cline-pass/deepseek-v4.1-flash": 1,
+          "opendesign/deepseek-v4.1-flash": 1,
+          "commandcode/deepseek/deepseek-v4.1-flash": 0.5,
+          "deepseek/deepseek-flash": 4.25
         }
       },
       "deepseek-flash": {
