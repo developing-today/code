@@ -41,16 +41,24 @@ pub enum WorldLine {
 ///
 /// An empty line returns `None`. Any other line that does not start with `/`
 /// is chat. Unknown `/` commands become [`WorldLine::Message`].
+///
+/// The verb boundary is uniform for every verb: the verb itself, or the
+/// verb followed by an ASCII space and its argument. A tab is not a
+/// separator (#4492) — `/help<TAB>me` and `/logs<TAB>5` are both unknown
+/// commands — while repeated spaces still parse because the argument
+/// remainder is trimmed.
 #[must_use]
 pub fn parse_line(line: &str) -> Option<WorldLine> {
     if line.is_empty() {
         return None;
     }
-    match line {
-        "/help" => return Some(WorldLine::Help),
-        "/quit" => return Some(WorldLine::Quit),
-        "/stats" => return Some(WorldLine::Stats),
-        "/caps" => return Some(WorldLine::Caps),
+    // Split on the ASCII space only, not on whitespace: the bare verbs use
+    // the same literal-space boundary as the argument verbs below.
+    match line.split(' ').next() {
+        Some("/help") => return Some(WorldLine::Help),
+        Some("/quit") => return Some(WorldLine::Quit),
+        Some("/stats") => return Some(WorldLine::Stats),
+        Some("/caps") => return Some(WorldLine::Caps),
         _ => {}
     }
     if line == "/records" || line.starts_with("/records ") {
@@ -75,8 +83,12 @@ pub fn parse_line(line: &str) -> Option<WorldLine> {
         return Some(WorldLine::Message("usage: /document <name>".to_owned()));
     }
     if let Some(rest) = line.strip_prefix("/document ") {
+        // The separator is ASCII spaces, not exactly one space: siblings
+        // (/records, /documents, /logs) trim theirs, and a name with
+        // interior spaces ("my file.txt") is still one name. A tab is not
+        // a separator — the verb boundary is a literal space (#4492).
         let name = rest.trim();
-        if !name.is_empty() && name == rest {
+        if !name.is_empty() {
             return Some(WorldLine::Document(name.to_owned()));
         }
         return Some(WorldLine::Message("usage: /document <name>".to_owned()));
@@ -97,6 +109,7 @@ pub fn parse_line(line: &str) -> Option<WorldLine> {
         return Some(WorldLine::Message("usage: /input <hex>".to_owned()));
     }
     if let Some(hex) = line.strip_prefix("/input ") {
+        let hex = hex.trim();
         if !hex.is_empty() && hex.len() % 2 == 0 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Some(WorldLine::Input(hex.to_ascii_lowercase()));
         }
@@ -165,6 +178,50 @@ mod tests {
     }
 
     #[test]
+    fn bare_verbs_ignore_space_separated_arguments() {
+        assert_eq!(parse_line("/help me"), Some(WorldLine::Help));
+        assert_eq!(parse_line("/quit now"), Some(WorldLine::Quit));
+        assert_eq!(parse_line("/stats all"), Some(WorldLine::Stats));
+        assert_eq!(parse_line("/caps list"), Some(WorldLine::Caps));
+        assert_eq!(
+            parse_line("/nonsense arg"),
+            Some(WorldLine::Message("unknown command; type /help".into()))
+        );
+        assert_eq!(
+            parse_line("/helpme"),
+            Some(WorldLine::Message("unknown command; type /help".into()))
+        );
+    }
+
+    #[test]
+    fn extra_separator_whitespace_still_parses() {
+        // #1946: the separator after /document and /input is one or more
+        // ASCII spaces, not exactly one space — siblings trim theirs.
+        assert_eq!(
+            parse_line("/document  report.txt"),
+            Some(WorldLine::Document("report.txt".into()))
+        );
+        assert_eq!(
+            parse_line("/input  ab"),
+            Some(WorldLine::Input("ab".into()))
+        );
+        // A name with interior spaces is still one name.
+        assert_eq!(
+            parse_line("/document my file.txt"),
+            Some(WorldLine::Document("my file.txt".into()))
+        );
+        // Extra separator whitespace does not rescue a bad argument.
+        assert_eq!(
+            parse_line("/input  zz"),
+            Some(WorldLine::Message("usage: /input <hex>".into()))
+        );
+        assert_eq!(
+            parse_line("/input  abc"),
+            Some(WorldLine::Message("usage: /input <hex>".into()))
+        );
+    }
+
+    #[test]
     fn glued_and_bare_verbs_do_not_parse_as_commands() {
         // #1507: every verb needs its boundary — exact, or the verb, a space,
         // and its argument. A glued argument is not the command.
@@ -189,6 +246,46 @@ mod tests {
         assert_eq!(
             parse_line("/input"),
             Some(WorldLine::Message("usage: /input <hex>".into()))
+        );
+    }
+
+    #[test]
+    fn test_tab_is_not_a_verb_boundary_for_any_verb_class() {
+        // #4492: one boundary rule — a tab separates nothing, for bare
+        // verbs exactly as for argument verbs (#1507 pinned /logs<TAB>5).
+        for line in ["/help\tme", "/stats\tall", "/quit\tnow", "/caps\tlist"] {
+            assert_eq!(
+                parse_line(line),
+                Some(WorldLine::Message("unknown command; type /help".into())),
+                "{line:?}"
+            );
+        }
+        for line in [
+            "/logs\t5",
+            "/records\tfoo",
+            "/documents\tfoo",
+            "/document\treport.txt",
+            "/input\tab",
+        ] {
+            assert_eq!(
+                parse_line(line),
+                Some(WorldLine::Message("unknown command; type /help".into())),
+                "{line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_space_boundary_still_parses_for_bare_and_argument_verbs() {
+        assert_eq!(parse_line("/help me"), Some(WorldLine::Help));
+        assert_eq!(parse_line("/help  me"), Some(WorldLine::Help));
+        assert_eq!(
+            parse_line("/logs 5"),
+            Some(WorldLine::Logs { seconds: Some(5) })
+        );
+        assert_eq!(
+            parse_line("/logs  5"),
+            Some(WorldLine::Logs { seconds: Some(5) })
         );
     }
 

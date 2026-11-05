@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/dezren39/mcpx/internal/mcpheaders"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpheaders"
 )
 
 // Request metadata headers, 2026-07-28.

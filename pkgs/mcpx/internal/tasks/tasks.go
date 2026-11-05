@@ -14,18 +14,20 @@ package tasks
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
 	_ "modernc.org/sqlite"
 )
 
@@ -36,19 +38,13 @@ type Task struct {
 	StatusMessage string    `json:"statusMessage,omitempty"`
 	CreatedAt     time.Time `json:"createdAt"`
 	LastUpdatedAt time.Time `json:"lastUpdatedAt"`
-	// ExpiresAt is the effective deadline of the task under the
-	// touch-on-read convention (docs/decisions/0006-ttl-touch-on-read.md):
-	// the earlier of the idle deadline (lastTouched + ttl) and the
-	// absolute ceiling (terminal transition + maxAge). Nonterminal tasks
-	// have no result-retention deadline and serialize this as null.
+	// ExpiresAt is the terminal-result retention deadline. Nonterminal tasks
+	// have no retention deadline and serialize it as null.
 	ExpiresAt *time.Time `json:"expiresAt"`
-	// LastTouched is when the task was last looked at: its creation,
-	// or the latest item read that renewed it.
+	// LastTouched is creation time or the latest public item/result read.
 	LastTouched *time.Time `json:"lastTouched"`
-	// TTLRemainingMs is ExpiresAt minus the moment this representation
-	// was produced, in milliseconds, never negative. It is the shared
-	// vocabulary every expiring mcpx representation carries beside its
-	// RFC 3339 expiresAt.
+	// TTLRemainingMs is refreshed for each representation and is zero when
+	// no terminal-result retention deadline exists.
 	TTLRemainingMs int64 `json:"ttlRemainingMs"`
 	// TTL is how long a finished task's result is kept, in milliseconds,
 	// measured from when the task reaches a terminal state — never from
@@ -65,38 +61,42 @@ type Task struct {
 	// it.
 	InputRequests map[string]any `json:"-"`
 
-	result   any
-	fault    *Fault
-	cancel   context.CancelFunc
-	done     chan struct{}
-	timer    *time.Timer
-	OnCancel func(ctx context.Context, reason string) `json:"-"`
+	// requestor is the key the task counts against for the store's
+	// per-requestor limits (protoTasks.maxPerRequestor). Never on the wire.
+	requestor Requestor
+
+	result any
+	fault  *Fault
+	cancel context.CancelFunc
+	done   chan struct{}
+	timer  *time.Timer
+	// cancelTimer bounds the in-memory cooperative-cancellation window. The
+	// cancelling mark and timer are deliberately not persisted or exposed.
+	cancelTimer *time.Timer
+	cancelling  bool
+	OnCancel    func(ctx context.Context, reason string) `json:"-"`
 }
 
-// deadline is the effective result-retention expiry: the earlier of the
-// idle deadline (lastTouched + ttl) and the absolute ceiling (terminalAt +
-// maxAge). A task's execution is never bounded by this deadline.
 func deadline(terminalAt, lastTouched time.Time, ttl, maxAge time.Duration) time.Time {
-	d := lastTouched.Add(ttl)
+	expires := lastTouched.Add(ttl)
 	if maxAge > 0 {
-		if ceiling := terminalAt.Add(maxAge); ceiling.Before(d) {
-			d = ceiling
+		if ceiling := terminalAt.Add(maxAge); ceiling.Before(expires) {
+			expires = ceiling
 		}
 	}
-	return d
+	return expires
 }
 
-// refreshTTLRemaining restamps TTLRemainingMs against now.
 func (t *Task) refreshTTLRemaining(now time.Time) {
 	if t.ExpiresAt == nil {
 		t.TTLRemainingMs = 0
 		return
 	}
-	ms := t.ExpiresAt.Sub(now).Milliseconds()
-	if ms < 0 {
-		ms = 0
+	remaining := t.ExpiresAt.Sub(now).Milliseconds()
+	if remaining < 0 {
+		remaining = 0
 	}
-	t.TTLRemainingMs = ms
+	t.TTLRemainingMs = remaining
 }
 
 func snapshot(t *Task, now time.Time) Task {
@@ -140,12 +140,35 @@ func (f *Fault) Error() string { return f.Message }
 
 // Store holds running and recently finished tasks.
 type Store struct {
-	mu           sync.Mutex
-	tasks        map[string]*Task
-	db           *sql.DB
-	ttl          time.Duration
-	maxAge       time.Duration
+	mu     sync.Mutex
+	tasks  map[string]*Task
+	db     *sql.DB
+	ttl    time.Duration
+	maxAge time.Duration
+	// Audit receives task lifecycle records. Set it before the store is
+	// shared; records contain identifiers and metadata, never task contents.
+	Audit func(logging.Record)
+	// PollInterval is the pollInterval each new task carries. Zero means
+	// the built-in default. Set before the store is shared.
 	PollInterval time.Duration
+
+	// MaxTTL clamps any requested TTL inside Start. Zero means
+	// DefaultMaxTTL. Wired from protoTasks.maxTTL by the seams.
+	MaxTTL time.Duration
+	// MaxPerRequestor caps one requestor's non-terminal tasks. Zero means
+	// DefaultMaxPerRequestor. Wired from protoTasks.maxPerRequestor.
+	MaxPerRequestor int
+	// PerMinute is the tasks/* admission window per requestor. Zero means
+	// DefaultPerMinute; a negative value disables the window. Wired from
+	// protoTasks.perMinute (whose 0 means disabled, translated by the
+	// wiring seam, not here).
+	PerMinute int
+	// CancelGrace is how long cooperative work may finish after cancellation
+	// is requested. Zero means DefaultCancelGrace.
+	CancelGrace time.Duration
+
+	win      *Window
+	winLimit int
 
 	// watchers hear the id of every task whose state changed, after the
 	// change and outside the lock, so a watcher may read the store.
@@ -157,11 +180,8 @@ type Store struct {
 	OnCancelHook func(id string, reason string)
 }
 
-// Configure sets the TTL convention's two durations, from the settings
-// registry (tasks.ttl / tasks.maxAge). A non-positive value is
-// ignored: a store nobody configured keeps the built-in defaults, and
-// a resolved set that somehow produced zero must not make tasks
-// immortal or instantly dead.
+// Configure updates the default result TTL and its terminal-time ceiling.
+// Nonpositive values leave the built-in/current configuration unchanged.
 func (s *Store) Configure(ttl, maxAge time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -206,6 +226,40 @@ func (s *Store) changed(id string) {
 	}
 }
 
+func (s *Store) audit(level slog.Level, event string, attrs map[string]any) {
+	if s.Audit == nil {
+		return
+	}
+	attrs[logging.KeyEvent] = event
+	s.Audit(logging.Record{Time: time.Now(), Level: level, Msg: event, Attrs: attrs})
+}
+
+func requestorAuditAttrs(requestor Requestor) map[string]any {
+	key := requestor.Identity
+	if key == "" {
+		key = "unbound"
+	}
+	return map[string]any{"requestor_key": key, "requestor_role": requestor.Role}
+}
+
+func (s *Store) logTerminal(t *Task) {
+	s.audit(slog.LevelInfo, "task.terminal", map[string]any{
+		"task_id":     t.TaskID,
+		"status":      t.Status,
+		"duration_ms": time.Since(t.CreatedAt).Milliseconds(),
+	})
+}
+
+// RecordRetrieval logs the metadata for a task retrieval at debug level.
+// The surface and method are supplied by the handler; task data is not read.
+func (s *Store) RecordRetrieval(surface, method, id string) {
+	s.audit(slog.LevelDebug, "task.retrieval", map[string]any{
+		"surface": surface,
+		"method":  method,
+		"task_id": id,
+	})
+}
+
 type idKey struct{}
 
 // IDFrom is the id of the task whose body ctx belongs to, or "". It is how a
@@ -217,11 +271,7 @@ func IDFrom(ctx context.Context) string {
 
 // New builds an empty store.
 func New() *Store {
-	return &Store{
-		tasks:  map[string]*Task{},
-		ttl:    defaults.TaskTTL,
-		maxAge: defaults.TaskMaxAge,
-	}
+	return &Store{tasks: map[string]*Task{}, ttl: defaults.TaskTTL, maxAge: defaults.TaskMaxAge}
 }
 
 // Open opens or creates a persistent SQLite-backed task store.
@@ -381,9 +431,6 @@ FROM tasks`)
 		}
 		expiresAtMs := expiresAt.UnixMilli()
 		if expiresAtMs <= nowMs {
-			if t.timer != nil {
-				t.timer.Stop()
-			}
 			toDelete = append(toDelete, id)
 			continue
 		}
@@ -451,11 +498,11 @@ ON CONFLICT(task_id) DO UPDATE SET
 	)
 }
 
-func unixMilli(t *time.Time) int64 {
-	if t == nil {
+func unixMilli(value *time.Time) int64 {
+	if value == nil {
 		return 0
 	}
-	return t.UnixMilli()
+	return value.UnixMilli()
 }
 
 func (s *Store) deleteFromDBLocked(id string) {
@@ -488,11 +535,198 @@ func (s *Store) ensure() {
 	}
 }
 
-// NewID is the handle a caller holds a task by.
+// NewID is the handle a caller holds a task by: 128 bits of randomness
+// (16 bytes), so an id is unguessable at the scale the per-requestor caps
+// now let the store grow to.
 func NewID() string {
-	var b [8]byte
-	_, _ = rand.Read(b[:])
+	var b [16]byte
+	_, _ = RandSource.Read(b[:])
 	return "tsk-" + hex.EncodeToString(b[:])
+}
+
+// Requestor is the composite key a task counts against for the store's
+// per-requestor limits: a ROLE and an IDENTITY, as separate fields —
+// never a plain string, and never distinguished by a string prefix.
+//
+// The role field exists because one logical operation can create two
+// store tasks in different capacities: on the daemon's embedded MCP
+// surface a task-supporting call creates the /v1/ask backing (role
+// ask) and the MCP wrapper (role caller), and for a client-named
+// identity both carried the same plain string, so a per-requestor cap
+// of 1 refused — and abandoned — the operation, and the default cap
+// silently halved. Separate roles keep one operation to one slot in
+// each ledger (Codex + CodeRabbit review, PR #2869).
+//
+// The identity field is caller-supplied text (a session id, a run id,
+// an MCP identity key). Because the role is a separate field, no
+// caller-supplied identity can collide with a reserved bucket: a
+// session literally named "unbound" keys as {caller, "unbound"},
+// which is not the unbound bucket {, } (CodeRabbit review, PR #2869).
+type Requestor struct {
+	Role     string
+	Identity string
+}
+
+// The requestor roles. RoleCaller is an ordinary creation site
+// charging its caller; RoleAsk is the ask seam (/v1/ask backings,
+// handleAskBegin) charging in its asking capacity; RoleReport is the
+// reporting-call seam (handleCallReporting) charging in its reporting
+// capacity, separate from the execution wrappers that spawn it.
+const (
+	RoleCaller = "caller"
+	RoleAsk    = "ask"
+	RoleReport = "report"
+)
+
+// Caller names an ordinary requestor: the given caller identity in
+// the caller role. An empty identity is the unbound bucket.
+func Caller(identity string) Requestor {
+	if identity == "" {
+		return UnboundRequestor
+	}
+	return Requestor{Role: RoleCaller, Identity: identity}
+}
+
+// Ask names an ask-seam requestor: the given caller identity in the
+// ask role. An empty identity is the anonymous ask bucket.
+func Ask(identity string) Requestor {
+	return Requestor{Role: RoleAsk, Identity: identity}
+}
+
+// Report names a reporting-call requestor: the given caller identity
+// in the report role. An empty identity is the anonymous report
+// bucket.
+func Report(identity string) Requestor {
+	return Requestor{Role: RoleReport, Identity: identity}
+}
+
+// UnboundRequestor is the bucket a creation site passes when it holds
+// no caller identity. It is capped like any other requestor — "we
+// don't know who asked" must not mean "unlimited".
+var UnboundRequestor = Requestor{}
+
+// AskRequestor is the bucket anonymous ask-seam tasks count against.
+// It is its own bucket, not UnboundRequestor, for the two-ledgers
+// reason recorded on Requestor.
+var AskRequestor = Requestor{Role: RoleAsk}
+
+// ReportRequestor is the bucket anonymous reporting-call tasks count
+// against. It is its own bucket, not UnboundRequestor, for the
+// two-ledgers reason recorded on Requestor: a /v1/exec wrapper task
+// (caller role) stays non-terminal for the whole run while the
+// script's tool calls arrive as reporting tasks under the same
+// session identity, so charging both to one ledger lets the wrapper
+// starve its own calls -- at a per-requestor cap of 1 the first
+// reporting call is refused outright (Codex review, PR #2869).
+var ReportRequestor = Requestor{Role: RoleReport}
+
+// key is the window-counter spelling of the requestor: the two fields
+// joined by a separator neither can be confused across, because the
+// role is one of a fixed set spelled first.
+func (r Requestor) key() string { return r.Role + "\x00" + r.Identity }
+
+// The task-store limit defaults (protoTasks.*). A seam wires the settings
+// over these; the store applies them when its fields are unset.
+const (
+	DefaultMaxTTL          = time.Hour
+	DefaultMaxPerRequestor = 32
+	DefaultPerMinute       = 120
+)
+
+// DefaultCancelGrace is declared with the defaults (protoTasks.cancelGrace),
+// not here: the defaults guard forbids a package-level redeclaration.
+var DefaultCancelGrace = defaults.TaskCancelGrace
+
+// ErrPerRequestorCap is the named sentinel Start returns when a requestor
+// already holds MaxPerRequestor non-terminal tasks. The seams map it to
+// -32603 (MCP) / 429 (/v1); the wrapped message names the limit.
+var ErrPerRequestorCap = errors.New("tasks: per-requestor task cap reached")
+
+// ErrRateWindow is the named sentinel Admit reports through the seams when
+// a requestor exceeds the tasks/* per-minute window: -32603 / 429, with
+// protoTasks.perMinute named.
+var ErrRateWindow = errors.New("tasks: protoTasks.perMinute admission window exceeded")
+
+// Window is a small fixed-window admission counter, one bucket per key.
+// It exists for the tasks/* seams (internal/tasks is the one package both
+// surfaces share); it is not a general rate-limit framework.
+type Window struct {
+	mu     sync.Mutex
+	limit  int
+	counts map[string]*windowBucket
+	// lastSweep is when expired buckets were last removed; sweeping on
+	// every new key made admission O(N^2) over distinct requestors.
+	lastSweep time.Time
+}
+
+type windowBucket struct {
+	start time.Time
+	n     int
+}
+
+// NewWindow returns a Window admitting at most limit calls per key per
+// minute.
+func NewWindow(limit int) *Window {
+	return &Window{limit: limit, counts: map[string]*windowBucket{}}
+}
+
+// Allow reports whether one more call for key is admitted in the current
+// fixed minute window, and records it when it is.
+func (w *Window) Allow(key string, now time.Time) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	b, ok := w.counts[key]
+	if !ok || now.Sub(b.start) >= time.Minute {
+		// Sweep at most once per minute so admission stays O(1) per new
+		// key; the sweep still bounds the map: distinct requestors on a
+		// long-lived daemon cannot accumulate entries past their windows.
+		if now.Sub(w.lastSweep) >= time.Minute {
+			for k, v := range w.counts {
+				if now.Sub(v.start) >= time.Minute {
+					delete(w.counts, k)
+				}
+			}
+			w.lastSweep = now
+		}
+		w.counts[key] = &windowBucket{start: now, n: 1}
+		return true
+	}
+	if b.n >= w.limit {
+		return false
+	}
+	b.n++
+	return true
+}
+
+// Admit counts one tasks/* call for requestor against the store's
+// per-minute window (PerMinute). Every tasks/* method counts, tasks/result
+// included: a long poll is admitted once and held server-side, so counting
+// at admission bounds the call rate without punishing the wait — and an
+// exemption would leave one method permanently unwindowed (triage
+// settlement, task 3733).
+func (s *Store) Admit(requestor Requestor) bool {
+	limit := s.PerMinute
+	if limit == 0 {
+		limit = DefaultPerMinute
+	}
+	if limit < 0 {
+		return true // window disabled (protoTasks.perMinute = 0)
+	}
+	s.mu.Lock()
+	if s.win == nil || s.winLimit != limit {
+		s.win = NewWindow(limit)
+		s.winLimit = limit
+	}
+	win := s.win
+	s.mu.Unlock()
+	allowed := win.Allow(requestor.key(), time.Now())
+	if !allowed {
+		attrs := requestorAuditAttrs(requestor)
+		attrs["limit"] = "per_minute"
+		attrs["limit_value"] = limit
+		s.audit(slog.LevelInfo, "task.limit_refused", attrs)
+	}
+	return allowed
 }
 
 // DefaultTTL is the retention a caller gets when it does not ask for one, in
@@ -539,31 +773,91 @@ func (s *Store) armRetentionLocked(t *Task) {
 	s.armExpiryLocked(t, time.Until(expires))
 }
 
-// Start runs fn in the background and returns its handle at once. The
-// ttl is retention, not a deadline: it is measured from when the task
+// Start runs fn in the background and returns its handle at once.
+//
+// The requestor key is who the task counts against: Start clamps the
+// requested TTL to the store's MaxTTL and refuses with ErrPerRequestorCap
+// when the requestor already holds MaxPerRequestor non-terminal tasks. The
+// empty key is the UnboundRequestor bucket, capped like any other.
+//
+// The ttl is retention, not a deadline: it is measured from when the task
 // reaches a terminal state (see Task.TTL), so work that outlives its
 // ttl still runs to completion. A caller that needs the work itself
 // bounded uses StartWithDeadline.
-func (s *Store) Start(ttl int64, fn func(ctx context.Context) (any, *Fault)) Task {
-	return s.StartWithDeadline(ttl, 0, fn)
+func (s *Store) Start(requestor Requestor, ttl int64, fn func(ctx context.Context) (any, *Fault)) (Task, error) {
+	return s.StartWithDeadline(requestor, ttl, 0, fn)
 }
 
 // StartWithDeadline is Start with an explicit bound on the work itself:
 // a task still not terminal deadline after it starts is cancelled, as
 // if Cancel had been called, and its retention clock starts from that
-// cancellation. A zero deadline leaves the work unbounded.
-func (s *Store) StartWithDeadline(ttl int64, deadline time.Duration, fn func(ctx context.Context) (any, *Fault)) Task {
+// cancellation. A zero deadline leaves the work unbounded. The
+// requestor key, TTL clamp and per-requestor cap are Start's, above.
+//
+// A deadline task's retention is floored at two poll intervals, under
+// the clamp: both deadline seams in the tree are internal tasks whose
+// result a wrapper collects by polling at the interval the task itself
+// advertises (the daemon-backed ask path: driveAsked polls, sleeping a
+// full TaskPoll between looks while a question is open). A clamped TTL
+// below one poll cycle -- protoTasks.maxTTL=100ms against a 1s poll --
+// would delete a finished backing result before the wrapper's next
+// look, and its poll would meet a 404 and record a successful call as
+// failed (Codex on #2869, round 6). The floor is on the returned task's
+// TTL, so what a client is told is what the store does.
+func (s *Store) StartWithDeadline(requestor Requestor, ttl int64, deadline time.Duration, fn func(ctx context.Context) (any, *Fault)) (Task, error) {
+	if ttl <= 0 {
+		s.mu.Lock()
+		configuredTTL := s.ttl
+		s.mu.Unlock()
+		if configuredTTL <= 0 {
+			ttl = DefaultTTL()
+		} else {
+			ttl = configuredTTL.Milliseconds()
+		}
+	}
+	ttlClamped := false
+	maxTTL := s.MaxTTL
+	if maxTTL <= 0 {
+		maxTTL = DefaultMaxTTL
+	}
+	if ttl > maxTTL.Milliseconds() {
+		ttl = maxTTL.Milliseconds()
+		ttlClamped = true
+	}
+	if deadline > 0 {
+		poll := s.PollInterval
+		if poll <= 0 {
+			poll = defaults.TaskPollInterval
+		}
+		if floor := (2 * poll).Milliseconds(); ttl < floor {
+			ttl = floor
+		}
+	}
+	capN := s.MaxPerRequestor
+	if capN <= 0 {
+		capN = DefaultMaxPerRequestor
+	}
+	s.mu.Lock()
+	s.ensure()
+	live := 0
+	for _, ot := range s.tasks {
+		if ot.requestor == requestor && !Terminal(ot.Status) {
+			live++
+		}
+	}
+	if live >= capN {
+		// Counted and inserted under the one lock: concurrent bursts for
+		// the same requestor cannot each observe the same free slot.
+		s.mu.Unlock()
+		attrs := requestorAuditAttrs(requestor)
+		attrs["limit"] = "max_per_requestor"
+		attrs["limit_value"] = capN
+		s.audit(slog.LevelInfo, "task.limit_refused", attrs)
+		return Task{}, fmt.Errorf("%w: protoTasks.maxPerRequestor allows %d non-terminal tasks per requestor", ErrPerRequestorCap, capN)
+	}
 	now := time.Now()
 	ctx, cancel := context.WithCancel(context.Background())
-	s.mu.Lock()
-	configuredTTL, poll := s.ttl, s.PollInterval
-	s.mu.Unlock()
-	if ttl <= 0 {
-		if configuredTTL <= 0 {
-			configuredTTL = defaults.TaskTTL
-		}
-		ttl = configuredTTL.Milliseconds()
-	}
+	poll := s.PollInterval
 	if poll <= 0 {
 		poll = defaults.TaskPollInterval
 	}
@@ -572,14 +866,18 @@ func (s *Store) StartWithDeadline(ttl int64, deadline time.Duration, fn func(ctx
 		CreatedAt: now, LastUpdatedAt: now,
 		LastTouched: &now,
 		TTL:         ttl, PollInterval: poll.Milliseconds(),
-		cancel: cancel, done: make(chan struct{}),
+		requestor: requestor,
+		cancel:    cancel, done: make(chan struct{}),
 	}
 	ctx = context.WithValue(ctx, idKey{}, t.TaskID)
-	s.mu.Lock()
-	s.ensure()
 	s.tasks[t.TaskID] = t
 	s.saveTaskLocked(t)
 	s.mu.Unlock()
+	attrs := requestorAuditAttrs(requestor)
+	attrs["task_id"] = t.TaskID
+	attrs["effective_ttl_ms"] = ttl
+	attrs["ttl_clamped"] = ttlClamped
+	s.audit(slog.LevelInfo, "task.created", attrs)
 
 	go func() {
 		result, fault := fn(ctx)
@@ -602,36 +900,49 @@ func (s *Store) StartWithDeadline(ttl int64, deadline time.Duration, fn func(ctx
 	// while the goroutine above is writing the original.
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return *t
+	return *t, nil
 }
 
 // finish records what a task's body produced, and reports whether that
 // changed its status: a task cancelled while running keeps its cancellation.
 func (s *Store) finish(t *Task, result any, fault *Fault) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if t.Status == Cancelled {
-		return false // cancelled while running; the cancellation stands
+	if Terminal(t.Status) {
+		s.mu.Unlock()
+		return false // the first terminal recording under the lock wins
+	}
+	wasCancelling := t.cancelling
+	t.cancelling = false
+	if t.cancelTimer != nil {
+		t.cancelTimer.Stop()
+		t.cancelTimer = nil
 	}
 	t.LastUpdatedAt = time.Now()
 	t.InputRequests = nil
 	if fault != nil {
 		t.Status, t.fault = Failed, fault
 		t.StatusMessage = fault.Message
-		s.armRetentionLocked(t)
-		s.saveTaskLocked(t)
-		return true
-	}
-	t.Status, t.result = Completed, result
-	// A tool result that is itself an error is a failed task, per the
-	// specification's own note on TaskStatus.
-	if m, ok := result.(map[string]any); ok {
-		if isErr, _ := m["isError"].(bool); isErr {
-			t.Status = Failed
+		if t.StatusMessage == "" && wasCancelling {
+			t.StatusMessage = "completed during cancellation"
+		}
+	} else {
+		t.Status, t.result = Completed, result
+		// A tool result that is itself an error is a failed task, per the
+		// specification's own note on TaskStatus.
+		if m, ok := result.(map[string]any); ok {
+			if isErr, _ := m["isError"].(bool); isErr {
+				t.Status = Failed
+				t.StatusMessage = toolResultErrorMessage(m)
+			}
+		}
+		if t.StatusMessage == "" && wasCancelling {
+			t.StatusMessage = "completed during cancellation"
 		}
 	}
 	s.armRetentionLocked(t)
 	s.saveTaskLocked(t)
+	s.mu.Unlock()
+	s.logTerminal(t)
 	return true
 }
 
@@ -658,8 +969,8 @@ func (s *Store) Get(id string) (Task, bool) {
 	return snapshot(t, time.Now()), true
 }
 
-// Read returns a public item snapshot and renews terminal-result retention.
-// Nonterminal tasks record the touch but have no result-retention deadline.
+// Read returns a public task item snapshot and renews only terminal-result
+// retention. Collection and internal reads use Get/List instead.
 func (s *Store) Read(id string) (Task, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -703,14 +1014,22 @@ func (s *Store) touchLocked(t *Task, now time.Time) bool {
 func (s *Store) SetStatus(id, status, message string) {
 	s.mu.Lock()
 	t, ok := s.tasks[id]
-	moved := ok && !Terminal(t.Status) && (t.Status != status || t.StatusMessage != message)
+	moved := ok && !t.cancelling && !Terminal(t.Status) && (t.Status != status || t.StatusMessage != message)
 	if moved {
 		t.Status, t.StatusMessage, t.LastUpdatedAt = status, message, time.Now()
+		if Terminal(status) {
+			s.armRetentionLocked(t)
+		}
 		s.saveTaskLocked(t)
 	}
 	s.mu.Unlock()
 	if moved {
 		s.changed(id)
+		if Terminal(status) {
+			if snap, ok := s.Get(id); ok {
+				s.logTerminal(&snap)
+			}
+		}
 	}
 }
 
@@ -727,7 +1046,7 @@ func (s *Store) setInput(id string, requests map[string]any) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.tasks[id]
-	if !ok || Terminal(t.Status) {
+	if !ok || t.cancelling || Terminal(t.Status) {
 		return false
 	}
 	status := Working
@@ -761,8 +1080,9 @@ func (s *Store) Cancel(id string) (Task, bool) {
 	return s.CancelWithReason(id, "cancelled")
 }
 
-// CancelWithReason stops a task with an explanatory reason and returns its final state,
-// performing a cooperative cancellation handshake before hard termination.
+// CancelWithReason begins cooperative cancellation and returns the current
+// wire-visible state. If the work finishes within CancelGrace, its own
+// terminal status wins; otherwise the store records Cancelled with reason.
 func (s *Store) CancelWithReason(id string, reason string) (Task, bool) {
 	s.mu.Lock()
 	t, ok := s.tasks[id]
@@ -770,10 +1090,65 @@ func (s *Store) CancelWithReason(id string, reason string) (Task, bool) {
 		s.mu.Unlock()
 		return Task{}, false
 	}
-	moved := !Terminal(t.Status)
+	start := !Terminal(t.Status) && !t.cancelling
 	var onCancel func(ctx context.Context, reason string)
 	var cancel context.CancelFunc
-	if moved {
+	if start {
+		t.cancelling = true
+		grace := s.CancelGrace
+		if grace <= 0 {
+			grace = DefaultCancelGrace
+		}
+		t.cancelTimer = time.AfterFunc(grace, func() {
+			s.expireCancellation(t, reason)
+		})
+		onCancel = t.OnCancel
+		cancel = t.cancel
+	}
+	snap := *t
+	hook := s.OnCancelHook
+	s.mu.Unlock()
+
+	if start {
+		if onCancel != nil {
+			ctx, cancelCtx := context.WithTimeout(context.Background(), defaults.UpstreamCancelSendTimeout)
+			onCancel(ctx, reason)
+			cancelCtx()
+		}
+		if hook != nil {
+			hook(id, reason)
+		}
+		if cancel != nil {
+			cancel()
+		}
+	}
+	return snap, true
+}
+
+// CancelImmediate records Cancelled at once and returns the terminal
+// snapshot. It is the legacy 2025-11-25 tasks/cancel semantics
+// (conformance: tasks-cancel-transition-before-response,
+// tasks-cancelled-sticky): the transition happens before the reply and
+// stands whatever the work does afterwards. The cooperative grace
+// window of CancelWithReason belongs to the modern extension path
+// only. The work is still notified (OnCancel, the store hook, and its
+// context), it just cannot change the recorded ending.
+func (s *Store) CancelImmediate(id string, reason string) (Task, bool) {
+	s.mu.Lock()
+	t, ok := s.tasks[id]
+	if !ok {
+		s.mu.Unlock()
+		return Task{}, false
+	}
+	transitioned := !Terminal(t.Status)
+	var onCancel func(ctx context.Context, reason string)
+	var cancel context.CancelFunc
+	if transitioned {
+		if t.cancelTimer != nil {
+			t.cancelTimer.Stop()
+			t.cancelTimer = nil
+		}
+		t.cancelling = false
 		t.Status, t.LastUpdatedAt = Cancelled, time.Now()
 		if t.StatusMessage == "" && reason != "" {
 			t.StatusMessage = reason
@@ -787,7 +1162,8 @@ func (s *Store) CancelWithReason(id string, reason string) (Task, bool) {
 	hook := s.OnCancelHook
 	s.mu.Unlock()
 
-	if moved {
+	if transitioned {
+		s.logTerminal(t)
 		if onCancel != nil {
 			ctx, cancelCtx := context.WithTimeout(context.Background(), defaults.UpstreamCancelSendTimeout)
 			onCancel(ctx, reason)
@@ -799,9 +1175,57 @@ func (s *Store) CancelWithReason(id string, reason string) (Task, bool) {
 		if cancel != nil {
 			cancel()
 		}
+		// Notify watchers last: a watcher may wait on the task's
+		// completion (Store.Result waits for done), which only the
+		// now-cancelled work can deliver -- notifying first could
+		// deadlock the watcher against the pending cancellation.
 		s.changed(id)
 	}
 	return snap, true
+}
+
+// expireCancellation records the cancel only if the task's work did not
+// record a terminal status first. Called by the per-task grace timer.
+func (s *Store) expireCancellation(t *Task, reason string) {
+	s.mu.Lock()
+	if s.tasks[t.TaskID] != t || !t.cancelling || Terminal(t.Status) {
+		s.mu.Unlock()
+		return
+	}
+	t.cancelling = false
+	t.cancelTimer = nil
+	t.Status, t.LastUpdatedAt = Cancelled, time.Now()
+	if t.StatusMessage == "" && reason != "" {
+		t.StatusMessage = reason
+	}
+	s.armRetentionLocked(t)
+	s.saveTaskLocked(t)
+	s.mu.Unlock()
+	s.logTerminal(t)
+	s.changed(t.TaskID)
+}
+
+// toolResultErrorMessage returns the first text content from an isError
+// result, bounded by the protocol's status-message limit.
+func toolResultErrorMessage(result map[string]any) string {
+	if blocks, ok := result["content"].([]any); ok {
+		for _, block := range blocks {
+			part, ok := block.(map[string]any)
+			if !ok || part["type"] != "text" {
+				continue
+			}
+			text, ok := part["text"].(string)
+			if !ok || text == "" {
+				continue
+			}
+			runes := []rune(text)
+			if len(runes) > 512 {
+				runes = runes[:512]
+			}
+			return string(runes)
+		}
+	}
+	return "tool returned an error result"
 }
 
 // ErrNoTask is returned for a handle the store does not hold, which usually
@@ -849,8 +1273,8 @@ func (s *Store) Result(ctx context.Context, id string) (any, *Fault, error) {
 	return t.result, nil, nil
 }
 
-// ReadResult is the public result-read path. Result itself remains a
-// non-touching primitive for internal polling and notification machinery.
+// ReadResult is the public result-read path. Result remains non-touching for
+// internal polling and notification machinery.
 func (s *Store) ReadResult(ctx context.Context, id string) (any, *Fault, error) {
 	result, fault, err := s.Result(ctx, id)
 	if err != nil {

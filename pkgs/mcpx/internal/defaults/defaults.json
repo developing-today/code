@@ -161,10 +161,14 @@
   },
   "exec": {
     "timeout": "120s",
+    "hookTimeout": "60s",
+    "resolveTimeout": "3m",
+    "resolveWaitDelay": "2s",
     "workDirs": 8,
     "programs": 64,
     "entries": 8,
     "stderrLimit": 65536,
+    "stdoutLimit": 65536,
     "output": "text",
     "remoteOutput": "structured",
     "delivery": "reference"
@@ -176,6 +180,8 @@
   },
   "artifacts": {
     "ttl": "24h",
+    "idleTtl": "0s",
+    "maxAge": "168h",
     "maxBytes": "64MiB",
     "quota": "1GiB",
     "inlineMaxBytes": "1MiB",
@@ -263,7 +269,11 @@
     "taskAfter": "2s"
   },
   "protoTasks": {
-    "pollInterval": "1s"
+    "pollInterval": "1s",
+    "cancelGrace": "5s"
+  },
+  "wasm": {
+    "logLineSize": "64KiB"
   },
   "stdioShutdown": {
     "stdinGrace": "2s",
@@ -290,6 +300,9 @@
   "embeddings": {
     "remoteTimeout": "10s",
     "searchTimeout": "2s"
+  },
+  "proxy": {
+    "timeout": "10m"
   },
   "hooks": {
     "timeout": "2s"

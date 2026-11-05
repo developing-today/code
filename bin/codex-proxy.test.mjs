@@ -7,9 +7,11 @@
 // whose behaviour is keyed on markers in the prompt: a run that exits
 // non-zero used to be reported as a successful 'stop' — empty when it
 // produced nothing, and carrying the truncated text when it produced
+// (startProxy additionally pins the stub via CODEX_PROXY_CODEX_BIN so a
+// host-installed codex can never shadow it, #694.)
 // partial output.
 import assert from 'node:assert/strict';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFile, execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -21,6 +23,16 @@ import { fileURLToPath } from 'node:url';
 const binDir = path.dirname(fileURLToPath(import.meta.url));
 
 const STUB = `#!/bin/sh
+# The proxy runs this through execFile before accepting chat turns. Handle it
+# before reading stdin: execFile leaves the child's stdin open, so cat would
+# otherwise wait for the 30-second command timeout on every request.
+if [ "$1" = "debug" ] && [ "$2" = "models" ]; then
+  printf '%s\\n' '{"models":[{"slug":"gpt-6.1-sol","display_name":"GPT-6.1 Sol","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"}],"default_reasoning_level":"medium"},{"slug":"gpt-6-luna","display_name":"GPT-6 Luna","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"}],"default_reasoning_level":"low"},{"slug":"gpt-5.6-luna","display_name":"GPT-5.6 Luna","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"}],"default_reasoning_level":"low"}]}'
+  exit 0
+fi
+if [ -n "$CODEX_PROXY_TEST_STDIN_DELAY_MS" ]; then
+  exec node -e 'setTimeout(() => { process.stdin.on("data", () => {}); process.stdin.resume(); }, Number(process.env.CODEX_PROXY_TEST_STDIN_DELAY_MS))'
+fi
 prompt="$(cat)"
 resume=0
 for a in "$@"; do [ "$a" = "resume" ] && resume=1; done
@@ -32,6 +44,8 @@ for a in "$@"; do [ "$a" = "resume" ] && resume=1; done
 } >> "$HOME/invocations.log"
 if [ "$resume" = "1" ]; then
   case "$prompt" in
+    *RESUMETIMEOUT*)
+      exec node -e 'setInterval(() => {}, 1000)' ;;
     *RESUMEFAIL*)
       echo "stub codex: session not found" >&2
       exit 3 ;;
@@ -57,8 +71,21 @@ case "$prompt" in
   *INBANDFAIL*)
     printf '%s\\n' '{"type":"turn.failed","error":{"message":"stub codex: model overloaded"}}'
     exit 0 ;;
+  *INBANDSTR*)
+    printf '%s\\n' '{"type":"turn.failed","error":"stub codex: string overload"}'
+    exit 0 ;;
+  *INBANDNONE*)
+    printf '%s\\n' '{"type":"turn.failed"}'
+    exit 0 ;;
+  *INBANDOBJ*)
+    printf '%s\\n' '{"type":"turn.failed","error":{}}'
+    exit 0 ;;
   *SIGKILLME*)
     kill -9 $$ ;;
+  *TIMEOUT*)
+    exec node -e 'const fs = require("node:fs"); fs.writeFileSync(process.env.CODEX_PROXY_CHILD_PID_FILE, String(process.pid)); setInterval(() => {}, 1000)' ;;
+  *IGNORETERM*)
+    exec node -e 'const fs = require("node:fs"); fs.writeFileSync(process.env.CODEX_PROXY_CHILD_PID_FILE, String(process.pid)); process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)' ;;
   *)
     printf '%s\\n' '{"type":"thread.started","thread_id":"stub-session-1"}'
     printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"Hello world"}}'
@@ -66,6 +93,27 @@ case "$prompt" in
     exit 0 ;;
 esac
 `;
+
+test('Codex stub answers live model lookup without blocking on stdin', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-proxy-stub-test-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const stubPath = path.join(tmp, 'codex');
+  fs.writeFileSync(stubPath, STUB, { mode: 0o755 });
+
+  const stdout = await new Promise((resolve, reject) => {
+    execFile(stubPath, ['debug', 'models'], { timeout: 1000 }, (err, out, stderr) => {
+      if (err) {
+        reject(new Error(`codex debug models stub failed: ${err.message}; stderr=${stderr}`));
+      } else {
+        resolve(out);
+      }
+    });
+  });
+  const catalog = JSON.parse(stdout);
+  assert.ok(Array.isArray(catalog.models));
+  assert.ok(catalog.models.length >= 3);
+  assert.ok(catalog.models.some((model) => model.slug === 'gpt-6.1-sol'));
+});
 
 
 // ---------------------------------------------------------------------------
@@ -207,6 +255,7 @@ const startProxy = async (reuse, extraEnv = {}, seedHome = null) => {
       HOME: home,
       XDG_STATE_HOME: stateHome,
       CODEX_PROXY_PORT: String(port),
+      CODEX_PROXY_CODEX_BIN: path.join(home, '.local', 'bin', 'codex'),
       ...extraEnv
     },
     stdio: ['ignore', 'pipe', 'pipe']
@@ -231,6 +280,27 @@ const post = (port, body) => fetch(`http://127.0.0.1:${port}/v1/chat/completions
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body)
 });
+
+const waitFor = async (predicate, timeoutMs = 5000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`condition not met within ${timeoutMs}ms`);
+};
+
+const isProcessAlive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if (err.code === 'ESRCH') return false;
+    throw err;
+  }
+};
+
+const readPid = (file) => Number(fs.readFileSync(file, 'utf-8'));
 
 const assertFailure = async (port, marker, detail) => {
   const messages = [{ role: 'user', content: `please ${marker} now` }];
@@ -274,6 +344,34 @@ test('successful run is unchanged in both modes', async (t) => {
   assert.ok(sse.trimEnd().endsWith('data: [DONE]'));
 });
 
+test('CLI transport: cached_input_tokens surfaces as prompt_tokens_details.cached_tokens (#3114)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+
+  // Non-stream: the exec stub's turn.completed carries cached_input_tokens 93.
+  const plainRes = await post(port, { messages: TURN1 });
+  assert.equal(plainRes.status, 200);
+  const plain = JSON.parse(await plainRes.text());
+  assert.equal(plain.usage.prompt_tokens_details.cached_tokens, 93, 'CLI transport must surface cached_input_tokens as prompt_tokens_details.cached_tokens (opencode #394)');
+
+  // The resumed turn's stub usage has NO cached_input_tokens: the detail
+  // object must be omitted entirely, not emitted as 0.
+  const r2 = await post(port, { messages: TURN2 });
+  assert.equal(r2.status, 200);
+  const resumed = JSON.parse(await r2.text());
+  assert.equal(resumed.choices[0].message.content, 'resumed answer');
+  assert.equal(resumed.usage.prompt_tokens_details, undefined, 'absent cache value must omit prompt_tokens_details entirely');
+
+  // Stream: the end chunk carries the same cached_tokens for a fresh run.
+  const streamRes = await post(port, { messages: [{ role: 'user', content: 'gamma streaming question' }], stream: true });
+  assert.equal(streamRes.status, 200);
+  const sse = await streamRes.text();
+  const events = sse.split('\n').filter(l => l.startsWith('data: ') && !l.includes('[DONE]')).map(l => JSON.parse(l.slice('data: '.length)));
+  const endChunk = events.find(e => e.usage);
+  assert.ok(endChunk, 'stream end chunk must carry usage');
+  assert.equal(endChunk.usage.prompt_tokens_details.cached_tokens, 93, 'streaming CLI transport must surface cached_tokens');
+});
+
 test('execution failure with no output: 500 non-stream, SSE error + [DONE] stream (#676)', async (t) => {
   const { port, stop } = await startProxy();
   t.after(stop);
@@ -298,10 +396,171 @@ test('partial output then turn.failed with exit 0: masked success becomes an err
   await assertFailure(port, 'INBANDPARTIAL', /Codex execution failed: stub codex: run failed midway/);
 });
 
+test('turn.failed with a bare-string error: the string is the detail on both transports (#694)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  await assertFailure(port, 'INBANDSTR', /Codex execution failed: stub codex: string overload/);
+});
+
+test('turn.failed with no error message: fallback names the in-band failure, not exit 0 (#694)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  await assertFailure(port, 'INBANDNONE', /Codex execution failed: codex turn failed \(turn\.failed event carried no error message\)/);
+  await assertFailure(port, 'INBANDOBJ', /Codex execution failed: codex turn failed \(turn\.failed event carried no error message\)/);
+
+  const plainRes = await post(port, { messages: [{ role: 'user', content: 'please INBANDNONE now' }] });
+  assert.equal(plainRes.status, 500);
+  const plainBody = JSON.parse(await plainRes.text());
+  assert.doesNotMatch(plainBody.error.message, /exited with code 0/, 'message-less in-band failure must not blame a successful exit');
+});
+
 test('empty-stderr fallback names the killing signal, not code null (#676)', async (t) => {
   const { port, stop } = await startProxy();
   t.after(stop);
   await assertFailure(port, 'SIGKILLME', /Codex execution failed: codex exec terminated by signal SIGKILL/);
+});
+
+test('exec turn deadline terminates a hung child and reports timeout', async (t) => {
+  const pidFile = path.join(os.tmpdir(), `codex-proxy-timeout-${process.pid}.pid`);
+  const { port, stop } = await startProxy(null, {
+    CODEX_PROXY_TRANSPORT: 'exec',
+    CODEX_PROXY_EXEC_TURN_TIMEOUT_MS: '1000',
+    CODEX_PROXY_CHILD_PID_FILE: pidFile
+  });
+  t.after(() => {
+    stop();
+    try { fs.unlinkSync(pidFile); } catch {}
+  });
+
+  const res = await post(port, { messages: [{ role: 'user', content: 'please TIMEOUT now' }] });
+  assert.equal(res.status, 500);
+  const body = await res.json();
+  assert.match(body.error.message, /codex exec timed out after 1000ms/);
+  const pid = readPid(pidFile);
+  await waitFor(() => !isProcessAlive(pid));
+});
+
+test('warm-resume timeout invalidates its cached session without launching a cold fallback', async (t) => {
+  const { port, home, stateHome, stop } = await startProxy(null, {
+    CODEX_PROXY_TRANSPORT: 'exec-resume',
+    CODEX_PROXY_EXEC_TURN_TIMEOUT_MS: '1000'
+  });
+  t.after(stop);
+
+  const first = await post(port, { messages: TURN1 });
+  assert.equal(first.status, 200);
+  await first.text();
+
+  const secondMessages = [
+    ...TURN1,
+    { role: 'assistant', content: 'Hello world' },
+    { role: 'user', content: 'please RESUMETIMEOUT now' }
+  ];
+  const second = await post(port, { messages: secondMessages });
+  assert.equal(second.status, 500);
+  assert.match((await second.json()).error.message, /codex exec timed out after 1000ms/);
+  assert.equal(readInvocations(home).length, 2, 'timed-out resume must not start a third cold run');
+  const sessionsPath = path.join(stateHome, 'codex-proxy', 'sessions.json');
+  assert.deepEqual(JSON.parse(fs.readFileSync(sessionsPath, 'utf-8')), {}, 'timed-out resume must invalidate the cached session');
+});
+
+test('exec turn timeout escalates from SIGTERM to SIGKILL', async (t) => {
+  const pidFile = path.join(os.tmpdir(), `codex-proxy-timeout-ignore-${process.pid}.pid`);
+  const { port, stop } = await startProxy(null, {
+    CODEX_PROXY_TRANSPORT: 'exec',
+    CODEX_PROXY_EXEC_TURN_TIMEOUT_MS: '1000',
+    CODEX_PROXY_CHILD_PID_FILE: pidFile
+  });
+  t.after(() => {
+    stop();
+    try {
+      if (fs.existsSync(pidFile)) {
+        const pid = readPid(pidFile);
+        if (isProcessAlive(pid)) process.kill(pid, 'SIGKILL');
+        fs.unlinkSync(pidFile);
+      }
+    } catch {}
+  });
+
+  const startedAt = Date.now();
+  const res = await post(port, { messages: [{ role: 'user', content: 'please IGNORETERM now' }] });
+  assert.equal(res.status, 500);
+  assert.match((await res.json()).error.message, /codex exec timed out after 1000ms/);
+  assert.ok(Date.now() - startedAt >= 3800, 'request should settle after the SIGKILL grace period');
+  const pid = readPid(pidFile);
+  assert.equal(isProcessAlive(pid), false, 'SIGKILL escalation must leave no child process');
+});
+
+test('client disconnect terminates the exec child with the shared kill helper', async (t) => {
+  const pidFile = path.join(os.tmpdir(), `codex-proxy-disconnect-${process.pid}.pid`);
+  const { port, stop } = await startProxy(null, {
+    CODEX_PROXY_TRANSPORT: 'exec',
+    CODEX_PROXY_EXEC_TURN_TIMEOUT_MS: '60000',
+    CODEX_PROXY_CHILD_PID_FILE: pidFile
+  });
+  t.after(() => {
+    stop();
+    try {
+      if (fs.existsSync(pidFile)) {
+        const pid = readPid(pidFile);
+        if (isProcessAlive(pid)) process.kill(pid, 'SIGKILL');
+        fs.unlinkSync(pidFile);
+      }
+    } catch {}
+  });
+
+  const controller = new AbortController();
+  const pending = fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages: [{ role: 'user', content: 'please IGNORETERM now' }] }),
+    signal: controller.signal
+  });
+  await waitFor(() => fs.existsSync(pidFile));
+  const pid = readPid(pidFile);
+  controller.abort();
+  await assert.rejects(pending);
+  await waitFor(() => !isProcessAlive(pid), 5000);
+});
+
+test('invalid exec timeout override warns once and uses the default', async (t) => {
+  const { port, stop, log } = await startProxy(null, {
+    CODEX_PROXY_TRANSPORT: 'exec',
+    CODEX_PROXY_EXEC_TURN_TIMEOUT_MS: '0'
+  });
+  t.after(stop);
+
+  const res = await post(port, { messages: [{ role: 'user', content: 'normal run' }] });
+  assert.equal(res.status, 200);
+  assert.equal((log().match(/invalid CODEX_PROXY_EXEC_TURN_TIMEOUT_MS/g) || []).length, 1);
+});
+
+test('exec timeout override beyond Node timer range warns and uses the default', async (t) => {
+  const { port, stop, log } = await startProxy(null, {
+    CODEX_PROXY_TRANSPORT: 'exec',
+    CODEX_PROXY_EXEC_TURN_TIMEOUT_MS: '2147483648'
+  });
+  t.after(stop);
+
+  const res = await post(port, { messages: [{ role: 'user', content: 'normal run' }] });
+  assert.equal(res.status, 200);
+  assert.equal((log().match(/invalid CODEX_PROXY_EXEC_TURN_TIMEOUT_MS/g) || []).length, 1);
+  assert.doesNotMatch(log(), /TimeoutOverflowWarning/);
+});
+
+test('timed-out child with a pending large stdin write does not crash the proxy', async (t) => {
+  const { port, stop } = await startProxy(null, {
+    CODEX_PROXY_TRANSPORT: 'exec',
+    CODEX_PROXY_EXEC_TURN_TIMEOUT_MS: '100',
+    CODEX_PROXY_TEST_STDIN_DELAY_MS: '500'
+  });
+  t.after(stop);
+
+  const content = `please wait ${'x'.repeat(5 * 1024 * 1024)}`;
+  const res = await post(port, { messages: [{ role: 'user', content }] });
+  assert.equal(res.status, 500);
+  assert.match((await res.json()).error.message, /codex exec timed out after 100ms/);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/health`)).status, 200);
 });
 
 const readInvocations = (home) => {
@@ -618,8 +877,36 @@ test('token sync updates only the active base openai row (#2533)', async (t) => 
   assert.match(started.log(), /codex-token-sync: updated 1 credential row\(s\)/);
 });
 
+test('token sync stays off when CODEX_PROXY_TOKEN_SYNC=0 (opencode#1154 cutover)', async (t) => {
+  let dbPath;
+  const started = await startProxy(null, { CODEX_PROXY_TOKEN_SYNC: '0' }, (home) => { dbPath = seedSyncHome(home); });
+  t.after(started.stop);
+  const rows = JSON.parse(runPy(READ_SYNC_DB, { SYNC_TEST_DB: dbPath }));
+  assert.equal(rows['cred-active'].value.access, 'OLD-ACCESS', 'sync off must leave the active row untouched');
+  assert.equal(rows['cred-active'].time_updated, 111);
+  assert.match(started.log(), /codex-token-sync: disabled by CODEX_PROXY_TOKEN_SYNC=0/);
+  assert.doesNotMatch(started.log(), /codex-token-sync: updated/);
+});
+
 test('token sync failure is logged, not swallowed (#2533)', async (t) => {
   const started = await startProxy(null, {}, (home) => { seedSyncHome(home, { corruptDb: true }); });
   t.after(started.stop);
   assert.match(started.log(), /codex-token-sync FAILED:/);
+});
+
+test('non-object JSON body is a 400 and the proxy stays alive (#2816)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  for (const bad of ['null', '[1,2]', '"x"', '42']) {
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: bad
+    });
+    assert.equal(res.status, 400, `body ${bad} must be a 400, got ${res.status}`);
+    await res.text();
+  }
+  const alive = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{bad json'
+  });
+  assert.equal(alive.status, 400, 'proxy must still serve after non-object bodies');
+  await alive.text();
 });

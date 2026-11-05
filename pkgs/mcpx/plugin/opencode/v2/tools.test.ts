@@ -47,9 +47,7 @@ const stubEditor = (): ToolEditorLike & {
   };
 };
 
-const stubDomain = (
-  editor: ReturnType<typeof stubEditor>,
-): ToolDomainLike => ({
+const stubDomain = (editor: ReturnType<typeof stubEditor>): ToolDomainLike => ({
   transform: async (fn) => {
     fn(editor);
     return {};
@@ -94,6 +92,7 @@ const runtime = (over: Record<string, unknown> = {}) =>
     discoverFn: async () => discoveryWith([candidate(socketTarget)]),
     runBinFn: async () => "from the binary",
     clientFor: () => fakeClient(),
+    assertPermission: async () => {},
     ...over,
   } as never);
 
@@ -104,9 +103,7 @@ describe("registration (tool.transform)", () => {
       toolsEnabled: true,
       daemonTools: true,
     });
-    expect(editor.namespaces).toEqual([
-      { name: "mcpx", description: expect.stringContaining("mcpx") },
-    ]);
+    expect(editor.namespaces).toEqual([{ name: "mcpx", description: expect.stringContaining("mcpx") }]);
     expect(names.sort()).toEqual([
       "mcpx_daemon_forget",
       "mcpx_daemon_select",
@@ -187,9 +184,7 @@ describe("setup: instructions gate (plugin.instructions)", () => {
 describe("options resolution (v1 parity)", () => {
   test("an explicit empty bin is preserved — it forbids spawning", () => {
     expect(resolveOptions({ bin: "" }, {}).bin).toBe("");
-    expect(
-      resolveOptions({ bin: "" }, { MCPX_PLUGIN_BIN: "/usr/bin/mcpx" }).bin,
-    ).toBe("");
+    expect(resolveOptions({ bin: "" }, { MCPX_PLUGIN_BIN: "/usr/bin/mcpx" }).bin).toBe("");
   });
 
   test("bin falls back to the environment, then to unset", () => {
@@ -217,8 +212,7 @@ describe("discovery ladder wiring", () => {
     const other: Target = { kind: "url", base: "http://127.0.0.1:9" };
     const rt = runtime({
       onTarget: (t: Target) => void targets.push(t),
-      discoverFn: async () =>
-        discoveryWith([candidate(socketTarget), candidate(other)]),
+      discoverFn: async () => discoveryWith([candidate(socketTarget), candidate(other)]),
     });
     await rt.look();
     await rt.look();
@@ -272,13 +266,55 @@ describe("rediscovery precedence", () => {
     // A transient failure clears the cached discovery (viaDaemon forgets).
     failExec = true;
     const exec = rt.tools().find((t) => t.name === "exec")!;
-    await expect(
-      exec.execute({ source: "1" } as never, { sessionID: "s1" }),
-    ).rejects.toThrow();
+    await expect(exec.execute({ source: "1" } as never, { sessionID: "s1" })).rejects.toThrow();
     // Rediscovery must ask the ladder for the SESSION choice, not storage.
     rememberedSeen.length = 0;
     await rt.look();
     expect(rememberedSeen).toEqual([targetKey(picked)]);
+  });
+
+  test("a transient failure immediately rediscovers at the default miss cooldown", async () => {
+    let discoverCalls = 0;
+    let failExec = true;
+    const rt = runtime({
+      discoverFn: async () => {
+        discoverCalls += 1;
+        return discoveryWith([candidate(socketTarget)]);
+      },
+      clientFor: () =>
+        fakeClient({
+          exec: async () => {
+            if (failExec) {
+              failExec = false;
+              throw new Error("daemon went away");
+            }
+            return { output: "recovered through daemon" };
+          },
+        }),
+    });
+    const exec = rt.tools().find((t) => t.name === "exec")!;
+
+    await expect(exec.execute({ source: "1" } as never, { sessionID: "s1" })).rejects.toThrow();
+    expect(discoverCalls).toBe(1);
+
+    const recovered = await exec.execute({ source: "1" } as never, { sessionID: "s1" });
+    expect(recovered.content).toContain("recovered through daemon");
+    expect(discoverCalls).toBe(2);
+  });
+
+  test("a genuine discovery miss still observes the default cooldown", async () => {
+    let discoverCalls = 0;
+    const rt = runtime({
+      discoverFn: async () => {
+        discoverCalls += 1;
+        return { candidates: [], rung: 6, reason: "none", ambiguous: false };
+      },
+    });
+
+    await rt.look();
+    await rt.look();
+
+    expect(discoverCalls).toBe(1);
   });
 });
 
@@ -328,11 +364,72 @@ describe("tool executors", () => {
     const storage = stubStorage();
     const rt = runtime({ storage });
     const select = rt.daemonTools().find((t) => t.name === "daemon_select")!;
-    const out = await select.execute(
-      { candidate: 0, remember: "until-gone" } as never,
-      { sessionID: "s1" },
-    );
+    const out = await select.execute({ candidate: 0, remember: "until-gone" } as never, { sessionID: "s1" });
     expect(out.content).toContain("until this daemon stops answering");
     expect(storage.map.get("daemon:/work")).toBeDefined();
+  });
+});
+
+describe("daemon_select permission gate (#1858 item (2))", () => {
+  test("asserts mcpx_daemon_select with the v1 ask payload before applying", async () => {
+    const asserted: unknown[] = [];
+    const rt = runtime({
+      assertPermission: async (input: never) => void asserted.push(input),
+    });
+    const select = rt.daemonTools().find((t) => t.name === "daemon_select")!;
+    const out = await select.execute({ candidate: 0 } as never, { sessionID: "s1" });
+    expect(out.content).toContain("Now using");
+    expect(asserted).toEqual([
+      expect.objectContaining({
+        sessionID: "s1",
+        action: "mcpx_daemon_select",
+        resources: ["unix:///tmp/m.sock"],
+        save: ["unix:///tmp/m.sock"],
+        metadata: expect.objectContaining({
+          socket: "unix:///tmp/m.sock",
+          remember: "session",
+          stopOthers: false,
+        }),
+      }),
+    ]);
+  });
+
+  test("a rejected assert applies nothing", async () => {
+    const targets: Target[] = [];
+    const rt = runtime({
+      onTarget: (t: Target) => void targets.push(t),
+      assertPermission: async () => {
+        throw new Error("user rejected");
+      },
+    });
+    const select = rt.daemonTools().find((t) => t.name === "daemon_select")!;
+    await expect(select.execute({ candidate: 0 } as never, { sessionID: "s1" })).rejects.toThrow("user rejected");
+    expect(targets).toEqual([]);
+  });
+
+  test("with no permission gate wired, the choice is refused, not silently applied", async () => {
+    const rt = runtime({ assertPermission: undefined });
+    const select = rt.daemonTools().find((t) => t.name === "daemon_select")!;
+    const out = await select.execute({ candidate: 0 } as never, { sessionID: "s1" });
+    expect(out.content).toContain("no permission prompt");
+    expect(out.content).not.toContain("Now using");
+  });
+});
+
+describe("setup: permission gate registration (#1858 item (2))", () => {
+  test("setup registers the evaluate hook on the permission domain", async () => {
+    const hooks: string[] = [];
+    const ctx: McpxV2Context = {
+      storage: stubStorage(),
+      directory: "/work",
+      session: { hook: () => {} },
+      tool: { hook: () => {}, transform: async () => ({}) },
+      permission: {
+        hook: async (name: string) => void hooks.push(name),
+        assert: async () => {},
+      } as never,
+    };
+    await setupMcpxV2(ctx, { tools: false, daemonTools: false });
+    expect(hooks).toEqual(["evaluate"]);
   });
 });

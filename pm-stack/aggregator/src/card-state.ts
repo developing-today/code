@@ -29,6 +29,7 @@
  * store's order) — no I/O, so renderers and tests share one truth.
  */
 import { latestInFamily, type DashAction } from "./actions.ts";
+import { isRecord } from "./validate.ts";
 
 export type CardSuppression =
   | { kind: "snoozed"; until: string; action: DashAction }
@@ -44,17 +45,32 @@ export interface CardState {
   pending: DashAction[];
   /** Merged survey answers by question id, latest answer wins. */
   answered: Map<string, string | string[]>;
+  /** Action that supplied the current value for each answered question. */
+  answerActionsByQuestion: Map<string, DashAction>;
   /** The option picked by the latest effective option answer, if any. */
   answeredOptionId?: string;
+  /** Action that supplied the latest standalone option pick. */
+  answeredOptionAction?: DashAction;
+  /** All effective option actions, including legacy records without a
+   *  canonical question pointer, for render-time mapping to current items. */
+  answeredOptionActionsById: Map<string, DashAction>;
 }
 
 /** Ids cancelled by a restore: any non-superseded, non-rejected
  *  restore action cancels the action it names in `supersedes`
- *  (a consumer rejection is non-effective, as for every other verb). */
+ *  (a consumer rejection is non-effective, as for every other verb) —
+ *  unless the restore is itself cancelled by a later effective
+ *  restore (#4310). A restore chain therefore alternates: restore R1
+ *  cancels dismiss D, restore R2 superseding R1 cancels R1 and so
+ *  revives D, R3 superseding R2 cancels R2 and re-cancels D, and so
+ *  on. Deriving newest first (input is oldest first) makes each
+ *  restore's own cancellation known before its target is considered,
+ *  which settles chains of any depth in one pass. */
 export function cancelledActionIds(actions: DashAction[]): Set<string> {
   const out = new Set<string>();
-  for (const a of actions) {
-    if (a.verb === "restore" && a.state !== "superseded" && a.state !== "rejected" && a.supersedes)
+  for (let i = actions.length - 1; i >= 0; i--) {
+    const a = actions[i];
+    if (a.verb === "restore" && a.state !== "superseded" && a.state !== "rejected" && a.supersedes && !out.has(a.id))
       out.add(a.supersedes);
   }
   return out;
@@ -72,8 +88,9 @@ export function cardState(actions: DashAction[] | undefined, now = Date.now()): 
   const eff = effectiveActions(actions);
   const suppressors: CardSuppression[] = [];
   const snooze = latestInFamily(eff, "snooze");
-  if (snooze && snooze.state !== "rejected" && snooze.payload.until && Date.parse(snooze.payload.until) > now) {
-    suppressors.push({ kind: "snoozed", until: snooze.payload.until, action: snooze });
+  const snoozeUntil = isRecord(snooze?.payload) ? snooze.payload.until : undefined;
+  if (snooze && snooze.state !== "rejected" && typeof snoozeUntil === "string" && Date.parse(snoozeUntil) > now) {
+    suppressors.push({ kind: "snoozed", until: snoozeUntil, action: snooze });
   }
   const dismiss = latestInFamily(eff, "dismiss");
   if (dismiss && dismiss.state !== "rejected") suppressors.push({ kind: "dismissed", action: dismiss });
@@ -83,18 +100,41 @@ export function cardState(actions: DashAction[] | undefined, now = Date.now()): 
 
   const ack = latestInFamily(eff, "ack");
   const answered = new Map<string, string | string[]>();
+  const answerActionsByQuestion = new Map<string, DashAction>();
   let answeredOptionId: string | undefined;
+  let answeredOptionAction: DashAction | undefined;
+  const answeredOptionActionsById = new Map<string, DashAction>();
   for (const a of eff) {
-    if (a.verb !== "answer" || a.state === "rejected") continue;
-    for (const entry of a.payload.answers ?? []) answered.set(entry.questionId, entry.value);
-    if (a.payload.optionId) answeredOptionId = a.payload.optionId;
+    if (a.verb !== "answer" || a.state === "rejected" || !isRecord(a.payload)) continue;
+    if (Array.isArray(a.payload.answers)) {
+      for (const entry of a.payload.answers) {
+        if (!isRecord(entry) || typeof entry.questionId !== "string") continue;
+        const value = entry.value;
+        if (typeof value === "string" || (Array.isArray(value) && value.every((item) => typeof item === "string"))) {
+          answered.set(entry.questionId, value);
+          answerActionsByQuestion.set(entry.questionId, a);
+        }
+      }
+    }
+    if (typeof a.payload.optionId === "string") {
+      answeredOptionId = a.payload.optionId;
+      answeredOptionAction = a;
+      answeredOptionActionsById.set(a.payload.optionId, a);
+      if (typeof a.payload.questionId === "string") {
+        answered.set(a.payload.questionId, a.payload.optionId);
+        answerActionsByQuestion.set(a.payload.questionId, a);
+      }
+    }
   }
   return {
     suppressed: suppressors.at(-1) ?? null,
     acked: ack !== undefined && ack.state !== "rejected",
     pending: eff.filter((a) => a.state === "new"),
     answered,
+    answerActionsByQuestion,
     ...(answeredOptionId ? { answeredOptionId } : {}),
+    ...(answeredOptionAction ? { answeredOptionAction } : {}),
+    answeredOptionActionsById,
   };
 }
 

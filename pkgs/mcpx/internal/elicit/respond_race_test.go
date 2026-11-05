@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
 )
 
 func TestConcurrentAnswersOneWinnerLosersToldSo(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/nearmiss"
+	"github.com/developing-today/code/pkgs/mcpx/internal/nearmiss"
 )
 
 // Placeholder is a name that may appear in a launcher template as @name.

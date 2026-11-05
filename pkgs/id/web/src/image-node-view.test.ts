@@ -185,3 +185,68 @@ describe("committed attrs on mouse-up", () => {
     expect(committed?.attrs.height).toBe(120);
   });
 });
+
+// ── update() src sync (#1392) ─────────────────────────────────────
+
+describe("update() src sync (#1392)", () => {
+  /** Count assignments to img.src via an own-property setter spy. */
+  function countSrcSets(img: HTMLImageElement): { sets: () => number } {
+    const proto = Object.getPrototypeOf(img) as object;
+    const desc = Object.getOwnPropertyDescriptor(proto, "src");
+    if (!desc?.get || !desc?.set) throw new Error("img src descriptor not found");
+    let count = 0;
+    Object.defineProperty(img, "src", {
+      configurable: true,
+      get() {
+        return desc.get!.call(this);
+      },
+      set(v: string) {
+        count += 1;
+        desc.set!.call(this, v);
+      },
+    });
+    return { sets: () => count };
+  }
+
+  it("an update with unchanged attrs does not reassign img.src", () => {
+    const { nv, img, view } = (() => {
+      const s = setup();
+      return { ...s, view: s.view };
+    })();
+    const counter = countSrcSets(img);
+    const same = richSchema.nodes.image.create({
+      src: "/api/images/abc123",
+      alt: "cat",
+      width: START_W,
+      height: START_H,
+    });
+    expect(nv.update(same)).toBe(true);
+    expect(counter.sets()).toBe(0);
+    expect(img.getAttribute("src")).toBe("/api/images/abc123");
+    void view;
+  });
+
+  it("a changed src updates the image exactly once, and clearing clears it", () => {
+    const { nv, img } = setup();
+    const counter = countSrcSets(img);
+    const changed = richSchema.nodes.image.create({
+      src: "/api/images/def456",
+      alt: "cat",
+      width: START_W,
+      height: START_H,
+    });
+    expect(nv.update(changed)).toBe(true);
+    expect(counter.sets()).toBe(1);
+    expect(img.getAttribute("src")).toBe("/api/images/def456");
+
+    const cleared = richSchema.nodes.image.create({
+      src: "",
+      alt: "cat",
+      width: START_W,
+      height: START_H,
+    });
+    expect(nv.update(cleared)).toBe(true);
+    expect(counter.sets()).toBe(2);
+    expect(img.getAttribute("src")).toBe("");
+  });
+});

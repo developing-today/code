@@ -12,8 +12,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // Settings resolves every setting for this invocation.
@@ -329,6 +329,7 @@ var handFlagsMeaningOther = map[string]map[string]bool{
 	"exec":   {"keep": true},    // likewise
 	"api":    {"include": true}, // operations to include, not logging.include
 	"schema": {"format": true},  // output schema format, not logging.format
+	"man":    {"format": true},  // output document format, not logging.format
 	"config": {"format": true},  // --schema output format, not logging.format
 }
 

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/mcpheaders"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpheaders"
 )
 
 // The official suite's http-custom-header-server-validation scenario looks

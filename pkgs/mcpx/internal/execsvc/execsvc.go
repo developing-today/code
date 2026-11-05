@@ -32,11 +32,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
-	"github.com/dezren39/mcpx/internal/artifacts"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/logging"
-	"github.com/dezren39/mcpx/internal/runner"
+	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/deps"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
 )
 
 // Delivery says how artifact bodies reach the caller.
@@ -80,8 +83,9 @@ type ArtifactOptions struct {
 	// MaxBytes is the per-artifact ceiling the caller accepts for inline or
 	// streamed delivery. Anything larger stays a reference.
 	MaxBytes int64 `json:"maxBytes,omitempty"`
-	// SharedFs is a directory the caller can read. Artifacts are placed
-	// there -- hardlinked, not copied -- instead of being transferred.
+	// SharedFs is a directory the caller can read. Artifacts are copied there
+	// from the store so the caller can read them directly without a later
+	// transfer over the MCP connection.
 	SharedFs string `json:"sharedFs,omitempty"`
 	// Dir is where the CLI writes artifacts for the person who ran it. It is
 	// SharedFs by another name for a local caller, kept separate because one
@@ -102,7 +106,17 @@ type TaskOptions struct {
 // caller declaring what it can receive is the thing that makes the script
 // identical everywhere.
 type Options struct {
-	Runtime      string            `json:"runtime,omitempty"`
+	Runtime string `json:"runtime,omitempty"`
+	// Interpreter is the script.interpreter command line for this run;
+	// empty takes the service's configured one. A shebang in the source
+	// or file beats it, as it beats every configuration surface.
+	Interpreter string `json:"interpreter,omitempty"`
+	// CwdPolicy is the caller's script.cwd policy for this run; empty
+	// takes the service's configured one. The CLI resolves its own set
+	// (flag aliases, env, config) and forwards the result, so a remote
+	// run honours the caller's policy instead of silently substituting
+	// the daemon's.
+	CwdPolicy    string            `json:"cwdPolicy,omitempty"`
 	Timeout      string            `json:"timeout,omitempty"`
 	Permissions  string            `json:"permissions,omitempty"`
 	Placeholders map[string]any    `json:"placeholders,omitempty"`
@@ -114,6 +128,13 @@ type Options struct {
 	Capabilities []string          `json:"capabilities,omitempty"`
 	Artifacts    *ArtifactOptions  `json:"artifacts,omitempty"`
 	Task         *TaskOptions      `json:"task,omitempty"`
+	// DryRun runs the script with every tool call intercepted
+	// (#1927 rung: dry run): no call reaches a server, each returns a
+	// schema-valid synthetic result, and the calls that would have
+	// run are reported as call frames marked dryRun. The static
+	// scanner cannot see dynamic calls; a dry run sees all of them,
+	// at the cost of the results being fake.
+	DryRun bool `json:"dryRun,omitempty"`
 
 	// NS restricts the generated client to these namespaces, and Args are
 	// handed to the script. Neither is in the design's list, and both are
@@ -147,11 +168,76 @@ type Options struct {
 	CaptureConsole *bool `json:"captureConsole,omitempty"`
 	// Phases are lines run around the script, as runner.Phases.
 	Phases *Phases `json:"phases,omitempty"`
+	// Deps says where the script's packages come from (#1913). It travels as
+	// data -- specifiers and the manifest's own text -- because a path would
+	// name the caller's filesystem, which a daemon without shared storage
+	// cannot read.
+	Deps *DepsOptions `json:"deps,omitempty"`
 
 	// Hooks are scripts run at the edges of this run, in declaration order
 	// within a phase. They append to the daemon's config-declared hooks
 	// rather than replacing them, the way ScriptConfig.Prefix layers.
 	Hooks []Hook `json:"hooks,omitempty"`
+}
+
+// DepsOptions is a script's dependency set as it crosses the wire.
+//
+// Manifest and Lockfile carry the files' CONTENT rather than a path, for the
+// same reason phase lines do: a remote daemon that receives a path can only
+// read its own filesystem, and the caller meant theirs. The names are
+// separate so the workdir gets a file the runtime recognises.
+type DepsOptions struct {
+	// Packages are explicit specifiers: name or name@version.
+	Packages []string `json:"packages,omitempty"`
+	// Manifest is the manifest's text, already comment-stripped when it came
+	// from a package.jsonc.
+	Manifest string `json:"manifest,omitempty"`
+	// ManifestName is the filename to write it as: package.json by default.
+	ManifestName string `json:"manifestName,omitempty"`
+	// ManifestDir is the directory the selected manifest was read
+	// from, on the caller's filesystem: the resolution base for
+	// its local file:/link: artifacts, which npm resolves against
+	// the manifest's directory rather than the script's. It is a
+	// base for a runner sharing the caller's filesystem (local
+	// execution) -- the only case local artifacts can be
+	// transported at all; a remote daemon cannot open it and the
+	// set's data fields remain the whole story there.
+	ManifestDir string `json:"manifestDir,omitempty"`
+	// PackageDirs records, per package name, the directory a relative
+	// local specifier for that package resolves against when it differs
+	// from ManifestDir -- a config-layer package's origin, carried so a
+	// set combining a project manifest with config-only file: packages
+	// resolves each artifact against its own layer's directory.
+	PackageDirs map[string]string `json:"packageDirs,omitempty"`
+	// Lockfile is the lockfile's content, honoured frozen and never
+	// rewritten. It is bytes, not a string, because a lockfile may be binary
+	// (bun.lockb): encoding/json carries []byte as base64, so the content
+	// survives the wire byte-for-byte, where a string would replace invalid
+	// UTF-8 with replacement characters and corrupt it.
+	Lockfile []byte `json:"lockfile,omitempty"`
+	// LockfileName is the filename to write it as, such as bun.lock.
+	LockfileName string `json:"lockfileName,omitempty"`
+	// Lockfiles carries EVERY lockfile found beside the manifest, not
+	// just the first: which one governs depends on the runtime that
+	// finally executes the script, and that is only known at the
+	// runner. Lockfile above stays as the first entry for consumers
+	// that predate the list.
+	Lockfiles []DepsLockfile `json:"lockfiles,omitempty"`
+	// NPMRC is the selected project's .npmrc content, transported
+	// with the manifest and lockfiles so the isolated frozen
+	// install runs under the project's own npm settings.
+	NPMRC []byte `json:"npmrc,omitempty"`
+	// Source is the resolved deps.source, carried so the daemon materialises
+	// the same set the caller judged.
+	Source string `json:"source,omitempty"`
+	// AutoInstall is the resolved deps.autoInstall: off, fallback or always.
+	AutoInstall string `json:"autoInstall,omitempty"`
+}
+
+// DepsLockfile is one lockfile's name and content on the wire.
+type DepsLockfile struct {
+	Name    string `json:"name"`
+	Content []byte `json:"content,omitempty"`
 }
 
 // Phases is runner.Phases on the wire.
@@ -240,6 +326,10 @@ type CallInfo struct {
 	OK              bool   `json:"ok"`
 	Error           string `json:"error,omitempty"`
 	DestructiveHint *bool  `json:"destructiveHint,omitempty"`
+	// DryRun marks a call that was intercepted by a dry run: it was
+	// reported, never executed, and the script saw a synthetic
+	// result.
+	DryRun bool `json:"dryRun,omitempty"`
 }
 
 // ArgsHash is the stable fingerprint of a call's arguments: sha256 of
@@ -263,6 +353,11 @@ func ArgsHash(args any) string {
 type CallRegistry struct {
 	mu    sync.Mutex
 	sinks map[string]*callSink
+	// dryRuns are the runs whose calls are intercepted rather than
+	// executed (#1927 dry run). The daemon's call path consults
+	// IsDryRun before dispatching; the exec service marks the run
+	// for the length of the run.
+	dryRuns map[string]bool
 }
 
 // callSink is one run's registered sink plus its delivery lifetime:
@@ -276,7 +371,31 @@ type callSink struct {
 
 // NewCallRegistry builds an empty registry.
 func NewCallRegistry() *CallRegistry {
-	return &CallRegistry{sinks: map[string]*callSink{}}
+	return &CallRegistry{sinks: map[string]*callSink{}, dryRuns: map[string]bool{}}
+}
+
+// RegisterDryRun marks runID as a dry run until the returned
+// function is called: the daemon's call path intercepts its calls
+// instead of executing them. The unregister is idempotent.
+func (r *CallRegistry) RegisterDryRun(runID string) (unregister func()) {
+	r.mu.Lock()
+	r.dryRuns[runID] = true
+	r.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			delete(r.dryRuns, runID)
+			r.mu.Unlock()
+		})
+	}
+}
+
+// IsDryRun reports whether runID is currently marked as a dry run.
+func (r *CallRegistry) IsDryRun(runID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.dryRuns[runID]
 }
 
 // Register installs sink for runID and returns the function that
@@ -327,7 +446,7 @@ func (r *CallRegistry) ReportCall(runID, server, tool string, args any, dur time
 	info := &CallInfo{
 		Server: server, Tool: tool, ArgsHash: ArgsHash(args),
 		DurationMs: dur.Milliseconds(), OK: callErr == nil,
-		DestructiveHint: destructive,
+		DestructiveHint: destructive, DryRun: r.IsDryRun(runID),
 	}
 	if callErr != nil {
 		info.Error = callErr.Error()
@@ -356,17 +475,29 @@ type LogRecord struct {
 
 // Result is the structured answer.
 type Result struct {
-	RunID      string            `json:"runId"`
-	Result     any               `json:"result,omitempty"`
-	Emits      []json.RawMessage `json:"emits"`
-	Logs       []LogRecord       `json:"logs"`
-	Stdout     string            `json:"stdout"`
-	Artifacts  []Artifact        `json:"artifacts"`
-	ExitCode   int               `json:"exitCode"`
-	DurationMs int64             `json:"durationMs"`
-	Runtime    string            `json:"runtime,omitempty"`
-	TimedOut   bool              `json:"timedOut,omitempty"`
-	Error      string            `json:"error,omitempty"`
+	RunID  string            `json:"runId"`
+	Result any               `json:"result,omitempty"`
+	Emits  []json.RawMessage `json:"emits"`
+	Logs   []LogRecord       `json:"logs"`
+	Stdout string            `json:"stdout"`
+	// StdoutTruncated is set when Stdout was capped at
+	// Limits.StdoutLimit (exec.maxOutputBytes, CODE-16); the end of
+	// Stdout itself carries the marker naming the dropped byte count.
+	StdoutTruncated bool       `json:"stdoutTruncated,omitempty"`
+	Artifacts       []Artifact `json:"artifacts"`
+	ExitCode        int        `json:"exitCode"`
+	DurationMs      int64      `json:"durationMs"`
+	Runtime         string     `json:"runtime,omitempty"`
+	TimedOut        bool       `json:"timedOut,omitempty"`
+	Error           string     `json:"error,omitempty"`
+	// Notice carries the runner's one-line statement of what a
+	// dispatched (non-JavaScript) run does not have: no generated
+	// client, no enforced permission profiles.
+	Notice string `json:"notice,omitempty"`
+	// DryRun records that the run was a dry run (#1927): every tool
+	// call was intercepted and answered synthetically, so nothing
+	// the script "did" happened.
+	DryRun bool `json:"dryRun,omitempty"`
 }
 
 // Source supplies the generated client the script is run against.
@@ -382,6 +513,11 @@ type Source interface {
 	Globals(ctx context.Context, ns []string) (string, error)
 	// Namespaces are the names to bind as bare identifiers in a snippet.
 	Namespaces(ctx context.Context, ns []string) ([]string, error)
+	// ClientModuleFor is ClientModule and Globals for one named script
+	// language (#1917 Phase 2): the module the runner installs beside a
+	// script of that language and the ambient declarations written with it.
+	// The default target keeps its own two methods, unchanged.
+	ClientModuleFor(ctx context.Context, language string, ns []string) (module, globals string, err error)
 }
 
 // Limits are the resolved settings one service runs under.
@@ -389,6 +525,10 @@ type Limits struct {
 	Timeout     time.Duration
 	Runtime     string
 	Permissions string
+	// Interpreter is the configured script.interpreter command line.
+	Interpreter string
+	// CwdPolicy is the configured script.cwd policy.
+	CwdPolicy string
 	// Setup holds declared runtimes, the auto order and user profiles.
 	Setup runner.Setup
 	// SetupErr is why Setup could not be read; every run reports it.
@@ -401,6 +541,8 @@ type Limits struct {
 	InlineMaxBytes   int64
 	ChunkBytes       int64
 	InterceptImages  bool
+	// StdoutLimit caps the stdout a Result returns (bytes); <= 0 is no cap.
+	StdoutLimit int64
 }
 
 // DefaultLimits are the built-in values, before any configuration.
@@ -414,6 +556,7 @@ func DefaultLimits() Limits {
 		InlineMaxBytes:  defaults.ArtifactInlineMaxBytes,
 		ChunkBytes:      defaults.ArtifactChunkBytes,
 		InterceptImages: defaults.ArtifactInterceptImages,
+		StdoutLimit:     int64(defaults.ExecStdoutLimit),
 	}
 }
 
@@ -440,6 +583,9 @@ type Service struct {
 	BearerToken string
 	// Limits are the resolved settings.
 	Limits Limits
+	// ConfigDir is the directory holding the configuration in force,
+	// for the script.cwd "config" policy on runs through this service.
+	ConfigDir string
 	// WorkDir holds the generated client between runs, so the runtime's
 	// module cache stays warm. Empty means a temporary directory per run.
 	WorkDir string
@@ -471,11 +617,45 @@ type Request struct {
 	// RunID, when set, is used instead of a fresh one: the daemon registers
 	// a script's run for question correlation before the script starts.
 	RunID string
+	// CallSettings, when set, is the caller's call-settings header JSON
+	// (X-Mcpx-Settings) for the request that asked for this run. It is
+	// handed to the script as MCPX_SETTINGS so the generated client's
+	// own calls carry it back to the daemon -- a per-call value the
+	// caller set for the run (e.g. a shorter pool.callTimeout, #1864
+	// item 4) governs the calls the run makes, not just the run's own
+	// request.
+	CallSettings string
 }
 
 // Sink receives frames in order. Returning an error stops the run, which is
 // how a disconnected HTTP client kills the script it was watching.
 type Sink func(Frame) error
+
+// resolveExecTimeout applies the per-request timeout override rule
+// (#2398): a caller may lower the operator's bound, never remove or
+// raise it. A non-positive override is refused outright — the runner
+// treats 0 as "no limit", so accepting one would silently delete the
+// operator's exec.timeout. A positive override above the operator
+// limit clamps to it (the ClampedBy principle, #1864). An operator
+// limit of 0 is the operator's own no-limit choice: a positive
+// override then applies unclamped, and no override leaves the run
+// unbounded, exactly as the operator configured.
+func resolveExecTimeout(limit time.Duration, requested string) (time.Duration, error) {
+	if requested == "" {
+		return limit, nil
+	}
+	d, err := time.ParseDuration(requested)
+	if err != nil {
+		return 0, fmt.Errorf("exec: timeout %q: %w", requested, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("exec: timeout %q: must be positive", requested)
+	}
+	if limit > 0 && d > limit {
+		return limit, nil
+	}
+	return d, nil
+}
 
 // Run executes the script, building the runner options itself.
 //
@@ -491,13 +671,9 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 	}
 	opts := req.Opts
 
-	timeout := s.Limits.Timeout
-	if opts.Timeout != "" {
-		d, err := time.ParseDuration(opts.Timeout)
-		if err != nil {
-			return nil, fmt.Errorf("exec: timeout %q: %w", opts.Timeout, err)
-		}
-		timeout = d
+	timeout, err := resolveExecTimeout(s.Limits.Timeout, opts.Timeout)
+	if err != nil {
+		return nil, err
 	}
 
 	clientSrc, err := s.Src.ClientModule(ctx, opts.NS)
@@ -505,6 +681,16 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 		return nil, err
 	}
 	globals, _ := s.Src.Globals(ctx, opts.NS)
+	// A run in another language gets that language's client instead
+	// (#1917 Phase 2). The language rule is the runner's, so a request the
+	// runner will treat as Python is exactly the request that fetches the
+	// Python client.
+	clients := map[string]runner.Client{}
+	if runner.ScriptLanguage(req.File, req.Source) == codegen.Python.Name {
+		if module, pyGlobals, cerr := s.Src.ClientModuleFor(ctx, codegen.Python.Name, opts.NS); cerr == nil {
+			clients[codegen.Python.Name] = runner.Client{Module: module, Globals: pyGlobals}
+		}
+	}
 
 	capture := s.Limits.CaptureConsole
 	if opts.CaptureConsole != nil {
@@ -515,9 +701,13 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 		File:             req.File,
 		ClientSource:     clientSrc,
 		GlobalsSource:    globals,
+		Clients:          clients,
 		WorkDir:          s.WorkDir,
 		WorkRoot:         s.WorkRoot,
 		Runtime:          firstNonEmpty(opts.Runtime, s.Limits.Runtime),
+		Interpreter:      firstNonEmpty(opts.Interpreter, s.Limits.Interpreter),
+		CwdPolicy:        firstNonEmpty(opts.CwdPolicy, s.Limits.CwdPolicy),
+		ConfigDir:        s.ConfigDir,
 		Setup:            s.Limits.Setup,
 		Timeout:          timeout,
 		Permissions:      firstNonEmpty(opts.Permissions, s.Limits.Permissions),
@@ -536,8 +726,14 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 		// whatever started the daemon.
 		Stdin: strings.NewReader(opts.Stdin),
 	}
-	if req.RunID != "" {
-		ropts.Env = map[string]string{"MCPX_RUN": req.RunID}
+	if req.RunID != "" || req.CallSettings != "" {
+		ropts.Env = map[string]string{}
+		if req.RunID != "" {
+			ropts.Env["MCPX_RUN"] = req.RunID
+		}
+		if req.CallSettings != "" {
+			ropts.Env["MCPX_SETTINGS"] = req.CallSettings
+		}
 	}
 	if ph := opts.Phases; ph != nil {
 		ropts.Phases = runner.Phases{Before: ph.Before, Prefix: ph.Prefix,
@@ -570,6 +766,65 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 // keeps rendering logs to a terminal while the service collects the same
 // records for the result.
 func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Options, sink Sink) (*Result, error) {
+	// The wire dependency set becomes the runner's in RunWith, the one
+	// boundary every caller (CLI, /v1, MCP) crosses, so no path can
+	// accept deps and then drop them (#1913). This conversion is NOT
+	// part of sink defaulting: callers that supply a sink (the
+	// streaming CLI path, the daemon's execStream handler) were
+	// silently losing their dependency sets when it was nested inside
+	// `if sink == nil` (Codex review, PR #2589).
+	// A /v1 or MCP caller can send explicit pins beside a manifest text
+	// without the CLI's Resolve ever seeing the pair, so the conflict
+	// rule is enforced again at this boundary — the one every caller
+	// crosses — rather than trusting each surface to check (CodeRabbit
+	// review, PR #2589). A contradicting pin is reported, never
+	// silently resolved in the manifest's favour.
+	if opts.Deps != nil && opts.Deps.Manifest != "" && len(opts.Deps.Packages) > 0 {
+		var man struct {
+			Dependencies         map[string]any `json:"dependencies"`
+			DevDependencies      map[string]any `json:"devDependencies"`
+			OptionalDependencies map[string]any `json:"optionalDependencies"`
+		}
+		if err := json.Unmarshal([]byte(opts.Deps.Manifest), &man); err != nil {
+			return nil, fmt.Errorf("deps: parse transported manifest: %w", err)
+		}
+		want := map[string]string{}
+		// Match deps.Load: production overrides development, and optional
+		// requirements override both.
+		for _, sec := range []map[string]any{man.DevDependencies, man.Dependencies, man.OptionalDependencies} {
+			for name, v := range sec {
+				if s, ok := v.(string); ok {
+					want[name] = s
+				}
+			}
+		}
+		if conflicts := deps.Conflicts(opts.Deps.Packages, want); len(conflicts) > 0 {
+			var parts []string
+			for _, c := range conflicts {
+				parts = append(parts, fmt.Sprintf("%s: explicit %s contradicts manifest %s",
+					c.Name, c.Explicit, c.Manifest))
+			}
+			return nil, fmt.Errorf("deps: %s", strings.Join(parts, "; "))
+		}
+	}
+	if opts.Deps != nil && ropts.Deps == nil {
+		ropts.Deps = &runner.Deps{
+			Packages:     opts.Deps.Packages,
+			Manifest:     opts.Deps.Manifest,
+			ManifestName: opts.Deps.ManifestName,
+			ManifestDir:  opts.Deps.ManifestDir,
+			PackageDirs:  opts.Deps.PackageDirs,
+			Lockfile:     opts.Deps.Lockfile,
+			LockfileName: opts.Deps.LockfileName,
+			NPMRC:        opts.Deps.NPMRC,
+			Source:       opts.Deps.Source,
+			AutoInstall:  opts.Deps.AutoInstall,
+		}
+		for _, l := range opts.Deps.Lockfiles {
+			ropts.Deps.Lockfiles = append(ropts.Deps.Lockfiles,
+				runner.Lockfile{Name: l.Name, Content: l.Content})
+		}
+	}
 	if sink == nil {
 		sink = func(Frame) error { return nil }
 	}
@@ -623,9 +878,18 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	// each call as a call frame, interleaved with the run's own output
 	// exactly where it happened.
 	unregisterCalls := func() {}
+	unregisterDryRun := func() {}
 	if s.Calls != nil {
 		unregisterCalls = s.Calls.Register(runID, emitFrame)
+		if opts.DryRun {
+			// Marked for the whole run: the daemon's call path
+			// checks the registry before dispatching a call that
+			// carries this run id, and answers it synthetically.
+			unregisterDryRun = s.Calls.RegisterDryRun(runID)
+			res.DryRun = true
+		}
 	}
+	defer unregisterDryRun()
 	// Safety net only: the explicit close below, before the terminal
 	// frames, is the one that orders call frames ahead of them.
 	defer unregisterCalls()
@@ -731,6 +995,7 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	// frame lands here, in order, and drops any report that comes
 	// later — nothing may be written to the stream after end.
 	unregisterCalls()
+	unregisterDryRun()
 	if sinkErr != nil {
 		// The consumer left. Nothing more can be delivered, and the script
 		// has already been killed by the cancelled context.
@@ -772,6 +1037,7 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	res.DurationMs = rres.Duration.Milliseconds()
 	res.Runtime = rres.Runtime
 	res.TimedOut = rres.TimedOut
+	res.Notice = rres.Notice
 	if rerr != nil {
 		res.Error = rerr.Error()
 	}
@@ -798,11 +1064,16 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 
 	// A script whose stdout is JSON almost always means it as its answer, so
 	// it is offered parsed as well as raw. The same rule `mcpx --json run`
-	// has always followed, kept identical so the two agree.
+	// has always followed, kept identical so the two agree. The parsed
+	// value is remembered so the truncation below can tell a
+	// stdout-derived Result from a hook replacement.
+	var stdoutParsed any
+	haveStdoutParsed := false
 	if trimmed := strings.TrimSpace(res.Stdout); trimmed != "" {
 		var parsed any
 		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
 			res.Result = parsed
+			stdoutParsed, haveStdoutParsed = parsed, true
 		}
 	}
 
@@ -870,6 +1141,30 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	// pay nothing for artifacts it does not want.
 	if deliveryOf(opts, s.Limits) == DeliveryStream {
 		s.streamBodies(res, opts, emitFrame)
+	}
+
+	// CODE-16 (#1937): the Result boundary is where returned stdout is
+	// capped, so every surface that returns a run -- CLI, /v1, MCP --
+	// sees the same capped stdout. Internal consumers above (the JSON
+	// answer parse, hooks) worked on the full text; only what is
+	// handed back is bounded. Full output is unchanged wherever a
+	// full record already exists.
+	if capped, truncated := truncateStdout(res.Stdout, s.Limits.StdoutLimit); truncated {
+		res.Stdout = capped
+		res.StdoutTruncated = true
+		// A Result that is still the stdout parse must not survive
+		// as a side channel around the cap: renderers (renderExec)
+		// treat a Result that no longer matches stdout as a hook
+		// replacement and re-present it in full. A hook replacement
+		// -- a value that differs from the stdout parse -- is the
+		// hook's own answer and is preserved.
+		if haveStdoutParsed && res.Result != nil {
+			if rb, err := json.Marshal(res.Result); err == nil {
+				if pb, err := json.Marshal(stdoutParsed); err == nil && string(rb) == string(pb) {
+					res.Result = nil
+				}
+			}
+		}
 	}
 	return res, sinkErr
 }
@@ -1000,9 +1295,9 @@ func (s *Service) deliver(res *Result, opts Options) error {
 	for i := range res.Artifacts {
 		a := &res.Artifacts[i]
 		if dir != "" {
-			// A shared filesystem beats every transfer mode: the caller can
-			// already read the bytes, so hardlinking them into its directory
-			// costs an inode and no I/O.
+			// A shared filesystem lets the caller read the destination directly.
+			// Export still copies bytes from the store into that directory; this
+			// avoids a later transfer, not filesystem I/O.
 			p, err := s.Store.Export(a.Meta, dir)
 			if err != nil {
 				errs = append(errs, fmt.Sprintf("%s: %v", a.Name, err))
@@ -1145,6 +1440,65 @@ func ArtifactsDirFor(cwd, dir string) string {
 //
 // The tail rather than the head: a stack trace ends with the line that
 // matters, and a script that floods stderr floods it from the start.
+// truncateStdout caps s at limit bytes, keeping the head and ending
+// with a marker that names the dropped byte count, so truncation is
+// visible, never silent. The returned string is at most limit bytes
+// for EVERY positive limit, including one smaller than the marker
+// itself (then the marker prefix alone fills the budget). A limit
+// <= 0, or a string that already fits, is returned unchanged with
+// truncated=false. The cut backs off to a UTF-8 rune boundary so it
+// never splits a multi-byte rune.
+func truncateStdout(s string, limit int64) (string, bool) {
+	if limit <= 0 || int64(len(s)) <= limit {
+		return s, false
+	}
+	marker := func(kept int) string {
+		return fmt.Sprintf("\n[mcpx: stdout truncated -- kept %d of %d bytes, dropped %d bytes; raise exec.maxOutputBytes to see more]", kept, len(s), len(s)-kept)
+	}
+	// The limit is a hard bound: when it cannot hold even the marker
+	// (kept = 0 is the shortest form), the marker's own prefix is the
+	// most informative thing that fits.
+	if int(limit) <= len(marker(0)) {
+		return marker(0)[:int(limit)], true
+	}
+	kept := int(limit) - len(marker(int(limit)))
+	// The marker's own length depends on kept's digit count; settle
+	// it. Each step is O(1): runeBoundary inspects only the last few
+	// bytes (see below), never the whole prefix.
+	for i := 0; i < 8; i++ {
+		kept = runeBoundary(s, kept)
+		want := int(limit) - len(marker(kept))
+		if want == kept {
+			break
+		}
+		kept = want
+	}
+	kept = runeBoundary(s, kept)
+	for kept > 0 && kept+len(marker(kept)) > int(limit) {
+		kept = runeBoundary(s, kept-1)
+	}
+	return s[:kept] + marker(kept), true
+}
+
+// runeBoundary returns kept, reduced by at most a few bytes so the
+// cut does not split a multi-byte rune at the end of s[:kept]. It
+// decodes only the last rune: an invalid byte EARLIER in s must not
+// drag the cut back over the whole prefix (validating the shrinking
+// prefix per dropped byte is quadratic on the arbitrary non-UTF-8
+// bytes a subprocess can emit).
+func runeBoundary(s string, kept int) int {
+	for i := 0; i < utf8.UTFMax && kept > 0; i++ {
+		if s[kept-1] < utf8.RuneSelf {
+			break // ASCII: the cut is already on a boundary
+		}
+		if _, size := utf8.DecodeLastRuneInString(s[:kept]); size > 1 {
+			break // the last rune is complete (or a real U+FFFD)
+		}
+		kept-- // split rune or stray byte: retreat one byte
+	}
+	return kept
+}
+
 type tailBuffer struct {
 	limit int
 	buf   []byte

@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/registry"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/registry"
 )
 
 // fakeRegistry pages through total entries the way the official registry

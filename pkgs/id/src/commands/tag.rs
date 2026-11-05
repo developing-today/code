@@ -75,10 +75,7 @@ pub fn hex_decode(input: &str) -> Result<Vec<u8>> {
         .strip_prefix("0x")
         .or_else(|| trimmed.strip_prefix("0X"))
         .unwrap_or(trimmed);
-    let cleaned: String = stripped
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
+    let cleaned: String = stripped.chars().filter(|c| !c.is_whitespace()).collect();
     if !cleaned.len().is_multiple_of(2) {
         bail!("hex value must have an even number of digits");
     }

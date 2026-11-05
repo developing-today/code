@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/settings"
-	"github.com/dezren39/mcpx/plugin/opencode/skills"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/plugin/opencode/skills"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -20,16 +20,17 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/artifacts"
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/daemon"
-	"github.com/dezren39/mcpx/internal/diagnose"
-	"github.com/dezren39/mcpx/internal/execsvc"
-	"github.com/dezren39/mcpx/internal/logging"
-	"github.com/dezren39/mcpx/internal/preflight"
-	"github.com/dezren39/mcpx/internal/runner"
-	"github.com/dezren39/mcpx/internal/source"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/preflight"
+	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
+	"github.com/developing-today/code/pkgs/mcpx/internal/source"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // App carries state shared by every subcommand.
@@ -459,6 +460,8 @@ func (a *App) CmdBatch(ctx context.Context, args []string) error {
 	file := fs.String("file", "", "path to JSON file containing calls")
 	parallel := fs.Bool("parallel", false, "execute calls concurrently")
 	stopOnError := fs.Bool("stop-on-error", true, "stop on first error")
+	safePrefix := fs.Bool("safe-prefix", false,
+		"execute only the safe prefix: stop before the first destructive-annotated call and report the rest skipped (#1927)")
 	if err := parseFlags(a, fs, args); err != nil {
 		return err
 	}
@@ -497,6 +500,7 @@ func (a *App) CmdBatch(ctx context.Context, args []string) error {
 			Calls       []BatchCallItem `json:"calls"`
 			Parallel    *bool           `json:"parallel"`
 			StopOnError *bool           `json:"stopOnError"`
+			SafePrefix  *bool           `json:"safePrefix"`
 		}
 		if err := json.Unmarshal(data, &obj); err != nil {
 			return fmt.Errorf("parsing batch JSON: %w", err)
@@ -508,13 +512,16 @@ func (a *App) CmdBatch(ctx context.Context, args []string) error {
 		if obj.StopOnError != nil && *stopOnError {
 			*stopOnError = *obj.StopOnError
 		}
+		if obj.SafePrefix != nil && !*safePrefix {
+			*safePrefix = *obj.SafePrefix
+		}
 	}
 
 	c, err := a.ensure(ctx)
 	if err != nil {
 		return err
 	}
-	resp, err := c.Batch(ctx, calls, *stopOnError, *parallel, a.callContext(*session, *session))
+	resp, err := c.Batch(ctx, calls, *stopOnError, *parallel, *safePrefix, a.callContext(*session, *session))
 	if err != nil {
 		if a.JSON {
 			a.outCallFailure(err)
@@ -656,6 +663,9 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		"validate script structure, tool signatures, and syntax without executing")
 	repairFlag := fs.Bool("repair", false,
 		"automatically attempt script repair using configured model if execution fails")
+	dryRunFlag := fs.Bool("dry-run", false,
+		"run the script with every tool call intercepted (#1927): nothing executes, "+
+			"each call is reported and answered with a synthetic result")
 
 	allowRepeat := newRepeatable()
 	fs.Var(allowRepeat, "allow-repeat",
@@ -840,7 +850,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if elsewhere {
 		return a.execOnDaemon(ctx, c, fs, inline, ns, sessionKey, eo,
 			execRemoteFlags{timeout: *timeout, runtime: *rt, permissions: *perms,
-				export: *export, session: sessionKey, shape: shape})
+				export: *export, session: sessionKey, shape: shape, dryRun: *dryRunFlag})
 	}
 	// This process is about to start the script, so it checks first. The
 	// daemon would refuse a script it was asked to run; this one is not asked.
@@ -867,6 +877,21 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if gerr != nil {
 		// Editor convenience only; never fail a run for it.
 		globalsSrc = ""
+	}
+	// The client a script gets is the client of its language (#1917 Phase
+	// 2). The language is only known once the file is resolved, which
+	// happens below; fetching the Python pair here is one local round trip
+	// and never fails the run -- a daemon without the route leaves clients
+	// empty and the run as it was.
+	clients := map[string]runner.Client{}
+	if py, pyerr := c.ClientModuleLanguage(ctx, codegen.Python.Name, ns, "", a.Profile); pyerr == nil && py != clientSrc {
+		// A daemon from before #1917 Phase 2 ignores ?language and answers
+		// with the TypeScript module; installing that as mcpx_client.py
+		// would be worse than no client at all, so an identical body means
+		// "this daemon has no Python client" and the run keeps the raw
+		// notice instead.
+		pyGlobals, _ := c.GlobalsLanguage(ctx, codegen.Python.Name, ns, a.Profile)
+		clients[codegen.Python.Name] = runner.Client{Module: py, Globals: pyGlobals}
 	}
 
 	// --runtime is hand-written, so the registry's script.runtime only
@@ -953,14 +978,27 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if a.Settings().Given("script.permissions") {
 		setPerms = a.Settings().String("script.permissions")
 	}
+	// script.interpreter and script.cwd come from the resolved set like
+	// every other script.* value: flag aliases (--interpreter/--shell),
+	// env and config files all fold into the same two strings.
+	interpreterPref := set.String("script.interpreter")
+	cwdPolicy := set.String("script.cwd")
+	configDir := ""
+	if cp := configPathOf(cfg); cp != "" {
+		configDir = filepath.Dir(cp)
+	}
 	opts := runner.Options{
 		// Set when something other than a terminal is collecting the output:
 		// the MCP server, which has to return it rather than print it.
 		Stdout:         a.stdoutOverride,
 		ClientSource:   clientSrc,
 		GlobalsSource:  globalsSrc,
+		Clients:        clients,
 		CaptureConsole: shape.captureConsole,
 		Runtime:        runtimePref,
+		Interpreter:    interpreterPref,
+		CwdPolicy:      cwdPolicy,
+		ConfigDir:      configDir,
 		Setup:          rtSetup,
 		Timeout:        *timeout,
 		Prelude:        prelude,
@@ -979,6 +1017,11 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		Env: map[string]string{
 			"MCPX_SESSION": sessionKey,
 			"MCPX_RUN":     runID,
+			// The caller's call-scoped settings (--pool-call-timeout
+			// and friends) ride along so the generated client's calls
+			// carry them back to the daemon as x-mcpx-settings,
+			// exactly as a daemon-run script's do (#1864 item 4).
+			"MCPX_SETTINGS": c.callSettings,
 			// Whether artifact({path}) may hand the daemon a path instead of
 			// bytes. A socket is the evidence that the daemon shares this
 			// filesystem; a remote endpoint has none.
@@ -1090,8 +1133,8 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 
 	// The artifact store is the daemon's, opened from this side. When the
 	// daemon is on this machine that is the same SQLite index and the same
-	// blobs, so a file the script registered can be hardlinked into an
-	// output directory rather than fetched back over a socket.
+	// blobs, so a file the script registered can be copied from the store into
+	// an output directory without being fetched back over a socket.
 	var store *artifacts.Store
 	if st, serr := a.localStore(); serr == nil {
 		store = st
@@ -1100,11 +1143,17 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		// Only worth failing for when the caller actually asked for files.
 		return serr
 	}
+	depsOpts, derr := a.depsOptions(mustGetwd(), opts.File)
+	if derr != nil {
+		return derr
+	}
 	svc := a.localService(store, c.Socket())
 	wire := execsvc.Options{
 		Session:   sessionKey,
 		Output:    eo.Output,
 		Artifacts: eo.artifactOptions(mustGetwd()),
+		Deps:      depsOpts,
+		DryRun:    *dryRunFlag,
 	}
 	if wire.Artifacts != nil {
 		wire.Capabilities = []string{execsvc.CapabilityArtifacts}
@@ -1121,7 +1170,11 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		if err != nil {
 			return err
 		}
-		env := runEnvelope(res, out.String(), collected, streamed)
+		// The envelope carries the service's capped stdout
+		// (res.Stdout), not the raw stream captured in out: the raw
+		// copy would hand back output the exec.maxOutputBytes cap
+		// already cut, with no truncation indication.
+		env := runEnvelope(res, res.Stdout, collected, streamed)
 		if s := errOut.String(); s != "" {
 			env["stderr"] = s
 		}
@@ -1190,6 +1243,9 @@ func runEnvelope(res *execsvc.Result, stdout string, logs []logging.Record, stre
 	}
 	if res.TimedOut {
 		env["timedOut"] = true
+	}
+	if res.StdoutTruncated {
+		env["stdoutTruncated"] = true
 	}
 	// A script whose stdout is JSON almost always means it as its result, so
 	// offer it parsed as well as raw rather than making every caller re-parse.
@@ -2265,13 +2321,29 @@ type scriptShape struct {
 // inlineSource splices prefix and suffix lines around a snippet. A snippet is
 // generated wholesale, so prefix lines share its scope and can declare
 // bindings the snippet uses.
+//
+// A snippet's own shebang goes first, ahead of the prefix. Dispatch reads the
+// first line to decide the interpreter (#2167), and a shell prefix line in
+// front of it hid the shebang: `mcpx exec --prefix 'echo before' $'#!/bin/sh\necho hello'`
+// then went to the JavaScript harness instead of sh (#2611 review). The
+// shebang is still the program's own first line; the prefix runs after it,
+// which is the order the interpreter would have imposed anyway.
 func (sh scriptShape) inlineSource(args []string) string {
 	var body strings.Builder
+	var rest strings.Builder
+	rest.WriteString(strings.Join(args, " "))
+	if first := rest.String(); strings.HasPrefix(first, "#!") {
+		line, tail, _ := strings.Cut(first, "\n")
+		body.WriteString(line)
+		body.WriteString("\n")
+		rest.Reset()
+		rest.WriteString(tail)
+	}
 	for _, line := range sh.prefix {
 		body.WriteString(line)
 		body.WriteString("\n")
 	}
-	body.WriteString(strings.Join(args, " "))
+	body.WriteString(rest.String())
 	for _, line := range sh.suffix {
 		body.WriteString("\n")
 		body.WriteString(line)

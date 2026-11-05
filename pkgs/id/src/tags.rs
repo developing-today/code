@@ -335,6 +335,8 @@ pub struct Tag {
     pub value: Option<TagValue>,
     /// Content hash of the entry data.
     pub hash: Hash,
+    /// Length in bytes of the entry data referenced by `hash`.
+    pub len: u64,
     /// Entry timestamp (microseconds since epoch, from iroh-docs).
     pub timestamp: u64,
     /// Author who wrote this entry.
@@ -584,7 +586,7 @@ fn encode_omega_null_key_prefix(key: &[u8]) -> Vec<u8> {
 /// Handles both `TupleValue::String` and `TupleValue::Bytes` for binary support.
 fn decode_alpha_key(raw: &[u8]) -> Result<(TagValue, TagValue, Option<TagValue>)> {
     let fields = decode(raw)?;
-    if fields.len() < 3 {
+    if fields.len() != 3 {
         bail!("α key has {} fields, expected 3", fields.len());
     }
     let subject = tuple_value_to_tag_value(&fields[0])
@@ -608,7 +610,7 @@ fn decode_alpha_key(raw: &[u8]) -> Result<(TagValue, TagValue, Option<TagValue>)
 /// back to `(subject, key, value?)`. Handles both String and Bytes variants.
 fn decode_omega_key(raw: &[u8]) -> Result<(TagValue, TagValue, Option<TagValue>)> {
     let fields = decode(raw)?;
-    if fields.len() < 3 {
+    if fields.len() != 3 {
         bail!("Ω key has {} fields, expected 3", fields.len());
     }
     let value = if fields[0].is_null() {
@@ -845,6 +847,44 @@ impl TagStore {
         Ok(())
     }
 
+    /// Set a tag whose entry payload already exists in the blob store,
+    /// referencing it by content hash instead of writing new bytes.
+    ///
+    /// Both α and Ω entries will reference the given content hash, so the
+    /// payload is preserved exactly. Used when moving or copying tags
+    /// between subjects, where recreating the tag with new data would
+    /// silently drop the original payload.
+    pub async fn set_tag_hash(
+        &self,
+        ns: &NamespacePair,
+        subject: &[u8],
+        key: &[u8],
+        value: Option<&[u8]>,
+        hash: Hash,
+        size: u64,
+    ) -> Result<()> {
+        let alpha_key = encode_alpha_key(subject, key, value);
+        let omega_key = encode_omega_key(subject, key, value);
+
+        ns.alpha
+            .set_hash(self.author, alpha_key, hash, size)
+            .await
+            .context("writing α entry")?;
+        ns.omega
+            .set_hash(self.author, omega_key, hash, size)
+            .await
+            .context("writing Ω entry")?;
+
+        self.emit(TagEvent::Set {
+            ns: self.ns_name(ns),
+            subject: String::from_utf8_lossy(subject).into_owned(),
+            key: String::from_utf8_lossy(key).into_owned(),
+            value: value.map(|v| String::from_utf8_lossy(v).into_owned()),
+        });
+
+        Ok(())
+    }
+
     /// Delete a specific tag from both α and Ω.
     ///
     /// Deletes entries matching the exact `(subject, key, value|null)` tuple.
@@ -986,17 +1026,38 @@ impl TagStore {
         from: &[u8],
         to: &[u8],
     ) -> Result<usize> {
+        self.transfer_all_tags_except(ns, from, to, &[]).await
+    }
+
+    /// Transfer tags to another subject, dropping tags whose keys are excluded.
+    ///
+    /// Each non-excluded tag is copied to `to` by content hash, so its entry
+    /// payload is preserved exactly, then all tags are deleted from `from`.
+    /// Excluded tags are discarded rather than left on the old subject.
+    /// Returns the number of tags copied.
+    pub async fn transfer_all_tags_except(
+        &self,
+        ns: &NamespacePair,
+        from: &[u8],
+        to: &[u8],
+        excluded_keys: &[&[u8]],
+    ) -> Result<usize> {
         let tags = self.get_tags(ns, from).await?;
-        let count = tags.len();
+        let mut count = 0;
         for tag in &tags {
-            self.set_tag(
+            if excluded_keys.iter().any(|key| *key == tag.key.as_bytes()) {
+                continue;
+            }
+            self.set_tag_hash(
                 ns,
                 to,
                 &tag.key,
                 tag.value.as_ref().map(TagValue::as_bytes),
-                b"",
+                tag.hash,
+                tag.len,
             )
             .await?;
+            count += 1;
         }
         self.del_all_tags(ns, from).await?;
 
@@ -1019,12 +1080,13 @@ impl TagStore {
         let tags = self.get_tags(ns, from).await?;
         let count = tags.len();
         for tag in &tags {
-            self.set_tag(
+            self.set_tag_hash(
                 ns,
                 to,
                 &tag.key,
                 tag.value.as_ref().map(TagValue::as_bytes),
-                b"",
+                tag.hash,
+                tag.len,
             )
             .await?;
         }
@@ -1302,7 +1364,7 @@ impl TagStore {
     ///
     /// An empty query returns all tags.
     pub async fn search_by_query(&self, ns: &NamespacePair, query: &str) -> Result<Vec<Tag>> {
-        let terms = parse_search_query(query);
+        let terms = parse_search_query(query)?;
 
         if terms.is_empty() {
             return self.list_all(ns).await;
@@ -1405,6 +1467,7 @@ fn entry_to_tag_alpha(entry: &iroh_docs::Entry) -> Result<Tag> {
         key,
         value,
         hash: entry.content_hash(),
+        len: entry.content_len(),
         timestamp: entry.timestamp(),
         author: entry.author(),
     })
@@ -1418,6 +1481,7 @@ fn entry_to_tag_omega(entry: &iroh_docs::Entry) -> Result<Tag> {
         key,
         value,
         hash: entry.content_hash(),
+        len: entry.content_len(),
         timestamp: entry.timestamp(),
         author: entry.author(),
     })
@@ -1448,6 +1512,44 @@ pub enum SearchTerm {
     BareWord(String),
 }
 
+/// Why a search query was refused instead of silently degenerating.
+///
+/// The malformed forms in this enum used to parse into terms that
+/// broadened or emptied the result set without any signal: an empty
+/// quoted literal became a substring match against every tag, an
+/// explicitly empty quoted key/value component was dropped (widening
+/// the search), and an unterminated quote left a stray `"` in the term
+/// (matching nothing). Refusing them keeps the failure visible.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchQueryError {
+    /// `""` — an explicitly empty quoted literal.
+    EmptyQuotedLiteral,
+    /// `name:""` / `"":value` — an explicitly empty quoted key or value
+    /// component (distinct from the unquoted `name:` / `:value` forms).
+    EmptyQuotedComponent { term: String },
+    /// A quote opened in this term is never closed.
+    UnterminatedQuote { term: String },
+}
+
+impl std::fmt::Display for SearchQueryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyQuotedLiteral => {
+                write!(f, "empty quoted literal \"\" is not a valid search term")
+            }
+            Self::EmptyQuotedComponent { term } => write!(
+                f,
+                "empty quoted component in search term {term:?}: quote a non-empty key or value, or use the unquoted form"
+            ),
+            Self::UnterminatedQuote { term } => {
+                write!(f, "unterminated quote in search term {term:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SearchQueryError {}
+
 /// Parse a search query string into structured [`SearchTerm`]s.
 ///
 /// Terms are whitespace-separated (respecting quoted strings): any
@@ -1465,11 +1567,19 @@ pub enum SearchTerm {
 /// - `"key:":":value"` → key is literally `key:`, value is literally `:value`
 ///
 /// Multiple terms are `ANDed` together.
-pub fn parse_search_query(input: &str) -> Vec<SearchTerm> {
+///
+/// # Errors
+///
+/// Returns [`SearchQueryError`] for malformed quoted forms that would
+/// otherwise degenerate silently: an empty quoted literal (`""`), an
+/// explicitly empty quoted key/value component (`name:""`, `"":value`),
+/// or an unterminated quote. The unquoted empty-component forms keep
+/// their established meaning (`name:` is key-only, `:value` value-only).
+pub fn parse_search_query(input: &str) -> Result<Vec<SearchTerm>, SearchQueryError> {
     let mut terms = Vec::new();
     let input = input.trim();
     if input.is_empty() {
-        return terms;
+        return Ok(terms);
     }
 
     // Byte index into `input`. It only ever advances by whole chars, so it
@@ -1514,22 +1624,39 @@ pub fn parse_search_query(input: &str) -> Vec<SearchTerm> {
         }
 
         let term_str = &input[start..i];
+        if in_quotes {
+            return Err(SearchQueryError::UnterminatedQuote {
+                term: term_str.to_owned(),
+            });
+        }
         if !term_str.is_empty() {
-            terms.push(parse_single_term(term_str));
+            terms.push(parse_single_term(term_str)?);
         }
     }
 
-    terms
+    Ok(terms)
 }
 
 /// Parse a single whitespace-delimited term into a [`SearchTerm`].
-fn parse_single_term(s: &str) -> SearchTerm {
+fn parse_single_term(s: &str) -> Result<SearchTerm, SearchQueryError> {
+    // An explicitly empty quoted literal matches nothing meaningful and
+    // used to degrade into a substring search for "" — every tag.
+    if s == "\"\"" {
+        return Err(SearchQueryError::EmptyQuotedLiteral);
+    }
     // Try to find an unquoted colon separator
     if let Some((left, right)) = split_on_unquoted_colon(s) {
+        // `name:""` / `"":value`: the quotes make the emptiness
+        // explicit, so refuse rather than dropping the component and
+        // silently widening the search (unquoted `name:` / `:value`
+        // keep their key-only / value-only meaning).
+        if left == "\"\"" || right == "\"\"" {
+            return Err(SearchQueryError::EmptyQuotedComponent { term: s.to_owned() });
+        }
         let key = strip_quotes(&left);
         let value = strip_quotes(&right);
 
-        if key.is_empty() && !value.is_empty() {
+        Ok(if key.is_empty() && !value.is_empty() {
             SearchTerm::ValueOnly(value)
         } else if !key.is_empty() && value.is_empty() {
             SearchTerm::KeyOnly(key)
@@ -1538,15 +1665,15 @@ fn parse_single_term(s: &str) -> SearchTerm {
         } else {
             // Both empty — bare colon, treat as bare word
             SearchTerm::BareWord(s.to_owned())
-        }
+        })
     } else {
         // No unquoted colon
         let stripped = strip_quotes(s);
-        if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+        Ok(if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
             SearchTerm::Literal(stripped)
         } else {
             SearchTerm::BareWord(stripped)
-        }
+        })
     }
 }
 
@@ -1940,6 +2067,47 @@ mod tests {
         assert_eq!(subject, "file.txt");
         assert_eq!(key, "label");
         assert_eq!(value, Some(TagValue::from("rust")));
+    }
+
+    /// Build a 4-field α-shaped key: a valid tag key plus a trailing field.
+    /// No writer emits this; it models the phantom key from issue #1832.
+    fn encode_alpha_key_4_fields() -> Vec<u8> {
+        let mut enc = TupleEncoder::new();
+        encode_smart(&mut enc, b"file.txt");
+        encode_smart(&mut enc, b"tag");
+        encode_smart(&mut enc, b"v1");
+        encode_smart(&mut enc, b"extra");
+        enc.build()
+    }
+
+    /// Build a 4-field Ω-shaped key: (value, key, subject) plus a trailing field.
+    fn encode_omega_key_4_fields() -> Vec<u8> {
+        let mut enc = TupleEncoder::new();
+        encode_smart(&mut enc, b"v1");
+        encode_smart(&mut enc, b"tag");
+        encode_smart(&mut enc, b"file.txt");
+        encode_smart(&mut enc, b"extra");
+        enc.build()
+    }
+
+    #[test]
+    fn test_decode_alpha_key_rejects_four_fields() {
+        let raw = encode_alpha_key_4_fields();
+        let err = decode_alpha_key(&raw).unwrap_err();
+        assert!(
+            err.to_string().contains("expected 3"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_decode_omega_key_rejects_four_fields() {
+        let raw = encode_omega_key_4_fields();
+        let err = decode_omega_key(&raw).unwrap_err();
+        assert!(
+            err.to_string().contains("expected 3"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -2429,31 +2597,88 @@ mod tests {
 
     #[test]
     fn test_parse_search_empty() {
-        assert!(parse_search_query("").is_empty());
-        assert!(parse_search_query("   ").is_empty());
+        assert!(parse_search_query("").unwrap().is_empty());
+        assert!(parse_search_query("   ").unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_parse_search_empty_quoted_literal_refused() {
+        // Regression (#2011): `""` used to become Literal(""), a
+        // substring term that matches every tag.
+        assert_eq!(
+            parse_search_query("\"\""),
+            Err(SearchQueryError::EmptyQuotedLiteral)
+        );
+    }
+
+    #[test]
+    fn test_parse_search_empty_quoted_component_refused() {
+        // Regression (#2011): `name:""` used to collapse to KeyOnly and
+        // `"":high` to ValueOnly, silently dropping the explicit empty
+        // component and broadening the search.
+        assert_eq!(
+            parse_search_query("name:\"\""),
+            Err(SearchQueryError::EmptyQuotedComponent {
+                term: "name:\"\"".to_owned()
+            })
+        );
+        assert_eq!(
+            parse_search_query("\"\":high"),
+            Err(SearchQueryError::EmptyQuotedComponent {
+                term: "\"\":high".to_owned()
+            })
+        );
+        // The unquoted forms keep their established meaning and must
+        // stay distinguishable from the quoted-empty refusals above.
+        assert_eq!(
+            parse_search_query("name:").unwrap(),
+            vec![SearchTerm::KeyOnly("name".to_owned())]
+        );
+        assert_eq!(
+            parse_search_query(":high").unwrap(),
+            vec![SearchTerm::ValueOnly("high".to_owned())]
+        );
+    }
+
+    #[test]
+    fn test_parse_search_unterminated_quote_refused() {
+        // Regression (#2011): an unclosed quote used to leave a stray
+        // `"` in the term, which then matched nothing, silently.
+        assert_eq!(
+            parse_search_query("\"abc def"),
+            Err(SearchQueryError::UnterminatedQuote {
+                term: "\"abc def".to_owned()
+            })
+        );
+        assert_eq!(
+            parse_search_query("key:\"unclosed"),
+            Err(SearchQueryError::UnterminatedQuote {
+                term: "key:\"unclosed".to_owned()
+            })
+        );
     }
 
     #[test]
     fn test_parse_search_bare_word() {
-        let terms = parse_search_query("hello");
+        let terms = parse_search_query("hello").unwrap();
         assert_eq!(terms, vec![SearchTerm::BareWord("hello".to_owned())]);
     }
 
     #[test]
     fn test_parse_search_key_only() {
-        let terms = parse_search_query("name:");
+        let terms = parse_search_query("name:").unwrap();
         assert_eq!(terms, vec![SearchTerm::KeyOnly("name".to_owned())]);
     }
 
     #[test]
     fn test_parse_search_value_only() {
-        let terms = parse_search_query(":myfile.txt");
+        let terms = parse_search_query(":myfile.txt").unwrap();
         assert_eq!(terms, vec![SearchTerm::ValueOnly("myfile.txt".to_owned())]);
     }
 
     #[test]
     fn test_parse_search_key_value() {
-        let terms = parse_search_query("name:myfile.txt");
+        let terms = parse_search_query("name:myfile.txt").unwrap();
         assert_eq!(
             terms,
             vec![SearchTerm::KeyValue(
@@ -2465,7 +2690,7 @@ mod tests {
 
     #[test]
     fn test_parse_search_literal() {
-        let terms = parse_search_query("\"hello world\"");
+        let terms = parse_search_query("\"hello world\"").unwrap();
         assert_eq!(terms, vec![SearchTerm::Literal("hello world".to_owned())]);
     }
 
@@ -2473,14 +2698,14 @@ mod tests {
     fn test_parse_search_literal_with_colon() {
         // A quoted string containing a colon should be a literal search,
         // not a key:value pair.
-        let terms = parse_search_query("\":key\"");
+        let terms = parse_search_query("\":key\"").unwrap();
         assert_eq!(terms, vec![SearchTerm::Literal(":key".to_owned())]);
     }
 
     #[test]
     fn test_parse_search_quoted_key_value() {
         // "key:":":value" → KeyValue("key:", ":value")
-        let terms = parse_search_query("\"key:\":\":value\"");
+        let terms = parse_search_query("\"key:\":\":value\"").unwrap();
         assert_eq!(
             terms,
             vec![SearchTerm::KeyValue("key:".to_owned(), ":value".to_owned())]
@@ -2489,7 +2714,7 @@ mod tests {
 
     #[test]
     fn test_parse_search_multiple_terms() {
-        let terms = parse_search_query("name: :high priority");
+        let terms = parse_search_query("name: :high priority").unwrap();
         assert_eq!(
             terms,
             vec![
@@ -2511,7 +2736,11 @@ mod tests {
         ];
         for sep in [" ", "\t", "\n", "\r\n", "\u{00A0}"] {
             let query = format!("name:foo{sep}bar{sep}baz:");
-            assert_eq!(parse_search_query(&query), expected, "separator {sep:?}");
+            assert_eq!(
+                parse_search_query(&query).unwrap(),
+                expected,
+                "separator {sep:?}"
+            );
         }
     }
 
@@ -2519,7 +2748,7 @@ mod tests {
     fn test_parse_search_tab_after_colon() {
         // `name:` + tab + `priority` is KeyOnly + BareWord, exactly as the
         // space form parses — not one fused KeyValue with a tab inside.
-        let terms = parse_search_query("name:\tpriority");
+        let terms = parse_search_query("name:\tpriority").unwrap();
         assert_eq!(
             terms,
             vec![
@@ -2533,7 +2762,7 @@ mod tests {
     fn test_parse_search_quoted_whitespace_preserved() {
         // Whitespace inside quotes stays part of the term: a quoted tab or
         // newline is literal text, not a separator.
-        let terms = parse_search_query("\"hello\tworld\nagain\"");
+        let terms = parse_search_query("\"hello\tworld\nagain\"").unwrap();
         assert_eq!(
             terms,
             vec![SearchTerm::Literal("hello\tworld\nagain".to_owned())]
@@ -2542,7 +2771,7 @@ mod tests {
 
     #[test]
     fn test_parse_search_quoted_with_spaces() {
-        let terms = parse_search_query("\"hello world\" name:foo");
+        let terms = parse_search_query("\"hello world\" name:foo").unwrap();
         assert_eq!(
             terms,
             vec![
@@ -2555,21 +2784,21 @@ mod tests {
     #[test]
     fn test_parse_search_colon_only() {
         // A bare colon should not crash
-        let terms = parse_search_query(":");
+        let terms = parse_search_query(":").unwrap();
         assert_eq!(terms.len(), 1);
     }
 
     #[test]
     fn test_parse_search_empty_key_value() {
         // key: with trailing space
-        let terms = parse_search_query("key: ");
+        let terms = parse_search_query("key: ").unwrap();
         assert_eq!(terms, vec![SearchTerm::KeyOnly("key".to_owned())]);
     }
 
     #[test]
     fn test_parse_search_quoted_colon_in_key() {
         // Quoted key containing colon: "key:":":value"
-        let terms = parse_search_query("\"key:\":\":value\"");
+        let terms = parse_search_query("\"key:\":\":value\"").unwrap();
         assert_eq!(
             terms,
             vec![SearchTerm::KeyValue("key:".to_owned(), ":value".to_owned())]
@@ -2578,7 +2807,7 @@ mod tests {
 
     #[test]
     fn test_parse_search_bare_word_case() {
-        let terms = parse_search_query("README");
+        let terms = parse_search_query("README").unwrap();
         assert_eq!(terms, vec![SearchTerm::BareWord("README".to_owned())]);
     }
 

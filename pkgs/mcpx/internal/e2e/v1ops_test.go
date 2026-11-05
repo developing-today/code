@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
 )
 
 // getJSON reads one /v1 route over the daemon's socket.
@@ -267,7 +267,8 @@ func TestATaskCanBeCancelled(t *testing.T) {
 
 func TestTasksMaxAgeIsReachableFromEnvironment(t *testing.T) {
 	e := newEnv(t, oneServer)
-	e.envVars = append(e.envVars, "MCPX_TASKS_MAX_AGE=2s")
+	e.envVars = append(e.envVars, "MCPX_TASKS_MAX_AGE=5s")
+	e.envVars = append(e.envVars, "MCPX_PROTO_TASKS_CANCEL_GRACE=20ms")
 	e.run("ls") // start the daemon after setting the environment value
 	c := e.socketClient(t)
 
@@ -291,9 +292,29 @@ func TestTasksMaxAgeIsReachableFromEnvironment(t *testing.T) {
 		t.Fatalf("a nonterminal task has no result-retention countdown, got %v", task)
 	}
 
-	code, terminal := postJSON(t, c, "/v1/tasks/"+id+"/cancel", `{}`)
-	if code != http.StatusOK || terminal["status"] != "cancelled" {
-		t.Fatalf("cancel did not produce a terminal task: %d %v", code, terminal)
+	code, cancelResponse := postJSON(t, c, "/v1/tasks/"+id+"/cancel", `{}`)
+	if code != http.StatusOK {
+		t.Fatalf("cancel request failed: %d %v", code, cancelResponse)
+	}
+	var terminal map[string]any
+	terminalBy := time.Now().Add(2 * time.Second)
+	for time.Now().Before(terminalBy) {
+		list := getJSON(t, c, "/v1/tasks")
+		rows, _ := list["tasks"].([]any)
+		for _, row := range rows {
+			item, _ := row.(map[string]any)
+			if item["taskId"] == id && item["status"] != "working" && item["status"] != "input_required" {
+				terminal = item
+				break
+			}
+		}
+		if terminal != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if terminal == nil {
+		t.Fatalf("cancel did not reach a terminal state: %v", cancelResponse)
 	}
 	parse := func(field string, doc map[string]any) time.Time {
 		t.Helper()
@@ -309,8 +330,8 @@ func TestTasksMaxAgeIsReachableFromEnvironment(t *testing.T) {
 	}
 	terminalAt := parse("lastUpdatedAt", terminal)
 	expiresAt := parse("expiresAt", terminal)
-	if !expiresAt.After(terminalAt) || expiresAt.After(terminalAt.Add(2*time.Second)) {
-		t.Fatalf("tasks.maxAge=2s should cap terminal retention from the transition: terminal=%v expiry=%v", terminalAt, expiresAt)
+	if !expiresAt.After(terminalAt) || expiresAt.After(terminalAt.Add(5*time.Second)) {
+		t.Fatalf("tasks.maxAge=5s should cap terminal retention from the transition: terminal=%v expiry=%v", terminalAt, expiresAt)
 	}
 	if _, ok := terminal["ttlRemainingMs"].(float64); !ok {
 		t.Fatalf("terminal task should report ttlRemainingMs: %v", terminal)

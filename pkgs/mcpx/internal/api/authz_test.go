@@ -3,7 +3,7 @@ package api_test
 import (
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
 )
 
 // Every operation in the table declares a permission, and the declared

@@ -11,6 +11,7 @@ import {
   collectFileExportAdapter,
   credentialRefLabel,
   validateCredentialRef,
+  type CredentialRef,
   type PreviousValue,
 } from "../src/token-adapter.ts";
 
@@ -31,6 +32,21 @@ describe("credential contract", () => {
     expect(() => validateCredentialRef({ kind: "file", path: "/tmp/t", mode: 0o600, cookie: "a=b" })).toThrow(
       /references only/,
     );
+  });
+
+  test("credential value keys are checked as own properties for both reference kinds", () => {
+    const keys = ["token", "cookie", "value", "secret", "password", "apiKey", "api_key", "authorization"];
+    const refs: CredentialRef[] = [
+      { kind: "bitwarden", name: "x" },
+      { kind: "file", path: "/tmp/t", mode: 0o600 },
+    ];
+    for (const ref of refs) {
+      for (const key of keys) {
+        const inherited = Object.assign(Object.create({ [key]: "sensitive" }), ref);
+        expect(validateCredentialRef(inherited)).toEqual(ref);
+        expect(() => validateCredentialRef({ ...ref, [key]: undefined })).toThrow(/references only/);
+      }
+    }
   });
 
   test("a file reference without the 0600 contract is rejected", () => {
@@ -129,7 +145,7 @@ const PREV_ENTRY: PreviousValue<QuotaCurrentEntry> = {
   value: {
     providerId: "meta",
     providerName: "Meta",
-    serviceId: "meta:high-usage",
+    serviceId: "meta",
     state: "ok",
     measuredAt: "2026-10-29T04:30:00Z",
     source: "file-export/meta-laptop",
@@ -170,7 +186,7 @@ describe("file-export adapter (the framework's first adapter)", () => {
     });
     expect(out.status).toBe("ok");
     expect(out.value?.providerId).toBe("meta");
-    expect(out.value?.serviceId).toBe("meta:high-usage");
+    expect(out.value?.serviceId).toBe("meta");
     expect(out.value?.source).toBe("file-export/meta-laptop");
     expect(out.value?.windows.some((w) => w.name === "5h" && w.pctOfLimit === 12.5)).toBe(true);
   });
@@ -185,7 +201,7 @@ describe("file-export adapter (the framework's first adapter)", () => {
     });
     expect(out.status).toBe("session-expired");
     expect(out.needsRelogin).toBe(true);
-    expect(out.value?.serviceId).toBe("meta:high-usage");
+    expect(out.value?.serviceId).toBe("meta");
     expect(out.stale).toBe(true);
   });
 
@@ -207,6 +223,44 @@ describe("file-export adapter (the framework's first adapter)", () => {
     expect(out.value?.measuredAt).toBe("2026-10-29T04:30:00Z");
   });
 
+  test("a null or undefined window element is unparseable (never throws), previous retained", () => {
+    for (const windows of [[null], [undefined]]) {
+      const out = collectFileExportAdapter({
+        now: NOW,
+        previous: PREV_ENTRY,
+        fileMtimeIso: "2026-10-29T04:59:00Z",
+        stale: false,
+        doc: {
+          service: "meta",
+          source: "file-export/meta-laptop",
+          status: "ok",
+          measuredAt: "2026-10-29T04:59:00Z",
+          windows: windows as never,
+        },
+      });
+      expect(out.status).toBe("unparseable");
+      expect(out.value?.measuredAt).toBe("2026-10-29T04:30:00Z");
+    }
+  });
+
+  test("a non-string window name is unparseable drift, not a healthy reading", () => {
+    const out = collectFileExportAdapter({
+      now: NOW,
+      previous: PREV_ENTRY,
+      fileMtimeIso: "2026-10-29T04:59:00Z",
+      stale: false,
+      doc: {
+        service: "meta",
+        source: "file-export/meta-laptop",
+        status: "ok",
+        measuredAt: "2026-10-29T04:59:00Z",
+        windows: [{ name: 42, usedPct: 1 }] as never,
+      },
+    });
+    expect(out.status).toBe("unparseable");
+    expect(out.value?.measuredAt).toBe("2026-10-29T04:30:00Z");
+  });
+
   test("a stale producer is transport-unavailable; a missing document is fetch-failed with null", () => {
     const stale = collectFileExportAdapter({
       now: NOW,
@@ -216,7 +270,7 @@ describe("file-export adapter (the framework's first adapter)", () => {
       doc: { status: "ok" },
     });
     expect(stale.status).toBe("transport-unavailable");
-    expect(stale.value?.serviceId).toBe("meta:high-usage");
+    expect(stale.value?.serviceId).toBe("meta");
     const missing = collectFileExportAdapter({ now: NOW, previous: null, fileMtimeIso: null, stale: false, doc: null });
     expect(missing.status).toBe("fetch-failed");
     expect(missing.value).toBeNull();

@@ -13,7 +13,7 @@
  * Success document (file-export format the #1151 gatherer ingests):
  *   { service: "supabase", source: "file-export/supabase",
  *     status: "ok" | "partial",
- *     measuredAt: <ISO>, project: "muse-dev", ref: <project ref>,
+ *     measuredAt: <ISO>, project: "muse-dev2", ref: <project ref>,
  *     metrics: [ { id: "db-size", used: 1.15, limit: 0.5, unit: "gb",
  *                  source: "management-api:/database/query pg_database_size",
  *                  flag?: "approaching-paid-trigger", detail? } ],
@@ -47,14 +47,15 @@
  *   egres bytes        no endpoint exists (request counts only) — documented gap
  */
 import { execFile } from "node:child_process";
+import fs from "node:fs";
 import { appendFile, mkdir, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 export const SOURCE = "file-export/supabase";
-export const DEFAULT_PROJECT_REF = "nltgxorqwxhgfzseiirt"; // muse-dev (#1050)
-export const DEFAULT_SECRET_NAME = "supabase.access-token-muse-cli";
+export const DEFAULT_PROJECT_REF = "keihfchslgjetkmnmzra"; // muse-dev2
+export const DEFAULT_SECRET_NAME = "supabase.muse-dev2.access-token-muse-cli";
 export const API_BASE = "https://api.supabase.com/v1";
 
 /** Supabase Free-plan allowances (supabase.com/pricing, recorded 2026-10-29:
@@ -97,7 +98,12 @@ export function parseRequestCount(payload) {
 }
 
 /** Measured $0 (or more) from billing/addons: selected addons priced fixed
- * monthly amounts; usage-priced addons are unknown while none are selected. */
+ * monthly amounts; usage-priced addons are unknown while none are selected.
+ * Fail-closed per addon (#2492): a selected addon whose price amount is
+ * missing, not a finite number, or negative is a shape this parser does
+ * not know — throw unparseable (run() turns that into billing: null for
+ * the tick) instead of silently counting the addon as $0 or letting a
+ * negative amount into a total that gets stamped measured. */
 export function billedFromAddons(payload) {
   const selected = payload?.selected_addons;
   if (!Array.isArray(selected)) {
@@ -106,7 +112,10 @@ export function billedFromAddons(payload) {
   let usd = 0;
   for (const addon of selected) {
     const amount = addon?.price?.amount;
-    if (typeof amount === "number" && Number.isFinite(amount)) usd += amount;
+    if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) {
+      throw new ExportError("unparseable", 6, "billing/addons: selected addon price amount missing/invalid");
+    }
+    usd += amount;
   }
   return Math.round(usd * 100) / 100;
 }
@@ -388,6 +397,14 @@ async function main() {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+const isMain = (() => {
+  try {
+    if (!process.argv[1]) return false;
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+if (isMain) {
   await main();
 }

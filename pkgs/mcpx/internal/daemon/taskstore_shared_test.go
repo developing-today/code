@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/settings"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // Issue #1555: TaskStore is how internal/cli shares the daemon's one
@@ -39,7 +39,10 @@ func TestTaskStoreUsesHotRetentionSettings(t *testing.T) {
 	if s.TaskStore() != store {
 		t.Fatal("a hot settings update replaced the shared task store")
 	}
-	task := store.Start(0, func(context.Context) (any, *tasks.Fault) { return "done", nil })
+	task, err := store.Start(tasks.UnboundRequestor, 0, func(context.Context) (any, *tasks.Fault) { return "done", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
 	if task.TTL != 250 {
 		t.Fatalf("new task did not use hot tasks.ttl update: TTL=%dms", task.TTL)
 	}

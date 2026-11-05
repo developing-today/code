@@ -478,6 +478,41 @@ let
           user = { };
           # sara = { };
         };
+        # clanServices replacements for the clanModules.* imports that
+        # modules/shared.nix used to carry (clanModules was removed
+        # upstream; see #159). state-version is not listed here:
+        # clanCore enables it by default.
+        inventory.instances = {
+          # Runs the OpenSSH server with persistent host keys.
+          # Root's authorized keys stay in machines/user/configuration.nix.
+          sshd = {
+            roles.server.tags.all = { };
+            # The old sshd module only generated host keys; CA-signed host
+            # certificates are a new-service extra that would require
+            # shared openssh-ca vars this repo does not have.
+            roles.server.settings.certificate.enable = false;
+          };
+          # Generates the root password (was clanModules.root-password).
+          user-root = {
+            module.name = "users";
+            roles.default.tags.all = { };
+            roles.default.settings.user = "root";
+          };
+          # Zerotier network (was clan.core.networking.zerotier.controller
+          # in machines/user/configuration.nix; the direct option was
+          # removed upstream). This machine is the controller and a peer.
+          zerotier = {
+            module.name = "zerotier";
+            roles.controller.machines.user = { };
+            roles.peer.machines.user = { };
+          };
+          # Generates the "user" password (was clanModules.user-password).
+          user-user = {
+            module.name = "users";
+            roles.default.tags.all = { };
+            roles.default.settings.user = "user";
+          };
+        };
       };
     in
     {
@@ -548,6 +583,32 @@ let
                   actionlint
                 ];
               };
+
+              # Lean shell for the fleet build container and GHA job
+              # containers (dezren39/fleet, containers/fleet-build).
+              # Same motivation as mcpx-lint above: `default` is the
+              # whole monorepo workstation environment (Android SDK,
+              # clan, desktop tooling via nix-common.nix) and is far
+              # too heavy to warm into a shared CI image. This shell
+              # carries only the CI toolchains — the repo's pinned
+              # Rust toolchain, Go, Bun, Node, zig — plus basic tools,
+              # all from the same nixpkgs-unstable tree as `default`,
+              # so container CI and the workstation agree on versions.
+              # The fleet image warms THIS shell for this repo.
+              fleet = pkgs.mkShell {
+                packages = [
+                  nixCommon.rustToolchain
+                ]
+                ++ (with pkgs; [
+                  git
+                  jq
+                  ripgrep
+                  go_1_27
+                  bun
+                  nodejs
+                  zig
+                ]);
+              };
             }
           );
     };
@@ -600,15 +661,49 @@ let
 
       mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix { };
       mcpxDocs = pkgs.callPackage ../pkgs/mcpx/docs.nix { };
+      mcpxRealServers = pkgs.callPackage ../pkgs/mcpx/real-servers.nix { };
       idMailDeploy = pkgs.callPackage ../nixos/services/id-mail/worker/deploy.nix { };
+      pkarrDeploy = pkgs.callPackage ../pkgs/pkarr-worker/deploy.nix {
+        cf = pkgs.callPackage ../pkgs/cf { };
+      };
+      developingTodayBackupDeploy = pkgs.callPackage ../infra/github-backup/deploy.nix { };
     in
     {
       packages = {
-        inherit mcpx idMailDeploy;
+        inherit
+          mcpx
+          idMailDeploy
+          pkarrDeploy
+          developingTodayBackupDeploy
+          ;
         mcpx-docs = mcpxDocs;
+        mcpx-real-servers = mcpxRealServers;
+      };
+      checks = {
+        # The packaging test (#1981): run the built mcpx artifact --
+        # never the source tree -- with an empty HOME: --version,
+        # the wrapper PATH (via `mcpx doctor` in a scrubbed
+        # environment), the man page and completions, and a stdio
+        # serve handshake. The script is the single source, shared
+        # with the hand-run command in pkgs/mcpx/AGENTS.md.
+        mcpx-packaging =
+          pkgs.runCommand "mcpx-packaging-test"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.gzip
+                pkgs.jq
+              ];
+            }
+            ''
+              bash ${../pkgs/mcpx/packaging-test.sh} ${mcpx}
+              touch $out
+            '';
       };
       apps = (pkgs.lib.mapAttrs mkRecipeApp publicRecipes) // {
         id-mail-deploy = mkApp idMailDeploy "Deploy the mail Worker from this checkout (needs Bitwarden and sops access)";
+        pkarr-deploy = mkApp pkarrDeploy "Deploy the pkarr Worker via the cf versions flow (needs Bitwarden and sops access)";
+        developing-today-backup-deploy = mkApp developingTodayBackupDeploy "Deploy the developing-today-backup Worker (github-backup webhook receiver) via the wrangler versions flow (needs Bitwarden and sops access)";
         mcpx = {
           type = "app";
           program = "${mcpx}/bin/mcpx";
@@ -1000,6 +1095,90 @@ let
       ))
     ];
 
+  # Flake checks for the laptop-backups shell suites (#1841): the seven
+  # suites in nixos/home drive the real backup and watchdog scripts with
+  # stubbed systemctl/bws/journalctl/rclone, so each is a runCommandLocal
+  # that copies nixos/home somewhere writable and runs one suite. Until
+  # this wiring they ran only by hand on the laptop, so a regression in
+  # the backup scripts reached CI only when somebody remembered to run
+  # them. inputs.self is copied, not run in place: the store path is
+  # read-only and the suites write beside themselves.
+  make-laptop-backups-checks = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      suites = [
+        "laptop-backups-watchdog"
+        "pm-dashboard-backup"
+        "pm-dashboard-backup-copy"
+        "pm-dashboard-backup-date"
+        "pm-dashboard-backup-manifest"
+        "pm-dashboard-backup-prune"
+        "pm-dashboard-backup-record"
+      ];
+    in
+    {
+      checks = builtins.listToAttrs (
+        map (suite: {
+          name = "laptop-backups-${suite}";
+          value =
+            pkgs.runCommandLocal "check-laptop-backups-${suite}"
+              {
+                nativeBuildInputs = [
+                  pkgs.bash
+                  pkgs.coreutils
+                  pkgs.diffutils
+                  pkgs.findutils
+                  pkgs.gnugrep
+                  pkgs.gnused
+                  pkgs.gnutar
+                  pkgs.gzip
+                  pkgs.jq
+                  pkgs.python3
+                  pkgs.util-linux
+                  pkgs.zstd
+                ];
+              }
+              ''
+                cp -r ${inputs.self}/nixos/home home
+                chmod -R u+w home
+                cd home
+                bash ${suite}.test.sh
+                mkdir -p $out
+                echo "${suite} suite passed" > $out/result.txt
+              '';
+        }) suites
+      );
+    }
+  );
+
+  # fleet multicall binary packages (pkgs/fleet; epic code#5412,
+  # step 1 code#5429). One workspace, capability variants as
+  # separate attrs; the connect-static flavor (musl) is only
+  # offered on Linux, where a static target makes sense.
+  make-fleet = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      fleetPkgs = pkgs.callPackage ../pkgs/fleet {
+        sourceRev = inputs.self.rev or "dirty";
+      };
+    in
+    {
+      packages = {
+        inherit (fleetPkgs)
+          fleet
+          fleet-serve
+          fleet-connect
+          fleet-brokers
+          ;
+      }
+      // pkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") {
+        inherit (fleetPkgs) fleet-connect-static fleet-static;
+      };
+    }
+  );
+
   make-mcpx-overlay = {
     overlays = {
       default = final: prev: {
@@ -1010,6 +1189,27 @@ let
       };
     };
   };
+
+  # The mcpx daemon modules (code#4801): the canonical module files
+  # live in pkgs/mcpx/modules; these outputs wrap them with this
+  # flake's own mcpx build as the package default. The opencode fork
+  # re-exports the same files defaulted to its build, and
+  # openchamber passes them through — the option set never forks.
+  make-mcpx-modules =
+    let
+      wrap =
+        module:
+        { lib, pkgs, ... }:
+        {
+          imports = [ module ];
+          services.mcpx.package = lib.mkDefault (pkgs.callPackage ../pkgs/mcpx/package.nix { });
+        };
+    in
+    {
+      nixosModules.mcpx = wrap ../pkgs/mcpx/modules/nixos.nix;
+      homeManagerModules.mcpx = wrap ../pkgs/mcpx/modules/home-manager.nix;
+      darwinModules.mcpx = wrap ../pkgs/mcpx/modules/darwin.nix;
+    };
 
   _self = merge [
     lib
@@ -1055,6 +1255,9 @@ let
         make-root-apps
         make-id
         make-mcpx-overlay
+        make-mcpx-modules
+        make-laptop-backups-checks
+        make-fleet
         ;
     }
   ];

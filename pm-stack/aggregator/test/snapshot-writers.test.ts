@@ -14,6 +14,7 @@ import {
   recordsFromPools,
   recordsFromProviderUsage,
   recordsFromSaasServices,
+  freshestDate,
 } from "../src/snapshot-records.ts";
 import { SnapshotStore, isSnapshotRecord } from "../src/snapshots.ts";
 
@@ -88,7 +89,15 @@ describe("recordsFromSaasServices", () => {
 describe("recordsFromPaygLines", () => {
   test("backfill ids are reused so the series continues", () => {
     const lines: PaygLine[] = [
-      { id: "meta-payg", label: "Meta", accruedUsd: 23.92, unbilledUsd: 0.01, note: "", measuredAt: "2026-10-25", sourceClass: "console" },
+      {
+        id: "meta-payg",
+        label: "Meta",
+        accruedUsd: 23.92,
+        unbilledUsd: 0.01,
+        note: "",
+        measuredAt: "2026-10-25",
+        sourceClass: "console",
+      },
       {
         id: "cloudflare-gateway",
         label: "GW",
@@ -112,7 +121,7 @@ describe("recordsFromPaygLines", () => {
     ];
     const recs = recordsFromPaygLines(lines, "fleet-feed-collector");
     expect(recs.map((r) => `${r.serviceId}/${r.metricId}`)).toEqual([
-      "meta:high-usage/payg-accrued",
+      "meta/payg-accrued",
       "cloudflare/gateway-accrual-est",
     ]);
     expect(recs[0]).toMatchObject({ value: 23.92, unit: "usd", source: "console" });
@@ -127,7 +136,9 @@ describe("recordsFromPools", () => {
       provider: "Anthropic",
       plan: "Claude Pro",
       state: "healthy",
-      windows: [{ name: "weekly", unit: "other", limit: 100, used: 42, percent: 42, resetsAt: "2026-10-28T14:00:00-05:00" }],
+      windows: [
+        { name: "weekly", unit: "other", limit: 100, used: 42, percent: 42, resetsAt: "2026-10-28T14:00:00-05:00" },
+      ],
     };
     // The 2027 renewal date elsewhere in the section is an operational
     // date, not a read — the Last checked bullet wins.
@@ -163,7 +174,11 @@ describe("recordsFromDns", () => {
 
 describe("recordsFromProviderUsage", () => {
   test("session count always; codex windows only when the endpoint answered", () => {
-    const walled = { generated_at: "2026-10-26T10:59:33Z", sessions: [1, 2, 3], codex_usage: { status: "http 403", usage: null } };
+    const walled = {
+      generated_at: "2026-10-26T10:59:33Z",
+      sessions: [1, 2, 3],
+      codex_usage: { status: "http 403", usage: null },
+    };
     expect(recordsFromProviderUsage(walled, "check-usage")).toEqual([
       {
         ts: "2026-10-26T10:59:33Z",
@@ -191,11 +206,67 @@ describe("recordsFromProviderUsage", () => {
     const recs = recordsFromProviderUsage(answered, "check-usage");
     expect(recs.map((r) => `${r.serviceId}/${r.metricId}=${r.value}`)).toEqual([
       "opencode-server/sessions-listed=0",
-      "openai:codex/7-day=12",
-      "openai:codex/5-hour=3",
+      "openai.main/7-day=12",
+      "openai.main/5-hour=3",
     ]);
     expect(recordsFromProviderUsage(null, "check-usage")).toEqual([]);
     expect(recordsFromProviderUsage({ sessions: [] }, "check-usage")).toEqual([]);
+  });
+
+  test("skips an invalid window without suppressing sessions or a valid companion", () => {
+    const snapshot = {
+      generated_at: "2026-10-26T10:59:33Z",
+      sessions: [1],
+      codex_usage: {
+        usage: {
+          rate_limit: {
+            primary_window: { used_percent: -1, limit_window_seconds: 604800 },
+            secondary_window: { used_percent: 100, limit_window_seconds: 18000 },
+          },
+        },
+      },
+    };
+
+    expect(
+      recordsFromProviderUsage(snapshot, "check-usage").map((r) => `${r.serviceId}/${r.metricId}=${r.value}`),
+    ).toEqual(["opencode-server/sessions-listed=1", "openai.main/5-hour=100"]);
+  });
+
+  test("skips percentages above 100 and non-finite values", () => {
+    const snapshot = {
+      generated_at: "2026-10-26T10:59:33Z",
+      sessions: [],
+      codex_usage: {
+        usage: {
+          rate_limit: {
+            primary_window: { used_percent: 100.01, limit_window_seconds: 604800 },
+            secondary_window: { used_percent: Number.POSITIVE_INFINITY, limit_window_seconds: 18000 },
+          },
+        },
+      },
+    };
+
+    expect(
+      recordsFromProviderUsage(snapshot, "check-usage").map((r) => `${r.serviceId}/${r.metricId}=${r.value}`),
+    ).toEqual(["opencode-server/sessions-listed=0"]);
+  });
+
+  test("accepts the inclusive percentage boundaries", () => {
+    const snapshot = {
+      generated_at: "2026-10-26T10:59:33Z",
+      codex_usage: {
+        usage: {
+          rate_limit: {
+            primary_window: { used_percent: 0, limit_window_seconds: 604800 },
+            secondary_window: { used_percent: 100, limit_window_seconds: 18000 },
+          },
+        },
+      },
+    };
+
+    expect(
+      recordsFromProviderUsage(snapshot, "check-usage").map((r) => `${r.serviceId}/${r.metricId}=${r.value}`),
+    ).toEqual(["openai.main/7-day=0", "openai.main/5-hour=100"]);
   });
 });
 
@@ -217,7 +288,7 @@ describe("DeepSeek CNY balance (#1052)", () => {
     expect(recs).toHaveLength(1);
     expect(recs[0]).toMatchObject({
       ts: dayTs("2026-10-25"),
-      serviceId: "deepseek:api",
+      serviceId: "deepseek",
       metricId: "credits_balance",
       value: 44.63,
       unit: "cny",
@@ -233,6 +304,37 @@ describe("DeepSeek CNY balance (#1052)", () => {
     expect(recordsFromDeepseekBalance("### DeepSeek\n- balance: ¥44.63\n", "b")).toEqual([]);
   });
 
+  test("an impossible on-line day falls back to Last checked and passes the gate (#3379)", () => {
+    const doc = `# Quota view
+
+### DeepSeek
+- **PAYG balance:** ¥44.63 (2026-02-30 read), parked.
+- **Last checked:** 2026-10-30 refresh
+`;
+    const recs = recordsFromDeepseekBalance(doc, "b");
+    expect(recs).toHaveLength(1);
+    expect(recs[0].ts).toBe(dayTs("2026-10-30"));
+    expect(isSnapshotRecord(recs[0])).toBe(true);
+  });
+
+  test("an impossible on-line month falls back to Last checked and passes the gate (#3379)", () => {
+    const doc = `# Quota view
+
+### DeepSeek
+- **PAYG balance:** ¥44.63 (2026-13-01 read), parked.
+- **Last checked:** 2026-10-30 refresh
+`;
+    const recs = recordsFromDeepseekBalance(doc, "b");
+    expect(recs).toHaveLength(1);
+    expect(recs[0].ts).toBe(dayTs("2026-10-30"));
+    expect(isSnapshotRecord(recs[0])).toBe(true);
+  });
+
+  test("an impossible on-line date with no other valid date yields no record (#3379)", () => {
+    expect(recordsFromDeepseekBalance("### DeepSeek\n- **PAYG balance:** ¥44.63 (2026-02-30 read)\n", "b")).toEqual([]);
+    expect(recordsFromDeepseekBalance("### DeepSeek\n- **PAYG balance:** ¥44.63 (2026-13-01 read)\n", "b")).toEqual([]);
+  });
+
   test("a cny record validates, round-trips the store, and no DeepSeek record is usd", async () => {
     const dir = await mkdtemp(join(tmpdir(), "snap-cny-"));
     try {
@@ -241,7 +343,7 @@ describe("DeepSeek CNY balance (#1052)", () => {
       expect(isSnapshotRecord(recs[0])).toBe(true);
       expect(await store.append(recs)).toBe(1);
       expect(await store.append(recs)).toBe(0); // re-run dedupes
-      const stored = (await store.readAll()).filter((r) => r.serviceId === "deepseek:api");
+      const stored = (await store.readAll()).filter((r) => r.serviceId === "deepseek");
       expect(stored).toHaveLength(1);
       expect(stored[0].unit).toBe("cny");
       expect(stored[0].value).toBe(44.63);
@@ -314,13 +416,21 @@ describe("writer dedupe invariant", () => {
       const store = new SnapshotStore(dir);
       const batch = [
         ...recordsFromSaasServices(
-          [svc({ metrics: [{ id: "databases", label: "Databases", unit: "count", used: 1, limit: 100, highlight: true }] })],
+          [
+            svc({
+              metrics: [{ id: "databases", label: "Databases", unit: "count", used: 1, limit: 100, highlight: true }],
+            }),
+          ],
           "fleet-feed-collector",
         ),
         // The same fact derived by another writer (different
         // observedBy) is the same record to the store.
         ...recordsFromSaasServices(
-          [svc({ metrics: [{ id: "databases", label: "Databases", unit: "count", used: 1, limit: 100, highlight: true }] })],
+          [
+            svc({
+              metrics: [{ id: "databases", label: "Databases", unit: "count", used: 1, limit: 100, highlight: true }],
+            }),
+          ],
           "stewardship-cycle",
         ),
       ];
@@ -330,5 +440,43 @@ describe("writer dedupe invariant", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("snapshot boundary on validate.ts primitives (#2578 Phase 2)", () => {
+  const base = {
+    serviceId: "cloudflare",
+    metricId: "gateway-accrual-est",
+    unit: "usd-est",
+    source: "estimate",
+    observedBy: "stewardship-cycle",
+    ts: "2026-10-26T12:00:00Z",
+    value: 5,
+  } as const;
+
+  test("limit/resetsAt are validated when present (#2483)", () => {
+    expect(isSnapshotRecord({ ...base, limit: 100 })).toBe(true);
+    expect(isSnapshotRecord({ ...base, limit: 0 })).toBe(true);
+    expect(isSnapshotRecord({ ...base, limit: null })).toBe(true);
+    expect(isSnapshotRecord({ ...base, limit: Number.NaN })).toBe(false);
+    expect(isSnapshotRecord({ ...base, limit: Number.POSITIVE_INFINITY })).toBe(false);
+    expect(isSnapshotRecord({ ...base, limit: -1 })).toBe(false);
+    expect(isSnapshotRecord({ ...base, resetsAt: "2026-11-01T00:00:00Z" })).toBe(true);
+    expect(isSnapshotRecord({ ...base, resetsAt: null })).toBe(true);
+    expect(isSnapshotRecord({ ...base, resetsAt: "2026-02-30" })).toBe(false);
+    expect(isSnapshotRecord({ ...base, resetsAt: "2026-13-01T00:00:00Z" })).toBe(false);
+    expect(isSnapshotRecord({ ...base, resetsAt: "soon" })).toBe(false);
+  });
+
+  test("impossible ts dates never validate (#2264)", () => {
+    expect(isSnapshotRecord({ ...base, ts: "2026-02-30T12:00:00Z" })).toBe(false);
+    expect(isSnapshotRecord({ ...base, ts: "2026-13-01T12:00:00Z" })).toBe(false);
+  });
+
+  test("freshestDate ignores impossible dates (#2264)", () => {
+    expect(freshestDate("checked 2026-10-01; renews 2026-02-30")).toBe("2026-10-01");
+    expect(freshestDate("only 2026-13-01 here")).toBe(null);
+    expect(freshestDate("2026-10-01 and 2026-10-03")).toBe("2026-10-03");
+    expect(freshestDate("no dates")).toBe(null);
   });
 });

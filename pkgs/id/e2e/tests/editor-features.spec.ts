@@ -148,11 +148,17 @@ test.describe("Syntax Highlighting", () => {
     await page.waitForTimeout(2_000);
 
     // .txt files use rich schema (not raw/code_block), so no Shiki spans
-    // Check that no syntax-colored spans exist
+    // Check that no syntax-colored spans exist. Collab-cursor decorations
+    // are not highlighting: the cursor bar segment carries a styled span
+    // (background + text color) inside .collab-cursor, and the probe on
+    // #1229 showed it is the one span this count used to pick up in a
+    // .txt editor. Exclude decoration spans only — a genuine Shiki span
+    // anywhere else in the editor still counts.
     const coloredSpanCount = await editor.evaluate((el) => {
       const spans = el.querySelectorAll("span[style]");
       let count = 0;
       for (const span of spans) {
+        if (span.closest(".collab-cursor, .collab-cursor-bar")) continue;
         if ((span as HTMLElement).style.color) count++;
       }
       return count;

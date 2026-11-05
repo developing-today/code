@@ -7,18 +7,24 @@
 // inventing numbers. Manual/console reads are a first-class source
 // class (§2); nothing here pretends to be a live meter.
 //
-// Backblaze B2, Fly.io, and Baseten are deliberately NOT services
-// here: B2 is omitted until an account exists (§1.4), and Fly/Baseten
-// are unheld candidates with no meter and no renewal date.
+// Backblaze B2, Fly.io, and Baseten are candidate shells below
+// (#1058): no account exists (§1.4) and they have no meter and no
+// renewal date, but they render as explicit candidate cards — never
+// silently absent, never presented as held.
 
 import type { ChargeRow, DatedRead, PaygEstimate, PaygLine, SaasGroup, SaasService, UsageMetric } from "./model.ts";
 import { sectionOf } from "./quota-extract.ts";
+import { parseIsoDate } from "./validate.ts";
 
 const DATE_RE = /\d{4}-\d{2}-\d{2}/g;
 
 /** Every ISO date in a text, ascending. */
 function datesIn(text: string): string[] {
-  return [...text.matchAll(DATE_RE)].map((m) => m[0]).sort();
+  // Real calendar dates only (#2264), mirroring snapshot-records.ts.
+  return [...text.matchAll(DATE_RE)]
+    .map((m) => m[0])
+    .filter((d) => parseIsoDate(d) !== null)
+    .sort();
 }
 
 /** The freshest ISO date in a text, or null. */
@@ -305,14 +311,19 @@ const cloudflareMetrics: MetricExtractor = (section) => {
       limit: allowance(both, /([\d,.]+[kMB]?) GB-hours disk/),
     }),
   );
-  const counts = /(\d+) Workers, (\d+) R2 buckets[^;]*; (\d+) D1, (\d+) KV, (\d+) Queues/.exec(usage);
+  const counts = /([\d,]+) Workers, ([\d,]+) R2 buckets[^;]*; ([\d,]+) D1, ([\d,]+) KV, ([\d,]+) Queues/.exec(usage);
   if (counts) {
     out.push(
-      metric({ id: "workers-count", label: "Workers deployed", unit: "count", used: Number(counts[1]) }),
-      metric({ id: "r2-buckets", label: "R2 buckets", unit: "count", used: Number(counts[2]) }),
-      metric({ id: "d1-count", label: "D1 databases", unit: "count", used: Number(counts[3]) }),
-      metric({ id: "kv-count", label: "KV namespaces", unit: "count", used: Number(counts[4]) }),
-      metric({ id: "queues-count", label: "Queues", unit: "count", used: Number(counts[5]) }),
+      metric({
+        id: "workers-count",
+        label: "Workers deployed",
+        unit: "count",
+        used: Number(counts[1].replace(/,/g, "")),
+      }),
+      metric({ id: "r2-buckets", label: "R2 buckets", unit: "count", used: Number(counts[2].replace(/,/g, "")) }),
+      metric({ id: "d1-count", label: "D1 databases", unit: "count", used: Number(counts[3].replace(/,/g, "")) }),
+      metric({ id: "kv-count", label: "KV namespaces", unit: "count", used: Number(counts[4].replace(/,/g, "")) }),
+      metric({ id: "queues-count", label: "Queues", unit: "count", used: Number(counts[5].replace(/,/g, "")) }),
     );
   }
   return out.filter((m) => m.used != null || m.limit != null);
@@ -321,14 +332,14 @@ const cloudflareMetrics: MetricExtractor = (section) => {
 const tursoMetrics: MetricExtractor = (section) => {
   const plan = bullet(section, /\*\*Plan \/ price \/ allowance:\*\*/);
   const usage = bullet(section, /\*\*Usage \/ dates:\*\*/);
-  const db = /(\d+) DB/.exec(usage);
+  const db = /([\d,]+) DB/.exec(usage);
   const zero = /0 B, 0 usage/.test(usage);
   return [
     metric({
       id: "databases",
       label: "Databases",
       unit: "count",
-      used: db ? Number(db[1]) : null,
+      used: db ? Number(db[1].replace(/,/g, "")) : null,
       limit: allowance(plan, /(100) DBs/),
       highlight: true,
     }),
@@ -392,7 +403,7 @@ const supabaseMetrics: MetricExtractor = () => [
 const githubMetrics: MetricExtractor = (section) => {
   const plan = bullet(section, /\*\*Plan \/ price \/ allowance:\*\*/);
   const usage = bullet(section, /\*\*Usage \/ dates:\*\*/);
-  const comped = /(\d[\d,]*) Linux \+ (\d+) macOS minutes/.exec(usage);
+  const comped = /([\d,]+) Linux \+ ([\d,]+) macOS minutes/.exec(usage);
   const out: UsageMetric[] = [
     metric({
       id: "actions-billable-minutes",
@@ -431,7 +442,7 @@ const githubMetrics: MetricExtractor = (section) => {
         id: "actions-comped-minutes",
         label: "Actions minutes (comped, October)",
         unit: "minutes",
-        used: Number(comped[1].replace(/,/g, "")) + Number(comped[2]),
+        used: Number(comped[1].replace(/,/g, "")) + Number(comped[2].replace(/,/g, "")),
         note: "Fully comped/discounted — net $0; comped minutes do not consume the plan allowance.",
       }),
     );
@@ -442,7 +453,7 @@ const githubMetrics: MetricExtractor = (section) => {
 const modalMetrics: MetricExtractor = (section) => {
   const plan = bullet(section, /\*\*Plan \/ price \/ allowance:\*\*/);
   const usage = bullet(section, /\*\*Usage \/ dates:\*\*/);
-  const credits = /\$(\d+(?:\.\d+)?) monthly compute-credit/.exec(plan);
+  const credits = /\$([\d,]+(?:\.\d+)?) monthly compute-credit/.exec(plan);
   // Monthly console read (§2.2, #1111): the Usage bullet carries the
   // dated used figure, e.g. "$12.50 compute credits used on 2026-10-24"
   // or "used $12.50". Plan bullet holds the $30/mo grant (the limit).
@@ -450,20 +461,23 @@ const modalMetrics: MetricExtractor = (section) => {
   // deliberately NOT numbers: no fallback below matches a bare number,
   // so they stay null instead of masquerading as dollars (Codex P2).
   const usedMatch =
-    /\$(\d+(?:\.\d+)?)\s*(?:monthly\s*)?compute\s+credits?\s*used/i.exec(usage) ??
-    /(\d+(?:\.\d+)?)\s*credits?\s*used/i.exec(usage) ??
-    /used[:\s]+\$(\d+(?:\.\d+)?)/i.exec(usage) ??
-    /used[:\s]+(\d+(?:\.\d+)?)\s*credits?\b/i.exec(usage);
-  const used = usedMatch ? Number(usedMatch[1]) : null;
+    /\$([\d,]+(?:\.\d+)?)\s*(?:monthly\s*)?compute\s+credits?\s*used/i.exec(usage) ??
+    /([\d,]+(?:\.\d+)?)\s*credits?\s*used/i.exec(usage) ??
+    /used[:\s]+\$([\d,]+(?:\.\d+)?)/i.exec(usage) ??
+    /used[:\s]+([\d,]+(?:\.\d+)?)\s*credits?\b/i.exec(usage);
+  const used = usedMatch ? Number(usedMatch[1].replace(/,/g, "")) : null;
   return [
     metric({
       id: "compute-credits",
       label: "Compute credits / month",
       unit: "usd",
       used,
-      limit: credits ? Number(credits[1]) : 30,
+      limit: credits ? Number(credits[1].replace(/,/g, "")) : 30,
       highlight: true,
-      note: used != null ? "Monthly console read (§2.2)." : "No run hours or credit balance recorded — manual dashboard read (§2.2).",
+      note:
+        used != null
+          ? "Monthly console read (§2.2)."
+          : "No run hours or credit balance recorded — manual dashboard read (§2.2).",
     }),
   ];
 };
@@ -474,14 +488,14 @@ const modalMetrics: MetricExtractor = (section) => {
  * read 2026-10-26)". No metrics until a dated count is recorded. */
 const bitwardenMetrics: MetricExtractor = (section) => {
   const usage = bullet(section, /\*\*Usage \/ dates:\*\*/);
-  const secrets = /(\d+)\s*secrets?/i.exec(usage);
-  const projects = /(\d+)\s*projects?/i.exec(usage);
+  const secrets = /([\d,]+)\s*secrets?/i.exec(usage);
+  const projects = /([\d,]+)\s*projects?/i.exec(usage);
   return [
     metric({
       id: "secrets-count",
       label: "Secrets",
       unit: "count",
-      used: secrets ? Number(secrets[1]) : null,
+      used: secrets ? Number(secrets[1].replace(/,/g, "")) : null,
       highlight: true,
       note: "bws count-only read (§2.2); names/values never enter the hub.",
     }),
@@ -489,7 +503,7 @@ const bitwardenMetrics: MetricExtractor = (section) => {
       id: "projects-count",
       label: "Projects",
       unit: "count",
-      used: projects ? Number(projects[1]) : null,
+      used: projects ? Number(projects[1].replace(/,/g, "")) : null,
       highlight: true,
       note: "bws count-only read (§2.2); names/values never enter the hub.",
     }),
@@ -631,6 +645,42 @@ const SERVICE_SPECS: ServiceSpec[] = [
     shellNote:
       "Counts only in this hub — secret names/values never enter it. No count recorded yet; plan/price unknown.",
   },
+  {
+    id: "backblaze-b2",
+    name: "Backblaze B2",
+    group: "object-storage",
+    heading: /^### Backblaze B2$/,
+    summaryKey: /^Backblaze B2/,
+    status: "candidate",
+    cadenceDays: 31,
+    metrics: () => [],
+    shellNote:
+      "Candidate — not held: no account exists (§1.4); evaluated in free-services-to-check.md. Listed so it is never silently absent (#1058).",
+  },
+  {
+    id: "fly-io",
+    name: "Fly.io",
+    group: "compute",
+    heading: /^### Fly\.io$/,
+    summaryKey: /^Fly\.io/,
+    status: "candidate",
+    cadenceDays: 31,
+    metrics: () => [],
+    shellNote:
+      "Candidate — not held: no account, no meter, no renewal date. Listed so it is never silently absent (#1058).",
+  },
+  {
+    id: "baseten",
+    name: "Baseten",
+    group: "compute",
+    heading: /^### Baseten$/,
+    summaryKey: /^Baseten/,
+    status: "candidate",
+    cadenceDays: 31,
+    metrics: () => [],
+    shellNote:
+      "Candidate — not held: no account, no meter, no renewal date. Listed so it is never silently absent (#1058).",
+  },
 ];
 
 /** Extract every family-2 service from quota-view.md Part (b). */
@@ -651,6 +701,11 @@ export function extractSaasServices(doc: string): SaasService[] {
       measuredAt: null,
       sourceClass: "manual",
       sourceNote: "quota-view.md Part (b) — local-record snapshot; no live checks performed",
+      sources: {
+        quotaViewSection: spec.heading.source.replace(/^\^/, "").replace(/\$$/, ""),
+        trackerRow: row?.[0] ?? null,
+        baselineDoc: "evidence-and-interpretation-baseline-2026-10-20.md (~/workspace/ai-subscriptions/)",
+      },
       nextDate: row?.[4] && row[4] !== "unknown" ? row[4] : null,
       cadenceDays: spec.cadenceDays,
       conflicts: [],
@@ -710,6 +765,19 @@ export interface CloudflareExportMetric {
   lowerBound?: boolean;
 }
 
+/** One Workers AI neurons/day alert from the export document (#2287):
+ * a UTC day in the cycle-to-date whose grouped per-day total exceeded
+ * the exporter's threshold. Present only when firing. */
+export interface CloudflareExportAlert {
+  kind?: string;
+  date?: string;
+  totalNeurons?: number;
+  threshold?: number;
+  topModels?: { model?: string; neurons?: number }[];
+  /** Day total is a lower bound (grouped query hit its limit). */
+  lowerBound?: boolean;
+}
+
 /** The file-export document written by pm-stack/cloudflare-export. */
 export interface CloudflareExportDoc {
   service?: string;
@@ -719,6 +787,7 @@ export interface CloudflareExportDoc {
   cycleStart?: string;
   billing?: { status?: string };
   metrics?: CloudflareExportMetric[];
+  alerts?: CloudflareExportAlert[];
 }
 
 /** Freshness bound for preferring export values: the #1151 tick is
@@ -739,17 +808,22 @@ export function applyCloudflareExport(
   nowMs: number = Date.now(),
 ): SaasService[] {
   if (!doc || doc.status !== "ok" || !doc.measuredAt || !Array.isArray(doc.metrics)) return services;
-  const measuredMs = Date.parse(doc.measuredAt);
-  if (!Number.isFinite(measuredMs)) return services;
+  // Real-calendar ISO only (#5018): Date.parse rolls impossible dates
+  // over (2026-02-30 -> Mar 2) and accepts non-ISO strings, so the
+  // freshness window must be computed from parseIsoDate's verdict.
+  const measured = parseIsoDate(doc.measuredAt);
+  if (!measured) return services;
+  const measuredMs = measured.getTime();
   if (nowMs - measuredMs > CLOUDFLARE_EXPORT_STALE_MS || measuredMs > nowMs + 5 * 60 * 1000) return services;
   // A tick that ran just before a UTC month rollover carries the
   // previous cycle's totals; overlaying them would compare a full month
   // against a fresh one's limits. Documents without cycleStart (older
   // producers) stay backwards compatible.
   if (doc.cycleStart) {
-    const cycleMs = Date.parse(doc.cycleStart);
-    if (!Number.isFinite(cycleMs)) return services;
-    const cycle = new Date(cycleMs);
+    // Same real-calendar rule (#5018): an impossible cycleStart must not
+    // roll into a neighbouring month and evade the same-month check.
+    const cycle = parseIsoDate(doc.cycleStart);
+    if (!cycle) return services;
     const current = new Date(nowMs);
     if (cycle.getUTCFullYear() !== current.getUTCFullYear() || cycle.getUTCMonth() !== current.getUTCMonth()) {
       return services;
@@ -758,8 +832,13 @@ export function applyCloudflareExport(
   const cf = services.find((s) => s.id === "cloudflare");
   if (!cf) return services;
   const byId = new Map(
+    // A negative measurement is a broken export, not live data: drop it
+    // here as applySupabaseExport does, so the metric keeps its prose or
+    // null fallback instead of stamping a negative used/percent.
     doc.metrics
-      .filter((m) => m && typeof m.id === "string" && typeof m.used === "number" && Number.isFinite(m.used))
+      .filter(
+        (m) => m && typeof m.id === "string" && typeof m.used === "number" && Number.isFinite(m.used) && m.used >= 0,
+      )
       .map((m) => [m.id, m]),
   );
   if (!byId.size) return services;
@@ -780,8 +859,34 @@ export function applyCloudflareExport(
     doc.billing?.status === "invoice-only"
       ? "; billing invoice-only (subscriptions/billing 403 with the day-to-day token)"
       : ""
-  }`;
+  }${cloudflareAlertsNote(doc.alerts)}`;
   return services;
+}
+
+/** Render the export document's Workers AI neurons/day alerts (#2287)
+ * loudly onto the card's sourceNote. Absent/empty/malformed alerts
+ * render nothing — a document without alerts renders exactly as
+ * before. Only called for a fresh ok document (the caller's gates). */
+function cloudflareAlertsNote(alerts: CloudflareExportAlert[] | undefined): string {
+  if (!Array.isArray(alerts)) return "";
+  const parts: string[] = [];
+  for (const a of alerts) {
+    if (!a || a.kind !== "workers-ai-neurons-day") continue;
+    const top = Array.isArray(a.topModels)
+      ? a.topModels
+          .filter((m) => m && typeof m.model === "string")
+          .map((m) => `${m.model} ${typeof m.neurons === "number" ? m.neurons : "?"}`)
+          .join(", ")
+      : "";
+    parts.push(
+      `⚠ ALERT workers-ai-neurons-day: ${typeof a.date === "string" ? a.date : "unknown date"} burned ${
+        typeof a.totalNeurons === "number" ? a.totalNeurons : "?"
+      } neurons, over the ${typeof a.threshold === "number" ? a.threshold : "?"} threshold${
+        a.lowerBound ? " (total is a lower bound)" : ""
+      }${top ? `; top models: ${top}` : ""}`,
+    );
+  }
+  return parts.length ? `; ${parts.join("; ")}` : "";
 }
 
 // --- Supabase live export overlay (#1050) -----------------------------------
@@ -834,14 +939,24 @@ export function applySupabaseExport(
   nowMs: number = Date.now(),
 ): SaasService[] {
   if (!doc || (doc.status !== "ok" && doc.status !== "partial")) return services;
-  if (!doc.measuredAt || !Array.isArray(doc.metrics)) return services;
-  const measuredMs = Date.parse(doc.measuredAt);
-  if (!Number.isFinite(measuredMs)) return services;
+  if (typeof doc.measuredAt !== "string" || !doc.measuredAt || !Array.isArray(doc.metrics)) return services;
+  // Real-calendar ISO only (#5018): see the Cloudflare gate above.
+  const measured = parseIsoDate(doc.measuredAt);
+  if (!measured) return services;
+  const measuredMs = measured.getTime();
   if (nowMs - measuredMs > SUPABASE_EXPORT_STALE_MS || measuredMs > nowMs + 5 * 60 * 1000) return services;
   const supabase = services.find((s) => s.id === "supabase");
   if (!supabase) return services;
   const byId = new Map(
-    doc.metrics.filter((m) => m && typeof m.id === "string").map((m) => [m.id, m]),
+    doc.metrics
+      .filter(
+        (m) =>
+          m &&
+          typeof m.id === "string" &&
+          !(typeof m.used === "number" && m.used < 0) &&
+          !(typeof m.limit === "number" && m.limit < 0),
+      )
+      .map((m) => [m.id, m]),
   );
   if (!byId.size) return services;
   supabase.metrics = supabase.metrics.map((m) => {
@@ -857,7 +972,9 @@ export function applySupabaseExport(
       parts.push(`Live via ${live.source ?? doc.source ?? "file-export/supabase"}, measured ${doc.measuredAt}.`);
       if (live.detail) parts.push(live.detail);
       if (live.flag === "approaching-paid-trigger") {
-        parts.push("Approaching-paid trigger: at or above 80% of the Free-plan limit (Drew's $30/mo ceiling is the decision context).");
+        parts.push(
+          "Approaching-paid trigger: at or above 80% of the Free-plan limit (Drew's $30/mo ceiling is the decision context).",
+        );
       }
     }
     return {
@@ -869,7 +986,13 @@ export function applySupabaseExport(
       note: parts.join(" ").slice(0, 600),
     };
   });
-  if (doc.billing && doc.billing.measured !== false && typeof doc.billing.billedUsd === "number" && Number.isFinite(doc.billing.billedUsd)) {
+  if (
+    doc.billing &&
+    doc.billing.measured !== false &&
+    typeof doc.billing.billedUsd === "number" &&
+    Number.isFinite(doc.billing.billedUsd) &&
+    doc.billing.billedUsd >= 0
+  ) {
     supabase.billedUsd = doc.billing.billedUsd;
   } else {
     // Codex P2 (PR #2369 re-review, 2026-10-29): an accepted export with no
@@ -879,7 +1002,9 @@ export function applySupabaseExport(
     // no billed line at all.
     supabase.billedUsd = null;
   }
-  supabase.plan = doc.billing?.plan ? `Free plan (${doc.project ?? "supabase"}); measured ${doc.measuredAt}` : supabase.plan;
+  supabase.plan = doc.billing?.plan
+    ? `Free plan (${doc.project ?? "supabase"}); measured ${doc.measuredAt}`
+    : supabase.plan;
   supabase.measuredAt = doc.measuredAt.slice(0, 10);
   supabase.sourceClass = "api";
   const gapCount = (doc.scope ?? []).filter((s) => typeof s.status === "number" && s.status >= 400).length;
@@ -1057,7 +1182,9 @@ export function extractSubscriptions(doc: string): { name: string; plan: string;
     out.push({
       name: "Wispr Flow",
       plan: price ? `Pro $${price[1]}/yr` : "Pro (annual)",
-      renewsAt: renews ? renews[1] : null,
+      // Real calendar dates only (#2206): a non-calendar date is no
+      // renewal date at all, never a verbatim renewsAt.
+      renewsAt: renews && parseIsoDate(renews[1]) !== null ? renews[1] : null,
     });
   }
   return out;

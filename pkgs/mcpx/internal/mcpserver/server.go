@@ -17,7 +17,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -31,10 +30,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/catalog"
-	"github.com/dezren39/mcpx/internal/codegen"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/spec"
+	"github.com/developing-today/code/pkgs/mcpx/internal/catalog"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
 )
 
 // Backend is what the server exposes. Defined here rather than taken from the
@@ -63,8 +64,22 @@ type Backend interface {
 	// Complete answers completion/complete for a ref/prompt or ref/resource
 	// by asking the upstream server that owns it. params is the request as
 	// the client sent it. An unknown ref wraps ErrInvalidParams.
-	Complete(ctx context.Context, params json.RawMessage) ([]string, error)
+	Complete(ctx context.Context, params json.RawMessage) (Completion, error)
 	ResourceTemplates(ctx context.Context) ([]ResourceRef, error)
+}
+
+// Completion is a completion/complete answer: the values, plus the
+// full ranked match count they were drawn from when the backend knows
+// it. The daemon caps its /v1/complete reply before the MCP surface
+// sees it (#2878), so a backend that only handed over values would
+// make this surface report total = len(values) and hasMore = false
+// for a reply the daemon had already truncated from a larger set.
+// TotalKnown is false when the backend has no count (a direct
+// upstream answer): the caller then uses len(values) as before.
+type Completion struct {
+	Values     []string
+	Total      int
+	TotalKnown bool
 }
 
 // Notifier is where the server hears about things worth pushing.
@@ -208,6 +223,12 @@ type Server struct {
 	// ExtrasOnly is set: they describe the meta-tools, which are absent.
 	OwnInstructions string
 
+	// Instance is this server process's unique instance identity,
+	// reported to clients as serverInfo.instance (#1877). Empty means
+	// no identity is reported -- the zero value every test server and
+	// ExtrasOnly adapter keeps, so nothing about their surface changes.
+	Instance string
+
 	// PageSize caps how many items a list reply carries.
 	PageSize int
 
@@ -282,6 +303,15 @@ type Server struct {
 	// means the standalone behaviour: a private in-memory store.
 	TaskStore *taskStore
 
+	// TaskAudit, when set, is the audit seam a private task store
+	// (the TaskStore == nil path in tasks()) is wired with, so a
+	// standalone server's task lifecycle records reach a log instead
+	// of being silently dropped by the store's nil-Audit guard
+	// (#2500, Codex on PR #4743). An injected TaskStore is configured
+	// by its owner (the daemon wires its sink at construction), so
+	// this field is ignored then.
+	TaskAudit func(logging.Record)
+
 	// taskStore holds background requests.
 	taskStore *taskStore
 	// taskOwners is which connection started each task, by its id. Empty
@@ -353,6 +383,7 @@ func (s *Server) WithExtras(extras []Extra) *Server {
 		Ask:                s.Ask,
 		ExtrasOnly:         s.ExtrasOnly,
 		OwnInstructions:    s.OwnInstructions,
+		Instance:           s.Instance,
 		Reactive:           s.Reactive,
 		PinnedTools:        s.PinnedTools,
 		ReactiveWorkingSet: s.ReactiveWorkingSet,
@@ -769,9 +800,20 @@ func (s *Server) envelope(req request, result any) any {
 	if meta == nil {
 		meta = map[string]any{}
 	}
-	meta[MetaServerInfo] = map[string]any{"name": s.name, "version": s.version}
+	meta[MetaServerInfo] = s.serverInfo()
 	m["_meta"] = meta
 	return m
+}
+
+// serverInfo is the identity this server reports, in initialize and in
+// the modern _meta alike: name and version, plus the process instance
+// identity when one is set (#1877).
+func (s *Server) serverInfo() map[string]any {
+	info := map[string]any{"name": s.name, "version": s.version}
+	if s.Instance != "" {
+		info["instance"] = s.Instance
+	}
+	return info
 }
 
 func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
@@ -865,7 +907,7 @@ func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
 		var call struct {
 			Name string `json:"name"`
 		}
-		ctx = s.withPass(ctx)
+		ctx = s.withRaw(s.withPass(ctx))
 		if json.Unmarshal(req.Params, &call) == nil && call.Name != "" {
 			found, err := s.hasTool(ctx, call.Name)
 			if err == nil && !found {
@@ -909,7 +951,7 @@ func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
 		return reply(map[string]any{
 			"protocolVersion": version,
 			"capabilities":    caps,
-			"serverInfo":      map[string]any{"name": s.name, "version": s.version},
+			"serverInfo":      s.serverInfo(),
 			"instructions":    s.instructions(),
 		})
 
@@ -1826,7 +1868,7 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 			// it, because what it settles governs every later reply.
 			resp := s.HandleOn(base, c, req)
 			if req.Method == "initialize" && resp != nil && resp.Error == nil {
-				s.startListChanged(c)
+				s.startListChanged(base, c)
 			}
 			// Never a reply to a notification, not even an error: JSON-RPC
 			// forbids it, and a client would have nothing to match it to.
@@ -1952,6 +1994,12 @@ func (s *Server) RESTHandler(tool string) http.HandlerFunc {
 // initialize, a GET notification stream, batches for 2025-03-26, and
 // responses to questions mcpx asked.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// ?codemode=false asks for raw tools instead of the code-mode
+	// surface (codemode.go). It is on the URL, so it is read here, once,
+	// and rides the request context every later stage already derives
+	// from r.Context(). Any other value -- and its absence -- is the
+	// surface as it has always been.
+	r = r.WithContext(withCodemode(r.Context(), r.URL.Query().Get("codemode") == "false"))
 	if !s.originAllowed(r.Header.Get("Origin")) {
 		writeJSON(w, http.StatusForbidden, response{JSONRPC: "2.0", Error: &rpcError{
 			Code: codeInvalidRequest, Message: "Origin " + r.Header.Get("Origin") + " is not allowed"}})
@@ -2329,7 +2377,7 @@ func (s *Server) reapSessionsLocked() {
 
 func newSessionID() string {
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	if _, err := RandSource.Read(b[:]); err != nil {
 		return "sess-0"
 	}
 	return "sess-" + hex.EncodeToString(b[:])
@@ -2524,7 +2572,7 @@ func (s *Server) capabilities(ctx context.Context, version string, c *Conn) map[
 		// is the upstreams' list and changes when theirs does. It used to
 		// be declared for the fixed list too, and a client re-listed on
 		// every upstream change and got the same ten tools back.
-		"tools":     map[string]any{"listChanged": push && s.toolsVary()},
+		"tools":     map[string]any{"listChanged": push && s.toolsListChangedFor(ctx)},
 		"resources": map[string]any{"subscribe": push, "listChanged": push},
 		"prompts":   map[string]any{"listChanged": push},
 	}
@@ -2732,6 +2780,7 @@ func (s *Server) complete(ctx context.Context, params json.RawMessage) (map[stri
 			Message: `ref.type is "ref/prompt" or "ref/resource", got "` + p.Ref.Type + `"`}
 	}
 	var values []string
+	total := -1 // the backend's full match count, when it reported one
 	if s.backend != nil {
 		got, err := s.backend.Complete(ctx, params)
 		if err != nil {
@@ -2741,7 +2790,10 @@ func (s *Server) complete(ctx context.Context, params json.RawMessage) (map[stri
 			}
 			return nil, &rpcError{Code: code, Message: err.Error()}
 		}
-		values = got
+		values = got.Values
+		if got.TotalKnown {
+			total = got.Total
+		}
 	}
 	// The ceiling the specification sets. Read per request, because
 	// completion.maxValues is a hot setting: a value read once when the
@@ -2753,11 +2805,12 @@ func (s *Server) complete(ctx context.Context, params json.RawMessage) (map[stri
 		}
 	}
 	// The setting may lower the count, not raise it past what every
-	// revision's CompleteResult allows.
-	if max > specMaxCompletions {
-		max = specMaxCompletions
+	// revision's CompleteResult allows. The cap computation is shared
+	// with the daemon surface via settings (#2878).
+	max = settings.EffectiveCompletionCap(max)
+	if total < 0 {
+		total = len(values)
 	}
-	total := len(values)
 	if len(values) > max {
 		values = values[:max]
 	}
@@ -2782,9 +2835,9 @@ func (l lockedEncoder) Encode(v any) error {
 	return l.enc.Encode(v)
 }
 
-// specMaxCompletions is CompleteResult.values' maxItems in every revision: a
-// fact of the protocol, not a default.
-const specMaxCompletions = 100
+// The completion spec cap lives in internal/settings
+// (settings.SpecCompletionCap) so the daemon and MCP surfaces share
+// one constant and one cap computation (#2878).
 
 // hasTool reports whether tools/call can reach name.
 func (s *Server) hasTool(ctx context.Context, name string) (bool, error) {
@@ -2830,6 +2883,16 @@ func (s *Server) invoke(ctx context.Context, name string, args json.RawMessage) 
 		}
 	} else if s.ReactiveWorkingSet != nil {
 		s.ReactiveWorkingSet.Touch("", name)
+	}
+	if rawToolsRequested(ctx) {
+		nt, isRaw, err := s.rawOwner(ctx, name)
+		if err != nil {
+			return "", err
+		}
+		if !isRaw {
+			return "", fmt.Errorf("no tool named %q on the raw surface (codemode=false)", name)
+		}
+		return s.backend.Call(ctx, nt.Namespace, nt.Tool.Name, args)
 	}
 	if name == "request_tools" {
 		return s.executeRequestTools(ctx, args)

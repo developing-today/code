@@ -11,9 +11,9 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/dezren39/mcpx/internal/cli"
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/cli"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
@@ -102,10 +102,10 @@ func main() {
 			// A bootstrap flag like --config: it decides which files
 			// the settings are read from, so it is captured here,
 			// before any settings exist (issue #1842).
-			config.SetPathsConfigSeed(splitList(args[1]))
+			config.AddPathsConfigSeed(splitList(args[1]))
 			args = args[2:]
 		case strings.HasPrefix(args[0], "--paths-config="):
-			config.SetPathsConfigSeed(splitList(strings.TrimPrefix(args[0], "--paths-config=")))
+			config.AddPathsConfigSeed(splitList(strings.TrimPrefix(args[0], "--paths-config=")))
 			args = args[1:]
 		case args[0] == "--version" || args[0] == "-v":
 			fmt.Println("mcpx", version)

@@ -29,7 +29,7 @@ jobs:
   check:
     name: nix flake check (full)
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
 
@@ -41,6 +41,7 @@ jobs:
       # Same store cache as the PR gate, so the nightly run starts warm
       # and unchanged derivations are not rebuilt from cold (#288).
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
         with:
           # FlakeHub Cache off (#2120): no id-token is granted and the
           # developing-today org is not registered, so the action's

@@ -1,0 +1,9 @@
+[Unit]
+Description=github-backup: weekly reconciliation sweep
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env python3 __GB_DIR__/bin/reconcile.py
+WorkingDirectory=%h/backups/github

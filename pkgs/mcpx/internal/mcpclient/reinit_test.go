@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
 // reinitUpstream is a fake legacy Streamable HTTP upstream whose sessions

@@ -430,6 +430,17 @@ describe("goDurationMs", () => {
     expect(goDurationMs("soon")).toBeUndefined();
     expect(goDurationMs("60s please")).toBeUndefined();
     expect(goDurationMs("-30s")).toBeUndefined();
+    // #2309: Go's duration ceiling — ParseDuration rejects totals
+    // past 2^63-1 ns, so extreme spellings are absent, never
+    // Infinity or a beyond-ceiling cooldown.
+    expect(goDurationMs("3000000h")).toBeUndefined();
+    expect(goDurationMs("99999999999999999999h")).toBeUndefined();
+    // Just under the ceiling still parses (the largest Go duration
+    // is 2562047h47m16.854775807s = 2^63-1 ns).
+    expect(goDurationMs("2562047h47m16.854775s")).toBeDefined();
+    expect(goDurationMs("2562047h47m16.854775s")).toBeLessThanOrEqual(9_223_372_036_854.776);
+    // #2309: Go accepts a bare "0" as zero.
+    expect(goDurationMs("0")).toBe(0);
   });
 });
 

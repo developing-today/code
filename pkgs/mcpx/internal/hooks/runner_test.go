@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/events"
-	"github.com/dezren39/mcpx/internal/hooks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/hooks"
 )
 
 func waitFor(t *testing.T, what string, cond func() bool) {
@@ -133,4 +133,52 @@ func TestFailingHookPublishesHookFailedAndIsCounted(t *testing.T) {
 		st := r.Stats()
 		return len(st) == 1 && st[0].Failed == 1
 	})
+}
+
+func TestHookFailureTextPrefersTheStderrDiagnostic(t *testing.T) {
+	// #2880: stdout and stderr shared one capped writer, so a hook that filled
+	// the bound with stdout before writing its diagnostic had truncated stdout
+	// recorded as the failure. Each stream has its own bound now, and the
+	// failure text is stderr's first line.
+	hs, err := hooks.Parse(`[{"name":"noisy","on":"progress","run":["sh","-c","head -c 70000 /dev/zero | tr '\\0' x; echo 'boom: the diagnostic' >&2; exit 1"]}]`, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bus := events.New(16)
+	r := hooks.NewRunner(bus, hs, nil)
+	r.Start()
+	defer r.Stop()
+	bus.Publish(events.Event{Kind: events.Progress})
+	waitFor(t, "failure recorded", func() bool {
+		st := r.Stats()
+		return len(st) == 1 && st[0].Failed == 1
+	})
+	last := r.Stats()[0].LastError
+	if !strings.Contains(last, "boom: the diagnostic") {
+		t.Fatalf("failure text must name the stderr diagnostic, got %.120q", last)
+	}
+	if strings.Contains(last, "xxxx") {
+		t.Fatalf("capped stdout polluted the failure text: %.120q", last)
+	}
+}
+
+func TestHookFailureTextFallsBackToStdout(t *testing.T) {
+	// A hook that exits nonzero with nothing on stderr still reports its first
+	// stdout line, as before.
+	hs, err := hooks.Parse(`[{"name":"quiet","on":"progress","run":["sh","-c","echo 'stdout says why'; exit 1"]}]`, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bus := events.New(16)
+	r := hooks.NewRunner(bus, hs, nil)
+	r.Start()
+	defer r.Stop()
+	bus.Publish(events.Event{Kind: events.Progress})
+	waitFor(t, "failure recorded", func() bool {
+		st := r.Stats()
+		return len(st) == 1 && st[0].Failed == 1
+	})
+	if last := r.Stats()[0].LastError; !strings.Contains(last, "stdout says why") {
+		t.Fatalf("failure text must fall back to stdout, got %.120q", last)
+	}
 }
