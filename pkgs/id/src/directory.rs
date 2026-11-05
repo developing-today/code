@@ -2103,12 +2103,15 @@ impl Directory {
             let formed_by = self.friend_requests.get(&pair(a, b));
             if artifact_requests.is_empty() {
                 // The legacy signature ends only a friendship it could
-                // have targeted: one formed by a noncanonical request,
-                // or formed with no request ID at all. A friendship
-                // formed by a canonical request is not the target of a
-                // legacy removal already in the log - that removal ended
-                // the formation it named nothing for - so this one stands.
-                if formed_by.is_some_and(|id| artifact::is_friend_request_id(id)) {
+                // have targeted: one formed by a noncanonical request
+                // ID (#5624). A friendship formed by a canonical request
+                // is not its target, and a friendship formed with no
+                // request ID at all (the local request_friend_as flow)
+                // cannot be told apart from a newer ID-less friendship
+                // the removal predates, so recovery leaves both standing
+                // - the same skip the scan has always applied to ID-less
+                // formations.
+                if !formed_by.is_some_and(|id| !artifact::is_friend_request_id(id)) {
                     return None;
                 }
                 return Some(DirectoryEntry::FriendRemoved {
@@ -2133,11 +2136,16 @@ impl Directory {
             // pending request the artifact does not name keeps it; the
             // named IDs were already voided by the removal's own
             // journal entry when it first applied.
+            let has_pending = self.requests.contains_key(&(a.to_owned(), b.to_owned()))
+                || self.requests.contains_key(&(b.to_owned(), a.to_owned()));
             let pending: Vec<String> = [self.pending_id(a, b), self.pending_id(b, a)]
                 .into_iter()
                 .flatten()
                 .collect();
-            if !pending.is_empty() && !pending.iter().any(|id| bound.contains(id)) {
+            // A pending entry with no envelope ID (request_friend_as)
+            // is pending state too: pending_id flattens it away, but an
+            // artifact naming only other IDs did not target it.
+            if has_pending && !pending.iter().any(|id| bound.contains(id)) {
                 return None;
             }
             return Some(DirectoryEntry::FriendRemoved {
@@ -2996,6 +3004,85 @@ mod tests {
             reopened.pending_id(&ann, &bo).as_deref(),
             Some(second.as_str())
         );
+    }
+
+    #[test]
+    fn a_newer_id_less_friendship_survives_an_older_legacy_removal_in_replay() {
+        // #5624 (Codex P2 on the fix PR): after a legacy-formed
+        // friendship is removed (empty-request artifact), the pair
+        // befriends again through the local ID-less flow
+        // (request_friend_as / accept_friend_as, used by the local UI).
+        // The newer friendship has no formed-by ID, so the canonical
+        // guard cannot protect it; recovery must skip ID-less
+        // formations rather than re-apply the historical removal.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("directory.jsonl");
+        let mut directory = Directory::open(&path).unwrap();
+        let (ann, ann_credential) = account(&mut directory, "Ann");
+        let (bo, _bo_credential) = account(&mut directory, "Bo");
+        directory
+            .apply(&DirectoryEntry::FriendRequested {
+                from: ann.clone(),
+                to: bo.clone(),
+                id: Some("r1".to_owned()),
+            })
+            .unwrap();
+        directory
+            .apply(&DirectoryEntry::FriendAccepted {
+                from: ann.clone(),
+                to: bo.clone(),
+                request: Some("r1".to_owned()),
+                id: None,
+            })
+            .unwrap();
+        directory.remove_friend(&ann_credential, &bo).unwrap();
+        assert!(!directory.are_friends(&ann, &bo));
+        directory.request_friend_as(&ann, &bo).unwrap();
+        directory.accept_friend_as(&bo, &ann).unwrap();
+        assert!(directory.are_friends(&ann, &bo));
+        drop(directory);
+
+        let replayed = Directory::replay_read_only(&path).unwrap();
+        assert!(replayed.are_friends(&ann, &bo));
+        drop(replayed);
+
+        let reopened = Directory::open(&path).unwrap();
+        assert!(reopened.are_friends(&ann, &bo));
+    }
+
+    #[test]
+    fn a_newer_id_less_pending_request_survives_an_older_canonical_removal_in_replay() {
+        // #5624 (Codex P2 on the fix PR): a canonical pending request
+        // is removed (the artifact names it), then the pair creates a
+        // new pending request through the local ID-less flow.
+        // pending_id flattens the ID-less entry away, so the recovery
+        // guard must count the entry itself as pending state the
+        // historical removal does not name.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("directory.jsonl");
+        let mut directory = Directory::open(&path).unwrap();
+        let (ann, ann_credential) = account(&mut directory, "Ann");
+        let (bo, _bo_credential) = account(&mut directory, "Bo");
+        let canonical = "0123456789abcdef0123456789abcdef".to_owned();
+        directory
+            .apply(&DirectoryEntry::FriendRequested {
+                from: ann.clone(),
+                to: bo.clone(),
+                id: Some(canonical.clone()),
+            })
+            .unwrap();
+        directory.remove_friend(&ann_credential, &bo).unwrap();
+        assert!(directory.pending_id(&ann, &bo).is_none());
+        directory.request_friend_as(&ann, &bo).unwrap();
+        assert!(directory.requests.contains_key(&(ann.clone(), bo.clone())));
+        drop(directory);
+
+        let replayed = Directory::replay_read_only(&path).unwrap();
+        assert!(replayed.requests.contains_key(&(ann.clone(), bo.clone())));
+        drop(replayed);
+
+        let reopened = Directory::open(&path).unwrap();
+        assert!(reopened.requests.contains_key(&(ann, bo)));
     }
 
     #[test]
