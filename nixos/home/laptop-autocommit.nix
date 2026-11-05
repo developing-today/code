@@ -34,6 +34,7 @@ let
     openclaw = "${home}/.openclaw";
     hatch = "${home}/hatch";
     hatch-personal = "${home}/hatch-personal";
+    cairn = "${home}/git/cairn";
   };
   sweepService = name: path: {
     "laptop-autocommit-${name}" = {
