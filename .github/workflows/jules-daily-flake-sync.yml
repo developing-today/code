@@ -62,7 +62,7 @@ jobs:
 
       - name: Run Flake Sync & Config Agent via pm-dispatch
         id: dispatch
-        uses: developing-today/code/.github/actions/pm-dispatch-start@main
+        uses: ./.github/actions/pm-dispatch-start
         with:
           title: "Daily flake sync & config optimization"
           prompt: >-
