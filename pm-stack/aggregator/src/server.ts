@@ -1525,6 +1525,16 @@ async function handler(req: Request): Promise<Response> {
     const sections = attentionSections(view, coverage, counts, act, briefs, census);
     return sseResponse(ssePatch(`#attn-${section}`, attentionFragment(section, sections[section])));
   }
+  if (path === "/assets/app.css") {
+    // The committed Tailwind + DaisyUI build (Phase C): source is
+    // src/ui.css, rebuilt with `bun run build:css`; never generated at
+    // request time, so a plain pull deploys it like the other assets.
+    const file = Bun.file(new URL("./assets/app.css", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/css; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
+  }
   if (path === "/assets/datastar.js") {
     // The vendored Datastar bundle (#1444) — a static asset, never a
     // service worker; /sw.js keeps serving the kill switch.
@@ -2239,6 +2249,10 @@ const servers = cfg.hosts.map((hostname) =>
   Bun.serve({
     hostname,
     port: cfg.port,
+    // Phase B §13.1: slow fragments (overview/board/queue renders) exceed
+    // Bun's 10s default idle timeout and the patch response gets killed
+    // mid-render; 60s gives the heavy contexts room without going unbounded.
+    idleTimeout: 60,
     fetch: fetchHandler,
   }),
 );
