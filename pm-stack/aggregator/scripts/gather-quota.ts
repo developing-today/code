@@ -67,6 +67,23 @@
 //      own credential machinery, which is what gathering quota by
 //      asking OpenCode means for a route-only pool.
 //
+//   6. The OpenDesign session keeper (src/opendesign-renewal.ts,
+//      Drew's 2026-11-05 provider browser-auth auto-renewal rule):
+//      family 1's OpenDesign leg rides on a Better Auth session in
+//      OpenChamber's managed credential store — the one credential
+//      in the tick that is a browser session rather than a token.
+//      Before the provider runs each tick, the keeper reads the
+//      stored session (authenticated reads slide its expiry once
+//      the update interval elapses — verified live 2026-11-05:
+//      expiresAt re-extended to read-time + 7 days), records the
+//      horizon in opendesign-renewal.json beside quota-current.json,
+//      re-captures the cookie from the standing laptop Helium over
+//      CDP when the stored session fails or its horizon runs low
+//      (validating the candidate before it is stored), and raises
+//      an alert in that state file while days remain when renewal
+//      cannot complete. Fail-soft: a keeper error never fails the
+//      tick.
+//
 // Outputs:
 //   - quota-current.json — the latest-state contract (model.ts
 //     QuotaCurrentFile) in the deployed aggregator dir, beside
@@ -145,6 +162,7 @@ import {
 } from "../src/clinepass-adapter.ts";
 import type { CredentialRef } from "../src/token-adapter.ts";
 import { safeProviderReason } from "../src/credential-lifecycle.ts";
+import { renewOpenDesignSession, type OpenDesignCredentialLike } from "../src/opendesign-renewal.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
@@ -427,6 +445,50 @@ async function resolveClinePassCredentialValue(ref: CredentialRef): Promise<stri
     return v || null;
   } catch {
     return null;
+  }
+}
+
+/** Managed-credential accessors the OpenChamber quota module exposes (libDir). */
+interface OpenDesignCredentialsModule {
+  readManagedCredential: (providerId: string) => OpenDesignCredentialLike | null;
+  writeManagedCredential: (providerId: string, value: OpenDesignCredentialLike) => unknown;
+}
+interface OpenDesignProviderModule {
+  fetchOpenDesignQuota: (credential: OpenDesignCredentialLike) => Promise<unknown>;
+}
+
+/**
+ * The OpenDesign session keeper run (family 6 above). Runs before
+ * the provider listing is fetched so a credential renewed this tick
+ * is the one the tick's OpenDesign read uses. Fail-soft: any error
+ * is logged and the tick proceeds with the stored credential as-is.
+ */
+async function runOpenDesignRenewal(tickAt: string): Promise<void> {
+  if (process.env.OPENDESIGN_RENEWAL_DISABLED === "1") return;
+  try {
+    const credentials = (await import(join(libDir, "quota/credentials/providers.js"))) as unknown as OpenDesignCredentialsModule;
+    const provider = (await import(join(libDir, "quota/providers/opendesign.js"))) as unknown as OpenDesignProviderModule;
+    const state = await renewOpenDesignSession({
+      readCredential: () => credentials.readManagedCredential("opendesign"),
+      writeCredential: (value) => {
+        credentials.writeManagedCredential("opendesign", value);
+      },
+      validateCredential: async (credential) => {
+        await provider.fetchOpenDesignQuota(credential);
+      },
+      cdpUrl: process.env.OPENDESIGN_CDP_URL ?? "http://127.0.0.1:19222",
+      statePath: process.env.OPENDESIGN_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "opendesign-renewal.json"),
+      forceCapture: process.env.OPENDESIGN_RENEWAL_FORCE_CAPTURE === "1",
+      now: () => new Date(tickAt),
+      log: (line) => console.log(`quota-gatherer: ${line}`),
+    });
+    if (state.status === "attention") {
+      console.log(`quota-gatherer: opendesign-renewal ATTENTION ${state.alert ?? ""}`);
+    }
+  } catch (err) {
+    console.log(
+      `quota-gatherer: opendesign-renewal failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+    );
   }
 }
 
@@ -829,6 +891,9 @@ async function main(): Promise<number> {
   } catch (err) {
     return failTick(tickAt, started, `quota module import failed: ${err instanceof Error ? err.message : String(err)}`);
   }
+
+  // Family 6: renew the OpenDesign session before its read.
+  await runOpenDesignRenewal(tickAt);
 
   let providerIds: string[];
   try {
