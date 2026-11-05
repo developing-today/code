@@ -58,7 +58,15 @@ impl SignedPeerAnnouncement {
             return None;
         }
         let payload = frame.strip_prefix(PEER_ANNOUNCEMENT_FRAME_MAGIC)?;
-        let signed = postcard::from_bytes::<Self>(payload).ok()?;
+        // `take_from_bytes`, not `from_bytes`: trailing bytes after the
+        // envelope must refuse the frame, not be silently ignored —
+        // verify() re-encodes the parsed fields, so an unsigned suffix
+        // would otherwise give one signed announcement many accepted
+        // byte spellings (#6197; same pattern as world/replication.rs).
+        let (signed, rest) = postcard::take_from_bytes::<Self>(payload).ok()?;
+        if !rest.is_empty() {
+            return None;
+        }
         signed.verify()
     }
 
@@ -129,6 +137,33 @@ mod tests {
             SignedPeerAnnouncement::decode_frame(&postcard::to_allocvec(&announcement).unwrap())
                 .is_none()
         );
+    }
+
+    #[test]
+    fn signed_frame_refuses_trailing_bytes() {
+        // #6197 oracle: the full-consumption invariant — a frame is
+        // exactly one postcard value after the magic; any remainder
+        // refuses it, while the genuine frame still decodes/verifies.
+        let key = signing_key(9);
+        let announcement = announcement(&key);
+        let signed = SignedPeerAnnouncement::sign(announcement.clone(), &key).unwrap();
+        let frame = signed.encode_frame().unwrap();
+        assert_eq!(
+            SignedPeerAnnouncement::decode_frame(&frame),
+            Some(announcement)
+        );
+
+        let mut trailing_byte = frame.clone();
+        trailing_byte.push(0x00);
+        assert!(SignedPeerAnnouncement::decode_frame(&trailing_byte).is_none());
+
+        let mut trailing_garbage = frame.clone();
+        trailing_garbage.extend_from_slice(b"garbage!!");
+        assert!(SignedPeerAnnouncement::decode_frame(&trailing_garbage).is_none());
+
+        let mut trailing_second = frame.clone();
+        trailing_second.extend_from_slice(&postcard::to_allocvec(&signed).unwrap());
+        assert!(SignedPeerAnnouncement::decode_frame(&trailing_second).is_none());
     }
 
     #[test]
