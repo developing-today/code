@@ -462,17 +462,41 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
   const asked = parseSubcommandResults(askStdout, "explicit ask");
   const askMs = Date.now() - askT0;
 
-  const keyOf = (r: QuotaProviderResult) => `${r.providerId} ${r.credentialId ?? ""}`;
-  const byKey = new Map<string, { result: QuotaProviderResult; ms: number }>();
-  for (const r of listing) byKey.set(keyOf(r), { result: r, ms: listingMs });
-  for (const r of asked) byKey.set(keyOf(r), { result: r, ms: askMs });
-
+  // Per-provider group choice, the pre-rewire discipline generalized:
+  // a listing group with an ok row wins (the ask is not consulted for
+  // it); otherwise a fresher ask group with an ok row replaces it;
+  // otherwise the ask group (fresher error) stands over the listing's.
+  // The two invocations key credentials differently (the listing
+  // enumerates stored credentials; a named ask may answer with a
+  // credential-less result), so merging per-credential would publish
+  // the same pool twice — once as each invocation saw it.
+  const groupByProvider = (results: QuotaProviderResult[], ms: number) => {
+    const groups = new Map<string, { results: QuotaProviderResult[]; ms: number }>();
+    for (const result of results) {
+      const group = groups.get(result.providerId) ?? { results: [], ms };
+      group.results.push(result);
+      groups.set(result.providerId, group);
+    }
+    return groups;
+  };
+  const listingGroups = groupByProvider(listing, listingMs);
+  const askGroups = groupByProvider(asked, askMs);
   const byProvider = new Map<string, { results: QuotaProviderResult[]; ms: number }>();
-  for (const { result, ms } of byKey.values()) {
-    const group = byProvider.get(result.providerId) ?? { results: [], ms };
-    group.results.push(result);
-    group.ms = Math.max(group.ms, ms);
-    byProvider.set(result.providerId, group);
+  for (const [id, group] of listingGroups) byProvider.set(id, group);
+  for (const [id, askGroup] of askGroups) {
+    const listed = byProvider.get(id);
+    if (!listed) {
+      byProvider.set(id, askGroup);
+      continue;
+    }
+    const listedOk = listed.results.some((r) => r.ok);
+    const askOk = askGroup.results.some((r) => r.ok);
+    if (!listedOk) byProvider.set(id, askGroup);
+    else if (!askOk) {
+      console.log(`quota-gatherer: ${id} ok via listing — explicit ask's error row dropped`);
+    } else {
+      byProvider.set(id, askGroup);
+    }
   }
 
   const runs: ProviderRun[] = [];
