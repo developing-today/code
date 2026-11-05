@@ -20,6 +20,7 @@
   [Workers limits](https://developers.cloudflare.com/workers/platform/limits/),
   [TCP sockets](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/),
   [Durable Objects WebSockets / hibernation](https://developers.cloudflare.com/durable-objects/best-practices/websockets/),
+  [Durable Objects limits](https://developers.cloudflare.com/durable-objects/platform/limits/),
   [Durable Object state](https://developers.cloudflare.com/durable-objects/api/state/).
   Statements drawn from those docs are marked **[verified 2026-11-05]**;
   everything else is an architectural judgment of this record.
@@ -48,13 +49,23 @@ no native ID wire protocol, and it never terminates ID payload encryption.
 
 ### Why this shape
 
-- The platform wall is real and dispositive. **[verified 2026-11-05]** and
-  repo prior art agree: Workers have no UDP socket API and no general
-  inbound TCP listener (inbound TCP reaches a Worker only forwarded from
-  another Worker over a service binding); outbound TCP exists via
-  `connect()` from `cloudflare:sockets`. QUIC/iroh, hole punching, and
-  DERP-style UDP relaying therefore *cannot* run in a Worker. Any design
-  that needs them is a self-hosted `id` broker design, not this one.
+- The platform wall is real and dispositive — for *endpoints*.
+  **[verified 2026-11-05]** and repo prior art agree: Workers have no UDP
+  socket API and no general inbound TCP listener (inbound TCP reaches a
+  Worker only forwarded from another Worker over a service binding);
+  outbound TCP exists via `connect()` from `cloudflare:sockets`. A
+  Worker therefore cannot be a QUIC/iroh *endpoint*: it cannot join the
+  swarm, accept QUIC connections, or hole-punch. **A relay forwarder is
+  a different claim, and this record does not conflate the two:** iroh's
+  relay protocol is HTTPS/WebSocket-shaped — endpoints connect out to
+  the relay and it forwards encapsulated, encrypted packets without
+  terminating QUIC — so the absence of UDP does *not* by itself rule
+  out a Workers implementation of relay forwarding (repo prior art §6
+  rates exactly this fits-with-changes). Whether the pairing in
+  Decision ¶2 can be made wire-compatible with the iroh relay protocol
+  — rather than merely equivalent in shape — is an implementation-time
+  evaluation this record explicitly leaves open and requires; it is
+  not settled, in either direction, by the platform wall.
 - What Workers uniquely buys is reachability and zero operations: a
   globally anycast HTTPS/WebSocket endpoint on 443 — the one egress path
   restricted networks reliably allow (#5671's motivating case) — with no
@@ -86,7 +97,10 @@ Right shape when **all** of these hold:
 A self-hosted `id` broker (#5671 §2's native role) is **required** instead
 when any of these hold:
 
-- UDP/QUIC semantics, hole punching, or a real iroh/DERP relay are needed.
+- UDP/QUIC *endpoint* semantics or hole punching are needed, or the
+  iroh-relay wire-compatibility evaluation (above) has been run and
+  failed, so relaying must run somewhere that can speak the native
+  protocol stack.
 - Data-residency, sovereignty, or no-third-party-metadata requirements
   apply, or the deployment must survive a Cloudflare account/platform
   decision (suspension, quota, pricing change) — Workers availability is
@@ -121,10 +135,16 @@ Ship order, if implementation is ever scheduled: rendezvous role first
   below that. Consequence: one DO per session/pair (not per fleet) keeps
   blast radius and serialization honest; a per-pair DO is nowhere near
   the cap, by design.
-- **WebSocket message size in Durable Objects: 1 MiB** (Workers limits
-  doc, Durable Objects table) **[verified 2026-11-05]**. Consequence:
-  frames above 1 MiB must be chunked by the *endpoints'* framing layer;
-  the relay forwards frames, it does not reassemble streams.
+- **WebSocket message size in Durable Objects: 32 MiB, received messages
+  only** (Durable Objects limits doc, both storage backends)
+  **[verified 2026-11-05]**. Consequence: the platform does not force
+  small frames. This record nevertheless recommends an *application*
+  frame cap well below 32 MiB (1 MiB is a reasonable starting point) as
+  a deliberate judgment — smaller frames bound per-message CPU, memory,
+  and head-of-line blocking on a shared pair — and that cap is ours to
+  revisit, not a Cloudflare restriction. Above whichever cap is chosen,
+  chunking is the *endpoints'* framing layer's job; the relay forwards
+  frames, it does not reassemble streams.
 - **Memory 128 MB per Worker/DO; CPU is metered per request/event**
   **[verified 2026-11-05]**. Consequence: forwarding must be
   copy-light, backpressure must close or pause a flooding side rather
@@ -144,9 +164,14 @@ Ship order, if implementation is ever scheduled: rendezvous role first
 
 ## Alternatives rejected
 
-- **Workers as an iroh/DERP relay or QUIC peer.** Impossible on the
+- **Workers as a QUIC/iroh endpoint (peer).** Impossible on the
   platform (no UDP), not merely hard. Rejected by physics, recorded so
-  it is not re-proposed.
+  it is not re-proposed. This rejection covers endpoint-hood only: a
+  Workers *relay forwarder* speaking the iroh relay protocol over
+  HTTPS/WebSocket is not rejected here — see the platform-wall bullet
+  above; its wire compatibility is an open implementation-time
+  evaluation, and the generic pairing in Decision ¶2 is the fallback
+  if compatibility does not hold.
 - **Relay over outbound `connect()` TCP from the Worker to the server.**
   Only helps servers with a public inbound TCP listener — precisely the
   servers that least need help — and cannot pair two NAT-only endpoints.
