@@ -9,6 +9,7 @@ import {
   buildIncidentPayload,
   buildTestPayload,
   classEnabled,
+  createAlertsStoreGetter,
   duplicateWouldRepeatDelivery,
   incidentObjectRef,
   incidentUrl,
@@ -31,6 +32,47 @@ import { renderAlerts } from "../src/render.ts";
 import type { Provenance } from "../src/model.ts";
 import { sqlInt, sqlJson, sqlStr, type SupabaseClient } from "../src/supabase.ts";
 import type { Config } from "../src/config.ts";
+
+describe("getAlertsStore retry-after-null memoization", () => {
+  test("retries a null client, shares the next in-flight attempt, and caches success", async () => {
+    let clientCalls = 0;
+    let resolveFirst!: (value: SupabaseClient | null) => void;
+    const firstResult = new Promise<SupabaseClient | null>((resolve) => {
+      resolveFirst = resolve;
+    });
+    let resolveRetry!: (value: SupabaseClient | null) => void;
+    const retryResult = new Promise<SupabaseClient | null>((resolve) => {
+      resolveRetry = resolve;
+    });
+    const fakeClient: SupabaseClient = {
+      ref: "test-project",
+      async query<T>() {
+        return [] as T[];
+      },
+    };
+    const getStore = createAlertsStoreGetter(async () => {
+      clientCalls += 1;
+      return clientCalls === 1 ? firstResult : retryResult;
+    });
+
+    const initial = getStore();
+    const concurrentInitial = getStore();
+    expect(clientCalls).toBe(1);
+    resolveFirst(null);
+    expect(await Promise.all([initial, concurrentInitial])).toEqual([null, null]);
+
+    const first = getStore();
+    const second = getStore();
+    expect(clientCalls).toBe(2);
+    resolveRetry(fakeClient);
+
+    const [store, concurrentStore] = await Promise.all([first, second]);
+    expect(store).not.toBeNull();
+    expect(store).toBe(concurrentStore);
+    expect(await getStore()).toBe(store);
+    expect(clientCalls).toBe(2);
+  });
+});
 
 describe("sql literals", () => {
   test("single quotes double", () => {
