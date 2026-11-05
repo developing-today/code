@@ -348,6 +348,8 @@ def discover_candidates_and_stuck():
                     "lease_until": r.get("lease_until"),
                     "lane_id": r.get("lane_id"),
                     "issue_number": prog.get("issue_number"),
+                    "dedupe_key": r.get("dedupe_key"),
+                    "title": r.get("title"),
                 })
             
             session_id = prog.get("session_id")
@@ -710,29 +712,63 @@ def send_prompt(task_id, worker_id, queue, issue_number, session_id):
         return False
 
 
-def post_agent_note(task_id, session_id):
-    """Post agent-note:v1 on the issue.
-    
-    Note: agent-note:v1 state=handed off
+# Queue -> GitHub repo for the launch agent-note (prompt.md step 4e).
+QUEUE_REPOS = {
+    "repo-health-code-pilot": "developing-today/code",
+    "repo-health-opencode-pilot": "developing-today-forks/opencode",
+    "repo-health-openchamber-pilot": "developing-today-forks/openchamber",
+    "repo-health-nix-pilot": "dezren39/nix",
+}
+
+
+def ref_for(dedupe_key):
+    """(kind, number) of the task's issue/PR, parsed from the tail of
+    its dedupe key ("...:issue:3302" / "...:pr:4934"), or None."""
+    m = re.search(r"(issue|pr):(\d+)$", dedupe_key or "")
+    if not m:
+        return None
+    return m.group(1), m.group(2)
+
+
+def note_body(task_id, session_id, title, url):
+    """The agent-note:v1 launch note (format proven by the launch
+    driver that bound the first 29 tasks)."""
+    at = datetime.now(timezone.utc).isoformat()
+    return f"""**Agent note** - handed off
+
+- **Agent:** opencode claimant (opencode-claimant)
+- **Session / ID:** queue task {task_id}; bound session `{session_id}`
+- **Found via:** queue task handoff on the opencode execution lane
+- **Task:** {title}
+- **Expectation:** the bound worker session works task {task_id} to a terminal queue state and must not claim another task. It revalidates the issue/PR before acting.
+- **Links:** {url or 'none recorded'}
+
+<!-- agent-note:v1 agent=opencode-claimant state=handed-off task={task_id} session={session_id} at={at} -->"""
+
+
+def post_agent_note(task_id, session_id, queue, dedupe_key, title):
+    """Post the launch agent-note on the task's issue/PR (prompt.md
+    step 4e): a gh comment carrying the agent-note:v1 marker.
+
+    A task whose dedupe key carries no issue/PR ref has nowhere to
+    post - a quiet no-op (returns True), not a failure. (The previous
+    implementation shelled to `repo-queue signal --worker ...`,
+    which is not a note path at all: signal is the queue-poke verb
+    and rejects --worker, so every launch recorded a spurious
+    agent-note failure.)
     """
-    # Use repo-queue signal to post the note
-    cmd = [
-        "repo-queue", "signal", str(task_id),
-        "--worker", "opencode-claimant",
-        "--kind", "agent-note:v1",
-        "--state", "handed off",
-        "--body", f"Opencode claimant launched task {task_id} with session {session_id}"
-    ]
-    
+    ref = ref_for(dedupe_key)
+    repo = QUEUE_REPOS.get(queue)
+    if not ref or not repo:
+        return True
+    kind, number = ref
+    url = f"https://github.com/{repo}/{'pull' if kind == 'pr' else 'issues'}/{number}"
+    note_path = Path.home() / ".local" / "state" / "opencode-claimant" / f"note-{task_id}.md"
     try:
-        result = subprocess.run(
-            cmd,
-            cwd=REPO_PRIMARY,
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        
+        note_path.write_text(note_body(task_id, session_id, title, url))
+        cmd = ["gh", "pr" if kind == "pr" else "issue", "comment", number,
+               "--repo", repo, "--body-file", str(note_path)]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if result.returncode != 0:
             print(f"Agent note failed for task {task_id}: {result.stderr}", file=sys.stderr)
             return False
@@ -740,9 +776,6 @@ def post_agent_note(task_id, session_id):
     except Exception as e:
         print(f"Agent note exception for task {task_id}: {e}", file=sys.stderr)
         return False
-
-
-
 
 def delete_session(session_id):
     """Best-effort DELETE of a created session (cleanup after a failed
@@ -807,7 +840,7 @@ def launch_candidate(candidate, route_model):
         return None, [f"Task {task_id}: prompt send failed"]
 
     # Post agent note
-    if not post_agent_note(task_id, session_id):
+    if not post_agent_note(task_id, session_id, queue, candidate.get("dedupe_key"), candidate.get("title")):
         skips.append(f"Task {task_id}: agent note failed")
 
     print(f"Launched task {task_id} with session {session_id}", file=sys.stderr)
