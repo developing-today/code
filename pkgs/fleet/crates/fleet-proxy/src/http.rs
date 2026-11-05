@@ -66,6 +66,43 @@ impl From<std::io::Error> for HttpError {
     }
 }
 
+/// Whether `method` is a valid HTTP method token (RFC 9110
+/// `token`): non-empty, `tchar`s only. Anything else — whitespace,
+/// a control character, a separator — cannot appear in a request
+/// line this client emits (#5750).
+pub(crate) fn valid_method(method: &str) -> bool {
+    !method.is_empty()
+        && method.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
+}
+
+/// Whether `path` may appear in a request line: non-empty,
+/// origin-form (starts with `/`), and free of spaces, control
+/// characters, and DEL — the bytes that would break the line or
+/// forge a header (#5750). Query strings and percent-encoded
+/// bytes pass unchanged.
+pub(crate) fn valid_path(path: &str) -> bool {
+    path.starts_with('/') && path.bytes().all(|b| b > 0x20 && b != 0x7f)
+}
+
 /// One HTTP connection to a laptop service, over a tunnel stream.
 pub struct HttpConn {
     reader: BufReader<TcpStream>,
@@ -129,6 +166,18 @@ impl HttpConn {
         token: &str,
         body: Option<&[u8]>,
     ) -> Result<(u16, Vec<u8>), HttpError> {
+        // The method and path are interpolated into the request
+        // line below: a control character in either is a CRLF
+        // injection that forges headers or smuggles a whole second
+        // request onto this pooled connection (#5750). Reject
+        // before a single byte is written. (The Python broker got
+        // this from http.client, which validates both.)
+        if !valid_method(method) || !valid_path(path) {
+            self.reusable = false;
+            return Err(HttpError::Malformed(format!(
+                "invalid request method or path (method {method:?})"
+            )));
+        }
         let mut head = format!(
             "{method} {path} HTTP/1.1\r\n\
              Host: {host_header}\r\n\
@@ -348,6 +397,58 @@ mod tests {
 
     fn get(conn: &mut HttpConn) -> Result<(u16, Vec<u8>), HttpError> {
         conn.request("GET", "/x", "127.0.0.1", "token", None)
+    }
+
+    #[test]
+    fn crlf_in_path_is_malformed_before_any_write() {
+        // #5750: the crafted path that smuggled a second request
+        // in the probe must now fail at validation; the canned
+        // peer never sees a request (no response is queued).
+        let (mut conn, _server) = canned_conn(vec![]);
+        let err = conn
+            .request(
+                "GET",
+                "/health\r\nX-Injected: yes\r\nContent-Length: 0\r\n\r\nGET /admin HTTP/1.1",
+                "127.0.0.1",
+                "token",
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(err, HttpError::Malformed(_)), "{err}");
+        assert!(!conn.reusable());
+    }
+
+    #[test]
+    fn crlf_in_method_and_space_in_path_are_malformed() {
+        let (mut conn, _server) = canned_conn(vec![]);
+        let err = conn
+            .request("GET\r\nX-Injected: 1", "/x", "127.0.0.1", "token", None)
+            .unwrap_err();
+        assert!(matches!(err, HttpError::Malformed(_)), "{err}");
+        let (mut conn, _server) = canned_conn(vec![]);
+        let err = conn
+            .request("GET", "/x y", "127.0.0.1", "token", None)
+            .unwrap_err();
+        assert!(matches!(err, HttpError::Malformed(_)), "{err}");
+        let (mut conn, _server) = canned_conn(vec![]);
+        let err = conn
+            .request("GET", "", "127.0.0.1", "token", None)
+            .unwrap_err();
+        assert!(matches!(err, HttpError::Malformed(_)), "{err}");
+    }
+
+    #[test]
+    fn method_and_path_validators_accept_ordinary_traffic() {
+        assert!(valid_method("GET"));
+        assert!(valid_method("PROPFIND"));
+        assert!(!valid_method(""));
+        assert!(!valid_method("GE T"));
+        assert!(valid_path("/health"));
+        assert!(valid_path("/queue/list?state=queued&n=5"));
+        assert!(valid_path("/files/a%20b"));
+        assert!(!valid_path(""));
+        assert!(!valid_path("health"));
+        assert!(!valid_path("/x\u{7f}"));
     }
 
     #[test]
