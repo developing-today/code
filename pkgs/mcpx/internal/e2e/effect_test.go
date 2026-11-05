@@ -38,7 +38,7 @@ var implementedEffectProbes = map[string]string{
 	"script.interpreter":         "TestScriptInterpreterIsReachableFromTheEnvironment",
 	"script.env":                 "TestScriptEnvIsReachableFromTheEnvironment",
 	"script.captureConsole":      "TestScriptCaptureConsoleOffDropsConsoleOutput",
-	"script.typecheck":           "TestScriptTypecheckOnRefusesATypeError",
+	"script.check":               "TestScriptTypecheckOnRefusesATypeError",
 	"logging.file":               "TestLoggingFileOffWritesNoDurableLog",
 	"plumbing.strictUnknownKeys": "TestStrictUnknownKeysRefusesATypo",
 	"paths.state":                "TestStateDirectoryIsReachableAsASetting",

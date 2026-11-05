@@ -45,7 +45,7 @@ var EffectProbes = map[string]string{
 	"logging.file":               "TestLoggingFileOffWritesNoDurableLog",
 	"script.captureConsole":      "TestScriptCaptureConsoleOffDropsConsoleOutput",
 	"script.prefix":              "TestScriptPrefixIsReachableFromTheEnvironment",
-	"script.typecheck":           "TestScriptTypecheckOnRefusesATypeError",
+	"script.check":               "TestScriptTypecheckOnRefusesATypeError",
 	"script.env":                 "TestScriptEnvIsReachableFromTheEnvironment",
 	"paths.state":                "TestStateDirectoryIsReachableAsASetting",
 	"registry.url":               "TestRegistryPageSizeChangesWhatTheCLIAsksFor",

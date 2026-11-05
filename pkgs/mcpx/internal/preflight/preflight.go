@@ -179,7 +179,8 @@ type TypeCheckMode string
 
 const (
 	TypeCheckOff    TypeCheckMode = "off"
-	TypeCheckOn     TypeCheckMode = "on"
+	TypeCheckTypes  TypeCheckMode = "types"
+	TypeCheckOn     TypeCheckMode = TypeCheckTypes // legacy name for callers
 	TypeCheckStrict TypeCheckMode = "strict"
 )
 
@@ -226,8 +227,8 @@ func TypeCheckResolved(ctx context.Context, runtimeBin, entry string, mode TypeC
 		// equivalent single command. Saying so is better than pretending the
 		// check ran.
 		r.Add(Problem{
-			What:  "type checking is only available under Deno; " + base + " strips types rather than checking them",
-			Where: "script.typecheck",
+			What:  "script checking is only available under Deno; " + base + " strips types rather than checking them",
+			Where: "script.check",
 		})
 		return r
 	}
@@ -256,14 +257,14 @@ func TypeCheckResolved(ctx context.Context, runtimeBin, entry string, mode TypeC
 	if cctx.Err() != nil {
 		r.Add(Problem{
 			What:  "type checking did not finish within " + timeout.String(),
-			Where: "script.typecheck",
-			Fix:   "raise the timeout, or set script.typecheck off",
+			Where: "script.check",
+			Fix:   "raise the timeout, or set script.check off",
 		})
 		return r
 	}
 	r.Add(Problem{
 		What:  "the program does not type check:\n" + indent(strings.TrimSpace(string(out))),
-		Where: "script.typecheck",
+		Where: "script.check",
 		Fatal: true,
 	})
 	return r

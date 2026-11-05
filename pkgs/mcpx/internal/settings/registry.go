@@ -349,14 +349,20 @@ func scriptSettings() []Setting {
 			Long: srcLong,
 		},
 		{
-			Path: "script.typecheck", Commands: runCommands, Kind: KindEnum, Default: "off",
-			Scope: ScopeClient,
-			Enum:  []string{"off", "on", "strict"},
-			Name:  "Type check",
-			Short: "check the generated program before running it",
-			Long: "Resolves and checks every import without executing anything. Costs " +
-				"a second or two on a cold module cache, which is why it is off by " +
-				"default rather than on.",
+			Path: "script.check", PathAliases: []string{"script.typecheck"},
+			Commands: runCommands, Kind: KindEnum, Default: "off",
+			Scope:       ScopeClient,
+			Enum:        []string{"off", "types", "strict"},
+			EnumAliases: map[string][]string{"types": {"on"}},
+			FlagAliases: []string{"script-typecheck", "typecheck"},
+			EnvAliases:  []string{"MCPX_SCRIPT_TYPECHECK"},
+			Name:        "Script check",
+			Short:       "check the generated program before running it",
+			Long: "types resolves imports and checks types; strict also checks " +
+				"declaration files. Checking is off by default. Type checking is " +
+				"currently supported by Deno. The old " +
+				"script.typecheck path, MCPX_SCRIPT_TYPECHECK variable, --script-typecheck " +
+				"flag and --typecheck flag remain accepted; the old value on means types.",
 		},
 		{
 			Path: "script.imports", Commands: runCommands, Kind: KindEnum, Default: "report",

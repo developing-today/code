@@ -656,7 +656,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	noLauncher := fs.Bool("no-launcher", false,
 		"run the script with no launcher: no globals, no capture, no wrapper")
 	typecheck := fs.String("typecheck", "",
-		"check the program before running it: off, on, strict")
+		"check the program before running it: off, types, strict (on aliases types)")
 	promptFlag := fs.String("prompt", "",
 		"synthesize and execute a script from a natural language prompt")
 	validateFlag := fs.Bool("validate", false,
@@ -2416,10 +2416,9 @@ func (a *App) resolveScriptShape(cfg *config.Config, f scriptFlags) (scriptShape
 	sh.onSuccess = cfg.ScriptPhase("onSuccess", sh.hooks.phaseValues("script.onSuccess", f.onSuccess))
 	sh.onError = cfg.ScriptPhase("onError", sh.hooks.phaseValues("script.onError", f.onError))
 
-	// Read from the resolved set, so the value is whichever layer won: the
-	// short --typecheck spelling, the generated --script-typecheck, a
-	// variable, or the config file.
-	sh.typecheck = firstNonEmpty(f.typecheck, a.Settings().String("script.typecheck"))
+	// Read the canonical setting after resolution so legacy path, variable,
+	// and flag spellings all pass through the same value normalization.
+	sh.typecheck = a.Settings().String("script.check")
 
 	// No short flag spelling: the registry value is the whole story, from
 	// the generated --script-imports flag, a variable, or the config file.
