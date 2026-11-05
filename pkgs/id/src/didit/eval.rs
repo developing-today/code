@@ -480,8 +480,8 @@ fn day_included(span: &HoursSpan, weekday: u8) -> bool {
     }
 }
 
-/// Every active span overlapping `[start, end)`, for the local dates the range
-/// touches.
+/// Every active span overlapping `[start, end)`, including the previous local
+/// date so wrapping spans begun before the range can cover its leading edge.
 fn active_spans_between(
     tz: Tz,
     active: &ActiveWindow,
@@ -491,7 +491,9 @@ fn active_spans_between(
     if matches!(active, ActiveWindow::Always) {
         return Ok(vec![(start, end)]);
     }
-    let first = local_date(start, tz)?;
+    let first = local_date(start, tz)?
+        .pred_opt()
+        .ok_or(EvalError::OutOfRange)?;
     let last = local_date(end.saturating_sub(1), tz)?;
     let mut spans = Vec::new();
     // A span that wraps past midnight began on the preceding local date, so

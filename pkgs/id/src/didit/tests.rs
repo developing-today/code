@@ -66,6 +66,18 @@ fn always(mut expectation: Expectation) -> Expectation {
     expectation
 }
 
+fn overnight_hours(mut expectation: Expectation) -> Expectation {
+    expectation.active = ActiveWindow::Hours {
+        hours: vec![HoursSpan {
+            from_minute: 1200,
+            to_minute: 360,
+            days: None,
+        }],
+        tz: CHICAGO.to_owned(),
+    };
+    expectation
+}
+
 fn record(id_byte: u8, subjects: Vec<Hash>, act: &str, at: i64) -> Record {
     Record {
         id: id(id_byte),
@@ -397,6 +409,32 @@ fn dst_day_is_twenty_three_hours() {
 }
 
 #[test]
+fn day_count_includes_previous_days_wrapping_span() {
+    let outside = overnight_hours(expectation(
+        0x55,
+        vec![dog_a()],
+        "outside",
+        Window::CountPerPeriod {
+            count: 1,
+            period: Period::Day,
+        },
+    ));
+    let at_2am = record(
+        0x56,
+        vec![dog_a()],
+        "outside",
+        chicago(2026, 6, 16, 2, 0),
+    );
+    let now = chicago(2026, 6, 16, 12, 0);
+
+    let verdicts = evaluate(&[outside], &[at_2am], now).expect("evaluate");
+    let today = current(&verdicts, midnight(2026, 6, 16));
+    assert_eq!(today.len(), 1);
+    assert_eq!(today[0].state, VerdictState::Satisfied);
+    assert_eq!(today[0].count, 1);
+}
+
+#[test]
 fn count_verdict_is_violated_after_last_active_span_closes() {
     // #5049: CountPerPeriod 2/Day with the default active window
     // (07:00-22:00 America/Chicago) and no records. Once the period's last
@@ -515,6 +553,32 @@ fn count_verdict_overnight_carry_in_span_is_not_unmeetable() {
     assert_eq!(today.len(), 1);
     assert_eq!(today[0].state, VerdictState::Satisfied);
     assert_eq!(today[0].count, 1);
+}
+
+#[test]
+fn week_count_includes_previous_days_wrapping_span() {
+    let outside = overnight_hours(expectation(
+        0x57,
+        vec![dog_a()],
+        "outside",
+        Window::CountPerPeriod {
+            count: 1,
+            period: Period::Week,
+        },
+    ));
+    let at_2am = record(
+        0x58,
+        vec![dog_a()],
+        "outside",
+        chicago(2026, 6, 15, 2, 0),
+    );
+    let now = chicago(2026, 6, 15, 12, 0);
+
+    let verdicts = evaluate(&[outside], &[at_2am], now).expect("evaluate");
+    let this_week = current(&verdicts, midnight(2026, 6, 15));
+    assert_eq!(this_week.len(), 1);
+    assert_eq!(this_week[0].state, VerdictState::Satisfied);
+    assert_eq!(this_week[0].count, 1);
 }
 
 #[test]
