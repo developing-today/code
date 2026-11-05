@@ -578,6 +578,11 @@ def create_session(task_id, queue, issue_number, route_model):
     except Exception as e:
         print(f"Session creation failed for task {task_id}: {e}", file=sys.stderr)
         return None, None
+
+    # The v2 server wraps the created session in a {"data": ...}
+    # envelope; the session (id, location) lives inside it.
+    if isinstance(session, dict) and isinstance(session.get("data"), dict):
+        session = session["data"]
     
     # Verify location.directory matches requested
     if session.get("location", {}).get("directory") != REPO_PRIMARY:
@@ -684,12 +689,11 @@ def send_prompt(task_id, worker_id, queue, issue_number, session_id):
         return False
     
     payload = {
-        "content": prompt_text,
-        "role": "user"
+        "text": prompt_text
     }
-    
+
     req = urllib.request.Request(
-        f"{OPENCODE_URL.rstrip('/')}/api/session/{session_id}/messages",
+        f"{OPENCODE_URL.rstrip('/')}/api/session/{session_id}/prompt",
         data=json.dumps(payload).encode(),
         method="POST"
     )
