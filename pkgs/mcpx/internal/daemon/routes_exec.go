@@ -203,6 +203,8 @@ func (s *Server) ExecService() *execsvc.Service {
 		set.List("script.runtimeOrder"), set.String("script.profiles"))
 	lim.CaptureConsole = set.Bool("script.captureConsole")
 	lim.Typecheck = set.String("script.check")
+	lim.TypeCheckOnError = set.String("script.checkOnError")
+	lim.TypeCheckOnUnsupported = set.String("script.checkOnUnsupported")
 	lim.Imports = set.String("script.imports")
 	lim.ImportsOnDynamic = set.String("script.importsOnDynamic")
 	lim.ImportsOnMissing = set.String("script.importsOnMissing")
