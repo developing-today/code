@@ -122,7 +122,9 @@ def validate(registry):
                 errors.append(f"{where}: ports must be a list of integers in 1..65535")
             elif len(set(ports)) != len(ports):
                 errors.append(f"{where}: ports must not repeat a port")
-        if "restart" in defn and defn["restart"] not in RESTART_POLICIES:
+        if "restart" in defn and not (
+            isinstance(defn["restart"], str) and defn["restart"] in RESTART_POLICIES
+        ):
             errors.append(
                 f"{where}: restart must be one of {', '.join(sorted(RESTART_POLICIES))}"
             )
@@ -141,7 +143,9 @@ def validate(registry):
             errors.append(
                 f"{where}: targets must be a non-empty list of host/class names"
             )
-        if "class" in defn and defn["class"] not in CLASSES:
+        if "class" in defn and not (
+            isinstance(defn["class"], str) and defn["class"] in CLASSES
+        ):
             errors.append(f"{where}: class must be one of {', '.join(sorted(CLASSES))}")
     return errors
 
