@@ -22,6 +22,7 @@ pub mod access;
 pub mod connectivity;
 pub mod discovery;
 pub mod membership;
+pub mod residency;
 pub mod sync_method;
 pub mod time;
 pub mod tuple;

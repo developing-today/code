@@ -217,6 +217,7 @@ pub use id_core::petname;
 pub mod protocol;
 pub mod publications;
 pub mod pull_policy;
+pub use id_core::residency;
 pub mod references;
 pub mod rejection;
 pub mod repl;
