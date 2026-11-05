@@ -120,7 +120,8 @@ setup_home() {
     "$RUN_HOME/atlas/meta-quota-export"
   local f
   for f in actions.json comments.json fleet-feed.json quota-current.json \
-    registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json; do
+    registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json \
+    events.json coverage-snapshot.json aa-last-good.json; do
     printf '{}\n' >"$RUN_HOME/.local/state/pm-aggregator/$f"
   done
   printf '{}\n' >"$RUN_HOME/atlas/meta-quota-export/latest.json"
@@ -217,11 +218,11 @@ assert_member missing-optional journals/pm-aggregator.log optional present
 if manifest_json missing-optional | python3 -c '
 import json, sys
 m = json.load(sys.stdin)
-sys.exit(0 if len(m.get("expected", [])) == 14 else 1)
+sys.exit(0 if len(m.get("expected", [])) == 20 else 1)
 '; then
-  ok "missing-optional: manifest lists all 14 expected members"
+  ok "missing-optional: manifest lists all 20 expected members"
 else
-  fail "missing-optional: manifest expected list is not the full 14-member set"
+  fail "missing-optional: manifest expected list is not the full 20-member set"
 fi
 
 # --- dump step ran but produced no dir: conditionally required ----------------
