@@ -529,7 +529,7 @@ async function writeSupabaseRecords(entries: QuotaCurrentEntry[], tickAt: string
     const query =
       "insert into agent.quota_records (id, source, ts, plan, weekly_percent, resets, payload) values " +
       values.join(", ") +
-      " on conflict (id) do nothing;";
+      " on conflict (source, id, ts) do nothing;";
     const res = await fetch(`https://api.supabase.com/v1/projects/${ref}/database/query`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
