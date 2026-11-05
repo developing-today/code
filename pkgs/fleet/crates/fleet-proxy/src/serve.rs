@@ -423,6 +423,20 @@ fn parse_request(frame: &serde_json::Value) -> Result<Request, String> {
         .and_then(|v| v.as_str())
         .ok_or("request is missing \"path\"")?
         .to_string();
+    // The method/path are interpolated into an HTTP request line
+    // by HttpConn::request: reject the shapes that would inject
+    // headers or smuggle a second request here, at the frame
+    // boundary, before any pool checkout happens (#5750).
+    if !crate::http::valid_method(&method) {
+        return Err(format!(
+            "request \"method\" {method:?} is not an HTTP token"
+        ));
+    }
+    if !crate::http::valid_path(&path) {
+        return Err(format!(
+            "request \"path\" {path:?} is not a clean origin-form path"
+        ));
+    }
     let body = frame.get("body").filter(|b| !b.is_null()).cloned();
     let port = frame
         .get("port")
