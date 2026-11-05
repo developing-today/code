@@ -41,6 +41,16 @@ const ARCHIVE_IDENTITY_TAG_KEYS: [&[u8]; 5] = [
     b"archive.replace",
 ];
 
+/// Archive ownership references that must not travel onto a copy (#4761).
+///
+/// [`FileOps::delete`] follows these references and hard-deletes the named
+/// archives, so duplicating them onto a copy makes deleting the copy destroy
+/// the still-existing source's archives. Rename moves them (correct: the
+/// source name ceases to exist); copy leaves the source alive, so they stay
+/// behind. The destination's own `archive.replace`, for a file replaced by
+/// the copy, is set separately after the tag duplication.
+const COPY_EXCLUDED_TAG_KEYS: [&[u8]; 2] = [b"archive.rename", b"archive.replace"];
+
 /// Errors from file operations, distinguishable so callers can map them to
 /// protocol errors or HTTP status codes.
 #[derive(Debug, Error)]
@@ -530,9 +540,10 @@ impl<'a> FileOps<'a> {
 
     /// Copy `from` to `to` (a second name for the same content).
     ///
-    /// A file already at `to` is archived first. Metadata is duplicated, the
-    /// identity tags are refreshed, and the copy gets its own `created` and
-    /// `modified` timestamps.
+    /// A file already at `to` is archived first. Metadata is duplicated —
+    /// except the source's `archive.rename`/`archive.replace` ownership
+    /// references (#4761) — the identity tags are refreshed, and the copy
+    /// gets its own `created` and `modified` timestamps.
     pub async fn copy(&self, from: &str, to: &str) -> Result<CopyOutcome, FileOpError> {
         let to = Self::validate_target(from, to)?;
         let hash = self
@@ -555,7 +566,7 @@ impl<'a> FileOps<'a> {
         let ns = &self.tags.global;
         if let Err(e) = self
             .tags
-            .copy_all_tags(ns, from.as_bytes(), to.as_bytes())
+            .copy_all_tags_except(ns, from.as_bytes(), to.as_bytes(), &COPY_EXCLUDED_TAG_KEYS)
             .await
         {
             tracing::warn!("failed to copy tags {from} -> {to}: {e:#}");
@@ -1071,6 +1082,75 @@ mod replacement_metadata_tests {
             has_tag(&source, "source-only", "source-metadata"),
             "{source:?}"
         );
+
+        node.shutdown().await.unwrap();
+    }
+
+    /// Copying a file with archives must not duplicate the source's
+    /// archive.rename/archive.replace ownership references onto the copy
+    /// (#4761): deleting the copy would otherwise hard-delete the
+    /// still-existing source's archives.
+    #[tokio::test]
+    async fn copy_does_not_inherit_source_archive_references() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "source.txt", b"original").await;
+        put(&node, "other.txt", b"replacement").await;
+
+        // Replacing source.txt archives the displaced content
+        // (archive.replace) and the renamed-away name (archive.rename)
+        // onto the live source.txt.
+        let renamed = node
+            .ops()
+            .rename("other.txt", "source.txt", true)
+            .await
+            .unwrap();
+        let renamed_archive = renamed.archived_original.expect("original name archived");
+        let replaced_archive = renamed.archived_replaced.expect("replaced file archived");
+        let source = tags_of(&node, "source.txt").await;
+        assert!(
+            has_tag(&source, "archive.rename", &renamed_archive),
+            "{source:?}"
+        );
+        assert!(
+            has_tag(&source, "archive.replace", &replaced_archive),
+            "{source:?}"
+        );
+
+        node.ops().copy("source.txt", "copy.txt").await.unwrap();
+        let copied = tags_of(&node, "copy.txt").await;
+        assert!(values(&copied, "archive.rename").is_empty(), "{copied:?}");
+        assert!(values(&copied, "archive.replace").is_empty(), "{copied:?}");
+
+        // Deleting the copy removes no archives; the source's archives
+        // (blob tags and metadata) survive.
+        let deleted = node.ops().delete("copy.txt").await.unwrap();
+        assert_eq!(deleted.archives_removed, 0, "{deleted:?}");
+        assert!(
+            node.blobs()
+                .tags()
+                .get(&replaced_archive)
+                .await
+                .unwrap()
+                .is_some(),
+            "source archive tag {replaced_archive} removed by delete(copy)"
+        );
+        assert!(
+            node.blobs()
+                .tags()
+                .get(&renamed_archive)
+                .await
+                .unwrap()
+                .is_some(),
+            "source archive tag {renamed_archive} removed by delete(copy)"
+        );
+        assert!(
+            !tags_of(&node, &replaced_archive).await.is_empty(),
+            "source archive metadata removed by delete(copy)"
+        );
+
+        // The source still owns its archives: deleting it removes both.
+        let deleted_source = node.ops().delete("source.txt").await.unwrap();
+        assert_eq!(deleted_source.archives_removed, 2, "{deleted_source:?}");
 
         node.shutdown().await.unwrap();
     }
