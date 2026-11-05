@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "audit": {
+    "tree_commit": "8295e70cbd240c912f60cdec24c1aafcd373e224",
     "actions_api_audited_at": "2026-11-05T18:39:34Z",
     "source": "GitHub Actions workflows API",
     "workflow_count": 55,
@@ -119,7 +120,10 @@
     },
     {
       "id": "id.roc.library",
-      "paths": ["pkgs/id/examples/roc-world/**"],
+      "paths": [
+        "pkgs/id/examples/roc-world/**",
+        "pkgs/id/examples/roc-cap-demo/roc-cap-demo-test.sh"
+      ],
       "invocation": "bash scripts/roc-test.sh (roc-test flake check)",
       "venue": {
         "workflow": ".github/workflows/id-check.yml",
@@ -128,7 +132,8 @@
         "dispatchable": true
       },
       "status": "mapped",
-      "notes": "Fails closed if the pinned Roc compiler is missing (#813)."
+      "related_issues": [5957],
+      "notes": "Includes roc-cap-demo-test.sh through scripts/roc-test.sh; fails closed if the pinned Roc compiler is missing (#813)."
     },
     {
       "id": "id.roc.examples",
@@ -612,11 +617,25 @@
     {
       "id": "pm-stack.external-comms.quarantine",
       "paths": ["pm-stack/external-comms/test_push_quarantine.py"],
-      "invocation": "Python test; exact command not established",
+      "invocation": "cd pm-stack/external-comms && python3 -m unittest test_push_quarantine.py",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test external-comms push-quarantine Python suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [6217],
+      "notes": "Current workflow YAML has workflow_dispatch plus push/pull_request path filters for external-comms; the registry records configuration, not an automatic coverage claim."
+    },
+    {
+      "id": "pm-stack.meta-exporter",
+      "paths": ["pm-stack/meta-exporter/meta-quota-export.test.mjs"],
+      "invocation": "node --test pm-stack/meta-exporter/meta-quota-export.test.mjs",
       "venue": null,
       "status": "uncovered",
       "phase2_issue": 6185,
-      "reason": "No current PM workflow or exact invocation confirmed; Phase 2 follow-up must be filed."
+      "reason": "Added to current main after the initial inventory; no workflow invokes it. Phase 2 follow-up must be filed."
     },
     {
       "id": "github-backup.python",
