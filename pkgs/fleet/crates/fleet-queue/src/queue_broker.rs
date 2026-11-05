@@ -307,6 +307,16 @@ fn simple_rpc(st: &State, fn_name: &str, args: Value) -> Value {
     }
 }
 
+fn claim_response(row: Value) -> Value {
+    // PostgREST may encode a missing composite result as an all-null
+    // task object. Only a non-null id denotes an actual claim.
+    if row.get("id").map(Value::is_null).unwrap_or(true) {
+        ok(json!({"row": Value::Null, "empty": true}))
+    } else {
+        ok(json!({"row": row}))
+    }
+}
+
 fn verb_with_execution(st: &State, fn_name: &str, args: Value, req: &Value) -> Value {
     let row = match st.rpc(fn_name, args) {
         Ok(r) => r,
@@ -388,7 +398,10 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             if let Some(lane) = req.get("lane").filter(|l| !l.is_null()) {
                 args["p_lane_id"] = lane.clone();
             }
-            simple_rpc(st, "claim_repo_task", args)
+            match st.rpc("claim_repo_task", args) {
+                Ok(row) => claim_response(row),
+                Err(e) => fail(e.exit, e.msg),
+            }
         }
         "/lane" => simple_rpc(
             st,
@@ -661,4 +674,36 @@ pub fn run() -> i32 {
     }
     // incoming_requests() ends only when the server stops.
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claim_sentinel_is_an_explicit_empty_response() {
+        let sentinel = json!({
+            "id": null,
+            "queue": null,
+            "title": null,
+            "body": null,
+            "payload": null,
+            "status": null,
+        });
+
+        assert_eq!(
+            claim_response(sentinel),
+            json!({"ok": true, "row": null, "empty": true})
+        );
+    }
+
+    #[test]
+    fn claim_with_task_preserves_the_row() {
+        let task = json!({"id": 42, "queue": "repo-health-code-pilot", "status": "claimed"});
+
+        assert_eq!(
+            claim_response(task.clone()),
+            json!({"ok": true, "row": task})
+        );
+    }
 }

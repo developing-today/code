@@ -590,6 +590,14 @@ fn opt_queue(args: &Args) -> String {
     args.get("queue").unwrap_or_else(default_queue)
 }
 
+fn no_tasks_message(queue: &str, queue_was_explicit: bool) -> String {
+    if queue_was_explicit {
+        format!("(no tasks in queue {queue})")
+    } else {
+        format!("(no tasks; --queue was not specified, using default queue {queue})")
+    }
+}
+
 fn opt_worker(args: &Args) -> String {
     args.get("worker")
         .unwrap_or_else(|| DEFAULT_WORKER.to_string())
@@ -828,10 +836,11 @@ fn cmd_enqueue(rest: &[String]) -> i32 {
 fn cmd_list(rest: &[String]) -> i32 {
     let args = parse_args(rest, &["queue", "status", "limit", "not-before"], &[]);
     reject_extra_pos("list", &args, 0);
+    let queue = opt_queue(&args);
     let resp = call(
         "/list",
         &json!({
-            "queue": opt_queue(&args),
+            "queue": queue,
             "status": args.get("status"),
             "limit": args.get_i64("limit").unwrap_or(20),
             "not_before": args.get("not-before"),
@@ -844,7 +853,7 @@ fn cmd_list(rest: &[String]) -> i32 {
         .cloned()
         .unwrap_or_default();
     if rows.is_empty() {
-        println!("(no tasks)");
+        println!("{}", no_tasks_message(&queue, args.has("queue")));
         return 0;
     }
     let cols: Vec<String> = ["task", "priority", "status", "age", "dedupe_key", "title"]
@@ -1426,6 +1435,18 @@ mod tests {
             .expect("well-formed invocation parses");
         assert_eq!(args.get("queue"), Some("alpha".to_string()));
         assert_eq!(args.get_i64("limit").unwrap_or(20), 20);
+    }
+
+    #[test]
+    fn empty_list_output_identifies_explicit_and_default_queues() {
+        assert_eq!(
+            no_tasks_message("repo-health-code-pilot", true),
+            "(no tasks in queue repo-health-code-pilot)"
+        );
+        assert_eq!(
+            no_tasks_message("repo-health-code-shadow", false),
+            "(no tasks; --queue was not specified, using default queue repo-health-code-shadow)"
+        );
     }
 
     /// One spelling of a value flag: `--flag value` or `--flag=value`.
