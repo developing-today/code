@@ -1154,7 +1154,9 @@ in
         printf 'DEEPSEEK_API_KEY=%s\n' "$(cat /run/secrets/agent-auth/deepseek-api-key)" >> "$HOME/.local/state/opencode/mistral-api-key.env"
       ''
     );
-    EnvironmentFile = "%h/.local/state/opencode/mistral-api-key.env";
+    # Let ExecStartPre run when the file is absent; systemd reads it again
+    # for ExecStart after the materializer has created it.
+    EnvironmentFile = "-%h/.local/state/opencode/mistral-api-key.env";
   };
 
   services.mcpx = {
