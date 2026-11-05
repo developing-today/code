@@ -3885,7 +3885,10 @@ fn parse_img_tag(html: &str) -> Option<Value> {
     if !bytes
         .get(..4)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"<img"))
-        || !matches!(bytes.get(4).copied(), Some(b' ' | b'>'))
+        || !matches!(
+            bytes.get(4).copied(),
+            Some(after_name) if after_name.is_ascii_whitespace() || after_name == b'>'
+        )
     {
         return None;
     }
@@ -10072,6 +10075,39 @@ Some text
         let node = parse_img_tag("<img src = 'x.png' alt = 'A' />").expect("img parses");
         assert_eq!(node["attrs"]["src"], "x.png");
         assert_eq!(node["attrs"]["alt"], "A");
+    }
+
+    #[test]
+    fn test_img_tag_accepts_ascii_whitespace_after_name() {
+        for separator in ["\n", "\t", "\r", "\x0c"] {
+            let html = format!("<img{separator}src=\"x.png\" width=\"240\" alt=\"A\" />");
+            let node = parse_img_tag(&html).expect("img with ASCII whitespace parses");
+            assert_eq!(node["attrs"]["src"], "x.png", "separator {separator:?}");
+            assert_eq!(node["attrs"]["width"], 240, "separator {separator:?}");
+            assert_eq!(node["attrs"]["alt"], "A", "separator {separator:?}");
+        }
+    }
+
+    #[test]
+    fn test_linked_img_tag_accepts_newline_after_img_name() {
+        let node = parse_linked_img_tag(
+            "<a href=\"https://example.com\"><img\nsrc=\"x.png\" width=\"240\" /></a>",
+        )
+        .expect("linked img with newline parses");
+        assert_eq!(node["attrs"]["src"], "x.png");
+        assert_eq!(node["attrs"]["width"], 240);
+        assert_eq!(node["attrs"]["linkHref"], "https://example.com");
+    }
+
+    #[test]
+    fn test_img_tag_name_boundary_preserves_existing_forms() {
+        let spaced = parse_img_tag("<img src=\"x.png\" />").expect("space form parses");
+        assert_eq!(spaced["attrs"]["src"], "x.png");
+        assert!(
+            parse_img_tag("<img>").is_none(),
+            "bare tag still has no required src"
+        );
+        assert!(parse_img_tag("<imgx src=\"x.png\" />").is_none());
     }
 
     #[test]
