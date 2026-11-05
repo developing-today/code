@@ -168,8 +168,15 @@ describe("deriveEpicEta", () => {
     expect(eta.remainingUnits).toBe(2);
   });
 
-  test("zero lower-quartile pace: P50 present, P80 explicitly unmeasurable, no crash", () => {
-    // Primary weeks [0, 1, 1, 1]: median pace 1, lower quartile 0.
+  test("zero lower-quartile pace, re-pinned for the resampling estimator (#5274): P50 and P80 both present", () => {
+    // Primary weeks [0, 1, 1, 1]. Under forecast/v1 the median pace
+    // was 1 and the lower-quartile pace 0, so P80 was explicitly
+    // unmeasurable (the previous pin). The design \u00a71 resampling
+    // estimator (forecast/v2) draws the observed buckets themselves:
+    // a zero week is a draw, not a denominator, so the
+    // weeks-to-complete distribution has a finite conservative tail
+    // and P80 is defensible. This pin replaces the v1 pin with that
+    // rationale, per #5274's acceptance criteria.
     const eta = deriveEpicEta({
       subjectRef: EPIC,
       cutoffs: history(5, [2, 3, 4, null, null]).slice(0, 5),
@@ -177,8 +184,50 @@ describe("deriveEpicEta", () => {
     expect(eta.status).toBe("forecast");
     expect(eta.sample.completionsPrimary).toBe(3);
     expect(eta.p50).not.toBeNull();
+    expect(eta.p80).not.toBeNull();
+    expect(eta.p80! >= eta.p50!).toBe(true);
+    expect(eta.limitations.join(" ")).not.toContain("lower-quartile");
+  });
+
+  test("bursty zero-median buckets [0, 0, 0, 4]: forecast with finite P50 <= P80, not no_measurable_pace (#5274)", () => {
+    // 4 children close in the last observed week; 4 remain. The
+    // median bucket is 0, so forecast/v1 returned
+    // no_measurable_pace despite 4 completions of evidence; the
+    // resampling estimator forecasts from the bucket distribution.
+    const closes: (number | null)[] = [4, 4, 4, 4, null, null, null, null];
+    const eta = deriveEpicEta({ subjectRef: EPIC, cutoffs: history(8, closes).slice(0, 5) });
+    expect(eta.status).toBe("forecast");
+    expect(eta.sample.completionsPrimary).toBe(4);
+    expect(eta.remainingUnits).toBe(4);
+    expect(eta.p50).not.toBeNull();
+    expect(eta.p80).not.toBeNull();
+    expect(Number.isFinite(Date.parse(eta.p50!))).toBe(true);
+    expect(Number.isFinite(Date.parse(eta.p80!))).toBe(true);
+    expect(eta.p80! >= eta.p50!).toBe(true);
+  });
+
+  test("resampling estimator is deterministic: identical inputs produce identical outputs (#5274)", () => {
+    const closes: (number | null)[] = [4, 4, 4, 4, null, null, null, null];
+    const cutoffs = history(8, closes).slice(0, 5);
+    const a = deriveEpicEta({ subjectRef: EPIC, cutoffs });
+    const b = deriveEpicEta({ subjectRef: EPIC, cutoffs });
+    expect(b).toEqual(a);
+  });
+
+  test("all-zero borrowed baseline buckets: still no_measurable_pace, no dates (#5274)", () => {
+    // Local evidence is below the floor (1 completion in the primary
+    // window) and the borrowed baseline's buckets are all zero: the
+    // total observed pace is zero, and resampling zero buckets can
+    // only draw zero \u2014 no date is defensible.
+    const closes: (number | null)[] = [3, null, null, null, null, null];
+    const eta = deriveEpicEta({
+      subjectRef: EPIC,
+      cutoffs: history(6, closes).slice(0, 6),
+      borrowedBaseline: { scopeRef: `${REPO}#200`, weeklyCompletions: [0, 0, 0, 0] },
+    });
+    expect(eta.status).toBe("no_measurable_pace");
+    expect(eta.p50).toBeNull();
     expect(eta.p80).toBeNull();
-    expect(eta.limitations.join(" ")).toContain("lower-quartile");
   });
 
   test("inferred scope counts direct children only, not grandchildren via epicRef", () => {
