@@ -1733,10 +1733,13 @@
       // 2026-11-03 (Drew, direct order): WEIGHTED 2:1 main:alternate,
       // replacing the ordered alternate-first arrangement above - main
       // (fresh weekly window) carries the pair, alternate backs it.
+      // 2026-11-05 (Drew, direct order): converted to ORDERED
+      // plan-first (virtual-provider ordering pass) - main first,
+      // alternate the fallback; the 2:1 preference is preserved as
+      // sequence instead of draw share.
       "openai-plan": {
         "providers": ["openai.main", "openai.alternate"],
-        "selection": "weighted",
-        "weights": { "openai.main": 2, "openai.alternate": 1 }
+        "selection": "ordered"
       },
       // mistral-plan (2026-11-04, Drew): the Mistral pair as ONE
       // provider route — vibe-direct attempted first on every dispatch
@@ -1761,14 +1764,17 @@
       // drewrypope:popesdrew, replacing the equal round-robin split
       // described above; the opencode providers are weighted above
       // opendesign in every pool that seats both.
+      // 2026-11-05 (Drew, direct order): converted to ORDERED
+      // plan-first (virtual-provider ordering pass) - drewrypope
+      // first, popesdrew the fallback; the 2:1 preference is
+      // preserved as sequence instead of draw share.
       // The bare opencode-go provider is NOT a member: it has no account
       // of its own and rides whichever console login is active, so its
       // burn landed on that account unattributed. Quota/health rules
       // still demote a walled member inside the group.
       "opencode-go-plans": {
         "providers": ["opencode-go.drewrypope", "opencode-go.popesdrew"],
-        "selection": "weighted",
-        "weights": { "opencode-go.drewrypope": 2, "opencode-go.popesdrew": 1 }
+        "selection": "ordered"
       }
     },
     "model_routes": {
@@ -1821,6 +1827,14 @@
         // responding before this landed: the API leg by a direct
         // completion on deepseek-flash, the plan legs by the pool's
         // standing live traffic.
+        // 2026-11-05 (Drew, later direct order): converted to ORDERED
+        // plan-first (virtual-provider ordering pass), superseding
+        // the weighted 2:1 plan:API split described above. The plan
+        // doors run in their tuned sequence (Go, ClinePass,
+        // OpenDesign, Command Code - the old 6/1/1/0.5 proportions
+        // as order), and the official-API leg (deepseek-flash,
+        // "1017") sits LAST as the fallback: plan capacity is spent
+        // before the metered door serves.
         "targets": [
           {
             "model": "opencode-go-plans/deepseek-v4.1-flash",
@@ -1837,15 +1851,8 @@
           "commandcode/deepseek/deepseek-v4.1-flash",
           "deepseek/deepseek-flash"
         ],
-        "selection": "weighted",
-        "autonomy": "rules",
-        "weights": {
-          "opencode-go-plans/deepseek-v4.1-flash": 6,
-          "cline-pass/deepseek-v4.1-flash": 1,
-          "opendesign/deepseek-v4.1-flash": 1,
-          "commandcode/deepseek/deepseek-v4.1-flash": 0.5,
-          "deepseek/deepseek-flash": 4.25
-        }
+        "selection": "ordered",
+        "autonomy": "rules"
       },
       "deepseek-flash": {
         "name": "DeepSeek Flash - plan providers only",
@@ -1872,6 +1879,10 @@
         // seats no tier (specialist's Pro relief tail was removed in the
         // same pass — Pro's II band sits below the specialist chain); it
         // remains the named pool for direct calls.
+        // 2026-11-05 (Drew, direct order): converted from round-robin
+        // to ORDERED plan-first (virtual-provider ordering pass);
+        // legs run Go, ClinePass, OpenDesign, Command Code - the old
+        // weights (3 / default / default / 0.5) as sequence.
         "targets": [
           {
             "model": "opencode-go-plans/deepseek-v4-pro",
@@ -1887,12 +1898,8 @@
           },
           "commandcode/deepseek/deepseek-v4-pro"
         ],
-        "selection": "round-robin",
-        "autonomy": "rules",
-        "weights": {
-          "opencode-go-plans/deepseek-v4-pro": 3,
-          "commandcode/deepseek/deepseek-v4-pro": 0.5
-        }
+        "selection": "ordered",
+        "autonomy": "rules"
       },
       "haiku-plan": {
         "name": "Claude Haiku - plan providers",
@@ -1961,20 +1968,21 @@
         // every Luna plan door for its other callers (small-100k)
         // and for deliberate use. The same-day trim of this route
         // is reverted - it had blast radius beyond workhorse.
+        // 2026-11-05 (Drew, direct order): converted from round-robin
+        // to ORDERED plan-first (virtual-provider ordering pass).
+        // Target order now encodes the burn-by-expiry weights as
+        // sequence: Go first (was weight 6), the ChatGPT pair second
+        // (2.5), OpenDesign last (default weight 1).
         "targets": [
+          "opencode-go-plans/gpt-6-luna",
           "openai-plan/gpt-6-luna",
           {
             "model": "opendesign/gpt-6-luna",
             "variants": { "xhigh": "high", "max": "high" }
-          },
-          "opencode-go-plans/gpt-6-luna"
+          }
         ],
-        "selection": "round-robin",
-        "autonomy": "rules",
-        "weights": {
-          "opencode-go-plans/gpt-6-luna": 6,
-          "openai-plan/gpt-6-luna": 2.5
-        }
+        "selection": "ordered",
+        "autonomy": "rules"
       },
       // glm-flash-plan DISSOLVED 2026-10-27 (pool redesign): GLM 5.3 Flash
       // is seated nowhere. Decline-with-reason: it is dominated on its own
@@ -2003,13 +2011,15 @@
         // Gemini 3 thought_signature round-trip the objection above was
         // about), the ls proxy service is retired, and this pool now
         // rides on the direct door the same way.
+        // 2026-11-05: selection normalized to ORDERED (single leg -
+        // ordering is moot; virtual-provider ordering pass).
         "targets": [
           {
             "model": "antigravity-direct/gemini-3.8-flash",
             "variants": { "xhigh": "high", "max": "high" }
           }
         ],
-        "selection": "round-robin",
+        "selection": "ordered",
         "autonomy": "rules"
       },
       "sonnet-plan": {
@@ -2030,6 +2040,11 @@
         // serves claude-sonnet-5-5 and bridges tool calls; the pool
         // is single-live-door on the direct door, plus claude-code's
         // return.
+        // 2026-11-05 (Drew, direct order): converted from round-robin
+        // to ORDERED plan-first (virtual-provider ordering pass) -
+        // the Claude plan door first, Antigravity second, mirroring
+        // opus-plan and haiku-plan. While claude-code is disabled
+        // the chain simply starts at the direct door.
         "targets": [
           "claude-code/claude-sonnet-5-5",
           {
@@ -2037,7 +2052,7 @@
             "variants": { "xhigh": "high", "max": "high" }
           }
         ],
-        "selection": "round-robin",
+        "selection": "ordered",
         "autonomy": "rules"
       },
       "opus-plan": {
@@ -2126,6 +2141,10 @@
         // openai-plan/gpt-6.1-sol (ordered: alternate first,
         // main the reserve) at the pair's previous combined weight
         // (2 + 1 = 3); OpenDesign and Command Code keep their seats.
+        // 2026-11-05 (Drew, direct order): converted from round-robin
+        // to ORDERED plan-first (virtual-provider ordering pass) -
+        // the ChatGPT pair first (its old weight 3 as sequence),
+        // then OpenDesign, then Command Code.
         "targets": [
           "openai-plan/gpt-6.1-sol",
           {
@@ -2134,11 +2153,8 @@
           },
           "commandcode/gpt-6.1-sol"
         ],
-        "selection": "round-robin",
-        "autonomy": "rules",
-        "weights": {
-          "openai-plan/gpt-6.1-sol": 3
-        }
+        "selection": "ordered",
+        "autonomy": "rules"
       },
       "terra-plan": {
         "name": "GPT Terra - plan providers",
@@ -2177,7 +2193,10 @@
         // decision for this pool belongs to Drew / routing-review and
         // is recorded on issue #4390 -- this note does not retire it.
         "targets": ["openai-plan/gpt-6.1-terra"],
-        "selection": "round-robin",
+        // 2026-11-05: selection normalized to ORDERED (single leg -
+        // ordering is moot; virtual-provider ordering pass). The
+        // keep-or-retire question above is untouched.
+        "selection": "ordered",
         "autonomy": "rules"
       },
       "argon-plan": {
@@ -2207,15 +2226,15 @@
         // 2026-10-30 (Drew): the agy leaf moved to antigravity-direct —
         // the same CLI wire protocol with no CLI spawn (the agy proxy
         // service is retired). Same model, same pool position.
+        // 2026-11-05 (Drew, direct order): converted from round-robin
+        // to ORDERED plan-first (virtual-provider ordering pass) -
+        // Go first (its old weight 3 as sequence), Antigravity second.
         "targets": [
           "opencode-go-plans/gemini-4-argon",
           "antigravity-direct/gemini-4-argon"
         ],
-        "selection": "round-robin",
-        "autonomy": "rules",
-        "weights": {
-          "opencode-go-plans/gemini-4-argon": 3
-        }
+        "selection": "ordered",
+        "autonomy": "rules"
       },
       "beam-plan": {
         "name": "Reflection Beam - plan providers",
@@ -2225,15 +2244,16 @@
         // Doors: the Command Code free route plus OpenCode Go's beam-free
         // on all three workspaces. Leaves are seated unconditionally: the
         // router skips disabled or quota-empty leaves at runtime.
+        // 2026-11-05 (Drew, direct order): converted from round-robin
+        // to ORDERED plan-first (virtual-provider ordering pass) -
+        // Go first (its old weight 3 as sequence), the Command Code
+        // free route second.
         "targets": [
-          "commandcode/reflection/beam:free",
-          "opencode-go-plans/beam-free"
+          "opencode-go-plans/beam-free",
+          "commandcode/reflection/beam:free"
         ],
-        "selection": "round-robin",
-        "autonomy": "rules",
-        "weights": {
-          "opencode-go-plans/beam-free": 3
-        }
+        "selection": "ordered",
+        "autonomy": "rules"
       },
       "mimo-flash-plan": {
         "name": "MiMo Flash - plan providers",
@@ -2245,18 +2265,18 @@
         // DeepSeek leaves out of the Flash pools' way is about burn
         // accounting, and MiMo is ClinePass's best seat), OpenDesign,
         // and Command Code as a minor leaf (weight 0.5, $10 credits/mo).
+        // 2026-11-05 (Drew, direct order): converted from round-robin
+        // to ORDERED plan-first (virtual-provider ordering pass) -
+        // Go, ClinePass, OpenDesign, Command Code (the old 3/1/1/0.5
+        // proportions as sequence).
         "targets": [
           "opencode-go-plans/mimo-v2.6-flash",
           "cline-pass/mimo-v2.6-flash",
           "opendesign/mimo-v2.6-flash",
           "commandcode/xiaomi/mimo-v2.6-flash"
         ],
-        "selection": "round-robin",
-        "autonomy": "rules",
-        "weights": {
-          "opencode-go-plans/mimo-v2.6-flash": 3,
-          "commandcode/xiaomi/mimo-v2.6-flash": 0.5
-        }
+        "selection": "ordered",
+        "autonomy": "rules"
       },
       "scout": {
         "name": "Scout - routine work: cheapest, fastest, smart enough",
@@ -2274,12 +2294,16 @@
         // dissolved — GLM's ~60 t/s decode never fit a fast tier) and Beam
         // is addressed through its new beam-plan pool instead of the raw
         // Command Code leaf.
+        // 2026-11-05 (Drew, direct order): converted from round-robin
+        // to ORDERED plan-first (virtual-provider ordering pass) -
+        // no weights were recorded, so the target order becomes the
+        // sequence: Flash plan, Haiku plan, Beam plan.
         "targets": [
           "opencode-route/deepseek-flash-plan#low",
           "opencode-route/haiku-plan#low",
           "opencode-route/beam-plan"
         ],
-        "selection": "round-robin",
+        "selection": "ordered",
         "autonomy": "rules"
       },
       "background": {
@@ -2483,20 +2507,20 @@
         // bucket, NOT the Gemini bucket pulled from the primary path on
         // 2026-10-31. Medium effort: workhorse is the volume tier;
         // sonnet-plan#high stays specialist's head seat.
+        // 2026-11-05 (Drew, direct order): converted from round-robin
+        // to ORDERED plan-first (virtual-provider ordering pass).
+        // All four legs carried equal weight 2, so the target order
+        // becomes the sequence unchanged: Luna (OpenAI plan), Spark
+        // (Meta plan), DeepSeek Flash plan, Sonnet plan. The legs
+        // now burn strictly in that order instead of sharing draws.
         "targets": [
           "openai-plan/gpt-6-luna#xhigh",
           "muse-direct/muse-spark-1.3-contributor#xhigh",
           "opencode-route/deepseek-flash-plan#high",
           "opencode-route/sonnet-plan#medium"
         ],
-        "selection": "round-robin",
-        "autonomy": "rules",
-        "weights": {
-          "openai-plan/gpt-6-luna": 2,
-          "muse-direct/muse-spark-1.3-contributor": 2,
-          "opencode-route/deepseek-flash-plan": 2,
-          "opencode-route/sonnet-plan": 2
-        }
+        "selection": "ordered",
+        "autonomy": "rules"
       },
       "workhorse": {
         "name": "Workhorse - standard work: Flash primary, weighted relief pool behind it",
@@ -2563,18 +2587,20 @@
         // 2026-11-03 (Drew): deepseek-flash-plan#high rejoins this
         // pool at weight 2 (it also keeps its workhorse-primary seat
         // and its new workhorse-ordered seat - additions only).
+        // 2026-11-05 (Drew, direct order): converted from weighted to
+        // ORDERED plan-first (virtual-provider ordering pass) - the
+        // route is renamed in effect only; the id stays
+        // workhorse-weighted because consumers address it. Sequence
+        // encodes the old weights: Haiku plan and DeepSeek Flash
+        // plan (weight 2 each, target order kept), Spark plan last
+        // (weight 1).
         "targets": [
           "opencode-route/haiku-plan#high",
-          "opencode-route/spark-plan#xhigh",
-          "opencode-route/deepseek-flash-plan#high"
+          "opencode-route/deepseek-flash-plan#high",
+          "opencode-route/spark-plan#xhigh"
         ],
-        "selection": "weighted",
-        "autonomy": "rules",
-        "weights": {
-          "opencode-route/haiku-plan": 2,
-          "opencode-route/spark-plan": 1,
-          "opencode-route/deepseek-flash-plan": 2
-        }
+        "selection": "ordered",
+        "autonomy": "rules"
       },
       "specialist": {
         "name": "Specialist - hard work: quality first, Claude then Argon then Meta Spark then OpenAI",
@@ -2659,20 +2685,19 @@
         // via gemini-flash-plan — antigravity-ls serves
         // gemini-3.8-flash live (AA v5: II 31 at high,
         // ~311 t/s decode), which clears this pool's bar.
+        // 2026-11-05 (Drew, direct order): converted from round-robin
+        // to ORDERED plan-first (virtual-provider ordering pass) -
+        // target order already matched the weights (Spark 3, Flash
+        // plan 2, Haiku plan 2, Gemini Flash plan 1) and becomes the
+        // sequence.
         "targets": [
           "opencode-route/spark-plan#xhigh",
           "opencode-route/deepseek-flash-plan#high",
           "opencode-route/haiku-plan#high",
           "opencode-route/gemini-flash-plan#high"
         ],
-        "selection": "round-robin",
-        "autonomy": "rules",
-        "weights": {
-          "opencode-route/spark-plan": 3,
-          "opencode-route/deepseek-flash-plan": 2,
-          "opencode-route/haiku-plan": 2,
-          "opencode-route/gemini-flash-plan": 1
-        }
+        "selection": "ordered",
+        "autonomy": "rules"
       },
       "small-100k": {
         "name": "Small 100k - Haiku + Luna below the 100k context cliff",
@@ -2681,6 +2706,9 @@
         // 100k limit, so sessions pinned here compact before crossing the cliff. On fork
         // builds predating #554 the decoder strips the unknown limit key and the pool
         // simply runs uncapped.
+        // 2026-11-05 (Drew, direct order): converted from round-robin
+        // to ORDERED plan-first (virtual-provider ordering pass) -
+        // Haiku plan first, Luna plan second (target order kept).
         // AA v5: Haiku #high II 30, Luna #xhigh II 23 (TTFT 24.2s; #max would be 93.8s).
         // 2026-10-27 pool redesign: this is now the <=100k element of the
         // renamed `small` pool (below).
@@ -2688,7 +2716,7 @@
           "opencode-route/haiku-plan#high",
           "opencode-route/luna-plan#xhigh"
         ],
-        "selection": "round-robin",
+        "selection": "ordered",
         "autonomy": "rules",
         "limit": { "context": 100000 }
       },
@@ -2706,11 +2734,15 @@
         // 100k) beside the direct Haiku target, under this route's 200k
         // cap. Haiku 5.5 is 1M native — the 200k element is a cost-policy
         // ceiling, not a model limit: bigger jobs belong to bigger pools.
+        // 2026-11-05 (Drew, direct order): converted from round-robin
+        // to ORDERED plan-first (virtual-provider ordering pass) -
+        // the <=100k element first, the Haiku target second (target
+        // order kept).
         "targets": [
           "opencode-route/small-100k",
           "opencode-route/haiku-plan#high"
         ],
-        "selection": "round-robin",
+        "selection": "ordered",
         "autonomy": "rules",
         "limit": { "context": 200000 }
       }
