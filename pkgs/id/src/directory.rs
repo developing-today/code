@@ -2584,7 +2584,7 @@ mod tests {
         ];
 
         for requests in cases {
-            let removal = SignedArtifact::sign(
+            let removal = SignedArtifact::sign_unchecked(
                 &key_of(&ann_credential),
                 1,
                 "",
@@ -2734,7 +2734,7 @@ mod tests {
         let request = requests[0].clone();
         drop(home);
 
-        let legacy = SignedArtifact::sign(
+        let legacy = SignedArtifact::sign_unchecked(
             &key_of(&ann_credential),
             1,
             "",
