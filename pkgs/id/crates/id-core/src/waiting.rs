@@ -299,7 +299,11 @@ where
     /// Unlike [`insert`](Self::insert) and [`park`](Self::park), nothing expires first, and an
     /// empty `missing` does not release the event: it is held for good, as a parked event is.
     /// The caller holds the events in the order they arrived, so they are released in that
-    /// order. An event whose key is already held is ignored.
+    /// order. An event whose key is already held, has arrived, or is ready is ignored, as for
+    /// [`insert`](Self::insert): restoring an already-applied or ready key must not hold a
+    /// second copy that a later arrival would hand out again (#3911). A proof header that
+    /// must stay held after it is marked arrived does not take this path: it takes
+    /// [`restore_held_for_good`](Self::restore_held_for_good).
     ///
     /// # Errors
     ///
@@ -317,11 +321,44 @@ where
         event: E,
         arrived_at: u64,
     ) -> Result<(), WaitRefusal> {
-        if self.by_key.contains_key(&key) {
+        if self.arrived.contains(&key)
+            || self.by_key.contains_key(&key)
+            || self.ready_keys.contains(&key)
+        {
             return Ok(());
         }
         let missing: HashSet<K> = missing.into_iter().collect();
         self.hold(author, key, missing, event, arrived_at)
+    }
+
+    /// Holds an event for good even though its key has arrived: the explicit
+    /// held-for-good route for fork proof headers (#3911, design #4000 decision 3).
+    /// A proof header is marked arrived when its fork is decided, so the
+    /// ordinary [`restore`](Self::restore) would ignore it; this route holds it
+    /// anyway, waiting for nothing, so no arrival releases it and only the age
+    /// cap drops it. The caller is the store's proof park, which keeps the
+    /// row's first arrival time and its conflicts seen.
+    ///
+    /// An event whose key is already held is ignored, as for
+    /// [`restore`](Self::restore). The arrived and ready guards do not apply:
+    /// bypassing them is the point of the route.
+    ///
+    /// # Errors
+    ///
+    /// [`WaitRefusal::AuthorFull`] when the author already holds the per-author
+    /// cap, or [`WaitRefusal::PoolFull`] when the pool already holds the total
+    /// cap across all authors.
+    pub fn restore_held_for_good(
+        &mut self,
+        author: AuthorKey,
+        key: K,
+        event: E,
+        arrived_at: u64,
+    ) -> Result<(), WaitRefusal> {
+        if self.by_key.contains_key(&key) {
+            return Ok(());
+        }
+        self.hold(author, key, HashSet::new(), event, arrived_at)
     }
 
     /// The held events of `author`, in sequence order of arrival. Parked events are
@@ -810,5 +847,59 @@ mod tests {
         );
         assert_eq!(pool.len(), 2);
         assert!(pool.contains(&1) && pool.contains(&2) && !pool.contains(&3));
+    }
+
+    #[test]
+    fn test_restore_ignores_a_key_that_has_arrived() {
+        // #3911: an already-applied key restored again must not be held a
+        // second time: no held copy, no release when its dependency arrives,
+        // and nothing for take_ready.
+        let mut pool = pool();
+        pool.arrived(1, 0);
+        pool.restore(author(1), 1, [10], "stale", 0).unwrap();
+        assert!(!pool.contains(&1));
+        assert!(pool.is_empty());
+        assert!(pool.arrived(10, 0).is_empty());
+        assert!(pool.take_ready().is_empty());
+        assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn test_restore_ignores_a_key_in_the_ready_queue() {
+        // #3911: a key sitting in the ready queue is not held, so restoring it
+        // must not create a held copy alongside the ready original: the ready
+        // event is handed out once, and no dependency arrival releases more.
+        let mut pool = pool();
+        pool.arrived(10, 0);
+        pool.insert(author(1), 1, [10], "ready", 0).unwrap();
+        pool.restore(author(1), 1, [10], "copy", 0).unwrap();
+        assert!(!pool.contains(&1));
+        assert_eq!(pool.take_ready(), vec!["ready"]);
+        assert!(pool.take_ready().is_empty(), "the ready event is taken once");
+        assert!(pool.arrived(10, 0).is_empty());
+        assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn test_restore_held_for_good_holds_an_arrived_proof_key() {
+        // The explicit held-for-good route bypasses the arrived guard on
+        // purpose: a proof header marked arrived stays parked, counted under
+        // the caps, until the age cap drops it.
+        let mut pool = pool();
+        pool.arrived(7, 0);
+        pool.restore_held_for_good(author(1), 7, "proof", 0)
+            .unwrap();
+        assert!(pool.contains(&7));
+        assert_eq!(pool.waiting_count(author(1)), 1);
+        assert!(pool.take_ready().is_empty());
+        assert!(pool.arrived(9, 0).is_empty());
+        assert!(
+            pool.contains(&7),
+            "no arrival releases a held-for-good copy"
+        );
+        // A second park of the same key is a duplicate, not a second copy.
+        pool.restore_held_for_good(author(1), 7, "proof", 0)
+            .unwrap();
+        assert_eq!(pool.waiting_count(author(1)), 1);
     }
 }
