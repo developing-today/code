@@ -147,8 +147,13 @@ const OBSERVED_BY = "quota-gatherer";
  * plan — its read is the PLAN read; see keepCommandCodePlanWindows.
  * DeepSeek: named ask resolves it but the subcommand's listing
  * currently omits it — opencode#1729; remove it here when the
- * listing and the named ask agree on the configured set.) */
-const EXPLICIT_ASK_PROVIDERS = ["meta", "command-code", "deepseek"];
+ * listing and the named ask agree on the configured set.
+ * Mistral: its console budget read is CDP-backed and exceeds the
+ * subcommand's 30s per-provider cap under the full listing's
+ * concurrency (opencode#1729); the small explicit ask gives it
+ * room, and its result replaces the listing's timed-out one.
+ * Remove it here when the cap is raised.) */
+const EXPLICIT_ASK_PROVIDERS = ["meta", "command-code", "deepseek", "mistral"];
 
 async function writeAtomic(path: string, text: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
