@@ -366,6 +366,52 @@ fn parse_accepts_the_well_formed_message_and_rejects_the_rest() {
     assert_eq!(accept::parse(b"\xc1"), Err(ProofError::Malformed));
 }
 
+#[test]
+fn parse_rejects_trailing_bytes_after_the_accept_map() {
+    let bare = raw("accept", VECTOR_INVITE_ID, 2);
+    assert!(accept::parse(&bare).is_ok());
+
+    // A single stray byte.
+    let mut trailing_byte = bare.clone();
+    trailing_byte.push(0x00);
+    assert_eq!(
+        accept::parse(&trailing_byte),
+        Err(ProofError::Malformed)
+    );
+
+    // A trailing scalar value (msgpack positive fixint 42).
+    let mut trailing_scalar = bare.clone();
+    trailing_scalar.push(0x2a);
+    assert_eq!(
+        accept::parse(&trailing_scalar),
+        Err(ProofError::Malformed)
+    );
+
+    // A trailing string value ("hello" as a fixstr).
+    let mut trailing_string = bare.clone();
+    trailing_string.extend_from_slice(b"\xa5hello");
+    assert_eq!(
+        accept::parse(&trailing_string),
+        Err(ProofError::Malformed)
+    );
+
+    // A whole second accept map concatenated after the first.
+    let mut duplicated = bare.clone();
+    duplicated.extend_from_slice(&bare);
+    assert_eq!(accept::parse(&duplicated), Err(ProofError::Malformed));
+}
+
+#[test]
+fn parse_accepts_a_wider_than_minimal_integer_encoding() {
+    // The full-consumption check compares consumed length, it does not re-encode and
+    // compare: an honest encoding that spells the version as a uint8 (0xcc) instead of
+    // the minimal positive fixint stays accepted, as Keybase clients may emit it.
+    let mut widened = raw("accept", VECTOR_INVITE_ID, 2);
+    assert_eq!(widened.pop(), Some(2), "version is the final byte");
+    widened.extend_from_slice(&[0xcc, 2]);
+    assert!(accept::parse(&widened).is_ok());
+}
+
 // ---------------------------------------------------------------------------
 // The admin path
 // ---------------------------------------------------------------------------
