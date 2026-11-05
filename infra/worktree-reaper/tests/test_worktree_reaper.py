@@ -255,6 +255,25 @@ class GateTests(unittest.TestCase):
         self.assertFalse(os.path.isdir(tree))
 
 
+class RunLogCollisionTests(unittest.TestCase):
+    """#5716: two runs in the same second must not share a run log."""
+
+    def test_two_runs_same_second_both_logged(self):
+        tmp = tempfile.mkdtemp(prefix="wtreaper-collision-")
+        try:
+            repo = SyntheticRepo(tmp)
+            runner = ReaperRun(repo, os.path.join(tmp, "state"))
+            tree = repo.branch_tree("t/fresh", push=True)
+            first = runner.run(quiet_hours=100000)
+            second = runner.run(quiet_hours=100000)
+            self.assertEqual(first[tree]["reason"], "active")
+            self.assertEqual(second[tree]["reason"], "active")
+            logs = os.listdir(os.path.join(tmp, "state", "runs"))
+            self.assertEqual(len(logs), 2, logs)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class UnitTests(unittest.TestCase):
     def test_porcelain_parser(self):
         raw = (
