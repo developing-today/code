@@ -286,6 +286,10 @@ export function initCollab(
           MAX_STEPS_MESSAGE_BYTES,
           "byte message budget and cannot be synced; edit kept locally only.",
         );
+        // The console line alone leaves the wedge invisible in the UI: sync
+        // has silently stopped for this document while the local document
+        // keeps the edit. Surface it through the status callback too.
+        updateStatus("error");
         return;
       }
       console.log("[collab] Sending", batch.length, "of", sendable.steps.length, "steps, version:", sendable.version);
