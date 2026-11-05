@@ -148,7 +148,7 @@ def is_stuck_bound(row, session, active_ids, now_ms):
         return False
     if session is None or not is_root_session(session):
         return False
-    if active_ids is None or session_id in active_ids:
+    if active_ids is not None and session_id in active_ids:
         return False
     t = session.get("time") or {}
     if t.get("idle") or session.get("outcome"):
