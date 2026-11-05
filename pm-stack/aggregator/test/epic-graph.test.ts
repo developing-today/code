@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { epicGraph, epicSelector } from "../src/epic-graph.ts";
 import type { ProjectPoolItem, RefKey } from "../src/model.ts";
 
@@ -294,8 +296,12 @@ describe("renderProgramProject per-epic dependency graph (#3973)", () => {
   test("the epic selector nav is isolated from the global nav styles", () => {
     const html = renderWith(fixturePool());
     expect(html).toContain('class="epic-graph-selector"');
-    expect(html).toContain(".epic-graph-selector { position: static; }");
-    expect(html).toContain(".epic-graph-selector a { white-space: normal;");
+    // Phase C: page CSS is the external /assets/app.css build; its rules
+    // live in the stylesheet source (src/ui.css), not in the page HTML.
+    expect(html).toContain('href="/assets/app.css"');
+    const uiCss = readFileSync(join(import.meta.dir, "..", "src", "ui.css"), "utf8");
+    expect(uiCss).toContain(".epic-graph-selector { position: static; }");
+    expect(uiCss).toContain(".epic-graph-selector a { white-space: normal;");
   });
 
   test("the graph resolves against the full pool, not the Area-filtered detail pool", () => {
@@ -359,8 +365,9 @@ describe("renderProgramProject per-epic dependency graph (#3973)", () => {
 
   test("the epic-graph flex layout and its narrow-screen stacking ship in the stylesheet", () => {
     const html = renderWith(fixturePool());
-    expect(html).toContain(".epic-graph-flex { display: flex;");
-    expect(html).toContain(".epic-graph-flex { flex-direction: column; }");
+    const uiCss = readFileSync(join(import.meta.dir, "..", "src", "ui.css"), "utf8");
+    expect(uiCss).toContain(".epic-graph-flex { display: flex;");
+    expect(uiCss).toContain(".epic-graph-flex { flex-direction: column; }");
     expect(html).toContain('class="epic-graph-flex"');
     expect(html).toContain('class="epic-graph-list"');
   });

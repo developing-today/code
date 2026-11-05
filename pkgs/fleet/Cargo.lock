@@ -280,6 +280,7 @@ dependencies = [
  "fleet-proxy-proto",
  "fleet-registry",
  "libc",
+ "proptest",
  "serde",
  "serde_json",
 ]

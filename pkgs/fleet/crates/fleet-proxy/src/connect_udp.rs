@@ -42,6 +42,13 @@
 //! * A session with no datagrams in either direction for
 //!   [`RELAY_IDLE_TIMEOUT`] closes.
 //!
+//! The follow-up surface beside this module: `udp_forward`
+//! (the client shim wrapping plain UDP into these sessions)
+//! and two small bins — `fleet-connect-udp`, the standalone
+//! endpoint for hosts where the broker doesn't run (the
+//! laptop's dark deployment), and `fleet-udp-forward`, the
+//! shim. Neither bin is wired into any service by the code.
+//!
 //! There is deliberately **no target allowlist**: the listener
 //! binds loopback by default and is off unless configured, the
 //! same trust posture as the broker itself (a local capability,
@@ -539,6 +546,48 @@ pub fn serve(listener: TcpListener) {
     }
 }
 
+/// The `fleet-connect-udp` usage text (#6134), printed to
+/// stdout by the bin help intercept at exit 0 and to stderr
+/// after a usage error. The bin takes no arguments at all:
+/// behaviour is governed entirely by the loaded fleet config.
+pub const CONNECT_UDP_USAGE: &str = "usage: fleet-connect-udp
+
+The standalone CONNECT-UDP endpoint (RFC 9298). Takes no
+arguments: whether the endpoint serves, and what it binds,
+is governed by the loaded fleet config ($FLEET_CONFIG, else
+~/.config/fleet/fleet.toml) — it serves only when that config
+opts in with [proxy] connect_udp = true, and stays dark
+(exit 69) otherwise.";
+
+/// What the standalone bin should do with its argument vector,
+/// decided before any config is loaded or anything is bound
+/// (#6134, the #5488/#5568 class: a --help or a typo must never
+/// start a network endpoint).
+#[derive(Debug, PartialEq, Eq)]
+pub enum BinArgs {
+    /// No arguments: run the endpoint (bare behaviour unchanged).
+    Run,
+    /// -h/--help present: print the usage to stdout, exit 0.
+    Help,
+    /// Any other argument: a usage error naming that argument,
+    /// exit EXIT_USAGE (2).
+    UsageError(String),
+}
+
+/// Classify the bin argument vector. A help flag anywhere wins
+/// (the `run_init` precedent, #5619); otherwise the first
+/// argument — any argument, since the bin takes none — is the
+/// usage error.
+pub fn classify_bin_args(argv: &[String]) -> BinArgs {
+    if argv.iter().any(|a| matches!(a.as_str(), "-h" | "--help")) {
+        return BinArgs::Help;
+    }
+    match argv.first() {
+        None => BinArgs::Run,
+        Some(first) => BinArgs::UsageError(first.clone()),
+    }
+}
+
 /// The serve-side entry: bind per config and serve. A bind
 /// failure is returned for the caller to log — an opt-in spike
 /// reports its own failure and never takes the broker down
@@ -730,6 +779,39 @@ impl UdpProxyReceiver {
 mod tests {
     use super::*;
     use std::io::ErrorKind;
+
+    #[test]
+    fn bin_args_help_usage_error_and_bare() {
+        // #6134: the three argument shapes are pinned before any
+        // config load or bind can happen — help succeeds, an
+        // unknown argument is a usage error naming it, and bare
+        // runs the endpoint exactly as before.
+        let strings = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        for flag in ["--help", "-h"] {
+            assert_eq!(
+                classify_bin_args(&strings(&[flag])),
+                BinArgs::Help,
+                "{flag}"
+            );
+        }
+        assert_eq!(classify_bin_args(&strings(&[])), BinArgs::Run);
+        assert_eq!(
+            classify_bin_args(&strings(&["--bogus-junk"])),
+            BinArgs::UsageError("--bogus-junk".to_string())
+        );
+        assert_eq!(
+            classify_bin_args(&strings(&["extra"])),
+            BinArgs::UsageError("extra".to_string())
+        );
+        // Help anywhere wins, even alongside another argument.
+        assert_eq!(
+            classify_bin_args(&strings(&["--bogus-junk", "--help"])),
+            BinArgs::Help
+        );
+        // The usage states the contract the help shape promises.
+        assert!(CONNECT_UDP_USAGE.contains("Takes no"));
+        assert!(CONNECT_UDP_USAGE.contains("connect_udp = true"));
+    }
 
     #[test]
     fn varint_round_trip() {
