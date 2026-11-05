@@ -3545,6 +3545,8 @@ export function renderTodayBody(
   coverage: SourceCoverage[],
   health: HealthView | null = null,
   quotaUnavailable = false,
+  queue?: QueueView,
+  queueStale = false,
 ): string {
   const walled = quota.pools.filter((p) => p.state === "walled");
   const alerts: string[] = [];
@@ -3604,10 +3606,13 @@ export function renderTodayBody(
         })
         .join("")
     : `<p class="muted">No projects to measure yet.</p>`;
+  const nextUp = queue
+    ? `<section class="today-next-up"><h2>Next up <span class="badge">${Math.min(queue.nextUp.length, 5)}</span>${queueStale ? ' <span class="badge stale" title="Queue inputs are stale or unavailable; see /health">stale inputs</span>' : ""}</h2><p class="muted">The next queued work, in the published horizon order.</p>${queueRows(queue.nextUp.slice(0, 5), "Nothing is queued for the next pick.")}</section>`
+    : "";
   return `${todayHealthStrip(health, quota, quotaUnavailable)}${provenanceLine}${alerts.join("")}
 <h2>Top objectives</h2>${objectives}
 <h2>Project momentum</h2>${momentum}
-${actions}${coverageHtml(coverage)}`;
+${nextUp}${actions}${coverageHtml(coverage)}`;
 }
 
 /** The today page (#1444): full server render. */
@@ -3620,10 +3625,12 @@ export function renderToday(
   detail?: ProvenanceDetail,
   health: HealthView | null = null,
   quotaUnavailable = false,
+  queue?: QueueView,
+  queueStale = false,
 ): string {
   return layout(
     "Today",
-    `<h1>Today</h1>${renderTodayBody(today, attention, quota, coverage, health, quotaUnavailable)}`,
+    `<h1>Today</h1>${renderTodayBody(today, attention, quota, coverage, health, quotaUnavailable, queue, queueStale)}`,
     provenance,
     "/today",
     "",

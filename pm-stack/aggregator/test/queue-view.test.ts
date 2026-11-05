@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { BoardItem, GhItem, OrchestrationSection, ProjectPoolItem } from "../src/model.ts";
-import { buildQueueView } from "../src/queue-view.ts";
+import { buildQueueView, queueInputsStale } from "../src/queue-view.ts";
 import { renderQueue, renderQueueBody } from "../src/render.ts";
 import { PAGES } from "../src/pages.ts";
 
@@ -76,6 +76,39 @@ const task = (
 });
 
 describe("buildQueueView (#1160)", () => {
+  test("queue freshness follows source diagnostics, not projection time", () => {
+    const fresh = {
+      mode: "live",
+      facets: { board: { text: "live", state: "live" }, items: { text: "live", state: "live" } },
+      feed: { sections: [{ key: "projects", present: true, status: "success", ageMs: 60_000 }] },
+      jobs: { orchestration: { state: "live" } },
+    } as unknown as Exclude<Parameters<typeof queueInputsStale>[0], null>;
+    expect(queueInputsStale(fresh)).toBe(false);
+    expect(queueInputsStale(null)).toBe(true);
+    expect(queueInputsStale({ ...fresh, mode: "fixtures" })).toBe(false);
+    expect(
+      queueInputsStale({
+        ...fresh,
+        facets: { ...fresh.facets!, board: { ...fresh.facets!.board, text: "stale", state: "stale" } },
+      }),
+    ).toBe(true);
+    expect(
+      queueInputsStale({
+        ...fresh,
+        feed: {
+          ...fresh.feed,
+          sections: [{ key: "projects", present: false, status: "unknown", ageMs: 60_000 }],
+        },
+      }),
+    ).toBe(true);
+    expect(
+      queueInputsStale({
+        ...fresh,
+        jobs: { ...fresh.jobs, orchestration: { ...fresh.jobs.orchestration, state: "stale" } },
+      }),
+    ).toBe(true);
+  });
+
   test("reconciles board work with Project status labels and dedupes by issue ref", () => {
     const ref = "developing-today/code#10";
     const view = buildQueueView({

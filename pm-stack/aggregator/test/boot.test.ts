@@ -138,6 +138,8 @@ describe("server boots from fixtures", () => {
     const today = await (await fetch(`http://127.0.0.1:${port}/frag/today`)).text();
     expect(today.includes("Top objectives")).toBe(true);
     expect(today.includes("Project momentum")).toBe(true);
+    expect(today.includes("Next up")).toBe(true);
+    expect(today.includes("stale inputs")).toBe(false); // fixture inputs are an intentional static source
     const todayJson = (await (await fetch(`http://127.0.0.1:${port}/api/today.json`)).json()) as {
       objectives: unknown[];
       momentum: unknown[];

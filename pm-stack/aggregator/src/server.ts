@@ -134,7 +134,7 @@ import { searchWork } from "./search-view.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
-import { buildQueueView } from "./queue-view.ts";
+import { buildQueueView, queueInputsStale } from "./queue-view.ts";
 
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
@@ -686,15 +686,22 @@ async function todaySignals() {
 }
 
 async function todayContext() {
-  const [{ board, items }, { rows }, { view, coverage }, signals, summary] = await Promise.all([
+  const [{ board, items }, { rows, pool }, { view, coverage, orchestration }, signals] = await Promise.all([
     boardContext(),
     roadmapContext(),
     attentionContext(),
     todaySignals(),
-    source.orchestration().catch(() => null),
   ]);
   const diagnosis = source.diagnostics?.().orchestration;
-  return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis), view, coverage, ...signals };
+  const queue = buildQueueView({ board, pool, items, orchestration });
+  return {
+    today: deriveToday(board, rows, items, orchestration, new Date(), diagnosis),
+    view,
+    coverage,
+    ...signals,
+    queue,
+    queueStale: queueInputsStale(signals.health),
+  };
 }
 
 async function queueContext() {
@@ -1360,12 +1367,12 @@ async function handler(req: Request): Promise<Response> {
       const signals = await todaySignals();
       return html(renderTodayShell(prov(), provDetail(), signals.health, signals.quota, signals.quotaUnavailable));
     }
-    const { today, view, coverage, quota, health, quotaUnavailable } = await todayContext();
-    return html(renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable));
+    const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
+    return html(renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable, queue, queueStale));
   }
   if (path === "/frag/today") {
-    const { today, view, coverage, quota, health, quotaUnavailable } = await todayContext();
-    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage, health, quotaUnavailable)}</div>`;
+    const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
+    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage, health, quotaUnavailable, queue, queueStale)}</div>`;
     return sseResponse(ssePatch("#today-main", wrapped));
   }
 
