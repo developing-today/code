@@ -460,12 +460,26 @@ describe("goDurationMs", () => {
     expect(goDurationMs("2h")).toBe(7_200_000);
   });
 
+  test("matches Go's fractional components and microsecond spellings", () => {
+    expect(goDurationMs(".5s")).toBe(500);
+    expect(goDurationMs("1.s")).toBe(1_000);
+    expect(goDurationMs(".5s.5s")).toBe(1_000);
+    expect(goDurationMs("1μs")).toBe(0.001);
+    expect(goDurationMs("1µs")).toBe(0.001);
+    expect(goDurationMs("1us")).toBe(0.001);
+  });
+
   test("treats anything it does not understand as absent", () => {
     // A cooldown of NaN retries forever, which is the failure the caller
     // falls back from rather than into.
     expect(goDurationMs(undefined)).toBeUndefined();
     expect(goDurationMs("")).toBeUndefined();
     expect(goDurationMs("60")).toBeUndefined();
+    expect(goDurationMs("00")).toBeUndefined();
+    expect(goDurationMs("5.")).toBeUndefined();
+    expect(goDurationMs(".s")).toBeUndefined();
+    expect(goDurationMs("1e3s")).toBeUndefined();
+    expect(goDurationMs("1_000s")).toBeUndefined();
     expect(goDurationMs("soon")).toBeUndefined();
     expect(goDurationMs("60s please")).toBeUndefined();
     expect(goDurationMs("-30s")).toBeUndefined();

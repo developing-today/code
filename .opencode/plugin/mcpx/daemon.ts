@@ -92,8 +92,18 @@ export const TUNING = {
  */
 export const goDurationMs = (v: string | undefined): number | undefined => {
   if (!v) return undefined;
-  const unit: Record<string, number> = { ns: 1e-6, us: 1e-3, µs: 1e-3, ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
-  const re = /(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)/g;
+  const unit: Record<string, number> = {
+    ns: 1e-6,
+    us: 1e-3,
+    µs: 1e-3,
+    μs: 1e-3,
+    ms: 1,
+    s: 1000,
+    m: 60_000,
+    h: 3_600_000,
+  };
+  // Go accepts .5 and 1. components when a unit follows (but not a bare "5.").
+  const re = /((?:\d+(?:\.\d*)?|\.\d+))(ns|us|µs|μs|ms|s|m|h)/g;
   let total = 0;
   let matched = 0;
   let m: RegExpExecArray | null;
