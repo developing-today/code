@@ -2080,13 +2080,11 @@ mod tests {
         let report = replica.replicate_board_from(&graph, &root_hash).unwrap();
         assert_eq!(report.status.state, ReplicaState::Complete);
         assert!(replica.get(&local_game).is_some());
-        assert!(
-            replica
-                .compose_view(&root_hash, &ViewLayers::default())
-                .unwrap()
-                .objects
-                .contains(&embedded_post)
-        );
+        let view = replica
+            .compose_view(&root_hash, &ViewLayers::default())
+            .unwrap();
+        assert!(view.objects.contains(&local_game));
+        assert!(view.objects.contains(&embedded_post));
     }
 
     #[test]
@@ -3290,9 +3288,10 @@ mod tests {
                 &key(seed),
                 1,
                 "",
-                BoardObject::GamePost(game),
+                BoardObject::GamePost(game.clone()),
             ).unwrap();
             prop_assert!(signed.verify().is_ok());
+            prop_assert_eq!(&signed.object, &BoardObject::GamePost(game));
             prop_assert_eq!(
                 SignedBoardObject::from_artifact(signed.artifact.clone()).unwrap(),
                 signed,
