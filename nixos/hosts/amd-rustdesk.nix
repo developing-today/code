@@ -4,18 +4,25 @@ let
   rustdeskPasswordAssert = pkgs.writeShellScript "rustdesk-password-assert" ''
     set -eu
 
-    # Fetch the password in the owning user context. Three traps,
-    # all hit on 2026-11-05: the fleet session broker is bound to the
+    # Fetch the password in the owning user context. Traps, all
+    # hit on 2026-11-05: the fleet session broker is bound to the
     # login session, so the durable route is the Bitwarden fallback,
     # which needs the access token exported from its on-disk file
     # (the same file the fleet-feed collector unit names via
     # BWS_ACCESS_TOKEN_FILE); runuser preserves the caller
     # environment, so HOME and XDG_CONFIG_HOME must be pinned or
-    # the fleet CLI reads /root/.config/fleet and fails; and a root process cannot use
-    # the user session broker at all.
+    # the fleet CLI reads /root/.config/fleet and fails; a root
+    # process cannot use the user session broker at all; and PATH
+    # must be pinned for the runuser child too \u2014 from a system
+    # service the inherited PATH is the unit's, which has no sh for
+    # the inner `sh -c` (nor cat, nor the bws the fallback spawns),
+    # so the first activations (gens 537/538) failed all 60 retries
+    # instantly with "env: 'sh': No such file or directory". A
+    # unit-level path does not reach the runuser child; the pin has
+    # to be on this env call.
     pw=""
     for _ in $(seq 1 60); do
-      if pw="$(${pkgs.util-linux}/bin/runuser -u user -- env HOME=/home/user XDG_CONFIG_HOME=/home/user/.config sh -c 'export BWS_ACCESS_TOKEN="$(cat /home/user/.config/bws/access-token)"; exec /home/user/.local/bin/fleet secrets get rustdesk.amd-6-password' 2>/dev/null)" && [ -n "$pw" ]; then
+      if pw="$(${pkgs.util-linux}/bin/runuser -u user -- env HOME=/home/user XDG_CONFIG_HOME=/home/user/.config PATH=${pkgs.bash}/bin:${pkgs.coreutils}/bin:${pkgs.bws}/bin sh -c 'export BWS_ACCESS_TOKEN="$(cat /home/user/.config/bws/access-token)"; exec /home/user/.local/bin/fleet secrets get rustdesk.amd-6-password' 2>/dev/null)" && [ -n "$pw" ]; then
         break
       fi
       pw=""
