@@ -43,6 +43,15 @@ ORG.append(repo("developing-today/some-fork", fork=True))
 USER = [repo(n) for n in FLEET_AND_SIDE if n.startswith("dezren39/")]
 USER.append(repo("dezren39/scratch"))
 
+# The developing-today-forks org capture (#5615): opencode and
+# openchamber moved there on 2026-11-04 and are GitHub forks;
+# some-tool is a forks-org-owned non-fork repo.
+FORKS_ORG = [
+    repo("developing-today-forks/opencode", fork=True),
+    repo("developing-today-forks/openchamber", fork=True),
+    repo("developing-today-forks/some-tool"),
+]
+
 CENSUS = """# All-repos census — fixture
 
 | /home/user/git/code | https://github.com/developing-today/code.git | main |
@@ -57,6 +66,7 @@ class GenerateTest(unittest.TestCase):
     def setUp(self) -> None:
         self.dir = Path(tempfile.mkdtemp())
         (self.dir / "org.json").write_text(json.dumps(ORG))
+        (self.dir / "forks-org.json").write_text(json.dumps(FORKS_ORG))
         (self.dir / "user.json").write_text(json.dumps(USER))
         (self.dir / "census.md").write_text(CENSUS)
         self.out = self.dir / "repo-universe.yaml"
@@ -68,6 +78,8 @@ class GenerateTest(unittest.TestCase):
                 str(GENERATE),
                 "--org-json",
                 str(self.dir / "org.json"),
+                "--forks-org-json",
+                str(self.dir / "forks-org.json"),
                 "--user-json",
                 str(self.dir / "user.json"),
                 "--census",
@@ -124,6 +136,80 @@ class GenerateTest(unittest.TestCase):
                     ]
                 )
         self.assertFalse(live_out.exists())
+
+    def test_forks_org_repos_are_enumerated(self) -> None:
+        # #5615: the forks-org capture is merged before classification,
+        # so forks-org repos land in the artifact from the GitHub
+        # enumeration itself, not via census or overrides.
+        artifact = self.run_gen()
+        self.assertIn(
+            "- name: developing-today-forks/some-tool\n"
+            "    url: https://github.com/developing-today-forks/some-tool\n"
+            "    class: owned\n    watch: issues\n    sources: [github]",
+            artifact,
+        )
+        self.assertIn(
+            "- name: developing-today-forks/opencode\n"
+            "    url: https://github.com/developing-today-forks/opencode\n"
+            "    class: fork\n    watch: inventory-only\n    sources: [github]",
+            artifact,
+        )
+        self.assertIn(
+            "- name: developing-today-forks/openchamber\n"
+            "    url: https://github.com/developing-today-forks/openchamber\n"
+            "    class: fork\n    watch: inventory-only\n    sources: [github]",
+            artifact,
+        )
+
+    def test_live_fetches_both_orgs(self) -> None:
+        # --live must enumerate orgs/developing-today-forks/repos
+        # alongside orgs/developing-today/repos (#5615) and merge the
+        # captures before classification.
+        spec = importlib.util.spec_from_file_location("generate", GENERATE)
+        gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gen)
+        requested: list[str] = []
+
+        def fake_run(cmd, **kwargs):
+            if "--paginate" in cmd:
+                endpoint = cmd[-1]
+                requested.append(endpoint)
+                if "developing-today-forks" in endpoint:
+                    payload = FORKS_ORG
+                elif "user/repos" in endpoint:
+                    payload = USER
+                else:
+                    payload = ORG
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=json.dumps(payload), stderr=""
+                )
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps({"login": "dezren39"}), stderr=""
+            )
+
+        live_out = self.dir / "live-out.yaml"
+        with mock.patch.object(gen.subprocess, "run", side_effect=fake_run):
+            rc = gen.main(
+                [
+                    "--live",
+                    "--census",
+                    str(self.dir / "census.md"),
+                    "--output",
+                    str(live_out),
+                ]
+            )
+        self.assertEqual(rc, 0)
+        self.assertTrue(
+            any(e.startswith("orgs/developing-today/repos") for e in requested),
+            f"developing-today org not enumerated: {requested}",
+        )
+        self.assertTrue(
+            any(e.startswith("orgs/developing-today-forks/repos") for e in requested),
+            f"developing-today-forks org not enumerated: {requested}",
+        )
+        out = live_out.read_text()
+        self.assertIn("developing-today-forks/some-tool", out)
+        self.assertIn("developing-today-forks/opencode", out)
 
     def test_offline_mode_requires_both_captures(self) -> None:
         # Omitting a capture without --live must fail, not silently
