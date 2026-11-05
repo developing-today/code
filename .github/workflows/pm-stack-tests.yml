@@ -5,10 +5,16 @@ on:
   push:
     paths:
       - "pm-stack/external-comms/**"
+      - "pm-stack/opencode-usage-export/**"
+      - "pm-stack/cloudflare-export/**"
+      - "pm-stack/supabase-export/**"
       - ".github/workflows/pm-stack-tests.yml"
   pull_request:
     paths:
       - "pm-stack/external-comms/**"
+      - "pm-stack/opencode-usage-export/**"
+      - "pm-stack/cloudflare-export/**"
+      - "pm-stack/supabase-export/**"
       - ".github/workflows/pm-stack-tests.yml"
 
 permissions:
@@ -16,9 +22,9 @@ permissions:
 
 jobs:
   test:
-    name: aggregator + projector + dispatch + python suites
+    name: aggregator + projector + dispatch + python suites + quota exporters
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -108,3 +114,22 @@ jobs:
             exit 1
           fi
           python3 -m unittest test_push_quarantine
+
+      # Quota exporter suites for #6084
+      # opencode-usage-export: node --test (4 tests)
+      - name: Test opencode-usage-export suite
+        run: node --test pm-stack/opencode-usage-export/opencode-usage-export.test.mjs
+
+      # cloudflare-export: node --test (35 tests)
+      - name: Test cloudflare-export suite
+        run: node --test pm-stack/cloudflare-export/cloudflare-quota-export.test.mjs
+
+      # supabase-export: bun test (12 tests)
+      - name: Test supabase-export suite
+        working-directory: pm-stack/supabase-export
+        run: |
+          if [ ! -f supabase-quota-export.test.mjs ]; then
+            echo "::error::Missing suite file pm-stack/supabase-export/supabase-quota-export.test.mjs — the supabase suite was not run."
+            exit 1
+          fi
+          bun test
