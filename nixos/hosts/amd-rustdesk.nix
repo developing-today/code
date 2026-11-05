@@ -76,6 +76,12 @@ in
     description = "Re-assert the RustDesk permanent password from the vault";
     after = [ "network.target" ];
     wantedBy = [ "multi-user.target" ];
+    # The fetch script's vault route is fleet secrets get's Bitwarden
+    # fallback, which spawns `bws` (the broker leg is bound to the
+    # login session by design). Without bws on the unit PATH the
+    # first real activation (gen 537, 2026-11-05) failed all 60
+    # retries with "bws secret list: spawn failed: entity not found".
+    path = [ pkgs.bws ];
     serviceConfig = {
       Type = "oneshot";
       ExecStart = rustdeskPasswordAssert;
