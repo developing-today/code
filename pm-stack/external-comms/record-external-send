@@ -75,20 +75,35 @@ def secret(name):
     fleet = find_fleet()
     if not fleet:
         raise RuntimeError("fleet binary not found (secrets route)")
-    out = subprocess.run([fleet, "secrets", "get", name],
-                         capture_output=True, text=True, timeout=30)
-    if out.returncode != 0:
-        raise RuntimeError(f"fleet secrets get {name} failed "
-                           f"(exit {out.returncode})")
-    return out.stdout.strip()
+    # The broker answers single calls reliably but can fail transiently
+    # under burst (exit 3 observed during the 68-row backfill); the
+    # queue broker retries the same race at startup. Retry with backoff.
+    import time
+    last = None
+    for attempt in range(3):
+        out = subprocess.run([fleet, "secrets", "get", name],
+                             capture_output=True, text=True, timeout=30)
+        if out.returncode == 0:
+            return out.stdout.strip()
+        last = out.returncode
+        if attempt < 2:
+            time.sleep(1 + attempt)
+    raise RuntimeError(f"fleet secrets get {name} failed "
+                       f"(exit {last}, 3 attempts)")
+
+
+_DB_CONFIG = None
 
 
 def db_config():
-    base = os.environ.get("EXTERNAL_COMMS_SUPABASE_URL") or \
-        secret("supabase.muse-dev2.project-url")
-    key = os.environ.get("EXTERNAL_COMMS_SERVICE_KEY") or \
-        secret("supabase.muse-dev2.service-role-key")
-    return base.rstrip("/"), key
+    global _DB_CONFIG
+    if _DB_CONFIG is None:
+        base = os.environ.get("EXTERNAL_COMMS_SUPABASE_URL") or \
+            secret("supabase.muse-dev2.project-url")
+        key = os.environ.get("EXTERNAL_COMMS_SERVICE_KEY") or \
+            secret("supabase.muse-dev2.service-role-key")
+        _DB_CONFIG = (base.rstrip("/"), key)
+    return _DB_CONFIG
 
 
 def insert_record(base, key, rec):
