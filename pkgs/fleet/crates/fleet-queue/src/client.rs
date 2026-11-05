@@ -91,10 +91,9 @@ fn direct_roundtrip(url: &str, path: &str, body: &Value) -> Result<Value, String
     if hostport.is_empty() || hostport.contains('/') {
         return Err(format!("bad broker URL {url:?}"));
     }
-    let token_file = std::env::var("REPO_QUEUE_TOKEN_FILE")
-        .unwrap_or_else(|_| format!("{}/.config/queue-broker/token", home()));
-    let token = std::fs::read_to_string(&token_file)
-        .map_err(|e| format!("cannot read queue-broker token file {token_file}: {e}"))?;
+    let token_file_env = std::env::var("REPO_QUEUE_TOKEN_FILE").ok();
+    let token_file = token_file_from_env(token_file_env.as_deref(), &home());
+    let token = crate::token_file::load_token_file(&token_file)?;
     let token = token.trim();
     let payload = serde_json::to_vec(body).unwrap();
     let mut s = TcpStream::connect(hostport)
@@ -582,8 +581,33 @@ fn parse_i64_flag(name: &str, raw: &str) -> Result<i64, String> {
         .map_err(|_| format!("argument --{name}: invalid int value {raw:?}"))
 }
 
+fn env_or_default(value: Option<&str>, default: &str) -> String {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(default)
+        .to_string()
+}
+
+fn default_queue_from_env(value: Option<&str>) -> String {
+    env_or_default(value, DEFAULT_QUEUE)
+}
+
+fn signal_path_from_env(value: Option<&str>, home_dir: &str) -> String {
+    let default = format!(
+        "{home_dir}/workspace/goals/keep-the-four-repos-healthy/hidden_files/repo-queue-signal.json"
+    );
+    env_or_default(value, &default)
+}
+
+fn token_file_from_env(value: Option<&str>, home_dir: &str) -> String {
+    let default = format!("{home_dir}/.config/queue-broker/token");
+    env_or_default(value, &default)
+}
+
 fn default_queue() -> String {
-    std::env::var("REPO_QUEUE_DEFAULT_QUEUE").unwrap_or_else(|_| DEFAULT_QUEUE.to_string())
+    let value = std::env::var("REPO_QUEUE_DEFAULT_QUEUE").ok();
+    default_queue_from_env(value.as_deref())
 }
 
 fn opt_queue(args: &Args) -> String {
@@ -1254,12 +1278,8 @@ fn cmd_signal(rest: &[String]) -> i32 {
     let queued_count = resp.get("queued_count").cloned().unwrap_or(json!(0));
     let oldest = resp.get("oldest_queued_at").cloned().unwrap_or(Value::Null);
 
-    let signal_path = std::env::var("REPO_QUEUE_SIGNAL_PATH").unwrap_or_else(|_| {
-        format!(
-            "{}/workspace/goals/keep-the-four-repos-healthy/hidden_files/repo-queue-signal.json",
-            home()
-        )
-    });
+    let signal_path_env = std::env::var("REPO_QUEUE_SIGNAL_PATH").ok();
+    let signal_path = signal_path_from_env(signal_path_env.as_deref(), &home());
     let dir = std::path::Path::new(&signal_path)
         .parent()
         .map(|p| p.to_string_lossy().to_string())
@@ -1351,6 +1371,37 @@ mod tests {
 
     fn pos(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn assert_env_resolution(resolve: impl Fn(Option<&str>) -> String, default: &str) {
+        for value in [None, Some(""), Some(" \t\n")] {
+            assert_eq!(resolve(value), default);
+        }
+        assert_eq!(
+            resolve(Some(" /tmp/configured path ")),
+            "/tmp/configured path"
+        );
+    }
+
+    #[test]
+    fn default_queue_empty_env_values_use_default() {
+        assert_env_resolution(default_queue_from_env, DEFAULT_QUEUE);
+    }
+
+    #[test]
+    fn signal_path_empty_env_values_use_home_default() {
+        let home_dir = "/home/test";
+        let default = format!(
+            "{home_dir}/workspace/goals/keep-the-four-repos-healthy/hidden_files/repo-queue-signal.json"
+        );
+        assert_env_resolution(|value| signal_path_from_env(value, home_dir), &default);
+    }
+
+    #[test]
+    fn token_file_empty_env_values_use_home_default() {
+        let home_dir = "/home/test";
+        let default = format!("{home_dir}/.config/queue-broker/token");
+        assert_env_resolution(|value| token_file_from_env(value, home_dir), &default);
     }
 
     #[test]

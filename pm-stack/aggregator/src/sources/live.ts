@@ -78,6 +78,7 @@ import {
   type SessionRecord,
   type SourceCoverage,
   type UsageView,
+  isValidRef,
   parseRef,
   refsInText,
   refUrl,
@@ -485,7 +486,19 @@ export async function projectorLinks(baseUrl: string, subject: string): Promise<
   const r = await getJson(`${baseUrl}/links?subject=${encodeURIComponent(subject)}`);
   if (!r.ok) return [];
   const rows = (r.json as { links?: ProjectorLinkRow[] }).links ?? [];
-  return rows.map((row) => ({ ref: row.ref, relation: asRelation(row.relation) }));
+  // Stored rows bypass the projector's POST /links gate (legacy/seeded
+  // data), so the shared ref rule (#4952) is applied here at the read
+  // boundary (#6211): a ref parseRef rejects - an unsafe-integer number,
+  // or not owner/repo#N at all - must never reach a renderer, where
+  // refUrl would throw on it and 500 the page. The drop is logged so a
+  // bad registry row stays visible instead of silently vanishing.
+  return rows.flatMap((row) => {
+    if (!isValidRef(row.ref)) {
+      console.error(`[registry] WARNING: dropping projector link with invalid ref ${JSON.stringify(row.ref)} for subject ${subject} (#6211)`);
+      return [];
+    }
+    return [{ ref: row.ref, relation: asRelation(row.relation) }];
+  });
 }
 
 /**

@@ -47,6 +47,49 @@ async function sha256Hex(bytes) {
     .join("");
 }
 
+// Read exactly frameLength bytes starting at offset from a response body
+// that ignored the Range header (HTTP 200, the whole bundle). Bytes before
+// offset are discarded chunk by chunk and the stream is cancelled the
+// moment the frame is complete; only the frame itself is ever retained.
+// A stream that ends early yields a short array, which the caller's
+// exact-length check rejects (fail closed).
+export async function readStreamedFrame(resp, offset, frameLength) {
+  if (!resp.body || typeof resp.body.getReader !== "function") {
+    // No readable stream to bound: fall back to buffering and slicing.
+    const whole = new Uint8Array(await resp.arrayBuffer());
+    return whole.slice(offset, offset + frameLength);
+  }
+  const reader = resp.body.getReader();
+  const parts = [];
+  let skip = offset;
+  let remaining = frameLength;
+  try {
+    while (remaining > 0) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (skip >= value.length) {
+        skip -= value.length;
+        continue;
+      }
+      const take = value.subarray(skip, skip + remaining);
+      parts.push(take);
+      remaining -= take.length;
+      skip = 0;
+    }
+  } finally {
+    // Stop the download here: never pull the rest of the bundle.
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+  const frame = new Uint8Array(frameLength - remaining);
+  let pos = 0;
+  for (const part of parts) {
+    frame.set(part, pos);
+    pos += part.length;
+  }
+  return frame;
+}
+
 // ---------------------------------------------------------------------------
 // Durable Object: one instance per bundle id. Concurrent fetches for the
 // same bundle funnel through here; an in-flight map joins identical member
@@ -132,11 +175,15 @@ export class BundleFlight {
     if (resp.status !== 206 && resp.status !== 200) {
       throw new HttpError(502, `drive range download failed (HTTP ${resp.status})`);
     }
-    let frame = new Uint8Array(await resp.arrayBuffer());
+    let frame;
     if (resp.status === 200) {
-      // Drive ignored the Range header and sent the whole bundle: slice out
-      // exactly the member's frame before doing anything with it.
-      frame = frame.slice(offset, offset + frame_length);
+      // Drive ignored the Range header and sent the whole bundle: stream
+      // it, discarding everything before the frame and stopping as soon
+      // as the frame is complete, so peak memory tracks frame_length
+      // rather than the bundle size (issue #6182).
+      frame = await readStreamedFrame(resp, offset, frame_length);
+    } else {
+      frame = new Uint8Array(await resp.arrayBuffer());
     }
     if (frame.length !== frame_length) {
       throw new HttpError(

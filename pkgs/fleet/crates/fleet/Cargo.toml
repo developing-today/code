@@ -26,6 +26,10 @@ fleet-proxy = { workspace = true, default-features = false }
 # the connect variant must not carry it (§2: "nothing else").
 fleet-secrets = { workspace = true, optional = true }
 serde_json = { workspace = true }
+# Direct dep for the SIGPIPE disposition reset in main (#5569);
+# already in the workspace lockfile as a transitive dependency.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 # Capability features (§2). The shipped variants are feature sets:
 #   fleet         = default (full)

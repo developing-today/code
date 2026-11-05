@@ -63,3 +63,35 @@ openclaw status
 openclaw doctor
 openclaw agent --message "Who are you, who do you work with, and what is your default model?"
 ```
+
+### Verify tool plugins (bundled + custom) — NOT `openclaw plugins list`
+
+`openclaw plugins list` shows **runtime plugins only** (channels, harnesses,
+providers, search). Tool plugins — the bundled ones (gogcli, goplaces, qmd,
+sag, camsnap, discrawl, wacrawl) and custom ones (the vendored summarize
+plugin) — never appear in that list, in either the enabled or the disabled
+section. Their absence there is expected, not a registration failure
+(this cost a diagnosis cycle once: issue #6347).
+
+A tool plugin is registered when both of these hold in the **deployed**
+system:
+
+1. Its package is on the gateway's PATH — the `openclaw-gateway-default`
+   wrapper script run by the `openclaw-gateway` unit exports a PATH with
+   one store path per tool package (e.g. `...-summarize-0.21.14/bin`).
+2. Its skill is in the rendered config's skill load paths:
+   `~/.openclaw/openclaw.json` lists
+   `~/.local/share/nix-openclaw/skills/default/<name>`, and that directory
+   contains the plugin's `SKILL.md`.
+
+Then smoke-test the binary from its store path, e.g. for summarize:
+`<store-path>/bin/summarize --version` and
+`<store-path>/bin/summarize --extract https://example.com`.
+Two gotchas: the binaries are on the gateway's PATH only, not the login
+shell's (`which summarize` fails interactively — that is normal); and the
+first-ever `--extract` is slow (a minute or more) because the
+HTML-to-Markdown step shells out to `uvx --from markitdown[all]`, which
+downloads its packages on a cold cache before falling back to readability
+extraction — later runs take seconds. A full LLM summarize additionally
+needs a provider API key in the gateway's environment; `--extract` does
+not.

@@ -250,6 +250,7 @@ dependencies = [
  "fleet-registry",
  "fleet-search",
  "fleet-secrets",
+ "libc",
  "serde_json",
 ]
 
