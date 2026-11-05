@@ -153,6 +153,144 @@ describe("epicGraph", () => {
     expect(g.rankedBlocked[0]!.blockers).toEqual([R(99)]);
   });
 
+  test("ranks shared transitive blockers once per open item and shows additional blockers", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), labels: ["effort/s"], blockedBy: [R(90)] }),
+      item({ number: 3, epicRef: R(1), labels: ["effort/m"], blockedBy: [R(2), R(91)] }),
+      // #4 reaches #90 along two paths (#4 → #2 and #4 → #3 → #2).
+      item({ number: 4, epicRef: R(1), labels: ["effort/xs"], blockedBy: [R(2), R(3)] }),
+      item({ number: 90, blockedBy: [R(99)] }),
+      item({ number: 91, blockedBy: [R(99)] }),
+    ];
+    const g = epicGraph(pool, R(1));
+    const shared = g.rankedBlockers.find((blocker) => blocker.ref === R(99))!;
+    expect(shared.state).toBeNull();
+    expect(shared.issueUrl).toBe("https://github.com/developing-today/code/issues/99");
+    expect(shared.downstreamCount).toBe(3);
+    expect(shared.downstreamItems.map((downstream) => downstream.ref)).toEqual([R(2), R(3), R(4)]);
+    expect(shared.downstreamItems.find((downstream) => downstream.ref === R(3))!.additionalBlockers).toEqual([R(2), R(91)]);
+    expect(shared.downstreamItems.find((downstream) => downstream.ref === R(4))!.additionalBlockers).toEqual([R(2), R(3)]);
+
+    // Ranking summaries cover the complete member set, not only graph nodes.
+    expect(epicGraph(pool, R(1), 2).rankedBlockers).toEqual(g.rankedBlockers);
+  });
+
+  test("ties use known effort weight then canonical ref, and report unsized contributors", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), labels: ["effort/xs"], blockedBy: [R(90)] }),
+      item({ number: 3, epicRef: R(1), labels: ["effort/s"], blockedBy: [R(90)] }),
+      item({ number: 4, epicRef: R(1), labels: ["effort/m"], blockedBy: [R(91)] }),
+      item({ number: 5, epicRef: R(1), blockedBy: [R(91)] }),
+      item({ number: 6, epicRef: R(1), labels: ["effort/s"], blockedBy: [R(92)] }),
+      item({ number: 7, epicRef: R(1), labels: ["effort/xs"], blockedBy: [R(92)] }),
+      item({ number: 90 }),
+      item({ number: 91 }),
+      item({ number: 92 }),
+    ];
+    const ranked = epicGraph(pool, R(1)).rankedBlockers;
+    expect(ranked.map((blocker) => blocker.ref)).toEqual([R(91), R(90), R(92)]);
+    expect(ranked.map((blocker) => blocker.downstreamCount)).toEqual([2, 2, 2]);
+    expect(ranked.map((blocker) => blocker.knownEffortWeight)).toEqual([12, 5, 5]);
+    expect(ranked[0]!.unsizedCount).toBe(1);
+
+    const reversed = epicGraph([...pool].reverse(), R(1)).rankedBlockers;
+    expect(reversed).toEqual(ranked);
+  });
+
+  test("matches a reachability model for every four-member dependency DAG", () => {
+    const members = [2, 3, 4, 5];
+    const edges: [number, number][] = [
+      [2, 3],
+      [2, 4],
+      [2, 5],
+      [3, 4],
+      [3, 5],
+      [4, 5],
+    ];
+    const labels = new Map<number, string>([
+      [2, "effort/xs"],
+      [3, "effort/s"],
+      [4, "effort/m"],
+      [5, "effort/l"],
+    ]);
+    const weights = new Map<number, number>([
+      [2, 1],
+      [3, 4],
+      [4, 12],
+      [5, 40],
+    ]);
+
+    // The oracle is set reachability: for each open member, find every
+    // blocker in its ancestry, then aggregate member sets and their weight.
+    for (let mask = 0; mask < 1 << edges.length; mask += 1) {
+      const blockedBy = new Map<number, number[]>(members.map((number) => [number, []]));
+      edges.forEach(([descendant, blocker], bit) => {
+        if ((mask & (1 << bit)) !== 0) blockedBy.get(descendant)!.push(blocker);
+      });
+      const pool = [
+        item({ number: 1, title: "Epic", kind: "Epic" }),
+        ...members.map((number) =>
+          item({
+            number,
+            epicRef: R(1),
+            labels: [labels.get(number)!],
+            blockedBy: blockedBy.get(number)!.map(R),
+          }),
+        ),
+      ];
+      const descendants = new Map<number, Set<number>>();
+      for (const member of members) {
+        const visited = new Set<number>();
+        const pending = [...blockedBy.get(member)!];
+        while (pending.length > 0) {
+          const blocker = pending.pop()!;
+          if (visited.has(blocker)) continue;
+          visited.add(blocker);
+          const work = descendants.get(blocker) ?? new Set<number>();
+          work.add(member);
+          descendants.set(blocker, work);
+          pending.push(...blockedBy.get(blocker)!);
+        }
+      }
+      const expected = [...descendants.entries()]
+        .map(([blocker, work]) => ({
+          ref: R(blocker),
+          downstreamCount: work.size,
+          knownEffortWeight: [...work].reduce((sum, number) => sum + weights.get(number)!, 0),
+          downstreamItems: [...work].sort((a, b) => R(a).localeCompare(R(b))).map(R),
+        }))
+        .sort(
+          (a, b) =>
+            b.downstreamCount - a.downstreamCount ||
+            b.knownEffortWeight - a.knownEffortWeight ||
+            a.ref.localeCompare(b.ref),
+        );
+      const actual = epicGraph(pool, R(1)).rankedBlockers.map((blocker) => ({
+        ref: blocker.ref,
+        downstreamCount: blocker.downstreamCount,
+        knownEffortWeight: blocker.knownEffortWeight,
+        downstreamItems: blocker.downstreamItems.map((downstream) => downstream.ref),
+      }));
+      expect(actual).toEqual(expected);
+    }
+  });
+
+  test("closed and merged blockers, their ancestors, and closed descendants do not count", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), blockedBy: [R(90), R(91)] }),
+      item({ number: 3, epicRef: R(1), state: "closed", blockedBy: [R(94)] }),
+      item({ number: 4, epicRef: R(1), blockedBy: [R(95)] }),
+      item({ number: 90, state: "closed", blockedBy: [R(96)] }),
+      item({ number: 91, state: "merged", blockedBy: [R(97)] }),
+      item({ number: 95, blockedBy: [R(98)] }),
+    ];
+    const refs = epicGraph(pool, R(1)).rankedBlockers.map((blocker) => blocker.ref);
+    expect(refs).toEqual([R(95), R(98)]);
+  });
+
   test("external count is computed before the node cap (Codex round-3)", () => {
     const pool = [
       item({ number: 1, title: "Epic", kind: "Epic" }),
@@ -250,6 +388,17 @@ describe("renderProgramProject per-epic dependency graph (#3973)", () => {
     expect(html).toContain("(unresolved)");
     expect(html).toContain("blocked by:");
     expect(html).toContain("waiting on 1 unresolved blocker");
+  });
+
+  test("renders the primary downstream ranking with uncertainty, additional blockers, and separate unsized counts", () => {
+    const html = renderWith(fixturePool());
+    expect(html).toContain("Primary ranking — blockers by downstream open work");
+    expect(html).toContain("2 distinct open downstream items; known effort weight 0; 2 unsized contributors");
+    expect(html).toContain("outside this pool; status unknown — unresolved");
+    expect(html).toContain("additional unresolved blockers");
+    expect(html).toContain("not a promise that every item is immediately unblocked");
+    expect(html).toContain("longest blocked chain");
+    expect(html).toContain("Open items by current unresolved direct-blocker count");
   });
 
   test("a pool with no eligible epic says unavailable, not an empty graph", () => {
