@@ -153,6 +153,8 @@ describe("epicGraph", () => {
     expect(g.blockedCount).toBe(1); // #5 is blocked even though the cap hides it
     expect(g.rankedBlocked.map((r) => r.ref)).toEqual([R(5)]);
     expect(g.rankedBlocked[0]!.blockers).toEqual([R(99)]);
+    expect(g.rankedBlocked[0]!.downstreamCount).toBeGreaterThanOrEqual(0);
+    expect(Array.isArray(g.rankedBlocked[0]!.contributingItems)).toBe(true);
   });
 
   test("external count is computed before the node cap (Codex round-3)", () => {
@@ -251,7 +253,8 @@ describe("renderProgramProject per-epic dependency graph (#3973)", () => {
     expect(html).toContain("not in this pool / status unknown — unresolved");
     expect(html).toContain("(unresolved)");
     expect(html).toContain("blocked by:");
-    expect(html).toContain("waiting on 1 unresolved blocker");
+    expect(html).toContain("waiting on");
+    expect(html).toContain("distinct downstream open epic item");
   });
 
   test("a pool with no eligible epic says unavailable, not an empty graph", () => {

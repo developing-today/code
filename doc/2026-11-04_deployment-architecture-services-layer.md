@@ -139,7 +139,7 @@ services.<name> = {
   user = "user";                    # or a systemd DynamicUser where suitable
   ports = [ 4801 ];
   restart = "on-failure";
-  healthCheck = "http://100.99.113.103:4801/health";
+  healthCheck = "http://100.99.113.103:4801/healthz";
   targets = [ "laptop" ];           # hosts/classes this may deploy to
 };
 ```

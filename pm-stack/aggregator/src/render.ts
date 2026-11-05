@@ -6579,17 +6579,21 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
     ? `<p class="muted">Truncated: this graph shows ${g.nodes.length} of ${g.totalNodes} nodes (cap ${EPIC_GRAPH_DEFAULT_CAP}). The counts above cover the full set; a capped graph is not complete.</p>`
     : "";
 
-  // Ranked summary: open member items by how many unresolved blockers
-  // they wait on, from the graph's pre-cap ranking (the full transitive
-  // unblock ranking is #3974; this is the per-epic blocked summary
-  // beside the graph). Never derived from the capped node list: a
-  // member the cap hid is still waiting.
+  // Ranked summary: open member items by how many distinct open epic items
+  // are in the transitive blockedBy ancestry of their blockers (the full
+  // transitive downstream ranking is #3974). Never derived from the
+  // capped node list: a member the cap hid is still waiting.
   const ranked = g.rankedBlocked;
   const rankedHtml = ranked.length
     ? `<ul class="epic-graph-list">${ranked
         .map(
-          (r) =>
-            `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${r.blockers.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>`).join(", ")}</li>`,
+          (r) => {
+            const blockerItems = r.blockers.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>`);
+            const contributingItems = r.contributingItems.length > 0
+              ? `<br><span class="muted">Contributing downstream epics: ${r.contributingItems.map((ci) => `<a href="${esc(refUrl(ci))}">${esc(ci)}</a>`).join(", ")}</span>`
+              : "";
+            return `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.downstreamCount} distinct downstream open epic item${r.downstreamCount === 1 ? "" : "s"} via ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${blockerItems.join(", ")}${contributingItems}</li>`;
+          },
         )
         .join("")}</ul>`
     : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
