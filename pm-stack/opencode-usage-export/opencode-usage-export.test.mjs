@@ -156,3 +156,60 @@ test("no candidate exists: store-missing failure document, exit 3", async () => 
   assert.equal(doc.status, "store-missing");
   assert.equal(doc.sessions, undefined);
 });
+
+test("invalid --window-hours values fail closed with usage exit 2 and name the flag", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  for (const extra of [["banana"], ["-5"], ["0"], ["Infinity"], ["--fresh-hours"], []]) {
+    const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir, "--window-hours", ...extra] });
+    assert.equal(exitCode, 2, `argv tail: ${JSON.stringify(extra)}`);
+    assert.equal(doc.status, "invalid-argument");
+    assert.equal(doc.sessions, undefined);
+    assert.match(doc.detail, /--window-hours/);
+  }
+  const latest = JSON.parse(await readFile(join(outDir, "latest.json"), "utf8"));
+  assert.equal(latest.status, "invalid-argument");
+});
+
+test("invalid --fresh-hours values fail closed with usage exit 2 and name the flag", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  for (const extra of [["banana"], ["-1"], ["0"], ["Infinity"], []]) {
+    const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir, "--fresh-hours", ...extra] });
+    assert.equal(exitCode, 2, `argv tail: ${JSON.stringify(extra)}`);
+    assert.equal(doc.status, "invalid-argument");
+    assert.equal(doc.sessions, undefined);
+    assert.match(doc.detail, /--fresh-hours/);
+  }
+});
+
+test("invalid flags are rejected before any store read", async () => {
+  const { home, outDir } = await fakeHome();
+  // No store exists at all: a store-first implementation would report
+  // store-missing (3); validation-first reports invalid-argument (2).
+  const { exitCode, doc } = await run({
+    home, now: NOW,
+    argv: ["--out-dir", outDir, "--db", join(home, "nope.db"), "--window-hours", "banana"],
+  });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--window-hours/);
+});
+
+test("explicit valid window and freshness values retain existing behavior", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), {
+    sessions: [
+      { id: "ses_recent" },
+      { id: "ses_old", updated: NOW - 48 * HOUR, created: NOW - 49 * HOUR },
+    ],
+    messages: [assistantMsg("ses_recent")],
+  });
+  const { exitCode, doc } = await run({
+    home, now: NOW, argv: ["--out-dir", outDir, "--window-hours", "48", "--fresh-hours", "12"],
+  });
+  assert.equal(exitCode, 0);
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.windowHours, 48);
+  assert.equal(doc.sessions.length, 2); // both sessions fall inside the 48h window
+});
