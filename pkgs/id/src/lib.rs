@@ -199,6 +199,7 @@ pub mod groups;
 pub mod helpers;
 pub mod hosted_binding;
 pub mod idset;
+pub mod input_framing;
 pub mod invite;
 pub mod invites;
 pub mod issuer_rotation;
