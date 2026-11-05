@@ -182,6 +182,8 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
 
+    use proptest::prelude::*;
+
     fn argv(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|s| (*s).to_string()).collect()
     }
@@ -324,5 +326,187 @@ mod tests {
     fn invalid_bind_address_still_fails() {
         let err = parse(&["--bind", "not-an-ip"]).expect_err("a non-IP --bind must be rejected");
         assert!(err.contains("--bind"), "{err}");
+    }
+
+    // Property-based coverage of the #6139 parser invariants (the
+    // oracle is the invariant itself, checked against a model of
+    // the generated invocation; the fixed examples above stay as
+    // smoke coverage). Per the repo testing doctrine, parsers get
+    // PBT: a generator hammers flag combinations and positions no
+    // example list would enumerate.
+    //
+    // Invariants:
+    // 1. Any scalar flag occurring twice before any `--help` is a
+    //    usage error naming that flag — wherever the two
+    //    occurrences sit among otherwise-valid arguments.
+    // 2. An invocation using each scalar at most once parses, and
+    //    the parsed fields equal the model of what was generated.
+    // 3. `--help` short-circuits: tokens after it are never
+    //    parsed, but a duplicate completed before it still errors.
+
+    const SCALARS: [&str; 4] = ["--proxy", "--bind", "--target", "--ports"];
+
+    /// A valid value for `flag`: `--bind` must carry an IP, the
+    /// other scalars accept any string at parse time.
+    fn scalar_value(flag: &str, s: &str, ip: &str) -> String {
+        if flag == "--bind" {
+            ip.to_string()
+        } else {
+            s.to_string()
+        }
+    }
+
+    fn unit(flag: &str, value: &str) -> Vec<String> {
+        vec![flag.to_string(), value.to_string()]
+    }
+
+    /// Filler units: each scalar other than `dup` at most once
+    /// (selected by `mask`), plus the given `--map` units. Every
+    /// filler is valid, so nothing in it can error on its own.
+    fn filler_units(dup: &str, mask: u8, s: &str, ip: &str, maps: &[String]) -> Vec<Vec<String>> {
+        let mut units: Vec<Vec<String>> = Vec::new();
+        for (bit, flag) in SCALARS.iter().enumerate() {
+            if *flag != dup && mask & (1 << bit) != 0 {
+                units.push(unit(flag, &scalar_value(flag, s, ip)));
+            }
+        }
+        for m in maps {
+            units.push(unit("--map", m));
+        }
+        units
+    }
+
+    fn flatten(units: &[Vec<String>]) -> Vec<String> {
+        units.iter().flat_map(|u| u.iter().cloned()).collect()
+    }
+
+    proptest! {
+        #[test]
+        fn duplicate_scalar_rejected_in_any_position(
+            flag_idx in 0usize..SCALARS.len(),
+            s1 in "[a-z]{1,4}",
+            s2 in "[a-z]{1,4}",
+            ip1 in prop_oneof![Just("127.0.0.1"), Just("127.0.0.2"), Just("::1")],
+            ip2 in prop_oneof![Just("127.0.0.1"), Just("127.0.0.2"), Just("::1")],
+            mask in 0u8..8,
+            s_fill in "[a-z]{1,4}",
+            ip_fill in prop_oneof![Just("127.0.0.1"), Just("127.0.0.2"), Just("::1")],
+            maps in proptest::collection::vec("[a-z]{1,3}", 0..3),
+            a_raw in 0usize..16,
+            b_raw in 0usize..16,
+        ) {
+            let flag = SCALARS[flag_idx];
+            let fillers = filler_units(flag, mask, &s_fill, ip_fill, &maps);
+            let n = fillers.len();
+            let a = a_raw % (n + 1);
+            let b = b_raw % (n - a + 1);
+            let mut units: Vec<Vec<String>> = Vec::new();
+            units.extend_from_slice(&fillers[..a]);
+            units.push(unit(flag, &scalar_value(flag, &s1, ip1)));
+            units.extend_from_slice(&fillers[a..a + b]);
+            units.push(unit(flag, &scalar_value(flag, &s2, ip2)));
+            units.extend_from_slice(&fillers[a + b..]);
+            let err = parse_args_inner(&flatten(&units))
+                .expect_err("a repeated scalar flag must be rejected wherever it appears");
+            prop_assert_eq!(err, format!("argument {flag}: duplicate flag"));
+        }
+
+        #[test]
+        fn distinct_scalars_parse_to_the_model(
+            mask in 0u8..16,
+            s_proxy in "[a-z]{1,4}",
+            s_target in "[a-z]{1,4}",
+            s_ports in "[a-z]{1,4}",
+            ip_bind in prop_oneof![Just("127.0.0.1"), Just("127.0.0.2"), Just("::1")],
+            maps in proptest::collection::vec("[a-z]{1,3}", 0..3),
+            rotate in 0usize..8,
+            reverse in any::<bool>(),
+        ) {
+            // Model: build the invocation as tagged units, lay
+            // them out (rotate / reverse), then read the expected
+            // fields back off that same layout.
+            let mut units: Vec<Vec<String>> = Vec::new();
+            if mask & 1 != 0 {
+                units.push(unit("--proxy", &s_proxy));
+            }
+            if mask & 2 != 0 {
+                units.push(unit("--bind", ip_bind));
+            }
+            if mask & 4 != 0 {
+                units.push(unit("--target", &s_target));
+            }
+            if mask & 8 != 0 {
+                units.push(unit("--ports", &s_ports));
+            }
+            for m in &maps {
+                units.push(unit("--map", m));
+            }
+            if !units.is_empty() {
+                let k = rotate % units.len();
+                units.rotate_left(k);
+                if reverse {
+                    units.reverse();
+                }
+            }
+            let expected_maps: Vec<String> = units
+                .iter()
+                .filter(|u| u[0] == "--map")
+                .map(|u| u[1].clone())
+                .collect();
+            let has = |flag: &str| units.iter().any(|u| u[0] == flag);
+            let value_of = |flag: &str| {
+                units.iter().find(|u| u[0] == flag).map(|u| u[1].clone())
+            };
+            let p = parse_args_inner(&flatten(&units))
+                .expect("each scalar at most once must parse");
+            prop_assert!(!p.help);
+            prop_assert_eq!(p.proxy, value_of("--proxy"));
+            prop_assert_eq!(
+                p.bind,
+                if has("--bind") {
+                    Some(ip_bind.parse::<IpAddr>().expect("generated bind is an IP"))
+                } else {
+                    None
+                }
+            );
+            prop_assert_eq!(p.target, value_of("--target"));
+            prop_assert_eq!(p.ports, value_of("--ports"));
+            prop_assert_eq!(p.maps, expected_maps);
+        }
+
+        #[test]
+        fn help_short_circuits_but_never_excuses_an_earlier_duplicate(
+            flag_idx in 0usize..SCALARS.len(),
+            s1 in "[a-z]{1,4}",
+            s2 in "[a-z]{1,4}",
+            ip1 in prop_oneof![Just("127.0.0.1"), Just("127.0.0.2"), Just("::1")],
+            ip2 in prop_oneof![Just("127.0.0.1"), Just("127.0.0.2"), Just("::1")],
+            mask in 0u8..8,
+            s_fill in "[a-z]{1,4}",
+            ip_fill in prop_oneof![Just("127.0.0.1"), Just("127.0.0.2"), Just("::1")],
+            maps in proptest::collection::vec("[a-z]{1,3}", 0..2),
+        ) {
+            let flag = SCALARS[flag_idx];
+            let v1 = scalar_value(flag, &s1, ip1);
+            let v2 = scalar_value(flag, &s2, ip2);
+            // Help before the repeat: the second occurrence is
+            // never parsed, so the invocation is a help request.
+            let mut units = filler_units(flag, mask, &s_fill, ip_fill, &maps);
+            units.push(unit(flag, &v1));
+            units.push(vec!["--help".to_string()]);
+            units.push(unit(flag, &v2));
+            let p = parse_args_inner(&flatten(&units))
+                .expect("help short-circuits before the repeat is parsed");
+            prop_assert!(p.help);
+            // Help after the repeat: the duplicate error fires
+            // first, in scan order.
+            let mut units: Vec<Vec<String>> = Vec::new();
+            units.push(unit(flag, &v1));
+            units.push(unit(flag, &v2));
+            units.push(vec!["--help".to_string()]);
+            let err = parse_args_inner(&flatten(&units))
+                .expect_err("a duplicate completed before --help must still be rejected");
+            prop_assert_eq!(err, format!("argument {flag}: duplicate flag"));
+        }
     }
 }
