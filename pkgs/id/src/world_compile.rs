@@ -777,20 +777,43 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn fake_compiler(script: &str) -> (tempfile::TempDir, PathBuf) {
+    fn fake_compiler(script: &str) -> Option<(tempfile::TempDir, PathBuf)> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let is_executable = |path: &Path| {
+            std::fs::metadata(path).is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            })
+        };
+        let interpreter = std::env::var_os("ID_TEST_FAKE_SH")
+            .map(PathBuf::from)
+            .filter(|path| is_executable(path))
+            .or_else(|| {
+                let path = PathBuf::from("/bin/sh");
+                is_executable(&path).then_some(path)
+            });
+        let Some(interpreter) = interpreter else {
+            eprintln!(
+                "skipping fake compiler probe test: neither ID_TEST_FAKE_SH nor /bin/sh is executable"
+            );
+            return None;
+        };
+
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("fake-roc");
+        let script = format!("#!{}\n{script}", interpreter.display());
         std::fs::write(&path, script).expect("write fake compiler");
-        use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
             .expect("chmod fake compiler");
-        (dir, path)
+        Some((dir, path))
     }
 
     #[cfg(unix)]
     #[test]
     fn version_probe_records_the_reported_version() {
-        let (_dir, bin) = fake_compiler("#!/bin/sh\necho 'roc version 9.9-test'\n");
+        let Some((_dir, bin)) = fake_compiler("echo 'roc version 9.9-test'\n") else {
+            return;
+        };
         assert_eq!(
             probe_compiler_version(&bin, Duration::from_secs(5)),
             "roc version 9.9-test"
@@ -803,7 +826,9 @@ mod tests {
         // A compiler that hangs while reporting its version must be
         // killed at the probe bound and recorded as unavailable, not
         // block the compile forever (Codex P2 on PR #4263).
-        let (_dir, bin) = fake_compiler("#!/bin/sh\nsleep 30\n");
+        let Some((_dir, bin)) = fake_compiler("sleep 30\n") else {
+            return;
+        };
         let started = std::time::Instant::now();
         assert_eq!(probe_compiler_version(&bin, Duration::from_millis(200)), "");
         assert!(started.elapsed() < Duration::from_secs(5));
@@ -812,7 +837,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn version_probe_failure_records_empty() {
-        let (_dir, bin) = fake_compiler("#!/bin/sh\nexit 3\n");
+        let Some((_dir, bin)) = fake_compiler("exit 3\n") else {
+            return;
+        };
         assert_eq!(probe_compiler_version(&bin, Duration::from_secs(5)), "");
     }
 
