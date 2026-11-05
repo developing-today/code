@@ -310,6 +310,8 @@ def main():
                         "lease_until": r.get("lease_until"),
                         "lane_id": r.get("lane_id"),
                         "issue_number": prog.get("issue_number"),
+                        "dedupe_key": r.get("dedupe_key"),
+                        "title": r.get("title"),
                     }
                 )
             session_id = prog.get("session_id")
