@@ -47,10 +47,11 @@ import { parseProxyPort } from './proxy-port.mjs';
 import { createRequestBodyCollector } from './request-body.mjs';
 import { createStreamDecoder } from './stream-decode.mjs';
 
-// Default port 18747: 18746 is claimed by design-code-proxy
-// (DESIGN_CODE_PROXY_PORT) in this repo's config, so muse-proxy takes the
-// next port in the family range (cf. clef 18742, agy 18743, codex 18744,
-// antigravity-ls 18745, design-code 18746).
+// Default port 18747: muse-proxy takes the next port in the family
+// range after design-code's old 18746 (cf. clef 18742, agy 18743,
+// codex 18744, antigravity-ls 18745, design-code 18746 — all since
+// retired; design-code's bin program was removed in the 2026-11-06
+// proxy-infra decommission).
 const PORT = parseProxyPort('MUSE_PROXY_PORT', 18747);
 const HOST = process.env.MUSE_PROXY_HOST || '127.0.0.1';
 
