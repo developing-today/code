@@ -299,8 +299,21 @@ pub fn signed_message(method: &str, target: &str, at: u64, nonce: &str, body: &[
     )
 }
 
+/// Whether `nonce` is one `verify_signed` can accept: 1-64 ASCII
+/// alphanumeric characters or '-'.
+fn nonce_in_domain(nonce: &str) -> bool {
+    !nonce.is_empty()
+        && nonce.len() <= 64
+        && nonce.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
 /// Sign a request as a client holding `key` would.
-#[must_use]
+///
+/// # Errors
+///
+/// Fails if `nonce` is empty, longer than 64 characters, or has a character
+/// other than an ASCII letter, digit or '-': `verify_signed` refuses every
+/// such nonce, so no signature is produced for one.
 pub fn sign_request(
     key: &SigningKey,
     method: &str,
@@ -308,14 +321,18 @@ pub fn sign_request(
     body: &[u8],
     at: u64,
     nonce: &str,
-) -> Signed {
+) -> Result<Signed> {
+    anyhow::ensure!(
+        nonce_in_domain(nonce),
+        "nonce must be 1-64 ASCII letters, digits or '-'"
+    );
     let message = signed_message(method, target, at, nonce, body);
-    Signed {
+    Ok(Signed {
         key: hex_encode(&key.verifying_key().to_bytes()),
         at,
         nonce: nonce.to_owned(),
         signature: hex_encode(&key.sign(message.as_bytes()).to_bytes()),
-    }
+    })
 }
 
 /// Check a signed request and return the key that made it.
@@ -345,13 +362,7 @@ pub fn verify_signed(
         )
         .into());
     }
-    if signed.nonce.is_empty()
-        || signed.nonce.len() > 64
-        || !signed
-            .nonce
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
-    {
+    if !nonce_in_domain(&signed.nonce) {
         return Err(refused());
     }
     let key = normalize_key(&signed.key).ok().ok_or_else(refused)?;
@@ -525,7 +536,7 @@ mod tests {
             b"",
             now(),
             "n1",
-        );
+        ).unwrap();
         let mut replays = ReplayGuard::default();
         let who = verify_signed(
             &mut replays,
@@ -555,7 +566,7 @@ mod tests {
         let key = SigningKey::from_bytes(&[7; 32]);
         let at = now();
         let target = "/api/world/directory?world=x";
-        let signed = sign_request(&key, "GET", target, b"", at, "edge");
+        let signed = sign_request(&key, "GET", target, b"", at, "edge").unwrap();
         let mut replays = ReplayGuard::default();
 
         assert!(verify_signed(&mut replays, &signed, "GET", target, b"", at).is_ok());
@@ -587,7 +598,7 @@ mod tests {
     #[test]
     fn a_signed_request_is_bound_to_its_method_target_body_and_time() {
         let key = SigningKey::from_bytes(&[7; 32]);
-        let signed = sign_request(&key, "POST", "/api/world/directory", b"{}", now(), "n2");
+        let signed = sign_request(&key, "POST", "/api/world/directory", b"{}", now(), "n2").unwrap();
         for (method, target, body, at) in [
             ("GET", "/api/world/directory", b"{}".as_slice(), now()),
             ("POST", "/api/world/other", b"{}".as_slice(), now()),
@@ -621,12 +632,12 @@ mod tests {
         let mut replays = ReplayGuard::after_boot(boot, window);
         let target = "/api/world/directory";
 
-        let early = sign_request(&key, "GET", target, b"", boot + 599_000, "b1");
+        let early = sign_request(&key, "GET", target, b"", boot + 599_000, "b1").unwrap();
         let error =
             verify_signed(&mut replays, &early, "GET", target, b"", boot + 599_000).unwrap_err();
         assert!(boot_refused(&error), "{error:#}");
 
-        let late = sign_request(&key, "GET", target, b"", boot + 600_000, "b2");
+        let late = sign_request(&key, "GET", target, b"", boot + 600_000, "b2").unwrap();
         assert!(verify_signed(&mut replays, &late, "GET", target, b"", boot + 600_000).is_ok());
     }
 
@@ -634,7 +645,7 @@ mod tests {
     fn a_request_captured_before_a_restart_is_refused_during_the_boot_window() {
         let key = SigningKey::from_bytes(&[7; 32]);
         let boot = now();
-        let captured = sign_request(&key, "GET", "/x", b"", boot - 60_000, "old");
+        let captured = sign_request(&key, "GET", "/x", b"", boot - 60_000, "old").unwrap();
         let mut replays = ReplayGuard::after_boot(boot, Duration::from_mins(10));
         let error =
             verify_signed(&mut replays, &captured, "GET", "/x", b"", boot + 60_000).unwrap_err();
@@ -645,8 +656,35 @@ mod tests {
     fn a_zero_boot_window_refuses_nothing() {
         let key = SigningKey::from_bytes(&[7; 32]);
         let mut replays = ReplayGuard::after_boot(now(), Duration::ZERO);
-        let signed = sign_request(&key, "GET", "/x", b"", now(), "z1");
+        let signed = sign_request(&key, "GET", "/x", b"", now(), "z1").unwrap();
         assert!(verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_ok());
+    }
+
+    #[test]
+    fn sign_request_refuses_nonces_verify_signed_would_reject() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let long = "a".repeat(65);
+        for bad in [
+            "",
+            long.as_str(),
+            "has space",
+            "under_score",
+            "plus+sign",
+            "dot.name",
+            "n\u{e9}",
+        ] {
+            let error = sign_request(&key, "GET", "/x", b"", now(), bad).unwrap_err();
+            assert!(format!("{error:#}").contains("nonce"), "{bad:?}: {error:#}");
+        }
+        let max = "a".repeat(64);
+        for good in ["n1", "abc-DEF-123", max.as_str()] {
+            let signed = sign_request(&key, "GET", "/x", b"", now(), good).unwrap();
+            let mut replays = ReplayGuard::default();
+            assert!(
+                verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_ok(),
+                "{good:?}"
+            );
+        }
     }
 
     #[test]
@@ -688,7 +726,7 @@ mod tests {
         let mut signed = None;
         for seed in 0_u8..=255 {
             let key = SigningKey::from_bytes(&[seed; 32]);
-            let candidate = sign_request(&key, "GET", "/x", b"", now(), "n1");
+            let candidate = sign_request(&key, "GET", "/x", b"", now(), "n1").unwrap();
             if plus_encode(&candidate.key) != candidate.key {
                 signed = Some(candidate);
                 break;
@@ -706,7 +744,7 @@ mod tests {
     #[test]
     fn a_signed_request_with_a_non_canonical_s_is_refused() {
         let key = SigningKey::from_bytes(&[7; 32]);
-        let mut signed = sign_request(&key, "GET", "/x", b"", now(), "z2");
+        let mut signed = sign_request(&key, "GET", "/x", b"", now(), "z2").unwrap();
         let raw = hex_bytes::<64>(&signed.signature).unwrap();
         signed.signature = hex_encode(&with_non_canonical_s(raw));
         let mut replays = ReplayGuard::default();
