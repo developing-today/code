@@ -29,5 +29,7 @@ pub mod client;
 pub mod queue_broker;
 #[cfg(feature = "secrets-broker")]
 pub mod secrets_broker;
+#[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]
+pub mod uds_http;
 #[cfg(feature = "queue-broker")]
 pub mod validate;

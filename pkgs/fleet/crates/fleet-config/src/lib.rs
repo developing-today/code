@@ -23,6 +23,12 @@ use serde::Deserialize;
 
 /// The session broker's socket, as the Python broker runs it today.
 pub const DEFAULT_BROKER_SOCKET: &str = ".cache/laptop-agent/broker.sock";
+/// The queue broker's Unix socket (#6216): dual-bound alongside its
+/// TCP listener, in the broker's own config dir (token file sibling).
+pub const DEFAULT_QUEUE_BROKER_SOCKET: &str = ".config/queue-broker/broker.sock";
+/// The secrets broker's Unix socket (#6216): dual-bound alongside its
+/// TCP listener, in the broker's own config dir (token file sibling).
+pub const DEFAULT_SECRETS_BROKER_SOCKET: &str = ".config/secrets-broker/broker.sock";
 /// The proxy's per-port routing table (§4): port → service name.
 pub const PORT_LAPTOP_AGENT: u16 = 4799;
 pub const PORT_SECRETS_BROKER: u16 = 4800;
@@ -304,7 +310,7 @@ impl Config {
                 return Err(ConfigError::Read {
                     path: path.to_path_buf(),
                     message: e.to_string(),
-                })
+                });
             }
         };
         cfg.validate(path)?;
@@ -322,9 +328,7 @@ impl Config {
     fn validate(&self, path: &std::path::Path) -> Result<(), ConfigError> {
         let reject = |field: &str, default: u64| ConfigError::Parse {
             path: path.to_path_buf(),
-            message: format!(
-                "{field} must not be 0; omit the field for the default ({default})"
-            ),
+            message: format!("{field} must not be 0; omit the field for the default ({default})"),
         };
         if self.proxy.egress_proxy_port == Some(0) {
             return Err(reject(
@@ -336,10 +340,7 @@ impl Config {
             return Err(reject("[dispatch] port", u64::from(PORT_DISPATCH)));
         }
         if self.proxy.idle_exit_secs == Some(0) {
-            return Err(reject(
-                "[proxy] idle_exit_secs",
-                DEFAULT_IDLE_EXIT_SECS,
-            ));
+            return Err(reject("[proxy] idle_exit_secs", DEFAULT_IDLE_EXIT_SECS));
         }
         Ok(())
     }
@@ -376,6 +377,28 @@ impl Config {
             Some(p) => resolve_under(home, &PathBuf::from(p)),
             None => resolve_under(home, &PathBuf::from(DEFAULT_BROKER_SOCKET)),
         }
+    }
+
+    /// The queue broker's Unix socket path (#6216). `QUEUE_BROKER_SOCKET`
+    /// beats the default; no config-file field exists for it, so the
+    /// resolution is env -> default under $HOME, like the session
+    /// broker's socket with the config source absent.
+    pub fn queue_broker_socket(&self) -> PathBuf {
+        Self::broker_socket_from(
+            env_path("QUEUE_BROKER_SOCKET"),
+            Some(DEFAULT_QUEUE_BROKER_SOCKET),
+            &home_dir(),
+        )
+    }
+
+    /// The secrets broker's Unix socket path (#6216).
+    /// `SECRETS_BROKER_SOCKET` beats the default.
+    pub fn secrets_broker_socket(&self) -> PathBuf {
+        Self::broker_socket_from(
+            env_path("SECRETS_BROKER_SOCKET"),
+            Some(DEFAULT_SECRETS_BROKER_SOCKET),
+            &home_dir(),
+        )
     }
 
     pub fn idle_exit_secs(&self) -> u64 {
@@ -679,6 +702,20 @@ mod tests {
         assert_eq!(
             Config::broker_socket_from(None, Some("rel/c.sock"), &home),
             home.join("rel").join("c.sock")
+        );
+        // #6216: the queue/secrets broker socket defaults resolve under
+        // $HOME in each broker's own config dir.
+        assert_eq!(
+            Config::broker_socket_from(None, Some(DEFAULT_QUEUE_BROKER_SOCKET), &home),
+            home.join(".config")
+                .join("queue-broker")
+                .join("broker.sock")
+        );
+        assert_eq!(
+            Config::broker_socket_from(None, Some(DEFAULT_SECRETS_BROKER_SOCKET), &home),
+            home.join(".config")
+                .join("secrets-broker")
+                .join("broker.sock")
         );
     }
 
