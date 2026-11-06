@@ -2,6 +2,7 @@
 //! Ported verbatim from pkgs/atlas-search's bin crate in fleet step 5
 //! (#5433): the output-parity contract lives in these writers, so the
 //! fleet verb renders service envelopes byte-identically to atlas-search.
+//! Drift guard: .github/scripts/check-fleet-search-parity.sh (#5920).
 //! `render_text` / `snippet`. Values render the way CPython's
 //! f-strings render them (floats via repr, None as "None",
 //! `rank_sources` as a Python dict repr).
