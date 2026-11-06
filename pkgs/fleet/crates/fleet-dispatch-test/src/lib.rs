@@ -4,18 +4,32 @@
 //! An explicit-dispatch CI test surface over GitHub Actions:
 //!
 //!   fleet dispatch-test scan    count active Actions jobs in each
-//!                               scope repo and name the first one
-//!                               with free capacity + the pilot
-//!                               workflow present
+//!                               execution-home copy and name the
+//!                               first one with free capacity + the
+//!                               generic workflow present
 //!   fleet dispatch-test submit  store a job row in the Turso jobs
-//!                               store, then dispatch the pilot
+//!                               store, then dispatch the generic
 //!                               workflow (fleet-dispatch-test.yml)
-//!                               in the chosen repo with the job id
+//!                               in the chosen copy with the job id
 //!   fleet dispatch-test status  print one stored job row as JSON
 //!
 //! Nothing here is trigger-driven: every verb runs only when a
 //! caller invokes it, and `submit` dispatches a workflow_dispatch
 //! run explicitly. No Actions triggers are enabled by this crate.
+//!
+//! Execution homes (phase 2, Drew's corrected design): ONE repo —
+//! the fleet repo (default `dezren39/fleet`, config
+//! `[dispatch-test] fleet_repo`) — holds the other fleet repos as
+//! git submodules and carries the generic workflow. Eligible
+//! homes are its COPIES: the source repo plus every repo found by
+//! following its fork network (forks, and forks of forks). The
+//! scan discovers them per invocation unless `[dispatch-test]
+//! scopes` pins an explicit list (the pin is an override, not the
+//! default). A job names a SUBMODULE + REF + COMMANDS; the
+//! generic workflow checks out the fleet repo, checks out the
+//! named submodule at the named ref, and runs the commands inside
+//! it, in the fleet-build container image whose baked Nix store
+//! is the fleet repo's partial preloaded cache.
 //!
 //! Capacity counting (scan): for each scope repo, ACTIVE JOBS =
 //! (jobs with status in_progress or queued across all in_progress
@@ -50,8 +64,8 @@ const EXIT_HTTP: i32 = 4;
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
 const WORKFLOW_FILE: &str = "fleet-dispatch-test.yml";
-const DEFAULT_SCRIPT: &str =
-    "set -eux; echo dispatch-test smoke; uname -a; git rev-parse HEAD || true";
+const DEFAULT_COMMANDS: &str =
+    "set -eux; echo dispatch-test smoke; git rev-parse HEAD; uname -a";
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -481,6 +495,85 @@ fn choose(scans: &[RepoScan], threshold: u64) -> Option<&RepoScan> {
 }
 
 // ---------------------------------------------------------------------------
+// Discovery: the fleet repo's copies (source + fork network)
+// ---------------------------------------------------------------------------
+
+/// `full_name`s from a `GET /repos/{r}/forks` body.
+fn fork_full_names(forks_body: &Value) -> Vec<String> {
+    forks_body
+        .as_array()
+        .map(|forks| {
+            forks
+                .iter()
+                .filter_map(|f| f.get("full_name").and_then(|n| n.as_str()))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Append `name` to `scopes` when new; returns whether it was new.
+/// (Pure dedup step, unit-tested.)
+fn push_scope(scopes: &mut Vec<String>, name: &str) -> bool {
+    if scopes.iter().any(|s| s == name) {
+        false
+    } else {
+        scopes.push(name.to_string());
+        true
+    }
+}
+
+/// Discover the execution homes: the fleet repo itself, then its
+/// fork network breadth-first (forks, then forks of forks, ...
+/// depth-capped at 8 levels — the real network is 1 level today).
+/// Order is selection order: source first, then copies in the
+/// order the API names them.
+fn discover_scopes(github: &Github, fleet_repo: &str) -> Result<Vec<String>> {
+    let mut scopes = vec![fleet_repo.to_string()];
+    let mut level = vec![fleet_repo.to_string()];
+    for _ in 0..8 {
+        let mut next: Vec<String> = Vec::new();
+        for repo in &level {
+            let body = github.get(&format!("/repos/{repo}/forks?per_page=100"))?;
+            for name in fork_full_names(&body) {
+                if push_scope(&mut scopes, &name) {
+                    next.push(name);
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        level = next;
+    }
+    Ok(scopes)
+}
+
+/// The scope list + where it came from: the config pin when
+/// `[dispatch-test] scopes` is non-empty, otherwise fork-network
+/// discovery rooted at the fleet repo.
+fn resolve_scopes(github: &Github, config: &Config) -> Result<(Vec<String>, &'static str)> {
+    let pinned = config.dispatch_test_scopes();
+    if !pinned.is_empty() {
+        return Ok((pinned, "config"));
+    }
+    let scopes = discover_scopes(github, config.dispatch_test_fleet_repo())?;
+    Ok((scopes, "fork-network"))
+}
+
+/// A submodule name is a single path segment of the fleet repo:
+/// alphanumerics, `-`, `_`, `.` — never empty, never `.`/`..`,
+/// never containing a slash (it is joined onto the checkout).
+fn valid_submodule(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+// ---------------------------------------------------------------------------
 // Turso jobs store (HTTPS pipeline, hrana-over-HTTP v2 shape)
 // ---------------------------------------------------------------------------
 
@@ -669,6 +762,28 @@ impl Turso {
     }
 }
 
+/// Phase-2 store migration, applied idempotently by the verbs
+/// that touch the new columns: jobs gain `submodule` (the fleet
+/// repo submodule the job runs in) and `commands` (the shell
+/// commands run inside it). The MVP columns stay: `target_ref`
+/// now carries the SUBMODULE ref (empty = the umbrella's recorded
+/// SHA) and `script` mirrors `commands` so MVP-era readers still
+/// see the payload. A duplicate-column error means the migration
+/// already ran and is not a failure.
+fn ensure_schema(turso: &Turso) -> Result<()> {
+    for sql in [
+        "ALTER TABLE jobs ADD COLUMN submodule TEXT",
+        "ALTER TABLE jobs ADD COLUMN commands TEXT",
+    ] {
+        match turso.execute(sql, &[]) {
+            Ok(_) => {}
+            Err(e) if e.message().contains("duplicate column") => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Verbs
 // ---------------------------------------------------------------------------
@@ -676,13 +791,15 @@ impl Turso {
 const SCAN_USAGE: &str = "\
 Usage: fleet dispatch-test scan [--threshold N] [--json]
 
-For each scope repo (config [dispatch-test] scopes, in order):
-count ACTIVE JOBS via the GitHub API — jobs with status
-in_progress or queued across in_progress runs, plus queued runs
-counted as 1 active unit each (approximation: a queued run has
-not started and exposes no jobs, so it counts once regardless of
-its eventual fan-out). Also probe whether the pilot workflow
-(fleet-dispatch-test.yml) is present and active.
+For each execution-home copy (in order): count ACTIVE JOBS via
+the GitHub API — jobs with status in_progress or queued across
+in_progress runs, plus queued runs counted as 1 active unit each
+(approximation: a queued run has not started and exposes no jobs,
+so it counts once regardless of its eventual fan-out). Also probe
+whether the generic workflow (fleet-dispatch-test.yml) is
+present and active. Copies are DISCOVERED — the fleet repo
+([dispatch-test] fleet_repo, default dezren39/fleet) plus its
+fork network — unless [dispatch-test] scopes pins a list.
 
 Prints one line per scope:
   <repo> active=<n> workflow=<yes|no> eligible=<yes|no>
@@ -698,12 +815,14 @@ fn verb_scan(config: &Config, args: &[String]) -> Result<()> {
     let parsed = parse_args(args, &["threshold"], &["json"])?;
     let threshold = parse_threshold(parsed.get("threshold"), config)?;
     let github = Github::new(config)?;
-    let scopes = config.dispatch_test_scopes();
+    let (scopes, scopes_source) = resolve_scopes(&github, config)?;
     let scans = scan_scopes(&github, &scopes)?;
     let chosen = choose(&scans, threshold).map(|s| s.repo.clone());
     if parsed.flag("json") {
         let doc = json!({
             "threshold": threshold,
+            "fleet_repo": config.dispatch_test_fleet_repo(),
+            "scopes_source": scopes_source,
             "scopes": scans.iter().map(|s| s.to_json(threshold)).collect::<Vec<_>>(),
             "chosen": chosen,
         });
@@ -712,6 +831,11 @@ fn verb_scan(config: &Config, args: &[String]) -> Result<()> {
             serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "null".to_string())
         );
     } else {
+        println!(
+            "scopes source: {} (fleet repo {})",
+            scopes_source,
+            config.dispatch_test_fleet_repo()
+        );
         for s in &scans {
             println!(
                 "{} active={} workflow={} eligible={}",
@@ -727,26 +851,36 @@ fn verb_scan(config: &Config, args: &[String]) -> Result<()> {
 }
 
 const SUBMIT_USAGE: &str = "\
-Usage: fleet dispatch-test submit [--threshold N] [--repo owner/name]
-                                  [--ref REF] [--name TEXT]
-                                  [--script TEXT | --script-file PATH]
+Usage: fleet dispatch-test submit --submodule NAME [--threshold N]
+                                  [--repo owner/name] [--ref REF]
+                                  [--name TEXT]
+                                  [--commands TEXT | --commands-file PATH]
 
-Store a job in the Turso jobs store (status queued), pick a scope
-(--repo forces one; otherwise the scan rule: first scope with
-active < threshold and the pilot workflow present), mark the row
-dispatched, and dispatch fleet-dispatch-test.yml in that repo
-with the job id as its only input.
+Store a job in the Turso jobs store (status queued), pick an
+execution-home copy (--repo forces one; otherwise the scan rule:
+first discovered copy with active < threshold and the generic
+workflow present), mark the row dispatched, and dispatch
+fleet-dispatch-test.yml in that copy with the job id as its only
+input. The generic workflow checks out the fleet repo, checks
+out the named submodule at the named ref, and runs the commands
+inside it (fleet-build container: the fleet repo's preloaded
+nix cache).
 
   --threshold N      capacity threshold (default: config, else 40)
-  --repo owner/name  force this repo instead of scanning scopes
-  --ref REF          checkout ref recorded on the job (default:
-                     the string HEAD — the pilot's default checkout)
+  --repo owner/name  force this execution-home copy
+  --submodule NAME   fleet-repo submodule to run in (required) —
+                     e.g. code, opencode, openchamber, nix, hatch
+  --ref REF          ref inside the SUBMODULE repo: branch, tag
+                     or SHA (default: empty = the submodule stays
+                     at the umbrella's recorded SHA)
   --name TEXT        job name recorded on the row
-  --script TEXT      the script the pilot runs for this job
-  --script-file PATH read the script from a file
-                     (default script: a trivial smoke script)
+  --commands TEXT    shell commands run inside the submodule
+  --commands-file PATH
+                     read the commands from a file
+                     (default: a trivial smoke command set)
 
-Prints JSON: {job_id, repo, active_at_scan, threshold, status}.";
+Prints JSON: {job_id, repo, submodule, ref, active_at_scan,
+threshold, status}.";
 
 fn verb_submit(config: &Config, args: &[String]) -> Result<Value> {
     if args.iter().any(|a| a == "--help" || a == "-h") {
@@ -755,22 +889,43 @@ fn verb_submit(config: &Config, args: &[String]) -> Result<Value> {
     }
     let parsed = parse_args(
         args,
-        &["threshold", "repo", "ref", "name", "script", "script-file"],
+        &[
+            "threshold",
+            "repo",
+            "submodule",
+            "ref",
+            "name",
+            "commands",
+            "commands-file",
+        ],
         &[],
     )?;
-    if parsed.get("script").is_some() && parsed.get("script-file").is_some() {
-        return Err(usage("--script and --script-file are mutually exclusive"));
+    if parsed.get("commands").is_some() && parsed.get("commands-file").is_some() {
+        return Err(usage("--commands and --commands-file are mutually exclusive"));
     }
     let threshold = parse_threshold(parsed.get("threshold"), config)?;
-    let script = match parsed.get("script-file") {
-        Some(path) => std::fs::read_to_string(path)
-            .map_err(|e| usage(format!("cannot read script file {path}: {e}")))?,
-        None => parsed
-            .get("script")
-            .map(str::to_string)
-            .unwrap_or_else(|| DEFAULT_SCRIPT.to_string()),
+    let submodule = match parsed.get("submodule") {
+        Some(s) if valid_submodule(s) => s.to_string(),
+        Some(s) => {
+            return Err(usage(format!(
+                "--submodule must be a single fleet-repo submodule name                  (letters, digits, '-', '_', '.'), got {s:?}"
+            )));
+        }
+        None => {
+            return Err(usage(
+                "--submodule is required: the fleet-repo submodule to run in",
+            ));
+        }
     };
-    let target_ref = parsed.get("ref").unwrap_or("HEAD").to_string();
+    let commands = match parsed.get("commands-file") {
+        Some(path) => std::fs::read_to_string(path)
+            .map_err(|e| usage(format!("cannot read commands file {path}: {e}")))?,
+        None => parsed
+            .get("commands")
+            .map(str::to_string)
+            .unwrap_or_else(|| DEFAULT_COMMANDS.to_string()),
+    };
+    let target_ref = parsed.get("ref").unwrap_or("").to_string();
     let name = parsed.get("name").map(str::to_string);
     if let Some(repo) = parsed.get("repo") {
         let parts: Vec<&str> = repo.split('/').collect();
@@ -781,37 +936,42 @@ fn verb_submit(config: &Config, args: &[String]) -> Result<Value> {
 
     let github = Github::new(config)?;
     let turso = Turso::new(config)?;
+    ensure_schema(&turso)?;
 
-    // (a) job id, (b) INSERT as queued.
+    // (a) job id, (b) INSERT as queued. `script` mirrors
+    // `commands` (MVP-era readers); `target_ref` is the
+    // submodule ref ('' = recorded SHA).
     let id = generate_job_id()?;
     let created = now_rfc3339();
     turso.execute(
         "INSERT INTO jobs (id, created_at, name, target_repo, target_ref, script, status, \
-         run_id, run_url, exit_code, output_tail, updated_at) \
-         VALUES (?, ?, ?, NULL, ?, ?, 'queued', NULL, NULL, NULL, NULL, ?)",
+         run_id, run_url, exit_code, output_tail, updated_at, submodule, commands) \
+         VALUES (?, ?, ?, NULL, ?, ?, 'queued', NULL, NULL, NULL, NULL, ?, ?, ?)",
         &[
             TursoArg::Text(id.clone()),
             TursoArg::Text(created.clone()),
             name.map(TursoArg::Text).unwrap_or(TursoArg::Null),
-            TursoArg::Text(target_ref),
-            TursoArg::Text(script),
+            TursoArg::Text(target_ref.clone()),
+            TursoArg::Text(commands.clone()),
             TursoArg::Text(created.clone()),
+            TursoArg::Text(submodule.clone()),
+            TursoArg::Text(commands),
         ],
     )?;
 
-    // (c) pick the scope.
+    // (c) pick the execution-home copy.
     let (repo, active_at_scan) = if let Some(forced) = parsed.get("repo") {
         let scan = scan_repo(&github, forced)?;
         (forced.to_string(), scan.active)
     } else {
-        let scopes = config.dispatch_test_scopes();
+        let (scopes, _source) = resolve_scopes(&github, config)?;
         let scans = scan_scopes(&github, &scopes)?;
         match choose(&scans, threshold) {
             Some(s) => (s.repo.clone(), s.active),
             None => {
                 return Err(transport_err(format!(
-                    "no eligible scope: no scope repo has active < {threshold} with the \
-                     pilot workflow present (job {id} remains queued in the store)"
+                    "no eligible scope: no execution-home copy has active < {threshold} \
+                     with the generic workflow present (job {id} remains queued in the store)"
                 )));
             }
         }
@@ -827,7 +987,7 @@ fn verb_submit(config: &Config, args: &[String]) -> Result<Value> {
         ],
     )?;
 
-    // (e) dispatch the pilot workflow at the repo's default branch.
+    // (e) dispatch the generic workflow at the copy's default branch.
     let repo_body = github.get(&format!("/repos/{repo}"))?;
     let default_branch = repo_body
         .get("default_branch")
@@ -845,6 +1005,8 @@ fn verb_submit(config: &Config, args: &[String]) -> Result<Value> {
     Ok(json!({
         "job_id": id,
         "repo": repo,
+        "submodule": submodule,
+        "ref": if target_ref.is_empty() { Value::Null } else { Value::String(target_ref) },
         "active_at_scan": active_at_scan,
         "threshold": threshold,
         "status": "dispatched",
@@ -869,9 +1031,11 @@ fn verb_status(config: &Config, args: &[String]) -> Result<Value> {
     }
     let id = &args[0];
     let turso = Turso::new(config)?;
+    ensure_schema(&turso)?;
     let result = turso.execute(
-        "SELECT id, created_at, name, target_repo, target_ref, script, status, \
-         run_id, run_url, exit_code, output_tail, updated_at FROM jobs WHERE id = ?",
+        "SELECT id, created_at, name, target_repo, target_ref, submodule, commands, \
+         script, status, run_id, run_url, exit_code, output_tail, updated_at \
+         FROM jobs WHERE id = ?",
         &[TursoArg::Text(id.clone())],
     )?;
     let row = result
@@ -897,8 +1061,8 @@ fleet repos for free GitHub Actions capacity, submit a job to
 the Turso-backed jobs store and dispatch the pilot workflow,
 then track the job's stored status.
 
-  scan [--threshold N] [--json]   capacity + workflow scan of the scope repos
-  submit [options]                store a job and dispatch the pilot workflow
+  scan [--threshold N] [--json]   capacity + workflow scan of the fleet-repo copies
+  submit [options]                store a job and dispatch the generic workflow
   status <job-id>                 print one stored job row as JSON
 
 Run 'fleet dispatch-test <command> --help' for a verb's options.
@@ -1086,6 +1250,45 @@ mod tests {
         let err = parse_pipeline_rows(&per).unwrap_err();
         assert_eq!(err.exit_code(), EXIT_TRANSPORT);
         assert!(err.message().contains("no such table"));
+    }
+
+    #[test]
+    fn fork_names_parse_and_scopes_dedup_in_order() {
+        let body = json!([
+            {"full_name": "developing-today/fleet"},
+            {"full_name": "developing-today-forks/fleet"},
+            {"name": "no-full-name"}
+        ]);
+        assert_eq!(
+            fork_full_names(&body),
+            vec![
+                "developing-today/fleet".to_string(),
+                "developing-today-forks/fleet".to_string()
+            ]
+        );
+        assert!(fork_full_names(&json!({"forks": []})).is_empty());
+        let mut scopes = vec!["dezren39/fleet".to_string()];
+        assert!(push_scope(&mut scopes, "developing-today/fleet"));
+        assert!(!push_scope(&mut scopes, "dezren39/fleet"));
+        assert!(push_scope(&mut scopes, "developing-today-forks/fleet"));
+        assert_eq!(
+            scopes,
+            vec![
+                "dezren39/fleet",
+                "developing-today/fleet",
+                "developing-today-forks/fleet"
+            ]
+        );
+    }
+
+    #[test]
+    fn submodule_names_are_single_path_segments() {
+        for ok in ["code", "opencode", "openchamber", "nix", "hatch-personal", "dezren39-zettel"] {
+            assert!(valid_submodule(ok), "{ok} should be valid");
+        }
+        for bad in ["", ".", "..", "../code", "code/sub", "a b", "a/b", "x;rm"] {
+            assert!(!valid_submodule(bad), "{bad:?} should be invalid");
+        }
     }
 
     #[test]
