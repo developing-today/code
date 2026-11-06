@@ -35,10 +35,14 @@
   //   shows a zero-traffic window.
   // - "claude-code" was TEMPORARILY disabled (2026-10-27, Drew; RE-ENABLED 2026-11-06, Drew - see the dated note above disabled_providers): the Claude
   //   plan is on the FREE tier for now and the API may be down. The setup
-  //   itself is confirmed working — the proxy (:18749) is live and serves
-  //   claude-haiku-5-5 (verified 2026-10-27) — this is a config-level pause
-  //   only: the proxy, its catalog entries, and every route that references
-  //   it stay in place. Claude MODELS via other plans (antigravity-ls,
+  //   itself was confirmed working at pause time — the proxy (:18749)
+  //   was live and served claude-haiku-5-5 (verified 2026-10-27) — and
+  //   the pause began as config-level only. That changed on 2026-11-05:
+  //   the provider block below was repointed from the proxy to the
+  //   fork's native claude-code provider (code#6117, opencode#1749),
+  //   and on 2026-11-06 the proxy itself (bin/claude-code-proxy.mjs,
+  //   its systemd unit and :18749) was removed in the proxy-infra
+  //   decommission. Claude MODELS via other plans (antigravity-ls,
   //   cline-pass, opendesign leaves in haiku/sonnet/opus-plan) are NOT the
   //   Claude plan and are unaffected. To re-enable: delete "claude-code"
   //   from disabled_providers and restore the "default" below.
@@ -70,8 +74,9 @@
   // (the pools below already ship that way — haiku-plan seats claude-code
   // while it is off).
   //
-  // WORKED EXAMPLE — Claude: "claude-code" sits in the list today because
-  // the Claude plan is on the free tier (see the header note). The day it
+  // WORKED EXAMPLE — Claude (resolved 2026-11-06, when claude-code
+  // left the list): "claude-code" sat in the list because the Claude
+  // plan was on the free tier (see the header note). The day it
   // comes back, delete the "claude-code" line from the list and Claude is
   // live: its definition, model catalog, and haiku-plan seat are already in
   // place, and every tier that consumes haiku-plan (scout, workhorse,
@@ -2208,7 +2213,7 @@
         // every other leaf in this pool. Same last position.
         // NEW 2026-10-28 (Job 2): round-robin over every verified Spark
         // contributor door — meta direct, ClinePass (live completion
-        // probed 2026-10-28), Command Code (live :18748 list), and
+        // probed 2026-10-28), Command Code (live :18748 proxy list, 2026-10-28; the proxy retired 2026-11-06 — the provider is native since 2026-11-05), and
         // OpenCode Go x3 (the live serve catalog lists
         // muse-spark-1.3-contributor on all three workspaces). The
         // tier seats that used to address the meta leaf directly
@@ -2251,9 +2256,11 @@
         // catalog lists a Sol-class model.
         // 2026-10-28 (Job 2): two plan doors join — OpenDesign (serves
         // gpt-6.1-sol; its block entry is added in this PR) and Command
-        // Code (gpt-6.1-sol verified in the LIVE :18748 /v1/models
-        // list, 85 ids, 2026-10-28 — the running bridge trails the
-        // source catalog but does serve Sol).
+        // Code (gpt-6.1-sol verified in the then-live :18748
+        // /v1/models list, 85 ids, 2026-10-28 — the running bridge
+        // trailed the source catalog but did serve Sol; the bridge
+        // retired 2026-11-06 and the provider is native since
+        // 2026-11-05).
         // 2026-10-31 (Drew): the ChatGPT pair seats through
         // openai-plan/gpt-6.1-sol (ordered: alternate first,
         // main the reserve) at the pair's previous combined weight
