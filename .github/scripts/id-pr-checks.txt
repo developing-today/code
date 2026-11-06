@@ -44,4 +44,5 @@ crash-gate-sweep
 crash-gate-control
 crash-gate-ingest
 just-recipes-drift
+just-recipes-alias-admission
 doc
