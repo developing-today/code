@@ -96,6 +96,11 @@ describe("titleRefs", () => {
       "developing-today/openchamber#492",
     ]);
   });
+
+  test("rejects unsafe-integer refs from explicit and alias title forms", () => {
+    expect(titleRefs("developing-today/code#9007199254740992")).toEqual([]);
+    expect(titleRefs("code #9007199254740992")).toEqual([]);
+  });
 });
 
 describe("inFlightBoardItems", () => {
@@ -271,5 +276,17 @@ describe("renderBoard in-flight lane", () => {
     expect(html).toContain('href="https://github.com/developing-today/openchamber/issues/492"');
     expect(html.match(/href="https:\/\/github.com\/developing-today\/openchamber\/issues\/492"/g)).toHaveLength(1);
     expect(html.match(/href="https:\/\/github.com\/developing-today\/code\/issues\/944"/g)).toHaveLength(1);
+  });
+
+  test("an unsafe non-first title ref cannot break rendering or displace the valid ref", () => {
+    const lane = inFlightBoardItems(
+      section([task("code #944, then developing-today/code#9007199254740992", "in-progress")]),
+      [],
+    );
+    expect(lane[0].links.map((link) => link.ref)).toEqual(["developing-today/code#944"]);
+
+    const html = renderBoard(lane, new Map(), provenance);
+    expect(html).toContain('href="https://github.com/developing-today/code/issues/944"');
+    expect(html).not.toContain('href="https://github.com/developing-today/code/issues/9007199254740992"');
   });
 });
