@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/cli"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
 	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
 	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 
@@ -57,7 +59,12 @@ func newEnv(t *testing.T, cfgBody string) *env {
 		dir:  dir,
 		mcpx: mcpx,
 		fake: fake,
-		envVars: append(withoutMCPXVars(os.Environ()),
+		// The child environment is built from an allowlist, not inherited:
+		// ChildEnv drops everything the test does not control, so no caller
+		// variable reaches the binary whatever the caller's shell exported
+		// (#1992). What the test does control is listed here and wins,
+		// because os/exec keeps the last value for a duplicated key.
+		envVars: testsupport.ChildEnv(os.Environ(), dir,
 			// Never the real registry. A test that reaches the internet
 			// fails wherever the internet is slow, which is every CI runner
 			// -- `/v1/registry/search` timed out there while passing on a
@@ -3195,25 +3202,68 @@ func TestConcurrentRunsOfOneScriptKeepTheirOwnLauncher(t *testing.T) {
 	}
 }
 
-// withoutMCPXVars drops every MCPX_ variable the developer running the suite
-// happens to have exported.
+// TestMain is the backstop for #1992: the suite must never disturb the
+// caller's real daemons, whatever the caller's shell exported.
 //
-// The harness sets the ones it needs a line below, and last-wins in exec's
-// environment would cover those. It does not cover the ones it deliberately
-// leaves unset: a test that asserts a knob is off reads the default only if
-// nothing in the ambient environment turned it on, and MCPX_TRACE=1 in the
-// shell of somebody debugging mcpx is exactly the case. That fails on one
-// machine and nowhere else, which is the worst kind.
-//
-// PATH and everything else is kept, because the child needs a runtime.
-func withoutMCPXVars(env []string) []string {
-	out := make([]string, 0, len(env))
-	for _, kv := range env {
-		if strings.HasPrefix(kv, "MCPX_") {
-			continue
+// First it fails fast if the parent carries a caller-daemon pointer
+// (MCPX_DAEMON_ENDPOINT or MCPX_SOCKET) that would reach a test child: with
+// the allowlist builder that cannot happen, so reaching this failure means
+// somebody widened the allowlist and every test after it would run against
+// the user's daemon instead of its own. Then it records the caller's real
+// daemon set, runs the suite, and fails if that set differs at the end --
+// the one assertion that the suite left the machine as it found it, which
+// also catches a regression of the #182 daemon-leak fix.
+func TestMain(m *testing.M) {
+	os.Exit(guardedMain(m))
+}
+
+func guardedMain(m *testing.M) int {
+	before := callerDaemonSet()
+	for _, name := range []string{"MCPX_DAEMON_ENDPOINT", "MCPX_SOCKET"} {
+		if v := os.Getenv(name); v != "" && childWouldInherit(name) {
+			fmt.Fprintf(os.Stderr,
+				"e2e: refusing to run: the parent exports %s=%q and the harness would pass it to test children, "+
+					"pointing the suite at the caller's daemon (#1992). Unset it, or fix the allowlist in internal/testsupport.\n",
+				name, v)
+			return 1
 		}
-		out = append(out, kv)
 	}
+	code := m.Run()
+	after := callerDaemonSet()
+	if !slices.Equal(before, after) {
+		fmt.Fprintf(os.Stderr,
+			"e2e: the suite disturbed the caller's real daemons (#1992): before=[%s] after=[%s]. "+
+				"Each test owns its MCPX_STATE_DIR, so a difference means a child reached the real state dir; "+
+				"a daemon you started or stopped yourself mid-suite reads the same way.\n",
+			strings.Join(before, " "), strings.Join(after, " "))
+		return 1
+	}
+	return code
+}
+
+// childWouldInherit reports whether a parent variable would reach a test
+// child through the allowlist builder. The probe carries no harness extras,
+// which can only override more, never less: if the name survives here it
+// survives in every test.
+func childWouldInherit(name string) bool {
+	prefix := name + "="
+	for _, kv := range testsupport.ChildEnv(os.Environ(), "") {
+		if strings.HasPrefix(kv, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// callerDaemonSet snapshots the caller's real daemons: the info records in
+// the state dir resolved from the parent environment, which no test may
+// touch because every test sets its own MCPX_STATE_DIR.
+func callerDaemonSet() []string {
+	var out []string
+	for _, d := range daemon.ResolvePaths().ListDaemons() {
+		out = append(out, d.Socket+" pid="+strconv.Itoa(d.PID))
+	}
+	slices.Sort(out)
 	return out
 }
 
