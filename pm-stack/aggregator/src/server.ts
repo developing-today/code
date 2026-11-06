@@ -135,6 +135,7 @@ import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
 import { buildQueueView, queueInputsStale } from "./queue-view.ts";
+import { dashboardResponseWithinDeadline } from "./assembly-deadline.ts";
 
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
@@ -2228,7 +2229,7 @@ async function fetchHandler(req: Request): Promise<Response> {
   // failure as an unsuccessful render.
   let res: Response;
   try {
-    res = await handler(req);
+    res = await dashboardResponseWithinDeadline(req, () => handler(req));
   } catch (err) {
     console.error(`aggregator: handler failed for ${req.method} ${req.url}:`, err);
     res = errorBoundaryResponse(new URL(req.url).pathname, err);
