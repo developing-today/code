@@ -2651,10 +2651,9 @@ fn convert_doc_to_bytes(name: &str, doc: &serde_json::Value) -> Result<Vec<u8>, 
 /// Inline atoms carry no `content`, so recursion alone loses them.
 /// Pinned representations (#1491): an `image` contributes its `alt`
 /// text verbatim when non-empty, otherwise its `src` verbatim when
-/// non-empty, otherwise nothing; a `front_matter` block contributes
-/// its `text` attr verbatim (#5639). Known remaining gap: `footnote_reference`
-/// atoms are not yet rendered — they contribute nothing; that is
-/// explicitly out of scope for the #1491 fix.
+/// non-empty, otherwise nothing; a `footnote_reference` contributes
+/// `[^<label>]` when its label is non-empty. A `front_matter` block
+/// contributes its `text` attr verbatim (#5639).
 fn extract_plain_text(doc: &serde_json::Value) -> String {
     let mut lines = Vec::new();
     if let Some(content) = doc.get("content").and_then(|c| c.as_array()) {
@@ -2731,7 +2730,9 @@ fn collect_plain_text_lines(nodes: &[serde_json::Value], lines: &mut Vec<String>
 /// as a newline, and any other inline node recursed into (its own
 /// inline content contributes its text instead of being dropped).
 /// The `image` atom has no content — its payload is `attrs`, rendered
-/// per the pinned policy on `extract_plain_text` (#1491).
+/// per the pinned policy on `extract_plain_text` (#1491). A
+/// `footnote_reference` atom similarly renders its non-empty label
+/// using the Markdown footnote-reference form.
 fn extract_inline_text(node: &serde_json::Value) -> String {
     let mut out = String::new();
     if let Some(content) = node.get("content").and_then(|c| c.as_array()) {
@@ -2756,6 +2757,18 @@ fn extract_inline_text(node: &serde_json::Value) -> String {
                         attrs.and_then(|a| a.get("src")).and_then(|v| v.as_str())
                     {
                         out.push_str(src);
+                    }
+                }
+                "footnote_reference" => {
+                    if let Some(label) = inline
+                        .get("attrs")
+                        .and_then(|attrs| attrs.get("label"))
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|label| !label.is_empty())
+                    {
+                        out.push_str("[^");
+                        out.push_str(label);
+                        out.push(']');
                     }
                 }
                 _ => out.push_str(&extract_inline_text(inline)),
@@ -4360,6 +4373,10 @@ mod tests {
         serde_json::json!({"type": "image", "attrs": attrs})
     }
 
+    fn footnote_reference(label: &str) -> serde_json::Value {
+        serde_json::json!({"type": "footnote_reference", "attrs": {"label": label}})
+    }
+
     #[test]
     fn test_extract_plain_text_image_only_paragraph_saves_as_alt() {
         // #1491: an image atom's only text is its alt.
@@ -4412,6 +4429,44 @@ mod tests {
             {"type": "text", "text": "y"}
         ]})]);
         assert_eq!(extract_plain_text(&doc), "xy");
+    }
+
+    #[test]
+    fn test_extract_plain_text_footnote_reference_between_text_runs() {
+        let doc = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+            {"type": "text", "text": "before "},
+            footnote_reference("note:α"),
+            {"type": "text", "text": " after"}
+        ]})]);
+        assert_eq!(extract_plain_text(&doc), "before [^note:α] after");
+    }
+
+    #[test]
+    fn test_extract_plain_text_footnote_reference_in_recursive_container() {
+        let doc = plain_doc(vec![serde_json::json!({"type": "bullet_list", "content": [
+            {"type": "list_item", "content": [serde_json::json!({"type": "paragraph", "content": [
+                {"type": "text", "text": "listed "},
+                footnote_reference("1"),
+                {"type": "text", "text": " text"}
+            ]})]}
+        ]})]);
+        assert_eq!(extract_plain_text(&doc), "listed [^1] text");
+    }
+
+    #[test]
+    fn test_extract_plain_text_footnote_reference_missing_or_empty_label_is_nothing() {
+        for reference in [
+            serde_json::json!({"type": "footnote_reference"}),
+            serde_json::json!({"type": "footnote_reference", "attrs": {}}),
+            serde_json::json!({"type": "footnote_reference", "attrs": {"label": ""}}),
+        ] {
+            let doc = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+                {"type": "text", "text": "x"},
+                reference,
+                {"type": "text", "text": "y"}
+            ]})]);
+            assert_eq!(extract_plain_text(&doc), "xy");
+        }
     }
 
     #[test]
