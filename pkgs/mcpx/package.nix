@@ -47,7 +47,7 @@ buildGo127Module {
       !(base == "bin" || base == "result" || lib.hasPrefix "result-" base || base == "mcpx-client.ts");
   };
 
-  # Five direct Go dependencies.
+  # Eleven direct Go dependencies.
   #
   # modernc.org/sqlite backs the log index. It is a pure-Go translation rather
   # than the usual mattn driver, because a cgo driver would make this
@@ -58,10 +58,29 @@ buildGo127Module {
   # 1.2 MB in the stripped binary and replace what would otherwise be raw
   # terminal handling: escape sequences, resize, and a redraw loop. That is
   # the kind of code that is never finished and never correct on every
-  # terminal.
+  # terminal. mattn/go-runewidth supplies the cell arithmetic that browser
+  # needs: wide characters and emoji take two cells, and truncation has to
+  # agree with the terminal.
   #
   # gopkg.in/yaml.v3 reads OpenAPI documents, which are published as YAML as
   # often as JSON and which one you get is not the caller's choice.
+  #
+  # santhosh-tekuri/jsonschema/v6 is a real JSON Schema validator for tool
+  # input/output and elicitation schemas, rather than hand-rolled checks.
+  #
+  # tetratelabs/wazero runs wasm tooling and the embeddings worker without a
+  # cgo toolchain, keeping the pure-Go build.
+  #
+  # golang.org/x/sys exposes the OS-specific syscalls the standard library
+  # does not: peer credentials on the daemon socket, and process groups.
+  #
+  # golang.org/x/net carries publicsuffix and idna for the elicitation answer
+  # review: the registrable domain under a URL about to be answered, plus both
+  # host forms and a punycode warning (#1678).
+  #
+  # tailscale.com is the tsnet identity transport (#1967): the daemon embeds a
+  # Tailscale node and is reachable by its tailnet identity, still as a pure-Go
+  # CGO_ENABLED=0 binary.
   #
   # Everything else -- the MCP client, the process pools, the JSON Schema to
   # TypeScript compiler, the CLI -- is standard library.
