@@ -2530,7 +2530,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn records_client_rejects_over_count_page() {
+    async fn test_records_client_rejects_over_count_page() {
         let mut map = serde_json::Map::new();
         for i in 0..=crate::world::MAX_RECORDS {
             map.insert(format!("k{i:05}"), serde_json::json!(i));
@@ -2545,7 +2545,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn records_client_rejects_oversized_value() {
+    async fn test_records_client_rejects_oversized_value() {
         let page = records_page(
             serde_json::json!({"a": "x".repeat(crate::world::MAX_RECORD_VALUE_BYTES + 1)}),
             None,
@@ -2558,7 +2558,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn records_client_rejects_control_char_key() {
+    async fn test_records_client_rejects_control_char_key() {
         let page = records_page(serde_json::json!({"a\u{1}b": 1}), None);
         let err = rogue_records(vec![page]).await.unwrap_err();
         assert!(
@@ -2568,7 +2568,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn records_client_rejects_stuck_cursor() {
+    async fn test_records_client_rejects_stuck_cursor() {
         // One page, repeated forever: next_after never advances past "a".
         let page = records_page(serde_json::json!({"a": 1}), Some("a"));
         let err = rogue_records(vec![page]).await.unwrap_err();
@@ -2580,7 +2580,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn records_client_rejects_duplicate_key_across_pages() {
+    async fn test_records_client_rejects_duplicate_key_across_pages() {
         let pages = vec![
             records_page(serde_json::json!({"a": 1, "b": 2}), Some("b")),
             records_page(serde_json::json!({"b": 3}), None),
@@ -2593,7 +2593,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn records_client_rejects_out_of_order_page() {
+    async fn test_records_client_rejects_out_of_order_page() {
         let pages = vec![
             records_page(serde_json::json!({"m": 1}), Some("m")),
             records_page(serde_json::json!({"a": 2}), None),
@@ -2606,7 +2606,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn records_client_rejects_mismatched_cursor() {
+    async fn test_records_client_rejects_mismatched_cursor() {
         let page = records_page(serde_json::json!({"a": 1}), Some("zzz"));
         let err = rogue_records(vec![page]).await.unwrap_err();
         assert!(
@@ -2616,7 +2616,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn records_client_accepts_conforming_pages() {
+    async fn test_records_client_accepts_conforming_pages() {
         let pages = vec![
             records_page(serde_json::json!({"a": 1, "b": 2}), Some("b")),
             records_page(serde_json::json!({"c": 3}), None),
