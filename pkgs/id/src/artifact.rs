@@ -41,23 +41,23 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use iroh::{
+    Endpoint, EndpointAddr,
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler},
-    Endpoint, EndpointAddr,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use unicode_normalization::is_nfc;
 
-use crate::connectivity::{connect, within, DIAL_TIMEOUT};
-use crate::directory::{hex_to_array, normalize_key, Directory, Refusal};
+use crate::connectivity::{DIAL_TIMEOUT, connect, within};
+use crate::directory::{Directory, Refusal, hex_to_array, normalize_key};
 use crate::directory_auth::Caller;
 use crate::directory_view::{DirectoryAction, DirectoryOutcome};
-use crate::envelope_net::{answer_frames, send, Reply};
-use crate::envelope_outbox::{check_target, Outcome};
+use crate::envelope_net::{Reply, answer_frames, send};
+use crate::envelope_outbox::{Outcome, check_target};
 use crate::event_sync::{CLOSE_WAIT, SESSION_DEADLINE};
 use crate::frames::{read_frame, write_frame};
 use crate::world::hex_encode;
@@ -153,7 +153,12 @@ fn is_hash(text: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn is_friend_request_id(text: &str) -> bool {
+/// The canonical friend-request ID shape: 16 bytes as 32 lowercase
+/// hexadecimal characters. This is the shape the envelope producer mints
+/// (`Envelope::signed` in directory.rs) and the shape the `friend_remove`
+/// receipt contract (#3146) requires; directory.rs reuses this predicate
+/// at friend-request admission (#5624) so the two never drift.
+pub(crate) fn is_friend_request_id(text: &str) -> bool {
     text.len() == 32
         && text
             .bytes()
@@ -1222,11 +1227,11 @@ pub async fn pull_within(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::test_forgeries::{identity_forgery, with_non_canonical_s, IDENTITY_KEY};
+    use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
     use iroh::{
-        endpoint::{presets, RelayMode},
-        protocol::Router,
         TransportAddr,
+        endpoint::{RelayMode, presets},
+        protocol::Router,
     };
     use iroh_base::SecretKey;
     use proptest::prelude::*;
@@ -2323,13 +2328,14 @@ mod tests {
         assert!(log.insert(doubled).is_err());
 
         // The builder refuses the same frontier before receipt sees it.
-        assert!(log
-            .sign_after(
+        assert!(
+            log.sign_after(
                 &key(1),
                 &document("second"),
                 vec![first.hash.clone(), first.hash.clone()],
             )
-            .is_err());
+            .is_err()
+        );
 
         let repeated = sign_raw_after(
             &key(1),

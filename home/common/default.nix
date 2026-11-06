@@ -19,11 +19,16 @@ let
   # /v1/systemone (127.0.0.1:13420); the port is free.
   codexProxyPort = 18744;
   museProxyPort = 18747;
-  commandcodeProxyPort = 18748;
+  # commandcodeProxyPort (18748) and claudeCodeProxyPort (18749)
+  # retired 2026-11-06 (Drew, proxy-infra decommission): both
+  # providers were repointed to the fork's native wire-emulation
+  # providers on 2026-11-05 (code#6117, opencode#1749), so the CLI
+  # proxies had no consumers left; their lets, units, session
+  # variables, bin programs and guard rows were removed in one
+  # change. Both ports are free.
   # opencodeRouteProxyPort (18750) retired 2026-11-04
   # (opencode#1153): OpenClaw repointed to the server facade
   # (127.0.0.1:13420/v1); the port is free.
-  claudeCodeProxyPort = 18749;
   # antigravityDirectProxyPort (18751) retired 2026-11-04 (opencode#1414):
   # the in-fork native provider replaced the door; the port is free.
   # Atlas search service port (code#5350 step 5, #5355): the fleet
@@ -76,7 +81,8 @@ let
   # Vendored from nixpkgs master; see the header in that file for why. Provides
   # `agy_acp_server`, which t3code's AcpRegistryDriver can drive.
   antigravity-acp = pkgs.callPackage ../../pkgs/antigravity-acp { };
-  # The hub build ships the language_server binary the LS proxy drives. Same
+  # The hub build ships the language_server binary the retired
+  # (2026-10-30) antigravity-ls proxy drove. Same
   # derivation as the system one, so the store path is shared, not rebuilt.
   antigravity-hub = pkgs.callPackage ../../pkgs/antigravity-hub { };
   # 2.1.293; nixpkgs is on 2.1.234. Must match the system `claude` so t3's
@@ -740,12 +746,14 @@ in
   # both replaced by antigravity-direct (above codex-proxy), which speaks
   # the CLI's wire protocol with no spawned processes. The definitions
   # are removed, not commented out, so the switch stops the services and
-  # they stay off; bin/antigravity-ls-proxy.mjs and bin/agy-proxy.mjs
-  # remain in the repo as history, uninvoked, and the matching opencode
-  # providers sit in disabled_providers. To undo: restore the two unit
-  # blocks and the agyProxyPort/antigravityLsProxyPort lets from git
-  # history, drop the session-variable removals below, and re-point the
-  # plan seats in opencode.jsonc back from antigravity-direct.
+  # they stay off. bin/antigravity-ls-proxy.mjs and bin/agy-proxy.mjs
+  # remained in the repo as history until the 2026-11-06 proxy-infra
+  # decommission removed them; the matching opencode providers sit in
+  # disabled_providers. To undo: restore the two unit blocks, the two
+  # bin programs and the agyProxyPort/antigravityLsProxyPort lets from
+  # git history, drop the session-variable removals below, and
+  # re-point the plan seats in opencode.jsonc back from
+  # antigravity-direct.
 
   # Design Code proxy removed (2026-11-03, Drew): its unit definition
   # stood here. Drew removed the design persona routes and the whole
@@ -754,9 +762,10 @@ in
   # removed from opencode.jsonc in the same pass, and the opendesign
   # provider/pool (a different thing, kept) never used this door. The
   # definition is removed, not commented out, so the switch stops the
-  # service and it stays off; bin/design-code-proxy.mjs remains in the
-  # repo as history, uninvoked, and its port let and session variable
-  # are removed with it. To undo: restore this unit block, the
+  # service and it stays off. bin/design-code-proxy.mjs remained in
+  # the repo as history until the 2026-11-06 proxy-infra decommission
+  # removed it; its port let and session variable were removed with
+  # the unit. To undo: restore this unit block, the bin program, the
   # designCodeProxyPort let, and the DESIGN_CODE_PROXY_PORT session
   # variable from git history, and re-add the config-side machinery.
 
@@ -774,97 +783,29 @@ in
   # reproduced: a switch that changes a unit's ExecStart restarts that
   # proxy, per the normal flake service pattern (cf. mcpx/openchamber).
 
-  # CLI proxy workroots (muse / commandcode / claude-code): the three
-  # units below point their *_PROXY_WORKDIR overrides at per-proxy
-  # subtrees of the state dir ~/.local/state/cli-proxies
-  # (cli-proxies/commandcode, cli-proxies/claude-code,
-  # cli-proxies/muse), so runtime session state (warm-session maps,
-  # per-conversation workdirs) lives outside the checkout. The
-  # scripts' default (bin/work inside ~/code) dirtied the primary
-  # checkout with every session and blocked pm-git-sync. The subtrees
-  # are per-proxy (#2785): commandcode and claude-code derive identical
-  # sessions/<sha256(key)[:16]> workdirs for overlapping keys, and
-  # muse uses its workroot as the session cwd/workspaceRoot, so one
-  # shared root let the proxies mutate each other's session state.
-  # Only the workroots moved: pre-#2785 state under the shared root is
-  # left in place (unattributable between the proxies by construction)
-  # and each proxy re-warms fresh state in its own subtree.
+  # CLI proxy workroot (muse): the muse unit below points its
+  # MUSE_PROXY_WORKDIR override at ~/.local/state/cli-proxies/muse,
+  # so runtime session state lives outside the checkout (the script's
+  # default, bin/work inside ~/code, dirtied the primary checkout
+  # with every session and blocked pm-git-sync). The commandcode and
+  # claude-code units that shared the cli-proxies root (#2785, #3067)
+  # are retired below; their state subtrees are left in place.
   #
-  # The commandcode + claude-code units additionally pin their shared
-  # key->session map via *_PROXY_SESSION_FILE to
-  # ~/.local/state/cli-proxies/sessions.json (#3067): that map was
-  # anchored to the scripts' own directory (bin/sessions.json) rather
-  # than the workroot, so the #2782 move missed it and the primary
-  # checkout kept dirtying. Both units MUST name the same file -- the
-  # two proxies share one map (mirrored key space).
-
-  # Command Code CLI Local Proxy Bridge for OpenCode (Go plan: the hosted
-  # Provider API rejects the Go plan, so OpenCode talks to the CLI via
-  # this OpenAI-compatible bridge on 18748, same pattern as codex-proxy).
-  # Runs the repo checkout's start script -- the same invocation the
-  # proxy-supervisor used for its transient fps-commandcode-proxy unit --
-  # so laptop/sandbox env handling and the MAX_TURNS pins live in exactly
-  # one place: bin/commandcode-proxy-start.sh. (The checkout path also
-  # avoids the stale-store ExecStart failure of #883.)
+  # Command Code proxy retired 2026-11-06 (Drew, proxy-infra
+  # decommission): its unit definition stood here. The provider was
+  # repointed to the fork's native wire-emulation provider on
+  # 2026-11-05 (code#6117, opencode#1749), so the :18748 CLI bridge
+  # had no consumers left; its let, unit, session variable,
+  # bin/commandcode-proxy.mjs, its start script and its test were
+  # removed in the same change. The port is free.
   #
-  # History: this unit originally landed (169d594e) WITH an
-  # Install.WantedBy while the supervisor owned the port, and the first
-  # activation including it (2026-10-26) crash-looped it against the
-  # supervisor's instance (44 restarts). That fight was a two-owners
-  # problem; #2104 removes the supervisor, so WantedBy is now correct.
-  systemd.user.services.commandcode-proxy = {
-    Unit = {
-      Description = "Command Code CLI Local Proxy Bridge for OpenCode";
-      After = [ "network-online.target" ];
-      Wants = [ "network-online.target" ];
-    };
-    Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "commandcode-proxy-start-unit" ''
-          exec /run/current-system/sw/bin/bash "$HOME/code/bin/commandcode-proxy-start.sh"
-        ''
-      );
-      Restart = "always";
-      RestartSec = 3;
-      Environment = [
-        "COMMANDCODE_PROXY_PORT=${toString commandcodeProxyPort}"
-        "COMMANDCODE_PROXY_HOST=127.0.0.1"
-        "COMMANDCODE_PROXY_WORKDIR=%h/.local/state/cli-proxies/commandcode"
-        "COMMANDCODE_PROXY_SESSION_FILE=%h/.local/state/cli-proxies/sessions.json"
-        "COMMANDCODE_PROXY_MAX_TURNS=1"
-        "COMMANDCODE_PROXY_AGENCY_MAX_TURNS=8"
-      ];
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
-
-  # Muse proxy (#2104): previously supervisor-config only, with no
-  # declarative unit at all. Entry point mirrors the supervisor's
-  # invocation of bin/claude-code-proxy.mjs (the codex-proxy shape).
-  systemd.user.services.claude-code-proxy = {
-    Unit = {
-      Description = "Claude Code CLI Local Proxy Bridge for OpenCode";
-      After = [ "network-online.target" ];
-      Wants = [ "network-online.target" ];
-    };
-    Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "claude-code-proxy-start" ''
-          export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec /run/current-system/sw/bin/node "$HOME/code/bin/claude-code-proxy.mjs"
-        ''
-      );
-      Restart = "always";
-      RestartSec = 3;
-      Environment = [
-        "CLAUDE_CODE_PROXY_PORT=${toString claudeCodeProxyPort}"
-        "CLAUDE_CODE_PROXY_HOST=127.0.0.1"
-        "CLAUDE_CODE_PROXY_WORKDIR=%h/.local/state/cli-proxies/claude-code"
-        "CLAUDE_CODE_PROXY_SESSION_FILE=%h/.local/state/cli-proxies/sessions.json"
-      ];
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
+  # Claude Code proxy retired 2026-11-06 (Drew, proxy-infra
+  # decommission): its unit definition stood here. Same story: the
+  # provider was repointed to the fork's native wire-emulation
+  # provider on 2026-11-05 (code#6117, opencode#1749) and re-enabled
+  # as a native provider on 2026-11-06; the :18749 CLI bridge's let,
+  # unit, session variable, bin/claude-code-proxy.mjs and its test
+  # were removed in the same change. The port is free.
 
   # Muse (Meta) proxy (#2104): also previously supervisor-config only.
   # Runs the checkout start script, the supervisor's exact invocation;
@@ -1130,27 +1071,38 @@ in
     };
   };
 
-  # MISTRAL_API_KEY for the opencode server (opencode#1653): the value
-  # lives in Bitwarden (mistral.api-key), mirrored into sops and decrypted
-  # to /run/secrets/agent-auth/mistral-api-key (nixos/agent-auth). It must
+  # DEEPSEEK_API_KEY for the opencode server: the value lives in
+  # Bitwarden (deepseek.api-key), mirrored into sops and decrypted to
+  # /run/secrets/agent-auth/deepseek-api-key (nixos/agent-auth). It must
   # never enter the Nix store, so an ExecStartPre materializes a
-  # systemd EnvironmentFile at every server start — the same pattern as
-  # openclaw-facade-auth-materialize in home/openclaw — and the unit reads
-  # it via EnvironmentFile. The vibe provider resolves the key from the
-  # server process env; the mistral provider's enrolled credential
-  # (integration "mistral") remains its primary source.
-  # The same materializer also writes DEEPSEEK_API_KEY (Bitwarden
-  # deepseek.api-key, via agent-auth/deepseek-api-key) into the same
-  # EnvironmentFile: it keys the deepseek provider's official-API leg
-  # (deepseek/deepseek-flash, "1017") in the deepseek-flash-plan route
-  # (Drew, direct order, 2026-11-05).
+  # systemd EnvironmentFile at every server start — the same pattern
+  # as openclaw-facade-auth-materialize in home/openclaw — and the
+  # unit reads it via EnvironmentFile. It keys the deepseek provider's
+  # official-API leg (deepseek/deepseek-flash, "1017") in the
+  # deepseek-flash-plan route (Drew, direct order, 2026-11-05).
+  #
+  # MISTRAL_API_KEY is deliberately NOT materialized here (removed
+  # 2026-11-06, root cause on opencode#1653). Mistral meters per KEY,
+  # not by call metadata: the Bitwarden mistral.api-key value is the
+  # account API key, billed to the API budget, while Vibe-plan usage
+  # is billed only when the Vibe sign-in key is used (OS keyring
+  # service "ai.mistral.vibe", from `vibe --setup`). vibe-direct
+  # resolves its credential exactly like the vibe binary — env
+  # MISTRAL_API_KEY first — so materializing the API key here
+  # silently rerouted all vibe-direct traffic onto the API budget:
+  # it burned the pool 16% -> 100% on 2026-11-05 and then walled the
+  # mistral-plan route. With no MISTRAL_API_KEY in the server env,
+  # vibe-direct falls through to the keyring plan key. The mistral
+  # provider is unaffected: its enrolled credential (integration
+  # "mistral") is its source — verified live 2026-11-06 (the leg
+  # returns the API-budget 402, not an auth error, with the env var
+  # absent).
   systemd.user.services.opencode.Service = {
     ExecStartPre = toString (
-      pkgs.writeShellScript "opencode-mistral-key-materialize" ''
+      pkgs.writeShellScript "opencode-env-key-materialize" ''
         set -eu
         umask 077
         mkdir -p "$HOME/.local/state/opencode"
-        printf 'MISTRAL_API_KEY=%s\n' "$(cat /run/secrets/agent-auth/mistral-api-key)" > "$HOME/.local/state/opencode/mistral-api-key.env"
         printf 'DEEPSEEK_API_KEY=%s\n' "$(cat /run/secrets/agent-auth/deepseek-api-key)" >> "$HOME/.local/state/opencode/mistral-api-key.env"
       ''
     );
@@ -1697,13 +1649,14 @@ in
       # Single source for the local proxy ports (see the let block):
       # opencode.jsonc reads them via {env:...} substitution.
       CODEX_PROXY_PORT = toString codexProxyPort;
-      # The three below were missing: their {env:...} templates in
-      # opencode.jsonc resolved to an empty port in the OpenChamber serve
+      # MUSE_PROXY_PORT below was one of three missing session
+      # variables whose {env:...} templates in opencode.jsonc
+      # resolved to an empty port in the OpenChamber serve
       # (2026-10-25 audit) because the variables never reached its
-      # environment. The session list must cover every let-block port.
+      # environment; the other two (commandcode, claude-code) were
+      # removed with their retired proxies on 2026-11-06. The session
+      # list must cover every let-block port.
       MUSE_PROXY_PORT = toString museProxyPort;
-      COMMANDCODE_PROXY_PORT = toString commandcodeProxyPort;
-      CLAUDE_CODE_PROXY_PORT = toString claudeCodeProxyPort;
       OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT = "1";
       # File watcher off by default (Drew, 2026-10-20): the working trees
       # are giant, and watching costs more than the live-external-edit
@@ -1751,9 +1704,10 @@ in
         # `atlas-search` (the Python CLI is kept as atlas-search-py).
         atlasSearch
         # No "agy-proxy" / "antigravity-ls-proxy" launchers here: both
-        # doors were retired 2026-10-30 and their units removed above.
-        # The .mjs files remain in bin/ as history, uninvoked — a PATH
-        # launcher would resurrect a retired door on its canonical port.
+        # doors were retired 2026-10-30, their units removed above, and
+        # their .mjs files removed in the 2026-11-06 proxy-infra
+        # decommission — a PATH launcher would resurrect a retired door
+        # on its canonical port.
         (pkgs.writeShellScriptBin "codex-proxy" ''
           export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
           exec ${pkgs.nodejs}/bin/node ${../../bin}/codex-proxy.mjs "$@"

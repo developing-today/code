@@ -23,6 +23,12 @@ use serde::Deserialize;
 
 /// The session broker's socket, as the Python broker runs it today.
 pub const DEFAULT_BROKER_SOCKET: &str = ".cache/laptop-agent/broker.sock";
+/// The queue broker's Unix socket (#6216): dual-bound alongside its
+/// TCP listener, in the broker's own config dir (token file sibling).
+pub const DEFAULT_QUEUE_BROKER_SOCKET: &str = ".config/queue-broker/broker.sock";
+/// The secrets broker's Unix socket (#6216): dual-bound alongside its
+/// TCP listener, in the broker's own config dir (token file sibling).
+pub const DEFAULT_SECRETS_BROKER_SOCKET: &str = ".config/secrets-broker/broker.sock";
 /// The proxy's per-port routing table (§4): port → service name.
 pub const PORT_LAPTOP_AGENT: u16 = 4799;
 pub const PORT_SECRETS_BROKER: u16 = 4800;
@@ -112,12 +118,17 @@ pub struct Config {
 pub struct ProxyConfig {
     /// Session broker socket path (relative paths resolve under $HOME).
     pub broker_socket: Option<String>,
+    /// Broker idle-exit timeout in seconds (default
+    /// [`DEFAULT_IDLE_EXIT_SECS`]). `0` is rejected at load (#6412):
+    /// it would exit the broker at its first idle tick, and there is
+    /// no "never idle-exit" spelling.
     pub idle_exit_secs: Option<u64>,
     /// The reach target for CONNECT tunnels (default
     /// [`DEFAULT_TARGET_HOST`]).
     pub target_host: Option<String>,
     /// Port of the egress proxy on the `HTTPS_PROXY` host (default
-    /// [`DEFAULT_EGRESS_PROXY_PORT`]).
+    /// [`DEFAULT_EGRESS_PROXY_PORT`]). `0` is rejected at load
+    /// (#6412): port 0 cannot be dialled.
     pub egress_proxy_port: Option<u16>,
     /// Dial the target directly instead of through a CONNECT tunnel
     /// (a broker running on the target host itself; also the
@@ -175,7 +186,8 @@ pub struct DispatchConfig {
     /// (default [`DEFAULT_DISPATCH_TOKEN_NAME`]).
     pub token_name: Option<String>,
     /// pm-dispatch's port on the target host (default
-    /// [`PORT_DISPATCH`]).
+    /// [`PORT_DISPATCH`]). `0` is rejected at load (#6412): port 0
+    /// cannot be dialled.
     pub port: Option<u16>,
 }
 
@@ -222,8 +234,46 @@ fn env_path(var: &str) -> Option<PathBuf> {
     non_empty_path(std::env::var_os(var).map(PathBuf::from))
 }
 
+/// An XDG base directory: only an absolute, non-empty value counts.
+/// The XDG base-directory spec says a relative value in these
+/// variables should be considered invalid and ignored; taking one
+/// literally would resolve the config file and the state dir from
+/// the process's working directory, so a `fleet.toml` planted at
+/// `./<relative-base>/fleet/fleet.toml` would load despite an
+/// absolute `HOME` (issue #6396 — the relative spelling of the
+/// #5473 planted-config hazard, and the XDG sibling of the
+/// relative-HOME rule in `home_anchor`). Scoped to the XDG bases
+/// only: explicit overrides (`FLEET_CONFIG`, the broker socket
+/// paths) keep their documented relative meanings.
+fn absolute_path(value: Option<PathBuf>) -> Option<PathBuf> {
+    non_empty_path(value).filter(|p| p.is_absolute())
+}
+
+fn env_xdg_base(var: &str) -> Option<PathBuf> {
+    absolute_path(std::env::var_os(var).map(PathBuf::from))
+}
+
+/// The home anchor: only an absolute, non-empty `HOME` may anchor
+/// home-relative resolution. A relative `HOME` is treated as unset
+/// for anchoring (issue #6404): used verbatim it would resolve the
+/// config file, the state dir, and the broker socket CWD-relative,
+/// so a `fleet.toml` planted under the working directory at
+/// `./<relative-home>/.config/fleet/fleet.toml` would load — the
+/// planted-config hazard of issue #5473 in its relative-HOME
+/// spelling. Falling back to "." here means the unset/empty case
+/// and the relative case share one behaviour, governed by the
+/// fallback decision tracked in issue #5737. Scoped to the HOME
+/// anchor only: relative XDG bases are issue #6396, and relative
+/// values from explicit overrides (FLEET_CONFIG, socket paths) keep
+/// their documented resolve-under-home meaning.
+fn home_anchor(value: Option<PathBuf>) -> PathBuf {
+    non_empty_path(value)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 fn home_dir() -> PathBuf {
-    env_path("HOME").unwrap_or_else(|| PathBuf::from("."))
+    home_anchor(std::env::var_os("HOME").map(PathBuf::from))
 }
 
 fn resolve_under(home: &std::path::Path, path: &std::path::Path) -> PathBuf {
@@ -244,7 +294,7 @@ impl Config {
     pub fn file_path() -> PathBuf {
         Self::file_path_from(
             env_path("FLEET_CONFIG"),
-            env_path("XDG_CONFIG_HOME"),
+            env_xdg_base("XDG_CONFIG_HOME"),
             &home_dir(),
         )
     }
@@ -269,17 +319,49 @@ impl Config {
     }
 
     pub fn load_from(path: &std::path::Path) -> Result<Config, ConfigError> {
-        match std::fs::read_to_string(path) {
+        let cfg: Config = match std::fs::read_to_string(path) {
             Ok(text) => toml::from_str(&text).map_err(|e| ConfigError::Parse {
                 path: path.to_path_buf(),
                 message: e.to_string(),
-            }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
-            Err(e) => Err(ConfigError::Read {
-                path: path.to_path_buf(),
-                message: e.to_string(),
-            }),
+            })?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
+            Err(e) => {
+                return Err(ConfigError::Read {
+                    path: path.to_path_buf(),
+                    message: e.to_string(),
+                });
+            }
+        };
+        cfg.validate(path)?;
+        Ok(cfg)
+    }
+
+    /// The crate's single zero rule (#6412, matching the direction of
+    /// #6397 for the `[[proxy.services]]` rows): a configured `0` for a
+    /// scalar numeric setting is a misspelling-class error, never a
+    /// value. Port 0 cannot be dialled, and `idle_exit_secs = 0` would
+    /// make the broker exit at its first idle tick — the opposite of
+    /// the "never idle-exit" an operator would mean by it. Reject all
+    /// three at load, naming the field; omitting the field keeps the
+    /// documented default. There is no zero spelling for "disabled".
+    fn validate(&self, path: &std::path::Path) -> Result<(), ConfigError> {
+        let reject = |field: &str, default: u64| ConfigError::Parse {
+            path: path.to_path_buf(),
+            message: format!("{field} must not be 0; omit the field for the default ({default})"),
+        };
+        if self.proxy.egress_proxy_port == Some(0) {
+            return Err(reject(
+                "[proxy] egress_proxy_port",
+                u64::from(DEFAULT_EGRESS_PROXY_PORT),
+            ));
         }
+        if self.dispatch.port == Some(0) {
+            return Err(reject("[dispatch] port", u64::from(PORT_DISPATCH)));
+        }
+        if self.proxy.idle_exit_secs == Some(0) {
+            return Err(reject("[proxy] idle_exit_secs", DEFAULT_IDLE_EXIT_SECS));
+        }
+        Ok(())
     }
 
     /// Is a domain enabled on this host? Default yes; `[domains]`
@@ -314,6 +396,28 @@ impl Config {
             Some(p) => resolve_under(home, &PathBuf::from(p)),
             None => resolve_under(home, &PathBuf::from(DEFAULT_BROKER_SOCKET)),
         }
+    }
+
+    /// The queue broker's Unix socket path (#6216). `QUEUE_BROKER_SOCKET`
+    /// beats the default; no config-file field exists for it, so the
+    /// resolution is env -> default under $HOME, like the session
+    /// broker's socket with the config source absent.
+    pub fn queue_broker_socket(&self) -> PathBuf {
+        Self::broker_socket_from(
+            env_path("QUEUE_BROKER_SOCKET"),
+            Some(DEFAULT_QUEUE_BROKER_SOCKET),
+            &home_dir(),
+        )
+    }
+
+    /// The secrets broker's Unix socket path (#6216).
+    /// `SECRETS_BROKER_SOCKET` beats the default.
+    pub fn secrets_broker_socket(&self) -> PathBuf {
+        Self::broker_socket_from(
+            env_path("SECRETS_BROKER_SOCKET"),
+            Some(DEFAULT_SECRETS_BROKER_SOCKET),
+            &home_dir(),
+        )
     }
 
     pub fn idle_exit_secs(&self) -> u64 {
@@ -436,7 +540,7 @@ impl Config {
 
     /// `~/.local/state/fleet` (or `$XDG_STATE_HOME/fleet`).
     pub fn state_dir() -> PathBuf {
-        Self::state_dir_from(env_path("XDG_STATE_HOME"), &home_dir())
+        Self::state_dir_from(env_xdg_base("XDG_STATE_HOME"), &home_dir())
     }
 
     fn state_dir_from(xdg_state_home: Option<PathBuf>, home: &std::path::Path) -> PathBuf {
@@ -618,6 +722,102 @@ mod tests {
             Config::broker_socket_from(None, Some("rel/c.sock"), &home),
             home.join("rel").join("c.sock")
         );
+        // #6216: the queue/secrets broker socket defaults resolve under
+        // $HOME in each broker's own config dir.
+        assert_eq!(
+            Config::broker_socket_from(None, Some(DEFAULT_QUEUE_BROKER_SOCKET), &home),
+            home.join(".config")
+                .join("queue-broker")
+                .join("broker.sock")
+        );
+        assert_eq!(
+            Config::broker_socket_from(None, Some(DEFAULT_SECRETS_BROKER_SOCKET), &home),
+            home.join(".config")
+                .join("secrets-broker")
+                .join("broker.sock")
+        );
+    }
+
+    #[test]
+    fn relative_xdg_bases_are_ignored() {
+        // #6396: a non-empty relative XDG base is invalid per the
+        // XDG spec and is treated as unset, exactly like an empty
+        // one (#5473) — resolution falls back to the HOME-anchored
+        // defaults, so a fleet.toml planted under the working
+        // directory at ./<relative-base>/fleet/fleet.toml is never
+        // loaded when HOME is set.
+        let home = PathBuf::from("/home/tester");
+        assert_eq!(absolute_path(Some(PathBuf::from("relcfg"))), None);
+        assert_eq!(absolute_path(Some(PathBuf::new())), None);
+        assert_eq!(absolute_path(None), None);
+        assert_eq!(
+            absolute_path(Some(PathBuf::from("/cfg"))),
+            Some(PathBuf::from("/cfg"))
+        );
+        assert_eq!(
+            Config::file_path_from(
+                None,
+                absolute_path(Some(PathBuf::from("relcfg"))),
+                &home
+            ),
+            home.join(".config").join("fleet").join("fleet.toml")
+        );
+        assert_eq!(
+            Config::file_path_from(
+                None,
+                absolute_path(Some(PathBuf::from("/cfg"))),
+                &home
+            ),
+            PathBuf::from("/cfg").join("fleet").join("fleet.toml")
+        );
+        assert_eq!(
+            Config::state_dir_from(absolute_path(Some(PathBuf::from("relstate"))), &home),
+            home.join(".local").join("state").join("fleet")
+        );
+        assert_eq!(
+            Config::state_dir_from(absolute_path(Some(PathBuf::from("/state"))), &home),
+            PathBuf::from("/state").join("fleet")
+        );
+        // The explicit per-file override is out of scope: a relative
+        // FLEET_CONFIG keeps its verbatim meaning.
+        assert_eq!(
+            Config::file_path_from(Some(PathBuf::from("rel.toml")), None, &home),
+            PathBuf::from("rel.toml")
+        );
+    }
+
+    #[test]
+    fn relative_home_is_not_an_anchor() {
+        // #6404: a relative HOME must never anchor resolution —
+        // file_path, state_dir, and broker_socket resolve exactly as
+        // they do for an unset/empty HOME, so a fleet.toml planted at
+        // ./<relative-home>/.config/fleet/fleet.toml is never loaded.
+        let anchor = home_anchor(Some(PathBuf::from("relhome")));
+        assert_eq!(anchor, PathBuf::from("."));
+        assert_eq!(home_anchor(None), PathBuf::from("."));
+        assert_eq!(home_anchor(Some(PathBuf::new())), PathBuf::from("."));
+        assert_eq!(
+            home_anchor(Some(PathBuf::from("/home/tester"))),
+            PathBuf::from("/home/tester")
+        );
+        assert_eq!(
+            Config::file_path_from(None, None, &anchor),
+            PathBuf::from(".")
+                .join(".config")
+                .join("fleet")
+                .join("fleet.toml")
+        );
+        assert_eq!(
+            Config::state_dir_from(None, &anchor),
+            PathBuf::from(".")
+                .join(".local")
+                .join("state")
+                .join("fleet")
+        );
+        assert_eq!(
+            Config::broker_socket_from(None, None, &anchor),
+            PathBuf::from(".").join(DEFAULT_BROKER_SOCKET)
+        );
     }
 
     #[test]
@@ -652,6 +852,37 @@ mod tests {
         let cfg = Config::load_from(&path).unwrap();
         assert_eq!(cfg.idle_exit_secs(), 60);
         assert_eq!(cfg.broker_socket(), PathBuf::from("/tmp/b.sock"));
+    }
+
+    #[test]
+    fn zero_scalar_numerics_are_a_loud_error() {
+        // #6412: a configured 0 is never a value — port 0 cannot be
+        // dialled and idle_exit_secs 0 exits the broker at its first
+        // tick. Each zero spelling fails at load naming its field;
+        // absent and valid values resolve exactly as before.
+        for (contents, field) in [
+            ("[proxy]\negress_proxy_port = 0\n", "egress_proxy_port"),
+            ("[dispatch]\nport = 0\n", "[dispatch] port"),
+            ("[proxy]\nidle_exit_secs = 0\n", "idle_exit_secs"),
+        ] {
+            let (_dir, path) = write_temp(contents);
+            match Config::load_from(&path) {
+                Err(ConfigError::Parse { message, .. }) => {
+                    assert!(
+                        message.contains(field),
+                        "error should name {field}: {message}"
+                    );
+                }
+                other => panic!("expected Parse error for {contents:?}, got {other:?}"),
+            }
+        }
+        let (_dir, path) = write_temp(
+            "[proxy]\negress_proxy_port = 3131\nidle_exit_secs = 60\n[dispatch]\nport = 4880\n",
+        );
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.egress_proxy_port(), 3131);
+        assert_eq!(cfg.idle_exit_secs(), 60);
+        assert_eq!(cfg.dispatch_port(), 4880);
     }
 }
 

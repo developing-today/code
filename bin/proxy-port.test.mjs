@@ -140,21 +140,6 @@ test('host:port addresses are parsed strictly (#494)', () => {
   }
 });
 
-test('antigravity-ls-proxy validates ANTIGRAVITY_LS_ADDRESS via the shared helper (#494)', () => {
-  const source = fs.readFileSync(path.join(binDir, 'antigravity-ls-proxy.mjs'), 'utf8');
-  assert.match(
-    source,
-    /parseAddressPortValue\('ANTIGRAVITY_LS_ADDRESS', process\.env\.ANTIGRAVITY_LS_ADDRESS\)/,
-    'antigravity-ls-proxy should validate ANTIGRAVITY_LS_ADDRESS with parseAddressPortValue'
-  );
-  assert.doesNotMatch(
-    source,
-    /parseInt\(parts/,
-    'antigravity-ls-proxy still parses ANTIGRAVITY_LS_ADDRESS with bare parseInt'
-  );
-  assert.match(source, /p >= 1 && p <= 65535/, 'candidate add() should bound ports to 1-65535');
-});
-
 const runCodex = (value) =>
   spawnSync(process.execPath, [path.join(binDir, 'codex-proxy.mjs')], {
     env: {
@@ -318,19 +303,16 @@ test('codex-proxy binds exactly the requested valid port', async (t) => {
   assert.equal((await res.json()).port, port);
 });
 
-test('every proxy port parse site in the five proxies uses the shared helper', () => {
+test('every proxy port parse site in the surviving proxies uses the shared helper', () => {
   // Per-file inventory, named, so a rework that moves a port from one proxy
   // to another has to update this list on purpose instead of drifting a bare
-  // total. design-code-proxy owns the antigravity-direct port parses.
+  // total. The retired doors (agy-proxy, antigravity-ls-proxy and
+  // design-code-proxy — retired 2026-10-30/2026-11-03, their bins kept
+  // as history until then — plus claude-code-proxy and
+  // commandcode-proxy) left this list with their bin programs in the
+  // 2026-11-06 proxy-infra decommission.
   const expected = {
     'codex-proxy.mjs': ['CODEX_PROXY_PORT'],
-    'agy-proxy.mjs': ['AGY_PROXY_PORT'],
-    'antigravity-ls-proxy.mjs': ['ANTIGRAVITY_LS_PROXY_PORT'],
-    'design-code-proxy.mjs': [
-      'DESIGN_CODE_PROXY_PORT',
-      'ANTIGRAVITY_DIRECT_PORT',
-      'CODEX_PROXY_PORT'
-    ],
     'muse-proxy.mjs': ['MUSE_PROXY_PORT']
   };
   for (const [file, names] of Object.entries(expected)) {
@@ -366,7 +348,8 @@ test('home-manager launches codex-proxy from the bin directory', () => {
   // entries this test once listed were removed with their launchers:
   // agy-proxy + antigravity-ls-proxy (retired 2026-10-30),
   // design-code-proxy (2026-11-03), clef-proxy (2026-11-04,
-  // opencode#1410).
+  // opencode#1410); the retired doors' bin programs were removed in
+  // the 2026-11-06 proxy-infra decommission.
   const nix = fs.readFileSync(
     path.join(binDir, '..', 'home', 'common', 'default.nix'),
     'utf8'
