@@ -1130,27 +1130,38 @@ in
     };
   };
 
-  # MISTRAL_API_KEY for the opencode server (opencode#1653): the value
-  # lives in Bitwarden (mistral.api-key), mirrored into sops and decrypted
-  # to /run/secrets/agent-auth/mistral-api-key (nixos/agent-auth). It must
+  # DEEPSEEK_API_KEY for the opencode server: the value lives in
+  # Bitwarden (deepseek.api-key), mirrored into sops and decrypted to
+  # /run/secrets/agent-auth/deepseek-api-key (nixos/agent-auth). It must
   # never enter the Nix store, so an ExecStartPre materializes a
-  # systemd EnvironmentFile at every server start — the same pattern as
-  # openclaw-facade-auth-materialize in home/openclaw — and the unit reads
-  # it via EnvironmentFile. The vibe provider resolves the key from the
-  # server process env; the mistral provider's enrolled credential
-  # (integration "mistral") remains its primary source.
-  # The same materializer also writes DEEPSEEK_API_KEY (Bitwarden
-  # deepseek.api-key, via agent-auth/deepseek-api-key) into the same
-  # EnvironmentFile: it keys the deepseek provider's official-API leg
-  # (deepseek/deepseek-flash, "1017") in the deepseek-flash-plan route
-  # (Drew, direct order, 2026-11-05).
+  # systemd EnvironmentFile at every server start — the same pattern
+  # as openclaw-facade-auth-materialize in home/openclaw — and the
+  # unit reads it via EnvironmentFile. It keys the deepseek provider's
+  # official-API leg (deepseek/deepseek-flash, "1017") in the
+  # deepseek-flash-plan route (Drew, direct order, 2026-11-05).
+  #
+  # MISTRAL_API_KEY is deliberately NOT materialized here (removed
+  # 2026-11-06, root cause on opencode#1653). Mistral meters per KEY,
+  # not by call metadata: the Bitwarden mistral.api-key value is the
+  # account API key, billed to the API budget, while Vibe-plan usage
+  # is billed only when the Vibe sign-in key is used (OS keyring
+  # service "ai.mistral.vibe", from `vibe --setup`). vibe-direct
+  # resolves its credential exactly like the vibe binary — env
+  # MISTRAL_API_KEY first — so materializing the API key here
+  # silently rerouted all vibe-direct traffic onto the API budget:
+  # it burned the pool 16% -> 100% on 2026-11-05 and then walled the
+  # mistral-plan route. With no MISTRAL_API_KEY in the server env,
+  # vibe-direct falls through to the keyring plan key. The mistral
+  # provider is unaffected: its enrolled credential (integration
+  # "mistral") is its source — verified live 2026-11-06 (the leg
+  # returns the API-budget 402, not an auth error, with the env var
+  # absent).
   systemd.user.services.opencode.Service = {
     ExecStartPre = toString (
-      pkgs.writeShellScript "opencode-mistral-key-materialize" ''
+      pkgs.writeShellScript "opencode-env-key-materialize" ''
         set -eu
         umask 077
         mkdir -p "$HOME/.local/state/opencode"
-        printf 'MISTRAL_API_KEY=%s\n' "$(cat /run/secrets/agent-auth/mistral-api-key)" > "$HOME/.local/state/opencode/mistral-api-key.env"
         printf 'DEEPSEEK_API_KEY=%s\n' "$(cat /run/secrets/agent-auth/deepseek-api-key)" >> "$HOME/.local/state/opencode/mistral-api-key.env"
       ''
     );
