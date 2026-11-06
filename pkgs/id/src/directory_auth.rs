@@ -54,6 +54,27 @@ pub enum Purpose {
     },
 }
 
+/// Which flow a pending code was issued for.
+///
+/// A flow, rather than the account carried by [`Purpose`], selects the
+/// independent pending-code slot for an address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PurposeKind {
+    /// Attach the address to an account.
+    Confirm,
+    /// Sign in to the account that owns the address.
+    SignIn,
+}
+
+impl Purpose {
+    fn kind(&self) -> PurposeKind {
+        match self {
+            Self::Confirm { .. } => PurposeKind::Confirm,
+            Self::SignIn { .. } => PurposeKind::SignIn,
+        }
+    }
+}
+
 /// Everything a request presented to prove who it is. Each field is checked
 /// by the transport or the directory before it counts.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -109,7 +130,7 @@ struct SessionRecord {
 pub struct DirectoryAuth {
     /// Keyed by the SHA-256 of the token, so memory never holds a usable token.
     sessions: HashMap<[u8; 32], SessionRecord>,
-    codes: HashMap<String, PendingCode>,
+    codes: HashMap<(String, PurposeKind), PendingCode>,
 }
 
 impl DirectoryAuth {
@@ -162,11 +183,13 @@ impl DirectoryAuth {
     ///
     /// # Errors
     ///
-    /// Fails with [`Refusal::RateLimited`] if a code for this address was sent
-    /// less than a minute ago.
+    /// Fails with [`Refusal::RateLimited`] if a code for this address and flow
+    /// was sent less than a minute ago.
     pub fn issue_code(&mut self, purpose: Purpose, address: &str, now: u64) -> Result<String> {
         self.codes.retain(|_, pending| pending.expires_at > now);
-        if let Some(pending) = self.codes.get(address)
+        let kind = purpose.kind();
+        let key = (address.to_owned(), kind);
+        if let Some(pending) = self.codes.get(&key)
             && pending.sent_at + CODE_RESEND_MS > now
         {
             return Err(Refusal::RateLimited(
@@ -176,10 +199,10 @@ impl DirectoryAuth {
         }
         let code = format!("{:06}", rand::rng().random_range(0..1_000_000_u32));
         self.codes.insert(
-            address.to_owned(),
+            key,
             PendingCode {
                 purpose,
-                digest: code_digest(address, &code),
+                digest: code_digest(address, kind, &code),
                 expires_at: now + CODE_TTL_MS,
                 sent_at: now,
                 attempts: 0,
@@ -188,34 +211,47 @@ impl DirectoryAuth {
         Ok(code)
     }
 
-    /// Check a code for an address. A code is used up by a correct answer, by
-    /// its expiry, or by too many wrong answers.
+    /// Check a code for an address and flow. A code is used up by a correct
+    /// answer, by its expiry, or by too many wrong answers. Checking the other
+    /// flow cannot consume or count an attempt against this flow's code.
     ///
     /// # Errors
     ///
     /// Fails if no code is pending, it has expired or run out of attempts, or
     /// the answer is wrong.
-    pub fn check_code(&mut self, address: &str, code: &str, now: u64) -> Result<Purpose> {
+    pub fn check_code(
+        &mut self,
+        address: &str,
+        kind: PurposeKind,
+        code: &str,
+        now: u64,
+    ) -> Result<Purpose> {
         let refused =
             || anyhow::Error::from(Refusal::Unauthenticated("no matching code".to_owned()));
-        let pending = self.codes.get_mut(address).ok_or_else(refused)?;
+        let key = (address.to_owned(), kind);
+        let pending = self.codes.get_mut(&key).ok_or_else(refused)?;
         if pending.expires_at <= now || pending.attempts >= CODE_ATTEMPTS {
-            self.codes.remove(address);
+            self.codes.remove(&key);
             return Err(refused());
         }
-        let digest = code_digest(address, code.trim());
+        let digest = code_digest(address, kind, code.trim());
         if !bool::from(digest.ct_eq(&pending.digest)) {
             pending.attempts += 1;
             return Err(refused());
         }
-        let pending = self.codes.remove(address).context("code vanished")?;
+        let pending = self.codes.remove(&key).context("code vanished")?;
         Ok(pending.purpose)
     }
 }
 
-fn code_digest(address: &str, code: &str) -> [u8; 32] {
+fn code_digest(address: &str, kind: PurposeKind, code: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(CODE_DOMAIN.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(match kind {
+        PurposeKind::Confirm => b"confirm".as_slice(),
+        PurposeKind::SignIn => b"sign-in".as_slice(),
+    });
     hasher.update(b"\n");
     hasher.update(address.as_bytes());
     hasher.update(b"\n");
@@ -413,8 +449,100 @@ mod tests {
             account: "ab".repeat(32),
         };
         let code = auth.issue_code(purpose.clone(), "a@b.co", now()).unwrap();
-        assert_eq!(auth.check_code("a@b.co", &code, now()).unwrap(), purpose);
-        assert!(auth.check_code("a@b.co", &code, now()).is_err());
+        assert_eq!(
+            auth.check_code("a@b.co", PurposeKind::SignIn, &code, now())
+                .unwrap(),
+            purpose
+        );
+        assert!(
+            auth.check_code("a@b.co", PurposeKind::SignIn, &code, now())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn confirmation_and_sign_in_codes_have_independent_slots() {
+        let mut auth = DirectoryAuth::default();
+        let confirm = Purpose::Confirm {
+            account: "ab".repeat(32),
+        };
+        let sign_in = Purpose::SignIn {
+            account: "cd".repeat(32),
+        };
+        let confirm_code = auth.issue_code(confirm.clone(), "a@b.co", now()).unwrap();
+        // The other flow can issue during the first flow's resend window.
+        let sign_in_code = auth
+            .issue_code(sign_in.clone(), "a@b.co", now() + 1)
+            .unwrap();
+        let same_flow_error = auth
+            .issue_code(confirm.clone(), "a@b.co", now() + 1)
+            .unwrap_err();
+        assert!(matches!(
+            same_flow_error.downcast_ref::<Refusal>(),
+            Some(Refusal::RateLimited(_))
+        ));
+
+        // Presenting one flow's code to the other neither consumes nor
+        // increments attempts on the code's own slot.
+        assert!(
+            auth.check_code("a@b.co", PurposeKind::Confirm, &sign_in_code, now() + 1)
+                .is_err()
+        );
+        assert!(
+            auth.check_code("a@b.co", PurposeKind::SignIn, &confirm_code, now() + 1)
+                .is_err()
+        );
+        assert_eq!(
+            auth.check_code("a@b.co", PurposeKind::Confirm, &confirm_code, now() + 1)
+                .unwrap(),
+            confirm
+        );
+        assert_eq!(
+            auth.check_code("a@b.co", PurposeKind::SignIn, &sign_in_code, now() + 1)
+                .unwrap(),
+            sign_in
+        );
+    }
+
+    #[test]
+    fn issuing_again_for_the_same_purpose_replaces_its_slot_at_the_resend_boundary() {
+        let mut auth = DirectoryAuth::default();
+        let purpose = Purpose::Confirm {
+            account: "ab".repeat(32),
+        };
+        let old_code = auth.issue_code(purpose.clone(), "a@b.co", now()).unwrap();
+        let wrong = if old_code == "999999" {
+            "000000"
+        } else {
+            "999999"
+        };
+        assert!(
+            auth.check_code("a@b.co", PurposeKind::Confirm, wrong, now())
+                .is_err()
+        );
+        let key = ("a@b.co".to_owned(), PurposeKind::Confirm);
+        assert_eq!(auth.codes[&key].attempts, 1);
+
+        let new_code = auth
+            .issue_code(purpose.clone(), "a@b.co", now() + CODE_RESEND_MS)
+            .unwrap();
+        let pending = &auth.codes[&key];
+        assert_eq!(pending.attempts, 0);
+        assert_eq!(pending.sent_at, now() + CODE_RESEND_MS);
+        assert_eq!(
+            pending.digest,
+            code_digest("a@b.co", PurposeKind::Confirm, &new_code)
+        );
+        assert_eq!(
+            auth.check_code(
+                "a@b.co",
+                PurposeKind::Confirm,
+                &new_code,
+                now() + CODE_RESEND_MS,
+            )
+            .unwrap(),
+            purpose
+        );
     }
 
     #[test]
@@ -431,9 +559,15 @@ mod tests {
             .unwrap();
         let wrong = if code == "999999" { "000000" } else { "999999" };
         for _ in 0..CODE_ATTEMPTS {
-            assert!(auth.check_code("a@b.co", wrong, now()).is_err());
+            assert!(
+                auth.check_code("a@b.co", PurposeKind::Confirm, wrong, now())
+                    .is_err()
+            );
         }
-        assert!(auth.check_code("a@b.co", &code, now()).is_err());
+        assert!(
+            auth.check_code("a@b.co", PurposeKind::Confirm, &code, now())
+                .is_err()
+        );
 
         let code = auth
             .issue_code(
@@ -445,8 +579,13 @@ mod tests {
             )
             .unwrap();
         assert!(
-            auth.check_code("a@b.co", &code, now() + CODE_RESEND_MS + CODE_TTL_MS)
-                .is_err()
+            auth.check_code(
+                "a@b.co",
+                PurposeKind::Confirm,
+                &code,
+                now() + CODE_RESEND_MS + CODE_TTL_MS,
+            )
+            .is_err()
         );
     }
 
@@ -475,15 +614,28 @@ mod tests {
         // issuing for a second address must keep it.
         auth.issue_code(purpose.clone(), "c@d.co", now() + CODE_TTL_MS - 1)
             .unwrap();
-        assert!(auth.codes.contains_key("a@b.co"));
+        assert!(
+            auth.codes
+                .contains_key(&("a@b.co".to_owned(), PurposeKind::SignIn))
+        );
         // At exactly expires_at the code is expired (check_code refuses at
         // expires_at <= now), so the same issuance sweep evicts it without
         // the first address ever checking.
         auth.issue_code(purpose, "e@f.co", now() + CODE_TTL_MS)
             .unwrap();
-        assert!(!auth.codes.contains_key("a@b.co"));
-        assert!(auth.codes.contains_key("c@d.co"));
-        assert!(auth.codes.contains_key("e@f.co"));
+        assert!(
+            !auth
+                .codes
+                .contains_key(&("a@b.co".to_owned(), PurposeKind::SignIn))
+        );
+        assert!(
+            auth.codes
+                .contains_key(&("c@d.co".to_owned(), PurposeKind::SignIn))
+        );
+        assert!(
+            auth.codes
+                .contains_key(&("e@f.co".to_owned(), PurposeKind::SignIn))
+        );
     }
 
     #[test]
@@ -495,7 +647,10 @@ mod tests {
         let code = auth.issue_code(purpose.clone(), "a@b.co", now()).unwrap();
         let wrong = if code == "999999" { "000000" } else { "999999" };
         for _ in 0..CODE_ATTEMPTS {
-            assert!(auth.check_code("a@b.co", wrong, now()).is_err());
+            assert!(
+                auth.check_code("a@b.co", PurposeKind::Confirm, wrong, now())
+                    .is_err()
+            );
         }
         // Issuing for another address inside the TTL sweeps expired codes
         // only: the exhausted code stays, so the attempt limit still refuses
@@ -503,14 +658,27 @@ mod tests {
         let other = auth
             .issue_code(purpose.clone(), "c@d.co", now() + CODE_RESEND_MS)
             .unwrap();
-        assert!(auth.codes.contains_key("a@b.co"));
         assert!(
-            auth.check_code("a@b.co", &code, now() + CODE_RESEND_MS)
-                .is_err()
+            auth.codes
+                .contains_key(&("a@b.co".to_owned(), PurposeKind::Confirm))
+        );
+        assert!(
+            auth.check_code(
+                "a@b.co",
+                PurposeKind::Confirm,
+                &code,
+                now() + CODE_RESEND_MS,
+            )
+            .is_err()
         );
         assert_eq!(
-            auth.check_code("c@d.co", &other, now() + CODE_RESEND_MS)
-                .unwrap(),
+            auth.check_code(
+                "c@d.co",
+                PurposeKind::Confirm,
+                &other,
+                now() + CODE_RESEND_MS,
+            )
+            .unwrap(),
             purpose
         );
     }
