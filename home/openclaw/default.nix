@@ -24,7 +24,7 @@
 let
   homeDir = "/home/user";
   # Local provider-proxy ports. The canonical definitions live in
-  # home/common/default.nix (clefProxyPort..claudeCodeProxyPort); these are
+  # home/common/default.nix (codexProxyPort..museProxyPort); these are
   # the same numbers, repeated here because OpenClaw's config is rendered
   # as data, not shell env. Keep in sync with home/common.
   # The opencode-route provider talks to the OpenCode server facade
@@ -71,12 +71,13 @@ in
   # since the route proxy retired (opencode#1153, 2026-11-04); it is
   # ordered After it but does not Want it (the server has its own
   # enablement; the ExecStartPre below waits for its service record).
-  # The per-CLI proxies are owned by the proxy-supervisor (transient
-  # fps-* units on the canonical ports), so the gateway must not Want
-  # the manual per-proxy units: a gateway restart would re-pull them,
-  # and the manual commandcode-proxy unit crash-loops on its
-  # already-taken port (#883). Only mcpx and the embedding server are
-  # Wanted.
+  # The gateway must not Want the per-proxy units: a gateway restart
+  # would re-pull them (the manual commandcode-proxy unit once
+  # crash-looped on its already-taken port, #883, in the retired
+  # proxy-supervisor era). The commandcode-proxy and agy-proxy units
+  # themselves are gone — commandcode in the 2026-11-06 proxy-infra
+  # decommission, agy on 2026-10-30 — so their After entries below
+  # are gone too. Only mcpx and the embedding server are Wanted.
   # Stable local embedding endpoint for memory-lancedb (#1300 phase 1):
   # a dedicated llama-server on a FIXED loopback port, reusing the
   # llama.cpp build and the Qwen3-Embedding-0.6B GGUF that OpenCode's
@@ -102,8 +103,6 @@ in
     Unit = {
       After = [
         "openclaw-embedding.service"
-        "commandcode-proxy.service"
-        "agy-proxy.service"
         "codex-proxy.service"
         "mcpx.service"
         "opencode.service"
@@ -332,7 +331,7 @@ in
           # Laptop operations
 
           - Everything is a systemd **user** service (linger on): `systemctl --user status|restart <name>`, logs via `journalctl --user -u <name>`.
-          - Provider proxies on loopback: clef 18742, agy 18743, codex 18744, antigravity-ls 18745, muse 18747, commandcode 18748, claude-code 18749; the OpenCode server facade on 13420 is this gateway's only model route. This gateway: 18789 (tailnet).
+          - Provider proxies on loopback: codex 18744, muse 18747 (the clef, agy, antigravity-ls, design-code, commandcode and claude-code doors are all retired — the last two in the 2026-11-06 proxy-infra decommission); the OpenCode server facade on 13420 is this gateway's only model route. This gateway: 18789 (tailnet).
           - OpenChamber's managed OpenCode port is dynamic — read `~/.config/openchamber/managed-opencode/state.json`, never hardcode it.
           - Secrets are referenced by name only (Bitwarden Secrets Manager; sops files under /run/secrets/agent-auth/). Never print or commit a secret value.
 

@@ -5,6 +5,8 @@
 //! contract's bounds. This is the step-1 stand-in for the live
 //! `id world contract --check` session harness (step 2).
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use id::shell_contract::{ShellContract, check_transcript};
 use id_native_shell::{
     SessionState, chat_frame, input_frame, join_frame, paste_frame, resize_frame,

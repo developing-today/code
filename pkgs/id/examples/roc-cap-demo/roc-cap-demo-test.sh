@@ -26,7 +26,10 @@ if ! command -v roc >/dev/null 2>&1; then
   exit 1
 fi
 
-fail() { echo "roc-cap-demo test FAILED: $*" >&2; exit 1; }
+fail() {
+  echo "roc-cap-demo test FAILED: $*" >&2
+  exit 1
+}
 
 echo "=== roc-cap-demo: library expect tests (roc test lib/main.roc) ==="
 roc test lib/main.roc
@@ -38,8 +41,8 @@ roc check main.roc
 # the reduced platform (Roc resolves package modules only inside the
 # package root, so a symlink out of lib-no-caps/ is not allowed). Keep
 # the copy honest: any drift between the two copies fails here.
-diff lib/Greeter.roc lib-no-caps/Greeter.roc >/dev/null \
-  || fail "lib-no-caps/Greeter.roc has drifted from lib/Greeter.roc; re-copy it"
+diff lib/Greeter.roc lib-no-caps/Greeter.roc >/dev/null ||
+  fail "lib-no-caps/Greeter.roc has drifted from lib/Greeter.roc; re-copy it"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -48,20 +51,32 @@ echo "=== roc-cap-demo: negative test A (capability not on the platform) ==="
 if roc check main-missing-cap.roc >"$TMP/neg-a.log" 2>&1; then
   fail "main-missing-cap.roc compiled, but the reduced platform must not satisfy the library"
 fi
-grep -q "pf.RocCap" "$TMP/neg-a.log" \
-  || { cat "$TMP/neg-a.log" >&2; fail "negative A failed, but not over the missing pf.RocCap module"; }
-grep -q "does not exist" "$TMP/neg-a.log" \
-  || { cat "$TMP/neg-a.log" >&2; fail "negative A failed, but the error does not say pf.RocCap is missing"; }
+grep -q "pf.RocCap" "$TMP/neg-a.log" ||
+  {
+    cat "$TMP/neg-a.log" >&2
+    fail "negative A failed, but not over the missing pf.RocCap module"
+  }
+grep -q "does not exist" "$TMP/neg-a.log" ||
+  {
+    cat "$TMP/neg-a.log" >&2
+    fail "negative A failed, but the error does not say pf.RocCap is missing"
+  }
 echo "negative A failed as required: pf.RocCap is not provided by the reduced platform"
 
 echo "=== roc-cap-demo: negative test B (platform used wrong) ==="
 if roc check main-wrong-usage.roc >"$TMP/neg-b.log" 2>&1; then
   fail "main-wrong-usage.roc compiled, but the wrong-signature capability call must not typecheck"
 fi
-grep -q "schedule_at_request" "$TMP/neg-b.log" \
-  || { cat "$TMP/neg-b.log" >&2; fail "negative B failed, but not at the schedule_at_request call"; }
-grep -qi "type mismatch" "$TMP/neg-b.log" \
-  || { cat "$TMP/neg-b.log" >&2; fail "negative B failed, but not with a type mismatch"; }
+grep -q "schedule_at_request" "$TMP/neg-b.log" ||
+  {
+    cat "$TMP/neg-b.log" >&2
+    fail "negative B failed, but not at the schedule_at_request call"
+  }
+grep -qi "type mismatch" "$TMP/neg-b.log" ||
+  {
+    cat "$TMP/neg-b.log" >&2
+    fail "negative B failed, but not with a type mismatch"
+  }
 echo "negative B failed as required: type mismatch at the schedule_at_request call"
 
 echo "✓ roc-cap-demo tests passed (positive path + both negative tests)"

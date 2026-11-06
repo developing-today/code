@@ -374,26 +374,17 @@ fn parse_rejects_trailing_bytes_after_the_accept_map() {
     // A single stray byte.
     let mut trailing_byte = bare.clone();
     trailing_byte.push(0x00);
-    assert_eq!(
-        accept::parse(&trailing_byte),
-        Err(ProofError::Malformed)
-    );
+    assert_eq!(accept::parse(&trailing_byte), Err(ProofError::Malformed));
 
     // A trailing scalar value (msgpack positive fixint 42).
     let mut trailing_scalar = bare.clone();
     trailing_scalar.push(0x2a);
-    assert_eq!(
-        accept::parse(&trailing_scalar),
-        Err(ProofError::Malformed)
-    );
+    assert_eq!(accept::parse(&trailing_scalar), Err(ProofError::Malformed));
 
     // A trailing string value ("hello" as a fixstr).
     let mut trailing_string = bare.clone();
     trailing_string.extend_from_slice(b"\xa5hello");
-    assert_eq!(
-        accept::parse(&trailing_string),
-        Err(ProofError::Malformed)
-    );
+    assert_eq!(accept::parse(&trailing_string), Err(ProofError::Malformed));
 
     // A whole second accept map concatenated after the first.
     let mut duplicated = bare.clone();
