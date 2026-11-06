@@ -234,6 +234,25 @@ fn env_path(var: &str) -> Option<PathBuf> {
     non_empty_path(std::env::var_os(var).map(PathBuf::from))
 }
 
+/// An XDG base directory: only an absolute, non-empty value counts.
+/// The XDG base-directory spec says a relative value in these
+/// variables should be considered invalid and ignored; taking one
+/// literally would resolve the config file and the state dir from
+/// the process's working directory, so a `fleet.toml` planted at
+/// `./<relative-base>/fleet/fleet.toml` would load despite an
+/// absolute `HOME` (issue #6396 — the relative spelling of the
+/// #5473 planted-config hazard, and the XDG sibling of the
+/// relative-HOME rule in `home_anchor`). Scoped to the XDG bases
+/// only: explicit overrides (`FLEET_CONFIG`, the broker socket
+/// paths) keep their documented relative meanings.
+fn absolute_path(value: Option<PathBuf>) -> Option<PathBuf> {
+    non_empty_path(value).filter(|p| p.is_absolute())
+}
+
+fn env_xdg_base(var: &str) -> Option<PathBuf> {
+    absolute_path(std::env::var_os(var).map(PathBuf::from))
+}
+
 /// The home anchor: only an absolute, non-empty `HOME` may anchor
 /// home-relative resolution. A relative `HOME` is treated as unset
 /// for anchoring (issue #6404): used verbatim it would resolve the
@@ -275,7 +294,7 @@ impl Config {
     pub fn file_path() -> PathBuf {
         Self::file_path_from(
             env_path("FLEET_CONFIG"),
-            env_path("XDG_CONFIG_HOME"),
+            env_xdg_base("XDG_CONFIG_HOME"),
             &home_dir(),
         )
     }
@@ -521,7 +540,7 @@ impl Config {
 
     /// `~/.local/state/fleet` (or `$XDG_STATE_HOME/fleet`).
     pub fn state_dir() -> PathBuf {
-        Self::state_dir_from(env_path("XDG_STATE_HOME"), &home_dir())
+        Self::state_dir_from(env_xdg_base("XDG_STATE_HOME"), &home_dir())
     }
 
     fn state_dir_from(xdg_state_home: Option<PathBuf>, home: &std::path::Path) -> PathBuf {
@@ -716,6 +735,54 @@ mod tests {
             home.join(".config")
                 .join("secrets-broker")
                 .join("broker.sock")
+        );
+    }
+
+    #[test]
+    fn relative_xdg_bases_are_ignored() {
+        // #6396: a non-empty relative XDG base is invalid per the
+        // XDG spec and is treated as unset, exactly like an empty
+        // one (#5473) — resolution falls back to the HOME-anchored
+        // defaults, so a fleet.toml planted under the working
+        // directory at ./<relative-base>/fleet/fleet.toml is never
+        // loaded when HOME is set.
+        let home = PathBuf::from("/home/tester");
+        assert_eq!(absolute_path(Some(PathBuf::from("relcfg"))), None);
+        assert_eq!(absolute_path(Some(PathBuf::new())), None);
+        assert_eq!(absolute_path(None), None);
+        assert_eq!(
+            absolute_path(Some(PathBuf::from("/cfg"))),
+            Some(PathBuf::from("/cfg"))
+        );
+        assert_eq!(
+            Config::file_path_from(
+                None,
+                absolute_path(Some(PathBuf::from("relcfg"))),
+                &home
+            ),
+            home.join(".config").join("fleet").join("fleet.toml")
+        );
+        assert_eq!(
+            Config::file_path_from(
+                None,
+                absolute_path(Some(PathBuf::from("/cfg"))),
+                &home
+            ),
+            PathBuf::from("/cfg").join("fleet").join("fleet.toml")
+        );
+        assert_eq!(
+            Config::state_dir_from(absolute_path(Some(PathBuf::from("relstate"))), &home),
+            home.join(".local").join("state").join("fleet")
+        );
+        assert_eq!(
+            Config::state_dir_from(absolute_path(Some(PathBuf::from("/state"))), &home),
+            PathBuf::from("/state").join("fleet")
+        );
+        // The explicit per-file override is out of scope: a relative
+        // FLEET_CONFIG keeps its verbatim meaning.
+        assert_eq!(
+            Config::file_path_from(Some(PathBuf::from("rel.toml")), None, &home),
+            PathBuf::from("rel.toml")
         );
     }
 
