@@ -17,7 +17,11 @@ let
   # clefProxyPort (18742) retired 2026-11-04 (opencode#1410):
   # the OpenChamber classifier rides the in-fork facade's
   # /v1/systemone (127.0.0.1:13420); the port is free.
-  codexProxyPort = 18744;
+  # codexProxyPort (18744) retired 2026-11-06 (Drew, proxy-infra
+  # decommission): the fork's native openai provider replaced the
+  # Codex CLI bridge, so the proxy had no consumers left; its let,
+  # units, session variable, bin program, launcher and guard row
+  # were removed in one change. The port is free.
   museProxyPort = 18747;
   # commandcodeProxyPort (18748) and claudeCodeProxyPort (18749)
   # retired 2026-11-06 (Drew, proxy-infra decommission): both
@@ -703,43 +707,18 @@ in
   # remains the keyring credential owner and the native provider
   # refreshes in memory, in place.
 
-  systemd.user.services.codex-proxy = {
-    Unit = {
-      Description = "OpenAI Codex CLI (codex) Local Proxy Bridge for OpenCode";
-      After = [ "network-online.target" ];
-      Wants = [ "network-online.target" ];
-    };
-    Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "codex-proxy-start" ''
-          export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec /run/current-system/sw/bin/node "$HOME/code/bin/codex-proxy.mjs"
-        ''
-      );
-      Restart = "always";
-      RestartSec = 3;
-      Environment = [
-        "CODEX_PROXY_PORT=${toString codexProxyPort}"
-        "CODEX_PROXY_HOST=127.0.0.1"
-        # Gate 1 cutover (opencode#1154): the in-fork codex credential
-        # sync (opencode#1468) owns the token copy now; the door must
-        # not overwrite the true JWT expiry with its synthetic one.
-        "CODEX_PROXY_TOKEN_SYNC=0"
-      ];
-    };
-    # No Install: codex-proxy.socket owns the listener and activates this
-    # service on first connection (#1821). Enabling the service directly
-    # as well would race the socket for the same port.
-  };
-
-  systemd.user.sockets.codex-proxy = {
-    Unit.Description = "Codex proxy listener";
-    Socket = {
-      ListenStream = "127.0.0.1:${toString codexProxyPort}";
-      Service = "codex-proxy.service";
-    };
-    Install.WantedBy = [ "sockets.target" ];
-  };
+  # Codex proxy removed (2026-11-06, Drew): its unit + socket
+  # definitions stood here. The fork's native openai provider
+  # replaced the Codex CLI bridge -- the proxy-fronting providers
+  # (openai-codex, chatgpt) were deleted 2026-11-03 and their route
+  # legs re-seated onto openai-plan, and the token sync the door
+  # also performed was re-homed into the fork (opencode#1468).
+  # The definitions are removed, not commented out, so the switch
+  # stops the service and it stays off. bin/codex-proxy.mjs was
+  # removed in the same change. To undo: restore the two unit
+  # blocks, the bin program and the codexProxyPort let from git
+  # history, and re-add a proxy-fronting provider to
+  # opencode.jsonc.
 
   # Antigravity LS proxy retired (2026-10-30, Drew): its unit definition
   # stood here. The language-server door and the agy CLI-spawn door are
@@ -1648,7 +1627,6 @@ in
       OPENCODE_EXPERIMENTAL_EVENT_SYSTEM = "1";
       # Single source for the local proxy ports (see the let block):
       # opencode.jsonc reads them via {env:...} substitution.
-      CODEX_PROXY_PORT = toString codexProxyPort;
       # MUSE_PROXY_PORT below was one of three missing session
       # variables whose {env:...} templates in opencode.jsonc
       # resolved to an empty port in the OpenChamber serve
@@ -1708,10 +1686,9 @@ in
         # their .mjs files removed in the 2026-11-06 proxy-infra
         # decommission — a PATH launcher would resurrect a retired door
         # on its canonical port.
-        (pkgs.writeShellScriptBin "codex-proxy" ''
-          export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/codex-proxy.mjs "$@"
-        '')
+        # No "codex-proxy" launcher either: the door was retired
+        # 2026-11-06 in the proxy-infra decommission (the fork's
+        # native openai provider replaced the CLI bridge).
         (pkgs.writeShellScriptBin "sync-models" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
           exec ${pkgs.nodejs}/bin/node ${../../bin/sync-models.mjs} "$@"

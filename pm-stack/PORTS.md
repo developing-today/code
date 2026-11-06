@@ -86,7 +86,7 @@ pattern at its atlas-search block).
 |---|---|---|---|---|
 | 18742 | clef-proxy | loopback | retired in `home/common/default.nix` (2026-11-04) | retired — free |
 | 18743 | agy-proxy (Antigravity) | loopback | retired 2026-10-30 (`.github/scripts/check-proxy-port-fallbacks.sh`) | retired — **stale `tailscale serve` forward still present**, pointing at a dead loopback port |
-| 18744 | codex-proxy | loopback (socket-activated) + tailnet via serve | `home/common/default.nix:20` (`codexProxyPort`), unit + socket in the same file | live |
+| 18744 | codex-proxy | loopback | retired 2026-11-06 (proxy-infra decommission) | retired — free (tailscale serve forward removed at kill) |
 | 18745 | antigravity-ls-proxy | loopback | retired 2026-10-30 | retired — **stale `tailscale serve` forward still present** |
 | 18746 | design-code-proxy | loopback | retired 2026-11-03 (`home/common/default.nix` comment block) | retired — **stale `tailscale serve` forward still present** |
 | 18747 | muse-proxy | loopback | `home/common/default.nix:21` (`museProxyPort`) | live |

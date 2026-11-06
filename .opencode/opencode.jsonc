@@ -527,8 +527,9 @@
     // "openai": model catalog maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
     // "openai-codex": retired 2026-11-03 -- definition deleted after its
     // route legs were re-seated onto openai-plan (see the note at
-    // disabled_providers). The codex door program (:18744) is untouched;
-    // its own retirement stays with the #1154 cutover.
+    // disabled_providers). The codex door program (:18744) was retired
+    // 2026-11-06 in the proxy-infra decommission, completing the
+    // #1154 cutover.
     // "open-design" (the design-code door shell, :18746): the commented-out
     // proxy block preserved here since 2026-10-25 was DELETED 2026-11-03
     // (Drew, direct order) together with the door's persona routes below.

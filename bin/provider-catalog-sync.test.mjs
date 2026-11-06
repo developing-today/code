@@ -433,10 +433,10 @@ test('CLI: OPENCODE_CONFIG_PATH pointing at the overlay does not redirect the ta
 // configured default)
 // ---------------------------------------------------------------------------
 
-test('SYNC_OWNED_PROVIDERS names exactly the five sync-models-owned providers (#4544)', () => {
+test('SYNC_OWNED_PROVIDERS names exactly the four sync-models-owned providers (#4544)', () => {
   assert.deepEqual(
     [...SYNC_OWNED_PROVIDERS].sort(),
-    ['antigravity-direct', 'cloudflare-gateway', 'google', 'openai', 'openai-codex'],
+    ['antigravity-direct', 'cloudflare-gateway', 'google', 'openai'],
   );
 });
 
