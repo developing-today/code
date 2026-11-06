@@ -124,6 +124,12 @@
   // usual one-line flip. The DEEPSEEK_API_KEY plumbing
   // (nixos/agent-auth + home/common materializer) is KEPT for the
   // same reason — slotted and ready, just disabled.
+  // UPDATE 2026-11-06 (#6414): the seat itself was later removed
+  // from deepseek-flash-plan — the metered-provider guard rejects a
+  // metered selection even while disabled, and the seated target
+  // failed main's bin-tests CI. The provider, its definition, and
+  // the key plumbing above are unchanged; see the REMOVED note on
+  // the route for the two-step re-enable.
   // 2026-10-30 (Drew, direct order): "meta" joins the list below.
   // The direct api.meta.ai door is dead by Meta's design — the plan
   // API key returns 403 client_attestation_denied from any
@@ -1829,7 +1835,7 @@
       // the only design provider in this config is "opendesign".
 
       "deepseek-flash-plan": {
-        "name": "DeepSeek Flash 1017 - plan stack + mistral-plan + deepseek slot (disabled)",
+        "name": "DeepSeek Flash 1017 - plan stack + mistral-plan",
         // 2026-10-26: per-leaf variant remaps (honored by expansion since
         // developing-today/opencode#541). ClinePass has no medium/xhigh; OpenDesign tops at
         // high. Remaps keep every leaf in the dispatch at its nearest wired rung.
@@ -1897,6 +1903,19 @@
         // member seats mistral-small-latest, the Flash-class Mistral
         // model both of mistral-plan's legs serve (vibe-direct
         // declares it; the mistral API catalog carries it).
+        // REMOVED 2026-11-06 (#6414): the deepseek/deepseek-flash
+        // target and its 0.1 weight are gone from this route. The
+        // metered-provider guard (bin/check-opencode-metered-providers)
+        // rejects a metered selection even while its provider is
+        // disabled - its test suite names that stance explicitly -
+        // and the slot design above made main's bin-tests CI fail on
+        // exactly that one violation. The deepseek provider stays
+        // DISABLED in the switchboard and its definition and
+        // DEEPSEEK_API_KEY plumbing stay in place; re-enabling is now
+        // a deliberate two-step change: delete "deepseek" from
+        // disabled_providers AND re-seat "deepseek/deepseek-flash" as
+        // this route's last target (weight 0.1) in the same pass that
+        // records Drew's approval for the PAYG use.
         "targets": [
           {
             "model": "opencode-go-plans/deepseek-v4.1-flash",
@@ -1922,8 +1941,7 @@
             // #high draw at "high", both producible by vibe-direct
             // first and the API leg alike).
             "variants": { "low": "none", "medium": "high", "high": "high", "xhigh": "high", "max": "high" }
-          },
-          "deepseek/deepseek-flash"
+          }
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -1935,8 +1953,7 @@
           "cline-pass/deepseek-v4.1-flash": 1,
           "opendesign/deepseek-v4.1-flash": 1,
           "commandcode/deepseek/deepseek-v4.1-flash": 0.5,
-          "mistral-plan/mistral-small-latest": 0.25,
-          "deepseek/deepseek-flash": 0.1
+          "mistral-plan/mistral-small-latest": 0.25
         }
       },
       "deepseek-flash": {
