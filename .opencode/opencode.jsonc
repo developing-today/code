@@ -33,7 +33,7 @@
   //   antigravity provider (opencode#1457). Same id, same wire; the
   //   door unit and bin/antigravity-direct.mjs retire once :18751
   //   shows a zero-traffic window.
-  // - "claude-code" is TEMPORARILY disabled (2026-10-27, Drew): the Claude
+  // - "claude-code" was TEMPORARILY disabled (2026-10-27, Drew; RE-ENABLED 2026-11-06, Drew - see the dated note above disabled_providers): the Claude
   //   plan is on the FREE tier for now and the API may be down. The setup
   //   itself is confirmed working — the proxy (:18749) is live and serves
   //   claude-haiku-5-5 (verified 2026-10-27) — this is a config-level pause
@@ -167,6 +167,22 @@
   // REVERSED 2026-11-02 (Drew, direct order): "muse-direct" leaves
   // the list. The Meta pool reset at 2026-11-02T00:00:00Z and reads
   // fresh 0% with 100 pts headroom; the door is back in service.
+  // 2026-11-06 (Drew, direct order): "claude-code" LEAVES the list
+  // below - the Claude plan is back (Claude Max enabled on the
+  // account) and the provider is re-enabled by this one-line flip,
+  // per the switchboard rule. Its seats were already in place:
+  // haiku-plan (leads), sonnet-plan (leads; feeds specialist head
+  // and workhorse-primary), opus-plan (leads; feeds summit head).
+  // No route edits: Drew ordered no new seats in speed/workhorse,
+  // and the seats there (via haiku-plan / sonnet-plan) are the ones
+  // already shipped. NOTE: re-enabling makes claude-code the live
+  // lead of haiku-plan again, ahead of opendesign - the
+  // haiku-plan re-enable lead-order question (ledger item
+  // haiku-plan-claude-code-reenable-order, issue #1132) is still
+  // open; if Drew rules OpenDesign keeps the lead, that is a
+  // one-line targets reorder in haiku-plan, not a switchboard
+  // change. Credential: ~/.claude/.credentials.json (native
+  // provider reads it in place); live-probed at enable time.
   "disabled_providers": [
     "google",
     "google-vertex",
@@ -179,7 +195,6 @@
     "github-copilot",
     "openrouter",
     "cloudflare-workers-ai",
-    "claude-code",
     "meta",
     "commandcode",
     "deepseek"
