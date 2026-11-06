@@ -203,19 +203,34 @@ fn unix_roundtrip(data: &[u8]) -> Result<Value, String> {
 fn broker_program() -> (String, Vec<String>) {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let fleet = dir.join("fleet");
-            if fleet.exists() {
-                return (
-                    fleet.to_string_lossy().into_owned(),
-                    vec!["proxy".to_string(), "serve".to_string()],
-                );
-            }
+            return broker_program_in(dir);
         }
     }
+    python_broker_program()
+}
+
+fn python_broker_program() -> (String, Vec<String>) {
     (
         "python3".to_string(),
         vec![format!("{}/tools/laptop-agent-broker.py", home())],
     )
+}
+
+/// The selection rule, pure over the directory beside the running
+/// binary so it is testable without touching the real install
+/// (#5758): a sibling `fleet` binary ALWAYS wins — no auto-start
+/// path may spawn the Python broker while a fleet binary exists;
+/// Python is the fallback for the standalone rollback builds that
+/// ship without one.
+fn broker_program_in(dir: &std::path::Path) -> (String, Vec<String>) {
+    let fleet = dir.join("fleet");
+    if fleet.exists() {
+        return (
+            fleet.to_string_lossy().into_owned(),
+            vec!["proxy".to_string(), "serve".to_string()],
+        );
+    }
+    python_broker_program()
 }
 
 fn spawn_broker() {
@@ -1756,5 +1771,41 @@ mod tests {
             prop_assert_eq!(code, 0);
             prop_assert_eq!(out, row);
         }
+    }
+
+    #[test]
+    fn broker_program_prefers_a_sibling_fleet_binary() {
+        // #5758 acceptance: while a fleet binary exists beside the
+        // running one, auto-start spawns `fleet proxy serve` —
+        // never the Python broker.
+        let dir =
+            std::env::temp_dir().join(format!("fleet-queue-broker-program-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("fleet"), b"#!/bin/sh\n").unwrap();
+        let (program, args) = broker_program_in(&dir);
+        assert_eq!(program, dir.join("fleet").to_string_lossy());
+        assert_eq!(args, vec!["proxy".to_string(), "serve".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn broker_program_falls_back_to_python_without_a_sibling() {
+        // The standalone rollback builds (no fleet beside them)
+        // keep the Python spawn.
+        let dir = std::env::temp_dir().join(format!(
+            "fleet-queue-broker-program-none-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (program, args) = broker_program_in(&dir);
+        assert_eq!(program, "python3");
+        assert_eq!(args.len(), 1);
+        assert!(
+            args[0].ends_with("/tools/laptop-agent-broker.py"),
+            "{args:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
