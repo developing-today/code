@@ -298,3 +298,16 @@ issue #1319.
 **None others known.** No other Jules schedule exists or is planned;
 the surface is retained in this registry so a future Jules schedule,
 if one is ever created, lands here in the same pass.
+
+## Surface 4 — GitHub Actions schedules (1 entry)
+
+Scheduled workflows in this repo (`.github/workflows/*` with a
+`schedule:` trigger). This surface was added 2026-11-05 with its first
+registered entry (#5451); other scheduled workflows that predate the
+surface are not yet recorded here — that gap is a registry defect of
+the same kind the maintenance rule names, to be backfilled by a later
+review, not silently normalised.
+
+| name/id | repo/scope | cadence | state | owner / scope | prompt/brief pointer | budget | kill criteria | created | last review |
+| ------- | ---------- | ------- | ----- | ------------- | -------------------- | ------ | ------------- | ------- | ----------- |
+| `bws-freshness` (`.github/workflows/bws-freshness.yml`) | developing-today/code | `23 6 * * *` (daily 06:23 UTC) + `workflow_dispatch` | enabled (fixture tests); live check gated off pending a secure credentialed runner (`BWS_FRESHNESS_ENABLED`) | issue #5451 | `.github/workflows/bws-freshness.yml`; check implementation `lib/bws-to-sops.sh --check` | not recorded | Disable the schedule if the fixture tests fail on main repeatedly or the drift-issue automation misfires | 2026-11-05 | 2026-11-05 |
