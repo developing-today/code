@@ -112,12 +112,17 @@ pub struct Config {
 pub struct ProxyConfig {
     /// Session broker socket path (relative paths resolve under $HOME).
     pub broker_socket: Option<String>,
+    /// Broker idle-exit timeout in seconds (default
+    /// [`DEFAULT_IDLE_EXIT_SECS`]). `0` is rejected at load (#6412):
+    /// it would exit the broker at its first idle tick, and there is
+    /// no "never idle-exit" spelling.
     pub idle_exit_secs: Option<u64>,
     /// The reach target for CONNECT tunnels (default
     /// [`DEFAULT_TARGET_HOST`]).
     pub target_host: Option<String>,
     /// Port of the egress proxy on the `HTTPS_PROXY` host (default
-    /// [`DEFAULT_EGRESS_PROXY_PORT`]).
+    /// [`DEFAULT_EGRESS_PROXY_PORT`]). `0` is rejected at load
+    /// (#6412): port 0 cannot be dialled.
     pub egress_proxy_port: Option<u16>,
     /// Dial the target directly instead of through a CONNECT tunnel
     /// (a broker running on the target host itself; also the
@@ -175,7 +180,8 @@ pub struct DispatchConfig {
     /// (default [`DEFAULT_DISPATCH_TOKEN_NAME`]).
     pub token_name: Option<String>,
     /// pm-dispatch's port on the target host (default
-    /// [`PORT_DISPATCH`]).
+    /// [`PORT_DISPATCH`]). `0` is rejected at load (#6412): port 0
+    /// cannot be dialled.
     pub port: Option<u16>,
 }
 
@@ -269,17 +275,54 @@ impl Config {
     }
 
     pub fn load_from(path: &std::path::Path) -> Result<Config, ConfigError> {
-        match std::fs::read_to_string(path) {
+        let cfg: Config = match std::fs::read_to_string(path) {
             Ok(text) => toml::from_str(&text).map_err(|e| ConfigError::Parse {
                 path: path.to_path_buf(),
                 message: e.to_string(),
-            }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
-            Err(e) => Err(ConfigError::Read {
-                path: path.to_path_buf(),
-                message: e.to_string(),
-            }),
+            })?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
+            Err(e) => {
+                return Err(ConfigError::Read {
+                    path: path.to_path_buf(),
+                    message: e.to_string(),
+                })
+            }
+        };
+        cfg.validate(path)?;
+        Ok(cfg)
+    }
+
+    /// The crate's single zero rule (#6412, matching the direction of
+    /// #6397 for the `[[proxy.services]]` rows): a configured `0` for a
+    /// scalar numeric setting is a misspelling-class error, never a
+    /// value. Port 0 cannot be dialled, and `idle_exit_secs = 0` would
+    /// make the broker exit at its first idle tick — the opposite of
+    /// the "never idle-exit" an operator would mean by it. Reject all
+    /// three at load, naming the field; omitting the field keeps the
+    /// documented default. There is no zero spelling for "disabled".
+    fn validate(&self, path: &std::path::Path) -> Result<(), ConfigError> {
+        let reject = |field: &str, default: u64| ConfigError::Parse {
+            path: path.to_path_buf(),
+            message: format!(
+                "{field} must not be 0; omit the field for the default ({default})"
+            ),
+        };
+        if self.proxy.egress_proxy_port == Some(0) {
+            return Err(reject(
+                "[proxy] egress_proxy_port",
+                u64::from(DEFAULT_EGRESS_PROXY_PORT),
+            ));
         }
+        if self.dispatch.port == Some(0) {
+            return Err(reject("[dispatch] port", u64::from(PORT_DISPATCH)));
+        }
+        if self.proxy.idle_exit_secs == Some(0) {
+            return Err(reject(
+                "[proxy] idle_exit_secs",
+                DEFAULT_IDLE_EXIT_SECS,
+            ));
+        }
+        Ok(())
     }
 
     /// Is a domain enabled on this host? Default yes; `[domains]`
@@ -652,6 +695,37 @@ mod tests {
         let cfg = Config::load_from(&path).unwrap();
         assert_eq!(cfg.idle_exit_secs(), 60);
         assert_eq!(cfg.broker_socket(), PathBuf::from("/tmp/b.sock"));
+    }
+
+    #[test]
+    fn zero_scalar_numerics_are_a_loud_error() {
+        // #6412: a configured 0 is never a value — port 0 cannot be
+        // dialled and idle_exit_secs 0 exits the broker at its first
+        // tick. Each zero spelling fails at load naming its field;
+        // absent and valid values resolve exactly as before.
+        for (contents, field) in [
+            ("[proxy]\negress_proxy_port = 0\n", "egress_proxy_port"),
+            ("[dispatch]\nport = 0\n", "[dispatch] port"),
+            ("[proxy]\nidle_exit_secs = 0\n", "idle_exit_secs"),
+        ] {
+            let (_dir, path) = write_temp(contents);
+            match Config::load_from(&path) {
+                Err(ConfigError::Parse { message, .. }) => {
+                    assert!(
+                        message.contains(field),
+                        "error should name {field}: {message}"
+                    );
+                }
+                other => panic!("expected Parse error for {contents:?}, got {other:?}"),
+            }
+        }
+        let (_dir, path) = write_temp(
+            "[proxy]\negress_proxy_port = 3131\nidle_exit_secs = 60\n[dispatch]\nport = 4880\n",
+        );
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.egress_proxy_port(), 3131);
+        assert_eq!(cfg.idle_exit_secs(), 60);
+        assert_eq!(cfg.dispatch_port(), 4880);
     }
 }
 
