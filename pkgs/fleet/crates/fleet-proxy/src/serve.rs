@@ -511,7 +511,10 @@ impl Broker {
         let port = req.port.unwrap_or(fleet_config::PORT_LAPTOP_AGENT);
         let token_path = match &req.token_file {
             Some(p) => std::path::PathBuf::from(p),
-            None => self.config.default_token_file(),
+            None => self
+                .config
+                .default_token_file()
+                .map_err(|e| e.to_string())?,
         };
         let token = std::fs::read_to_string(&token_path)
             .map_err(|e| format!("cannot read token file {}: {e}", token_path.display()))?;
@@ -750,7 +753,13 @@ fn keepalive_loop(broker: Arc<Broker>) {
 /// and a connect succeeds, a live broker owns it — exit 0 quietly.
 /// If the connect fails, the file is stale — unlink and bind.
 pub fn run(config: &Config) -> i32 {
-    let socket_path = config.broker_socket();
+    let socket_path = match config.broker_socket() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("{error}");
+            return crate::EXIT_TRANSPORT;
+        }
+    };
     if let Some(parent) = socket_path.parent() {
         let _ = std::fs::create_dir_all(parent);
         // The Python chmods its socket dir 0700 (best effort).

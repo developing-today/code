@@ -879,41 +879,47 @@ pub fn run() -> i32 {
     let socket_path = fleet_config::Config::load()
         .unwrap_or_default()
         .queue_broker_socket();
-    match crate::uds_http::bind_socket(&socket_path) {
-        Ok(Some(listener)) => {
-            let st = Arc::clone(&state);
-            let tok = token.clone();
-            crate::log::info(
-                "queue-broker",
-                &format!("listening on uds {}", socket_path.display()),
-            );
-            std::thread::spawn(move || {
-                crate::uds_http::serve(listener, move |req| {
-                    let (status, value) = handle_request(
-                        &st,
-                        &tok,
-                        &req.method,
-                        &req.target,
-                        req.header("X-Agent-Token"),
-                        &req.body,
-                    );
-                    (
-                        status,
-                        serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
-                    )
+    match socket_path {
+        Ok(socket_path) => match crate::uds_http::bind_socket(&socket_path) {
+            Ok(Some(listener)) => {
+                let st = Arc::clone(&state);
+                let tok = token.clone();
+                crate::log::info(
+                    "queue-broker",
+                    &format!("listening on uds {}", socket_path.display()),
+                );
+                std::thread::spawn(move || {
+                    crate::uds_http::serve(listener, move |req| {
+                        let (status, value) = handle_request(
+                            &st,
+                            &tok,
+                            &req.method,
+                            &req.target,
+                            req.header("X-Agent-Token"),
+                            &req.body,
+                        );
+                        (
+                            status,
+                            serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+                        )
+                    });
                 });
-            });
-        }
-        Ok(None) => crate::log::info(
-            "queue-broker",
-            &format!(
-                "uds {} already owned by a live broker; TCP only",
-                socket_path.display()
+            }
+            Ok(None) => crate::log::info(
+                "queue-broker",
+                &format!(
+                    "uds {} already owned by a live broker; TCP only",
+                    socket_path.display()
+                ),
             ),
-        ),
+            Err(e) => crate::log::info(
+                "queue-broker",
+                &format!("cannot bind uds {}: {e}; TCP only", socket_path.display()),
+            ),
+        },
         Err(e) => crate::log::info(
             "queue-broker",
-            &format!("cannot bind uds {}: {e}; TCP only", socket_path.display()),
+            &format!("uds socket path unavailable: {e}; TCP only"),
         ),
     }
 

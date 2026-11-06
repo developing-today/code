@@ -248,6 +248,9 @@ pub struct DispatchTestConfig {
 
 #[derive(Debug)]
 pub enum ConfigError {
+    /// A path needs the user's home directory, but `HOME` was absent or
+    /// empty and no explicit path override supplied a base directory.
+    MissingHome { setting: &'static str },
     /// The config file exists but does not parse. Carries the path and
     /// the parser's message — never config *values* beyond what the
     /// parser itself reports.
@@ -259,6 +262,10 @@ pub enum ConfigError {
 impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ConfigError::MissingHome { setting } => write!(
+                f,
+                "fleet: cannot resolve {setting}: HOME is unset or empty; set HOME or configure an absolute path override"
+            ),
             ConfigError::Parse { path, message } => {
                 write!(
                     f,
@@ -308,68 +315,83 @@ fn env_xdg_base(var: &str) -> Option<PathBuf> {
     absolute_path(std::env::var_os(var).map(PathBuf::from))
 }
 
-/// The home anchor: only an absolute, non-empty `HOME` may anchor
-/// home-relative resolution. A relative `HOME` is treated as unset
+/// The home anchor: only an absolute, non-empty HOME may anchor
+/// home-relative resolution. A relative HOME is treated as unset
 /// for anchoring (issue #6404): used verbatim it would resolve the
 /// config file, the state dir, and the broker socket CWD-relative,
-/// so a `fleet.toml` planted under the working directory at
-/// `./<relative-home>/.config/fleet/fleet.toml` would load — the
-/// planted-config hazard of issue #5473 in its relative-HOME
-/// spelling. Falling back to "." here means the unset/empty case
-/// and the relative case share one behaviour, governed by the
-/// fallback decision tracked in issue #5737. Scoped to the HOME
-/// anchor only: relative XDG bases are issue #6396, and relative
-/// values from explicit overrides (FLEET_CONFIG, socket paths) keep
-/// their documented resolve-under-home meaning.
-fn home_anchor(value: Option<PathBuf>) -> PathBuf {
-    non_empty_path(value)
-        .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| PathBuf::from("."))
+/// so a fleet.toml planted under the working directory would load
+/// — the planted-config hazard of issue #5473 in its relative-HOME
+/// spelling. An unset or empty HOME likewise yields no anchor
+/// (issue #5737): home-dependent resolution then fails with
+/// ConfigError::MissingHome instead of falling back to a dot.
+/// Scoped to the HOME anchor only: relative XDG bases are issue
+/// #6396 (handled by env_xdg_base above), and relative values from
+/// explicit overrides (FLEET_CONFIG, socket paths) keep their
+/// documented resolve-under-home meaning.
+fn home_anchor(value: Option<PathBuf>) -> Option<PathBuf> {
+    absolute_path(value)
 }
 
-fn home_dir() -> PathBuf {
+fn home_dir() -> Option<PathBuf> {
     home_anchor(std::env::var_os("HOME").map(PathBuf::from))
 }
 
-fn resolve_under(home: &std::path::Path, path: &std::path::Path) -> PathBuf {
+fn resolve_under(
+    home: Option<&std::path::Path>,
+    path: &std::path::Path,
+    setting: &'static str,
+) -> Result<PathBuf, ConfigError> {
     if path.is_absolute() {
-        path.to_path_buf()
+        Ok(path.to_path_buf())
     } else {
-        home.join(path)
+        let home = home.ok_or(ConfigError::MissingHome { setting })?;
+        Ok(home.join(path))
     }
 }
 
-fn resolve_under_home(path: &str) -> PathBuf {
-    resolve_under(&home_dir(), &PathBuf::from(path))
+fn resolve_under_home(
+    path: &str,
+    home: Option<&std::path::Path>,
+    setting: &'static str,
+) -> Result<PathBuf, ConfigError> {
+    resolve_under(home, &PathBuf::from(path), setting)
 }
 
 impl Config {
     /// The config file path: `$FLEET_CONFIG`, else
     /// `${XDG_CONFIG_HOME:-~/.config}/fleet/fleet.toml`.
-    pub fn file_path() -> PathBuf {
+    pub fn file_path() -> Result<PathBuf, ConfigError> {
+        let home = home_dir();
         Self::file_path_from(
             env_path("FLEET_CONFIG"),
             env_xdg_base("XDG_CONFIG_HOME"),
-            &home_dir(),
+            home.as_deref(),
         )
     }
 
     fn file_path_from(
         fleet_config: Option<PathBuf>,
         xdg_config_home: Option<PathBuf>,
-        home: &std::path::Path,
-    ) -> PathBuf {
+        home: Option<&std::path::Path>,
+    ) -> Result<PathBuf, ConfigError> {
         if let Some(p) = fleet_config {
-            return p;
+            return Ok(p);
         }
-        let base = xdg_config_home.unwrap_or_else(|| home.join(".config"));
-        base.join("fleet").join("fleet.toml")
+        let base = match xdg_config_home {
+            Some(base) => base,
+            None => home
+                .ok_or(ConfigError::MissingHome {
+                    setting: "the fleet config path",
+                })?
+                .join(".config"),
+        };
+        Ok(base.join("fleet").join("fleet.toml"))
     }
 
     /// Load configuration. A missing file yields defaults; a malformed
     /// or unreadable file is an error (see the crate docs for why).
     pub fn load() -> Result<Config, ConfigError> {
-        let path = Self::file_path();
+        let path = Self::file_path()?;
         Self::load_from(&path)
     }
 
@@ -441,28 +463,33 @@ impl Config {
 
     /// The session broker socket path. `FLEET_BROKER_SOCKET` beats the
     /// config file beats the default.
-    pub fn broker_socket(&self) -> PathBuf {
+    pub fn broker_socket(&self) -> Result<PathBuf, ConfigError> {
+        let home = home_dir();
         Self::broker_socket_from(
             env_path("FLEET_BROKER_SOCKET"),
             self.proxy.broker_socket.as_deref(),
-            &home_dir(),
+            home.as_deref(),
         )
     }
 
     fn broker_socket_from(
         env_socket: Option<PathBuf>,
         config_socket: Option<&str>,
-        home: &std::path::Path,
-    ) -> PathBuf {
+        home: Option<&std::path::Path>,
+    ) -> Result<PathBuf, ConfigError> {
         // Every source resolves the same way: a relative path is under
         // $HOME (the ProxyConfig field's documented rule), never the
         // process's working directory (issue #5473).
         if let Some(p) = env_socket {
-            return resolve_under(home, &p);
+            return resolve_under(home, &p, "the FLEET_BROKER_SOCKET path");
         }
         match config_socket {
-            Some(p) => resolve_under(home, &PathBuf::from(p)),
-            None => resolve_under(home, &PathBuf::from(DEFAULT_BROKER_SOCKET)),
+            Some(p) => resolve_under(home, &PathBuf::from(p), "the configured broker socket path"),
+            None => resolve_under(
+                home,
+                &PathBuf::from(DEFAULT_BROKER_SOCKET),
+                "the default broker socket path",
+            ),
         }
     }
 
@@ -470,21 +497,23 @@ impl Config {
     /// beats the default; no config-file field exists for it, so the
     /// resolution is env -> default under $HOME, like the session
     /// broker's socket with the config source absent.
-    pub fn queue_broker_socket(&self) -> PathBuf {
+    pub fn queue_broker_socket(&self) -> Result<PathBuf, ConfigError> {
+        let home = home_dir();
         Self::broker_socket_from(
             env_path("QUEUE_BROKER_SOCKET"),
             Some(DEFAULT_QUEUE_BROKER_SOCKET),
-            &home_dir(),
+            home.as_deref(),
         )
     }
 
     /// The secrets broker's Unix socket path (#6216).
     /// `SECRETS_BROKER_SOCKET` beats the default.
-    pub fn secrets_broker_socket(&self) -> PathBuf {
+    pub fn secrets_broker_socket(&self) -> Result<PathBuf, ConfigError> {
+        let home = home_dir();
         Self::broker_socket_from(
             env_path("SECRETS_BROKER_SOCKET"),
             Some(DEFAULT_SECRETS_BROKER_SOCKET),
-            &home_dir(),
+            home.as_deref(),
         )
     }
 
@@ -552,8 +581,13 @@ impl Config {
 
     /// The token file the session broker reads when a request names
     /// none (see [`DEFAULT_BROKER_TOKEN_FILE`]).
-    pub fn default_token_file(&self) -> PathBuf {
-        resolve_under_home(DEFAULT_BROKER_TOKEN_FILE)
+    pub fn default_token_file(&self) -> Result<PathBuf, ConfigError> {
+        let home = home_dir();
+        resolve_under_home(
+            DEFAULT_BROKER_TOKEN_FILE,
+            home.as_deref(),
+            "the default broker token file path",
+        )
     }
 
     /// The dispatch base URL when one is configured:
@@ -647,27 +681,46 @@ impl Config {
     }
 
     /// The secrets-broker token *file path* (never its contents).
-    pub fn secrets_token_file(&self) -> PathBuf {
+    pub fn secrets_token_file(&self) -> Result<PathBuf, ConfigError> {
+        let home = home_dir();
         match &self.secrets.token_file {
-            Some(p) => resolve_under_home(p),
-            None => resolve_under_home(DEFAULT_SECRETS_TOKEN_FILE),
+            Some(p) => {
+                resolve_under_home(p, home.as_deref(), "the configured secrets token file path")
+            }
+            None => resolve_under_home(
+                DEFAULT_SECRETS_TOKEN_FILE,
+                home.as_deref(),
+                "the default secrets token file path",
+            ),
         }
     }
 
     /// `~/.local/state/fleet` (or `$XDG_STATE_HOME/fleet`).
-    pub fn state_dir() -> PathBuf {
-        Self::state_dir_from(env_xdg_base("XDG_STATE_HOME"), &home_dir())
+    pub fn state_dir() -> Result<PathBuf, ConfigError> {
+        let home = home_dir();
+        Self::state_dir_from(env_xdg_base("XDG_STATE_HOME"), home.as_deref())
     }
 
-    fn state_dir_from(xdg_state_home: Option<PathBuf>, home: &std::path::Path) -> PathBuf {
-        let base = xdg_state_home.unwrap_or_else(|| home.join(".local").join("state"));
-        base.join("fleet")
+    fn state_dir_from(
+        xdg_state_home: Option<PathBuf>,
+        home: Option<&std::path::Path>,
+    ) -> Result<PathBuf, ConfigError> {
+        let base = match xdg_state_home {
+            Some(base) => base,
+            None => home
+                .ok_or(ConfigError::MissingHome {
+                    setting: "the fleet state directory",
+                })?
+                .join(".local")
+                .join("state"),
+        };
+        Ok(base.join("fleet"))
     }
 
     /// The materialized PATH shim dir (§4), regenerated from the
     /// negotiated services map at every connect/init.
-    pub fn shims_dir() -> PathBuf {
-        Self::state_dir().join("shims")
+    pub fn shims_dir() -> Result<PathBuf, ConfigError> {
+        Ok(Self::state_dir()?.join("shims"))
     }
 }
 
@@ -805,49 +858,57 @@ mod tests {
             Some(PathBuf::from("/x"))
         );
         assert_eq!(
-            Config::file_path_from(None, None, &home),
+            Config::file_path_from(None, None, Some(&home)).unwrap(),
             home.join(".config").join("fleet").join("fleet.toml")
         );
         assert_eq!(
-            Config::file_path_from(None, Some(PathBuf::from("/cfg")), &home),
+            Config::file_path_from(None, Some(PathBuf::from("/cfg")), Some(&home)).unwrap(),
             PathBuf::from("/cfg").join("fleet").join("fleet.toml")
         );
         assert_eq!(
-            Config::file_path_from(Some(PathBuf::from("/named.toml")), None, &home),
+            Config::file_path_from(Some(PathBuf::from("/named.toml")), None, Some(&home)).unwrap(),
             PathBuf::from("/named.toml")
         );
         assert_eq!(
-            Config::state_dir_from(None, &home),
+            Config::state_dir_from(None, Some(&home)).unwrap(),
             home.join(".local").join("state").join("fleet")
         );
         assert_eq!(
-            Config::state_dir_from(Some(PathBuf::from("/state")), &home),
+            Config::state_dir_from(Some(PathBuf::from("/state")), Some(&home)).unwrap(),
             PathBuf::from("/state").join("fleet")
         );
         // A relative FLEET_BROKER_SOCKET in the default's own spelling
         // names the same socket as the default itself.
         assert_eq!(
-            Config::broker_socket_from(Some(PathBuf::from(DEFAULT_BROKER_SOCKET)), None, &home),
-            Config::broker_socket_from(None, None, &home)
+            Config::broker_socket_from(
+                Some(PathBuf::from(DEFAULT_BROKER_SOCKET)),
+                None,
+                Some(&home)
+            )
+            .unwrap(),
+            Config::broker_socket_from(None, None, Some(&home)).unwrap()
         );
         assert_eq!(
-            Config::broker_socket_from(Some(PathBuf::from("/abs/b.sock")), None, &home),
+            Config::broker_socket_from(Some(PathBuf::from("/abs/b.sock")), None, Some(&home))
+                .unwrap(),
             PathBuf::from("/abs/b.sock")
         );
         assert_eq!(
-            Config::broker_socket_from(None, Some("rel/c.sock"), &home),
+            Config::broker_socket_from(None, Some("rel/c.sock"), Some(&home)).unwrap(),
             home.join("rel").join("c.sock")
         );
         // #6216: the queue/secrets broker socket defaults resolve under
         // $HOME in each broker's own config dir.
         assert_eq!(
-            Config::broker_socket_from(None, Some(DEFAULT_QUEUE_BROKER_SOCKET), &home),
+            Config::broker_socket_from(None, Some(DEFAULT_QUEUE_BROKER_SOCKET), Some(&home))
+                .unwrap(),
             home.join(".config")
                 .join("queue-broker")
                 .join("broker.sock")
         );
         assert_eq!(
-            Config::broker_socket_from(None, Some(DEFAULT_SECRETS_BROKER_SOCKET), &home),
+            Config::broker_socket_from(None, Some(DEFAULT_SECRETS_BROKER_SOCKET), Some(&home))
+                .unwrap(),
             home.join(".config")
                 .join("secrets-broker")
                 .join("broker.sock")
@@ -874,66 +935,126 @@ mod tests {
             Config::file_path_from(
                 None,
                 absolute_path(Some(PathBuf::from("relcfg"))),
-                &home
-            ),
+                Some(&home)
+            )
+            .unwrap(),
             home.join(".config").join("fleet").join("fleet.toml")
         );
         assert_eq!(
             Config::file_path_from(
                 None,
                 absolute_path(Some(PathBuf::from("/cfg"))),
-                &home
-            ),
+                Some(&home)
+            )
+            .unwrap(),
             PathBuf::from("/cfg").join("fleet").join("fleet.toml")
         );
         assert_eq!(
-            Config::state_dir_from(absolute_path(Some(PathBuf::from("relstate"))), &home),
+            Config::state_dir_from(absolute_path(Some(PathBuf::from("relstate"))), Some(&home))
+                .unwrap(),
             home.join(".local").join("state").join("fleet")
         );
         assert_eq!(
-            Config::state_dir_from(absolute_path(Some(PathBuf::from("/state"))), &home),
+            Config::state_dir_from(absolute_path(Some(PathBuf::from("/state"))), Some(&home))
+                .unwrap(),
             PathBuf::from("/state").join("fleet")
         );
         // The explicit per-file override is out of scope: a relative
         // FLEET_CONFIG keeps its verbatim meaning.
         assert_eq!(
-            Config::file_path_from(Some(PathBuf::from("rel.toml")), None, &home),
+            Config::file_path_from(Some(PathBuf::from("rel.toml")), None, Some(&home)).unwrap(),
             PathBuf::from("rel.toml")
         );
     }
 
     #[test]
     fn relative_home_is_not_an_anchor() {
-        // #6404: a relative HOME must never anchor resolution —
-        // file_path, state_dir, and broker_socket resolve exactly as
-        // they do for an unset/empty HOME, so a fleet.toml planted at
-        // ./<relative-home>/.config/fleet/fleet.toml is never loaded.
-        let anchor = home_anchor(Some(PathBuf::from("relhome")));
-        assert_eq!(anchor, PathBuf::from("."));
-        assert_eq!(home_anchor(None), PathBuf::from("."));
-        assert_eq!(home_anchor(Some(PathBuf::new())), PathBuf::from("."));
+        // #6404 + #5737 combined: a relative, unset, or empty HOME
+        // yields no anchor at all, and home-dependent resolution
+        // fails with MissingHome instead of resolving CWD-relative —
+        // a fleet.toml planted at ./<relative-home>/.config/fleet/
+        // fleet.toml is never loaded.
+        assert_eq!(home_anchor(Some(PathBuf::from("relhome"))), None);
+        assert_eq!(home_anchor(None), None);
+        assert_eq!(home_anchor(Some(PathBuf::new())), None);
         assert_eq!(
             home_anchor(Some(PathBuf::from("/home/tester"))),
-            PathBuf::from("/home/tester")
+            Some(PathBuf::from("/home/tester"))
+        );
+        for error in [
+            Config::file_path_from(None, None, None).unwrap_err(),
+            Config::state_dir_from(None, None).unwrap_err(),
+            Config::broker_socket_from(None, None, None).unwrap_err(),
+        ] {
+            assert!(matches!(error, ConfigError::MissingHome { .. }));
+        }
+    }
+
+    #[test]
+    fn home_dependent_paths_fail_when_home_is_unset_or_empty() {
+        // Exercise the pure resolution helpers rather than mutating
+        // process-global environment variables in parallel tests.
+        for home_value in [None, Some(PathBuf::new())] {
+            let home = non_empty_path(home_value);
+            let file_path = Config::file_path_from(None, None, home.as_deref());
+            let state_dir = Config::state_dir_from(None, home.as_deref());
+            let broker_socket = Config::broker_socket_from(None, None, home.as_deref());
+
+            for error in [
+                file_path.unwrap_err(),
+                state_dir.unwrap_err(),
+                broker_socket.unwrap_err(),
+            ] {
+                assert!(matches!(error, ConfigError::MissingHome { .. }));
+                let message = error.to_string();
+                assert!(message.contains("HOME"));
+                assert!(message.contains("set HOME"));
+            }
+        }
+    }
+
+    #[test]
+    fn absolute_path_overrides_work_without_home() {
+        assert_eq!(
+            Config::file_path_from(Some(PathBuf::from("/named.toml")), None, None).unwrap(),
+            PathBuf::from("/named.toml")
         );
         assert_eq!(
-            Config::file_path_from(None, None, &anchor),
-            PathBuf::from(".")
-                .join(".config")
-                .join("fleet")
-                .join("fleet.toml")
+            Config::file_path_from(None, Some(PathBuf::from("/cfg")), None).unwrap(),
+            PathBuf::from("/cfg/fleet/fleet.toml")
         );
         assert_eq!(
-            Config::state_dir_from(None, &anchor),
-            PathBuf::from(".")
-                .join(".local")
-                .join("state")
-                .join("fleet")
+            Config::state_dir_from(Some(PathBuf::from("/state")), None).unwrap(),
+            PathBuf::from("/state/fleet")
         );
         assert_eq!(
-            Config::broker_socket_from(None, None, &anchor),
-            PathBuf::from(".").join(DEFAULT_BROKER_SOCKET)
+            Config::broker_socket_from(Some(PathBuf::from("/abs/env.sock")), None, None).unwrap(),
+            PathBuf::from("/abs/env.sock")
         );
+        assert_eq!(
+            Config::broker_socket_from(None, Some("/abs/config.sock"), None).unwrap(),
+            PathBuf::from("/abs/config.sock")
+        );
+        assert_eq!(
+            resolve_under_home("/abs/token", None, "configured token file").unwrap(),
+            PathBuf::from("/abs/token")
+        );
+        assert!(matches!(
+            resolve_under_home(
+                DEFAULT_BROKER_TOKEN_FILE,
+                None,
+                "the default broker token file path"
+            ),
+            Err(ConfigError::MissingHome { .. })
+        ));
+        assert!(matches!(
+            resolve_under_home(
+                DEFAULT_SECRETS_TOKEN_FILE,
+                None,
+                "the default secrets token file path"
+            ),
+            Err(ConfigError::MissingHome { .. })
+        ));
     }
 
     #[test]
@@ -967,7 +1088,7 @@ mod tests {
             write_temp("[proxy]\nidle_exit_secs = 60\nbroker_socket = \"/tmp/b.sock\"\n");
         let cfg = Config::load_from(&path).unwrap();
         assert_eq!(cfg.idle_exit_secs(), 60);
-        assert_eq!(cfg.broker_socket(), PathBuf::from("/tmp/b.sock"));
+        assert_eq!(cfg.broker_socket().unwrap(), PathBuf::from("/tmp/b.sock"));
     }
 
     #[test]
