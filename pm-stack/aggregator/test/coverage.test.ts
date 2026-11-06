@@ -186,6 +186,68 @@ describe("snapshot rotation + delta", () => {
   });
 });
 
+describe("snapshot rotation — poisoned anchorAt (#5196)", () => {
+  const mk = (at: string, codeOpen: number | null): CoverageReport => ({
+    generatedAt: at,
+    repos: [
+      {
+        repo: "developing-today/code",
+        openIssues: codeOpen,
+        gateNow: 1,
+        gateNext: 2,
+        poolItems: 10,
+        poolUnsetStatus: 3,
+        poolUnsetArea: 4,
+      },
+    ],
+  });
+
+  test("a garbage anchorAt falls back to current.generatedAt and rotation fires on schedule", () => {
+    const stored: CoverageSnapshotFile = {
+      baseline: null,
+      current: mk("2026-10-01T00:00:00Z", 90),
+      weekly: mk("2026-10-01T00:00:00Z", 90),
+      anchorAt: "not-a-date",
+    };
+    const snap = nextCoverageSnapshot(stored, mk("2026-11-01T00:00:00Z", 100), NOW);
+    expect(snap.baseline?.generatedAt).toBe("2026-10-01T00:00:00Z");
+    expect(snap.anchorAt).toBe("2026-11-01T12:00:00.000Z");
+  });
+
+  test("an impossible anchorAt (2026-02-30) is treated like an unparseable one", () => {
+    const stored: CoverageSnapshotFile = {
+      baseline: null,
+      current: mk("2026-10-01T00:00:00Z", 90),
+      weekly: mk("2026-10-01T00:00:00Z", 90),
+      anchorAt: "2026-02-30T00:00:00Z",
+    };
+    const snap = nextCoverageSnapshot(stored, mk("2026-11-01T00:00:00Z", 100), NOW);
+    expect(snap.baseline?.generatedAt).toBe("2026-10-01T00:00:00Z");
+    expect(snap.anchorAt).toBe("2026-11-01T12:00:00.000Z");
+  });
+
+  test("the store reads a garbage-anchor file as absent, and a well-formed one as itself", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "coverage-anchor-"));
+    try {
+      const file = join(dir, "coverage-snapshot.json");
+      const store = new CoverageSnapshotStore(file);
+      const good: CoverageSnapshotFile = {
+        baseline: null,
+        current: mk("2026-10-01T00:00:00Z", 90),
+        anchorAt: "2026-10-01T00:00:00Z",
+      };
+      await store.write(good);
+      expect(await store.read()).toEqual(good);
+      await store.write({ ...good, anchorAt: "not-a-date" });
+      expect(await store.read()).toBeNull();
+      await store.write({ ...good, anchorAt: "2026-02-30T00:00:00Z" });
+      expect(await store.read()).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("computeCoverage — pool unavailable (PR #3309 Codex)", () => {
   test("a null pool renders pool fields as null, never fake zeros, while census counts stay real", () => {
     const report = computeCoverage(census, null, NOW);
