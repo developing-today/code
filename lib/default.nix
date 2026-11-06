@@ -1277,6 +1277,30 @@ let
       unhashableRegistry = pkgs.writeText "deploy-targets-unhashable.json" ''
         {"bad": {"class": ["systemd"], "restart": ["always"]}, "other": {"class": {"x": 1}, "restart": "sometimes"}}
       '';
+      validTargetService = {
+        package = "test-package";
+        entryPoint = "bin/service";
+        args = [ ];
+        environment = { };
+        secrets = [ ];
+        user = "nobody";
+        ports = [ ];
+        restart = "always";
+        healthCheck = null;
+        targets = [ "laptop" ];
+        class = "systemd";
+      };
+      invalidTargetRegistry =
+        name: target:
+        pkgs.writeText name (
+          builtins.toJSON {
+            svc = validTargetService // {
+              targets = [ target ];
+            };
+          }
+        );
+      newlineTargetRegistry = invalidTargetRegistry "deploy-targets-newline.json" "laptop\nFAKE  systemd     evil";
+      spaceTargetRegistry = invalidTargetRegistry "deploy-targets-space.json" "bad name";
     in
     {
       packages.deploy = deployPkgs.deploy;
@@ -1367,6 +1391,8 @@ let
           expect_invalid ${duplicateTargetsRegistry} "targets must not repeat a target"
           expect_invalid ${hostlessHealthCheckRegistry} "healthCheck must be an http(s) URL with a host"
           expect_invalid ${duplicatePortsRegistry} "ports must not repeat a port"
+          expect_invalid ${newlineTargetRegistry} "targets must be host/class names matching"
+          expect_invalid ${spaceTargetRegistry} "targets must be host/class names matching"
           mkdir -p $out
           cp err.txt $out/errors.txt
         '';
