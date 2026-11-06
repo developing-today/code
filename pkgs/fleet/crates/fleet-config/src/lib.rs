@@ -118,14 +118,12 @@ pub const DEFAULT_DISPATCH_TEST_TURSO_URL: &str =
 /// selection: a scope is eligible below this many active jobs.
 pub const DEFAULT_DISPATCH_TEST_THRESHOLD: u64 = 40;
 
-/// The default dispatch-test scope repos, in selection order.
-pub const DEFAULT_DISPATCH_TEST_SCOPES: &[&str] = &[
-    "developing-today/code",
-    "developing-today-forks/opencode",
-    "developing-today-forks/openchamber",
-    "dezren39/darwin-nix",
-    "dezren39/hatch",
-];
+/// The fleet repo: the dezren39 repo that holds the other fleet
+/// repos as git submodules (developing-today/code#6580 phase 2).
+/// Its copies — the source plus its fork network — are the
+/// dispatch-test execution homes, discovered dynamically unless
+/// `[dispatch-test] scopes` pins an explicit list.
+pub const DEFAULT_DISPATCH_TEST_FLEET_REPO: &str = "dezren39/fleet";
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -237,8 +235,13 @@ pub struct DispatchTestConfig {
     /// Actions-capacity threshold (default
     /// [`DEFAULT_DISPATCH_TEST_THRESHOLD`]).
     pub threshold: Option<u64>,
-    /// Scope repos, in selection order. Empty means the built-in
-    /// list ([`DEFAULT_DISPATCH_TEST_SCOPES`]).
+    /// The fleet repo whose copies are the execution homes
+    /// (default [`DEFAULT_DISPATCH_TEST_FLEET_REPO`]).
+    pub fleet_repo: Option<String>,
+    /// Scope repos, in selection order — a PIN/OVERRIDE: when
+    /// non-empty, exactly these execution-home copies are scanned.
+    /// Empty (the default) means DISCOVER: the fleet repo plus its
+    /// fork network.
     #[serde(default)]
     pub scopes: Vec<String>,
 }
@@ -596,17 +599,19 @@ impl Config {
             .unwrap_or(DEFAULT_DISPATCH_TEST_THRESHOLD)
     }
 
-    /// The dispatch-test scope repos, in selection order: the
-    /// configured list, or the built-in defaults when unset/empty.
+    /// The dispatch-test fleet repo (execution-home source).
+    pub fn dispatch_test_fleet_repo(&self) -> &str {
+        self.dispatch_test
+            .fleet_repo
+            .as_deref()
+            .unwrap_or(DEFAULT_DISPATCH_TEST_FLEET_REPO)
+    }
+
+    /// The pinned dispatch-test scope repos, in selection order.
+    /// Empty means no pin: the caller discovers the fleet repo's
+    /// copies (source + fork network) instead.
     pub fn dispatch_test_scopes(&self) -> Vec<String> {
-        if self.dispatch_test.scopes.is_empty() {
-            DEFAULT_DISPATCH_TEST_SCOPES
-                .iter()
-                .map(|s| s.to_string())
-                .collect()
-        } else {
-            self.dispatch_test.scopes.clone()
-        }
+        self.dispatch_test.scopes.clone()
     }
 
     /// The search domain's routing preference from `[search] via`
