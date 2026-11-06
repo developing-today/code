@@ -356,6 +356,12 @@ def main():
         log_fire(mode, candidates, [], cap_room, [{"reason": "cap_saturated", "cap_room": cap_room}])
         return 0
     
+    # In shadow mode, do not launch - only discover and report
+    if mode == "shadow":
+        print(f"Shadow mode: discovered {len(candidates)} candidates, cap_room={cap_room}, launching nothing")
+        log_fire(mode, candidates, [], cap_room, [{"reason": "shadow_no_launches"}])
+        return 0
+    
     print(f"Cap room available: {cap_room}")
     print(f"Launching up to {cap_room} tasks...")
     launched = launch_tasks(mode, candidates, cap_room)
