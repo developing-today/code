@@ -1718,7 +1718,9 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
             Some(frame) => frame,
             None => match io.recv().await {
                 Inbound::Text(text) => {
-                    if let Ok(frame) = serde_json::from_str::<ClientFrame>(&text) {
+                    if let Ok(frame) = parse_json_without_duplicate_keys(&text)
+                        .and_then(|value| serde_json::from_value::<ClientFrame>(value))
+                    {
                         frame
                     } else {
                         let _ = send_error(service.frame_meter(), io, "invalid world frame").await;

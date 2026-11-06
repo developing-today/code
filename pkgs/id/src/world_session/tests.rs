@@ -1250,6 +1250,53 @@ mod tests {
         peer.task.await.unwrap();
     }
 
+    #[tokio::test]
+    async fn query_frame_rejects_duplicate_json_keys_before_join() {
+        // Regression test for the PR #6508 review finding: frames received
+        // after a valid query/info first frame were parsed straight into
+        // ClientFrame, so duplicate keys in fields the frame type ignores
+        // collapsed silently and a join carrying them still entered the
+        // joined phase. Oracle: the strict duplicate-key parser — any
+        // repeated key at any depth refuses the frame before conversion.
+        let svc = service(None);
+        let (_, capability) = svc
+            .world()
+            .issue("ann".to_owned(), WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let cap = capability.expose().to_owned();
+
+        let frames: [(&str, String); 3] = [
+            (
+                "duplicate ignored world field",
+                format!(
+                    r#"{{"type":"join","capability":"{cap}","world":"lobby","world":"other"}}"#
+                ),
+            ),
+            (
+                "duplicate unknown field",
+                format!(r#"{{"type":"join","capability":"{cap}","bogus":1,"bogus":2}}"#),
+            ),
+            (
+                "duplicate inside ignored nested object",
+                format!(r#"{{"type":"join","capability":"{cap}","extra":{{"a":1,"a":2}}}}"#),
+            ),
+        ];
+
+        for (case, text) in frames {
+            let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+            peer.say(serde_json::json!({"type": "info", "capability": cap}))
+                .await;
+            assert_eq!(peer.next().await.unwrap()["type"], "module_info", "{case}");
+            peer.say_text(&text).await;
+            let reply = peer.next().await.unwrap();
+            assert_eq!(reply["type"], "error", "{case}: {reply}");
+            assert_eq!(reply["message"], "invalid world frame", "{case}: {reply}");
+            assert!(peer.next().await.is_none(), "{case}");
+            peer.task.await.unwrap();
+        }
+    }
+
     proptest! {
         #[test]
         fn duplicate_json_keys_are_rejected_at_any_nesting_depth(
