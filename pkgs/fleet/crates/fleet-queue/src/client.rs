@@ -268,9 +268,30 @@ fn spawn_broker() {
 /// is unavailable, otherwise returns the response envelope (which may
 /// itself be {ok:false, exit, error} — the caller decides).
 fn call(path: &str, body: &Value) -> Value {
-    match broker_roundtrip(path, body) {
-        Ok(v) => v,
-        Err(e) => die(3, &e),
+    // #6450 posture (crate::backoff — the one shared policy): a
+    // broker envelope carrying a 57014 / PGRST002-class error is
+    // retried with exponential backoff + jitter instead of dying on
+    // the caller. Safe for writes: a 57014 means Postgres cancelled
+    // the statement, so the write rolled back and cannot
+    // double-apply (enqueue dedupe keys are a second belt).
+    let mut attempt: u32 = 0;
+    loop {
+        match broker_roundtrip(path, body) {
+            Ok(v) => {
+                let retryable = v.get("ok").and_then(|o| o.as_bool()) == Some(false)
+                    && v.get("error")
+                        .and_then(|e| e.as_str())
+                        .map(crate::backoff::is_retryable)
+                        .unwrap_or(false);
+                if retryable && attempt + 1 < crate::backoff::MAX_ATTEMPTS {
+                    crate::backoff::sleep_after_failure(attempt);
+                    attempt += 1;
+                    continue;
+                }
+                return v;
+            }
+            Err(e) => die(3, &e),
+        }
     }
 }
 

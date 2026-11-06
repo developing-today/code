@@ -77,6 +77,9 @@ fn compiled_capabilities() -> CapabilitySet {
     if cfg!(feature = "dispatch") {
         caps.insert(Capability::Dispatch);
     }
+    if cfg!(feature = "dispatch-test") {
+        caps.insert(Capability::DispatchTest);
+    }
     if cfg!(feature = "laptop-agent") {
         caps.insert(Capability::LaptopAgent);
     }
@@ -361,6 +364,7 @@ fn print_domain_help(surface: &Surface, d: &Domain) {
         CapState::Available => match d.name {
             "queue" => "included in this build",
             "dispatch" => "included in this build",
+            "dispatch-test" => "included in this build",
             "secrets" => "included in this build",
             "search" => "included in this build",
             "proxy" => "included in this build",
@@ -495,6 +499,13 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
             #[cfg(feature = "dispatch")]
             if d.name == "dispatch" {
                 return fleet_dispatch::run(&surface.config, args);
+            }
+            // The dispatch-test domain (developing-today/code#6580):
+            // explicit-dispatch CI test over GitHub Actions + the
+            // Turso jobs store (full build only).
+            #[cfg(feature = "dispatch-test")]
+            if d.name == "dispatch-test" {
+                return fleet_dispatch_test::run(&surface.config, args);
             }
             // Step 6 (#5554): the secrets domain runs for real —
             // the fleet-secrets resolver chain as a verb.

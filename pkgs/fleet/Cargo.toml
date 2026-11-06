@@ -19,6 +19,7 @@ members = [
   "crates/fleet-proxy-proto",
   "crates/fleet-queue",
   "crates/fleet-dispatch",
+  "crates/fleet-dispatch-test",
   "crates/fleet-proxy",
   "crates/fleet-search",
   "crates/fleet",
@@ -38,6 +39,7 @@ fleet-secrets = { path = "crates/fleet-secrets" }
 fleet-proxy-proto = { path = "crates/fleet-proxy-proto" }
 fleet-queue = { path = "crates/fleet-queue" }
 fleet-dispatch = { path = "crates/fleet-dispatch" }
+fleet-dispatch-test = { path = "crates/fleet-dispatch-test" }
 fleet-proxy = { path = "crates/fleet-proxy" }
 fleet-search = { path = "crates/fleet-search" }
 serde = { version = "1", features = ["derive"] }
