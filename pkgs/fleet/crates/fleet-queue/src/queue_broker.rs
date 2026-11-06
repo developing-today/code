@@ -269,6 +269,16 @@ fn quote(s: &str, safe: &str) -> String {
     out
 }
 
+/// The `/list` limit, validated before it is interpolated into the
+/// PostgREST path (#6419): an out-of-range value from any client is
+/// rejected with the same usage error the client itself raises
+/// (design #6448 Phase 3: reject, not clamp). Absent means the
+/// existing default of 20.
+fn list_limit(req: &Value) -> Result<i64, String> {
+    let raw = req.get("limit").and_then(|l| l.as_i64());
+    crate::client::list_limit_or_default(raw)
+}
+
 fn ok(fields: Value) -> Value {
     let mut m = json!({"ok": true});
     if let (Some(dst), Some(src)) = (m.as_object_mut(), fields.as_object()) {
@@ -491,7 +501,10 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
         ),
         "/list" => {
             let queue = req.get("queue").and_then(|q| q.as_str()).unwrap_or("");
-            let limit = req.get("limit").and_then(|l| l.as_i64()).unwrap_or(20);
+            let limit = match list_limit(req) {
+                Ok(limit) => limit,
+                Err(e) => return fail(2, e),
+            };
             // `rich` adds the claim/binding fields the on-laptop
             // opencode claimant's poll.py needs (it reads through the
             // broker since the binary-direct migration retired the
@@ -726,4 +739,26 @@ pub fn run() -> i32 {
     }
     // incoming_requests() ends only when the server stops.
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_limit_rejects_out_of_range_before_the_postgrest_path() {
+        // #6419: the broker interpolated the limit unchecked, so a
+        // client that skipped validation (or a raw caller) could send
+        // 0, negatives, or an unbounded value straight to PostgREST.
+        for bad in [0, -1, 501, i64::MAX] {
+            let err = list_limit(&json!({"limit": bad}))
+                .err()
+                .expect("out-of-range limit must be rejected");
+            assert!(err.contains("--limit"), "error names the flag: {err}");
+        }
+        assert_eq!(list_limit(&json!({"limit": 1})), Ok(1));
+        assert_eq!(list_limit(&json!({"limit": 500})), Ok(500));
+        // Absent limit keeps the existing default of 20.
+        assert_eq!(list_limit(&json!({})), Ok(20));
+    }
 }

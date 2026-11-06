@@ -596,6 +596,31 @@ fn parse_i64_flag(name: &str, raw: &str) -> Result<i64, String> {
         .map_err(|_| format!("argument --{name}: invalid int value {raw:?}"))
 }
 
+/// The accepted range for `list --limit` (#6419; design #6448 Phase 3
+/// pin: out-of-range is REJECTED, never clamped, at both the client
+/// and the broker). `limit=0` used to silently report no tasks and an
+/// unbounded value reached the PostgREST query verbatim.
+pub(crate) const LIST_LIMIT_MAX: i64 = 500;
+pub(crate) const LIST_LIMIT_DEFAULT: i64 = 20;
+
+/// Validate a `list --limit` value against `1..=LIST_LIMIT_MAX`; the
+/// error names `--limit` so a usage failure points at the flag.
+pub(crate) fn validate_list_limit(limit: i64) -> Result<i64, String> {
+    if (1..=LIST_LIMIT_MAX).contains(&limit) {
+        Ok(limit)
+    } else {
+        Err(format!(
+            "argument --limit: value {limit} out of range 1..={LIST_LIMIT_MAX}"
+        ))
+    }
+}
+
+/// The `list --limit` value for a call: the flag's value validated, or
+/// the unchanged default when the flag is absent.
+pub(crate) fn list_limit_or_default(raw: Option<i64>) -> Result<i64, String> {
+    validate_list_limit(raw.unwrap_or(LIST_LIMIT_DEFAULT))
+}
+
 fn env_or_default(value: Option<&str>, default: &str) -> String {
     value
         .map(str::trim)
@@ -890,12 +915,16 @@ fn find_task_row(rows: &[Value], task_id: i64) -> Option<&Value> {
 fn cmd_list(rest: &[String]) -> i32 {
     let args = parse_args(rest, &["queue", "status", "limit", "not-before"], &[]);
     reject_extra_pos("list", &args, 0);
+    let limit = match list_limit_or_default(args.get_i64("limit")) {
+        Ok(limit) => limit,
+        Err(e) => die(2, &e),
+    };
     let resp = call(
         "/list",
         &json!({
             "queue": opt_queue(&args),
             "status": args.get("status"),
-            "limit": args.get_i64("limit").unwrap_or(20),
+            "limit": limit,
             "not_before": args.get("not-before"),
         }),
     );
@@ -1512,6 +1541,26 @@ mod tests {
         assert!(err.contains("--limit"), "error names the flag: {err}");
         assert!(err.contains("abc"), "error names the value: {err}");
         assert_eq!(parse_i64_flag("limit", "20"), Ok(20));
+    }
+
+    #[test]
+    fn list_limit_range_is_validated() {
+        // #6419: 0 silently reported no tasks; negatives and unbounded
+        // values reached the broker verbatim. Out-of-range is a usage
+        // error naming --limit (design #6448 Phase 3: reject, not clamp).
+        for bad in [0, -1, LIST_LIMIT_MAX + 1, i64::MAX] {
+            let err = validate_list_limit(bad)
+                .err()
+                .expect("out-of-range --limit must be rejected");
+            assert!(err.contains("--limit"), "error names the flag: {err}");
+        }
+        // Boundaries and the ordinary value pass through unchanged.
+        assert_eq!(validate_list_limit(1), Ok(1));
+        assert_eq!(validate_list_limit(20), Ok(20));
+        assert_eq!(validate_list_limit(LIST_LIMIT_MAX), Ok(LIST_LIMIT_MAX));
+        // Absent --limit keeps the existing default of 20.
+        assert_eq!(list_limit_or_default(None), Ok(20));
+        assert_eq!(list_limit_or_default(Some(0)), validate_list_limit(0));
     }
 
     #[test]
