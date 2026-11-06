@@ -27,19 +27,58 @@ Threshold/timing overrides: POWER_GUARD_POLL, POWER_GUARD_CONFIRM,
 POWER_GUARD_EDGE_CONFIRM.
 """
 
+import math
 import os
 import subprocess
 import sys
 import time
 
 SYSFS = os.environ.get("POWER_GUARD_SYSFS", "/sys/class/power_supply")
-POLL = float(os.environ.get("POWER_GUARD_POLL", "15"))
+
+def parse_timing(name, raw):
+    """Parse one timing override (seconds).
+
+    Invariant (the daemon's reason to exist, #1687/#6477): a timing
+    override is only meaningful as a finite, strictly positive number
+    of seconds. Zero or negative confirmation would fire on the first
+    sample; a non-positive poll cannot pace the loop.
+    Raises ValueError naming the variable and the offending value.
+    """
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"{name}={raw!r} is not a number; "
+            "it must be a finite positive number of seconds"
+        ) from None
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(
+            f"{name}={raw!r} must be a finite positive number of seconds"
+        )
+    return value
+
+
+def timing_from_env(name, default):
+    """Read a timing override, failing closed at startup on bad input.
+
+    On an invalid value, emit one named error (no traceback) and exit
+    non-zero before any polling, so a systemd unit shows as failed
+    instead of crash-looping or silently running unguarded.
+    """
+    raw = os.environ.get(name, default)
+    try:
+        return parse_timing(name, raw)
+    except ValueError as exc:
+        print(f"power-guard: error: {exc}", file=sys.stderr, flush=True)
+        raise SystemExit(2) from None
+
+POLL = timing_from_env("POWER_GUARD_POLL", "15")
 LOW_PCT = 20  # engage the block at/below this (UPower PercentageLow)
 CRITICAL_PCT = 5  # UPower PercentageCritical
 EDGE_PCT = 2  # UPower PercentageAction
 CRITICAL_TTE = 300  # seconds-to-empty treated as critical
-CONFIRM = float(os.environ.get("POWER_GUARD_CONFIRM", "300"))
-EDGE_CONFIRM = float(os.environ.get("POWER_GUARD_EDGE_CONFIRM", "60"))
+CONFIRM = timing_from_env("POWER_GUARD_CONFIRM", "300")
+EDGE_CONFIRM = timing_from_env("POWER_GUARD_EDGE_CONFIRM", "60")
 NO_INHIBIT = os.environ.get("POWER_GUARD_NO_INHIBIT") == "1"
 SLEEP_CMD = os.environ.get("POWER_GUARD_SLEEP_CMD", "systemctl hybrid-sleep")
 
