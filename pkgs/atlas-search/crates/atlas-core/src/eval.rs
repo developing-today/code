@@ -932,6 +932,174 @@ mod tests {
         }
     }
 
+    // Oracle: the #6390 parser invariant, property-style over
+    // generated documents (the repo testing doctrine for parsers):
+    // for arbitrary query ids (including ids that need JSON
+    // escaping), signal names, run-object field orderings, and
+    // duplicate positions, a repeated results key is always rejected
+    // naming the signal and the query — and the same generated
+    // document without the repetition always parses, preserving its
+    // rankings through a serialize/parse round-trip.
+    #[test]
+    fn duplicate_results_key_rejected_over_generated_documents() {
+        fn js(s: &str) -> String {
+            serde_json::to_string(s).expect("a string always encodes")
+        }
+        fn results_obj(entries: &[(&str, &[&str])]) -> String {
+            let parts: Vec<String> = entries
+                .iter()
+                .map(|(key, docs)| {
+                    let arr = serde_json::to_string(
+                        &docs.iter().map(|d| (*d).to_owned()).collect::<Vec<_>>(),
+                    )
+                    .expect("an array always encodes");
+                    format!("{}: {}", js(key), arr)
+                })
+                .collect();
+            format!("{{{}}}", parts.join(", "))
+        }
+        fn run_obj(signal: &str, results: &str, results_first: bool) -> String {
+            if results_first {
+                format!("{{\"results\": {}, \"signal\": {}}}", results, js(signal))
+            } else {
+                format!("{{\"signal\": {}, \"results\": {}}}", js(signal), results)
+            }
+        }
+        fn document(queries: &[&str], runs: &str) -> String {
+            let queries: Vec<String> = queries
+                .iter()
+                .map(|q| {
+                    format!(
+                        "{{\"id\": {}, \"class\": \"code\", \"split\": \"dev\"}}",
+                        js(q)
+                    )
+                })
+                .collect();
+            format!(
+                "{{\"format\": \"atlas-eval/v1\", \"queries\": [{}], \
+                 \"qrels\": [], \"runs\": [{}]}}",
+                queries.join(", "),
+                runs
+            )
+        }
+
+        let id_pieces = ["q", "query-", "a b", "a\"b", "a\\b", "caf\u{e9}", "x/y", ""];
+        let signal_pieces = ["dense", "bm25", "fused:a+b", "sig nal", "s\"1"];
+        let mut rng = Rng(0x6390_2026_1106);
+        for case in 0..300u64 {
+            let base = id_pieces[rng.below(id_pieces.len())];
+            let q_dup = format!("{base}{}", rng.below(5));
+            let q_other = format!("{q_dup}~other");
+            let signal = format!(
+                "{}{}",
+                signal_pieces[rng.below(signal_pieces.len())],
+                rng.below(3)
+            );
+            let signal2 = format!("{signal}~second");
+            let results_first = case % 2 == 1;
+            let r1: &[&str] = &["d1", "d2"];
+            let r2: &[&str] = &["d3"];
+            let ro: &[&str] = &["d9"];
+
+            // (raw runs text, signal named in the error, query named)
+            let (dup_runs, dup_signal, dup_query, clean_runs, expected): (
+                String,
+                String,
+                String,
+                String,
+                Vec<(&str, Vec<(&str, &[&str])>)>,
+            ) = match case % 3 {
+                0 => (
+                    run_obj(
+                        &signal,
+                        &results_obj(&[(&q_dup, r1), (&q_dup, r2)]),
+                        results_first,
+                    ),
+                    signal.clone(),
+                    q_dup.clone(),
+                    run_obj(&signal, &results_obj(&[(&q_dup, r1)]), results_first),
+                    vec![(signal.as_str(), vec![(q_dup.as_str(), r1)])],
+                ),
+                1 => (
+                    run_obj(
+                        &signal,
+                        &results_obj(&[(&q_dup, r1), (&q_other, ro), (&q_dup, r2)]),
+                        results_first,
+                    ),
+                    signal.clone(),
+                    q_dup.clone(),
+                    run_obj(
+                        &signal,
+                        &results_obj(&[(&q_dup, r1), (&q_other, ro)]),
+                        results_first,
+                    ),
+                    vec![(
+                        signal.as_str(),
+                        vec![(q_dup.as_str(), r1), (q_other.as_str(), ro)],
+                    )],
+                ),
+                _ => (
+                    format!(
+                        "{}, {}",
+                        run_obj(&signal, &results_obj(&[(&q_dup, r1)]), results_first),
+                        run_obj(
+                            &signal2,
+                            &results_obj(&[(&q_other, ro), (&q_other, r1)]),
+                            results_first
+                        )
+                    ),
+                    signal2.clone(),
+                    q_other.clone(),
+                    format!(
+                        "{}, {}",
+                        run_obj(&signal, &results_obj(&[(&q_dup, r1)]), results_first),
+                        run_obj(&signal2, &results_obj(&[(&q_other, ro)]), results_first)
+                    ),
+                    vec![
+                        (signal.as_str(), vec![(q_dup.as_str(), r1)]),
+                        (signal2.as_str(), vec![(q_other.as_str(), ro)]),
+                    ],
+                ),
+            };
+
+            let queries: Vec<&str> = vec![&q_dup, &q_other];
+            let err = EvalData::from_json(&document(&queries, &dup_runs))
+                .expect_err("a repeated results key must be rejected");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("duplicate results key")
+                    && msg.contains(&format!("{dup_signal:?}"))
+                    && msg.contains(&format!("{dup_query:?}")),
+                "case {case}: error must name signal and query: {msg}"
+            );
+
+            let parsed = EvalData::from_json(&document(&queries, &clean_runs))
+                .unwrap_or_else(|e| panic!("case {case}: clean document must parse: {e}"));
+            assert_eq!(parsed.runs.len(), expected.len(), "case {case}");
+            for (run, (want_signal, want_results)) in parsed.runs.iter().zip(&expected) {
+                assert_eq!(run.signal, *want_signal, "case {case}");
+                let want: BTreeMap<String, Vec<String>> = want_results
+                    .iter()
+                    .map(|(q, docs)| {
+                        (
+                            (*q).to_owned(),
+                            docs.iter().map(|d| (*d).to_owned()).collect(),
+                        )
+                    })
+                    .collect();
+                assert_eq!(run.results, want, "case {case}");
+            }
+            let round_tripped = EvalData::from_json(
+                &serde_json::to_string(&parsed).expect("parsed data serializes"),
+            )
+            .expect("serialized data re-parses");
+            assert_eq!(
+                round_tripped, parsed,
+                "case {case}: round-trip preserves the data"
+            );
+        }
+    }
+
     // Oracle: the metric definitions as invariants, checked over
     // 2000 generated (qrels, ranking) pairs — every metric stays in
     // [0, 1], Recall@100 ≤ Recall@1000 (monotone in k), and the
