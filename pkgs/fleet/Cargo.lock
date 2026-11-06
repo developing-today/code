@@ -299,6 +299,7 @@ dependencies = [
 name = "fleet-queue"
 version = "0.1.0"
 dependencies = [
+ "fleet-config",
  "fleet-secrets",
  "proptest",
  "serde",

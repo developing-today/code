@@ -276,6 +276,19 @@ func New() *Store {
 
 // Open opens or creates a persistent SQLite-backed task store.
 func Open(dbPath string) (*Store, error) {
+	return OpenWithRetention(dbPath, 0, 0)
+}
+
+// OpenWithRetention is Open with the deployment's retention settings
+// applied before the store loads and migrates existing rows. That
+// ordering matters: loadTasksFromDB derives deadlines for legacy rows
+// (expires_ms unset) from the store's ttl/maxAge and deletes rows past
+// them, so configuring retention only after Open — as daemon startup
+// previously did — deleted legacy terminal rows under the built-in
+// defaults before the configured retention could preserve them
+// (issue #6248). Nonpositive values leave the built-in defaults in
+// place, exactly as Configure does.
+func OpenWithRetention(dbPath string, ttl, maxAge time.Duration) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
 		return nil, fmt.Errorf("creating task db dir: %w", err)
 	}
@@ -284,6 +297,12 @@ func Open(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("opening task db: %w", err)
 	}
 	st := New()
+	if ttl > 0 {
+		st.ttl = ttl
+	}
+	if maxAge > 0 {
+		st.maxAge = maxAge
+	}
 	st.db = db
 	if err := st.initDB(); err != nil {
 		_ = db.Close()

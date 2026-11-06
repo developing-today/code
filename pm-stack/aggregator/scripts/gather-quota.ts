@@ -28,6 +28,15 @@
 //      a quota source. Fail-soft: a keeper error never fails the tick.
 //      (Its credential-store accessors live in the OpenChamber lib
 //      the store was born in — store plumbing, not a reading path.)
+//   1b. The Meta session keeper (src/meta-renewal.ts, same rule):
+//      Meta's quota functions ride the laptop Helium profile's
+//      dev.meta.ai session — no stored credential exists to
+//      maintain — so the keeper watches the meta-quota-export probe
+//      document each tick, re-arms the exporter units if they were
+//      renamed away (the 2026-11-01 failure), takes a fresh probe,
+//      and records the verdict in meta-renewal.json with an alert
+//      from the first bad tick when the session is truly logged
+//      out. Fail-soft like the OpenDesign keeper.
 //   2. The subcommand, twice: the configured listing
 //      (`opencode quota --json`) and the explicit ask
 //      (`opencode quota --json meta command-code`) — providers whose
@@ -110,6 +119,7 @@ import {
 import { SnapshotStore, isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
 import { safeProviderReason } from "../src/credential-lifecycle.ts";
 import { renewOpenDesignSession, type OpenDesignCredentialLike } from "../src/opendesign-renewal.ts";
+import { renewMetaSession } from "../src/meta-renewal.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
@@ -292,6 +302,37 @@ async function runOpenDesignRenewal(tickAt: string): Promise<void> {
   } catch (err) {
     console.log(
       `quota-gatherer: opendesign-renewal failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+    );
+  }
+}
+
+/**
+ * The Meta session keeper run (src/meta-renewal.ts, Drew's
+ * 2026-11-05 auto-renewal rule). Meta's quota functions ride the
+ * laptop Helium profile's dev.meta.ai session — no stored credential
+ * exists for a keeper to maintain, so this keeper watches the
+ * meta-quota-export probe document instead: fresh + ok = session
+ * valid; expired or silent = re-arm the exporter units if they were
+ * renamed away, take a fresh probe, and if the session is truly
+ * logged out raise an alert in meta-renewal.json from the first bad
+ * tick (re-login is a human step — Meta emails a code). Fail-soft,
+ * same contract as the OpenDesign keeper.
+ */
+async function runMetaRenewal(tickAt: string): Promise<void> {
+  if (process.env.META_RENEWAL_DISABLED === "1") return;
+  try {
+    const state = await renewMetaSession({
+      statePath: process.env.META_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "meta-renewal.json"),
+      ...(process.env.META_EXPORTER_LATEST_PATH ? { latestPath: process.env.META_EXPORTER_LATEST_PATH } : {}),
+      now: () => new Date(tickAt),
+      log: (line) => console.log(`quota-gatherer: ${line}`),
+    });
+    if (state.status === "attention") {
+      console.log(`quota-gatherer: meta-renewal ATTENTION ${state.alert ?? ""}`);
+    }
+  } catch (err) {
+    console.log(
+      `quota-gatherer: meta-renewal failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
     );
   }
 }
@@ -608,6 +649,7 @@ async function main(): Promise<number> {
   // The OpenDesign keeper runs first: a session renewed this tick is
   // the one the subcommand's OpenDesign read uses.
   await runOpenDesignRenewal(tickAt);
+  await runMetaRenewal(tickAt);
 
   // The single source: every reading this tick comes from the
   // opencode quota subcommand. A failure to run it, or output that

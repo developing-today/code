@@ -1,4 +1,4 @@
-// node_modules/fzstd/esm/index.mjs
+// ../../../../../code/pkgs/cold-store-reaper/worker/node_modules/fzstd/esm/index.mjs
 var ab = ArrayBuffer;
 var u8 = Uint8Array;
 var u16 = Uint16Array;
@@ -647,6 +647,41 @@ async function sha256Hex(bytes) {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
+async function readStreamedFrame(resp, offset, frameLength) {
+  if (!resp.body || typeof resp.body.getReader !== "function") {
+    const whole = new Uint8Array(await resp.arrayBuffer());
+    return whole.slice(offset, offset + frameLength);
+  }
+  const reader = resp.body.getReader();
+  const parts = [];
+  let skip = offset;
+  let remaining = frameLength;
+  try {
+    while (remaining > 0) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (skip >= value.length) {
+        skip -= value.length;
+        continue;
+      }
+      const take = value.subarray(skip, skip + remaining);
+      parts.push(take);
+      remaining -= take.length;
+      skip = 0;
+    }
+  } finally {
+    await reader.cancel().catch(() => {
+    });
+    reader.releaseLock();
+  }
+  const frame = new Uint8Array(frameLength - remaining);
+  let pos = 0;
+  for (const part of parts) {
+    frame.set(part, pos);
+    pos += part.length;
+  }
+  return frame;
+}
 var BundleFlight = class {
   constructor(state, env) {
     this.state = state;
@@ -722,9 +757,11 @@ var BundleFlight = class {
     if (resp.status !== 206 && resp.status !== 200) {
       throw new HttpError(502, `drive range download failed (HTTP ${resp.status})`);
     }
-    let frame = new Uint8Array(await resp.arrayBuffer());
+    let frame;
     if (resp.status === 200) {
-      frame = frame.slice(offset, offset + frame_length);
+      frame = await readStreamedFrame(resp, offset, frame_length);
+    } else {
+      frame = new Uint8Array(await resp.arrayBuffer());
     }
     if (frame.length !== frame_length) {
       throw new HttpError(
@@ -775,5 +812,6 @@ var index_default = {
 };
 export {
   BundleFlight,
-  index_default as default
+  index_default as default,
+  readStreamedFrame
 };

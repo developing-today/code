@@ -875,7 +875,10 @@ mod tests {
         pool.restore(author(1), 1, [10], "copy", 0).unwrap();
         assert!(!pool.contains(&1));
         assert_eq!(pool.take_ready(), vec!["ready"]);
-        assert!(pool.take_ready().is_empty(), "the ready event is taken once");
+        assert!(
+            pool.take_ready().is_empty(),
+            "the ready event is taken once"
+        );
         assert!(pool.arrived(10, 0).is_empty());
         assert!(pool.is_empty());
     }

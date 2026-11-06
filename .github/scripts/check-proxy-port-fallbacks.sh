@@ -25,8 +25,9 @@
 # Retired 2026-11-04 (opencode#1414): the antigravity-direct door itself
 # is gone — let, unit, session var, bin program and this row removed in
 # one change; the provider id lives on over the in-fork native provider.
-# Their bin/ scripts remain in the repo as history, uninvoked, and
-# their disabled opencode.jsonc providers keep the old fallbacks; see
+# Their bin/ scripts remained in the repo as history until the
+# 2026-11-06 proxy-infra decommission removed them; their disabled
+# opencode.jsonc providers keep the old fallbacks; see
 # the retirement note in home/common/default.nix. They are deliberately
 # NOT rows here — restoring one means restoring its let from git
 # history and re-adding its row in the same change (#2961).
@@ -47,11 +48,20 @@
 # outright (7b51087cc removed its let and unit; a0755459e removed its
 # opencode.jsonc door shell), so its row is gone from the table below,
 # same pattern as the 2026-10-30 retirements; bin/design-code-proxy.mjs
-# remains as history. The codex door program (:18744) is NOT retired —
+# remained as history until the 2026-11-06 proxy-infra decommission
+# removed it. The codex door program (:18744) is NOT retired —
 # only its opencode.jsonc provider was (1dad07b4a re-seated the
 # openai-codex routes onto openai-plan) — so the CODEX row keeps its
 # let and bin/ fallback checks with has_config "no": there is no
 # baseURL left in opencode.jsonc for it to match.
+#
+# Retired 2026-11-06 (Drew, proxy-infra decommission): the
+# commandcode door (:18748) and the claude-code door (:18749) are
+# gone the same way — let, unit, session var, bin program and their
+# rows below removed in one change. Both providers were repointed
+# to the fork's native wire-emulation providers on 2026-11-05
+# (code#6117, opencode#1749); this guard had been failing on their
+# stale rows since that repoint removed the jsonc baseURLs.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -62,8 +72,6 @@ config_file="$repo_root/.opencode/opencode.jsonc"
 proxies=(
   "CODEX_PROXY_PORT|codexProxyPort|bin/codex-proxy.mjs|no"
   "MUSE_PROXY_PORT|museProxyPort|bin/muse-proxy.mjs|yes"
-  "COMMANDCODE_PROXY_PORT|commandcodeProxyPort|bin/commandcode-proxy.mjs|yes"
-  "CLAUDE_CODE_PROXY_PORT|claudeCodeProxyPort|bin/claude-code-proxy.mjs|yes"
 )
 
 failed=0
