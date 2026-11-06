@@ -1,0 +1,36 @@
+name: atlas-search
+
+# CI tier policy: see .github/ci-policy.md
+
+on:
+  pull_request:
+    paths:
+      - "pkgs/atlas-search/**"
+      - ".github/workflows/atlas-search-pr.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atlas-search-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  atlas-search:
+    name: "basic: atlas-search Rust checks"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt
+
+      - name: Test atlas-search
+        run: cargo +1.99.0 test --manifest-path pkgs/atlas-search/Cargo.toml -p atlas-search
+
+      - name: Test atlas-core
+        run: cargo +1.99.0 test --manifest-path pkgs/atlas-search/Cargo.toml -p atlas-core
+
+      - name: Check formatting
+        run: cargo +1.99.0 fmt --manifest-path pkgs/atlas-search/Cargo.toml --all -- --check
