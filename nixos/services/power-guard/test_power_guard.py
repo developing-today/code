@@ -14,7 +14,9 @@ POWER_GUARD_SLEEP_CMD hooks.
 """
 
 import importlib.util
+import math
 import os
+import random
 import subprocess
 import sys
 import tempfile
@@ -68,6 +70,65 @@ class ParseTimingTests(unittest.TestCase):
                     with self.assertRaises(ValueError) as ctx:
                         pg.parse_timing(var, raw)
                     self.assertIn(var, str(ctx.exception))
+                    self.assertIn(repr(raw), str(ctx.exception))
+
+
+class ParseTimingPropertyTests(unittest.TestCase):
+    """Property-based coverage of the parser invariant (Codex #6485).
+
+    Oracle: the finite-positive predicate itself, evaluated
+    independently of parse_timing's control flow — a generated input
+    is acceptable iff float() parses it to a finite value > 0.
+    Generation is seeded, so failures reproduce exactly.
+    """
+
+    def oracle_accepts(self, raw):
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return False
+        return math.isfinite(value) and value > 0
+
+    @staticmethod
+    def generated_inputs(rng):
+        cases = []
+        for _ in range(200):  # plausible valid timings, many formats
+            v = rng.choice(
+                [
+                    rng.uniform(0.001, 100000),
+                    rng.randint(1, 100000),
+                    rng.uniform(0.001, 1),
+                ]
+            )
+            cases.append(rng.choice([repr(v), f"{v:.6f}", f"{v:e}", f" {v} "]))
+        for _ in range(200):  # invalid: zero/negative/non-finite/junk
+            cases.append(
+                rng.choice(
+                    [
+                        repr(-rng.uniform(0, 100000)),
+                        "0",
+                        "-0.0",
+                        rng.choice(["nan", "NaN", "inf", "-inf", "infinity"]),
+                        "".join(rng.choices("abcxyz_=!@#", k=rng.randint(1, 8))),
+                        f"{rng.uniform(1, 9)}x{rng.randint(0, 9)}",
+                        "",
+                    ]
+                )
+            )
+        return cases
+
+    def test_generated_inputs_match_finite_positive_predicate(self):
+        rng = random.Random(6477)
+        for raw in self.generated_inputs(rng):
+            with self.subTest(raw=raw):
+                if self.oracle_accepts(raw):
+                    self.assertEqual(
+                        pg.parse_timing("POWER_GUARD_CONFIRM", raw), float(raw)
+                    )
+                else:
+                    with self.assertRaises(ValueError) as ctx:
+                        pg.parse_timing("POWER_GUARD_CONFIRM", raw)
+                    self.assertIn("POWER_GUARD_CONFIRM", str(ctx.exception))
                     self.assertIn(repr(raw), str(ctx.exception))
 
 
