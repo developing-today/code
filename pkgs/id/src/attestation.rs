@@ -169,8 +169,10 @@ pub enum MatchState {
 /// # Errors
 ///
 /// Returns [`SignError::DuplicateSeat`] if both seats name the same
-/// player, a chain error if the extension or backlink is invalid, or a
-/// JSON error if the agreement cannot be serialized.
+/// player, [`SignError::NotAPlayer`] if the signing key is neither seat
+/// (no viewer would ever count its genesis, #6424), a chain error if the
+/// extension or backlink is invalid, or a JSON error if the agreement
+/// cannot be serialized.
 pub fn sign_genesis(
     key: &SigningKey,
     seq_num: SeqNum,
@@ -181,6 +183,10 @@ pub fn sign_genesis(
     let [first, second] = agreement.players;
     if first == second {
         return Err(SignError::DuplicateSeat);
+    }
+    let signer = player_id(key);
+    if signer != first && signer != second {
+        return Err(SignError::NotAPlayer);
     }
     let body = agreement.body()?;
     Ok(chain::sign(
@@ -212,10 +218,38 @@ pub fn sign_genesis(
 /// knowable only against the agreement and stays `compute_state`'s
 /// call, so any well-formed hex signs here.
 ///
+/// The claim is checked against the `agreement` it answers: the signing
+/// key must be one of the agreement's players, since [`compute_state`]
+/// ignores claims from non-players (#6424).
+///
 /// # Errors
 ///
-/// As [`sign_genesis`], plus [`SignError::InvalidOutcome`] above.
+/// As [`sign_genesis`] for the chain and JSON cases, plus
+/// [`SignError::InvalidOutcome`] above, [`SignError::AgreementMismatch`]
+/// if the claim does not answer `agreement`, and
+/// [`SignError::NotAPlayer`] if the signing key is not one of its players.
 pub fn sign_claim(
+    key: &SigningKey,
+    seq_num: SeqNum,
+    backlink: Option<Hash>,
+    agreement: &GenesisAgreement,
+    claim: &ResultClaim,
+    after: Vec<Hash>,
+) -> Result<Event, SignError> {
+    if claim.agreement != agreement.agreement_hash()? {
+        return Err(SignError::AgreementMismatch);
+    }
+    if !agreement.players.contains(&player_id(key)) {
+        return Err(SignError::NotAPlayer);
+    }
+    sign_claim_unchecked(key, seq_num, backlink, claim, after)
+}
+
+/// Signs a claim without checking the signer against an agreement; the
+/// outcome shape is still checked. Crate-private so only tests can
+/// build claims the viewer must ignore (the `sign_unchecked` pattern of
+/// the artifact module).
+pub(crate) fn sign_claim_unchecked(
     key: &SigningKey,
     seq_num: SeqNum,
     backlink: Option<Hash>,
@@ -335,7 +369,8 @@ pub fn compute_state(
 }
 
 /// A signing failure: the object would not serialize, the chain
-/// refused the event, or the object names the same player in both seats.
+/// refused the event, the object names the same player in both seats,
+/// or the signer is not a player of the agreement.
 #[derive(Debug)]
 pub enum SignError {
     /// The object would not serialize to its canonical body.
@@ -347,6 +382,12 @@ pub enum SignError {
     /// The claim's outcome is neither `"draw"` nor a 64-character
     /// lowercase hex player id, so no view could ever count it (#6441).
     InvalidOutcome,
+    /// The signing key is not one of the agreement's two players, so no
+    /// view would ever count the object (#6424).
+    NotAPlayer,
+    /// The claim names a different agreement than the one it was
+    /// checked against.
+    AgreementMismatch,
 }
 
 impl From<serde_json::Error> for SignError {
@@ -368,6 +409,12 @@ impl std::fmt::Display for SignError {
             Self::Chain(err) => write!(f, "chain refused the attestation event: {err:?}"),
             Self::DuplicateSeat => {
                 write!(f, "both seats of the agreement name the same player")
+            }
+            Self::NotAPlayer => {
+                write!(f, "signing key is not one of the agreement's players")
+            }
+            Self::AgreementMismatch => {
+                write!(f, "claim does not answer the given agreement")
             }
             Self::InvalidOutcome => {
                 write!(

@@ -88,6 +88,7 @@ fn play_match(x_outcome: &str, o_outcome: &str) -> Match {
         &x,
         1,
         Some(genesis_x.id),
+        &agreement,
         &claim_x,
         vec![genesis_x.id, genesis_o.id],
     )
@@ -96,6 +97,7 @@ fn play_match(x_outcome: &str, o_outcome: &str) -> Match {
         &o,
         1,
         Some(genesis_o.id),
+        &agreement,
         &claim_o,
         vec![genesis_x.id, genesis_o.id],
     )
