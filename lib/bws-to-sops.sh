@@ -5,6 +5,8 @@
 #
 #   lib/bws-to-sops.sh              sync all secrets -> secrets/sops/common/bws.yaml
 #   lib/bws-to-sops.sh --dry-run    list what would be written (key names only)
+#   lib/bws-to-sops.sh --check      names-only freshness check vs the committed
+#                                   mirror: writes nothing, exit 1 on drift (#5451)
 #   lib/bws-to-sops.sh --project ID only secrets in one bws project
 #   lib/bws-to-sops.sh --out FILE   write somewhere else
 #
@@ -26,6 +28,7 @@ REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || dirna
 OUT="${REPO_ROOT}/secrets/sops/common/bws.yaml"
 PROJECT=""
 DRY_RUN=false
+CHECK=false
 
 die() {
   echo "bws-to-sops: $*" >&2
@@ -46,8 +49,12 @@ while [ $# -gt 0 ]; do
     DRY_RUN=true
     shift
     ;;
+  --check)
+    CHECK=true
+    shift
+    ;;
   -h | --help)
-    sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 0
     ;;
   *) die "unknown argument: $1" ;;
@@ -87,6 +94,30 @@ if [ "$DRY_RUN" = true ]; then
   echo "Would write $COUNT secret(s) to ${OUT#"$REPO_ROOT"/}:"
   jq -r 'keys[] | "  " + .' <<<"$DOC"
   exit 0
+fi
+
+if [ "$CHECK" = true ]; then
+  # Names-only freshness check (#5451): compare BWS against the committed
+  # mirror without writing anything. The jq programs below only ever touch
+  # keys, so secret values cannot reach the output. Exit 0 when the mirror
+  # is fresh, 1 on any drift (added / removed / value-changed keys).
+  if [ ! -f "$OUT" ]; then
+    echo "Drift vs ${OUT#"$REPO_ROOT"/} (mirror missing; every key is added):"
+    jq -r 'keys[] | "  + " + .' <<<"$DOC"
+    exit 1
+  fi
+  CUR="$(sops -d --output-type json "$OUT" | jq -S .)" || die "cannot decrypt existing $OUT"
+  if [ "$CUR" = "$DOC" ]; then
+    echo "Up to date: ${OUT#"$REPO_ROOT"/} ($COUNT secrets)"
+    exit 0
+  fi
+  echo "Drift vs ${OUT#"$REPO_ROOT"/} (key names only):"
+  jq -rn --argjson a "$CUR" --argjson b "$DOC" '
+    ($b | keys) as $bk | ($a | keys) as $ak |
+    (($bk - $ak)[] | "  + \(.)"),
+    (($ak - $bk)[] | "  - \(.)"),
+    (($ak - ($ak - $bk))[] | select($a[.] != $b[.]) | "  ~ \(.)")'
+  exit 1
 fi
 
 if [ -f "$OUT" ]; then
