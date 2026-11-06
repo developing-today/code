@@ -148,6 +148,19 @@ pub trait LedgerBackend {
     /// and the transfers of a rejected open chain may be resubmitted
     /// (properly terminated) in a later batch. A production binding
     /// must implement the same rule.
+    ///
+    /// `Exists` legs inside a linked chain (#6170): TigerBeetle
+    /// breaks a linked chain on ANY non-`Created` status, so a chain
+    /// that mixes an idempotent `Exists` leg with new legs posts
+    /// NOTHING \u2014 the `Exists` leg reports
+    /// [`TransferError::Exists`] and every other leg reports
+    /// [`TransferError::LinkedEventFailed`]. The single exception is
+    /// a chain whose legs are ALL identical resubmissions: it
+    /// reports per-leg `Exists` and moves nothing (the surface the
+    /// `tb_ledger` binding presents after verifying every stored
+    /// leg of a resubmitted chain, PR #5072). A lone unlinked
+    /// transfer is a chain of one: `Exists` stays `Exists`, a new
+    /// transfer posts as before.
     fn create_transfers(&mut self, batch: &[Transfer]) -> Vec<Result<(), TransferError>>;
     /// Fallible ID lookup. Recovery must use this form so a backend outage
     /// cannot be mistaken for an absent transfer.
@@ -357,10 +370,18 @@ impl LedgerBackend for InMemoryLedger {
             let mut staged = self.balances.clone();
             let mut staged_transfers: HashMap<TransferId, Transfer> = HashMap::new();
             // Per-leg validation outcome. An idempotent `Exists` leg
-            // does not fail the chain: its effects are already in the
-            // real balances, so it is reported as `Err(Exists)` (as
-            // TigerBeetle reports it) without staging anything.
+            // stages nothing (its effects are already in the real
+            // balances), but inside a linked chain it is NOT neutral:
+            // TigerBeetle breaks a chain on any non-`Created` status
+            // (#6170, and the trait doc above). The chain outcome is
+            // decided after the loop from these per-leg outcomes:
+            // all-`Exists` chains report per-leg `Exists`; a mixed
+            // chain posts nothing, with the first `Exists` leg (or
+            // the first hard failure, whichever comes first in chain
+            // order) reporting its own outcome and every other leg
+            // reporting `LinkedEventFailed`.
             let mut leg_outcomes: Vec<Result<(), TransferError>> = Vec::with_capacity(chain.len());
+            let mut first_exists_offset: Option<usize> = None;
             let mut failure: Option<(usize, TransferError)> = None;
             for (offset, transfer) in chain.iter().enumerate() {
                 match self.validate_and_stage(transfer, &mut staged, &staged_transfers) {
@@ -369,6 +390,9 @@ impl LedgerBackend for InMemoryLedger {
                         leg_outcomes.push(Ok(()));
                     }
                     Err(TransferError::Exists) => {
+                        if first_exists_offset.is_none() {
+                            first_exists_offset = Some(offset);
+                        }
                         leg_outcomes.push(Err(TransferError::Exists));
                     }
                     Err(error) => {
@@ -379,19 +403,56 @@ impl LedgerBackend for InMemoryLedger {
             }
             match failure {
                 None => {
-                    self.balances = staged;
-                    for transfer in chain {
-                        if !self.transfers.contains_key(&transfer.id) {
-                            self.transfers.insert(transfer.id, transfer.clone());
-                            self.transfer_order.push(transfer.id);
+                    let exists_count = leg_outcomes
+                        .iter()
+                        .filter(|outcome| matches!(outcome, Err(TransferError::Exists)))
+                        .count();
+                    if exists_count > 0 && exists_count < chain.len() {
+                        // Mixed chain (#6170): an `Exists` leg ahead of
+                        // or behind new legs breaks the chain, exactly
+                        // as TigerBeetle breaks it. Nothing commits:
+                        // the staged balances and transfers are dropped,
+                        // `Exists` legs keep their outcome, and every
+                        // new leg reports `LinkedEventFailed`.
+                        for outcome in leg_outcomes {
+                            results.push(match outcome {
+                                Err(TransferError::Exists) => Err(TransferError::Exists),
+                                _ => Err(TransferError::LinkedEventFailed),
+                            });
                         }
+                    } else {
+                        // No `Exists` leg (an ordinary posting chain)
+                        // or nothing but `Exists` legs (a whole-chain
+                        // identical resubmission: per-leg `Exists`,
+                        // and since `Exists` legs stage nothing, the
+                        // commit below moves no balances and stores no
+                        // new transfers).
+                        self.balances = staged;
+                        for transfer in chain {
+                            if !self.transfers.contains_key(&transfer.id) {
+                                self.transfers.insert(transfer.id, transfer.clone());
+                                self.transfer_order.push(transfer.id);
+                            }
+                        }
+                        results.extend(leg_outcomes);
                     }
-                    results.extend(leg_outcomes);
                 }
                 Some((failing_offset, error)) => {
+                    // The chain broke at the first non-`Created` leg in
+                    // chain order: an earlier `Exists` leg (TigerBeetle
+                    // breaks on it before ever reaching the hard
+                    // failure) reports `Exists`; otherwise the failing
+                    // leg reports its own error. Every other leg
+                    // reports `LinkedEventFailed`.
+                    let (breaker_offset, breaker_error) = match first_exists_offset {
+                        Some(exists_offset) if exists_offset < failing_offset => {
+                            (exists_offset, TransferError::Exists)
+                        }
+                        _ => (failing_offset, error),
+                    };
                     for (offset, _) in chain.iter().enumerate() {
-                        results.push(Err(if offset == failing_offset {
-                            error
+                        results.push(Err(if offset == breaker_offset {
+                            breaker_error
                         } else {
                             TransferError::LinkedEventFailed
                         }));

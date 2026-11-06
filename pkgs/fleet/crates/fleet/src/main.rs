@@ -717,7 +717,28 @@ fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
     }
 }
 
+/// Restore the default SIGPIPE disposition (#5569). The Rust
+/// runtime ignores SIGPIPE, so a `println!` in any domain (queue,
+/// search, secrets, ...) panics when a downstream pipe closes
+/// early (`fleet secrets list | head`). With the default
+/// disposition the process dies quietly by SIGPIPE, like a
+/// well-behaved Unix filter, whichever verb is printing. Domains
+/// that handle EPIPE explicitly (secrets) keep their quiet-exit
+/// path; this covers the rest.
+#[cfg(unix)]
+fn restore_default_sigpipe() {
+    // SAFETY: signal() with SIG_DFL for SIGPIPE is a plain
+    // disposition reset, done before any other thread or I/O.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_default_sigpipe() {}
+
 fn main() {
+    restore_default_sigpipe();
     let argv: Vec<String> = std::env::args().collect();
     let invoked_as = argv
         .first()

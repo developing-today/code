@@ -2987,8 +2987,12 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
 
         NodeValue::Link(link) => {
             // Link - collect children with link mark added
+            // #5745: neutralize executable/unknown URL schemes at this
+            // single entry point — every Markdown link (typed, imported,
+            // or collaborative, which reaches this converter via
+            // collab.rs) carries the sanitized href from here on.
             let mut marks = active_marks.to_vec();
-            let mut attrs = json!({"href": link.url});
+            let mut attrs = json!({"href": sanitize_link_url(&link.url)});
             if !link.title.is_empty() {
                 attrs["title"] = json!(link.title);
             }
@@ -3927,6 +3931,67 @@ fn parse_img_tag(html: &str) -> Option<Value> {
     }))
 }
 
+/// #5745: the allowed-scheme oracle for link URLs.
+///
+/// A link URL is safe iff, after removing the characters browsers strip
+/// while parsing a URL (TAB/LF/CR anywhere, leading C0 controls and
+/// spaces), it either has no scheme at all — a relative or internal
+/// reference, a fragment, a query, or a protocol-relative `//host/path`
+/// reference, none of which can name an executable scheme — or its
+/// scheme is exactly `http`, `https`, or `mailto` (case-insensitive).
+/// Everything else (`javascript:`, `data:`, `vbscript:`, any unknown
+/// scheme, and any obfuscation of those the stripping above exposes)
+/// is unsafe. This explicit allowed set is the oracle every link test
+/// for #5745 checks against; do not rely on browser sanitization.
+fn link_url_is_safe(url: &str) -> bool {
+    let probe: String = url
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    let probe = probe.trim_start_matches(|c: char| c.is_ascii_control() || c == ' ');
+    // A scheme exists only when a `:` precedes any `/`, `?`, or `#`.
+    let mut scheme_end = None;
+    for (i, c) in probe.char_indices() {
+        match c {
+            ':' => {
+                scheme_end = Some(i);
+                break;
+            }
+            '/' | '?' | '#' => break,
+            _ => {}
+        }
+    }
+    let Some(colon) = scheme_end else {
+        return true; // no scheme: relative / fragment / query / protocol-relative
+    };
+    let scheme = &probe[..colon];
+    let mut chars = scheme.chars();
+    let valid_scheme = !scheme.is_empty()
+        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    if !valid_scheme {
+        // A `:` in the first segment whose prefix is not a scheme
+        // (e.g. a relative path containing a colon) is not a scheme.
+        return true;
+    }
+    matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "http" | "https" | "mailto"
+    )
+}
+
+/// #5745: return `url` unchanged when [`link_url_is_safe`], else the
+/// inert fragment `"#"`. The link text and mark survive; only the
+/// executable target is removed, and `"#"` re-parses as a safe
+/// fragment, so sanitized documents are a stable round-trip fixpoint.
+fn sanitize_link_url(url: &str) -> String {
+    if link_url_is_safe(url) {
+        url.to_owned()
+    } else {
+        "#".to_owned()
+    }
+}
+
 /// Parse an HTML `<a ...>` opening tag, returning its `href` and optional
 /// `title`. Returns `None` for anything else, including an anchor with no
 /// (or an empty) `href`.
@@ -3947,7 +4012,11 @@ fn parse_anchor_tag(html: &str) -> Option<(String, Option<String>)> {
         return None;
     }
     let title = parsed.get("title").filter(|t| !t.is_empty()).cloned();
-    Some((href.clone(), title))
+    // #5745: a raw-HTML anchor wrapping an image gets the same
+    // allowed-scheme treatment as a Markdown link; an unsafe href is
+    // neutralized (not dropped, which would strand the raw anchor tag
+    // as a verbatim html_inline atom carrying the executable URL).
+    Some((sanitize_link_url(href), title))
 }
 
 /// Attach a wrapping anchor's link to an image node (#880/#893), in the
@@ -4975,7 +5044,11 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                 if let Some(link_href) = json["attrs"]["linkHref"].as_str()
                     && !link_href.is_empty()
                 {
-                    let mut anchor = format!("<a href=\"{}\"", escape_attr_value(link_href));
+                    // #5745: a PM doc that arrived as raw ProseMirror JSON
+                    // (collab Rich mode) never passed the parse-direction
+                    // sanitizer, so neutralize unsafe hrefs on the way out.
+                    let safe_href = sanitize_link_url(link_href);
+                    let mut anchor = format!("<a href=\"{}\"", escape_attr_value(&safe_href));
                     if let Some(link_title) = json["attrs"]["linkTitle"].as_str()
                         && !link_title.is_empty()
                     {
@@ -5197,7 +5270,8 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             wrappers.push((
                 mark_nesting_rank("link"),
                 NodeValue::Link(Box::new(comrak::nodes::NodeLink {
-                    url: link_href.to_owned(),
+                    // #5745: same save-direction neutralization as above.
+                    url: sanitize_link_url(link_href),
                     title: json["attrs"]["linkTitle"].as_str().unwrap_or("").to_owned(),
                 })),
             ));
@@ -5541,7 +5615,8 @@ fn create_marked_text<'a>(arena: &'a Arena<'a>, text: &str, marks: &[Value]) -> 
                 let href = mark["attrs"]["href"].as_str().unwrap_or("");
                 let title = mark["attrs"]["title"].as_str().unwrap_or("");
                 NodeValue::Link(Box::new(comrak::nodes::NodeLink {
-                    url: href.to_owned(),
+                    // #5745: same save-direction neutralization as above.
+                    url: sanitize_link_url(href),
                     title: title.to_owned(),
                 }))
             }
@@ -5832,6 +5907,156 @@ mod tests {
             .find(|m| m["type"] == "link")
             .unwrap();
         assert_eq!(link_mark["attrs"]["href"], "https://example.com");
+    }
+
+    #[test]
+    fn test_link_executable_schemes_neutralized() {
+        // #5745 regression: a javascript: link must not produce an
+        // executable href. Oracle: the allowed set documented on
+        // link_url_is_safe (http/https/mailto or scheme-less).
+        for md in [
+            "[open](javascript:alert(document.domain))",
+            "[open](JaVaScRiPt:alert(1))",
+            "[open](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)",
+            "[open](vbscript:msgbox(1))",
+            "[open](  javascript:alert(1))",
+            "[open](unknown-scheme:payload)",
+        ] {
+            let doc = markdown_to_prosemirror(md);
+            let para_content = doc["content"][0]["content"].as_array().unwrap();
+            let link_text = para_content
+                .iter()
+                .find(|n| {
+                    n["marks"]
+                        .as_array()
+                        .is_some_and(|m| m.iter().any(|mark| mark["type"] == "link"))
+                })
+                .unwrap_or_else(|| panic!("no link mark for {md}"));
+            // The link text survives; only the target is neutralized.
+            assert_eq!(link_text["text"], "open", "link text lost for {md}");
+            let link_mark = link_text["marks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["type"] == "link")
+                .unwrap();
+            assert_eq!(
+                link_mark["attrs"]["href"], "#",
+                "executable href survived for {md}"
+            );
+            // Save direction: the emitted Markdown carries the inert
+            // href, and re-parsing it is a stable fixpoint.
+            let saved = prosemirror_to_markdown(&doc).unwrap();
+            assert_eq!(saved, "[open](#)\n", "save not neutralized for {md}");
+            let (first, second) = two_saves(&saved);
+            assert_eq!(first, second, "no fixpoint after sanitize for {md}");
+        }
+    }
+
+    #[test]
+    fn test_link_tab_obfuscated_destination_forms_no_link() {
+        // #5745: a literal TAB inside a Markdown link destination is
+        // rejected by Comrak's destination grammar, so the source
+        // stays literal text and no link node — hence no href at
+        // all — is produced; there is nothing executable to render.
+        // TAB-obfuscated hrefs that arrive through the raw-HTML or
+        // ProseMirror-JSON paths (where no Comrak destination parse
+        // happens) are covered by the sanitizer's tab-stripping probe
+        // and the save-direction test below.
+        let doc = markdown_to_prosemirror("[open](java\tscript:alert(1))");
+        let para_content = doc["content"][0]["content"].as_array().unwrap();
+        assert!(
+            para_content.iter().all(|n| {
+                n["marks"]
+                    .as_array()
+                    .is_none_or(|marks| marks.iter().all(|mark| mark["type"] != "link"))
+            }),
+            "tab-obfuscated destination produced a link mark: {para_content:?}"
+        );
+    }
+
+    #[test]
+    fn test_link_safe_schemes_preserved() {
+        // #5745: every member of the documented allowed set (plus the
+        // scheme-less forms) keeps its href byte-for-byte, in both
+        // directions.
+        for (md, expected_href) in [
+            ("[a](http://example.com)", "http://example.com"),
+            (
+                "[a](https://example.com/x?y=1)",
+                "https://example.com/x?y=1",
+            ),
+            ("[a](HTTPS://example.com)", "HTTPS://example.com"),
+            ("[a](mailto:me@example.com)", "mailto:me@example.com"),
+            ("[a](notes.md)", "notes.md"),
+            ("[a](/abs/path.md)", "/abs/path.md"),
+            ("[a](#section)", "#section"),
+            ("[a](//example.com/x)", "//example.com/x"),
+        ] {
+            let doc = markdown_to_prosemirror(md);
+            let para_content = doc["content"][0]["content"].as_array().unwrap();
+            let link_mark = para_content[0]["marks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["type"] == "link")
+                .unwrap_or_else(|| panic!("no link mark for {md}"));
+            assert_eq!(
+                link_mark["attrs"]["href"], expected_href,
+                "safe href mutated for {md}"
+            );
+            let (first, second) = two_saves(&format!("{md}\n"));
+            assert_eq!(first, format!("{md}\n"), "safe link not preserved for {md}");
+            assert_eq!(first, second, "no fixpoint for {md}");
+        }
+    }
+
+    #[test]
+    fn test_link_sanitizer_save_direction_and_linked_image() {
+        // #5745: a PM doc that never passed the parse direction (the
+        // collab Rich path stores raw ProseMirror JSON) is neutralized
+        // on save.
+        let doc = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "click",
+                    "marks": [{"type": "link", "attrs": {"href": "javascript:alert(1)"}}]
+                }]
+            }]
+        });
+        let saved = prosemirror_to_markdown(&doc).unwrap();
+        assert_eq!(saved, "[click](#)\n");
+
+        // Same path with a TAB-obfuscated scheme: the sanitizer strips
+        // TAB/LF/CR before reading the scheme, so this is neutralized
+        // too (a Markdown destination could never carry it — Comrak
+        // rejects it — but raw ProseMirror JSON can).
+        let doc = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "click",
+                    "marks": [{"type": "link", "attrs": {"href": "java\tscript:alert(1)"}}]
+                }]
+            }]
+        });
+        let saved = prosemirror_to_markdown(&doc).unwrap();
+        assert_eq!(saved, "[click](#)\n");
+
+        // A raw-HTML anchor wrapping an image (the parse_anchor_tag
+        // path) gets the same neutralization instead of an executable
+        // linkHref.
+        let doc = markdown_to_prosemirror(
+            "<a href=\"javascript:alert(1)\"><img src=\"x.png\" width=\"240\" /></a>",
+        );
+        let node = &doc["content"][0]["content"][0];
+        assert_eq!(node["type"], "image");
+        assert_eq!(node["attrs"]["linkHref"], "#");
     }
 
     #[test]

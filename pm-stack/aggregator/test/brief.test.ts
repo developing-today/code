@@ -84,6 +84,29 @@ describe("buildItemBrief", () => {
     expect(brief.blocker.text).toContain("Not blocked");
   });
 
+  test("malformed blocker refs are omitted without losing valid blockers", () => {
+    const unsafe = "developing-today/code#99999999999999999999";
+    for (const badRef of [unsafe, "812"]) {
+      const brief = buildItemBrief(item({ number: 20, blockedBy: [badRef] }));
+      expect(brief.blocker.blockers).toEqual([]);
+      expect(brief.blocker.blocked).toBe(false);
+      expect(brief.blocker.text).toContain("Unknown");
+      expect(brief.blocker.text).toContain("malformed");
+      expect(brief.nextAction.text).toContain("Validate");
+      expect(brief.nextAction.text).not.toContain("not blocked");
+    }
+
+    const valid = buildItemBrief(item({ number: 21, blockedBy: ["developing-today/code#3"] }));
+    expect(valid.blocker.blocked).toBe(true);
+    expect(valid.blocker.blockers).toEqual([
+      {
+        ref: "developing-today/code#3",
+        url: "https://github.com/developing-today/code/issues/3",
+        state: "unknown",
+      },
+    ]);
+  });
+
   test("in-flight item: derived In Progress, last actor from latest comment", () => {
     const it = item({ number: 12, updatedAt: "2026-10-30T10:30:00Z" });
     const brief = buildItemBrief(it, {

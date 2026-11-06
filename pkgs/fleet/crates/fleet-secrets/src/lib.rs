@@ -19,6 +19,13 @@
 //!     never a value, never a subprocess's stderr (which could quote
 //!     vault material);
 //!   * nothing here persists a value: no cache, no file, no log line.
+//!   * an empty string is never a successful resolution (#6275): a
+//!     broken read and a genuinely empty vault value are
+//!     indistinguishable at this layer, and the 2026-11-05 incident
+//!     was a caller exiting 0 with an empty value while its sources
+//!     had actually failed — so an empty value counts as a source
+//!     failure everywhere in this crate, and the chain moves on or
+//!     fails loudly.
 
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -162,7 +169,12 @@ impl Resolver {
         let mut errors = Vec::new();
         for source in &self.sources {
             match source.resolve(name) {
-                Ok(value) => return Ok(value),
+                Ok(value) if !value.expose().is_empty() => return Ok(value),
+                Ok(_) => errors.push(SecretError::Unavailable {
+                    source: source.source_name(),
+                    name: name.to_string(),
+                    detail: "source returned an empty value".to_string(),
+                }),
                 Err(e) => errors.push(e),
             }
         }
@@ -292,6 +304,13 @@ impl SecretSource for BrokerSource {
                         name: name.to_string(),
                         detail: "200 response without a string \"value\" field".to_string(),
                     })?;
+                if value.is_empty() {
+                    return Err(SecretError::Unavailable {
+                        source: "secrets-broker",
+                        name: name.to_string(),
+                        detail: "200 response with an empty \"value\"".to_string(),
+                    });
+                }
                 Ok(SecretValue(value.to_string()))
             }
             404 => Err(SecretError::NotFound {
@@ -399,6 +418,11 @@ impl SecretSource for BwsSource {
             .get("value")
             .and_then(|v| v.as_str())
             .ok_or_else(|| unavailable("bws secret get: no string \"value\" field".to_string()))?;
+        if value.is_empty() {
+            return Err(unavailable(
+                "bws secret get: empty \"value\" field".to_string(),
+            ));
+        }
         Ok(SecretValue(value.to_string()))
     }
 }
@@ -446,6 +470,36 @@ mod tests {
         ]);
         let v = resolver.resolve("some.name").unwrap();
         assert_eq!(v.expose(), "fixture-value-not-a-secret");
+    }
+
+    #[test]
+    fn chain_skips_an_empty_value_and_uses_the_next_source() {
+        let resolver = Resolver::new(vec![
+            Box::new(FakeSource {
+                name: "secrets-broker",
+                result: Ok(String::new()),
+            }),
+            Box::new(FakeSource {
+                name: "bws",
+                result: Ok("fixture-value-not-a-secret".to_string()),
+            }),
+        ]);
+        let v = resolver.resolve("some.name").unwrap();
+        assert_eq!(v.expose(), "fixture-value-not-a-secret");
+    }
+
+    #[test]
+    fn chain_of_only_empty_values_fails_loudly() {
+        let resolver = Resolver::new(vec![Box::new(FakeSource {
+            name: "secrets-broker",
+            result: Ok(String::new()),
+        })]);
+        let err = resolver.resolve("some.name").unwrap_err();
+        let text = format!("{err}");
+        assert!(
+            text.contains("empty value"),
+            "the failure names the empty read: {text}"
+        );
     }
 
     #[test]
@@ -524,6 +578,21 @@ mod tests {
     }
 
     #[test]
+    fn bws_fallback_rejects_an_empty_value() {
+        let source = BwsSource::with_runner(Box::new(FakeRunner {
+            list: r#"[{"id":"id-1","key":"wanted.name"}]"#.to_string(),
+            get: r#"{"id":"id-1","key":"wanted.name","value":""}"#.to_string(),
+        }));
+        match source.resolve("wanted.name") {
+            Err(SecretError::Unavailable { source, detail, .. }) => {
+                assert_eq!(source, "bws");
+                assert!(detail.contains("empty"), "detail: {detail}");
+            }
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn broker_list_names_roundtrip_over_a_temp_socket() {
         use std::os::unix::net::UnixListener;
 
@@ -552,6 +621,52 @@ mod tests {
         assert_eq!(names, vec!["a.name".to_string(), "b.name".to_string()]);
         handle.join().unwrap();
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn broker_resolve_rejects_an_empty_value_over_a_temp_socket() {
+        use std::os::unix::net::UnixListener;
+
+        fn scripted_resolve(body: serde_json::Value) -> Result<SecretValue, SecretError> {
+            let dir = std::env::temp_dir().join(format!(
+                "fleet-secrets-resolve-test-{}-{}",
+                std::process::id(),
+                body["value"].as_str().map_or(0, str::len)
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let sock = dir.join("broker.sock");
+            let listener = UnixListener::bind(&sock).unwrap();
+            let handle = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let req: Request = fleet_proxy_proto::read_typed(&mut stream).unwrap();
+                assert_eq!(req.path, "/secret/wanted.name");
+                let resp = Response { status: 200, body };
+                fleet_proxy_proto::write_frame(&mut stream, &resp).unwrap();
+            });
+            let source = BrokerSource {
+                broker_socket: sock,
+                token_file: PathBuf::from("/nonexistent/token"),
+            };
+            let out = source.resolve("wanted.name");
+            handle.join().unwrap();
+            std::fs::remove_dir_all(&dir).ok();
+            out
+        }
+
+        let ok = scripted_resolve(serde_json::json!({
+            "key": "wanted.name",
+            "value": "fixture-value-not-a-secret"
+        }))
+        .unwrap();
+        assert_eq!(ok.expose(), "fixture-value-not-a-secret");
+
+        match scripted_resolve(serde_json::json!({"key": "wanted.name", "value": ""})) {
+            Err(SecretError::Unavailable { source, detail, .. }) => {
+                assert_eq!(source, "secrets-broker");
+                assert!(detail.contains("empty"), "detail: {detail}");
+            }
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
     }
 
     #[test]

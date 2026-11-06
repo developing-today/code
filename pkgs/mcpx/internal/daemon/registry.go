@@ -2217,6 +2217,7 @@ func failureStatus(err error) int {
 	var hidden HiddenTool
 	var secret SecretRequired
 	var denied ErrWriteDenied
+	var notConfirmed ErrNotConfirmed
 	var argDenied ErrArgumentRuleDenied
 	var unknownOutcome ErrUnknownOutcome
 	switch {
@@ -2226,6 +2227,13 @@ func failureStatus(err error) int {
 	case errors.As(err, &denied):
 		// The write policy refused the call: a permission answer, not
 		// a bad request and not an upstream failure.
+		return http.StatusForbidden
+	case errors.As(err, &notConfirmed):
+		// The confirmation gate refused the call (#6116): nobody
+		// confirmed it -- in a headless session, nobody could. That
+		// is a permission answer like the write policy's, not an
+		// upstream failure; answering 502 here made the gate
+		// indistinguishable from a tool that ran and broke.
 		return http.StatusForbidden
 	case errors.As(err, &secret):
 		// A conflict with the state of the daemon, not a fault in the request
@@ -2432,7 +2440,7 @@ func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, to
 		// Not asked by the write policy: the destructive floor still
 		// gets its say. Under ask the policy already asked once, and
 		// asking twice about one call would be noise, not consent.
-		if err := r.confirmDestructive(ctx, p, effTool, cc); err != nil {
+		if err := r.confirmDestructive(ctx, p, server, effTool, cc); err != nil {
 			return config.ResolvedScope{}, "", nil, err
 		}
 	}

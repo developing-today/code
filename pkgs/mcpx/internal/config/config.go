@@ -161,6 +161,22 @@ type Extras struct {
 	// server alone: ask, allow or deny (#1979). Empty means inherit the
 	// daemon mode.
 	WritePolicy string `json:"writePolicy,omitempty"`
+	// ReadOnlyTools names tools the operator declares read-only for
+	// this server (#6116): exact tool names, no patterns. The
+	// declaration is the operator's own word in their own config --
+	// the one classification input mcpx trusts outright, unlike a
+	// server's annotations, which a remote server can lie about
+	// (#2191). Many real servers publish no annotations at all (fff
+	// is one), and the specification's defaults then read every call
+	// as a possibly destructive write, so under policy.write=ask a
+	// headless caller -- which has nobody to answer the gate's
+	// question -- could never run a search tool. A declared tool is
+	// classified read-only by the write policy gate and clears the
+	// elicit.confirmDestructive floor. A tool that is not listed
+	// keeps the specification's defaults exactly; listing a tool
+	// here is a claim the operator is responsible for, and it never
+	// extends to a tool added later under a new name.
+	ReadOnlyTools []string `json:"readOnlyTools,omitempty"`
 	// ArgumentRules constrains calls by their arguments (#1986): keys
 	// are tool patterns matched exactly as Tools/ExcludeTools match,
 	// values are JSON Schema objects a call's arguments must validate
@@ -503,6 +519,11 @@ type Resolved struct {
 	// daemon policy.write setting (#1979).
 	WritePolicy string
 
+	// ReadOnlyTools is this view's operator-declared read-only tools
+	// (#6116): the pool block's names and the server's own, resolved
+	// at Resolve time. See Extras.ReadOnlyTools.
+	ReadOnlyTools []string
+
 	// ArgumentRules is this server's compiled argument rules (#1986):
 	// the pool block's rules and the server's own, compiled at Resolve
 	// time so a bad pattern or schema is a load-time error. Consumed by
@@ -513,6 +534,22 @@ type Resolved struct {
 	// secret: see internal/secrets. It is consulted before this server's own
 	// environment and the daemon's, and nothing here keeps what it returns.
 	Runtime func(name string) (string, bool)
+}
+
+// DeclaresReadOnly reports whether the operator declared this tool
+// read-only for this server in local configuration (#6116). Exact
+// names only: a pattern here could silently widen to a tool the
+// operator never saw, which is the failure the gate exists to stop.
+func (r *Resolved) DeclaresReadOnly(tool string) bool {
+	if r == nil {
+		return false
+	}
+	for _, name := range r.ReadOnlyTools {
+		if name == tool {
+			return true
+		}
+	}
+	return false
 }
 
 // SecretNames are the secrets this server requires: its own list and every
@@ -875,6 +912,7 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 		Tools:           allow,
 		ExcludeTools:    deny,
 		WritePolicy:     pick(ex.WritePolicy, d.WritePolicy),
+		ReadOnlyTools:   append(append([]string{}, d.ReadOnlyTools...), ex.ReadOnlyTools...),
 		ArgumentRules:   rules,
 		Profiles:        append(append([]string{}, d.Profiles...), ex.Profiles...),
 		Tags:            append(append([]string{}, d.Tags...), ex.Tags...),
@@ -1116,6 +1154,10 @@ func mergeExtras(near, far Extras) Extras {
 	near.StartTimeout = pick(near.StartTimeout, far.StartTimeout)
 	near.Namespace = pick(near.Namespace, far.Namespace)
 	near.WritePolicy = pick(near.WritePolicy, far.WritePolicy)
+	// Declarations accumulate across layered files, as
+	// ExtraIncludeTools does: a nearer file adds its servers' tools
+	// to the farther file's list rather than replacing it (#6116).
+	near.ReadOnlyTools = concat(far.ReadOnlyTools, near.ReadOnlyTools)
 	near.Description = pick(near.Description, far.Description)
 	near.Prelude = pick(near.Prelude, far.Prelude)
 	if len(near.Tools) == 0 {

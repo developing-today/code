@@ -419,12 +419,7 @@ fn day_count_includes_previous_days_wrapping_span() {
             period: Period::Day,
         },
     ));
-    let at_2am = record(
-        0x56,
-        vec![dog_a()],
-        "outside",
-        chicago(2026, 6, 16, 2, 0),
-    );
+    let at_2am = record(0x56, vec![dog_a()], "outside", chicago(2026, 6, 16, 2, 0));
     let now = chicago(2026, 6, 16, 12, 0);
 
     let verdicts = evaluate(&[outside], &[at_2am], now).expect("evaluate");
@@ -566,12 +561,7 @@ fn week_count_includes_previous_days_wrapping_span() {
             period: Period::Week,
         },
     ));
-    let at_2am = record(
-        0x58,
-        vec![dog_a()],
-        "outside",
-        chicago(2026, 6, 15, 2, 0),
-    );
+    let at_2am = record(0x58, vec![dog_a()], "outside", chicago(2026, 6, 15, 2, 0));
     let now = chicago(2026, 6, 15, 12, 0);
 
     let verdicts = evaluate(&[outside], &[at_2am], now).expect("evaluate");
@@ -1049,4 +1039,71 @@ fn interval_gap_crossing_sleep_window_seam_is_judged_across_it() {
     assert_eq!(seam[0].count, 18);
     assert!(seam[0].detail.contains("6300"), "{}", seam[0].detail);
     assert_eq!(seam[0].window_end, day + 86_400 + 3_600);
+}
+
+#[test]
+fn entity_alias_count_is_capped() {
+    use crate::didit::body::MAX_ALIASES;
+    // Oracle: the named cap MAX_ALIASES (mirroring MAX_SUBJECTS/MAX_DETAILS),
+    // sized well under the CBOR decoder's 8192-element LENGTH_LIMIT — a body
+    // at the cap round-trips, one alias over is refused by encode with an
+    // error naming the count and the limit.
+    let mut entity = Entity {
+        entity: dog_a(),
+        household: household(),
+        kind: "dog".to_owned(),
+        name: "Ada".to_owned(),
+        aliases: (0..MAX_ALIASES).map(|i| format!("alias-{i}")).collect(),
+        retired_at: None,
+    };
+    let bytes = encode_entity_body(&entity).expect("at the cap encodes");
+    assert_eq!(decode_entity_body(&bytes).expect("decode"), entity);
+
+    entity.aliases.push("one-too-many".to_owned());
+    assert!(matches!(
+        encode_entity_body(&entity).expect_err("over the cap is refused"),
+        DiditError::Invalid(message)
+            if message.contains("513") && message.contains("512")
+    ));
+}
+
+#[test]
+fn hours_span_count_is_capped() {
+    use crate::didit::body::MAX_HOURS_SPANS;
+    // Oracle: the named cap MAX_HOURS_SPANS, same shape as the alias cap —
+    // an expectation at the cap round-trips, one span over is refused by
+    // encode with an error naming the count and the limit.
+    let span = HoursSpan {
+        from_minute: 420,
+        to_minute: 1320,
+        days: None,
+    };
+    let mut fed = expectation(
+        0x61,
+        vec![dog_a()],
+        "fed",
+        Window::CountPerPeriod {
+            count: 1,
+            period: Period::Custom(PeriodCustom {
+                anchor: midnight(2026, 6, 15),
+                length_seconds: 86_400,
+            }),
+        },
+    );
+    fed.active = ActiveWindow::Hours {
+        hours: vec![span.clone(); MAX_HOURS_SPANS],
+        tz: CHICAGO.to_owned(),
+    };
+    let bytes = encode_expectation_body(&fed).expect("at the cap encodes");
+    assert_eq!(decode_expectation_body(&bytes).expect("decode"), fed);
+
+    let ActiveWindow::Hours { hours, .. } = &mut fed.active else {
+        panic!("the expectation carries an hours window");
+    };
+    hours.push(span);
+    assert!(matches!(
+        encode_expectation_body(&fed).expect_err("over the cap is refused"),
+        DiditError::Invalid(message)
+            if message.contains("513") && message.contains("512")
+    ));
 }

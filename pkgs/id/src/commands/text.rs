@@ -274,7 +274,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn list_tsv_row_shows_origin_and_upload_time() {
         assert_eq!(
             list_tsv_row("hash", "a.txt", Some("node-a"), Some(1_700_000_000)),
@@ -290,6 +289,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn tsv_row_keeps_control_characters_inside_the_name_field() {
         let row = tsv_row("hash", "x\nforged\tcolumn");
         assert_eq!(row, format!("hash\t{}", r#""x\nforged\tcolumn""#));

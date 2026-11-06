@@ -33,12 +33,16 @@
   //   antigravity provider (opencode#1457). Same id, same wire; the
   //   door unit and bin/antigravity-direct.mjs retire once :18751
   //   shows a zero-traffic window.
-  // - "claude-code" is TEMPORARILY disabled (2026-10-27, Drew): the Claude
+  // - "claude-code" was TEMPORARILY disabled (2026-10-27, Drew; RE-ENABLED 2026-11-06, Drew - see the dated note above disabled_providers): the Claude
   //   plan is on the FREE tier for now and the API may be down. The setup
-  //   itself is confirmed working — the proxy (:18749) is live and serves
-  //   claude-haiku-5-5 (verified 2026-10-27) — this is a config-level pause
-  //   only: the proxy, its catalog entries, and every route that references
-  //   it stay in place. Claude MODELS via other plans (antigravity-ls,
+  //   itself was confirmed working at pause time — the proxy (:18749)
+  //   was live and served claude-haiku-5-5 (verified 2026-10-27) — and
+  //   the pause began as config-level only. That changed on 2026-11-05:
+  //   the provider block below was repointed from the proxy to the
+  //   fork's native claude-code provider (code#6117, opencode#1749),
+  //   and on 2026-11-06 the proxy itself (bin/claude-code-proxy.mjs,
+  //   its systemd unit and :18749) was removed in the proxy-infra
+  //   decommission. Claude MODELS via other plans (antigravity-ls,
   //   cline-pass, opendesign leaves in haiku/sonnet/opus-plan) are NOT the
   //   Claude plan and are unaffected. To re-enable: delete "claude-code"
   //   from disabled_providers and restore the "default" below.
@@ -70,8 +74,9 @@
   // (the pools below already ship that way — haiku-plan seats claude-code
   // while it is off).
   //
-  // WORKED EXAMPLE — Claude: "claude-code" sits in the list today because
-  // the Claude plan is on the free tier (see the header note). The day it
+  // WORKED EXAMPLE — Claude (resolved 2026-11-06, when claude-code
+  // left the list): "claude-code" sat in the list because the Claude
+  // plan was on the free tier (see the header note). The day it
   // comes back, delete the "claude-code" line from the list and Claude is
   // live: its definition, model catalog, and haiku-plan seat are already in
   // place, and every tier that consumes haiku-plan (scout, workhorse,
@@ -101,6 +106,35 @@
   // 2026-10-25. Per the switchboard rule this flip is the whole job;
   // its full definition stays in the provider block, and deleting
   // the line re-enables it if the direct door is ever wanted.
+  // 2026-11-05 (Drew, direct order — supersedes the 2026-10-30 note
+  // above for this seat): "deepseek" LEAVES the list. The official-API
+  // door is re-enabled to serve one seat: deepseek/deepseek-flash
+  // ("1017") joins the deepseek-flash-plan route as its API leg under a
+  // weighted 2:1 plan:API split (see that route). The NEVER-FUNDS
+  // default stands for every other route; this seat is Drew's named
+  // exception, sized at the minority share of one pool.
+  // CORRECTED 2026-11-05 (Drew, later direct order — supersedes the
+  // paragraph directly above): "no don't re enable deepseek." The
+  // provider RETURNS to the list below. Its deepseek-flash-plan seat
+  // is a named SLOT, not an enablement exception: it stays in the
+  // pool in LAST position, and while the provider is disabled the
+  // seat contributes no leaf and can never be drawn (disabled
+  // providers are absent from the catalog, so route expansion drops
+  // the target entirely — it appears in neither the candidate list
+  // nor the exclusion list of the route's decision records, unlike
+  // quota/cooldown exclusions, which are recorded with reasons; the
+  // quota-block mechanism is a separate key and is untouched by
+  // this). The NEVER-FUNDS default stands with NO exception: the
+  // seat exists so that re-enabling, if Drew ever orders it, is the
+  // usual one-line flip. The DEEPSEEK_API_KEY plumbing
+  // (nixos/agent-auth + home/common materializer) is KEPT for the
+  // same reason — slotted and ready, just disabled.
+  // UPDATE 2026-11-06 (#6414): the seat itself was later removed
+  // from deepseek-flash-plan — the metered-provider guard rejects a
+  // metered selection even while disabled, and the seated target
+  // failed main's bin-tests CI. The provider, its definition, and
+  // the key plumbing above are unchanged; see the REMOVED note on
+  // the route for the two-step re-enable.
   // 2026-10-30 (Drew, direct order): "meta" joins the list below.
   // The direct api.meta.ai door is dead by Meta's design — the plan
   // API key returns 403 client_attestation_denied from any
@@ -128,6 +162,14 @@
   // retry-looping on "insufficient credits". Per the switchboard
   // rule the definition and every seat stay in place; deleting
   // this line re-enables Command Code if it is ever refilled.
+  // 2026-11-06: "commandcode" LEAVES the list. The blocker named in the
+  // 2026-10-31 note was twofold — an empty balance, and a router that kept
+  // retry-looping its leaves. The router half is fixed by the provider-
+  // availability system (opencode#1828): an exhausted-balance provider now
+  // classifies as quota/balance, benches on its first failure, and costs a
+  // session nothing while stopped; its seats stay seated and it rejoins
+  // automatically when the balance shows a measured increase. Evidence:
+  // the #1828 harness scenarios (seamlessness + measured-increase release).
   // 2026-11-01 (Drew, direct order): "muse-direct" joins the list.
   // The Meta pool is quota-exhausted until 2026-11-02T00:00:00Z and
   // sessions dealt its muse-spark leg die on the 429 with no local
@@ -138,6 +180,22 @@
   // REVERSED 2026-11-02 (Drew, direct order): "muse-direct" leaves
   // the list. The Meta pool reset at 2026-11-02T00:00:00Z and reads
   // fresh 0% with 100 pts headroom; the door is back in service.
+  // 2026-11-06 (Drew, direct order): "claude-code" LEAVES the list
+  // below - the Claude plan is back (Claude Max enabled on the
+  // account) and the provider is re-enabled by this one-line flip,
+  // per the switchboard rule. Its seats were already in place:
+  // haiku-plan (leads), sonnet-plan (leads; feeds specialist head
+  // and workhorse-primary), opus-plan (leads; feeds summit head).
+  // No route edits: Drew ordered no new seats in speed/workhorse,
+  // and the seats there (via haiku-plan / sonnet-plan) are the ones
+  // already shipped. NOTE: re-enabling makes claude-code the live
+  // lead of haiku-plan again, ahead of opendesign - the
+  // haiku-plan re-enable lead-order question (ledger item
+  // haiku-plan-claude-code-reenable-order, issue #1132) is still
+  // open; if Drew rules OpenDesign keeps the lead, that is a
+  // one-line targets reorder in haiku-plan, not a switchboard
+  // change. Credential: ~/.claude/.credentials.json (native
+  // provider reads it in place); live-probed at enable time.
   "disabled_providers": [
     "google",
     "google-vertex",
@@ -150,10 +208,8 @@
     "github-copilot",
     "openrouter",
     "cloudflare-workers-ai",
-    "deepseek",
-    "claude-code",
     "meta",
-    "commandcode"
+    "deepseek"
   ],
   // 2026-11-03 (Drew): muse, antigravity-ls, antigravity-agy, code-design,
   // design-code, cloudflare-gateway and chatgpt left this list together with
@@ -205,12 +261,14 @@
   // OPENCODE_CONFIG — see code#4544. Everything else here is deliberate config.
   "provider": {
     "claude-code": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Claude Code (CLI proxy)",
-      "options": {
-        "baseURL": "http://127.0.0.1:{env:CLAUDE_CODE_PROXY_PORT:-18749}/v1",
-        "apiKey": "claude-code-local"
-      },
+      // 2026-11-05 (code#6117, opencode#1749): repointed from the CLI proxy
+      // (:18749, @ai-sdk/openai-compatible) to the in-fork native claude-code
+      // provider - same provider id, native wire emulation of the Claude Code
+      // CLI, credential read in place from ~/.claude/.credentials.json; no
+      // baseURL/apiKey (the provider owns auth). STILL in disabled_providers:
+      // re-enabling stays a separate deliberate step.
+      "npm": "@opencode/ai/providers/claude-code",
+      "name": "Claude Code (native wire emulation)",
       "models": {
         "claude-haiku-5-5": {
           "name": "Haiku 5.5 (Claude Code)",
@@ -376,8 +434,10 @@
       "npm": "@opencode/ai/providers/mistral",
       "name": "Mistral API (drewrypope)"
       // Credential: the enrolled server credential (integration
-      // "mistral", Bitwarden mistral.api-key); MISTRAL_API_KEY is also
-      // materialized into the server unit's environment (home/common).
+      // "mistral", Bitwarden mistral.api-key) — the only source.
+      // MISTRAL_API_KEY is deliberately NOT materialized into the
+      // server environment: vibe-direct's env-first resolution would
+      // spend this API-budget key (see home/common, opencode#1653).
       // "models": maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
     },
     "vibe-direct": {
@@ -385,10 +445,15 @@
       "name": "Mistral Vibe Direct (native wire clone)",
       // 2026-11-04 (opencode#1653, PR #1661): native in-fork emulation of
       // the mistral-vibe binary — same Mistral wire, Vibe's presets and
-      // the attribution stamp (metadata.call_source "vibe_code", the
-      // metering key for the Vibe quota marts). No vibe subprocess.
-      // Credential: MISTRAL_API_KEY in the server unit's environment
-      // (vibe-auth resolution: config -> env -> ~/.vibe/.env -> keyring).
+      // the attribution stamp (metadata.call_source "vibe_code"; billing
+      // follows the KEY, not the stamp — see the credential note).
+      // No vibe subprocess.
+      // Credential: vibe-auth resolution mirrors the binary (config ->
+      // env -> ~/.vibe/.env -> keyring) and the server env must NOT
+      // carry MISTRAL_API_KEY: that key is the API-budget key and
+      // Mistral meters per key, so with the env slot empty vibe-direct
+      // falls through to the keyring "ai.mistral.vibe" sign-in key —
+      // the Vibe plan key.
       // Models are declared HERE: models.dev has no vibe entry, so
       // sync-models cannot maintain this catalog. The entries are the
       // preset ids + names from Vibe's own catalog (opencode#1653).
@@ -418,7 +483,32 @@
           "name": "Mistral Large"
         },
         "mistral-small-latest": {
-          "name": "Mistral Small"
+          "name": "Mistral Small",
+          // Variants declared 2026-11-05: the models.dev catalog
+          // attests none/high (reasoning effort) for this model id on
+          // the Mistral wire this provider clones — the same variants
+          // the "mistral" provider's catalog entry carries. Declaring
+          // them is load-bearing, not cosmetic: a provider-route
+          // group's variant set is the intersection of its legs'
+          // producible variants, so an empty list here emptied
+          // mistral-plan's variant set entirely — and because a
+          // route's offered variants are likewise an intersection
+          // across its targets, seating mistral-plan in
+          // deepseek-flash-plan collapsed that pool's variant set and
+          // broke every pinned-variant session on it (Variant
+          // unavailable: low/high) until these were declared.
+          "variants": {
+            "none": {
+              "options": {
+                "reasoning_effort": "none"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
         },
         "codestral-latest": {
           "name": "Codestral"
@@ -558,7 +648,28 @@
           "name": "DeepSeek V4 Flash Vision Exp"
         },
         "deepseek-flash": {
-          "name": "DeepSeek V4.1 Flash 1017"
+          "name": "DeepSeek V4.1 Flash 1017",
+          "limit": {
+            "context": 1048576,
+            "output": 393216
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            }
+          }
         },
         "deepseek-v4-flash": {
           "name": "DeepSeek V4 Flash"
@@ -870,12 +981,15 @@
       "name": "OpenCode Go (popesdrew)"
     },
     "commandcode": {
-          "npm": "@ai-sdk/openai-compatible",
-          "name": "Command Code (CLI proxy)",
-          "options": {
-                "baseURL": "http://127.0.0.1:{env:COMMANDCODE_PROXY_PORT:-18748}/v1",
-                "apiKey": "commandcode-local"
-          },
+          // 2026-11-05 (code#6117, opencode#1749): repointed from the CLI proxy
+          // (:18748, @ai-sdk/openai-compatible) to the in-fork native commandcode
+          // provider - same provider id, native wire emulation of the Command
+          // Code CLI (/alpha/generate), credential read in place from
+          // ~/.commandcode/auth.json; no baseURL/apiKey (the provider owns
+          // auth). STILL in disabled_providers: re-enabling stays a separate
+          // deliberate step.
+          "npm": "@opencode/ai/providers/commandcode",
+          "name": "Command Code (native wire emulation)",
           "models": {
                 "deepseek/deepseek-v4-pro": {
                       "name": "DeepSeek v4 Pro (Command Code)"
@@ -1687,7 +1801,6 @@
     "@franlol/opencode-md-table-formatter@latest",
     "opencode-cmd-provider@latest",
     "opencode-cockpit@latest",
-    "@openchamber/opencode-claude@1.3.8",
     "opencode-models-discovery@latest",
     "opencode-mem@latest",
     "opencode-auto-continue@https://github.com/developing-today/opencode-auto-continue/archive/refs/tags/latest.tar.gz"
@@ -1713,13 +1826,14 @@
       },
       // mistral-plan (2026-11-04, Drew): the Mistral pair as ONE
       // provider route — vibe-direct attempted first on every dispatch
-      // (the Vibe-attributed leg: metadata.call_source "vibe_code"),
-      // the plain Mistral API provider the reserve; the API leg serves
-      // only when vibe-direct fails or is demoted. Both legs resolve
-      // the same Bitwarden mistral.api-key credential (the vibe leg via
-      // MISTRAL_API_KEY in the server environment, the API leg via the
-      // enrolled "mistral" integration credential). Change the leg
-      // order HERE, in this providers list, and nowhere else.
+      // (the Vibe plan leg), the plain Mistral API provider the
+      // reserve; the API leg serves only when vibe-direct fails or is
+      // demoted. The legs use DIFFERENT keys by design (corrected
+      // 2026-11-06): Mistral meters per key — vibe-direct's keyring
+      // sign-in key bills the Vibe plan budget; the API leg's enrolled
+      // "mistral" integration credential bills the account API budget.
+      // Change the leg order HERE, in this providers list, and
+      // nowhere else.
       "mistral-plan": {
         "providers": ["vibe-direct", "mistral"],
         "selection": "ordered"
@@ -1755,7 +1869,7 @@
       // the only design provider in this config is "opendesign".
 
       "deepseek-flash-plan": {
-        "name": "DeepSeek Flash - plan providers",
+        "name": "DeepSeek Flash 1017 - plan stack + mistral-plan",
         // 2026-10-26: per-leaf variant remaps (honored by expansion since
         // developing-today/opencode#541). ClinePass has no medium/xhigh; OpenDesign tops at
         // high. Remaps keep every leaf in the dispatch at its nearest wired rung.
@@ -1779,6 +1893,63 @@
         // credits/mo — its boosted Flash allowance is small, the free
         // routes are its durable value; issue #1328 D4).
         // 2026-11-03 (Drew): opendesign/deepseek-v4-flash leaf REMOVED from this pool — the dotted deepseek-v4.1-flash leaf exists in the same opendesign catalog, so the older v4 leaf is dead weight.
+        // 2026-11-05 (Drew, direct order): the official-API leg joins —
+        // deepseek/deepseek-flash (the model named "1017" in the deepseek
+        // provider) is seated as this pool's second serving route beside
+        // the plan doors, and selection becomes "weighted" with an
+        // aggregate 2:1 plan:API split. The plan leaves keep their tuned
+        // proportions (Go 6, ClinePass 1, OpenDesign 1, Command Code 0.5;
+        // total 8.5) and the API leaf carries half the plan total (4.25),
+        // so the plan doors draw ~2/3 of new sessions and the API door
+        // ~1/3 (weighted draws are proportional; sessions stay sticky).
+        // The deepseek provider is re-enabled in the switchboard for
+        // this seat, keyed by DEEPSEEK_API_KEY (nixos/agent-auth +
+        // home/common materializer). Both legs were probe-verified
+        // responding before this landed: the API leg by a direct
+        // completion on deepseek-flash, the plan legs by the pool's
+        // standing live traffic.
+        // CORRECTED 2026-11-05 (Drew, later direct orders, same day —
+        // supersedes the paragraph directly above): the weighted 2:1
+        // split and the provider re-enablement are BOTH reverted. The
+        // pool is now a ROUND-ROBIN STACK, in this order: the DeepSeek
+        // plan leaves in their standing arrangement (Go plans,
+        // ClinePass, OpenDesign, Command Code), then mistral-plan as
+        // ONE member (the whole virtual provider nested as a unit —
+        // its internal ordered legs, vibe plan first and the Mistral
+        // API as its own fallback, are NOT flattened into this pool),
+        // then deepseek/deepseek-flash LAST. Under this fork's
+        // round-robin (#1122) a member's weight is its priority TIER,
+        // not a traffic share: draws rotate evenly inside the top
+        // tier whose members are eligible, and a lower tier serves
+        // only when every higher tier is ineligible. The weights below
+        // are therefore stack positions, not shares: the plan leaves
+        // keep their relative order (Go 6 over ClinePass/OpenDesign 1
+        // over Command Code 0.5), mistral-plan sits below them at
+        // 0.25, and the deepseek slot is last at 0.1. The deepseek
+        // provider is DISABLED (see the switchboard): its seat is a
+        // slot that contributes no leaf and cannot be drawn while
+        // disabled — see the switchboard note for the mechanism and
+        // the decision-record proof. Every DeepSeek Flash leaf seated
+        // here is the 1017 variant where its provider offers a choice
+        // (Go, ClinePass, OpenDesign and Command Code all seat their
+        // deepseek-v4.1-flash; the deepseek provider seats the model
+        // it names "DeepSeek V4.1 Flash 1017"). The mistral-plan
+        // member seats mistral-small-latest, the Flash-class Mistral
+        // model both of mistral-plan's legs serve (vibe-direct
+        // declares it; the mistral API catalog carries it).
+        // REMOVED 2026-11-06 (#6414): the deepseek/deepseek-flash
+        // target and its 0.1 weight are gone from this route. The
+        // metered-provider guard (bin/check-opencode-metered-providers)
+        // rejects a metered selection even while its provider is
+        // disabled - its test suite names that stance explicitly -
+        // and the slot design above made main's bin-tests CI fail on
+        // exactly that one violation. The deepseek provider stays
+        // DISABLED in the switchboard and its definition and
+        // DEEPSEEK_API_KEY plumbing stay in place; re-enabling is now
+        // a deliberate two-step change: delete "deepseek" from
+        // disabled_providers AND re-seat "deepseek/deepseek-flash" as
+        // this route's last target (weight 0.1) in the same pass that
+        // records Drew's approval for the PAYG use.
         "targets": [
           {
             "model": "opencode-go-plans/deepseek-v4.1-flash",
@@ -1792,13 +1963,31 @@
             "model": "opendesign/deepseek-v4.1-flash",
             "variants": { "xhigh": "high", "max": "high" }
           },
-          "commandcode/deepseek/deepseek-v4.1-flash"
+          "commandcode/deepseek/deepseek-v4.1-flash",
+          {
+            "model": "mistral-plan/mistral-small-latest",
+            // Variant remap: the pool's effort rungs map onto the two
+            // variants both mistral-plan legs can produce (none /
+            // high — see the vibe-direct model note). The remap keys
+            // are what let the pool keep offering its rungs with this
+            // member seated; the values keep the plan leg in front at
+            // every rung (a #low draw runs the group at "none", a
+            // #high draw at "high", both producible by vibe-direct
+            // first and the API leg alike).
+            "variants": { "low": "none", "medium": "high", "high": "high", "xhigh": "high", "max": "high" }
+          }
         ],
         "selection": "round-robin",
         "autonomy": "rules",
+        // Round-robin tier keys (#1122), NOT traffic shares — see the
+        // stack note above. Higher tier serves first; rotation is
+        // even within a tier.
         "weights": {
           "opencode-go-plans/deepseek-v4.1-flash": 6,
-          "commandcode/deepseek/deepseek-v4.1-flash": 0.5
+          "cline-pass/deepseek-v4.1-flash": 1,
+          "opendesign/deepseek-v4.1-flash": 1,
+          "commandcode/deepseek/deepseek-v4.1-flash": 0.5,
+          "mistral-plan/mistral-small-latest": 0.25
         }
       },
       "deepseek-flash": {
@@ -2030,7 +2219,7 @@
         // every other leaf in this pool. Same last position.
         // NEW 2026-10-28 (Job 2): round-robin over every verified Spark
         // contributor door — meta direct, ClinePass (live completion
-        // probed 2026-10-28), Command Code (live :18748 list), and
+        // probed 2026-10-28), Command Code (live :18748 proxy list, 2026-10-28; the proxy retired 2026-11-06 — the provider is native since 2026-11-05), and
         // OpenCode Go x3 (the live serve catalog lists
         // muse-spark-1.3-contributor on all three workspaces). The
         // tier seats that used to address the meta leaf directly
@@ -2073,9 +2262,11 @@
         // catalog lists a Sol-class model.
         // 2026-10-28 (Job 2): two plan doors join — OpenDesign (serves
         // gpt-6.1-sol; its block entry is added in this PR) and Command
-        // Code (gpt-6.1-sol verified in the LIVE :18748 /v1/models
-        // list, 85 ids, 2026-10-28 — the running bridge trails the
-        // source catalog but does serve Sol).
+        // Code (gpt-6.1-sol verified in the then-live :18748
+        // /v1/models list, 85 ids, 2026-10-28 — the running bridge
+        // trailed the source catalog but did serve Sol; the bridge
+        // retired 2026-11-06 and the provider is native since
+        // 2026-11-05).
         // 2026-10-31 (Drew): the ChatGPT pair seats through
         // openai-plan/gpt-6.1-sol (ordered: alternate first,
         // main the reserve) at the pair's previous combined weight
