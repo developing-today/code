@@ -292,7 +292,22 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
     /// `Submitted` record the recovery scanner reconciles by lookup —
     /// it never resubmits blindly, and idempotent IDs make even a
     /// resubmission safe.
+    ///
+    /// Terminal states are final (#4678): a `Posted` record is already
+    /// in the ledger, and an `Abandoned` record carries the recovery
+    /// scanner's deliberate decision not to resubmit. Submitting either
+    /// would silently reverse that decision and move funds, so both
+    /// are refused before any state write or ledger call. This also
+    /// makes an identical `execute()` retry against a terminal record
+    /// fail explicitly instead of resurrecting the conversion.
     pub fn submit(&mut self, record: &mut IntentRecord) -> Result<()> {
+        if matches!(record.state, IntentState::Posted | IntentState::Abandoned) {
+            bail!(
+                "submit: conversion {} is already {:?}; refusing to submit a terminal intent",
+                record.conversion_id,
+                record.state
+            );
+        }
         record.state = IntentState::Submitted;
         self.store
             .put(record)

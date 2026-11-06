@@ -92,7 +92,7 @@ failed.
 
 ```jsonc
 {
-  "repo": "developing-today/opencode", // required
+  "repo": "developing-today-forks/opencode", // required
   "title": "investigate the red build", // required
   "prompt": "…", // required ("body" accepted as an alias)
   "kind": "triage", // optional: triage|small_fix|pr_shepherd|ci_investigation

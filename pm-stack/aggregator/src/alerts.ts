@@ -180,16 +180,30 @@ export function classEnabled(sub: { classes: Record<string, boolean> }, cls: str
 /** Is `now` inside the quiet window (evaluated in the prefs' timezone)?
  * The incident class never consults this (breakthrough class, #3676);
  * it exists for the dashboard classes of #3317. */
+// ⚡ Bolt: inQuietHours is evaluated per subscription on every digest /
+// alert pass, and Intl.DateTimeFormat construction dominates it (~29µs).
+// The formatter depends only on the timezone, so cache one per tz; the
+// map is bounded by the set of tz names users actually store (a handful).
+const QUIET_HOURS_FORMATTERS = new Map<string, Intl.DateTimeFormat>();
+function quietHoursFormatter(tz: string): Intl.DateTimeFormat {
+  let fmt = QUIET_HOURS_FORMATTERS.get(tz);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    });
+    QUIET_HOURS_FORMATTERS.set(tz, fmt);
+  }
+  return fmt;
+}
+
 export function inQuietHours(quiet: QuietPrefs, now: Date): boolean {
   if (quiet.enabled === false) return false; // quiet hours off — no time-of-day limit
   let mins: number;
   try {
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: quiet.tz,
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23",
-    }).formatToParts(now);
+    const parts = quietHoursFormatter(quiet.tz).formatToParts(now);
     const h = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
     const m = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
     mins = h * 60 + m;

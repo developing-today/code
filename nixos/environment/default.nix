@@ -261,10 +261,100 @@ let
 
   scaleElectron2x = wrapElectronWithFlags "scaled2x" [ "--force-device-scale-factor=2" ];
 
+  # Chromium with structural CDP (code#5924 follow-up): the fleet
+  # Chromium entries must always expose the DevTools endpoint on
+  # loopback -- 19224 (convention: 19222 Helium, 19223 Brave,
+  # 19224 Chromium). wrapElectronWithFlags cannot be reused here:
+  # the wrapped chromium package symlinks share/applications into
+  # chromium-unwrapped's tree, and the helper's in-place desktop
+  # rewrite fails on the read-only target. No rewrite is needed:
+  # chromium's desktop file uses a bare `Exec=chromium`, resolved
+  # through PATH, so wrapping bin/ covers shell and launcher
+  # launches alike. Wrapper flags precede caller args, so
+  # automation passing its own --remote-debugging-port
+  # (playwright/puppeteer via mcpx) still wins.
+  chromiumPkg = inputs.nixpkgs-unstable.legacyPackages.${system}.chromium;
+  chromiumCdp = pkgs.symlinkJoin {
+    name = "${chromiumPkg.name}-cdp";
+    paths = [ chromiumPkg ];
+    nativeBuildInputs = [ pkgs.makeWrapper ];
+    postBuild = ''
+      for bin in "$out"/bin/*; do
+        [ -L "$bin" ] || continue
+        target=$(readlink -f "$bin")
+        [ -x "$target" ] || continue
+        rm "$bin"
+        makeWrapper "$target" "$bin" \
+          --add-flags "--remote-debugging-address=127.0.0.1" \
+          --add-flags "--remote-debugging-port=19224"
+      done
+    '';
+    meta = (chromiumPkg.meta or { }) // {
+      mainProgram = chromiumPkg.meta.mainProgram or null;
+    };
+  };
+
+  # Firefox-family with structural WebDriver BiDi (code#5924
+  # follow-up): Firefox and Zen have no CDP -- their remote
+  # protocol is WebDriver BiDi, started by --remote-debugging-port
+  # in current Firefox (verified against the installed
+  # Firefox 159.0: "WebDriver BiDi listening on ws://127.0.0.1"
+  # + a session.status round trip). Fleet port convention, one
+  # table for every browser remote endpoint, loopback-only:
+  #   19222 Helium CDP        19225 Firefox BiDi
+  #   19223 Brave/Chrome CDP  19226 Zen BiDi
+  #   19224 Chromium CDP      19227 Zen Twilight BiDi (darwin only)
+  # The remote agent binds 127.0.0.1 by itself, and its default
+  # policy is kept deliberately: foreign Host headers get 400
+  # and Origin-bearing upgrade requests get no WebSocket, so
+  # web content on this machine cannot hijack the socket. Local
+  # agent tooling (no Origin) works as-is; a caller that needs
+  # an Origin passes --remote-allow-origins itself -- caller
+  # args follow wrapper flags. Same bin-only wrapper shape as
+  # chromiumCdp: both packages' desktop files use bare
+  # `Exec=firefox` / `Exec=zen-beta`, resolved through PATH, so
+  # wrapping bin/ covers shell and launcher launches alike.
+  firefoxBidi = wrapFirefoxBidi "firefox" pkgs.firefox 19225;
+  wrapFirefoxBidi =
+    name: pkg: port:
+    let
+      joined = pkgs.symlinkJoin {
+        name = "${pkg.name}-bidi";
+        paths = [ pkg ];
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        postBuild = ''
+          for bin in "$out"/bin/*; do
+            [ -L "$bin" ] || continue
+            target=$(readlink -f "$bin")
+            [ -x "$target" ] || continue
+            rm "$bin"
+            makeWrapper "$target" "$bin" \
+              --add-flags "--remote-debugging-port=${toString port}"
+          done
+        '';
+        meta = (pkg.meta or { }) // {
+          mainProgram = pkg.meta.mainProgram or null;
+        };
+      };
+    in
+    joined
+    // lib.optionalAttrs (pkg ? override) {
+      # Keep the wrapped package override-compatible (code#6156):
+      # consumers such as home-manager's firefox module probe and
+      # call `package.override`; a bare symlinkJoin has none.
+      # Forward the underlying package's override, re-applying this
+      # wrap to its result and preserving its function-args shape.
+      override = lib.setFunctionArgs (args: wrapFirefoxBidi name (pkg.override args) port) (
+        lib.functionArgs pkg.override
+      );
+    };
+
+  zenBidi = wrapFirefoxBidi "zen" inputs.zen-browser.packages.${system}.default 19226;
+
   # OpenChamber's Electron GUI, built from the developing-today/openchamber fork.
   openchamber-desktop = inputs.openchamber.packages.${system}.openchamber-desktop;
 
-  # OpenChamber CLI/server built from the developing-today/openchamber fork.
+  # OpenChamber CLI/server built from the developing-today-forks/openchamber fork.
   openchamber = inputs.openchamber.packages.${system}.openchamber;
 
   # Meta's Muse Code agent. Hand-rolled because it is not in nixpkgs and the
@@ -473,7 +563,7 @@ in
       nix-output-monitor.packages.${system}.default
       ssh-to-age.packages.${system}.default
       nix-search.packages.${system}.default
-      zen-browser.packages.${system}.default
+      zenBidi # zen + structural WebDriver BiDi on 127.0.0.1:19226 (code#5924)
       #hyprland-qtutils.packages.${system}.hyprland-qtutils
       clan-core.packages.${system}.clan-cli
       opencode.packages.${system}.opencode
@@ -1249,7 +1339,8 @@ in
       # Testing and development tools
       #beekeeper-studio # electron 31 eol
       #cypress # electron 37 eol: insecure in this nixpkgs
-      inputs.nixpkgs-unstable.legacyPackages.${system}.chromium # nixos-unstable channel: cached (master chromium is not)
+      chromiumCdp # chromium + structural CDP on 127.0.0.1:19224 (code#5924); nixos-unstable channel: cached (master chromium is not)
+      firefoxBidi # firefox + structural WebDriver BiDi on 127.0.0.1:19225 (code#5924); also the HM programs.firefox package (home/common)
       inputs.nixpkgs-unstable.legacyPackages.${system}.chromedriver
       playwright-driver
       direnv

@@ -9,10 +9,16 @@ use serde_json::{Value, json};
 
 pub const PRIORITY_SCALE: [i64; 7] = [10, 20, 30, 40, 50, 70, 90];
 pub const KINDS: [&str; 4] = ["pr_shepherd", "triage", "small_fix", "ci_investigation"];
-pub const FLEET_REPOS: [&str; 7] = [
+// Both the old and the current names of the two repos that moved to the
+// developing-today-forks org (2026-11-04) stay allowlisted: in-flight queue
+// tasks carry dedupe keys with the old names and must keep validating,
+// while new tasks use the developing-today-forks names.
+pub const FLEET_REPOS: [&str; 9] = [
     "developing-today/code",
     "developing-today/opencode",
     "developing-today/openchamber",
+    "developing-today-forks/opencode",
+    "developing-today-forks/openchamber",
     "dezren39/nix",
     "dezren39/darwin-nix",
     "developing-today/zettel",
@@ -614,6 +620,8 @@ mod tests {
         assert!(match_dedupe("repo-health:v1:pr:developing-today/code:pr:0").is_none());
         assert!(match_dedupe("repo-health:v1:set:0:owed:developing-today/code").is_none());
         // Canonical spellings are untouched.
+        assert!(match_dedupe("repo-health:v1:fix:developing-today-forks/opencode:issue:5424").is_some());
+        assert!(match_dedupe("repo-health:v1:triage:developing-today-forks/openchamber:issue:5424").is_some());
         let m = match_dedupe("repo-health:v1:fix:developing-today/code:issue:5424")
             .expect("canonical fix key matches");
         assert_eq!(m.num, Some(5424));

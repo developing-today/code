@@ -622,6 +622,19 @@ pub fn run(config: &Config) -> i32 {
         let broker = Arc::clone(&broker);
         std::thread::spawn(move || keepalive_loop(broker));
     }
+    // CONNECT-UDP (RFC 9298) spike (#6109): only when the
+    // config opts in — the flag defaults off and nothing in
+    // the live path uses the endpoint. A startup failure is
+    // logged and the broker carries on: an opt-in spike must
+    // not take the broker it rides along with down.
+    if config.connect_udp_enabled() {
+        let config = config.clone();
+        std::thread::spawn(move || {
+            if let Err(why) = crate::connect_udp::run(&config) {
+                eprintln!("fleet proxy serve: connect-udp not serving: {why}");
+            }
+        });
+    }
     println!(
         "fleet proxy serve on {} (pool: {} per port, overflow wait {} ms)",
         socket_path.display(),

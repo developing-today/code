@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   attentionSorted,
   buildAttention,
@@ -506,7 +508,10 @@ describe("freshness chips (#1138)", () => {
     expect(html).toContain("quota reads OK");
     expect(html).toContain('href="/health"');
     expect(html).toContain('href="/quota"');
-    expect(html).toContain("@media (max-width: 480px)");
+    // Phase C: page CSS is the external /assets/app.css build now; the
+    // 480px today-strip rule lives in its source (src/ui.css).
+    expect(html).toContain('href="/assets/app.css"');
+    expect(readFileSync(join(import.meta.dir, "..", "src", "ui.css"), "utf8")).toContain("@media (max-width: 480px)");
     const fragmentBody = renderTodayBody(today, attention, quota, await src.coverage(), healthy);
     expect(fragmentBody).toContain("stack 2/2 up");
 

@@ -107,7 +107,7 @@ export function serviceIdFor(providerId: string): string {
   }
 }
 
-export const GATHERER_SOURCE = "openchamber-quota";
+export const GATHERER_SOURCE = "opencode-quota";
 
 /**
  * Split pool service ids the gatherer emits alongside the combined rows
@@ -391,7 +391,14 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
     const pct = isFiniteNumber(raw?.usedPercent) ? raw.usedPercent : null;
     // Percent is bounded by the window's own 100-point limit (#2571);
     // out-of-range values are dropped, not republished as live data.
-    if (pct !== null && !isPercentOf(100)(pct)) return;
+    // Turso is the exception (#6227): its windows are usage-vs-limit
+    // ratios over counts (storage bytes, rows read), which legitimately
+    // exceed 100 when the org is over its Starter limits — dropping
+    // them erased exactly the over-limit state the card exists to
+    // show (2026-11-05: storage ~147% and rows-read ~165% vanished
+    // from the live row while the under-limit windows survived).
+    const overLimitOk = result.providerId === "turso";
+    if (pct !== null && !(overLimitOk ? isNonNegative(pct) : isPercentOf(100)(pct))) return;
     entry.windows.push({
       name,
       value: pct,
@@ -712,9 +719,13 @@ export function entryFromTurso(
     const rawPctOfLimit = (rawUsed / limit) * 100;
     const pctOfLimit = pct3(rawUsed, limit);
     // The raw count can be finite while scaling it to a percentage
-    // overflows, or the source can report a value outside its quota.
-    // Neither is a usable live window (#2579).
-    if (!isPercentOf(100)(rawPctOfLimit) || !isPercentOf(100)(pctOfLimit)) return;
+    // overflows; a non-finite ratio is not a usable live window
+    // (#2579). A ratio ABOVE 100 is different (#6227): these windows
+    // are usage-vs-limit ratios over counts, and an org over its
+    // Starter limits is a real, reportable state (2026-11-05 live:
+    // storage ~147%, rows-read ~165%) — the window is kept with its
+    // native value and its >100 pctOfLimit, never dropped.
+    if (!isNonNegative(rawPctOfLimit) || !isNonNegative(pctOfLimit)) return;
     entry.windows.push({
       name,
       value,

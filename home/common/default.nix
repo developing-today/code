@@ -153,6 +153,92 @@ let
       install -Dm755 ${opencodeWrapper} $out/bin/opencode
     '';
   };
+
+  # Brave with structural CDP (code#5924 follow-up): Brave is
+  # Chromium-family, so it takes the same --remote-debugging flags
+  # as Helium (19222) and system Chromium (19224); Brave gets
+  # 19223, loopback-only. Same wrapper shape as
+  # wrapElectronWithFlags in nixos/environment (binaries wrapped,
+  # desktop entries repointed at the wrappers) so every launch
+  # path -- shell or launcher -- carries the flags. Caller-passed
+  # flags come after wrapper flags and win.
+  braveCdp = pkgs.symlinkJoin {
+    name = "${pkgs.brave.name}-cdp";
+    paths = [ pkgs.brave ];
+    nativeBuildInputs = [ pkgs.makeWrapper ];
+    postBuild = ''
+      for bin in "$out"/bin/*; do
+        [ -L "$bin" ] || continue
+        target=$(readlink -f "$bin")
+        [ -x "$target" ] || continue
+        rm "$bin"
+        makeWrapper "$target" "$bin" \
+          --add-flags "--remote-debugging-address=127.0.0.1" \
+          --add-flags "--remote-debugging-port=19223"
+      done
+
+      if [ -d "$out/share/applications" ]; then
+        for f in "$out"/share/applications/*.desktop; do
+          [ -e "$f" ] || continue
+          src=$(readlink -f "$f")
+          base=$(basename "$f")
+          rm "$f"
+          sed "s|${pkgs.brave}/bin/|$out/bin/|g" "$src" > "$out/share/applications/$base"
+        done
+      fi
+    '';
+    meta = (pkgs.brave.meta or { }) // {
+      mainProgram = pkgs.brave.meta.mainProgram or null;
+    };
+  };
+  # Firefox with structural WebDriver BiDi (code#5924 follow-up):
+  # Firefox has no CDP; --remote-debugging-port starts its
+  # WebDriver BiDi remote agent (binds 127.0.0.1 itself; default
+  # Host/Origin policy kept -- see nixos/environment for the full
+  # port table: 19225 Firefox BiDi, 19226 Zen BiDi). Home-manager
+  # installs this as the programs.firefox package below; the
+  # NixOS side installs the same wrapper via
+  # environment.systemPackages (nixos/environment firefoxBidi).
+  firefoxBidi =
+    let
+      wrapBidi =
+        pkg:
+        let
+          joined = pkgs.symlinkJoin {
+            name = "${pkg.name}-bidi";
+            paths = [ pkg ];
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            postBuild = ''
+              for bin in "$out"/bin/*; do
+                [ -L "$bin" ] || continue
+                target=$(readlink -f "$bin")
+                [ -x "$target" ] || continue
+                rm "$bin"
+                makeWrapper "$target" "$bin" \
+                  --add-flags "--remote-debugging-port=19225"
+              done
+            '';
+            meta = (pkg.meta or { }) // {
+              mainProgram = pkg.meta.mainProgram or null;
+            };
+          };
+        in
+        joined
+        // {
+          # home-manager's firefox module (mkFirefoxModule) treats a
+          # wrapped package as reconfigurable only through its
+          # `override`: it probes `lib.functionArgs package.override`
+          # for `cfg` / `appDataDir` and calls it with an override
+          # function merging cfg, extraPolicies and pkcs11Modules.
+          # A bare symlinkJoin has no `override`, which broke the HM
+          # evaluation of main in code#6156. Forward the underlying
+          # package's override -- re-applying the BiDi wrap to its
+          # result, with the override's exact function-args shape --
+          # so the module behaves exactly as it does for pkgs.firefox.
+          override = lib.setFunctionArgs (args: wrapBidi (pkg.override args)) (lib.functionArgs pkg.override);
+        };
+    in
+    wrapBidi pkgs.firefox;
   # The environment the mcpx daemon runs with (services.mcpx.environment
   # below; the module renders it into the unit).
   mcpxEnvironment = {
@@ -984,8 +1070,8 @@ in
   # The three standing services are defined by the fleet's layered
   # modules now, not by hand-rolled units in this file:
   #
-  #   services.openchamber  developing-today/openchamber, nix/modules
-  #   services.opencode     developing-today/opencode fork, nix/modules
+  #   services.openchamber  developing-today-forks/openchamber, nix/modules
+  #   services.opencode     developing-today-forks/opencode fork, nix/modules
   #   services.mcpx         developing-today/code, pkgs/mcpx/modules
   #
   # Each layer's enable cascades to the one below with mkDefault, so
@@ -1053,6 +1139,11 @@ in
   # it via EnvironmentFile. The vibe provider resolves the key from the
   # server process env; the mistral provider's enrolled credential
   # (integration "mistral") remains its primary source.
+  # The same materializer also writes DEEPSEEK_API_KEY (Bitwarden
+  # deepseek.api-key, via agent-auth/deepseek-api-key) into the same
+  # EnvironmentFile: it keys the deepseek provider's official-API leg
+  # (deepseek/deepseek-flash, "1017") in the deepseek-flash-plan route
+  # (Drew, direct order, 2026-11-05).
   systemd.user.services.opencode.Service = {
     ExecStartPre = toString (
       pkgs.writeShellScript "opencode-mistral-key-materialize" ''
@@ -1060,6 +1151,7 @@ in
         umask 077
         mkdir -p "$HOME/.local/state/opencode"
         printf 'MISTRAL_API_KEY=%s\n' "$(cat /run/secrets/agent-auth/mistral-api-key)" > "$HOME/.local/state/opencode/mistral-api-key.env"
+        printf 'DEEPSEEK_API_KEY=%s\n' "$(cat /run/secrets/agent-auth/deepseek-api-key)" >> "$HOME/.local/state/opencode/mistral-api-key.env"
       ''
     );
     EnvironmentFile = "%h/.local/state/opencode/mistral-api-key.env";
@@ -1334,6 +1426,7 @@ in
     #eza.enable = true;
     firefox = {
       enable = true;
+      package = firefoxBidi; # structural WebDriver BiDi on 127.0.0.1:19225 (code#5924)
       # pin legacy path explicitly; default changed to xdg.configHome in 26.05
       configPath = ".mozilla/firefox";
       policies = {
@@ -1886,7 +1979,7 @@ in
         bluez
         bluez-tools
         bottom
-        brave
+        braveCdp # brave + structural CDP on 127.0.0.1:19223 (code#5924)
         brig
         brightnessctl
         brillo

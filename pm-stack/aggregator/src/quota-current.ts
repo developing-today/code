@@ -423,7 +423,9 @@ const TURSO_WINDOW_META: Record<string, { label: string; unit: UsageUnit; limit:
  * Apply the gatherer's Turso entry (#1049) to the SaaS services —
  * the usage() counterpart of overlayQuotaCurrent, with the same
  * semantics: a fresh ok read replaces the Turso card's metrics,
- * measuredAt, and cycle end; an error or stale read leaves the
+ * measuredAt, and cycle end — except metrics the fresh read does
+ * not carry, which stay as stale-marked dated values (#6227); an
+ * error or stale read leaves the
  * card's dated values standing and adds a dated conflict flag, so
  * the failure is loud without faking a fresh zero. Services without
  * a Turso card, and files without a Turso entry, pass through
@@ -456,6 +458,19 @@ export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFil
       });
     }
     if (metrics.length === 0) return services;
+    // A partial fresh read must not silently erase the card's last
+    // dated values (#6227): metrics the fresh entry does not carry
+    // stay on the card, marked stale with the stamp they were read
+    // at, instead of vanishing until a complete read returns. They
+    // are evidence of the last measured state, never of recovery.
+    const freshIds = new Set(metrics.map((m) => m.id));
+    for (const m of svc.metrics) {
+      if (freshIds.has(m.id)) continue;
+      metrics.push({
+        ...m,
+        note: `stale: last measured ${svc.measuredAt}; absent from the fresh gatherer read at ${entry.measuredAt}`,
+      });
+    }
     const resetsAt = entry.windows.find((w) => w.resetsAt)?.resetsAt ?? null;
     out[idx] = {
       ...svc,

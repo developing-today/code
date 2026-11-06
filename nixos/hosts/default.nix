@@ -225,6 +225,9 @@ in
       # VAAPI-pinned streaming host, Moonlight client, encoder
       # watchdog. KRdp above remains the Plasma-side option.
       ./amd-sunshine.nix
+      # RustDesk permanent-password re-assertion from the vault
+      # (code#5694); RustDesk itself stays imperative, see the file.
+      ./amd-rustdesk.nix
       ./amd-ipv4-preference.nix
       ./amd-openclaw-secrets.nix
     ];

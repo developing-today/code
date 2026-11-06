@@ -18,7 +18,8 @@ import { navLinks } from "../src/render.ts";
 
 const SRC = join(import.meta.dir, "..", "src");
 const serverSource = readFileSync(join(SRC, "server.ts"), "utf8");
-const renderSource = readFileSync(join(SRC, "render.ts"), "utf8");
+const renderSource =
+  readFileSync(join(SRC, "ui.css"), "utf8") + "\n" + readFileSync(join(SRC, "render.ts"), "utf8");
 
 /** The CSS rule body for a selector in the stylesheet string. */
 function cssRule(selector: string): string {

@@ -50,6 +50,12 @@ in
     # resolves it from the server process env (vibe-auth tier 2), and the
     # plain mistral provider's env tier names the same variable.
     "agent-auth/mistral-api-key" = userSecret "secrets/sops/common/bws.yaml" "mistral.api-key";
+    # DeepSeek API key (Bitwarden deepseek.api-key): materialized into the
+    # opencode server unit's environment as DEEPSEEK_API_KEY by the same
+    # ExecStartPre in home/common. It keys the official-API leg
+    # (deepseek/deepseek-flash, "1017") seated in the deepseek-flash-plan
+    # route (Drew, direct order, 2026-11-05).
+    "agent-auth/deepseek-api-key" = userSecret "secrets/sops/common/bws.yaml" "deepseek.api-key";
   };
 
   # `op` as a setgid (onepassword-cli) wrapper in /run/wrappers/bin -- required

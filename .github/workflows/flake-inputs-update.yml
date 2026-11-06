@@ -1,5 +1,5 @@
 # Keeps the flake's openchamber and opencode inputs current with
-# developing-today/openchamber and developing-today/opencode. The openchamber
+# developing-today-forks/openchamber and developing-today-forks/opencode. The openchamber
 # input keeps its `inputs.opencode.follows = "opencode"`, so the two pins
 # always move together against the same opencode rev.
 #

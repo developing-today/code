@@ -11,7 +11,11 @@
 //! Receipt contract (#3231): a known-kind artifact is acceptable on receipt
 //! only when it satisfies the same rules its in-tree builder must satisfy —
 //! enforced in [`SignedArtifact::parsed`] before [`ArtifactLog`] stores or
-//! replays it, and at the producer seams that build each kind. A structural
+//! replays it, and at the producer seams that build each kind. The generic
+//! builders mirror receipt (#5623): [`SignedArtifact::sign`] and
+//! [`SignedArtifact::sign_after`] run the same `parsed` check before
+//! returning, so an in-tree caller can no longer mint a signed known-kind
+//! artifact that receipt would refuse. A structural
 //! rule failure is [`Refusal::Forbidden`] naming the rule; only hash and
 //! signature failures are [`Refusal::Unauthenticated`]. Receipt never
 //! rewrites signed bytes: duplicates and noncanonical values are refused,
@@ -37,23 +41,23 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{bail, ensure, Context, Result};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use iroh::{
-    Endpoint, EndpointAddr,
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler},
+    Endpoint, EndpointAddr,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use unicode_normalization::is_nfc;
 
-use crate::connectivity::{DIAL_TIMEOUT, connect, within};
-use crate::directory::{Directory, Refusal, hex_to_array, normalize_key};
+use crate::connectivity::{connect, within, DIAL_TIMEOUT};
+use crate::directory::{hex_to_array, normalize_key, Directory, Refusal};
 use crate::directory_auth::Caller;
 use crate::directory_view::{DirectoryAction, DirectoryOutcome};
-use crate::envelope_net::{Reply, answer_frames, send};
-use crate::envelope_outbox::{Outcome, check_target};
+use crate::envelope_net::{answer_frames, send, Reply};
+use crate::envelope_outbox::{check_target, Outcome};
 use crate::event_sync::{CLOSE_WAIT, SESSION_DEADLINE};
 use crate::frames::{read_frame, write_frame};
 use crate::world::hex_encode;
@@ -149,7 +153,12 @@ fn is_hash(text: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn is_friend_request_id(text: &str) -> bool {
+/// The canonical friend-request ID shape: 16 bytes as 32 lowercase
+/// hexadecimal characters. This is the shape the envelope producer mints
+/// (`Envelope::signed` in directory.rs) and the shape the `friend_remove`
+/// receipt contract (#3146) requires; directory.rs reuses this predicate
+/// at friend-request admission (#5624) so the two never drift.
+pub(crate) fn is_friend_request_id(text: &str) -> bool {
     text.len() == 32
         && text
             .bytes()
@@ -307,7 +316,11 @@ impl SignedArtifact {
     ///
     /// # Errors
     ///
-    /// Fails if `seq` is zero or the body cannot be serialized.
+    /// Fails if `seq` is zero or the body cannot be serialized, or if `kind`
+    /// is a known kind and its body breaks a rule receipt enforces — a
+    /// [`Refusal::Forbidden`] naming the rule, exactly as
+    /// [`SignedArtifact::parsed`] would refuse the signed artifact (#5623).
+    /// Unknown kinds stay envelope-only and always sign.
     pub fn sign(
         key: &SigningKey,
         seq: u64,
@@ -323,8 +336,42 @@ impl SignedArtifact {
     /// # Errors
     ///
     /// Fails if `seq` is zero, if `after` breaks the frontier rules (see
-    /// [`Self::check_after`]), or if the body cannot be serialized.
+    /// [`Self::check_after`]), if the body cannot be serialized, or if
+    /// `kind` is a known kind and its body breaks a rule receipt enforces
+    /// (see [`Self::sign`]).
     pub fn sign_after(
+        key: &SigningKey,
+        seq: u64,
+        prev: &str,
+        kind: &str,
+        body: serde_json::Value,
+        after: Vec<String>,
+    ) -> Result<Self> {
+        let artifact = Self::build_signed(key, seq, prev, kind, body, after)?;
+        // Construction-vs-receipt symmetry (#5623): a known kind is signed
+        // only when receipt would accept its body, so the check is the
+        // receipt check itself, run on the artifact about to go out.
+        // Unknown kinds parse to `None` and stay signable envelope-only.
+        artifact.parsed()?;
+        Ok(artifact)
+    }
+
+    /// Sign without the known-kind body check in [`Self::sign_after`]:
+    /// sequence, `after`-frontier, hash, and signature rules all still
+    /// apply. Test-only, so tests can still craft the signed-but-refusable
+    /// artifacts that receipt-side tests exist to refuse.
+    #[cfg(test)]
+    pub(crate) fn sign_unchecked(
+        key: &SigningKey,
+        seq: u64,
+        prev: &str,
+        kind: &str,
+        body: serde_json::Value,
+    ) -> Result<Self> {
+        Self::build_signed(key, seq, prev, kind, body, Vec::new())
+    }
+
+    fn build_signed(
         key: &SigningKey,
         seq: u64,
         prev: &str,
@@ -357,7 +404,25 @@ impl SignedArtifact {
     /// failure (#3196) — and with [`Refusal::Unauthenticated`] if the hash
     /// or signature does not check out.
     pub fn verify(&self) -> Result<()> {
-        Self::check_after(&self.after)?;
+        self.verify_mode(false)
+    }
+
+    /// [`Self::verify`] for history a log already holds (trusted local
+    /// replay only): the duplicate-`after` rule (#3196) postdates logs
+    /// the producer path legitimately wrote, so replay does not apply
+    /// it - mirroring how replay skips the duplicate-request rule in
+    /// `parsed_for_replay`. Authenticity (hash, signature, canonical
+    /// author) and the other frontier rules (count, well-formed hashes)
+    /// stay strict in both modes: a corrupt or forged line still fails
+    /// to reopen. Fresh receipt and remote receipt always use
+    /// [`Self::verify`]; this leniency is never a remote policy (#5625,
+    /// coordinating with the #4459 format cutoff).
+    pub(crate) fn verify_for_replay(&self) -> Result<()> {
+        self.verify_mode(true)
+    }
+
+    fn verify_mode(&self, replay: bool) -> Result<()> {
+        Self::check_after_mode(&self.after, replay)?;
         self.check_authenticity()
             .map_err(|error| Refusal::Unauthenticated(format!("{error:#}")).into())
     }
@@ -368,6 +433,10 @@ impl SignedArtifact {
     /// twice. Receipt refuses a duplicate rather than deduplicating it, so
     /// what the signer supplied stays visible (#3231).
     fn check_after(after: &[String]) -> Result<()> {
+        Self::check_after_mode(after, false)
+    }
+
+    fn check_after_mode(after: &[String], replay: bool) -> Result<()> {
         if after.len() > MAX_AFTER {
             return Err(forbidden(format!(
                 "an artifact names at most {MAX_AFTER} artifacts before it"
@@ -376,12 +445,18 @@ impl SignedArtifact {
         if after.iter().any(|hash| !is_hash(hash)) {
             return Err(forbidden("an artifact names a malformed hash in after"));
         }
-        let mut seen = HashSet::with_capacity(after.len());
-        for hash in after {
-            if !seen.insert(hash) {
-                return Err(forbidden(format!(
-                    "an artifact names {hash} twice in after"
-                )));
+        // The duplicate rule is the #3196 addition: in replay mode a
+        // frontier stored before it is grandfathered (see
+        // [`Self::verify_for_replay`]); construction and fresh receipt
+        // refuse a duplicate rather than deduplicating it.
+        if !replay {
+            let mut seen = HashSet::with_capacity(after.len());
+            for hash in after {
+                if !seen.insert(hash) {
+                    return Err(forbidden(format!(
+                        "an artifact names {hash} twice in after"
+                    )));
+                }
             }
         }
         Ok(())
@@ -487,7 +562,10 @@ impl SignedArtifact {
                 if body.media_type.is_empty() || body.media_type.len() > 128 {
                     return Err(forbidden("a document names its media type"));
                 }
-                if !is_nfc(&body.media_type) {
+                // The NFC rule (#3192) postdates logs the producer
+                // path legitimately wrote; replay grandfathers it
+                // (#5625), fresh receipt stays strict.
+                if !replay && !is_nfc(&body.media_type) {
                     return Err(forbidden("a document's media type is not NFC"));
                 }
                 let size = serde_json::to_vec(&body.content)
@@ -508,13 +586,13 @@ impl SignedArtifact {
                 if body.name.is_empty() || body.name.len() > 64 {
                     return Err(forbidden("a tag's name is 1 to 64 bytes"));
                 }
-                if !is_nfc(&body.name) {
+                if !replay && !is_nfc(&body.name) {
                     return Err(forbidden("a tag's name is not NFC"));
                 }
                 if body.value.as_ref().is_some_and(|value| value.len() > 256) {
                     return Err(forbidden("a tag's value is at most 256 bytes"));
                 }
-                if body.value.as_ref().is_some_and(|value| !is_nfc(value)) {
+                if !replay && body.value.as_ref().is_some_and(|value| !is_nfc(value)) {
                     return Err(forbidden("a tag's value is not NFC"));
                 }
                 Ok(Some(Kind::Tag(body)))
@@ -561,10 +639,14 @@ impl ArtifactLog {
     /// Opening a file replays its lines without the check, so a line the file held
     /// before the check still loads.
     fn store(&mut self, artifact: SignedArtifact, frame_check: bool) -> Result<Stored> {
-        artifact.verify()?;
         if frame_check {
+            artifact.verify()?;
             artifact.parsed()?;
         } else {
+            // Trusted local replay (open / open_read_only only): the
+            // grandfathered-rule twins. Remote receipt goes through
+            // `insert` and never reaches this branch (#5625).
+            artifact.verify_for_replay()?;
             artifact.parsed_for_replay()?;
         }
         let size = encoded_len(&artifact);
@@ -672,7 +754,8 @@ impl ArtifactLog {
     ///
     /// # Errors
     ///
-    /// Fails if the body cannot be serialized.
+    /// Fails if the body cannot be serialized, or if the kind's body breaks
+    /// a rule receipt enforces (see [`SignedArtifact::sign`]).
     pub fn sign(&self, key: &SigningKey, kind: &Kind) -> Result<SignedArtifact> {
         self.sign_after(key, kind, Vec::new())
     }
@@ -681,7 +764,8 @@ impl ArtifactLog {
     ///
     /// # Errors
     ///
-    /// Fails if the body cannot be serialized.
+    /// Fails if the body cannot be serialized, or if the kind's body breaks
+    /// a rule receipt enforces (see [`SignedArtifact::sign`]).
     pub fn sign_after(
         &self,
         key: &SigningKey,
@@ -1143,11 +1227,11 @@ pub async fn pull_within(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
+    use crate::test_forgeries::{identity_forgery, with_non_canonical_s, IDENTITY_KEY};
     use iroh::{
-        TransportAddr,
-        endpoint::{RelayMode, presets},
+        endpoint::{presets, RelayMode},
         protocol::Router,
+        TransportAddr,
     };
     use iroh_base::SecretKey;
     use proptest::prelude::*;
@@ -1238,6 +1322,14 @@ mod tests {
         }
     }
 
+    /// Sign a typed kind without the construction-side body check in
+    /// [`SignedArtifact::sign_after`], so receipt-side refusal of that
+    /// body stays testable (the typed twin of [`SignedArtifact::sign_unchecked`]).
+    fn sign_kind_unchecked(key: &SigningKey, kind: &Kind) -> SignedArtifact {
+        let (name, body) = kind.encode().unwrap();
+        SignedArtifact::sign_unchecked(key, 1, "", name, body).unwrap()
+    }
+
     fn author_tag(subject: &str, author: u8) -> Kind {
         Kind::Tag(Tag {
             subject: subject.to_owned(),
@@ -1325,7 +1417,7 @@ mod tests {
             "{error:#}"
         );
 
-        let mut forged = SignedArtifact::sign(
+        let mut forged = SignedArtifact::sign_unchecked(
             &key(3),
             2,
             &good.hash,
@@ -1348,7 +1440,7 @@ mod tests {
     #[test]
     fn a_removal_must_be_signed_by_one_of_its_accounts() {
         let mut log = ArtifactLog::default();
-        let stranger = SignedArtifact::sign(
+        let stranger = SignedArtifact::sign_unchecked(
             &key(3),
             1,
             "",
@@ -1393,7 +1485,7 @@ mod tests {
         ];
 
         for requests in cases {
-            let artifact = SignedArtifact::sign(
+            let artifact = SignedArtifact::sign_unchecked(
                 &key(1),
                 1,
                 "",
@@ -1429,7 +1521,7 @@ mod tests {
         // it, but replay does not brick the log that already holds it.
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(FILE);
-        let legacy = SignedArtifact::sign(
+        let legacy = SignedArtifact::sign_unchecked(
             &key(1),
             1,
             "",
@@ -1447,6 +1539,195 @@ mod tests {
 
         let reopened = ArtifactLog::open(&path).unwrap();
         assert_eq!(reopened.head_seq(&public(1)), 1);
+    }
+
+    #[test]
+    fn a_legacy_log_with_a_duplicate_after_frontier_still_replays() {
+        // #5625: stored before the duplicate-after rule (#3196), when
+        // sign_after accepted a repeated frontier hash. Fresh receipt
+        // (verify / insert) still refuses it; trusted local replay
+        // (open / open_read_only) reopens the log that already holds it.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE);
+        let mut log = ArtifactLog::default();
+        let first = log.sign(&key(1), &document("first")).unwrap();
+        log.insert(first.clone()).unwrap();
+        let legacy = sign_raw_after(
+            &key(1),
+            2,
+            &first.hash,
+            &document("second"),
+            vec![first.hash.clone(), first.hash.clone()],
+        );
+        assert!(legacy.verify().is_err());
+        assert!(ArtifactLog::default().insert(legacy.clone()).is_err());
+        append(&path, &first).unwrap();
+        append(&path, &legacy).unwrap();
+
+        let reopened = ArtifactLog::open(&path).unwrap();
+        assert_eq!(reopened.head_seq(&public(1)), 2);
+        let read_only = ArtifactLog::open_read_only(&path).unwrap();
+        assert_eq!(read_only.head_seq(&public(1)), 2);
+
+        // Authenticity stays strict in replay: the same log with a
+        // forged hash line does not reopen.
+        let mut forged = legacy.clone();
+        forged.hash = format!("{:064x}", 9_u64);
+        let bad_path = dir.path().join("forged.jsonl");
+        append(&bad_path, &first).unwrap();
+        append(&bad_path, &forged).unwrap();
+        assert!(ArtifactLog::open(&bad_path).is_err());
+        assert!(ArtifactLog::open_read_only(&bad_path).is_err());
+    }
+
+    #[test]
+    fn a_legacy_log_with_non_nfc_document_and_tag_fields_still_replays() {
+        // #5625: stored before the NFC rules (#3192), when the producer
+        // path passed media_type / tag text through the then-lenient
+        // parser. Fresh receipt still refuses each shape; replay
+        // grandfathers exactly those three fields.
+        let dir = TempDir::new().unwrap();
+        let cases: Vec<Kind> = vec![
+            Kind::Document(Document {
+                media_type: "application/jso\u{301}n".to_owned(),
+                content: json!({ "text": "ok" }),
+            }),
+            Kind::Tag(Tag {
+                subject: public(2),
+                name: "e\u{301}".to_owned(),
+                value: None,
+            }),
+            Kind::Tag(Tag {
+                subject: public(2),
+                name: "author".to_owned(),
+                value: Some("e\u{301}".to_owned()),
+            }),
+        ];
+        for (index, kind) in cases.into_iter().enumerate() {
+            let legacy = sign_kind_unchecked(&key(1), &kind);
+            assert!(legacy.parsed().is_err(), "case {index}");
+            assert!(
+                ArtifactLog::default().insert(legacy.clone()).is_err(),
+                "case {index}"
+            );
+            assert!(
+                matches!(legacy.parsed_for_replay(), Ok(Some(_))),
+                "case {index}"
+            );
+            let path = dir.path().join(format!("legacy-{index}.jsonl"));
+            append(&path, &legacy).unwrap();
+            let reopened = ArtifactLog::open(&path).unwrap();
+            assert_eq!(reopened.head_seq(&public(1)), 1, "case {index}");
+            let read_only = ArtifactLog::open_read_only(&path).unwrap();
+            assert_eq!(read_only.head_seq(&public(1)), 1, "case {index}");
+        }
+    }
+
+    #[test]
+    fn signing_a_known_kind_refuses_the_bodies_receipt_refuses() {
+        // Construction-vs-receipt symmetry (#5623), with `parsed` on a
+        // raw-signed copy as the oracle: for every known kind, a body
+        // receipt refuses is refused at signing time with the same
+        // Refusal::Forbidden class, and a body receipt accepts still signs.
+        let valid_id = |n: u8| format!("{n:032x}");
+        let refused: Vec<(&str, serde_json::Value)> = vec![
+            // A removal signed by an account that is not one of its two.
+            (
+                FRIEND_REMOVE,
+                json!({"a": public(1), "b": public(2), "requests": []}),
+            ),
+            // A document with no media type.
+            (
+                DOCUMENT,
+                json!({"media_type": "", "content": {"text": "x"}}),
+            ),
+            // A tag whose subject is not a hash.
+            (
+                TAG,
+                json!({"subject": "not a hash", "name": "author", "value": null}),
+            ),
+        ];
+        // The friend_remove case must be signed by the stranger, key(3).
+        let stranger_error =
+            SignedArtifact::sign(&key(3), 1, "", refused[0].0, refused[0].1.clone()).unwrap_err();
+        assert!(
+            matches!(
+                stranger_error.downcast_ref::<Refusal>(),
+                Some(Refusal::Forbidden(_))
+            ),
+            "{stranger_error:#}"
+        );
+        for (kind, body) in &refused[1..] {
+            let error = SignedArtifact::sign(&key(1), 1, "", kind, body.clone()).unwrap_err();
+            assert!(
+                matches!(error.downcast_ref::<Refusal>(), Some(Refusal::Forbidden(_))),
+                "{kind}: {error:#}"
+            );
+            let raw = SignedArtifact::sign_unchecked(&key(1), 1, "", kind, body.clone()).unwrap();
+            assert!(raw.parsed().is_err(), "{kind} body accepted by parsed");
+        }
+        // Too many friend-removal requests, signed by a party to the removal.
+        let too_many = SignedArtifact::sign(
+            &key(1),
+            1,
+            "",
+            FRIEND_REMOVE,
+            json!({
+                "a": public(1),
+                "b": public(2),
+                "requests": [valid_id(1), valid_id(2), valid_id(3), valid_id(4)]
+            }),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                too_many.downcast_ref::<Refusal>(),
+                Some(Refusal::Forbidden(_))
+            ),
+            "{too_many:#}"
+        );
+        // A home declaration naming another account.
+        let other_account = SignedArtifact::sign(
+            &key(2),
+            1,
+            "",
+            HOME_DECLARED,
+            json!({"account": public(1), "servers": []}),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                other_account.downcast_ref::<Refusal>(),
+                Some(Refusal::Forbidden(_))
+            ),
+            "{other_account:#}"
+        );
+        // The accepted side of the symmetry: valid bodies of every known
+        // kind still sign, and an unknown kind stays signable envelope-only.
+        for (kind, body) in [
+            (
+                FRIEND_REMOVE,
+                json!({"a": public(1), "b": public(2), "requests": [valid_id(1)]}),
+            ),
+            (HOME_DECLARED, json!({"account": public(1), "servers": []})),
+            (
+                DOCUMENT,
+                json!({"media_type": "application/json", "content": {"text": "x"}}),
+            ),
+            (
+                TAG,
+                json!({"subject": public(2), "name": "author", "value": null}),
+            ),
+        ] {
+            let signed = SignedArtifact::sign(&key(1), 1, "", kind, body).unwrap();
+            assert!(
+                matches!(signed.parsed(), Ok(Some(_))),
+                "{kind} valid body refused"
+            );
+        }
+        let future =
+            SignedArtifact::sign(&key(1), 1, "", "future_kind", json!({"anything": true})).unwrap();
+        assert_eq!(future.parsed().unwrap(), None);
     }
 
     #[test]
@@ -1477,7 +1758,7 @@ mod tests {
             endpoint_of(8)
         );
 
-        let plain = SignedArtifact::sign(
+        let plain = SignedArtifact::sign_unchecked(
             &key(1),
             3,
             &log.page(&public(1), 0)[1].hash,
@@ -1493,7 +1774,7 @@ mod tests {
             ),
             "{refused:#}"
         );
-        let other_account = SignedArtifact::sign(
+        let other_account = SignedArtifact::sign_unchecked(
             &key(2),
             1,
             "",
@@ -1813,7 +2094,10 @@ mod tests {
         home.receive(&accept, "home", 2).unwrap();
         let removal = home.remove_friend(&ann_credential, &bo).unwrap();
 
-        let mut forged = SignedArtifact::sign(
+        // Unchecked: the crafted declaration's author is the credential
+        // key, not the account named in the body, so construction-side
+        // validation would refuse it before the tamper under test.
+        let mut forged = SignedArtifact::sign_unchecked(
             &key_of(&ann_credential),
             2,
             &removal.hash,
@@ -2044,14 +2328,13 @@ mod tests {
         assert!(log.insert(doubled).is_err());
 
         // The builder refuses the same frontier before receipt sees it.
-        assert!(
-            log.sign_after(
+        assert!(log
+            .sign_after(
                 &key(1),
                 &document("second"),
                 vec![first.hash.clone(), first.hash.clone()],
             )
-            .is_err()
-        );
+            .is_err());
 
         let repeated = sign_raw_after(
             &key(1),
@@ -2074,30 +2357,37 @@ mod tests {
 
     #[test]
     fn documents_and_tags_are_checked_and_never_applied_as_directory_changes() {
+        // Construction refuses these bodies itself now (#5623), with the
+        // same Forbidden class receipt uses; a raw-signed copy is still
+        // refused by parsed() (the symmetry test below pins both sides).
         let huge = Kind::Document(Document {
             media_type: "application/json".to_owned(),
             content: json!({ "text": "x".repeat(MAX_DOCUMENT_BYTES) }),
         });
+        let huge_error = ArtifactLog::default().sign(&key(1), &huge).unwrap_err();
         assert!(
-            ArtifactLog::default()
-                .sign(&key(1), &huge)
-                .unwrap()
-                .parsed()
-                .is_err()
+            matches!(
+                huge_error.downcast_ref::<Refusal>(),
+                Some(Refusal::Forbidden(_))
+            ),
+            "{huge_error:#}"
         );
+        assert!(sign_kind_unchecked(&key(1), &huge).parsed().is_err());
 
         let loose = Kind::Tag(Tag {
             subject: "not a hash".to_owned(),
             name: "author".to_owned(),
             value: None,
         });
+        let loose_error = ArtifactLog::default().sign(&key(1), &loose).unwrap_err();
         assert!(
-            ArtifactLog::default()
-                .sign(&key(1), &loose)
-                .unwrap()
-                .parsed()
-                .is_err()
+            matches!(
+                loose_error.downcast_ref::<Refusal>(),
+                Some(Refusal::Forbidden(_))
+            ),
+            "{loose_error:#}"
         );
+        assert!(sign_kind_unchecked(&key(1), &loose).parsed().is_err());
 
         let fine = ArtifactLog::default()
             .sign(&key(1), &document("ok"))
@@ -2121,15 +2411,13 @@ mod tests {
     }
 
     fn home_declared_with(servers: Vec<HomeServer>) -> SignedArtifact {
-        ArtifactLog::default()
-            .sign(
-                &key(1),
-                &Kind::HomeDeclared(HomeDeclared {
-                    account: public(1),
-                    servers,
-                }),
-            )
-            .unwrap()
+        sign_kind_unchecked(
+            &key(1),
+            &Kind::HomeDeclared(HomeDeclared {
+                account: public(1),
+                servers,
+            }),
+        )
     }
 
     fn home_server(endpoint: String, world_id: &str) -> HomeServer {
@@ -2218,15 +2506,13 @@ mod tests {
             .unwrap();
         assert!(matches!(nfc.parsed(), Ok(Some(Kind::Document(_)))));
 
-        let decomposed = ArtifactLog::default()
-            .sign(
-                &key(1),
-                &Kind::Document(Document {
-                    media_type: "application/jso\u{301}n".to_owned(),
-                    content: json!({ "text": "ok" }),
-                }),
-            )
-            .unwrap();
+        let decomposed = sign_kind_unchecked(
+            &key(1),
+            &Kind::Document(Document {
+                media_type: "application/jso\u{301}n".to_owned(),
+                content: json!({ "text": "ok" }),
+            }),
+        );
         assert!(decomposed.parsed().is_err());
     }
 
@@ -2237,16 +2523,14 @@ mod tests {
             .unwrap();
         assert!(matches!(control.parsed(), Ok(Some(Kind::Tag(_)))));
 
-        let decomposed = ArtifactLog::default()
-            .sign(
-                &key(1),
-                &Kind::Tag(Tag {
-                    subject: public(2),
-                    name: "e\u{301}".to_owned(),
-                    value: None,
-                }),
-            )
-            .unwrap();
+        let decomposed = sign_kind_unchecked(
+            &key(1),
+            &Kind::Tag(Tag {
+                subject: public(2),
+                name: "e\u{301}".to_owned(),
+                value: None,
+            }),
+        );
         assert!(decomposed.parsed().is_err());
     }
 
@@ -2257,16 +2541,14 @@ mod tests {
             .unwrap();
         assert!(matches!(control.parsed(), Ok(Some(Kind::Tag(_)))));
 
-        let decomposed = ArtifactLog::default()
-            .sign(
-                &key(1),
-                &Kind::Tag(Tag {
-                    subject: public(2),
-                    name: "author".to_owned(),
-                    value: Some("e\u{301}".to_owned()),
-                }),
-            )
-            .unwrap();
+        let decomposed = sign_kind_unchecked(
+            &key(1),
+            &Kind::Tag(Tag {
+                subject: public(2),
+                name: "author".to_owned(),
+                value: Some("e\u{301}".to_owned()),
+            }),
+        );
         assert!(decomposed.parsed().is_err());
     }
 
