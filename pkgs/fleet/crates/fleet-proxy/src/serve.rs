@@ -245,10 +245,139 @@ impl TunnelPool {
     }
 }
 
+/// How long a caller waits for another caller's in-flight
+/// recovery of the same port before failing fast — the transport
+/// deadline, so waiting never costs more than one bounded attempt.
+const RECOVERY_WAIT: Duration = crate::tunnel::TRANSPORT_DEADLINE;
+
+#[derive(Default)]
+struct GateState {
+    in_flight: bool,
+    active_generation: u64,
+    completed_generation: u64,
+    last_error: Option<String>,
+    next_generation: u64,
+}
+
+/// Single-flight tunnel recovery (#5758): at most one tunnel open
+/// per port is ever in flight. Concurrent callers wait (bounded by
+/// [`RECOVERY_WAIT`]) for the in-flight attempt: if it failed they
+/// fail fast with that same error — no CONNECT stampede against a
+/// dead target; if it succeeded they take their turn as the next
+/// serialized opener, because the target is demonstrably back.
+struct RecoveryGate {
+    state: Mutex<std::collections::HashMap<u16, GateState>>,
+    finished: Condvar,
+}
+
+impl RecoveryGate {
+    fn new() -> RecoveryGate {
+        RecoveryGate {
+            state: Mutex::new(std::collections::HashMap::new()),
+            finished: Condvar::new(),
+        }
+    }
+
+    fn run<T>(&self, port: u16, attempt: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        let deadline = Instant::now() + RECOVERY_WAIT;
+        let mut waiting_on: Option<u64> = None;
+        loop {
+            let mut state = self.state.lock().unwrap();
+            let entry = state.entry(port).or_default();
+            if entry.in_flight {
+                let generation = entry.active_generation;
+                if waiting_on != Some(generation) {
+                    waiting_on = Some(generation);
+                }
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Err(format!(
+                        "tunnel recovery for port {port} still in flight; failing fast"
+                    ));
+                }
+                let (guard, _) = self.finished.wait_timeout(state, left).unwrap();
+                state = guard;
+                continue;
+            }
+            if let Some(generation) = waiting_on {
+                if entry.completed_generation == generation {
+                    if let Some(err) = &entry.last_error {
+                        // The attempt we waited on failed: share
+                        // its verdict instead of CONNECTing again.
+                        return Err(err.clone());
+                    }
+                    // It succeeded: fall through and open our own
+                    // tunnel as the next serialized attempt.
+                    waiting_on = None;
+                }
+            }
+            // Become the one in-flight opener for this port.
+            let entry = state.entry(port).or_default();
+            entry.next_generation += 1;
+            entry.active_generation = entry.next_generation;
+            entry.in_flight = true;
+            let generation = entry.active_generation;
+            drop(state);
+            let got = attempt();
+            let mut state = self.state.lock().unwrap();
+            let entry = state.entry(port).or_default();
+            entry.in_flight = false;
+            entry.completed_generation = generation;
+            entry.last_error = match &got {
+                Ok(_) => None,
+                Err(e) => Some(e.clone()),
+            };
+            self.finished.notify_all();
+            return got;
+        }
+    }
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ` for a unix timestamp — the broker's log
+/// stamp, computed without a date crate (civil-from-days).
+fn format_utc(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let tod = secs % 86_400;
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{year:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        tod / 3600,
+        (tod % 3600) / 60,
+        tod % 60
+    )
+}
+
+/// The one startup stamp every broker start writes first
+/// (#5758): UTC time, implementation, version, pool size, and
+/// pid — so which broker owned an incident window (and with what
+/// pool) is reconstructable from broker.log alone. Credentials
+/// are never part of it.
+fn startup_line(pool_size: usize, socket_path: &std::path::Path) -> String {
+    format!(
+        "{} fleet proxy serve start implementation=fleet-proxy version={} pool_size={} pid={} socket={}",
+        format_utc(now_secs()),
+        env!("CARGO_PKG_VERSION"),
+        pool_size,
+        std::process::id(),
+        socket_path.display()
+    )
+}
+
 struct Broker {
     config: Config,
     egress: Option<Egress>,
     pool: TunnelPool,
+    /// Single-flight gate for tunnel opens (recovery stampedes).
+    recovery: RecoveryGate,
     /// Last client-request time (unix secs). Keepalive health
     /// checks deliberately never write this.
     last_used: AtomicU64,
@@ -256,6 +385,13 @@ struct Broker {
 
 impl Broker {
     fn open_conn(&self, port: u16) -> Result<HttpConn, String> {
+        // Every tunnel open goes through the single-flight gate:
+        // concurrent recovery for one port is one CONNECT, and a
+        // failed attempt's verdict is shared with its waiters.
+        self.recovery.run(port, || self.open_conn_raw(port))
+    }
+
+    fn open_conn_raw(&self, port: u16) -> Result<HttpConn, String> {
         let target = self.config.target_host();
         let stream: TcpStream = if self.config.proxy_direct() {
             connect_tunnel(None, target, port)
@@ -583,6 +719,12 @@ pub fn run(config: &Config) -> i32 {
             return crate::EXIT_TRANSPORT;
         }
     };
+    let size = pool_size();
+    // The stamp is the FIRST line a starting broker writes, so it
+    // precedes any per-request tunnel failure the egress setup
+    // below may log.
+    println!("{}", startup_line(size, &socket_path));
+    let _ = std::io::stdout().flush();
     let egress = if config.proxy_direct() {
         None
     } else {
@@ -600,7 +742,8 @@ pub fn run(config: &Config) -> i32 {
     let broker = Arc::new(Broker {
         config: config.clone(),
         egress,
-        pool: TunnelPool::new(pool_size()),
+        pool: TunnelPool::new(size),
+        recovery: RecoveryGate::new(),
         last_used: AtomicU64::new(now_secs()),
     });
     // Preconnect: warm the laptop-agent pool through the same
@@ -635,13 +778,6 @@ pub fn run(config: &Config) -> i32 {
             }
         });
     }
-    println!(
-        "fleet proxy serve on {} (pool: {} per port, overflow wait {} ms)",
-        socket_path.display(),
-        broker.pool.size(),
-        POOL_WAIT_BUDGET.as_millis()
-    );
-    let _ = std::io::stdout().flush();
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
@@ -804,5 +940,86 @@ mod tests {
         pool.put(PORT, close_conn()); // not reusable: never pooled
         assert_eq!(pool.idle_count(PORT), 0);
         assert_eq!(pool.live_count(PORT), 0);
+    }
+
+    #[test]
+    fn single_flight_failure_is_shared_by_all_waiters() {
+        // Fault injection (#5758): N concurrent callers hit a dead
+        // target; exactly ONE recovery attempt runs and every
+        // waiter fails fast with its verdict — no stampede.
+        let gate = Arc::new(RecoveryGate::new());
+        let attempts = Arc::new(AtomicU64::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let gate = Arc::clone(&gate);
+            let attempts = Arc::clone(&attempts);
+            handles.push(std::thread::spawn(move || {
+                gate.run(PORT, || {
+                    attempts.fetch_add(1, Ordering::Relaxed);
+                    std::thread::sleep(Duration::from_millis(150));
+                    Err::<(), String>("tunnel to laptop:4799: refused".to_string())
+                })
+            }));
+        }
+        for h in handles {
+            let got = h.join().unwrap();
+            assert_eq!(
+                got.unwrap_err(),
+                "tunnel to laptop:4799: refused".to_string()
+            );
+        }
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn single_flight_serializes_successful_opens() {
+        // On success each caller still gets its own tunnel, but
+        // never concurrently: the in-flight count peaks at 1.
+        let gate = Arc::new(RecoveryGate::new());
+        let in_flight = Arc::new(AtomicU64::new(0));
+        let peak = Arc::new(AtomicU64::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let gate = Arc::clone(&gate);
+            let in_flight = Arc::clone(&in_flight);
+            let peak = Arc::clone(&peak);
+            handles.push(std::thread::spawn(move || {
+                gate.run(PORT, || {
+                    let now = in_flight.fetch_add(1, Ordering::Relaxed) + 1;
+                    peak.fetch_max(now, Ordering::Relaxed);
+                    std::thread::sleep(Duration::from_millis(30));
+                    in_flight.fetch_sub(1, Ordering::Relaxed);
+                    Ok::<(), String>(())
+                })
+            }));
+        }
+        for h in handles {
+            assert!(h.join().unwrap().is_ok());
+        }
+        assert_eq!(peak.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn startup_line_carries_the_incident_stamps() {
+        assert_eq!(format_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(format_utc(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(format_utc(951_782_400 + 3661), "2000-02-29T01:01:01Z");
+        // Pool size default is untouched by this change (#5758.5).
+        assert_eq!(DEFAULT_POOL_SIZE, 50);
+        let line = startup_line(50, std::path::Path::new("/tmp/broker.sock"));
+        assert!(line.contains("implementation=fleet-proxy"), "{line}");
+        assert!(
+            line.contains(&format!("version={}", env!("CARGO_PKG_VERSION"))),
+            "{line}"
+        );
+        assert!(line.contains("pool_size=50"), "{line}");
+        assert!(
+            line.contains(&format!("pid={}", std::process::id())),
+            "{line}"
+        );
+        assert!(line.contains("socket=/tmp/broker.sock"), "{line}");
+        // Shape: "<ISO-8601 UTC> fleet proxy serve start …".
+        let stamp = line.split(' ').next().unwrap();
+        assert!(stamp.ends_with('Z') && stamp.contains('T'), "{line}");
     }
 }
