@@ -601,6 +601,14 @@ const startMetaStub = async (mode) => {
           res.end(JSON.stringify({ received: JSON.parse(body || '{}'), authorization: req.headers.authorization }));
           return;
         }
+        if (mode === 'shell-generic-sse') {
+          res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+          res.end(`event: response.custom\ndata: ${JSON.stringify({
+            type: 'response.custom',
+            payload: { calls: [{ type: 'function_call', name: 'run_command' }] }
+          })}\n\n`);
+          return;
+        }
         if (mode === 'failed-empty' || mode === 'failed-partial') {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
@@ -955,6 +963,72 @@ test('direct mode: /v1/responses streaming translates aliased tool calls back', 
   const sse = await res.text();
   assert.ok(sse.includes('"name":"shell"'), 'the streamed function_call carries the client name');
   assert.ok(!sse.includes('run_command'), 'the alias never leaks to the client');
+});
+
+test('direct mode: /v1/responses aliases are rejected when the alias is already taken', async (t) => {
+  const meta = await startMetaStub('echo');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  for (const [existingName, blockedName] of [['run_command', 'shell'], ['terminal', 'bash']]) {
+    const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'muse-spark-1.3',
+        input: [],
+        tools: [
+          { type: 'function', name: existingName, parameters: { type: 'object' } },
+          { type: 'function', name: blockedName, parameters: { type: 'object' } }
+        ]
+      })
+    });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error.message, new RegExp(`Cannot safely alias tool "${blockedName}"`));
+  }
+  assert.equal(meta.requests.filter(r => r.url === '/v1/responses').length, 0, 'the blocked tool name never goes upstream');
+});
+
+test('direct mode: /v1/responses rejects unparseable JSON instead of forwarding it', async (t) => {
+  const meta = await startMetaStub('echo');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{'
+  });
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error.message, /not valid JSON/);
+  assert.equal(meta.requests.filter(r => r.url === '/v1/responses').length, 0, 'unparseable bytes are not forwarded');
+});
+
+test('direct mode: /v1/responses streaming unaliases nested function_call items', async (t) => {
+  const meta = await startMetaStub('shell-generic-sse');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'muse-spark-1.3',
+      stream: true,
+      input: [],
+      tools: [{ type: 'function', name: 'shell', parameters: { type: 'object' } }]
+    })
+  });
+  assert.equal(res.status, 200);
+  const sse = await res.text();
+  assert.match(sse, /"name":"shell"/);
+  assert.ok(!sse.includes('run_command'), 'the alias never leaks from an arbitrary nested event shape');
 });
 
 test('direct mode: MUSE_PROXY_DIRECT=0 leaves the exec path in charge (#2753)', async (t) => {
