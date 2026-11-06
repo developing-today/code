@@ -243,10 +243,12 @@ test('every proxy port parse site in the surviving proxies uses the shared helpe
   // design-code-proxy — retired 2026-10-30/2026-11-03, their bins kept
   // as history until then — plus claude-code-proxy,
   // commandcode-proxy and codex-proxy) left this list with their bin programs in the
-  // 2026-11-06 proxy-infra decommission.
-  const expected = {
-    'muse-proxy.mjs': ['MUSE_PROXY_PORT']
-  };
+  // 2026-11-06 proxy-infra decommission, and muse-proxy — the last
+  // provider proxy — left it the same day when muse-direct went
+  // native in the fork (opencode#1825). The list is empty: no
+  // provider proxy remains. proxy-supervise and proxy-relay still
+  // use the shared helper but take no per-proxy port variable.
+  const expected = {};
   for (const [file, names] of Object.entries(expected)) {
     const source = fs.readFileSync(path.join(binDir, file), 'utf8');
     assert.match(

@@ -89,7 +89,7 @@ pattern at its atlas-search block).
 | 18744 | codex-proxy | loopback | retired 2026-11-06 (proxy-infra decommission) | retired — free (tailscale serve forward removed at kill) |
 | 18745 | antigravity-ls-proxy | loopback | retired 2026-10-30 | retired — **stale `tailscale serve` forward still present** |
 | 18746 | design-code-proxy | loopback | retired 2026-11-03 (`home/common/default.nix` comment block) | retired — **stale `tailscale serve` forward still present** |
-| 18747 | muse-proxy | loopback | `home/common/default.nix:21` (`museProxyPort`) | live |
+| 18747 | muse-proxy | loopback | retired 2026-11-06 (native muse-direct provider, opencode#1825) | retired — free |
 | 18748 | commandcode-proxy | loopback | retired 2026-11-06 (proxy-infra decommission) | retired — free |
 | 18749 | claude-code-proxy | loopback | retired 2026-11-06 (proxy-infra decommission) | retired — free |
 | 18750 | opencode-route-proxy | loopback | retired 2026-11-04 | retired — free |
