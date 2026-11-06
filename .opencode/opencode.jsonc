@@ -1801,7 +1801,6 @@
     "@franlol/opencode-md-table-formatter@latest",
     "opencode-cmd-provider@latest",
     "opencode-cockpit@latest",
-    "@openchamber/opencode-claude@1.3.8",
     "opencode-models-discovery@latest",
     "opencode-mem@latest",
     "opencode-auto-continue@https://github.com/developing-today/opencode-auto-continue/archive/refs/tags/latest.tar.gz"
