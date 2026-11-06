@@ -1304,7 +1304,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn test_render_program_page_pins_the_world_and_omits_host_controls() {
         let html = render_program_page(&AssetUrls::default(), "arena", Some("/ws/world"));
         // Pinned to the one world this surface serves.
