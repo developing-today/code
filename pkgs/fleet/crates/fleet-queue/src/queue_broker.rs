@@ -10,6 +10,8 @@
 //! 5 no row). Auth: X-Agent-Token header.
 //!
 //! Env: QUEUE_BROKER_BIND (default 100.99.113.103:4801),
+//!      QUEUE_BROKER_SOCKET (Unix socket dual-bind, #6216; default
+//!      ~/.config/queue-broker/broker.sock via fleet-config),
 //!      QUEUE_BROKER_TOKEN_FILE (default ~/.config/queue-broker/token),
 //!      QUEUE_BROKER_SECRETS_URL (default http://100.99.113.103:4800),
 //!      QUEUE_BROKER_SECRETS_TOKEN_FILE (default ~/.config/secrets-broker/token).
@@ -19,7 +21,7 @@ use std::time::Duration;
 
 use fleet_secrets::{Resolver, SecretError, SecretSource, SecretValue};
 use serde_json::{Value, json};
-use tiny_http::{Header, Method, Response, Server, StatusCode};
+use tiny_http::{Header, Response, Server, StatusCode};
 
 const PILOT_REPO: &str = "developing-today/code";
 
@@ -578,17 +580,46 @@ fn json_response(status: u16, body: Value) -> Response<std::io::Cursor<Vec<u8>>>
         .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
 }
 
-fn token_ok(req: &tiny_http::Request, expected: &str) -> bool {
+fn token_matches(provided: Option<&str>, expected: &str) -> bool {
     // #6320 defence in depth: an empty expected token never authenticates,
     // not even against an empty X-Agent-Token header.
     if expected.is_empty() {
         return false;
     }
-    req.headers()
-        .iter()
-        .find(|h| h.field.as_str().to_ascii_lowercase() == "x-agent-token")
-        .map(|h| h.value.as_str() == expected)
-        .unwrap_or(false)
+    provided.map(|v| v == expected).unwrap_or(false)
+}
+
+/// Transport-agnostic request handling (#6216): the TCP loop adapts
+/// tiny_http requests to this function and the UDS loop adapts
+/// Unix-socket requests; routes and auth are identical on both
+/// transports by construction. Returns (status, JSON body).
+fn handle_request(
+    st: &State,
+    token: &str,
+    method: &str,
+    target: &str,
+    provided_token: Option<&str>,
+    body: &[u8],
+) -> (u16, Value) {
+    let path = target.split('?').next().unwrap_or("");
+    if method == "GET" && path == "/healthz" {
+        (200, ok(json!({"service": "queue-broker"})))
+    } else if !token_matches(provided_token, token) {
+        (401, json!({"error": "unauthorized"}))
+    } else if method != "POST" {
+        (405, json!({"error": "POST only"}))
+    } else {
+        match std::str::from_utf8(body) {
+            Ok(buf) => {
+                let parsed: Value = serde_json::from_str(buf).unwrap_or(Value::Null);
+                (200, dispatch(st, path, &parsed))
+            }
+            Err(e) => (
+                400,
+                json!({"ok": false, "exit": 2, "error": format!("bad body: {e}")}),
+            ),
+        }
+    }
 }
 
 pub fn run() -> i32 {
@@ -628,31 +659,69 @@ pub fn run() -> i32 {
         std::process::exit(3);
     });
     crate::log::info("queue-broker", &format!("listening on {bind}"));
+
+    // Dual-bind (#6216): the same handler over a Unix socket. A bind
+    // failure or a live owner degrades to TCP only, never to exit:
+    // the TCP listener is the established surface.
+    let socket_path = fleet_config::Config::load()
+        .unwrap_or_default()
+        .queue_broker_socket();
+    match crate::uds_http::bind_socket(&socket_path) {
+        Ok(Some(listener)) => {
+            let st = Arc::clone(&state);
+            let tok = token.clone();
+            crate::log::info(
+                "queue-broker",
+                &format!("listening on uds {}", socket_path.display()),
+            );
+            std::thread::spawn(move || {
+                crate::uds_http::serve(listener, move |req| {
+                    let (status, value) = handle_request(
+                        &st,
+                        &tok,
+                        &req.method,
+                        &req.target,
+                        req.header("X-Agent-Token"),
+                        &req.body,
+                    );
+                    (
+                        status,
+                        serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+                    )
+                });
+            });
+        }
+        Ok(None) => crate::log::info(
+            "queue-broker",
+            &format!(
+                "uds {} already owned by a live broker; TCP only",
+                socket_path.display()
+            ),
+        ),
+        Err(e) => crate::log::info(
+            "queue-broker",
+            &format!("cannot bind uds {}: {e}; TCP only", socket_path.display()),
+        ),
+    }
+
     for mut req in server.incoming_requests() {
         let state = Arc::clone(&state);
         let token = token.clone();
         std::thread::spawn(move || {
-            let path = req.url().split('?').next().unwrap_or("").to_string();
-            let resp = if req.method() == &Method::Get && path == "/healthz" {
-                json_response(200, ok(json!({"service": "queue-broker"})))
-            } else if !token_ok(&req, &token) {
-                json_response(401, json!({"error": "unauthorized"}))
-            } else if req.method() != &Method::Post {
-                json_response(405, json!({"error": "POST only"}))
-            } else {
-                let mut buf = String::new();
-                match req.as_reader().read_to_string(&mut buf) {
-                    Ok(_) => {
-                        let parsed: Value = serde_json::from_str(&buf).unwrap_or(Value::Null);
-                        json_response(200, dispatch(&state, &path, &parsed))
-                    }
-                    Err(e) => json_response(
-                        400,
-                        json!({"ok": false, "exit": 2, "error": format!("bad body: {e}")}),
-                    ),
-                }
-            };
-            let _ = req.respond(resp);
+            let method = req.method().as_str().to_string();
+            let target = req.url().to_string();
+            let provided = req
+                .headers()
+                .iter()
+                .find(|h| h.field.as_str().to_ascii_lowercase() == "x-agent-token")
+                .map(|h| h.value.as_str().to_string());
+            let mut body = Vec::new();
+            if method == "POST" {
+                let _ = req.as_reader().read_to_end(&mut body);
+            }
+            let (status, value) =
+                handle_request(&state, &token, &method, &target, provided.as_deref(), &body);
+            let _ = req.respond(json_response(status, value));
         });
     }
     // incoming_requests() ends only when the server stops.
