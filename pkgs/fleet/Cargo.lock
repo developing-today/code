@@ -244,6 +244,7 @@ version = "0.1.0"
 dependencies = [
  "fleet-config",
  "fleet-dispatch",
+ "fleet-dispatch-test",
  "fleet-proxy",
  "fleet-proxy-proto",
  "fleet-queue",
@@ -271,6 +272,17 @@ dependencies = [
  "fleet-secrets",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "fleet-dispatch-test"
+version = "0.1.0"
+dependencies = [
+ "fleet-config",
+ "fleet-secrets",
+ "serde",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]
