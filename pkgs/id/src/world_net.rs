@@ -655,7 +655,7 @@ impl RecordsBudget {
         // Check ordering: keys must be strictly ascending
         if let Some(last) = &self.last_key {
             anyhow::ensure!(
-                key > last,
+                key > last.as_str(),
                 "records are out of order: key {key:?} <= last key {last:?}"
             );
         }
@@ -1618,7 +1618,7 @@ impl WorldClient {
                     // Validate that the cursor advanced from what we sent
                     if let Some(cursor) = &after {
                         anyhow::ensure!(
-                            next > cursor,
+                            next > cursor.as_str(),
                             "records cursor did not advance: next_after={next:?}, previous cursor={cursor:?}"
                         );
                     }
