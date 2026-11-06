@@ -551,6 +551,7 @@ fn is_kebab_id(id: &str) -> bool {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     const MANIFEST: &str = r#"
 [app]
@@ -784,6 +785,90 @@ route = "/tic-tac-toe"
         assert!(discovery.errors[0].contains("b-second"));
         assert!(discovery.errors[0].contains("interfaces.web.socket"));
         assert!(discovery.errors[0].contains("/shared"));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        /// #6454 Codex finding on PR #6470: the cross-kind uniqueness
+        /// invariant needs generated coverage, not only fixed examples.
+        /// Generate app sequences whose routes/sockets collide across
+        /// kinds and compare discovery against a sorted, first-wins
+        /// reference model over the single binding namespace.
+        #[test]
+        fn discovery_cross_kind_namespace_matches_first_wins_model(
+            specs in proptest::collection::vec(
+                (0usize..4, proptest::option::of(0usize..4)),
+                0..9,
+            )
+        ) {
+            const PATHS: [&str; 4] = ["/a", "/b", "/c", "/d"];
+            let root = tempfile::tempdir().unwrap();
+            for (index, (route, socket)) in specs.iter().enumerate() {
+                let id = format!("app-{index:02}");
+                write_discoverable_app(
+                    root.path(),
+                    &id,
+                    &manifest_with_web(&id, PATHS[*route], (*socket).map(|s| PATHS[s])),
+                );
+            }
+            // Reference model: folders scan in sort order (the
+            // zero-padded ids sort in generation order); an app is
+            // rejected when its route or socket is already claimed in
+            // the shared namespace, or when route == socket (the parse
+            // rejection); otherwise it claims both of its paths.
+            let mut claimed: Vec<&str> = Vec::new();
+            let mut accepted: Vec<String> = Vec::new();
+            let mut rejected: Vec<String> = Vec::new();
+            for (index, (route, socket)) in specs.iter().enumerate() {
+                let id = format!("app-{index:02}");
+                let route = PATHS[*route];
+                let socket = (*socket).map(|s| PATHS[s]);
+                let self_collision = socket == Some(route);
+                let namespace_collision = claimed.contains(&route)
+                    || socket.is_some_and(|s| claimed.contains(&s));
+                if self_collision || namespace_collision {
+                    rejected.push(id);
+                } else {
+                    claimed.push(route);
+                    if let Some(s) = socket {
+                        claimed.push(s);
+                    }
+                    accepted.push(id);
+                }
+            }
+            let discovery = discover_apps(root.path());
+            let found: Vec<&str> = discovery
+                .apps
+                .iter()
+                .map(|app| app.manifest.app.id.as_str())
+                .collect();
+            prop_assert_eq!(
+                found,
+                accepted.iter().map(String::as_str).collect::<Vec<_>>()
+            );
+            // Rejection isolation: exactly one named error per rejected
+            // app, in scan order, and no other errors.
+            prop_assert_eq!(discovery.errors.len(), rejected.len());
+            for (error, id) in discovery.errors.iter().zip(&rejected) {
+                prop_assert!(
+                    error.contains(id.as_str()),
+                    "error names the rejected app {id}: {error}"
+                );
+            }
+            // Namespace uniqueness across the registered set.
+            let mut bound: Vec<&str> = Vec::new();
+            for app in &discovery.apps {
+                let web = app.manifest.interfaces.web.as_ref().unwrap();
+                bound.push(web.route.as_str());
+                if let Some(socket) = &web.socket {
+                    bound.push(socket.as_str());
+                }
+            }
+            let mut unique = bound.clone();
+            unique.sort_unstable();
+            unique.dedup();
+            prop_assert_eq!(bound.len(), unique.len());
+        }
     }
 
     #[test]
