@@ -623,13 +623,13 @@ impl RecordsBudget {
             "record key must be 1..={} bytes",
             crate::world::MAX_RECORD_KEY_BYTES
         );
-        
+
         // Check for control characters
         anyhow::ensure!(
             !key.chars().any(char::is_control),
             "record key {key:?} contains a control character"
         );
-        
+
         // Check value size
         let value_bytes = serde_json::to_vec(value)
             .context("measure record value")?
@@ -639,7 +639,7 @@ impl RecordsBudget {
             "record {key:?} is {value_bytes} bytes; the limit is {} bytes",
             crate::world::MAX_RECORD_VALUE_BYTES
         );
-        
+
         // Check total count
         self.record_count = self
             .record_count
@@ -651,15 +651,15 @@ impl RecordsBudget {
             self.record_count,
             crate::world::MAX_RECORDS
         );
-        
+
         // Check ordering: keys must be strictly ascending
         if let Some(last) = &self.last_key {
             anyhow::ensure!(
-                key > last,
+                key > last.as_str(),
                 "records are out of order: key {key:?} <= last key {last:?}"
             );
         }
-        
+
         self.last_key = Some(key.to_owned());
         Ok(())
     }
@@ -1511,7 +1511,8 @@ impl WorldClient {
         for (_, page) in self.record_pages(capability, prefix).await? {
             // Validate each page's records against caps, ordering, and total count
             for (key, value) in &page {
-                budget.validate_record(key, value)
+                budget
+                    .validate_record(key, value)
                     .with_context(|| format!("invalid record in page"))?;
             }
             all.extend(page);
@@ -1534,23 +1535,25 @@ impl WorldClient {
         let mut pages = self.record_pages(capability, prefix).await?.into_iter();
         let (sequence, mut all) = pages.next().context("host sent no records page")?;
         let mut budget = RecordsBudget::default();
-        
+
         // Validate the first page
         for (key, value) in &all {
-            budget.validate_record(key, value)
+            budget
+                .validate_record(key, value)
                 .with_context(|| format!("invalid record in first page (sequence {sequence})"))?;
         }
-        
+
         for (page_sequence, page) in pages {
             anyhow::ensure!(
                 page_sequence == sequence,
                 "the world changed while its records were read"
             );
-            
+
             // Validate subsequent pages
             for (key, value) in &page {
-                budget.validate_record(key, value)
-                    .with_context(|| format!("invalid record in page (sequence {page_sequence})"))?;
+                budget.validate_record(key, value).with_context(|| {
+                    format!("invalid record in page (sequence {page_sequence})")
+                })?;
             }
             all.extend(page);
         }
@@ -1591,47 +1594,45 @@ impl WorldClient {
                 .context("records reply has no sequence")?;
             let page: crate::world::Records =
                 serde_json::from_value(reply["records"].clone()).context("decode records page")?;
-            
+
             // Validate the page's records against caps, ordering, and total count
             for (key, value) in &page {
-                budget.validate_record(key, value)
+                budget
+                    .validate_record(key, value)
                     .with_context(|| format!("invalid record in page for sequence {sequence}"))?;
             }
-            
+
             // Check cursor validation: next_after must equal the last key of this page
-            match reply["next_after"].as_str() {
-                Some(next) => {
-                    // Validate that next_after matches the last key in this page
-                    if let Some((last_key, _)) = page.iter().next_back() {
-                        anyhow::ensure!(
-                            next == last_key,
-                            "invalid records cursor: next_after={next:?} does not match last key {last_key:?}"
-                        );
-                    } else {
-                        // Empty page should only happen when after is not null
-                        anyhow::ensure!(
-                            after.is_some(),
-                            "empty records page returned on first request"
-                        );
-                    }
-                    
-                    // Validate that the cursor advanced from what we sent
-                    if let Some(cursor) = &after {
-                        anyhow::ensure!(
-                            next > cursor,
-                            "records cursor did not advance: next_after={next:?}, previous cursor={cursor:?}"
-                        );
-                    }
-                    
-                    after = Some(next.to_owned());
+            let next_after = reply["next_after"].as_str();
+            if let Some(next) = next_after {
+                // Validate that next_after matches the last key in this page
+                if let Some((last_key, _)) = page.iter().next_back() {
+                    anyhow::ensure!(
+                        next == last_key,
+                        "invalid records cursor: next_after={next:?} does not match last key {last_key:?}"
+                    );
+                } else {
+                    // Empty page should only happen when after is not null
+                    anyhow::ensure!(
+                        after.is_some(),
+                        "empty records page returned on first request"
+                    );
                 }
-                None => {
-                    // No more pages
-                    return Ok(pages);
+
+                // Validate that the cursor advanced from what we sent
+                if let Some(cursor) = &after {
+                    anyhow::ensure!(
+                        next > cursor.as_str(),
+                        "records cursor did not advance: next_after={next:?}, previous cursor={cursor:?}"
+                    );
                 }
             }
-            
+
             pages.push((sequence, page));
+            match next_after {
+                Some(next) => after = Some(next.to_owned()),
+                None => return Ok(pages),
+            }
         }
     }
 
