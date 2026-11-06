@@ -9016,6 +9016,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn test_footnote_multi_paragraph_definition_fixpoint() {
         // #1031: a two-paragraph footnote definition must keep its
         // paragraph boundary — the flat #945 shape fused the two
