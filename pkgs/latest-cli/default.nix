@@ -343,6 +343,19 @@ in
     assert lib.assertMsg (
       system == "x86_64-linux"
     ) "pkgs/latest-cli: t3 is a prebuilt x86_64-linux artifact; system is ${system}";
+    let
+      # Pinned to the last patchelf known to patch the t3 SEA binary
+      # correctly (see the preFixup note in the derivation); the patchelf
+      # current nixpkgs ships (0.19.x) corrupts it.
+      patchelf0152 = stdenv.mkDerivation {
+        pname = "patchelf";
+        version = "0.15.2";
+        src = fetchurl {
+          url = "https://github.com/NixOS/patchelf/releases/download/0.15.2/patchelf-0.15.2.tar.bz2";
+          hash = "sha256-F3RfVkFZyOIo/EEtplogSLhGxLa0Igt3y/IkFuAvLXw=";
+        };
+      };
+    in
     stdenvNoCC.mkDerivation rec {
       pname = "t3";
       version = "0.1.2";
@@ -391,6 +404,33 @@ in
             ]
           }"
         runHook postInstall
+      '';
+
+      # The main `t3` binary is a Node single-executable (SEA) build, and
+      # patchelf 0.19.x -- the version current nixpkgs ships, and the one
+      # the autoPatchelfHook drives -- corrupts it: its rewrite of this
+      # binary's ELF layout segfaults at startup. Verified 2026-11-02
+      # against the fleet-pin build: a 0.19.2-patched binary dies with
+      # SIGSEGV on `--version` inside and outside the build sandbox and
+      # is byte-identical to the failing build outputs, while patchelf
+      # 0.15.2 (what the previous nixpkgs pin used, which produced
+      # working t3 builds) patches it correctly. Every other file in the
+      # tree is patched fine by the hook, so the hook still handles the
+      # tree; the main binary is held out of its pass -- moved aside in
+      # preFixup, then restored and patched with the pinned patchelf
+      # 0.15.2 in preInstallCheck, after fixup completes -- so the
+      # installCheck below gates on exactly the binary that ships.
+      preFixup = ''
+        mv "$out/libexec/t3/t3" "$TMPDIR/t3-main-pristine"
+      '';
+
+      preInstallCheck = ''
+        mv "$TMPDIR/t3-main-pristine" "$out/libexec/t3/t3"
+        chmod +x "$out/libexec/t3/t3"
+        ${patchelf0152}/bin/patchelf \
+          --set-interpreter "$(cat ${stdenv.cc}/nix-support/dynamic-linker)" \
+          --set-rpath "${stdenv.cc.cc.lib}/lib:${stdenv.cc.cc.libgcc}/lib" \
+          "$out/libexec/t3/t3"
       '';
 
       doInstallCheck = true;
