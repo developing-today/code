@@ -59,7 +59,12 @@ run_case() {
   local bws_fx="$TMP/$name.bws.json" mirror="$TMP/$name.mirror.yaml" out rc
   write_bws_fixture "$bws_fx" "$bws_doc"
   export BWS_FIXTURE="$bws_fx"
-  if [ "$mirror_doc" = "MISSING" ]; then
+  if [ "$mirror_doc" = "BROKEN" ]; then
+    # Mirror file exists, but decryption fails (stub is pointed at a
+    # nonexistent fixture): an operational failure, not drift.
+    printf 'not-a-real-sops-file\n' >"$mirror"
+    export SOPS_FIXTURE="$TMP/does-not-exist.json"
+  elif [ "$mirror_doc" = "MISSING" ]; then
     rm -f "$mirror"
     export SOPS_FIXTURE="$TMP/does-not-exist.json"
   else
@@ -128,7 +133,12 @@ run_case combined \
   '{"alpha": "VALUE-ALPHA", "beta": "VALUE-BETA", "gone": "VALUE-GONE"}' 1 \
   "  + delta" "  - gone" "  ~ beta"
 
-# 6. Missing mirror file -> exit 1, every BWS key reported as added.
+# 6. Operational failure: mirror exists but cannot be decrypted -> exit 2,
+#    never exit 1 (exit 1 is reserved for confirmed drift).
+run_case operational \
+  "$FRESH_BWS" "BROKEN" 2
+
+# 7. Missing mirror file -> exit 1, every BWS key reported as added.
 run_case missing \
   "$FRESH_BWS" "MISSING" 1 \
   "  + alpha" "  + beta"

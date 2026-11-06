@@ -32,7 +32,7 @@ CHECK=false
 
 die() {
   echo "bws-to-sops: $*" >&2
-  exit 1
+  exit "${DIE_EXIT:-1}"
 }
 
 while [ $# -gt 0 ]; do
@@ -60,6 +60,12 @@ while [ $# -gt 0 ]; do
   *) die "unknown argument: $1" ;;
   esac
 done
+
+# In --check mode, operational failures (no token, bws failure, duplicate
+# keys, decrypt failure) exit 2, so callers can tell them apart from
+# confirmed drift, which is exit 1 (#5451).
+DIE_EXIT=1
+[ "$CHECK" = true ] && DIE_EXIT=2
 
 for bin in bws sops jq; do
   command -v "$bin" >/dev/null 2>&1 || die "$bin not found in PATH"
@@ -100,7 +106,8 @@ if [ "$CHECK" = true ]; then
   # Names-only freshness check (#5451): compare BWS against the committed
   # mirror without writing anything. The jq programs below only ever touch
   # keys, so secret values cannot reach the output. Exit 0 when the mirror
-  # is fresh, 1 on any drift (added / removed / value-changed keys).
+  # is fresh, 1 on any drift (added / removed / value-changed keys), and 2
+  # on operational failure (see DIE_EXIT above) -- never conflate the two.
   if [ ! -f "$OUT" ]; then
     echo "Drift vs ${OUT#"$REPO_ROOT"/} (mirror missing; every key is added):"
     jq -r 'keys[] | "  + " + .' <<<"$DOC"
