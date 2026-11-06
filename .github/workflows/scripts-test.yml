@@ -2,6 +2,9 @@ name: scripts-test
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
 
 permissions:
   contents: read
@@ -33,3 +36,5 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -p 'test_worker_preflight.py' -v
       - name: Run bitwarden-load-secrets multiline contract tests (#5650)
         run: python3 -m unittest discover -s scripts/tests -p 'test_bitwarden_load_secrets.py' -v
+      - name: Run power-guard timing validation tests (#6477)
+        run: python3 -m unittest discover -s nixos/services/power-guard -p 'test_*.py' -v
