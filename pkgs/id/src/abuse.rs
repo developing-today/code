@@ -1213,6 +1213,7 @@ impl AbuseEvaluator {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -1456,6 +1457,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod budget_tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};

@@ -3,7 +3,7 @@ use crate::world::*;
 use std::sync::Arc;
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};

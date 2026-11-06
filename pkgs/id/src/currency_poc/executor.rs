@@ -189,7 +189,7 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
         let check_account = |id: AccountId, ledger: u32, role: &str| -> Result<()> {
             let account = self
                 .backend
-                .lookup_account(id)
+                .try_lookup_account(id)?
                 .with_context(|| format!("preflight: {role} account {id} does not exist"))?;
             if account.ledger != ledger {
                 bail!(
@@ -209,7 +209,7 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
 
         let user_balance = self
             .backend
-            .account_balance(request.user_source)
+            .try_account_balance(request.user_source)?
             .context("preflight: user source balance missing")?;
         let needed = request
             .amount_in
@@ -223,7 +223,7 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
         }
         let lp_balance = self
             .backend
-            .account_balance(request.lp_dest)
+            .try_account_balance(request.lp_dest)?
             .context("preflight: LP destination balance missing")?;
         if lp_balance.spendable() < amount_out {
             bail!(

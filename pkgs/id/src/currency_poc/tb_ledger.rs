@@ -23,10 +23,10 @@
 //!   equal to the persisted intent leg the recovery scanner checks
 //!   (`super::recovery`).
 //! - Status mapping covers the subset of TigerBeetle result codes the
-//!   PoC types model. An unmodelled status — or a transport-level
-//!   client error, for which the trait has no channel — panics with
-//!   the status/error named, rather than being silently folded into a
-//!   wrong variant. The scenarios exercise only the mapped subset.
+//!   PoC types model. Unmodelled statuses become explicit typed errors;
+//!   transport failures from creation requests become per-item backend
+//!   errors, and lookup/query failures propagate through the fallible
+//!   trait methods instead of being mistaken for missing records.
 //!
 //! The binding is behind the `currency-poc-tb` feature so default
 //! builds of the `id` crate do not link the client's native
@@ -34,7 +34,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use anyhow::{Context, Result};
 use tigerbeetle as tb;
@@ -49,20 +49,32 @@ use super::ledger::{
 /// substitute would serialize codes `0` and `1` identically, and a
 /// retry with the other code would report `Exists` instead of
 /// `ExistsWithDifferentFields`. `u16::MAX` has no wire representation
-/// under this scheme (its shift would wrap to `0`); the PoC's
-/// chart-of-accounts codes are small, and asking for `u16::MAX` is a
-/// programming error, not a runtime condition.
-fn wire_code(code: u16) -> u16 {
+/// under this scheme (its shift would wrap to `0`), so a create request
+/// containing it is rejected with `CodeOutOfRange` before reaching the server.
+fn wire_code(code: u16) -> Option<u16> {
     code.checked_add(1)
-        .expect("code u16::MAX has no TigerBeetle wire representation")
 }
 
 /// Inverse of [`wire_code`], used to restore the original code on
 /// lookups the registry does not know (e.g. records created by an
 /// earlier binding instance). Wire codes are always non-zero.
-fn poc_code(wire: u16) -> u16 {
+fn poc_code(wire: u16) -> Result<u16> {
     wire.checked_sub(1)
-        .expect("tigerbeetle returned a zero wire code")
+        .context("tigerbeetle returned a zero wire code")
+}
+
+fn lock_registry<'a, T>(registry: &'a Mutex<T>, name: &'static str) -> Option<MutexGuard<'a, T>> {
+    match registry.lock() {
+        Ok(guard) => Some(guard),
+        Err(error) => {
+            tracing::error!(
+                registry = name,
+                %error,
+                "TigerBeetle code registry mutex poisoned; falling back to wire codes"
+            );
+            None
+        }
+    }
 }
 
 /// A [`LedgerBackend`] backed by a live TigerBeetle cluster through
@@ -100,26 +112,27 @@ impl TigerBeetleLedger {
         self.runtime.block_on(future)
     }
 
-    fn account_code(&self, id: u128, wire: u16) -> u16 {
-        self.account_codes
-            .lock()
-            .expect("account code registry poisoned")
-            .get(&id)
-            .copied()
-            .unwrap_or_else(|| poc_code(wire))
+    fn account_code(&self, id: u128, wire: u16) -> Result<u16> {
+        let code = lock_registry(&self.account_codes, "account")
+            .and_then(|registry| registry.get(&id).copied());
+        match code {
+            Some(code) => Ok(code),
+            None => poc_code(wire),
+        }
     }
 
-    fn transfer_code(&self, id: u128, wire: u16) -> u16 {
-        self.transfer_codes
-            .lock()
-            .expect("transfer code registry poisoned")
-            .get(&id)
-            .copied()
-            .unwrap_or_else(|| poc_code(wire))
+    fn transfer_code(&self, id: u128, wire: u16) -> Result<u16> {
+        let code = lock_registry(&self.transfer_codes, "transfer")
+            .and_then(|registry| registry.get(&id).copied());
+        match code {
+            Some(code) => Ok(code),
+            None => poc_code(wire),
+        }
     }
 }
 
-fn to_tb_account(account: &Account) -> tb::Account {
+fn to_tb_account(account: &Account) -> std::result::Result<tb::Account, AccountError> {
+    let code = wire_code(account.code).ok_or(AccountError::CodeOutOfRange)?;
     let mut flags = tb::AccountFlags::empty();
     if account.flags.debits_must_not_exceed_credits {
         flags = flags | tb::AccountFlags::DebitsMustNotExceedCredits;
@@ -127,13 +140,13 @@ fn to_tb_account(account: &Account) -> tb::Account {
     if account.flags.credits_must_not_exceed_debits {
         flags = flags | tb::AccountFlags::CreditsMustNotExceedDebits;
     }
-    tb::Account {
+    Ok(tb::Account {
         id: account.id,
         ledger: account.ledger,
-        code: wire_code(account.code),
+        code,
         flags,
         ..Default::default()
-    }
+    })
 }
 
 fn from_tb_account(account: &tb::Account, code: u16) -> Account {
@@ -152,22 +165,23 @@ fn from_tb_account(account: &tb::Account, code: u16) -> Account {
     }
 }
 
-fn to_tb_transfer(transfer: &Transfer) -> tb::Transfer {
-    tb::Transfer {
+fn to_tb_transfer(transfer: &Transfer) -> std::result::Result<tb::Transfer, TransferError> {
+    let code = wire_code(transfer.code).ok_or(TransferError::CodeOutOfRange)?;
+    Ok(tb::Transfer {
         id: transfer.id,
         debit_account_id: transfer.debit_account_id,
         credit_account_id: transfer.credit_account_id,
         amount: transfer.amount,
         user_data_128: transfer.user_data_128,
         ledger: transfer.ledger,
-        code: wire_code(transfer.code),
+        code,
         flags: if transfer.linked {
             tb::TransferFlags::Linked
         } else {
             tb::TransferFlags::empty()
         },
         ..Default::default()
-    }
+    })
 }
 
 fn from_tb_transfer(transfer: &tb::Transfer, code: u16) -> Transfer {
@@ -195,7 +209,10 @@ fn map_account_status(status: tb::CreateAccountStatus) -> Result<(), AccountErro
         | Status::ExistsWithDifferentLedger
         | Status::ExistsWithDifferentCode => Err(AccountError::ExistsWithDifferentFields),
         Status::LedgerMustNotBeZero => Err(AccountError::LedgerMustNotBeZero),
-        other => panic!("tigerbeetle create_accounts returned unmodelled status {other:?}"),
+        other => {
+            tracing::error!(?other, "TigerBeetle returned an unmodelled account status");
+            Err(AccountError::UnmodelledStatus)
+        }
     }
 }
 
@@ -238,37 +255,52 @@ fn map_transfer_status(status: tb::CreateTransferStatus) -> Result<(), TransferE
         Status::OverflowsCreditsPending
         | Status::OverflowsCreditsPosted
         | Status::OverflowsCredits => Err(TransferError::CreditsMustNotExceedDebits),
-        other => panic!("tigerbeetle create_transfers returned unmodelled status {other:?}"),
+        other => {
+            tracing::error!(?other, "TigerBeetle returned an unmodelled transfer status");
+            Err(TransferError::UnmodelledStatus)
+        }
     }
 }
 
 impl LedgerBackend for TigerBeetleLedger {
     fn create_accounts(&mut self, accounts: &[Account]) -> Vec<Result<(), AccountError>> {
-        let wire: Vec<tb::Account> = accounts.iter().map(to_tb_account).collect();
-        let results = self
-            .block_on(self.client.create_accounts(&wire))
-            .expect("tigerbeetle create_accounts request failed");
-        assert_eq!(
-            results.len(),
-            accounts.len(),
-            "tigerbeetle returned one result per account"
-        );
+        let wire: Vec<tb::Account> = match accounts
+            .iter()
+            .map(to_tb_account)
+            .collect::<std::result::Result<_, _>>()
+        {
+            Ok(wire) => wire,
+            Err(error) => return vec![Err(error); accounts.len()],
+        };
+        let results = match self.block_on(self.client.create_accounts(&wire)) {
+            Ok(results) => results,
+            Err(error) => {
+                tracing::error!(%error, "TigerBeetle create_accounts request failed");
+                return vec![Err(AccountError::BackendFailure); accounts.len()];
+            }
+        };
+        if results.len() != accounts.len() {
+            tracing::error!(
+                expected = %accounts.len(),
+                actual = %results.len(),
+                "TigerBeetle returned an unexpected account status count"
+            );
+            return vec![Err(AccountError::BackendFailure); accounts.len()];
+        }
         // Record original codes only for creations TigerBeetle
         // accepted (Created) or confirmed identical (Exists). A
         // rejected creation (e.g. ExistsWithDifferentFields) must not
         // overwrite the registry: the stored record still carries
         // the earlier code, and lookups restore from the registry.
         {
-            let mut registry = self
-                .account_codes
-                .lock()
-                .expect("account code registry poisoned");
-            for (account, result) in accounts.iter().zip(results.iter()) {
-                if matches!(
-                    result.status,
-                    tb::CreateAccountStatus::Created | tb::CreateAccountStatus::Exists
-                ) {
-                    registry.insert(account.id, account.code);
+            if let Some(mut registry) = lock_registry(&self.account_codes, "account") {
+                for (account, result) in accounts.iter().zip(results.iter()) {
+                    if matches!(
+                        result.status,
+                        tb::CreateAccountStatus::Created | tb::CreateAccountStatus::Exists
+                    ) {
+                        registry.insert(account.id, account.code);
+                    }
                 }
             }
         }
@@ -279,30 +311,42 @@ impl LedgerBackend for TigerBeetleLedger {
     }
 
     fn create_transfers(&mut self, batch: &[Transfer]) -> Vec<Result<(), TransferError>> {
-        let wire: Vec<tb::Transfer> = batch.iter().map(to_tb_transfer).collect();
-        let results = self
-            .block_on(self.client.create_transfers(&wire))
-            .expect("tigerbeetle create_transfers request failed");
-        assert_eq!(
-            results.len(),
-            batch.len(),
-            "tigerbeetle returned one result per transfer"
-        );
+        let wire: Vec<tb::Transfer> = match batch
+            .iter()
+            .map(to_tb_transfer)
+            .collect::<std::result::Result<_, _>>()
+        {
+            Ok(wire) => wire,
+            Err(error) => return vec![Err(error); batch.len()],
+        };
+        let results = match self.block_on(self.client.create_transfers(&wire)) {
+            Ok(results) => results,
+            Err(error) => {
+                tracing::error!(%error, "TigerBeetle create_transfers request failed");
+                return vec![Err(TransferError::BackendFailure); batch.len()];
+            }
+        };
+        if results.len() != batch.len() {
+            tracing::error!(
+                expected = %batch.len(),
+                actual = %results.len(),
+                "TigerBeetle returned an unexpected transfer status count"
+            );
+            return vec![Err(TransferError::BackendFailure); batch.len()];
+        }
         // Same rule as create_accounts: record original codes only
         // for accepted (Created) or identical (Exists) transfers, so
         // a rejected retry cannot rewrite what lookups report for
         // the stored transfer.
         {
-            let mut registry = self
-                .transfer_codes
-                .lock()
-                .expect("transfer code registry poisoned");
-            for (transfer, result) in batch.iter().zip(results.iter()) {
-                if matches!(
-                    result.status,
-                    tb::CreateTransferStatus::Created | tb::CreateTransferStatus::Exists
-                ) {
-                    registry.insert(transfer.id, transfer.code);
+            if let Some(mut registry) = lock_registry(&self.transfer_codes, "transfer") {
+                for (transfer, result) in batch.iter().zip(results.iter()) {
+                    if matches!(
+                        result.status,
+                        tb::CreateTransferStatus::Created | tb::CreateTransferStatus::Exists
+                    ) {
+                        registry.insert(transfer.id, transfer.code);
+                    }
                 }
             }
         }
@@ -335,11 +379,22 @@ impl LedgerBackend for TigerBeetleLedger {
                 && raw[1..]
                     .iter()
                     .all(|r| matches!(r.status, tb::CreateTransferStatus::LinkedEventFailed));
-            if already_posted_pattern
+            let stored_legs_match = already_posted_pattern
                 && chain
                     .iter()
-                    .all(|leg| self.lookup_transfer(leg.id) == Some(leg.clone()))
-            {
+                    .all(|leg| match self.try_lookup_transfer(leg.id) {
+                        Ok(Some(found)) => found == *leg,
+                        Ok(None) => false,
+                        Err(error) => {
+                            tracing::error!(
+                                transfer_id = %leg.id,
+                                %error,
+                                "TigerBeetle idempotency verification lookup failed"
+                            );
+                            false
+                        }
+                    });
+            if stored_legs_match {
                 for slot in &mut mapped[chain_start..=chain_end] {
                     *slot = Err(TransferError::Exists);
                 }
@@ -349,35 +404,39 @@ impl LedgerBackend for TigerBeetleLedger {
         mapped
     }
 
-    fn lookup_transfer(&self, id: u128) -> Option<Transfer> {
+    fn try_lookup_transfer(&self, id: u128) -> Result<Option<Transfer>> {
         let found = self
             .block_on(self.client.lookup_transfers(&[id]))
-            .expect("tigerbeetle lookup_transfers request failed");
-        found
-            .first()
-            .map(|transfer| from_tb_transfer(transfer, self.transfer_code(id, transfer.code)))
+            .context("tigerbeetle lookup_transfers request failed")?;
+        let Some(transfer) = found.first() else {
+            return Ok(None);
+        };
+        let code = self.transfer_code(id, transfer.code)?;
+        Ok(Some(from_tb_transfer(transfer, code)))
     }
 
-    fn lookup_account(&self, id: u128) -> Option<Account> {
+    fn try_lookup_account(&self, id: u128) -> Result<Option<Account>> {
         let found = self
             .block_on(self.client.lookup_accounts(&[id]))
-            .expect("tigerbeetle lookup_accounts request failed");
-        found
-            .first()
-            .map(|account| from_tb_account(account, self.account_code(id, account.code)))
+            .context("tigerbeetle lookup_accounts request failed")?;
+        let Some(account) = found.first() else {
+            return Ok(None);
+        };
+        let code = self.account_code(id, account.code)?;
+        Ok(Some(from_tb_account(account, code)))
     }
 
-    fn account_balance(&self, id: u128) -> Option<AccountBalance> {
+    fn try_account_balance(&self, id: u128) -> Result<Option<AccountBalance>> {
         let found = self
             .block_on(self.client.lookup_accounts(&[id]))
-            .expect("tigerbeetle lookup_accounts request failed");
-        found.first().map(|account| AccountBalance {
+            .context("tigerbeetle lookup_accounts request failed")?;
+        Ok(found.first().map(|account| AccountBalance {
             debits_posted: account.debits_posted,
             credits_posted: account.credits_posted,
-        })
+        }))
     }
 
-    fn transfers_with_user_data_128(&self, value: u128) -> Vec<Transfer> {
+    fn try_transfers_with_user_data_128(&self, value: u128) -> Result<Vec<Transfer>> {
         // TigerBeetle treats a zero `user_data_128` filter as "no
         // filter" (QueryFilter documentation), so for value 0 the
         // query pages over every transfer; the exact post-filter
@@ -398,22 +457,37 @@ impl LedgerBackend for TigerBeetleLedger {
             };
             let found = self
                 .block_on(self.client.query_transfers(filter))
-                .expect("tigerbeetle query_transfers request failed");
+                .context("tigerbeetle query_transfers request failed")?;
             let page_full = found.len() == PAGE as usize;
             let last_timestamp = found.last().map(|transfer| transfer.timestamp);
-            matched.extend(
-                found
-                    .iter()
-                    .filter(|transfer| transfer.user_data_128 == value)
-                    .map(|transfer| {
-                        from_tb_transfer(transfer, self.transfer_code(transfer.id, transfer.code))
-                    }),
-            );
+            for transfer in found
+                .iter()
+                .filter(|transfer| transfer.user_data_128 == value)
+            {
+                let code = self.transfer_code(transfer.id, transfer.code)?;
+                matched.push(from_tb_transfer(transfer, code));
+            }
             match last_timestamp {
                 Some(last) if page_full => timestamp_min = last.saturating_add(1),
                 _ => break,
             }
         }
-        matched
+        Ok(matched)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{poc_code, wire_code};
+
+    #[test]
+    fn wire_code_rejects_the_unrepresentable_maximum() {
+        assert_eq!(wire_code(0), Some(1));
+        assert_eq!(wire_code(u16::MAX), None);
+    }
+
+    #[test]
+    fn zero_wire_code_is_reported_as_an_error() {
+        assert!(poc_code(0).is_err());
     }
 }

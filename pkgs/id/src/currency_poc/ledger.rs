@@ -85,6 +85,12 @@ pub enum AccountError {
     ExistsWithDifferentFields,
     /// `ledger` must be non-zero.
     LedgerMustNotBeZero,
+    /// The PoC code cannot be represented by the TigerBeetle wire encoding.
+    CodeOutOfRange,
+    /// The backend request failed before account statuses were returned.
+    BackendFailure,
+    /// The backend returned a status not modeled by this PoC.
+    UnmodelledStatus,
 }
 
 /// Per-transfer failures (subset of TigerBeetle's result codes).
@@ -118,6 +124,12 @@ pub enum TransferError {
     LedgerMismatch,
     DebitsMustNotExceedCredits,
     CreditsMustNotExceedDebits,
+    /// The PoC code cannot be represented by the TigerBeetle wire encoding.
+    CodeOutOfRange,
+    /// The backend request failed before transfer statuses were returned.
+    BackendFailure,
+    /// The backend returned a status not modeled by this PoC.
+    UnmodelledStatus,
 }
 
 /// The ledger operations the conversion executor needs.
@@ -137,12 +149,60 @@ pub trait LedgerBackend {
     /// (properly terminated) in a later batch. A production binding
     /// must implement the same rule.
     fn create_transfers(&mut self, batch: &[Transfer]) -> Vec<Result<(), TransferError>>;
-    fn lookup_transfer(&self, id: TransferId) -> Option<Transfer>;
-    fn lookup_account(&self, id: AccountId) -> Option<Account>;
-    fn account_balance(&self, id: AccountId) -> Option<AccountBalance>;
+    /// Fallible ID lookup. Recovery must use this form so a backend outage
+    /// cannot be mistaken for an absent transfer.
+    fn try_lookup_transfer(&self, id: TransferId) -> anyhow::Result<Option<Transfer>>;
+    /// Best-effort lookup for tests and inspection. Critical paths should use
+    /// [`Self::try_lookup_transfer`] to distinguish absence from backend errors.
+    fn lookup_transfer(&self, id: TransferId) -> Option<Transfer> {
+        match self.try_lookup_transfer(id) {
+            Ok(found) => found,
+            Err(error) => {
+                tracing::error!(transfer_id = %id, %error, "ledger transfer lookup failed");
+                None
+            }
+        }
+    }
+    /// Fallible account lookup for preflight and other critical paths.
+    fn try_lookup_account(&self, id: AccountId) -> anyhow::Result<Option<Account>>;
+    /// Best-effort lookup for tests and inspection. Critical paths should use
+    /// [`Self::try_lookup_account`] to distinguish absence from backend errors.
+    fn lookup_account(&self, id: AccountId) -> Option<Account> {
+        match self.try_lookup_account(id) {
+            Ok(found) => found,
+            Err(error) => {
+                tracing::error!(account_id = %id, %error, "ledger account lookup failed");
+                None
+            }
+        }
+    }
+    /// Fallible balance lookup for preflight and other critical paths.
+    fn try_account_balance(&self, id: AccountId) -> anyhow::Result<Option<AccountBalance>>;
+    /// Best-effort balance lookup for tests and inspection.
+    fn account_balance(&self, id: AccountId) -> Option<AccountBalance> {
+        match self.try_account_balance(id) {
+            Ok(balance) => balance,
+            Err(error) => {
+                tracing::error!(account_id = %id, %error, "ledger balance lookup failed");
+                None
+            }
+        }
+    }
     /// All posted transfers stamped with the given `user_data_128`
     /// (the conversion lookup the acceptance criteria ask for).
-    fn transfers_with_user_data_128(&self, value: u128) -> Vec<Transfer>;
+    fn try_transfers_with_user_data_128(&self, value: u128) -> anyhow::Result<Vec<Transfer>>;
+    /// Best-effort query for tests and inspection. Critical paths should use
+    /// [`Self::try_transfers_with_user_data_128`] to distinguish an empty result
+    /// from a backend error.
+    fn transfers_with_user_data_128(&self, value: u128) -> Vec<Transfer> {
+        match self.try_transfers_with_user_data_128(value) {
+            Ok(transfers) => transfers,
+            Err(error) => {
+                tracing::error!(user_data_128 = %value, %error, "ledger transfer query failed");
+                Vec::new()
+            }
+        }
+    }
 }
 
 /// In-memory backend implementing the TigerBeetle semantics listed in
@@ -343,24 +403,25 @@ impl LedgerBackend for InMemoryLedger {
         results
     }
 
-    fn lookup_transfer(&self, id: TransferId) -> Option<Transfer> {
-        self.transfers.get(&id).cloned()
+    fn try_lookup_transfer(&self, id: TransferId) -> anyhow::Result<Option<Transfer>> {
+        Ok(self.transfers.get(&id).cloned())
     }
 
-    fn lookup_account(&self, id: AccountId) -> Option<Account> {
-        self.accounts.get(&id).cloned()
+    fn try_lookup_account(&self, id: AccountId) -> anyhow::Result<Option<Account>> {
+        Ok(self.accounts.get(&id).cloned())
     }
 
-    fn account_balance(&self, id: AccountId) -> Option<AccountBalance> {
-        self.balances.get(&id).copied()
+    fn try_account_balance(&self, id: AccountId) -> anyhow::Result<Option<AccountBalance>> {
+        Ok(self.balances.get(&id).copied())
     }
 
-    fn transfers_with_user_data_128(&self, value: u128) -> Vec<Transfer> {
-        self.transfer_order
+    fn try_transfers_with_user_data_128(&self, value: u128) -> anyhow::Result<Vec<Transfer>> {
+        Ok(self
+            .transfer_order
             .iter()
             .filter_map(|id| self.transfers.get(id))
             .filter(|transfer| transfer.user_data_128 == value)
             .cloned()
-            .collect()
+            .collect())
     }
 }

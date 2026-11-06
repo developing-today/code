@@ -3,7 +3,7 @@
 //! Nothing here touches the network. The accept goes through an [`AcceptSender`] that records
 //! each send, so a refusal can be checked as "no send happened".
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use anyhow::Result;
 use ed25519_dalek::SigningKey;

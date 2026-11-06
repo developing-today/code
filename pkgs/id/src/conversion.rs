@@ -536,6 +536,7 @@ pub fn build_conversion_batch(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use proptest::prelude::*;
 

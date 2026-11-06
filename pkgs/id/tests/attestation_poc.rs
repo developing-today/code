@@ -22,7 +22,7 @@
 //! re-implemented here; the PoC question is whether the #2037 object
 //! shapes carry the attestation, not how bytes move.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use p2panda_core::{Hash, SigningKey};
 use tempfile::TempDir;

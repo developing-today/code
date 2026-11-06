@@ -952,7 +952,7 @@ fn footer_message(
 
 #[cfg(all(test, feature = "sandbox"))]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used)]
+    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
     use super::*;
 

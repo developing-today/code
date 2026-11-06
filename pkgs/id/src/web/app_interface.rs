@@ -442,6 +442,7 @@ pub fn web_interface_from_app_toml(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
