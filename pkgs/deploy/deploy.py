@@ -570,34 +570,41 @@ NOT_IMPLEMENTED = (
 )
 
 
-def _take_value_flag(args, flag):
-    while flag in args:
-        idx = args.index(flag)
-        if idx + 1 >= len(args):
-            return None, args, False
-        value = args[idx + 1]
-        del args[idx : idx + 2]
-        return value, args, True
-    return None, args, True
-
-
 def main(argv):
-    args = list(argv)
     registry_path = os.environ.get("DEPLOY_REGISTRY")
     explicit_state = None
     explicit_base = None
-    for flag in ("--registry", "--state-dir", "--profile-base"):
-        value, args, ok = _take_value_flag(args, flag)
-        if not ok:
+    # Value flags may appear before or after the subcommand, in either
+    # "--flag PATH" or "--flag=PATH" form, each at most once: a second
+    # occurrence is the typo-flag class of issue #6376, never a silent
+    # override of the first.
+    flag_values = {}
+    args = []
+    it = iter(argv)
+    for arg in it:
+        flag = next(
+            (
+                f
+                for f in ("--registry", "--state-dir", "--profile-base")
+                if arg == f or arg.startswith(f + "=")
+            ),
+            None,
+        )
+        if flag is None:
+            args.append(arg)
+            continue
+        if flag in flag_values:
+            print(f"deploy: {flag} given more than once", file=sys.stderr)
+            return 2
+        value = next(it, None) if arg == flag else arg[len(flag) + 1 :]
+        if not value:
             print(f"deploy: {flag} needs a path", file=sys.stderr)
             return 2
-        if value is not None:
-            if flag == "--registry":
-                registry_path = value
-            elif flag == "--state-dir":
-                explicit_state = value
-            else:
-                explicit_base = value
+        flag_values[flag] = value
+    if "--registry" in flag_values:
+        registry_path = flag_values["--registry"]
+    explicit_state = flag_values.get("--state-dir")
+    explicit_base = flag_values.get("--profile-base")
     dry_run = "--dry-run" in args
     args = [a for a in args if a != "--dry-run"]
     usage = (
@@ -620,6 +627,12 @@ def main(argv):
         print(f"deploy: cannot load registry {registry_path}: {exc}", file=sys.stderr)
         return 1
     if args[0] == "list":
+        if len(args) > 1:
+            print(
+                f"deploy: unexpected argument {args[1]!r} after 'list'",
+                file=sys.stderr,
+            )
+            return 2
         return cmd_list(registry)
     errors = validate(registry)
     if errors:

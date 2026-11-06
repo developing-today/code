@@ -1316,6 +1316,15 @@ let
               python3 ${../pkgs/deploy/test_deploy_slice2.py} ${../pkgs/deploy/deploy.py}
               mkdir -p $out
             '';
+        deploy-argv =
+          pkgs.runCommandLocal "check-deploy-argv"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_argv.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
         deploy-list-malformed = pkgs.runCommandLocal "check-deploy-list-malformed" { } ''
           expect_invalid() {
             registry="$1"
