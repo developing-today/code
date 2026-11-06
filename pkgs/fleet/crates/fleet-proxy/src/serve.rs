@@ -257,9 +257,78 @@ struct GateState {
     needs_recovery: bool,
     recovery_in_flight: bool,
     active_generation: u64,
-    completed_generation: u64,
-    last_error: Option<String>,
     next_generation: u64,
+    /// Verdict of each completed recovery generation (None =
+    /// success), kept per generation so a waiter always reads the
+    /// verdict of the generation IT waited on, never a successor's.
+    /// Pruned to the most recent generations (see `record`).
+    verdicts: std::collections::HashMap<u64, Option<String>>,
+}
+
+/// What [`decide`] tells a caller to do next — the gate's pure
+/// decision core, driven synchronously by the model-based
+/// property test and under the condvar by [`RecoveryGate::run`].
+#[derive(Debug, PartialEq, Eq)]
+enum Decision {
+    /// Healthy path: open now, ungated.
+    OpenNormal,
+    /// You are the one recovery attempt, generation attached.
+    OpenRecovery(u64),
+    /// A recovery is in flight: wait for this generation.
+    Wait(u64),
+    /// The generation you waited on failed: share its verdict.
+    ShareFailure(String),
+    /// The generation you waited on succeeded: open ungated.
+    ProceedAfterRecovery,
+}
+
+/// Pure gate decision for one caller. `waiting_on` is the
+/// generation the caller has been waiting for, if any — its
+/// verdict is consumed FIRST, before any newer in-flight attempt
+/// is considered (Codex P2, PR #6490).
+fn decide(entry: &mut GateState, waiting_on: Option<u64>) -> Decision {
+    if let Some(wgen) = waiting_on {
+        if let Some(verdict) = entry.verdicts.get(&wgen) {
+            return match verdict {
+                Some(err) => Decision::ShareFailure(err.clone()),
+                None => Decision::ProceedAfterRecovery,
+            };
+        }
+    }
+    if entry.recovery_in_flight {
+        return Decision::Wait(entry.active_generation);
+    }
+    if entry.needs_recovery {
+        entry.next_generation += 1;
+        entry.active_generation = entry.next_generation;
+        entry.recovery_in_flight = true;
+        entry.needs_recovery = false;
+        return Decision::OpenRecovery(entry.active_generation);
+    }
+    Decision::OpenNormal
+}
+
+/// Pure gate bookkeeping for a finished attempt. Any failure
+/// arms recovery for the next opener; a recovery attempt also
+/// records its generation's verdict (consumed by its waiters via
+/// [`decide`]) and disarms the gate on success. Verdicts are
+/// pruned to the last 64 generations — far beyond any live
+/// waiter cohort.
+fn record(entry: &mut GateState, recovery_generation: Option<u64>, error: Option<&String>) {
+    if error.is_some() {
+        entry.needs_recovery = true;
+    }
+    if let Some(generation) = recovery_generation {
+        entry.recovery_in_flight = false;
+        entry.verdicts.insert(generation, error.cloned());
+        if error.is_none() {
+            entry.needs_recovery = false;
+        }
+        if entry.verdicts.len() > 64 {
+            let floor = generation.saturating_sub(64);
+            entry.verdicts.retain(|gnum, _| *gnum > floor);
+        }
+    }
 }
 
 /// Single-flight tunnel RECOVERY (#5758, shaped by PR #6490's
@@ -290,67 +359,33 @@ impl RecoveryGate {
     fn run<T>(&self, port: u16, attempt: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
         let deadline = Instant::now() + RECOVERY_WAIT;
         let mut waiting_on: Option<u64> = None;
-        // Phase 1: decide — wait for an in-flight recovery, share
-        // its failure, or become an opener (recovery or normal).
-        let (recovery, generation) = loop {
+        let recovery_generation = loop {
             let mut state = self.state.lock().unwrap();
             let entry = state.entry(port).or_default();
-            // Consume the waited-on generation's verdict FIRST,
-            // before any newer in-flight attempt can overwrite
-            // what this caller observed (Codex P2, PR #6490).
-            if let Some(wgen) = waiting_on {
-                if entry.completed_generation == wgen {
-                    match &entry.last_error {
-                        Some(err) => return Err(err.clone()),
-                        None => {
-                            // Recovery succeeded: open ungated.
-                            break (false, 0);
-                        }
+            match decide(entry, waiting_on) {
+                Decision::ShareFailure(err) => return Err(err),
+                Decision::ProceedAfterRecovery => break None,
+                Decision::OpenNormal => break None,
+                Decision::OpenRecovery(generation) => break Some(generation),
+                Decision::Wait(generation) => {
+                    waiting_on = Some(generation);
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return Err(format!(
+                            "tunnel recovery for port {port} still in flight; failing fast"
+                        ));
                     }
+                    let (guard, _) = self.finished.wait_timeout(state, left).unwrap();
+                    state = guard;
+                    continue;
                 }
             }
-            if entry.recovery_in_flight {
-                waiting_on = Some(entry.active_generation);
-                let left = deadline.saturating_duration_since(Instant::now());
-                if left.is_zero() {
-                    return Err(format!(
-                        "tunnel recovery for port {port} still in flight; failing fast"
-                    ));
-                }
-                let (guard, _) = self.finished.wait_timeout(state, left).unwrap();
-                state = guard;
-                continue;
-            }
-            if entry.needs_recovery {
-                entry.next_generation += 1;
-                entry.active_generation = entry.next_generation;
-                entry.recovery_in_flight = true;
-                entry.needs_recovery = false;
-                break (true, entry.active_generation);
-            }
-            // Healthy path: no gate at all.
-            break (false, 0);
         };
-        // Phase 2: the attempt itself, outside the lock.
         let got = attempt();
-        // Phase 3: record the outcome. A failure (any mode) arms
-        // single-flight recovery for the next opener; a recovery
-        // success disarms it and releases its cohort.
         let mut state = self.state.lock().unwrap();
         let entry = state.entry(port).or_default();
-        if got.is_err() {
-            entry.needs_recovery = true;
-        }
-        if recovery {
-            entry.recovery_in_flight = false;
-            entry.completed_generation = generation;
-            entry.last_error = match &got {
-                Ok(_) => None,
-                Err(e) => Some(e.clone()),
-            };
-            if got.is_ok() {
-                entry.needs_recovery = false;
-            }
+        record(entry, recovery_generation, got.as_ref().err());
+        if recovery_generation.is_some() {
             self.finished.notify_all();
         }
         got
@@ -1083,6 +1118,163 @@ mod tests {
         // needs_recovery cleared: a later failure is a fresh
         // normal-mode failure, and the gate re-arms only then.
         assert!(gate.run(PORT, || Ok::<(), String>(())).is_ok());
+    }
+
+    // Model-based property test for the RecoveryGate decision
+    // core (Codex P1 round 2 on PR #6490; the repo testing
+    // doctrine: a state machine's invariants get a model and a
+    // generator, not only handwritten schedules). The MODEL is
+    // the oracle: an independent, minimal restatement of the
+    // gate spec — armed flag, the single in-flight recovery
+    // generation, and per-generation verdicts. Generated step
+    // sequences advance four simulated callers through the REAL
+    // `decide`/`record` functions; after every step the gate
+    // state must equal the model's, the decision must be the one
+    // the model predicts, and at most one simulated caller may
+    // hold a recovery opening.
+    #[derive(Debug, Clone, PartialEq)]
+    enum SimCaller {
+        New,
+        Waiting(u64),
+        Opening(Option<u64>, bool, String),
+        Done(Result<(), String>),
+    }
+
+    #[test]
+    fn recovery_gate_matches_the_model_on_generated_interleavings() {
+        use proptest::prelude::*;
+        #[derive(Default)]
+        struct Model {
+            armed: bool,
+            in_flight: Option<u64>,
+            next_gen: u64,
+            verdicts: std::collections::HashMap<u64, Option<String>>,
+        }
+        fn model_decide(m: &Model, waiting_on: Option<u64>) -> Decision {
+            if let Some(wgen) = waiting_on {
+                if let Some(verdict) = m.verdicts.get(&wgen) {
+                    return match verdict {
+                        Some(err) => Decision::ShareFailure(err.clone()),
+                        None => Decision::ProceedAfterRecovery,
+                    };
+                }
+            }
+            if let Some(g) = m.in_flight {
+                return Decision::Wait(g);
+            }
+            if m.armed {
+                return Decision::OpenRecovery(m.next_gen + 1);
+            }
+            Decision::OpenNormal
+        }
+        let strategy = proptest::collection::vec((0usize..4, any::<bool>()), 0..48usize);
+        proptest!(|(
+            steps in strategy,
+        )| {
+            let mut entry = GateState::default();
+            let mut model = Model::default();
+            let mut callers = vec![SimCaller::New; 4];
+            let mut attempts = 0u64;
+            let advance = |entry: &mut GateState,
+                           model: &mut Model,
+                           callers: &mut Vec<SimCaller>,
+                           ci: usize,
+                           succeed: bool,
+                           attempts: &mut u64| {
+                match callers[ci].clone() {
+                    SimCaller::New | SimCaller::Waiting(_) => {
+                        let waiting_on = match callers[ci] {
+                            SimCaller::Waiting(g) => Some(g),
+                            _ => None,
+                        };
+                        let expected = model_decide(model, waiting_on);
+                        let got = decide(entry, waiting_on);
+                        prop_assert_eq!(&got, &expected);
+                        match got {
+                            Decision::ShareFailure(err) => {
+                                // Oracle check: the shared error is
+                                // exactly the waited generation's
+                                // recorded verdict.
+                                let wgen = waiting_on.unwrap();
+                                prop_assert_eq!(
+                                    Some(&Some(err.clone())),
+                                    model.verdicts.get(&wgen)
+                                );
+                                callers[ci] = SimCaller::Done(Err(err));
+                            }
+                            Decision::ProceedAfterRecovery | Decision::OpenNormal => {
+                                *attempts += 1;
+                                let label = format!("err-c{ci}-a{attempts}");
+                                callers[ci] = SimCaller::Opening(None, succeed, label);
+                            }
+                            Decision::OpenRecovery(g) => {
+                                model.in_flight = Some(g);
+                                model.next_gen = g;
+                                model.armed = false;
+                                *attempts += 1;
+                                let label = format!("err-c{ci}-a{attempts}");
+                                callers[ci] = SimCaller::Opening(Some(g), succeed, label);
+                            }
+                            Decision::Wait(g) => {
+                                callers[ci] = SimCaller::Waiting(g);
+                            }
+                        }
+                    }
+                    SimCaller::Opening(gnum, succeed, label) => {
+                        let err = if succeed { None } else { Some(label.clone()) };
+                        record(entry, gnum, err.as_ref());
+                        if err.is_some() {
+                            model.armed = true;
+                        }
+                        if let Some(g) = gnum {
+                            model.in_flight = None;
+                            model.verdicts.insert(g, err.clone());
+                            if err.is_none() {
+                                model.armed = false;
+                            }
+                        }
+                        callers[ci] = SimCaller::Done(if succeed {
+                            Ok(())
+                        } else {
+                            Err(label)
+                        });
+                    }
+                    SimCaller::Done(_) => {}
+                }
+                // State equality with the model after every step.
+                prop_assert_eq!(entry.needs_recovery, model.armed);
+                prop_assert_eq!(entry.recovery_in_flight, model.in_flight.is_some());
+                prop_assert_eq!(entry.verdicts.len(), model.verdicts.len());
+                for (g, v) in &model.verdicts {
+                    prop_assert_eq!(entry.verdicts.get(g), Some(v));
+                }
+                // Invariant: at most one recovery opening exists.
+                let recovery_openings = callers
+                    .iter()
+                    .filter(|c| matches!(c, SimCaller::Opening(Some(_), _, _)))
+                    .count();
+                prop_assert!(recovery_openings <= 1);
+                Ok(())
+            };
+            for (ci, succeed) in &steps {
+                advance(&mut entry, &mut model, &mut callers, *ci, *succeed, &mut attempts)?;
+            }
+            // Drain: with cooperative (succeeding) steps every
+            // caller must reach a terminal state — no caller is
+            // ever stranded waiting on a generation.
+            for _ in 0..200 {
+                if callers.iter().all(|c| matches!(c, SimCaller::Done(_))) {
+                    break;
+                }
+                for ci in 0..4 {
+                    advance(&mut entry, &mut model, &mut callers, ci, true, &mut attempts)?;
+                }
+            }
+            prop_assert!(
+                callers.iter().all(|c| matches!(c, SimCaller::Done(_))),
+                "callers stranded: {callers:?}"
+            );
+        });
     }
 
     #[test]
