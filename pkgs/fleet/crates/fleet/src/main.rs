@@ -408,9 +408,9 @@ fn required_capability(d: &Domain, args: &[String]) -> Result<Capability, i32> {
             let sub = args.first().map(|s| s.as_str());
             match sub {
                 Some("serve") => Ok(Capability::ProxyServe),
-                Some("connect") | Some("init") => Ok(Capability::ProxyConnect),
+                Some("connect") | Some("init") | Some("ssh") => Ok(Capability::ProxyConnect),
                 _ => Err(usage_error(
-                    "'fleet proxy' needs a command: serve, connect, or init",
+                    "'fleet proxy' needs a command: serve, connect, init, or ssh",
                 )),
             }
         }
@@ -533,6 +533,17 @@ broker socket from fleet config (FLEET_BROKER_SOCKET / broker_socket).
 
 Takes no arguments.";
 
+const PROXY_SSH_USAGE: &str = "\
+Usage: fleet proxy ssh -- [ssh args...]
+
+Run system OpenSSH through the fleet proxy as a recovery path. The destination,
+identity, host-key policy, timeouts, keepalives, and ControlMaster settings are
+pinned by fleet. SSH options go after `--`; an optional remote command may follow
+the fixed destination. The fleet proxy credential stays in the environment and
+is sent only by the CONNECT relay.
+
+The inner SSH destination is fixed; do not pass an SSH `--` separator.";
+
 /// What the arguments after `fleet proxy serve` ask for. The serve
 /// leaf takes no arguments at all (`fleet_proxy::serve::run` is
 /// config-only), so anything trailing is either a help request or a
@@ -615,7 +626,141 @@ fn run_proxy(surface: &Surface, args: &[String]) -> i32 {
             }
         }
         Some("init") => run_init_call(surface, &args[1..]),
+        Some("ssh") => run_proxy_ssh(&args[1..], config),
         _ => unreachable!("required_capability rejects other proxy commands first"),
+    }
+}
+
+/// Split SSH's option prefix from its optional remote command. The fleet
+/// supplies the destination between these parts so callers cannot redirect
+/// the recovery command to an arbitrary host. Options (including their
+/// separate operands) remain byte-for-byte argument values, not shell text.
+fn split_ssh_options_and_command(args: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
+    const OPTIONS_WITH_OPERANDS: &[&str] = &[
+        "-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m", "-O", "-o",
+        "-p", "-Q", "-R", "-S", "-W", "-w",
+    ];
+
+    let mut options = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--" {
+            return Err("the SSH destination is fixed; do not pass a second '--'".to_string());
+        }
+        if !arg.starts_with('-') || arg == "-" {
+            return Ok((options, args[index..].to_vec()));
+        }
+        options.push(arg.clone());
+        if OPTIONS_WITH_OPERANDS.contains(&arg.as_str()) {
+            let operand = args
+                .get(index + 1)
+                .ok_or_else(|| format!("SSH option {arg} needs an argument"))?;
+            if operand == "--" {
+                return Err(format!("SSH option {arg} needs an argument before '--'"));
+            }
+            options.push(operand.clone());
+            index += 2;
+        } else {
+            index += 1;
+        }
+    }
+    Ok((options, Vec::new()))
+}
+
+fn shell_quote_executable(path: &std::path::Path) -> Result<String, String> {
+    let path = path.to_str().ok_or_else(|| {
+        "fleet executable path is not valid UTF-8 for OpenSSH ProxyCommand".to_string()
+    })?;
+    Ok(shell_quote(path))
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn build_proxy_ssh_argv(
+    executable: &std::path::Path,
+    config: &fleet_config::Config,
+    ssh_args: &[String],
+) -> Result<Vec<std::ffi::OsString>, String> {
+    let (options, command) = split_ssh_options_and_command(ssh_args)?;
+    let target_host = config.target_host();
+    let proxy_command = format!(
+        "ProxyCommand={} proxy connect --stdio --host {} --port %p",
+        shell_quote_executable(executable)?,
+        shell_quote(target_host)
+    );
+    let mut argv = vec![
+        "-o".into(),
+        "StrictHostKeyChecking=yes".into(),
+        "-o".into(),
+        format!("HostName={target_host}").into(),
+        "-o".into(),
+        "User=user".into(),
+        "-o".into(),
+        "UserKnownHostsFile=~/.ssh/known_hosts_laptop".into(),
+        "-o".into(),
+        "IdentitiesOnly=yes".into(),
+        "-i".into(),
+        "~/.ssh/id_ed25519".into(),
+        "-o".into(),
+        "ConnectTimeout=60".into(),
+        "-o".into(),
+        "ConnectionAttempts=3".into(),
+        "-o".into(),
+        "ServerAliveInterval=15".into(),
+        "-o".into(),
+        "ServerAliveCountMax=8".into(),
+        "-o".into(),
+        "ControlMaster=auto".into(),
+        "-o".into(),
+        "ControlPath=~/.ssh/cm-%r@%h:%p".into(),
+        "-o".into(),
+        "ControlPersist=3600".into(),
+        "-o".into(),
+        proxy_command.into(),
+    ];
+    argv.extend(options.into_iter().map(std::ffi::OsString::from));
+    argv.push(format!("user@{target_host}").into());
+    argv.extend(command.into_iter().map(std::ffi::OsString::from));
+    Ok(argv)
+}
+
+fn run_proxy_ssh(tail: &[String], config: &fleet_config::Config) -> i32 {
+    if tail.first().is_some_and(|arg| is_help_flag(arg)) {
+        println!("{PROXY_SSH_USAGE}");
+        return EXIT_OK;
+    }
+    if tail.first().map(String::as_str) != Some("--") {
+        return usage_error(&format!(
+            "'fleet proxy ssh' expects `--` before SSH arguments\n\n{PROXY_SSH_USAGE}"
+        ));
+    }
+    let executable = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("fleet: cannot locate its executable for ProxyCommand: {error}");
+            return EXIT_UNAVAILABLE;
+        }
+    };
+    let argv = match build_proxy_ssh_argv(&executable, config, &tail[1..]) {
+        Ok(argv) => argv,
+        Err(error) => return usage_error(&format!("{error}\n\n{PROXY_SSH_USAGE}")),
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let error = std::process::Command::new("ssh").args(argv).exec();
+        eprintln!("fleet: cannot execute system ssh: {error}");
+        EXIT_UNAVAILABLE
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = argv;
+        eprintln!("fleet: recovery SSH via system OpenSSH is supported on Unix only");
+        EXIT_UNAVAILABLE
     }
 }
 
@@ -873,6 +1018,93 @@ mod tests {
                 "proxy init {flag} must succeed"
             );
         }
+    }
+
+    #[test]
+    fn proxy_ssh_uses_connect_capability_and_explicit_separator() {
+        let proxy = domain("proxy").expect("proxy domain exists");
+        assert_eq!(
+            required_capability(proxy, &args(&["ssh"])),
+            Ok(Capability::ProxyConnect)
+        );
+        assert_eq!(
+            run_proxy_ssh(&args(&["--help"]), &fleet_config::Config::default()),
+            EXIT_OK
+        );
+        assert_eq!(
+            run_proxy_ssh(&args(&[]), &fleet_config::Config::default()),
+            EXIT_USAGE
+        );
+        assert_eq!(
+            run_proxy_ssh(
+                &args(&["-L", "1234:localhost:22"]),
+                &fleet_config::Config::default()
+            ),
+            EXIT_USAGE
+        );
+    }
+
+    #[test]
+    fn proxy_ssh_builds_pinned_argv_and_preserves_remote_arguments() {
+        let ssh_args = args(&[
+            "-L",
+            "127.0.0.1:2222:localhost:22",
+            "-o",
+            "LogLevel=ERROR",
+            "bash",
+            "-s",
+            "echo; touch /tmp/not-interpolated",
+        ]);
+        let executable = std::path::Path::new("/tmp/fleet path/fleet'bin");
+        let argv = build_proxy_ssh_argv(executable, &fleet_config::Config::default(), &ssh_args)
+            .expect("valid SSH argv");
+        let strings: Vec<&str> = argv.iter().map(|arg| arg.to_str().unwrap()).collect();
+        for setting in [
+            "StrictHostKeyChecking=yes",
+            "HostName=100.99.113.103",
+            "User=user",
+            "UserKnownHostsFile=~/.ssh/known_hosts_laptop",
+            "IdentitiesOnly=yes",
+            "ConnectTimeout=60",
+            "ConnectionAttempts=3",
+            "ServerAliveInterval=15",
+            "ServerAliveCountMax=8",
+            "ControlMaster=auto",
+            "ControlPath=~/.ssh/cm-%r@%h:%p",
+            "ControlPersist=3600",
+        ] {
+            assert!(
+                strings.windows(2).any(|pair| pair == ["-o", setting]),
+                "missing fixed SSH option {setting}"
+            );
+        }
+        assert!(strings.contains(&"~/.ssh/id_ed25519"));
+        assert!(strings.iter().any(|arg| {
+            *arg == "ProxyCommand='/tmp/fleet path/fleet'\\''bin' proxy connect --stdio --host '100.99.113.103' --port %p"
+        }));
+        assert!(strings.contains(&"-L"));
+        assert!(strings.contains(&"127.0.0.1:2222:localhost:22"));
+        let target = strings
+            .iter()
+            .position(|arg| *arg == "user@100.99.113.103")
+            .expect("fixed destination");
+        assert_eq!(strings[target + 1], "bash");
+        assert_eq!(strings[target + 2], "-s");
+        assert_eq!(strings[target + 3], "echo; touch /tmp/not-interpolated");
+    }
+
+    #[test]
+    fn proxy_ssh_rejects_missing_option_operands_and_second_separator() {
+        assert!(
+            split_ssh_options_and_command(&args(&["-p"]))
+                .unwrap_err()
+                .contains("needs an argument")
+        );
+        assert!(
+            split_ssh_options_and_command(&args(&["--", "other-host"]))
+                .unwrap_err()
+                .contains("destination is fixed")
+        );
     }
 
     #[test]
