@@ -247,13 +247,20 @@ func (t *HTTPTransport) Send(ctx context.Context, msg []byte) error {
 		// subscriptions/listen -- was read until the server closed it,
 		// which for a subscription is never: the acknowledgement and every
 		// list_changed after it sat unread, and the stream's caller hung.
-		head := &firstValue{}
+		limit := int64(defaults.HTTPErrorBodyLimit)
+		head := &firstValue{max: limit}
 		dec := json.NewDecoder(io.TeeReader(resp.Body, head))
 		var first json.RawMessage
 		if err := dec.Decode(&first); err != nil {
 			// Empty, or not JSON: handed on whole as before, for push to
-			// judge.
-			rest, readErr := io.ReadAll(resp.Body)
+			// judge — but bounded at HTTPErrorBodyLimit (#4282), so a
+			// misbehaving or proxied upstream cannot force unbounded
+			// memory growth with a huge non-JSON 200 reply.
+			var rest []byte
+			var readErr error
+			if room := limit - int64(head.buf.Len()); room > 0 {
+				rest, readErr = io.ReadAll(io.LimitReader(resp.Body, room))
+			}
 			resp.Body.Close()
 			if readErr != nil {
 				return readErr
@@ -284,17 +291,25 @@ func (t *HTTPTransport) Send(ctx context.Context, msg []byte) error {
 
 // firstValue keeps the bytes read while decoding a body's first JSON value,
 // so a body that turns out not to be JSON can still be handed on whole, and
-// stops keeping them once that value is decoded.
+// stops keeping them once that value is decoded. The kept head is capped at
+// max bytes (#4282): the tee must not buffer a huge non-JSON 200 reply whole.
 type firstValue struct {
 	buf  bytes.Buffer
 	done bool
+	max  int64
 }
 
 func (f *firstValue) Write(p []byte) (int, error) {
+	n := len(p)
 	if !f.done {
-		f.buf.Write(p)
+		if room := f.max - int64(f.buf.Len()); room > 0 {
+			if int64(len(p)) > room {
+				p = p[:room]
+			}
+			f.buf.Write(p)
+		}
 	}
-	return len(p), nil
+	return n, nil
 }
 
 // sseState is what one SSE stream said about itself: the last event id,
