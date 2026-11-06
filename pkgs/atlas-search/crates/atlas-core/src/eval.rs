@@ -41,8 +41,10 @@
 //!   empty ranking (all metrics 0) — an incomplete run is penalized,
 //!   never silently skipped.
 //! - A ranking may not repeat a doc, a qrel may not repeat a
-//!   (query, doc) pair, and qrels must name known queries; violations
-//!   are rejected at parse/validation time.
+//!   (query, doc) pair, a run's `results` may not repeat a query key
+//!   (serde_json would otherwise keep only the last ranking), and
+//!   qrels must name known queries; violations are rejected at
+//!   parse/validation time.
 //!
 //! ## Metrics and reporting
 //!
@@ -116,13 +118,127 @@ pub struct Qrel {
 }
 
 /// One signal's saved rankings: query id → doc ids in rank order.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Run {
     /// Signal name (`dense`, `bm25`, `splade`, `fused:dense+bm25`, …).
     pub signal: String,
     /// Ranked doc ids per query (best first). Rank order is the
     /// contract; raw scores are not needed by any metric here.
     pub results: BTreeMap<String, Vec<String>>,
+}
+
+// Manual `Deserialize` for `Run` (#6390): serde_json collapses a
+// repeated object key into a map silently, so the derived impl dropped
+// the first ranking for a repeated query key in `results` before
+// `validate()` could ever see it. This impl deserializes `results`
+// through a visitor that records a repeated key, then rejects the run
+// naming both the signal and the query. Serialization stays derived,
+// and struct-field duplicates keep serde's derived rejection.
+impl<'de> Deserialize<'de> for Run {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(field_identifier, rename_all = "lowercase")]
+        enum Field {
+            Signal,
+            Results,
+            #[serde(other)]
+            Other,
+        }
+
+        /// `results` plus the first repeated query key, if any.
+        struct DupCheckedResults(BTreeMap<String, Vec<String>>, Option<String>);
+
+        impl<'de> Deserialize<'de> for DupCheckedResults {
+            fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                struct ResultsVisitor;
+
+                impl<'de> serde::de::Visitor<'de> for ResultsVisitor {
+                    type Value = DupCheckedResults;
+
+                    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                        formatter.write_str("a map of query id to ranked doc ids")
+                    }
+
+                    fn visit_map<A>(
+                        self,
+                        mut access: A,
+                    ) -> std::result::Result<Self::Value, A::Error>
+                    where
+                        A: serde::de::MapAccess<'de>,
+                    {
+                        let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                        let mut duplicate: Option<String> = None;
+                        while let Some((key, value)) = access.next_entry::<String, Vec<String>>()? {
+                            if map.contains_key(&key) && duplicate.is_none() {
+                                duplicate = Some(key.clone());
+                            }
+                            map.entry(key).or_insert(value);
+                        }
+                        Ok(DupCheckedResults(map, duplicate))
+                    }
+                }
+
+                deserializer.deserialize_map(ResultsVisitor)
+            }
+        }
+
+        struct RunVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for RunVisitor {
+            type Value = Run;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("an atlas-eval run (signal + results)")
+            }
+
+            fn visit_map<A>(self, mut access: A) -> std::result::Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut signal: Option<String> = None;
+                let mut results: Option<BTreeMap<String, Vec<String>>> = None;
+                let mut duplicate_query: Option<String> = None;
+                while let Some(key) = access.next_key::<Field>()? {
+                    match key {
+                        Field::Signal => {
+                            if signal.is_some() {
+                                return Err(serde::de::Error::duplicate_field("signal"));
+                            }
+                            signal = Some(access.next_value()?);
+                        }
+                        Field::Results => {
+                            if results.is_some() {
+                                return Err(serde::de::Error::duplicate_field("results"));
+                            }
+                            let checked = access.next_value::<DupCheckedResults>()?;
+                            duplicate_query = checked.1;
+                            results = Some(checked.0);
+                        }
+                        Field::Other => {
+                            let _ = access.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                let signal = signal.ok_or_else(|| serde::de::Error::missing_field("signal"))?;
+                let results = results.ok_or_else(|| serde::de::Error::missing_field("results"))?;
+                if let Some(query) = duplicate_query {
+                    return Err(serde::de::Error::custom(format!(
+                        "duplicate results key: run {signal:?} repeats query {query:?} \
+                         (a repeated query key would silently replace that query's ranking)"
+                    )));
+                }
+                Ok(Run { signal, results })
+            }
+        }
+
+        deserializer.deserialize_struct("Run", &["signal", "results"], RunVisitor)
+    }
 }
 
 /// A complete `atlas-eval/v1` input document.
@@ -146,7 +262,8 @@ impl EvalData {
     /// Fails on malformed JSON or any validation rule in the module
     /// docs (wrong format version, duplicate query ids, qrels naming
     /// unknown queries, duplicate qrels, grades above `MAX_GRADE`,
-    /// duplicate docs in a ranking, duplicate signal names).
+    /// duplicate docs in a ranking, duplicate results keys, duplicate
+    /// signal names).
     pub fn from_json(text: &str) -> Result<Self> {
         let data: EvalData = serde_json::from_str(text)
             .map_err(|e| Error::fatal(format!("eval input is not valid atlas-eval JSON: {e}")))?;
@@ -711,6 +828,37 @@ mod tests {
             {"query": "q1", "doc": "d1", "grade": 2}
         ]);
         assert!(EvalData::from_json(&dup_qrel.to_string()).is_err());
+    }
+
+    // Oracle: issue #6390 — the raw document level of the format. A
+    // repeated query key inside a run's `results` object must be
+    // rejected naming the signal and the query; serde_json's map
+    // collapse must not get to silently keep the last ranking. Raw
+    // text is required: `serde_json::json!` cannot express duplicate
+    // object keys.
+    #[test]
+    fn duplicate_results_key_is_rejected_from_raw_text() {
+        let raw = r#"{
+            "format": "atlas-eval/v1",
+            "queries": [{"id": "q1", "class": "code", "split": "dev"}],
+            "qrels": [{"query": "q1", "doc": "d1", "grade": 1}],
+            "runs": [{"signal": "dense", "results": {"q1": ["d1"], "q1": ["d2"]}}]
+        }"#;
+        let err = EvalData::from_json(raw).expect_err("duplicate results key must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate results key"),
+            "error names the violation: {msg}"
+        );
+        assert!(msg.contains("dense"), "error names the signal: {msg}");
+        assert!(msg.contains("q1"), "error names the query: {msg}");
+
+        // The same document with the duplicate removed parses and
+        // scores exactly as before.
+        let clean = raw.replace(r#", "q1": ["d2"]"#, "");
+        let d = EvalData::from_json(&clean).expect("clean document parses");
+        let report = evaluate(&d, Split::Dev).unwrap();
+        assert_eq!(report.signals[0].overall.ndcg10, 1.0);
     }
 
     // Oracle: the documented missing-run rule — a signal with no
