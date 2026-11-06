@@ -83,6 +83,40 @@ mod tests {
                 .await
                 .map(|frame| serde_json::from_str(&frame).unwrap())
         }
+
+        async fn close(self) {
+            let Self {
+                to_server,
+                from_server,
+                task,
+            } = self;
+            let _ = to_server.send(Inbound::Closed).await;
+            drop(from_server);
+            task.await.unwrap();
+        }
+    }
+
+    async fn admin_history(service: WorldService) -> (Vec<serde_json::Value>, serde_json::Value) {
+        let mut admin = Peer::connect(service, SessionConfig::default());
+        admin
+            .say(serde_json::json!({
+                "type": "event_history_admin",
+                "admin_token": "admin",
+            }))
+            .await;
+        let begin = admin.next().await.unwrap();
+        assert_eq!(begin["type"], "event_history_begin");
+        let event_count = usize::try_from(begin["event_count"].as_u64().unwrap()).unwrap();
+        let mut events = Vec::with_capacity(event_count);
+        for _ in 0..event_count {
+            let frame = admin.next().await.unwrap();
+            assert_eq!(frame["type"], "event_history_event");
+            events.push(frame);
+        }
+        let records = admin.next().await.unwrap();
+        assert_eq!(records["type"], "records");
+        admin.close().await;
+        (events, records)
     }
 
     /// A program that does nothing, for tests that only install one.
@@ -226,6 +260,18 @@ mod tests {
             "the join event must not enter the participant stream"
         );
 
+        // A second session for this already-present participant, and closing
+        // just that session, must not create extra presence journal entries.
+        let mut repeat_joiner = Peer::connect(service.clone(), SessionConfig::default());
+        repeat_joiner
+            .say(serde_json::json!({
+                "type": "join",
+                "capability": capability.expose(),
+            }))
+            .await;
+        assert_eq!(repeat_joiner.next().await.unwrap()["type"], "snapshot");
+        repeat_joiner.close().await;
+
         let mut missing = Peer::connect(service.clone(), SessionConfig::default());
         missing
             .say(serde_json::json!({"type": "event_history_admin"}))
@@ -249,18 +295,21 @@ mod tests {
         assert_eq!(input["type"], "event");
         assert_eq!(input["event"]["kind"]["kind"], "input");
 
-        let mut admin = Peer::connect(service, SessionConfig::default());
-        admin
-            .say(serde_json::json!({
-                "type": "event_history_admin",
-                "admin_token": "admin",
-            }))
-            .await;
-        let begin = admin.next().await.unwrap();
-        assert_eq!(begin["type"], "event_history_begin");
-        assert_eq!(begin["event_count"], 2);
-        let joined = admin.next().await.unwrap();
-        assert_eq!(joined["type"], "event_history_event");
+        // Closing the final Ann session emits exactly one last-presence event.
+        joiner.close().await;
+        let mut history = Vec::new();
+        let mut records = serde_json::Value::Null;
+        // PresenceGuard schedules the final decrement when its session ends;
+        // retry the history snapshot until that actor command is observed.
+        for _ in 0..100 {
+            (history, records) = admin_history(service.clone()).await;
+            if history.len() == 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(history.len(), 3, "one join, one input, and one final leave");
+        let joined = &history[0];
         assert_eq!(joined["event"]["kind"]["kind"], "system");
         assert!(
             joined["event"]["kind"]["data"]["event"]
@@ -268,11 +317,14 @@ mod tests {
                 .unwrap()
                 .contains("joined")
         );
-        let input = admin.next().await.unwrap();
-        assert_eq!(input["type"], "event_history_event");
+        let input = &history[1];
         assert_eq!(input["event"]["kind"]["kind"], "input");
-        let records = admin.next().await.unwrap();
-        assert_eq!(records["type"], "records");
+        let left = &history[2];
+        assert_eq!(left["event"]["kind"]["kind"], "system");
+        let left_event: serde_json::Value =
+            serde_json::from_str(left["event"]["kind"]["data"]["event"].as_str().unwrap()).unwrap();
+        assert_eq!(left_event["event"], "left");
+        assert_eq!(left_event["participant"]["name"], "ann");
         assert_eq!(records["sequence"], 1);
     }
 
