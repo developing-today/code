@@ -44,6 +44,14 @@ pub struct WorldWebState {
     pub cookie_secure: bool,
 }
 
+impl WorldWebState {
+    /// Restrict this bridge state to one already-bound world.
+    pub(super) fn pinned_to(mut self, world: &str) -> Self {
+        self.hub = self.hub.map(|hub| hub.pinned_to(world));
+        self
+    }
+}
+
 /// Routes for the world session bridge; merge into any `Router<S>` with
 /// [`WorldWebState`] as the provided state.
 pub fn world_routes() -> axum::Router<WorldWebState> {
