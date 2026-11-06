@@ -162,6 +162,14 @@
   // retry-looping on "insufficient credits". Per the switchboard
   // rule the definition and every seat stay in place; deleting
   // this line re-enables Command Code if it is ever refilled.
+  // 2026-11-06: "commandcode" LEAVES the list. The blocker named in the
+  // 2026-10-31 note was twofold — an empty balance, and a router that kept
+  // retry-looping its leaves. The router half is fixed by the provider-
+  // availability system (opencode#1828): an exhausted-balance provider now
+  // classifies as quota/balance, benches on its first failure, and costs a
+  // session nothing while stopped; its seats stay seated and it rejoins
+  // automatically when the balance shows a measured increase. Evidence:
+  // the #1828 harness scenarios (seamlessness + measured-increase release).
   // 2026-11-01 (Drew, direct order): "muse-direct" joins the list.
   // The Meta pool is quota-exhausted until 2026-11-02T00:00:00Z and
   // sessions dealt its muse-spark leg die on the 429 with no local
@@ -201,7 +209,6 @@
     "openrouter",
     "cloudflare-workers-ai",
     "meta",
-    "commandcode",
     "deepseek"
   ],
   // 2026-11-03 (Drew): muse, antigravity-ls, antigravity-agy, code-design,
