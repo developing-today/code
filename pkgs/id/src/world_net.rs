@@ -1025,7 +1025,8 @@ impl WorldClient {
     /// # Errors
     ///
     /// Fails with the host's message if neither a valid admin token nor a valid
-    /// guest capability is supplied.
+    /// guest capability is supplied, or if the reply is missing the expected
+    /// `update.requested` field.
     pub async fn execution_profile(
         &mut self,
         admin_token: Option<&str>,
@@ -1049,7 +1050,14 @@ impl WorldClient {
                     .unwrap_or("host refused the execution profile query")
             );
         }
-        Ok(reply)
+        // Extract the requested profile from update.requested
+        // The reply has structure: { "type": "execution_profile", "update": { "requested": {...}, "applies_on_next_program_install_or_process_restart": bool }, "message": "..." }
+        let requested_profile = reply
+            .get("update")
+            .and_then(|update| update.get("requested"))
+            .context("host returned a malformed execution profile")?
+            .clone();
+        Ok(requested_profile)
     }
 
     /// Let other unisolated worlds write into this world, with the admin token.
@@ -1470,7 +1478,26 @@ impl WorldClient {
                     .as_str()
                     .context("host omitted world id")?
                     .to_owned();
-                let active_module_hash = reply["active_module_hash"].as_str().map(str::to_owned);
+                let active_module_hash = match reply.get("active_module_hash") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => {
+                        if let Some(hash) = value.as_str() {
+                            Some(hash.to_owned())
+                        } else {
+                            bail!(
+                                "host sent malformed active_module_hash: expected string or null, got {}",
+                                match value {
+                                    serde_json::Value::Null => "null",
+                                    serde_json::Value::Bool(_) => "boolean",
+                                    serde_json::Value::Number(_) => "number",
+                                    serde_json::Value::String(_) => "string",
+                                    serde_json::Value::Array(_) => "array",
+                                    serde_json::Value::Object(_) => "object",
+                                }
+                            );
+                        }
+                    }
+                };
                 let current_sequence = reply["current_sequence"]
                     .as_u64()
                     .context("host omitted sequence")?;
@@ -2573,7 +2600,8 @@ mod tests {
             .execution_profile(None, Some(&capability))
             .await
             .unwrap();
-        assert_eq!(res["type"], "execution_profile");
+        // execution_profile now returns just the requested profile, not the whole frame
+        assert!(res.get("wasm_fuel").is_some() || res.get("total_memory_bytes").is_some());
         guest.close();
 
         // 3. Admin can update profile
@@ -2589,6 +2617,7 @@ mod tests {
             .set_execution_profile("admin", custom_profile)
             .await
             .unwrap();
+        // set_execution_profile still returns the whole frame
         assert_eq!(set_res["type"], "execution_profile");
         assert_eq!(set_res["update"]["requested"]["wasm_fuel"], 750_000);
         admin.close();
@@ -2601,7 +2630,8 @@ mod tests {
             .execution_profile(Some("admin"), None)
             .await
             .unwrap();
-        assert_eq!(query_res["update"]["requested"]["wasm_fuel"], 750_000);
+        // execution_profile now returns just the requested profile
+        assert_eq!(query_res["wasm_fuel"], 750_000);
         admin_query.close();
 
         client_ep.close().await;
@@ -3388,6 +3418,104 @@ mod tests {
         assert_eq!(sessions.session_count(), 1);
 
         sessions.close_all();
+        client_ep.close().await;
+        host.router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn info_details_rejects_malformed_active_module_hash() {
+        let host = host(Some("admin")).await;
+        let client_ep = endpoint().await;
+        let cap = invite_for(&client_ep, &host.addr, None, "ann").await;
+
+        let mut client = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+
+        // Test with a valid string hash
+        let valid_reply = json!({
+            "type": "module_info",
+            "world_id": "test:world",
+            "active_module_hash": "abc123",
+            "current_sequence": 42,
+            "active_module_provenance": null,
+        });
+        client.inject_json(valid_reply).await;
+        let info = client.info_details(&cap).await.unwrap();
+        assert_eq!(info.active_module_hash, Some("abc123".to_string()));
+
+        // Test with null hash (legitimate no-module case)
+        let null_reply = json!({
+            "type": "module_info",
+            "world_id": "test:world",
+            "active_module_hash": null,
+            "current_sequence": 42,
+            "active_module_provenance": null,
+        });
+        client.inject_json(null_reply).await;
+        let info = client.info_details(&cap).await.unwrap();
+        assert_eq!(info.active_module_hash, None);
+
+        // Test with missing hash field (older hosts)
+        let missing_reply = json!({
+            "type": "module_info",
+            "world_id": "test:world",
+            "current_sequence": 42,
+            "active_module_provenance": null,
+        });
+        client.inject_json(missing_reply).await;
+        let info = client.info_details(&cap).await.unwrap();
+        assert_eq!(info.active_module_hash, None);
+
+        // Test with malformed hash (number) - should error
+        let number_reply = json!({
+            "type": "module_info",
+            "world_id": "test:world",
+            "active_module_hash": 123,
+            "current_sequence": 42,
+            "active_module_provenance": null,
+        });
+        client.inject_json(number_reply).await;
+        let err = client.info_details(&cap).await.unwrap_err();
+        assert!(err.to_string().contains("malformed active_module_hash"));
+
+        // Test with malformed hash (boolean) - should error
+        let bool_reply = json!({
+            "type": "module_info",
+            "world_id": "test:world",
+            "active_module_hash": true,
+            "current_sequence": 42,
+            "active_module_provenance": null,
+        });
+        client.inject_json(bool_reply).await;
+        let err = client.info_details(&cap).await.unwrap_err();
+        assert!(err.to_string().contains("malformed active_module_hash"));
+
+        // Test with malformed hash (array) - should error
+        let array_reply = json!({
+            "type": "module_info",
+            "world_id": "test:world",
+            "active_module_hash": ["abc"],
+            "current_sequence": 42,
+            "active_module_provenance": null,
+        });
+        client.inject_json(array_reply).await;
+        let err = client.info_details(&cap).await.unwrap_err();
+        assert!(err.to_string().contains("malformed active_module_hash"));
+
+        // Test with malformed hash (object) - should error
+        let object_reply = json!({
+            "type": "module_info",
+            "world_id": "test:world",
+            "active_module_hash": {"hash": "abc"},
+            "current_sequence": 42,
+            "active_module_provenance": null,
+        });
+        client.inject_json(object_reply).await;
+        let err = client.info_details(&cap).await.unwrap_err();
+        assert!(err.to_string().contains("malformed active_module_hash"));
+
+        client.close();
         client_ep.close().await;
         host.router.shutdown().await.unwrap();
     }
