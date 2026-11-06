@@ -56,12 +56,28 @@ fn connect_tcp(
             format!("{host} resolved to no addresses"),
         ));
     }
+    connect_addrs(&addrs, deadline, start)
+}
+
+/// Try each resolved address in order under the shared deadline
+/// (split per remaining address — see the loop body).
+fn connect_addrs(
+    addrs: &[std::net::SocketAddr],
+    deadline: Duration,
+    start: Instant,
+) -> std::io::Result<TcpStream> {
     let mut last_err: Option<std::io::Error> = None;
-    for addr in &addrs {
+    let total = addrs.len();
+    for (i, addr) in addrs.iter().enumerate() {
         let Some(left) = remaining(deadline, start) else {
             return Err(deadline_exceeded("TCP connect", deadline));
         };
-        match TcpStream::connect_timeout(addr, left) {
+        // Split the remaining budget across the addresses still
+        // untried (Codex P2, PR #6490): giving the first address
+        // the whole deadline lets a silently-dropping one starve
+        // reachable fallbacks behind it.
+        let share = left / (total - i) as u32;
+        match TcpStream::connect_timeout(addr, share) {
             Ok(stream) => return Ok(stream),
             Err(e) => last_err = Some(e),
         }
@@ -346,6 +362,22 @@ mod tests {
             "failed setup took {elapsed:?}, deadline was 200 ms"
         );
         silent.join().unwrap();
+    }
+
+    #[test]
+    fn fallback_address_is_reached_after_a_dead_first_address() {
+        // Codex P2, PR #6490: the first address gets only its
+        // share of the deadline, so a reachable fallback behind
+        // a dead one is still tried. 10.255.255.1 is unroutable
+        // (instant error) or black-holed (share timeout) — both
+        // must fall through to the loopback listener.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let good = listener.local_addr().unwrap();
+        let dead: std::net::SocketAddr = "10.255.255.1:65000".parse().unwrap();
+        let t0 = Instant::now();
+        let got = connect_addrs(&[dead, good], Duration::from_millis(600), t0);
+        assert!(got.is_ok(), "fallback never reached: {got:?}");
+        assert!(t0.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
