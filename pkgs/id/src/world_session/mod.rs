@@ -873,6 +873,131 @@ pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
     }
 }
 
+/// Parse one JSON value while refusing repeated object keys at every depth.
+/// `serde_json::Value` normally keeps only the last value for a repeated key,
+/// which can make routing and later checks observe different bytes than the
+/// client sent.
+fn parse_json_without_duplicate_keys(text: &str) -> Result<serde_json::Value, serde_json::Error> {
+    use serde::Deserialize;
+    use serde::de::{self, MapAccess, SeqAccess, Visitor};
+    use std::collections::HashSet;
+    use std::fmt;
+
+    struct UniqueValue(serde_json::Value);
+
+    impl<'de> Deserialize<'de> for UniqueValue {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            struct UniqueValueVisitor;
+
+            impl<'de> Visitor<'de> for UniqueValueVisitor {
+                type Value = UniqueValue;
+
+                fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    formatter.write_str("a JSON value without duplicate object keys")
+                }
+
+                fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
+                where
+                    E: de::Error,
+                {
+                    Ok(UniqueValue(serde_json::Value::Bool(value)))
+                }
+
+                fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+                where
+                    E: de::Error,
+                {
+                    Ok(UniqueValue(serde_json::Value::Number(value.into())))
+                }
+
+                fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+                where
+                    E: de::Error,
+                {
+                    Ok(UniqueValue(serde_json::Value::Number(value.into())))
+                }
+
+                fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+                where
+                    E: de::Error,
+                {
+                    serde_json::Number::from_f64(value)
+                        .map(serde_json::Value::Number)
+                        .map(UniqueValue)
+                        .ok_or_else(|| E::custom("JSON number is not finite"))
+                }
+
+                fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+                where
+                    E: de::Error,
+                {
+                    Ok(UniqueValue(serde_json::Value::String(value.to_owned())))
+                }
+
+                fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+                where
+                    E: de::Error,
+                {
+                    Ok(UniqueValue(serde_json::Value::String(value)))
+                }
+
+                fn visit_none<E>(self) -> Result<Self::Value, E>
+                where
+                    E: de::Error,
+                {
+                    Ok(UniqueValue(serde_json::Value::Null))
+                }
+
+                fn visit_unit<E>(self) -> Result<Self::Value, E>
+                where
+                    E: de::Error,
+                {
+                    Ok(UniqueValue(serde_json::Value::Null))
+                }
+
+                fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+                where
+                    A: SeqAccess<'de>,
+                {
+                    let mut values = Vec::new();
+                    while let Some(value) = sequence.next_element::<UniqueValue>()? {
+                        values.push(value.0);
+                    }
+                    Ok(UniqueValue(serde_json::Value::Array(values)))
+                }
+
+                fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+                where
+                    A: MapAccess<'de>,
+                {
+                    let mut seen = HashSet::new();
+                    let mut values = serde_json::Map::new();
+                    while let Some(key) = map.next_key::<String>()? {
+                        if !seen.insert(key.clone()) {
+                            return Err(de::Error::custom(format!(
+                                "duplicate JSON object key {key:?}"
+                            )));
+                        }
+                        let value = map.next_value::<UniqueValue>()?;
+                        values.insert(key, value.0);
+                    }
+                    Ok(UniqueValue(serde_json::Value::Object(values)))
+                }
+            }
+
+            deserializer.deserialize_any(UniqueValueVisitor)
+        }
+    }
+
+    let mut deserializer = serde_json::Deserializer::from_str(text);
+    let value = UniqueValue::deserialize(&mut deserializer)?.0;
+    deserializer.end()?;
+    Ok(value)
+}
+
 /// Run one session to completion.
 ///
 /// The first frame names the world (`"world": "<name>"`, default world if
@@ -898,7 +1023,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
             return;
         }
     };
-    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&first) else {
+    let Ok(mut value) = parse_json_without_duplicate_keys(&first) else {
         let _ = send_error(
             &unattributed,
             io,
@@ -2533,7 +2658,7 @@ async fn handle_client_frame<I: SessionIo>(
     pending_view_deadline: &mut Option<tokio::time::Instant>,
 ) -> bool {
     let world = service.world();
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+    let Ok(value) = parse_json_without_duplicate_keys(text) else {
         return send_error(service.frame_meter(), io, "invalid world frame").await;
     };
     if delegation_names_uses(&value) {
