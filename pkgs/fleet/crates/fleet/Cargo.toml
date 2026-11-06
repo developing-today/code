@@ -16,6 +16,7 @@ fleet-config = { workspace = true }
 fleet-proxy-proto = { workspace = true }
 fleet-queue = { workspace = true, optional = true }
 fleet-dispatch = { workspace = true, optional = true }
+fleet-dispatch-test = { workspace = true, optional = true }
 fleet-search = { workspace = true, optional = true }
 # The proxy CLIENT is part of every variant's registry (the
 # connect capability ships in all three builds); only the broker
@@ -46,6 +47,7 @@ full = [
   "search",
   "search-serve",
   "dispatch",
+  "dispatch-test",
   "laptop-agent",
   "secrets",
 ]
@@ -74,6 +76,7 @@ secrets-broker = [
 search = ["dep:fleet-search"]
 search-serve = ["dep:fleet-secrets"]
 dispatch = ["dep:fleet-dispatch"]
+dispatch-test = ["dep:fleet-dispatch-test"]
 # The secrets verb (step 6, #5554): in full and serve (§2 puts the
 # secrets platform in both), never in connect ("nothing else").
 secrets = ["dep:fleet-secrets"]
