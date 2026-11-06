@@ -228,8 +228,27 @@ fn env_path(var: &str) -> Option<PathBuf> {
     non_empty_path(std::env::var_os(var).map(PathBuf::from))
 }
 
+/// The home anchor: only an absolute, non-empty `HOME` may anchor
+/// home-relative resolution. A relative `HOME` is treated as unset
+/// for anchoring (issue #6404): used verbatim it would resolve the
+/// config file, the state dir, and the broker socket CWD-relative,
+/// so a `fleet.toml` planted under the working directory at
+/// `./<relative-home>/.config/fleet/fleet.toml` would load — the
+/// planted-config hazard of issue #5473 in its relative-HOME
+/// spelling. Falling back to "." here means the unset/empty case
+/// and the relative case share one behaviour, governed by the
+/// fallback decision tracked in issue #5737. Scoped to the HOME
+/// anchor only: relative XDG bases are issue #6396, and relative
+/// values from explicit overrides (FLEET_CONFIG, socket paths) keep
+/// their documented resolve-under-home meaning.
+fn home_anchor(value: Option<PathBuf>) -> PathBuf {
+    non_empty_path(value)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 fn home_dir() -> PathBuf {
-    env_path("HOME").unwrap_or_else(|| PathBuf::from("."))
+    home_anchor(std::env::var_os("HOME").map(PathBuf::from))
 }
 
 fn resolve_under(home: &std::path::Path, path: &std::path::Path) -> PathBuf {
@@ -660,6 +679,40 @@ mod tests {
         assert_eq!(
             Config::broker_socket_from(None, Some("rel/c.sock"), &home),
             home.join("rel").join("c.sock")
+        );
+    }
+
+    #[test]
+    fn relative_home_is_not_an_anchor() {
+        // #6404: a relative HOME must never anchor resolution —
+        // file_path, state_dir, and broker_socket resolve exactly as
+        // they do for an unset/empty HOME, so a fleet.toml planted at
+        // ./<relative-home>/.config/fleet/fleet.toml is never loaded.
+        let anchor = home_anchor(Some(PathBuf::from("relhome")));
+        assert_eq!(anchor, PathBuf::from("."));
+        assert_eq!(home_anchor(None), PathBuf::from("."));
+        assert_eq!(home_anchor(Some(PathBuf::new())), PathBuf::from("."));
+        assert_eq!(
+            home_anchor(Some(PathBuf::from("/home/tester"))),
+            PathBuf::from("/home/tester")
+        );
+        assert_eq!(
+            Config::file_path_from(None, None, &anchor),
+            PathBuf::from(".")
+                .join(".config")
+                .join("fleet")
+                .join("fleet.toml")
+        );
+        assert_eq!(
+            Config::state_dir_from(None, &anchor),
+            PathBuf::from(".")
+                .join(".local")
+                .join("state")
+                .join("fleet")
+        );
+        assert_eq!(
+            Config::broker_socket_from(None, None, &anchor),
+            PathBuf::from(".").join(DEFAULT_BROKER_SOCKET)
         );
     }
 
