@@ -2010,6 +2010,70 @@ mod tests {
 
     #[cfg(feature = "sandbox")]
     #[tokio::test]
+    async fn admin_upload_rejects_duplicate_json_keys_in_chunk_and_end_frames() {
+        use iroh_blobs::store::mem::MemStore;
+
+        async fn start_upload() -> Peer {
+            let service = WorldService::new(
+                WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap()),
+                Some("admin".to_owned()),
+            )
+            .with_blob_store(MemStore::new().into());
+            let mut peer = Peer::connect(service, SessionConfig::default());
+            peer.say(serde_json::json!({
+                "type": "install_begin",
+                "admin_token": "admin",
+                "total_bytes": 1,
+                "module_hash": null,
+                "seed": 12,
+            }))
+            .await;
+            assert_eq!(peer.next().await.unwrap()["type"], "upload_ready");
+            peer
+        }
+
+        const DUPLICATE_CHUNKS: [(&str, &str); 2] = [
+            (
+                "duplicate unknown chunk key",
+                r#"{"type":"install_chunk","offset":0,"data_hex":"00","bogus":1,"bogus":2}"#,
+            ),
+            (
+                "duplicate key inside ignored chunk object",
+                r#"{"type":"install_chunk","offset":0,"data_hex":"00","extra":{"a":1,"a":2}}"#,
+            ),
+        ];
+
+        for (case, frame) in DUPLICATE_CHUNKS {
+            let mut peer = start_upload().await;
+            peer.say_text(frame).await;
+            let reply = peer.next().await.unwrap();
+            assert_eq!(reply["type"], "error", "{case}: {reply}");
+            assert_eq!(
+                reply["message"], "expected module chunk frame",
+                "{case}: {reply}"
+            );
+            assert!(peer.next().await.is_none(), "{case}");
+            peer.task.await.unwrap();
+        }
+
+        let mut peer = start_upload().await;
+        peer.say(serde_json::json!({
+            "type": "install_chunk",
+            "offset": 0,
+            "data_hex": "00",
+        }))
+        .await;
+        peer.say_text(r#"{"type":"install_end","bogus":1,"bogus":2}"#)
+            .await;
+        let reply = peer.next().await.unwrap();
+        assert_eq!(reply["type"], "error", "{reply}");
+        assert_eq!(reply["message"], "expected install_end frame", "{reply}");
+        assert!(peer.next().await.is_none());
+        peer.task.await.unwrap();
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
     async fn admin_fuel_limit_applies_to_installed_programs() {
         use iroh_blobs::store::mem::MemStore;
 
