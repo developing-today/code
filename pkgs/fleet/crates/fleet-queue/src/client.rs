@@ -29,7 +29,7 @@ const TELEMETRY_FIELDS: [&str; 4] = ["pool", "model", "effort", "cost_usd"];
 const TERMINAL_STATUSES: [&str; 3] = ["done", "cancelled", "failed"];
 
 fn home() -> String {
-    std::env::var("HOME").unwrap_or_default()
+    crate::home::from_env().unwrap_or_else(|error| die(3, error))
 }
 
 fn eprint(s: &str) {
@@ -53,7 +53,12 @@ fn print_json(v: &Value) {
 // ---------------------------------------------------------------------------
 
 fn broker_sock() -> String {
-    format!("{}/.cache/laptop-agent/broker.sock", home())
+    broker_sock_from_home(Some(&home())).unwrap_or_else(|error| die(3, error))
+}
+
+fn broker_sock_from_home(home_dir: Option<&str>) -> Result<String, &'static str> {
+    let home = crate::home::resolve(home_dir)?;
+    Ok(format!("{home}/.cache/laptop-agent/broker.sock"))
 }
 
 // ---------------------------------------------------------------------------
@@ -92,7 +97,9 @@ fn direct_roundtrip(url: &str, path: &str, body: &Value) -> Result<Value, String
         return Err(format!("bad broker URL {url:?}"));
     }
     let token_file_env = std::env::var("REPO_QUEUE_TOKEN_FILE").ok();
-    let token_file = token_file_from_env(token_file_env.as_deref(), &home());
+    let home_env = std::env::var("HOME").ok();
+    let token_file = token_file_from_env(token_file_env.as_deref(), home_env.as_deref())
+        .unwrap_or_else(|error| die(3, error));
     let token = crate::token_file::load_token_file(&token_file)?;
     let token = token.trim();
     let payload = serde_json::to_vec(body).unwrap();
@@ -593,16 +600,24 @@ fn default_queue_from_env(value: Option<&str>) -> String {
     env_or_default(value, DEFAULT_QUEUE)
 }
 
-fn signal_path_from_env(value: Option<&str>, home_dir: &str) -> String {
+fn signal_path_from_env(
+    value: Option<&str>,
+    home_dir: Option<&str>,
+) -> Result<String, &'static str> {
+    let home_dir = crate::home::resolve(home_dir)?;
     let default = format!(
         "{home_dir}/workspace/goals/keep-the-four-repos-healthy/hidden_files/repo-queue-signal.json"
     );
-    env_or_default(value, &default)
+    Ok(env_or_default(value, &default))
 }
 
-fn token_file_from_env(value: Option<&str>, home_dir: &str) -> String {
+fn token_file_from_env(
+    value: Option<&str>,
+    home_dir: Option<&str>,
+) -> Result<String, &'static str> {
+    let home_dir = crate::home::resolve(home_dir)?;
     let default = format!("{home_dir}/.config/queue-broker/token");
-    env_or_default(value, &default)
+    Ok(env_or_default(value, &default))
 }
 
 fn default_queue() -> String {
@@ -1310,7 +1325,8 @@ fn cmd_signal(rest: &[String]) -> i32 {
     let oldest = resp.get("oldest_queued_at").cloned().unwrap_or(Value::Null);
 
     let signal_path_env = std::env::var("REPO_QUEUE_SIGNAL_PATH").ok();
-    let signal_path = signal_path_from_env(signal_path_env.as_deref(), &home());
+    let signal_path = signal_path_from_env(signal_path_env.as_deref(), Some(&home()))
+        .unwrap_or_else(|error| die(3, error));
     let dir = std::path::Path::new(&signal_path)
         .parent()
         .map(|p| p.to_string_lossy().to_string())
@@ -1370,6 +1386,9 @@ pub fn run(args: &[String]) -> i32 {
         );
         return 2;
     }
+    // Fail before dispatching any verb, so unset and empty HOME never
+    // reach a broker or filesystem path with a root-anchored default.
+    let _ = home();
     let sub = args[0].as_str();
     let rest = &args[1..];
     match sub {
@@ -1425,14 +1444,55 @@ mod tests {
         let default = format!(
             "{home_dir}/workspace/goals/keep-the-four-repos-healthy/hidden_files/repo-queue-signal.json"
         );
-        assert_env_resolution(|value| signal_path_from_env(value, home_dir), &default);
+        assert_env_resolution(
+            |value| signal_path_from_env(value, Some(home_dir)).unwrap(),
+            &default,
+        );
     }
 
     #[test]
     fn token_file_empty_env_values_use_home_default() {
         let home_dir = "/home/test";
         let default = format!("{home_dir}/.config/queue-broker/token");
-        assert_env_resolution(|value| token_file_from_env(value, home_dir), &default);
+        assert_env_resolution(
+            |value| token_file_from_env(value, Some(home_dir)).unwrap(),
+            &default,
+        );
+    }
+
+    #[test]
+    fn missing_or_empty_home_rejects_socket_token_and_signal_paths() {
+        for home_dir in [None, Some("")] {
+            assert_eq!(
+                broker_sock_from_home(home_dir),
+                Err(crate::home::HOME_REQUIRED)
+            );
+            assert_eq!(
+                token_file_from_env(None, home_dir),
+                Err(crate::home::HOME_REQUIRED)
+            );
+            assert_eq!(
+                signal_path_from_env(None, home_dir),
+                Err(crate::home::HOME_REQUIRED)
+            );
+        }
+    }
+
+    #[test]
+    fn home_derived_socket_token_and_signal_paths_are_unchanged() {
+        let home_dir = Some("/home/test");
+        assert_eq!(
+            broker_sock_from_home(home_dir),
+            Ok("/home/test/.cache/laptop-agent/broker.sock".to_string())
+        );
+        assert_eq!(
+            token_file_from_env(None, home_dir),
+            Ok("/home/test/.config/queue-broker/token".to_string())
+        );
+        assert_eq!(
+            signal_path_from_env(None, home_dir),
+            Ok("/home/test/workspace/goals/keep-the-four-repos-healthy/hidden_files/repo-queue-signal.json".to_string())
+        );
     }
 
     #[test]

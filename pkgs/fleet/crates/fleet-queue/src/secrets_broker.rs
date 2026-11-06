@@ -59,7 +59,7 @@ fn bws_token() -> Option<String> {
             return Some(t.trim().to_string());
         }
     }
-    let home = std::env::var("HOME").ok()?;
+    let home = crate::home::from_env().ok()?;
     for rel in [".config/bitwarden/access-token", ".config/bws/access-token"] {
         if let Ok(t) = std::fs::read_to_string(format!("{home}/{rel}")) {
             if !t.trim().is_empty() {
@@ -312,7 +312,10 @@ fn token_ok(req: &tiny_http::Request, expected: &str) -> bool {
 pub fn run() -> i32 {
     let bind =
         std::env::var("SECRETS_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4800".to_string());
-    let home = std::env::var("HOME").expect("HOME unset");
+    let home = crate::home::from_env().unwrap_or_else(|error| {
+        eprintln!("secrets-broker: {error}");
+        std::process::exit(2);
+    });
     let token_file = std::env::var("SECRETS_BROKER_TOKEN_FILE")
         .unwrap_or_else(|_| format!("{home}/.config/secrets-broker/token"));
     let token = crate::token_file::load_token_file(&token_file).unwrap_or_else(|e| {
