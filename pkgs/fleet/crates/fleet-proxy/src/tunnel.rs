@@ -49,7 +49,30 @@ fn connect_tcp(
     deadline: Duration,
     start: Instant,
 ) -> std::io::Result<TcpStream> {
-    let addrs: Vec<_> = (host, port).to_socket_addrs()?.collect();
+    // Resolution is inside the deadline too (Codex P2, PR
+    // #6490): `to_socket_addrs` blocks synchronously with no
+    // timeout, so it runs on a helper thread and the caller
+    // waits only for the remaining budget. A stalled resolver
+    // leaves that one thread parked — the tunnel attempt itself
+    // fails on budget like every other setup stall.
+    let (tx, rx) = std::sync::mpsc::channel();
+    {
+        let host = host.to_string();
+        std::thread::spawn(move || {
+            let got = (host.as_str(), port)
+                .to_socket_addrs()
+                .map(|it| it.collect::<Vec<_>>());
+            let _ = tx.send(got);
+        });
+    }
+    let Some(left) = remaining(deadline, start) else {
+        return Err(deadline_exceeded("DNS resolution", deadline));
+    };
+    let addrs = match rx.recv_timeout(left) {
+        Ok(Ok(addrs)) => addrs,
+        Ok(Err(e)) => return Err(e),
+        Err(_) => return Err(deadline_exceeded("DNS resolution", deadline)),
+    };
     if addrs.is_empty() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::AddrNotAvailable,
