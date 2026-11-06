@@ -245,26 +245,35 @@ impl TunnelPool {
     }
 }
 
-/// How long a caller waits for another caller's in-flight
-/// recovery of the same port before failing fast — the transport
-/// deadline, so waiting never costs more than one bounded attempt.
+/// How long a caller waits for an in-flight recovery of the same
+/// port before failing fast — the transport deadline, so waiting
+/// never costs more than one bounded attempt.
 const RECOVERY_WAIT: Duration = crate::tunnel::TRANSPORT_DEADLINE;
 
 #[derive(Default)]
 struct GateState {
-    in_flight: bool,
+    /// A tunnel open failed and no recovery has succeeded since:
+    /// the next opener is the single recovery attempt.
+    needs_recovery: bool,
+    recovery_in_flight: bool,
     active_generation: u64,
     completed_generation: u64,
     last_error: Option<String>,
     next_generation: u64,
 }
 
-/// Single-flight tunnel recovery (#5758): at most one tunnel open
-/// per port is ever in flight. Concurrent callers wait (bounded by
-/// [`RECOVERY_WAIT`]) for the in-flight attempt: if it failed they
-/// fail fast with that same error — no CONNECT stampede against a
-/// dead target; if it succeeded they take their turn as the next
-/// serialized opener, because the target is demonstrably back.
+/// Single-flight tunnel RECOVERY (#5758, shaped by PR #6490's
+/// Codex review): healthy opens are NOT gated — a cold pool or a
+/// burst opens concurrently exactly as before. The gate engages
+/// only after a failure: the next opener for that port becomes
+/// the one recovery attempt, and concurrent callers wait (bounded
+/// by [`RECOVERY_WAIT`]) for its verdict — failure is shared with
+/// the waiters (no CONNECT stampede against a dead target);
+/// success clears the gate and waiters proceed to their own,
+/// concurrent opens. A waiter always consumes the verdict of the
+/// generation it waited on BEFORE looking at any newer attempt,
+/// so an opener's immediate retry can never steal or overwrite
+/// the failure its cohort observed.
 struct RecoveryGate {
     state: Mutex<std::collections::HashMap<u16, GateState>>,
     finished: Condvar,
@@ -281,14 +290,27 @@ impl RecoveryGate {
     fn run<T>(&self, port: u16, attempt: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
         let deadline = Instant::now() + RECOVERY_WAIT;
         let mut waiting_on: Option<u64> = None;
-        loop {
+        // Phase 1: decide — wait for an in-flight recovery, share
+        // its failure, or become an opener (recovery or normal).
+        let (recovery, generation) = loop {
             let mut state = self.state.lock().unwrap();
             let entry = state.entry(port).or_default();
-            if entry.in_flight {
-                let generation = entry.active_generation;
-                if waiting_on != Some(generation) {
-                    waiting_on = Some(generation);
+            // Consume the waited-on generation's verdict FIRST,
+            // before any newer in-flight attempt can overwrite
+            // what this caller observed (Codex P2, PR #6490).
+            if let Some(wgen) = waiting_on {
+                if entry.completed_generation == wgen {
+                    match &entry.last_error {
+                        Some(err) => return Err(err.clone()),
+                        None => {
+                            // Recovery succeeded: open ungated.
+                            break (false, 0);
+                        }
+                    }
                 }
+            }
+            if entry.recovery_in_flight {
+                waiting_on = Some(entry.active_generation);
                 let left = deadline.saturating_duration_since(Instant::now());
                 if left.is_zero() {
                     return Err(format!(
@@ -299,37 +321,39 @@ impl RecoveryGate {
                 state = guard;
                 continue;
             }
-            if let Some(generation) = waiting_on {
-                if entry.completed_generation == generation {
-                    if let Some(err) = &entry.last_error {
-                        // The attempt we waited on failed: share
-                        // its verdict instead of CONNECTing again.
-                        return Err(err.clone());
-                    }
-                    // It succeeded: fall through and open our own
-                    // tunnel as the next serialized attempt.
-                    waiting_on = None;
-                }
+            if entry.needs_recovery {
+                entry.next_generation += 1;
+                entry.active_generation = entry.next_generation;
+                entry.recovery_in_flight = true;
+                entry.needs_recovery = false;
+                break (true, entry.active_generation);
             }
-            // Become the one in-flight opener for this port.
-            let entry = state.entry(port).or_default();
-            entry.next_generation += 1;
-            entry.active_generation = entry.next_generation;
-            entry.in_flight = true;
-            let generation = entry.active_generation;
-            drop(state);
-            let got = attempt();
-            let mut state = self.state.lock().unwrap();
-            let entry = state.entry(port).or_default();
-            entry.in_flight = false;
+            // Healthy path: no gate at all.
+            break (false, 0);
+        };
+        // Phase 2: the attempt itself, outside the lock.
+        let got = attempt();
+        // Phase 3: record the outcome. A failure (any mode) arms
+        // single-flight recovery for the next opener; a recovery
+        // success disarms it and releases its cohort.
+        let mut state = self.state.lock().unwrap();
+        let entry = state.entry(port).or_default();
+        if got.is_err() {
+            entry.needs_recovery = true;
+        }
+        if recovery {
+            entry.recovery_in_flight = false;
             entry.completed_generation = generation;
             entry.last_error = match &got {
                 Ok(_) => None,
                 Err(e) => Some(e.clone()),
             };
+            if got.is_ok() {
+                entry.needs_recovery = false;
+            }
             self.finished.notify_all();
-            return got;
         }
+        got
     }
 }
 
@@ -385,9 +409,9 @@ struct Broker {
 
 impl Broker {
     fn open_conn(&self, port: u16) -> Result<HttpConn, String> {
-        // Every tunnel open goes through the single-flight gate:
-        // concurrent recovery for one port is one CONNECT, and a
-        // failed attempt's verdict is shared with its waiters.
+        // Tunnel opens pass through the recovery gate: ungated
+        // while healthy, single-flight once an open has failed —
+        // see [`RecoveryGate`].
         self.recovery.run(port, || self.open_conn_raw(port))
     }
 
@@ -943,38 +967,45 @@ mod tests {
     }
 
     #[test]
-    fn single_flight_failure_is_shared_by_all_waiters() {
-        // Fault injection (#5758): N concurrent callers hit a dead
-        // target; exactly ONE recovery attempt runs and every
-        // waiter fails fast with its verdict — no stampede.
+    fn recovery_failure_is_shared_by_all_waiters() {
+        // Fault injection (#5758): one failure arms the gate;
+        // then N concurrent callers produce exactly ONE recovery
+        // attempt and every waiter fails fast with its verdict —
+        // no CONNECT stampede against a dead target.
         let gate = Arc::new(RecoveryGate::new());
         let attempts = Arc::new(AtomicU64::new(0));
+        let attempt = |attempts: &Arc<AtomicU64>| {
+            attempts.fetch_add(1, Ordering::Relaxed);
+            std::thread::sleep(Duration::from_millis(150));
+            Err::<(), String>("tunnel to laptop:4799: refused".to_string())
+        };
+        // Prime: a normal-mode failure arms single-flight recovery.
+        let priming = gate.run(PORT, || attempt(&attempts));
+        assert!(priming.is_err());
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
         let mut handles = Vec::new();
         for _ in 0..8 {
             let gate = Arc::clone(&gate);
             let attempts = Arc::clone(&attempts);
             handles.push(std::thread::spawn(move || {
-                gate.run(PORT, || {
-                    attempts.fetch_add(1, Ordering::Relaxed);
-                    std::thread::sleep(Duration::from_millis(150));
-                    Err::<(), String>("tunnel to laptop:4799: refused".to_string())
-                })
+                gate.run(PORT, || attempt(&attempts))
             }));
         }
         for h in handles {
-            let got = h.join().unwrap();
             assert_eq!(
-                got.unwrap_err(),
+                h.join().unwrap().unwrap_err(),
                 "tunnel to laptop:4799: refused".to_string()
             );
         }
-        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+        // Priming + exactly one shared recovery attempt.
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
     }
 
     #[test]
-    fn single_flight_serializes_successful_opens() {
-        // On success each caller still gets its own tunnel, but
-        // never concurrently: the in-flight count peaks at 1.
+    fn healthy_opens_proceed_concurrently() {
+        // Codex P1 on PR #6490: the gate must NOT serialize the
+        // healthy path — a cold-pool burst opens in parallel, so
+        // nobody times out queued behind successful CONNECTs.
         let gate = Arc::new(RecoveryGate::new());
         let in_flight = Arc::new(AtomicU64::new(0));
         let peak = Arc::new(AtomicU64::new(0));
@@ -987,7 +1018,7 @@ mod tests {
                 gate.run(PORT, || {
                     let now = in_flight.fetch_add(1, Ordering::Relaxed) + 1;
                     peak.fetch_max(now, Ordering::Relaxed);
-                    std::thread::sleep(Duration::from_millis(30));
+                    std::thread::sleep(Duration::from_millis(100));
                     in_flight.fetch_sub(1, Ordering::Relaxed);
                     Ok::<(), String>(())
                 })
@@ -996,7 +1027,62 @@ mod tests {
         for h in handles {
             assert!(h.join().unwrap().is_ok());
         }
-        assert_eq!(peak.load(Ordering::Relaxed), 1);
+        assert!(
+            peak.load(Ordering::Relaxed) > 1,
+            "healthy opens were serialized (peak {})",
+            peak.load(Ordering::Relaxed)
+        );
+    }
+
+    #[test]
+    fn waiter_keeps_its_generations_verdict_despite_a_retry() {
+        // Codex P2 on PR #6490: a waiter on a failed recovery
+        // generation must consume THAT verdict even if the
+        // opener's immediate retry starts a newer generation
+        // before the waiter reacquires the lock.
+        let gate = Arc::new(RecoveryGate::new());
+        // Prime the gate into recovery mode (attempt #1).
+        let n = Arc::new(AtomicU64::new(0));
+        let mk = |n: &Arc<AtomicU64>, ms: u64| {
+            let k = n.fetch_add(1, Ordering::Relaxed) + 1;
+            std::thread::sleep(Duration::from_millis(ms));
+            Err::<(), String>(format!("failure-{k}"))
+        };
+        assert_eq!(gate.run(PORT, || mk(&n, 0)).unwrap_err(), "failure-1");
+        // Leader: recovery attempt #2 (slow fail), then an
+        // immediate retry = attempt #3 (even slower fail).
+        let leader = {
+            let gate = Arc::clone(&gate);
+            let n = Arc::clone(&n);
+            std::thread::spawn(move || {
+                let first = gate.run(PORT, || mk(&n, 200));
+                let second = gate.run(PORT, || mk(&n, 600));
+                (first, second)
+            })
+        };
+        // Waiter arrives while attempt #2 is in flight.
+        std::thread::sleep(Duration::from_millis(50));
+        let waited = gate.run(PORT, || mk(&n, 0));
+        // The waiter shares attempt #2's verdict — it neither
+        // waits for nor reports attempt #3's.
+        assert_eq!(waited.unwrap_err(), "failure-2");
+        let (first, second) = leader.join().unwrap();
+        assert_eq!(first.unwrap_err(), "failure-2");
+        assert_eq!(second.unwrap_err(), "failure-3");
+    }
+
+    #[test]
+    fn successful_recovery_disarms_the_gate() {
+        // After a recovery succeeds, opens are concurrent again.
+        let gate = Arc::new(RecoveryGate::new());
+        assert!(
+            gate.run(PORT, || Err::<(), String>("dead".to_string()))
+                .is_err()
+        );
+        assert!(gate.run(PORT, || Ok::<(), String>(())).is_ok());
+        // needs_recovery cleared: a later failure is a fresh
+        // normal-mode failure, and the gate re-arms only then.
+        assert!(gate.run(PORT, || Ok::<(), String>(())).is_ok());
     }
 
     #[test]
