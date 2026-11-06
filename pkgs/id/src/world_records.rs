@@ -169,14 +169,29 @@ impl RecordsStore {
                 existing.insert(key.to_owned(), entry.content_hash());
             }
         }
+        // Delete obsolete keys before writing additions (Codex review
+        // on PR #6495): with add-before-delete, replacing one valid
+        // MAX_RECORDS-sized set with a disjoint one transiently put
+        // up to twice the cap of entries in the doc, and a follower
+        // reading that intermediate state was refused by the
+        // receipt-side cap in read_records. Delete-first keeps every
+        // intermediate doc state at or below
+        // max(old set, new set), so a conforming publisher never
+        // produces an over-cap doc.
+        let obsolete: Vec<String> = existing
+            .keys()
+            .filter(|key| !records.contains_key(*key))
+            .cloned()
+            .collect();
+        for key in &obsolete {
+            self.doc.del(self.author, doc_key(key)).await?;
+            existing.remove(key);
+        }
         for (key, value) in records {
             let bytes = serde_json::to_vec(value)?;
             if existing.remove(key) != Some(Hash::new(&bytes)) {
                 self.doc.set_bytes(self.author, doc_key(key), bytes).await?;
             }
-        }
-        for key in existing.keys() {
-            self.doc.del(self.author, doc_key(key)).await?;
         }
         Ok(())
     }
@@ -573,6 +588,29 @@ mod tests {
         let read = read_records(&store.doc, &host.blobs).await.unwrap();
         assert_eq!(read, records);
 
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn reconcile_replacing_a_full_set_stays_readable() {
+        // Regression for the Codex finding on PR #6495: replacing one
+        // MAX_RECORDS-sized set with a disjoint one must end in a doc
+        // that read_records accepts (delete-first ordering keeps every
+        // intermediate state within the cap as well).
+        let host = Node::spawn().await;
+        let store = RecordsStore::open(&host.docs, None).await.unwrap();
+        let mut first = Records::new();
+        for i in 0..MAX_RECORDS {
+            first.insert(format!("a{i}"), 1.into());
+        }
+        store.reconcile(&first).await.unwrap();
+        let mut second = Records::new();
+        for i in 0..MAX_RECORDS {
+            second.insert(format!("b{i}"), 2.into());
+        }
+        store.reconcile(&second).await.unwrap();
+        let read = read_records(&store.doc, &host.blobs).await.unwrap();
+        assert_eq!(read, second);
         host.shutdown().await;
     }
 
