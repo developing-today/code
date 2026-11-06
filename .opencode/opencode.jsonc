@@ -407,8 +407,10 @@
       "npm": "@opencode/ai/providers/mistral",
       "name": "Mistral API (drewrypope)"
       // Credential: the enrolled server credential (integration
-      // "mistral", Bitwarden mistral.api-key); MISTRAL_API_KEY is also
-      // materialized into the server unit's environment (home/common).
+      // "mistral", Bitwarden mistral.api-key) — the only source.
+      // MISTRAL_API_KEY is deliberately NOT materialized into the
+      // server environment: vibe-direct's env-first resolution would
+      // spend this API-budget key (see home/common, opencode#1653).
       // "models": maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
     },
     "vibe-direct": {
@@ -416,10 +418,15 @@
       "name": "Mistral Vibe Direct (native wire clone)",
       // 2026-11-04 (opencode#1653, PR #1661): native in-fork emulation of
       // the mistral-vibe binary — same Mistral wire, Vibe's presets and
-      // the attribution stamp (metadata.call_source "vibe_code", the
-      // metering key for the Vibe quota marts). No vibe subprocess.
-      // Credential: MISTRAL_API_KEY in the server unit's environment
-      // (vibe-auth resolution: config -> env -> ~/.vibe/.env -> keyring).
+      // the attribution stamp (metadata.call_source "vibe_code"; billing
+      // follows the KEY, not the stamp — see the credential note).
+      // No vibe subprocess.
+      // Credential: vibe-auth resolution mirrors the binary (config ->
+      // env -> ~/.vibe/.env -> keyring) and the server env must NOT
+      // carry MISTRAL_API_KEY: that key is the API-budget key and
+      // Mistral meters per key, so with the env slot empty vibe-direct
+      // falls through to the keyring "ai.mistral.vibe" sign-in key —
+      // the Vibe plan key.
       // Models are declared HERE: models.dev has no vibe entry, so
       // sync-models cannot maintain this catalog. The entries are the
       // preset ids + names from Vibe's own catalog (opencode#1653).
@@ -1793,13 +1800,14 @@
       },
       // mistral-plan (2026-11-04, Drew): the Mistral pair as ONE
       // provider route — vibe-direct attempted first on every dispatch
-      // (the Vibe-attributed leg: metadata.call_source "vibe_code"),
-      // the plain Mistral API provider the reserve; the API leg serves
-      // only when vibe-direct fails or is demoted. Both legs resolve
-      // the same Bitwarden mistral.api-key credential (the vibe leg via
-      // MISTRAL_API_KEY in the server environment, the API leg via the
-      // enrolled "mistral" integration credential). Change the leg
-      // order HERE, in this providers list, and nowhere else.
+      // (the Vibe plan leg), the plain Mistral API provider the
+      // reserve; the API leg serves only when vibe-direct fails or is
+      // demoted. The legs use DIFFERENT keys by design (corrected
+      // 2026-11-06): Mistral meters per key — vibe-direct's keyring
+      // sign-in key bills the Vibe plan budget; the API leg's enrolled
+      // "mistral" integration credential bills the account API budget.
+      // Change the leg order HERE, in this providers list, and
+      // nowhere else.
       "mistral-plan": {
         "providers": ["vibe-direct", "mistral"],
         "selection": "ordered"
