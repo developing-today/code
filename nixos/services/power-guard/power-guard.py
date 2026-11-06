@@ -35,13 +35,20 @@ import time
 
 SYSFS = os.environ.get("POWER_GUARD_SYSFS", "/sys/class/power_supply")
 
+# Largest interval time.sleep can represent: C PyTime_t is a signed
+# 64-bit count of nanoseconds, so a finite value beyond ~292 years
+# still overflows time.sleep at runtime (OverflowError) mid-loop.
+MAX_TIMING_SECONDS = (2**63 - 1) / 1e9
+
+
 def parse_timing(name, raw):
     """Parse one timing override (seconds).
 
     Invariant (the daemon's reason to exist, #1687/#6477): a timing
     override is only meaningful as a finite, strictly positive number
-    of seconds. Zero or negative confirmation would fire on the first
-    sample; a non-positive poll cannot pace the loop.
+    of seconds no larger than MAX_TIMING_SECONDS (the largest interval
+    time.sleep can represent). Zero or negative confirmation would fire
+    on the first sample; a non-positive poll cannot pace the loop.
     Raises ValueError naming the variable and the offending value.
     """
     try:
@@ -54,6 +61,11 @@ def parse_timing(name, raw):
     if not math.isfinite(value) or value <= 0:
         raise ValueError(
             f"{name}={raw!r} must be a finite positive number of seconds"
+        )
+    if value > MAX_TIMING_SECONDS:
+        raise ValueError(
+            f"{name}={raw!r} exceeds the largest interval time.sleep "
+            f"can represent ({MAX_TIMING_SECONDS:.0f} seconds)"
         )
     return value
 

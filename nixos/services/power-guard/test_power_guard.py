@@ -4,7 +4,8 @@
 Oracle: the acceptance criteria of #6477 plus the daemon's defining
 invariant from #1687 — hybrid-sleep may only fire after a *sustained*
 critical state, so a timing override is valid only as a finite,
-strictly positive number of seconds. Invalid overrides are decided by
+strictly positive number of seconds no larger than the largest
+interval time.sleep can represent. Invalid overrides are decided by
 the parser contract (named startup error, non-zero exit, before
 polling, marker file from the stubbed sleep command never written);
 valid behaviour is decided by the fake-sysfs probe scenarios A-E from
@@ -28,7 +29,7 @@ HERE = Path(__file__).resolve().parent
 DAEMON = HERE / "power-guard.py"
 
 TIMING_VARS = ("POWER_GUARD_POLL", "POWER_GUARD_CONFIRM", "POWER_GUARD_EDGE_CONFIRM")
-BAD_VALUES = ["abc", "", "nan", "NaN", "inf", "-inf", "0", "0.0", "-1", "-5"]
+BAD_VALUES = ["abc", "", "nan", "NaN", "inf", "-inf", "0", "0.0", "-1", "-5", "1e10", "1e100"]
 
 
 def load_daemon():
@@ -76,9 +77,10 @@ class ParseTimingTests(unittest.TestCase):
 class ParseTimingPropertyTests(unittest.TestCase):
     """Property-based coverage of the parser invariant (Codex #6485).
 
-    Oracle: the finite-positive predicate itself, evaluated
+    Oracle: the acceptance predicate itself, evaluated
     independently of parse_timing's control flow — a generated input
-    is acceptable iff float() parses it to a finite value > 0.
+    is acceptable iff float() parses it to a finite value > 0 and
+    no larger than MAX_TIMING_SECONDS (the time.sleep bound).
     Generation is seeded, so failures reproduce exactly.
     """
 
@@ -87,7 +89,7 @@ class ParseTimingPropertyTests(unittest.TestCase):
             value = float(raw)
         except (TypeError, ValueError):
             return False
-        return math.isfinite(value) and value > 0
+        return math.isfinite(value) and 0 < value <= pg.MAX_TIMING_SECONDS
 
     @staticmethod
     def generated_inputs(rng):
@@ -110,6 +112,7 @@ class ParseTimingPropertyTests(unittest.TestCase):
                         "-0.0",
                         rng.choice(["nan", "NaN", "inf", "-inf", "infinity"]),
                         "".join(rng.choices("abcxyz_=!@#", k=rng.randint(1, 8))),
+                        f"{rng.uniform(2, 9)}e{rng.randint(10, 100)}",
                         f"{rng.uniform(1, 9)}x{rng.randint(0, 9)}",
                         "",
                     ]
@@ -191,6 +194,7 @@ class DaemonSubprocessTests(unittest.TestCase):
             {"POWER_GUARD_POLL": "abc"},
             {"POWER_GUARD_POLL": "-1"},
             {"POWER_GUARD_POLL": "inf"},
+            {"POWER_GUARD_POLL": "1e100"},
         ]
         for timing in cases:
             var = next(iter(timing))
