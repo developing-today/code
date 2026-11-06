@@ -1140,7 +1140,12 @@ const DIRECT_TOOL_NAMES = Object.fromEntries(
 );
 const directToolAlias = (name, taken) => {
   const alias = DIRECT_TOOL_ALIASES[name];
-  if (!alias || (taken && taken.has(alias))) return name;
+  if (!alias) return name;
+  if (taken && taken.has(alias)) {
+    const error = new Error(`Cannot safely alias tool "${name}": "${alias}" is already defined`);
+    error.code = 'DIRECT_TOOL_ALIAS_COLLISION';
+    throw error;
+  }
   return alias;
 };
 const clientToolName = (name) => DIRECT_TOOL_NAMES[name] || name;
@@ -1148,27 +1153,47 @@ const clientToolName = (name) => DIRECT_TOOL_NAMES[name] || name;
 // The /v1/responses passthrough forwards client bodies in Responses shape;
 // apply the same tool-name aliasing there, in both directions, so a native
 // client (the muse-direct provider) passes the attestation gate too. An
-// unparseable body forwards verbatim, exactly as before.
+// malformed JSON is rejected locally instead of silently bypassing aliasing.
 const aliasResponsesRequestBody = (bodyText) => {
   let parsed;
-  try { parsed = JSON.parse(bodyText); } catch { return { text: bodyText, aliased: false }; }
+  try { parsed = JSON.parse(bodyText); } catch {
+    return { error: 'Request body is not valid JSON; refusing to forward it unaliased' };
+  }
   if (!parsed || typeof parsed !== 'object') return { text: bodyText, aliased: false };
   const taken = new Set((Array.isArray(parsed.tools) ? parsed.tools : [])
     .map(t => t && t.name).filter(Boolean));
   let aliased = false;
   const rename = (holder) => {
     if (holder && typeof holder.name === 'string') {
-      const next = directToolAlias(holder.name, taken);
+      let next;
+      try {
+        next = directToolAlias(holder.name, taken);
+      } catch (error) {
+        if (error.code === 'DIRECT_TOOL_ALIAS_COLLISION') return error.message;
+        throw error;
+      }
       if (next !== holder.name) { holder.name = next; aliased = true; }
     }
+    return null;
   };
-  if (Array.isArray(parsed.tools)) for (const t of parsed.tools) rename(t);
-  if (Array.isArray(parsed.input)) {
-    for (const item of parsed.input) {
-      if (item && item.type === 'function_call') rename(item);
+  if (Array.isArray(parsed.tools)) {
+    for (const t of parsed.tools) {
+      const error = rename(t);
+      if (error) return { error };
     }
   }
-  if (parsed.tool_choice && parsed.tool_choice.type === 'function') rename(parsed.tool_choice);
+  if (Array.isArray(parsed.input)) {
+    for (const item of parsed.input) {
+      if (item && item.type === 'function_call') {
+        const error = rename(item);
+        if (error) return { error };
+      }
+    }
+  }
+  if (parsed.tool_choice && parsed.tool_choice.type === 'function') {
+    const error = rename(parsed.tool_choice);
+    if (error) return { error };
+  }
   return aliased ? { text: JSON.stringify(parsed), aliased } : { text: bodyText, aliased };
 };
 
@@ -1187,10 +1212,17 @@ const unaliasSseData = (data) => {
   if (!data.includes('run_command') && !data.includes('terminal')) return data;
   let evt;
   try { evt = JSON.parse(data); } catch { return data; }
-  if (evt && evt.item && evt.item.type === 'function_call' && typeof evt.item.name === 'string') {
-    evt.item.name = clientToolName(evt.item.name);
-  }
-  if (evt && evt.response) unaliasResponsesOutput(evt.response);
+  const unaliasFunctionCalls = (value) => {
+    if (Array.isArray(value)) {
+      for (const item of value) unaliasFunctionCalls(item);
+    } else if (value && typeof value === 'object') {
+      if (value.type === 'function_call' && typeof value.name === 'string') {
+        value.name = clientToolName(value.name);
+      }
+      for (const child of Object.values(value)) unaliasFunctionCalls(child);
+    }
+  };
+  unaliasFunctionCalls(evt);
   return JSON.stringify(evt);
 };
 
@@ -1431,7 +1463,16 @@ const tryDirectChat = async ({ body, baseModel, effort, fullName, stream, res, c
     writeJsonBody(res, 502, { error: { message: keyResult.message } });
     return true;
   }
-  const upstreamBody = JSON.stringify(buildResponsesRequest(body, baseModel, effort));
+  let upstreamBody;
+  try {
+    upstreamBody = JSON.stringify(buildResponsesRequest(body, baseModel, effort));
+  } catch (error) {
+    if (error.code === 'DIRECT_TOOL_ALIAS_COLLISION') {
+      writeJsonBody(res, 400, { error: { message: error.message } });
+      return true;
+    }
+    throw error;
+  }
   let outcome;
   try {
     outcome = await directResponsesFetch(keyResult, upstreamBody, stream ? 'text/event-stream' : 'application/json');
@@ -1606,6 +1647,10 @@ const server = http.createServer((req, res) => {
       let aliasedBody = { text: bodyText, aliased: false };
       try {
         aliasedBody = aliasResponsesRequestBody(bodyText);
+        if (aliasedBody.error) {
+          writeJsonBody(res, 400, { error: { message: aliasedBody.error } });
+          return;
+        }
         outcome = await directResponsesFetch(keyResult, aliasedBody.text, req.headers.accept || 'application/json');
       } catch (err) {
         writeJsonBody(res, 502, { error: { message: `Direct Meta route request failed: ${err.message}` } });
