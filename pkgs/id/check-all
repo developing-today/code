@@ -94,6 +94,10 @@ fi
 # 3. Unit tests
 run_check "Unit Tests" cargo test --lib || true
 
+# 3b. id-native-shell tests (#5582): the crate is a non-default workspace
+# member, so the default-member runs in this script never touch it.
+run_check "id-native-shell Tests" cargo test -p id-native-shell || true
+
 # 4. Integration tests (skip in quick mode)
 if ! $QUICK; then
     run_check "Integration Tests" cargo test --test cli_integration || true
