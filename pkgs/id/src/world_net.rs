@@ -2447,6 +2447,185 @@ mod tests {
         );
     }
 
+    /// A host that answers `records` requests with scripted pages, however
+    /// rogue, instead of serving a real world. The last page repeats
+    /// forever, which is what a stuck-cursor host looks like on the wire.
+    #[derive(Debug, Clone)]
+    struct RogueRecordsHost {
+        pages: Arc<Vec<serde_json::Value>>,
+    }
+
+    impl ProtocolHandler for RogueRecordsHost {
+        async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+            while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+                let pages = Arc::clone(&self.pages);
+                tokio::spawn(async move {
+                    let mut index = 0usize;
+                    while let Ok(Some(_frame)) = crate::frames::read_frame(&mut recv).await {
+                        let Some(reply) = pages.get(index).or_else(|| pages.last()) else {
+                            break;
+                        };
+                        index += 1;
+                        let text = reply.to_string();
+                        if crate::frames::write_frame(&mut send, text.as_bytes())
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+            }
+            Ok(())
+        }
+    }
+
+    async fn rogue_host(pages: Vec<serde_json::Value>) -> (Router, EndpointAddr) {
+        let ep = endpoint().await;
+        let router = Router::builder(ep.clone())
+            .accept(
+                WORLD_ALPN,
+                RogueRecordsHost {
+                    pages: Arc::new(pages),
+                },
+            )
+            .spawn();
+        let addr = EndpointAddr::from_parts(
+            ep.id(),
+            ep.bound_sockets().iter().map(|a| {
+                let ip = if a.ip().is_unspecified() {
+                    std::net::Ipv4Addr::LOCALHOST.into()
+                } else {
+                    a.ip()
+                };
+                iroh::TransportAddr::Ip(std::net::SocketAddr::new(ip, a.port()))
+            }),
+        );
+        (router, addr)
+    }
+
+    fn records_page(records: serde_json::Value, next_after: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "type": "records",
+            "sequence": 7,
+            "records": records,
+            "next_after": next_after,
+        })
+    }
+
+    /// Drive `WorldClient::records` against a rogue host and return the
+    /// result. The timeout is the promptness oracle: an unvalidated client
+    /// hangs or balloons on several of these scripts instead of erroring.
+    async fn rogue_records(pages: Vec<serde_json::Value>) -> Result<crate::world::Records> {
+        let (router, addr) = rogue_host(pages).await;
+        let client_ep = endpoint().await;
+        let mut client = WorldClient::connect(&client_ep, addr).await.unwrap();
+        let result =
+            tokio::time::timeout(Duration::from_secs(10), client.records("capability", None))
+                .await
+                .expect("records() must refuse a rogue page promptly, not hang");
+        client_ep.close().await;
+        router.shutdown().await.unwrap();
+        result
+    }
+
+    #[tokio::test]
+    async fn records_client_rejects_over_count_page() {
+        let mut map = serde_json::Map::new();
+        for i in 0..=crate::world::MAX_RECORDS {
+            map.insert(format!("k{i:05}"), serde_json::json!(i));
+        }
+        let err = rogue_records(vec![records_page(serde_json::Value::Object(map), None)])
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:?}").contains("4096"),
+            "over-count error must name the cap: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn records_client_rejects_oversized_value() {
+        let page = records_page(
+            serde_json::json!({"a": "x".repeat(crate::world::MAX_RECORD_VALUE_BYTES + 1)}),
+            None,
+        );
+        let err = rogue_records(vec![page]).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("\"a\""),
+            "oversized-value error must name the key: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn records_client_rejects_control_char_key() {
+        let page = records_page(serde_json::json!({"a\u{1}b": 1}), None);
+        let err = rogue_records(vec![page]).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("control character"),
+            "control-char error must say why: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn records_client_rejects_stuck_cursor() {
+        // One page, repeated forever: next_after never advances past "a".
+        let page = records_page(serde_json::json!({"a": 1}), Some("a"));
+        let err = rogue_records(vec![page]).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("out of order")
+                || format!("{err:?}").contains("did not advance"),
+            "stuck cursor must be refused: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn records_client_rejects_duplicate_key_across_pages() {
+        let pages = vec![
+            records_page(serde_json::json!({"a": 1, "b": 2}), Some("b")),
+            records_page(serde_json::json!({"b": 3}), None),
+        ];
+        let err = rogue_records(pages).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("out of order"),
+            "duplicate key across pages must be refused: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn records_client_rejects_out_of_order_page() {
+        let pages = vec![
+            records_page(serde_json::json!({"m": 1}), Some("m")),
+            records_page(serde_json::json!({"a": 2}), None),
+        ];
+        let err = rogue_records(pages).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("out of order"),
+            "out-of-order key across pages must be refused: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn records_client_rejects_mismatched_cursor() {
+        let page = records_page(serde_json::json!({"a": 1}), Some("zzz"));
+        let err = rogue_records(vec![page]).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("does not match last key"),
+            "mismatched cursor must be refused: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn records_client_accepts_conforming_pages() {
+        let pages = vec![
+            records_page(serde_json::json!({"a": 1, "b": 2}), Some("b")),
+            records_page(serde_json::json!({"c": 3}), None),
+        ];
+        let records = rogue_records(pages).await.unwrap();
+        assert_eq!(records.len(), 3);
+        assert_eq!(records["c"], serde_json::json!(3));
+    }
+
     #[tokio::test]
     async fn peers_invite_join_chat_and_catch_up_over_iroh() {
         let host = host(Some("admin")).await;
