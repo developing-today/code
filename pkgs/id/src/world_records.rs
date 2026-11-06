@@ -21,7 +21,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use futures_lite::StreamExt;
 use iroh_blobs::{Hash, api::Store};
 use iroh_docs::{
@@ -36,7 +36,9 @@ use iroh_docs::{
 };
 use tokio::task::JoinHandle;
 
-use crate::world::{Records, WorldHandle};
+use crate::world::{
+    MAX_RECORD_KEY_BYTES, MAX_RECORD_VALUE_BYTES, MAX_RECORDS, Records, WorldHandle,
+};
 
 /// The host side: one world's records document.
 #[derive(Clone, Debug)]
@@ -201,26 +203,62 @@ impl RecordsStore {
 
 /// Read every record from a (local or replicated) records doc.
 ///
+/// Receipt-side cap enforcement (#6483): a replicated doc is not
+/// trusted just because a conforming publisher would have passed
+/// `crate::world::parse_records`. The same `MAX_RECORD*` caps are
+/// re-checked here, matching `parse_records` and
+/// `AdminHistoryBudget::add_record`: at most `MAX_RECORDS` records,
+/// keys non-empty, at most `MAX_RECORD_KEY_BYTES` bytes and free of
+/// control characters, and values at most `MAX_RECORD_VALUE_BYTES`
+/// serialized. Key and count checks run before the entry's blob is
+/// fetched, so an over-cap doc fails early rather than after
+/// materializing every blob; a value's size can only be measured once
+/// that one blob is in hand (the blob store serves whole blobs), and
+/// is checked before any later entry is fetched. Any violation is an
+/// error naming the offending record key. Callers surface it: the
+/// `mirror --follow` loop in `commands::world` propagates it with
+/// `?`, so a refusal ends the follow with an error instead of
+/// silently retry-spinning.
+///
 /// # Errors
 ///
-/// Docs or blob failures, or a value that is not JSON.
+/// Docs or blob failures, a value that is not JSON, or a record that
+/// exceeds one of the `MAX_RECORD*` caps.
 pub async fn read_records(doc: &Doc, blobs: &Store) -> Result<Records> {
     let mut records = Records::new();
+    let mut seen = 0usize;
     let entries = doc.get_many(Query::all().build()).await?;
     tokio::pin!(entries);
     while let Some(entry) = entries.try_next().await? {
         let Some(key) = record_key(entry.key()) else {
             continue;
         };
+        ensure!(
+            !key.is_empty() && key.len() <= MAX_RECORD_KEY_BYTES,
+            "record key {key:?} must be 1..={MAX_RECORD_KEY_BYTES} bytes"
+        );
+        ensure!(
+            !key.chars().any(char::is_control),
+            "record key {key:?} contains a control character"
+        );
+        seen += 1;
+        ensure!(
+            seen <= MAX_RECORDS,
+            "records doc contains more than {MAX_RECORDS} records; the limit is {MAX_RECORDS}"
+        );
         let bytes = blobs
             .blobs()
             .get_bytes(entry.content_hash())
             .await
             .with_context(|| format!("content of record {key:?} is not available yet"))?;
-        records.insert(
-            key.to_owned(),
-            serde_json::from_slice(&bytes).with_context(|| format!("record {key:?}"))?,
+        let value: serde_json::Value =
+            serde_json::from_slice(&bytes).with_context(|| format!("record {key:?}"))?;
+        let size = serde_json::to_vec(&value).map_or(usize::MAX, |v| v.len());
+        ensure!(
+            size <= MAX_RECORD_VALUE_BYTES,
+            "record {key:?} is {size} bytes; the limit is {MAX_RECORD_VALUE_BYTES}"
         );
+        records.insert(key.to_owned(), value);
     }
     Ok(records)
 }
@@ -535,6 +573,91 @@ mod tests {
         let read = read_records(&store.doc, &host.blobs).await.unwrap();
         assert_eq!(read, records);
 
+        host.shutdown().await;
+    }
+
+    async fn write_raw(store: &RecordsStore, key: &str, bytes: Vec<u8>) {
+        store
+            .doc
+            .set_bytes(store.author, doc_key(key), bytes)
+            .await
+            .unwrap();
+    }
+
+    async fn read_err(store: &RecordsStore, blobs: &Store) -> String {
+        read_records(&store.doc, blobs)
+            .await
+            .unwrap_err()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn read_records_accepts_a_conforming_doc() {
+        let host = Node::spawn().await;
+        let store = RecordsStore::open(&host.docs, None).await.unwrap();
+        write_raw(&store, "a", b"1".to_vec()).await;
+        write_raw(
+            &store,
+            &"k".repeat(MAX_RECORD_KEY_BYTES),
+            b"\"two\"".to_vec(),
+        )
+        .await;
+        let read = read_records(&store.doc, &host.blobs).await.unwrap();
+        assert_eq!(read.len(), 2);
+        assert_eq!(read["a"], 1);
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn read_records_refuses_an_oversized_value() {
+        let host = Node::spawn().await;
+        let store = RecordsStore::open(&host.docs, None).await.unwrap();
+        let big = serde_json::Value::String("x".repeat(MAX_RECORD_VALUE_BYTES + 1));
+        write_raw(&store, "big", serde_json::to_vec(&big).unwrap()).await;
+        let err = read_err(&store, &host.blobs).await;
+        assert!(err.contains("big") && err.contains("8192"), "{err}");
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn read_records_refuses_an_over_long_key() {
+        let host = Node::spawn().await;
+        let store = RecordsStore::open(&host.docs, None).await.unwrap();
+        write_raw(&store, &"k".repeat(MAX_RECORD_KEY_BYTES + 1), b"1".to_vec()).await;
+        let err = read_err(&store, &host.blobs).await;
+        assert!(err.contains("256"), "{err}");
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn read_records_refuses_a_control_character_key() {
+        let host = Node::spawn().await;
+        let store = RecordsStore::open(&host.docs, None).await.unwrap();
+        write_raw(&store, "bad\u{1}key", b"1".to_vec()).await;
+        let err = read_err(&store, &host.blobs).await;
+        assert!(err.contains("control character"), "{err}");
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn read_records_refuses_an_empty_key() {
+        let host = Node::spawn().await;
+        let store = RecordsStore::open(&host.docs, None).await.unwrap();
+        write_raw(&store, "", b"1".to_vec()).await;
+        let err = read_err(&store, &host.blobs).await;
+        assert!(err.contains("1..=256"), "{err}");
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn read_records_refuses_too_many_records() {
+        let host = Node::spawn().await;
+        let store = RecordsStore::open(&host.docs, None).await.unwrap();
+        for i in 0..=MAX_RECORDS {
+            write_raw(&store, &format!("k{i}"), b"1".to_vec()).await;
+        }
+        let err = read_err(&store, &host.blobs).await;
+        assert!(err.contains("4096"), "{err}");
         host.shutdown().await;
     }
 }
