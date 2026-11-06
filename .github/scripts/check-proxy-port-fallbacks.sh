@@ -66,6 +66,13 @@
 # to the fork's native wire-emulation providers on 2026-11-05
 # (code#6117, opencode#1749); this guard had been failing on their
 # stale rows since that repoint removed the jsonc baseURLs.
+#
+# Retired 2026-11-06 (Drew, muse-direct order): the muse door
+# (:18747), this guard's last row, is gone the same way — the
+# provider went native in the fork (@opencode/ai/providers/
+# muse-direct, opencode#1825). The row list is empty and the guard
+# passes vacuously; it stays wired so a future proxy door re-adds
+# its row here on purpose.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -74,7 +81,6 @@ config_file="$repo_root/.opencode/opencode.jsonc"
 
 # var | let binding | proxy script | has an opencode.jsonc baseURL
 proxies=(
-  "MUSE_PROXY_PORT|museProxyPort|bin/muse-proxy.mjs|yes"
 )
 
 failed=0
