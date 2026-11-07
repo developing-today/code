@@ -72,6 +72,12 @@ pub enum ChainError {
     /// Every sequence after 0 names the author's previous event.
     #[error("sequence {0} needs a backlink")]
     MissingBacklink(SeqNum),
+    /// A signed world move names a world ID that is empty or whitespace-only.
+    #[error("world id is blank, a world id must not be empty or whitespace-only")]
+    BlankWorldId,
+    /// A signed world move carries an empty input.
+    #[error("move input is empty, a move must carry at least one byte")]
+    EmptyInput,
     /// The bytes, or the extension inside them, are not the canonical encoding
     /// of the value they hold.
     #[error("the bytes are not the canonical encoding of their value")]
