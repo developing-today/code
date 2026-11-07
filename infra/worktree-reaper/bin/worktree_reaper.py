@@ -374,13 +374,23 @@ def walk_activity(tree, cutoff):
     return max_mtime, total, True
 
 
+class ProcScanError(OSError):
+    """The /proc scan itself failed (#5740).
+
+    Distinct from a successful scan that finds no processes: occupancy
+    is UNKNOWN, and every caller must fail closed (retain the tree).
+    Subclasses OSError so generic OS-error handlers still see it as
+    an inspection failure, never as an empty result.
+    """
+
+
 def proc_cwds():
     cwds = []
     me = str(os.getpid())
     try:
         pids = os.listdir("/proc")
-    except OSError:
-        return cwds
+    except OSError as exc:
+        raise ProcScanError(f"cannot list /proc: {exc}") from exc
     for pid in pids:
         if not pid.isdigit() or pid == me:
             continue
@@ -482,7 +492,18 @@ def reap_tree(primary, rec, cfg):
     # Re-verify in the same run, immediately before the irreversible step:
     # fresh /proc scan and a fresh dirt check (spec: --force only when the
     # sole blocker is allowlisted dirt, re-verified in the same run).
-    if tree_occupied(tree):
+    try:
+        occupied_now = tree_occupied(tree)
+    except ProcScanError as exc:
+        # Fail closed (#5740): occupancy unknown — retain the tree and
+        # say so; never let a scan error read as "unoccupied".
+        rec["action"] = "keep"
+        rec["reason"] = "occupied-unknown-at-removal"
+        rec["error"] = str(exc)
+        print(f"worktree-reaper: WARNING: /proc scan failed before "
+              f"removal of {tree}; retaining it ({exc})")
+        return False
+    if occupied_now:
         rec["action"] = "keep"
         rec["reason"] = "occupied-at-removal"
         return False
@@ -548,7 +569,16 @@ def main(argv=None):
     }
 
     primaries = [expand(p) for p in args.primary] or discover_primaries(cfg)
-    cwds = proc_cwds()
+    try:
+        cwds = proc_cwds()
+    except ProcScanError as exc:
+        # Fail closed (#5740): with no trustworthy occupancy scan,
+        # nothing in this run may be removed — stop before evaluating.
+        print(f"worktree-reaper: ERROR: /proc scan failed ({exc}); "
+              "failing closed, nothing will be removed this run.")
+        summary["errors"].append(f"proc scan failed: {exc}")
+        print(json.dumps(summary, indent=2))
+        return 1
     reaped_count = 0
     cap = int(cfg["max_removals"])
 
