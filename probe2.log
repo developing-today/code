@@ -1,0 +1,81 @@
+warning: unnecessary qualification
+    --> src/commands/world.rs:1088:33
+     |
+1088 |     let mut paths: Vec<(String, std::path::PathBuf)> = Vec::new();
+     |                                 ^^^^^^^^^^^^^^^^^^
+     |
+     = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+     |
+1088 -     let mut paths: Vec<(String, std::path::PathBuf)> = Vec::new();
+1088 +     let mut paths: Vec<(String, PathBuf)> = Vec::new();
+     |
+
+warning: unnecessary qualification
+    --> src/commands/world.rs:1091:31
+     |
+1091 |         let mut siblings: Vec<std::path::PathBuf> = std::fs::read_dir(source)
+     |                               ^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1091 -         let mut siblings: Vec<std::path::PathBuf> = std::fs::read_dir(source)
+1091 +         let mut siblings: Vec<PathBuf> = std::fs::read_dir(source)
+     |
+
+warning: unnecessary qualification
+   --> src/world_session/mod.rs:691:19
+    |
+691 |         let hash: iroh_blobs::Hash = expected_hash
+    |                   ^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+691 -         let hash: iroh_blobs::Hash = expected_hash
+691 +         let hash: Hash = expected_hash
+    |
+
+warning: method `keeps` is never used
+   --> src/event_store/ingest.rs:468:8
+    |
+466 | impl Staged {
+    | ----------- method in this implementation
+467 |     /// Whether the event is kept: stored, or held. A refused event and a fork are not.
+468 |     fn keeps(&self) -> bool {
+    |        ^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `id` (lib) generated 4 warnings (run `cargo fix --lib -p id` to apply 3 suggestions)
+   Compiling id v0.1.0 (/home/user/git/fleet/probe-2026-10-30-laneA-restorescope/pkgs/id)
+warning: missing documentation for the crate
+   --> tests/probe_restorescope.rs:2:1
+    |
+  2 | / #![allow(clippy::unwrap_used, clippy::expect_used)]
+  3 | | use id::world::{
+  4 | |     CapabilityBounds, JoinCapability, JournalEntry, Participant, WorldCore, WorldLimits,
+  5 | |     WorldScopes,
+...   |
+115 | |     assert!(input.is_ok(), "input-only restored capability submitted input");
+116 | | }
+    | |_^
+    |
+    = note: requested on the command line with `-W missing-docs`
+
+warning: `id` (test "probe_restorescope") generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.69s
+     Running tests/probe_restorescope.rs (target/debug/deps/probe_restorescope-464259012616a585)
+
+running 1 test
+CONTROL guest(0b00111) restore=Ok chat=Ok
+CONTROL live mint CHAT-only err=true
+CONTROL restore uses=0 err=true
+CASE-A restore scopes=0x87 (unnamed bit) ok=true
+CASE-B restore scopes=0 ok=true
+CASE-C CHAT-only chat_ok=true snapshot_ok=false
+CASE-D INPUT-only input_ok=true
+test probe_restore_scopes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+EXIT:0

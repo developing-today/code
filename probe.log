@@ -1,0 +1,595 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.26
+   Compiling cfg-if v1.0.5
+   Compiling serde_core v1.0.229
+   Compiling libc v0.2.190
+   Compiling serde v1.0.229
+   Compiling typenum v1.20.1
+   Compiling version_check v0.9.5
+   Compiling subtle v2.6.1
+   Compiling pin-project-lite v0.2.17
+   Compiling log v0.4.34
+   Compiling scopeguard v1.2.0
+   Compiling foldhash v0.2.0
+   Compiling memchr v2.8.3
+   Compiling portable-atomic v1.15.0
+   Compiling futures-core v0.3.34
+   Compiling critical-section v1.2.0
+   Compiling lock_api v0.4.14
+   Compiling rand_core v0.10.1
+   Compiling parking_lot_core v0.9.12
+   Compiling shlex v2.0.1
+   Compiling semver v1.0.28
+   Compiling find-msvc-tools v0.1.14
+   Compiling futures-io v0.3.34
+   Compiling thiserror v2.0.21
+   Compiling generic-array v0.14.7
+   Compiling cc v1.8.0
+   Compiling stable_deref_trait v1.2.1
+   Compiling cpufeatures v0.3.1
+   Compiling futures-sink v0.3.34
+   Compiling rustc_version v0.4.1
+   Compiling slab v0.4.12
+   Compiling cpufeatures v0.2.17
+   Compiling futures-task v0.3.34
+   Compiling cfg_aliases v0.2.2
+   Compiling futures-channel v0.3.34
+   Compiling equivalent v1.0.2
+   Compiling zerocopy v0.8.62
+   Compiling bitflags v2.13.2
+   Compiling getrandom v0.4.3
+   Compiling itoa v1.0.18
+   Compiling libm v0.2.16
+   Compiling fnv v1.0.7
+   Compiling chacha20 v0.10.2
+   Compiling const-oid v0.10.2
+   Compiling writeable v0.6.4
+   Compiling litemap v0.8.3
+   Compiling hashbrown v0.17.1
+   Compiling utf8_iter v1.0.4
+   Compiling icu_normalizer_data v2.3.0
+   Compiling percent-encoding v2.3.2
+   Compiling untrusted v0.9.0
+   Compiling icu_properties_data v2.3.0
+   Compiling anyhow v1.0.104
+   Compiling cmov v0.5.4
+   Compiling heck v0.5.0
+   Compiling autocfg v1.5.1
+   Compiling hybrid-array v0.4.15
+   Compiling form_urlencoded v1.2.2
+   Compiling fastrand v2.5.0
+   Compiling rustls v0.23.46
+   Compiling httparse v1.10.1
+   Compiling syn v2.0.119
+   Compiling syn v3.0.8
+   Compiling parking v2.2.1
+   Compiling ctutils v0.4.3
+   Compiling unicode-segmentation v1.13.3
+   Compiling spin v0.9.9
+   Compiling ipnet v2.12.2
+   Compiling unicode-xid v0.2.6
+   Compiling num-traits v0.2.19
+   Compiling convert_case v0.10.0
+   Compiling atomic-waker v1.1.2
+   Compiling base64 v0.23.1
+   Compiling tower-service v0.3.3
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.1
+   Compiling opaque-debug v0.3.1
+   Compiling heapless v0.7.17
+   Compiling sync_wrapper v1.0.2
+   Compiling byteorder v1.5.0
+   Compiling base64ct v1.8.3
+   Compiling time-core v0.1.9
+   Compiling num-conv v0.2.2
+   Compiling try-lock v0.2.5
+   Compiling rustc-hash v2.1.3
+   Compiling data-encoding v2.11.1
+   Compiling want v0.3.2
+   Compiling hash32 v0.2.1
+   Compiling futures-lite v2.6.1
+   Compiling time-macros v0.2.32
+   Compiling pem-rfc7468 v1.0.0
+   Compiling httpdate v1.0.3
+   Compiling powerfmt v0.2.1
+   Compiling openssl-probe v0.2.1
+   Compiling deranged v0.5.8
+   Compiling tower-layer v0.3.3
+   Compiling zmij v1.0.23
+   Compiling curve25519-dalek v5.0.0
+   Compiling minimal-lexical v0.2.1
+   Compiling getrandom v0.2.17
+   Compiling errno v0.3.14
+   Compiling socket2 v0.6.5
+   Compiling rand_core v0.6.4
+   Compiling signal-hook-registry v1.4.8
+   Compiling mio v1.2.4
+   Compiling ring v0.17.14
+   Compiling digest v0.11.3
+   Compiling sha2 v0.11.0
+   Compiling rand v0.10.3
+   Compiling base16ct v1.0.0
+   Compiling serde_json v1.0.154
+   Compiling arrayvec v0.7.8
+   Compiling serde_bytes v0.11.19
+   Compiling blake3 v1.8.7
+   Compiling nom v7.1.3
+   Compiling n0-future v0.3.2
+   Compiling signature v3.0.0
+   Compiling cordyceps v0.3.5
+   Compiling diatomic-waker v0.2.3
+   Compiling spin v0.10.1
+   Compiling rustversion v1.0.23
+   Compiling noq-udp v1.3.0
+   Compiling constant_time_eq v0.4.2
+   Compiling paste v1.0.15
+   Compiling winnow v1.0.4
+   Compiling tinyvec v1.13.3
+   Compiling indexmap v2.14.2
+   Compiling time v0.3.55
+   Compiling futures-buffered v0.2.13
+   Compiling num-integer v0.1.47
+   Compiling ahash v0.8.12
+   Compiling lazy_static v1.5.1
+   Compiling oid-registry v0.8.1
+   Compiling wasmtime-internal-core v48.0.7
+   Compiling toml_datetime v1.1.2+spec-1.1.0
+   Compiling base64 v0.22.1
+   Compiling num-bigint v0.4.8
+   Compiling curve25519-dalek v4.1.3
+   Compiling utf8parse v0.2.2
+   Compiling crossbeam-utils v0.8.23
+   Compiling cranelift-srcgen v0.135.7
+   Compiling lru v0.18.5
+   Compiling toml_parser v1.1.5+spec-1.1.0
+   Compiling cranelift-assembler-x64-meta v0.135.7
+   Compiling ryu v1.0.23
+   Compiling synstructure v0.13.2
+   Compiling rusticata-macros v4.1.0
+   Compiling regex-syntax v0.8.11
+   Compiling const-oid v0.9.6
+   Compiling siphasher v1.0.4
+   Compiling netlink-packet-core v0.8.2
+   Compiling anstyle-parse v1.0.0
+   Compiling arc-swap v1.9.2
+   Compiling ff v0.13.1
+   Compiling pem v4.0.0
+   Compiling toml_edit v0.25.17+spec-1.1.0
+   Compiling noq v1.3.0
+   Compiling synstructure v0.14.0
+   Compiling rand_pcg v0.10.2
+   Compiling netlink-packet-core v0.9.0
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling identity-hash v0.1.0
+   Compiling colorchoice v1.0.5
+   Compiling getrandom v0.3.4
+   Compiling anstyle v1.0.14
+   Compiling base16ct v0.2.0
+   Compiling sorted-index-buffer v0.2.1
+   Compiling netdev v0.46.3
+   Compiling iana-time-zone v0.1.65
+   Compiling sha1_smol v1.0.1
+   Compiling n0-dns-resolver v0.1.0
+   Compiling lru-slab v0.1.3
+   Compiling anstyle-query v1.1.5
+   Compiling anstream v1.0.0
+   Compiling chrono v0.4.45
+   Compiling cranelift-bitset v0.135.7
+   Compiling group v0.13.0
+   Compiling yasna v0.6.0
+   Compiling proc-macro-crate v3.5.0
+   Compiling simple-dns v0.12.0
+   Compiling iroh-dns v1.3.0
+   Compiling netwatch v0.19.3
+   Compiling syn v1.0.109
+   Compiling allocator-api2 v0.2.21
+   Compiling clap_lex v1.1.1
+   Compiling mac-addr v0.3.0
+   Compiling cranelift-isle v0.135.7
+   Compiling rustix v1.1.5
+   Compiling xml-rs v0.8.29
+   Compiling strsim v0.11.1
+   Compiling reloadable-core v0.1.0
+   Compiling bumpalo v3.20.3
+   Compiling zeroize_derive v1.5.0
+   Compiling tracing-attributes v0.1.31
+   Compiling zerocopy-derive v0.8.62
+   Compiling curve25519-dalek-derive v0.1.1
+   Compiling derive_more-impl v2.1.1
+   Compiling pin-project-internal v1.1.13
+   Compiling n0-error-macros v1.0.1
+   Compiling spez v0.1.2
+   Compiling serde_derive v1.0.229
+   Compiling tokio-macros v2.7.2
+   Compiling thiserror-impl v2.0.21
+   Compiling futures-macro v0.3.34
+   Compiling displaydoc v0.2.7
+   Compiling zeroize v1.9.1
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling zerovec-derive v0.11.6
+   Compiling rustls-pki-types v1.15.1
+   Compiling n0-error v1.0.1
+   Compiling der v0.8.2
+   Compiling pin-project v1.1.13
+   Compiling postcard-derive v0.2.2
+   Compiling asn1-rs-impl v0.2.0
+   Compiling crypto-common v0.1.7
+   Compiling futures-util v0.3.34
+   Compiling block-buffer v0.10.4
+   Compiling inout v0.1.4
+   Compiling rustls-webpki v0.103.15
+   Compiling digest v0.10.7
+   Compiling cipher v0.4.4
+   Compiling universal-hash v0.5.1
+   Compiling rustls-native-certs v0.8.4
+   Compiling aead v0.5.2
+   Compiling polyval v0.6.2
+   Compiling sha2 v0.10.9
+   Compiling aes v0.8.4
+   Compiling cobs v0.3.0
+   Compiling ghash v0.5.1
+   Compiling ctr v0.9.2
+   Compiling asn1-rs-derive v0.6.0
+   Compiling data-encoding-macro-internal v0.1.19
+   Compiling hmac v0.12.1
+   Compiling webpki-roots v1.0.9
+   Compiling der v0.7.10
+   Compiling enum-assoc v1.4.1
+   Compiling pulley-macros v48.0.7
+   Compiling hkdf v0.12.4
+   Compiling rustls-cert-read v0.3.0
+   Compiling aes-gcm v0.10.3
+   Compiling zerofrom v0.1.8
+   Compiling crypto-bigint v0.5.5
+   Compiling yoke v0.8.3
+   Compiling async-trait v0.1.92
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+   Compiling spki v0.8.1
+   Compiling data-encoding-macro v0.1.21
+   Compiling regex-automata v0.4.18
+   Compiling num_enum_derive v0.7.6
+   Compiling pkcs8 v0.11.0
+   Compiling sec1 v0.7.3
+   Compiling iroh-metrics-derive v1.0.1
+   Compiling strum_macros v0.28.0
+   Compiling asn1-rs v0.7.2
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling pulley-interpreter v48.0.7
+   Compiling clap_derive v4.6.7
+   Compiling icu_locale_core v2.3.0
+   Compiling icu_collections v2.3.0
+   Compiling xmltree v0.10.3
+   Compiling elliptic-curve v0.13.8
+   Compiling num_enum v0.7.6
+   Compiling clap_builder v4.6.7
+   Compiling netlink-packet-route v0.31.0
+   Compiling pem v3.0.6
+   Compiling sharded-slab v0.1.7
+   Compiling serde_spanned v1.1.2
+   Compiling iroh-relay v1.3.0
+   Compiling smallvec v1.16.3
+   Compiling bytes v1.12.1
+   Compiling serdect v0.4.3
+   Compiling icu_provider v2.3.1
+   Compiling ed25519 v3.0.0
+   Compiling parking_lot v0.12.5
+   Compiling icu_normalizer v2.3.0
+   Compiling once_cell v1.21.4
+   Compiling icu_properties v2.3.0
+   Compiling derive_more v2.1.1
+   Compiling postcard v1.1.3
+   Compiling futures-executor v0.3.34
+   Compiling tokio v1.53.2
+   Compiling tracing-core v0.1.36
+   Compiling http v1.5.0
+   Compiling der-parser v10.0.0
+   Compiling futures v0.3.34
+   Compiling fastbloom v0.17.0
+   Compiling netlink-sys v0.9.0
+   Compiling tracing v0.1.44
+   Compiling ed25519-dalek v3.0.0
+   Compiling hex v0.4.3
+   Compiling http-body v1.1.0
+   Compiling http-body-util v0.1.5
+   Compiling x509-parser v0.18.1
+   Compiling tracing-log v0.2.0
+   Compiling strum v0.28.0
+   Compiling matchers v0.2.0
+   Compiling thread_local v1.1.10
+   Compiling target-lexicon v0.13.5
+   Compiling simdutf8 v0.1.5
+   Compiling linux-raw-sys v0.12.1
+   Compiling nu-ansi-term v0.50.3
+   Compiling mime v0.3.17
+   Compiling cranelift-codegen-shared v0.135.7
+   Compiling toml_writer v1.1.3+spec-1.1.0
+   Compiling cranelift-codegen-meta v0.135.7
+   Compiling clap v4.6.7
+   Compiling axum-core v0.5.6
+   Compiling tracing-subscriber v0.3.23
+   Compiling idna_adapter v1.2.2
+   Compiling toml v1.1.8+spec-1.1.0
+   Compiling cranelift-entity v0.135.7
+   Compiling idna v1.1.0
+   Compiling serde_urlencoded v0.7.1
+   Compiling url v2.5.8
+   Compiling cranelift-assembler-x64 v0.135.7
+   Compiling rcgen v0.14.10
+   Compiling ppv-lite86 v0.2.21
+   Compiling hashbrown v0.14.5
+   Compiling netlink-packet-route v0.33.0
+   Compiling rand_core v0.9.5
+   Compiling iroh-base v1.3.0
+   Compiling attohttpc v0.30.1
+   Compiling dashmap v6.2.1
+   Compiling sha1 v0.11.0
+   Compiling serde_path_to_error v0.1.20
+   Compiling iroh v1.3.0
+   Compiling proc-macro-error-attr v0.4.12
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling seize v0.5.1
+   Compiling noq-proto v1.3.0
+   Compiling matchit v0.8.4
+   Compiling hashbrown v0.16.1
+   Compiling leb128fmt v0.1.0
+   Compiling hax-lib v0.3.7
+   Compiling papaya v0.2.5
+   Compiling tokio-util v0.7.20
+   Compiling tokio-rustls v0.26.6
+   Compiling tower v0.5.3
+   Compiling netlink-sys v0.8.8
+   Compiling reloadable-state v0.1.0
+   Compiling rustls-cert-file-reader v0.4.2
+   Compiling rustls-cert-reloadable-resolver v0.7.1
+   Compiling netlink-proto v0.12.2
+   Compiling gimli v0.33.0
+   Compiling backon v1.6.0
+   Compiling cranelift-bforest v0.135.7
+   Compiling cranelift-codegen v0.135.7
+   Compiling primeorder v0.13.6
+   Compiling poly1305 v0.8.0
+   Compiling hax-lib-macros v0.3.7
+   Compiling tower-http v0.6.11
+   Compiling proc-macro-error v0.4.12
+   Compiling signature v2.2.0
+   Compiling arbitrary v1.5.0
+   Compiling proc-macro-hack v0.5.20+deprecated
+   Compiling crc32fast v1.5.2
+   Compiling h2 v0.4.20
+   Compiling tokio-stream v0.1.19
+   Compiling n0-watcher v1.0.0
+   Compiling tokio-websockets v0.13.3
+   Compiling ed25519 v2.2.3
+   Compiling rand_chacha v0.9.0
+   Compiling cranelift-control v0.135.7
+   Compiling rand_chacha v0.3.1
+   Compiling regalloc2 v0.15.2
+   Compiling syn-mid v0.5.4
+   Compiling chacha20 v0.9.1
+   Compiling ref-cast v1.0.27
+   Compiling fixedbitset v0.5.7
+   Compiling object v0.39.1
+   Compiling chacha20poly1305 v0.10.1
+   Compiling rand v0.8.8
+   Compiling wasmparser v0.254.2
+   Compiling ed25519-dalek v2.2.0
+   Compiling p256 v0.13.2
+   Compiling cbor-core v0.10.1
+   Compiling x25519-dalek v2.0.1
+   Compiling ref-cast-impl v1.0.27
+   Compiling irpc-derive v0.17.0
+   Compiling hmac v0.13.0
+   Compiling termcolor v1.4.1
+   Compiling libcrux-intrinsics v0.0.8
+   Compiling libcrux-secrets v0.0.6
+   Compiling rand v0.9.5
+   Compiling p2panda-core v0.7.1 (https://github.com/p2panda/p2panda?rev=da80c05b95269926bf58121cf6a2d3dd5ca41dfc#da80c05b)
+   Compiling wasm-encoder v0.254.2
+   Compiling inplace-vec-builder v0.1.1
+   Compiling wasmtime-internal-versioned-export-macros v48.0.7
+   Compiling acto v0.8.2
+   Compiling wasmtime-internal-component-util v48.0.7
+   Compiling crc-catalog v2.5.0
+   Compiling binary-merge v0.1.2
+   Compiling genawaiter-proc-macro v0.99.1
+   Compiling genawaiter-macro v0.99.1
+   Compiling unicode-width v0.2.2
+   Compiling redb v4.3.0
+   Compiling wasmtime-internal-unwinder v48.0.7
+   Compiling libcrux-sha3 v0.0.10
+   Compiling range-collections v0.4.6
+   Compiling crc v3.4.0
+   Compiling libcrux-traits v0.0.8
+   Compiling futures-concurrency v7.7.1
+   Compiling iroh-io v0.6.2
+   Compiling tempfile v3.27.0
+   Compiling serde_bencode v0.2.4
+   Compiling hpke-rs-crypto v0.7.0
+   Compiling async-stream-impl v0.3.6
+   Compiling libcrux-platform v0.0.3
+   Compiling hyper v1.12.0
+   Compiling genawaiter v0.99.1
+   Compiling positioned-io v0.3.5
+   Compiling inout v0.2.2
+   Compiling flume v0.12.0
+   Compiling event-listener v5.4.2
+   Compiling nix v0.31.3
+   Compiling iroh-blobs v0.103.1
+   Compiling self_cell v1.3.0
+   Compiling wasmtime-internal-cranelift v48.0.7
+   Compiling smol_str v0.1.24
+   Compiling either v1.19.0
+   Compiling litrs v1.0.0
+   Compiling dyn-clone v1.0.20
+   Compiling foldhash v0.1.5
+   Compiling redb v3.1.3
+   Compiling itertools v0.14.0
+   Compiling hashbrown v0.15.5
+   Compiling bao-tree v0.16.1
+   Compiling async-stream v0.3.6
+   Compiling event-listener-strategy v0.5.4
+   Compiling cipher v0.5.2
+   Compiling document-features v0.2.12
+   Compiling wasmtime v48.0.7
+   Compiling hyper-util v0.1.21
+   Compiling hkdf v0.13.0
+   Compiling hpke v0.13.0
+   Compiling p384 v0.13.1
+   Compiling reflink-copy v0.1.30
+   Compiling iroh-tickets v1.0.0
+   Compiling hickory-proto v0.26.3
+   Compiling rand_chacha v0.10.0
+   Compiling nibble_vec v0.1.0
+   Compiling k256 v0.13.4
+   Compiling nested_enum_utils v0.2.3
+   Compiling concurrent-queue v2.5.0
+   Compiling iroh-docs v0.101.0
+   Compiling lru v0.16.4
+   Compiling endian-type v0.2.0
+   Compiling pkg-config v0.3.34
+   Compiling vcpkg v0.2.15
+   Compiling mainline v7.0.0
+   Compiling radix_trie v0.3.0
+   Compiling hpke-rs-rust-crypto v0.7.0
+   Compiling hyper-rustls v0.27.10
+   Compiling igd-next v0.17.1
+   Compiling reqwest v0.13.5
+   Compiling axum v0.8.9
+   Compiling wasmprinter v0.254.2
+   Compiling libsqlite3-sys v0.30.1
+   Compiling swarm-discovery v0.6.4
+   Compiling async-channel v2.5.0
+   Compiling ed25519-dalek-hpke v0.0.5
+   Compiling hpke-rs v0.7.0
+   Compiling salsa20 v0.11.0
+   Compiling iroh-metrics v1.0.2
+   Compiling tokio-rustls-acme v0.9.1
+   Compiling irpc v0.17.0
+   Compiling wasmtime-environ v48.0.7
+   Compiling petgraph v0.8.3
+   Compiling portmapper v0.19.3
+   Compiling p2panda-store v0.7.1 (https://github.com/p2panda/p2panda?rev=da80c05b95269926bf58121cf6a2d3dd5ca41dfc#da80c05b)
+   Compiling actor-helper v0.3.0
+   Compiling pbkdf2 v0.13.0
+   Compiling memfd v0.6.6
+   Compiling wasmtime-internal-jit-icache-coherence v48.0.7
+   Compiling serde-error v0.1.3
+   Compiling unicode-normalization v0.1.25
+   Compiling rmp v0.8.15
+   Compiling g2poly v1.2.2
+   Compiling home v0.5.12
+   Compiling p2panda-auth v0.7.1 (https://github.com/p2panda/p2panda?rev=da80c05b95269926bf58121cf6a2d3dd5ca41dfc#da80c05b)
+   Compiling scrypt v0.12.0
+   Compiling g2gen v1.2.2
+   Compiling rmp-serde v1.3.1
+   Compiling p2panda-sync v0.7.1 (/home/user/git/fleet/probe-2026-10-30-laneA-restorescope/pkgs/id/vendor/p2panda-sync)
+   Compiling p2panda-encryption v0.7.1 (/home/user/git/fleet/probe-2026-10-30-laneA-restorescope/pkgs/id/vendor/p2panda-encryption)
+   Compiling rustyline v18.0.1
+   Compiling wasm-encoder v0.261.0
+   Compiling sha1 v0.10.7
+   Compiling wait-timeout v0.2.1
+   Compiling quick-error v1.2.3
+   Compiling bit-vec v0.10.1
+   Compiling tungstenite v0.29.0
+   Compiling rusty-fork v0.3.1
+   Compiling g2p v1.2.2
+   Compiling bit-set v0.11.1
+   Compiling hashlink v0.9.1
+   Compiling half v2.7.1
+   Compiling salsa20 v0.10.2
+   Compiling vte v0.15.0
+   Compiling rand_xorshift v0.5.0
+   Compiling fallible-iterator v0.3.0
+   Compiling core_detect v1.0.0
+   Compiling unarray v0.1.4
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling proptest v1.12.0
+   Compiling tokio-tungstenite v0.29.0
+   Compiling dcbor v0.25.2
+   Compiling vt100 v0.16.2
+   Compiling wast v261.0.0
+   Compiling crypto_secretbox v0.1.1
+   Compiling rqrr v0.11.0
+   Compiling n0-mainline v0.7.1
+   Compiling rusqlite v0.32.1
+   Compiling wat v1.261.0
+   Compiling cranelift-native v0.135.7
+   Compiling cranelift-frontend v0.135.7
+   Compiling iroh-util v0.6.0
+   Compiling iroh-gossip v0.101.0
+   Compiling iroh-mdns-address-lookup v0.6.0
+   Compiling distributed-topic-tracker v0.3.5
+   Compiling id v0.1.0 (/home/user/git/fleet/probe-2026-10-30-laneA-restorescope/pkgs/id)
+warning: unnecessary qualification
+    --> src/commands/world.rs:1088:33
+     |
+1088 |     let mut paths: Vec<(String, std::path::PathBuf)> = Vec::new();
+     |                                 ^^^^^^^^^^^^^^^^^^
+     |
+     = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+     |
+1088 -     let mut paths: Vec<(String, std::path::PathBuf)> = Vec::new();
+1088 +     let mut paths: Vec<(String, PathBuf)> = Vec::new();
+     |
+
+warning: unnecessary qualification
+    --> src/commands/world.rs:1091:31
+     |
+1091 |         let mut siblings: Vec<std::path::PathBuf> = std::fs::read_dir(source)
+     |                               ^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1091 -         let mut siblings: Vec<std::path::PathBuf> = std::fs::read_dir(source)
+1091 +         let mut siblings: Vec<PathBuf> = std::fs::read_dir(source)
+     |
+
+warning: unnecessary qualification
+   --> src/world_session/mod.rs:691:19
+    |
+691 |         let hash: iroh_blobs::Hash = expected_hash
+    |                   ^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+691 -         let hash: iroh_blobs::Hash = expected_hash
+691 +         let hash: Hash = expected_hash
+    |
+
+warning: method `keeps` is never used
+   --> src/event_store/ingest.rs:468:8
+    |
+466 | impl Staged {
+    | ----------- method in this implementation
+467 |     /// Whether the event is kept: stored, or held. A refused event and a fork are not.
+468 |     fn keeps(&self) -> bool {
+    |        ^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `id` (lib) generated 4 warnings (run `cargo fix --lib -p id` to apply 3 suggestions)
+error[E0382]: use of moved value: `bad_uses`
+  --> tests/probe_restorescope.rs:84:26
+   |
+73 |     let bad_uses = JournalEntry::Issued {
+   |         -------- move occurs because `bad_uses` has type `JournalEntry`, which does not implement the `Copy` trait
+...
+83 |     println!("CONTROL restore uses=0 err={}", restore(vec![bad_uses]).is_err());
+   |                                                            -------- value moved here
+84 |     assert!(restore(vec![bad_uses]).is_err());
+   |                          ^^^^^^^^ value used here after move
+   |
+help: consider cloning the value if the performance cost is acceptable
+   |
+83 |     println!("CONTROL restore uses=0 err={}", restore(vec![bad_uses.clone()]).is_err());
+   |                                                                    ++++++++
+
+For more information about this error, try `rustc --explain E0382`.
+error: could not compile `id` (test "probe_restorescope") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+EXIT:101
