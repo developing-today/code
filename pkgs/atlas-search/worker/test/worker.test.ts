@@ -129,6 +129,23 @@ describe("atlas-search worker", () => {
     expect(meta.hit_count).toBe(1);
   });
 
+  it("rejects a whitespace-only query on both routes (#6937)", async () => {
+    const e0 = counts.embed;
+    const s0 = counts.search;
+    const deniedSearch = await search({ query: "   " });
+    expect(deniedSearch.status).toBe(400);
+    const inspect = await SELF.fetch(
+      "https://worker.test/v1/cache/inspect?query=%20%20%20",
+      { headers: GATE },
+    );
+    expect(inspect.status).toBe(400);
+    const body = (await inspect.json()) as { error?: { message?: string } };
+    expect(body.error?.message).toBe("query must not be empty");
+    // Neither route reached the service or a Durable Object fill.
+    expect(counts.embed).toBe(e0);
+    expect(counts.search).toBe(s0);
+  });
+
   it("refuses to cache a wrong-space embedding", async () => {
     const resp = await search({ query: "badspace query" });
     expect(resp.status).toBe(502);

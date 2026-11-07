@@ -102,6 +102,10 @@ export default {
       const q = url.searchParams.get("query");
       if (!q) return errorJson(400, "bad_request", "query parameter is required");
       const query = normalizeQuery(q);
+      // Same post-normalization check as POST /v1/search (#6937): a
+      // whitespace-only query is empty once normalized and must not be
+      // keyed or reach a Durable Object.
+      if (!query) return errorJson(400, "bad_request", "query must not be empty");
       const k = clampK(Number(url.searchParams.get("k") ?? DEFAULT_K));
       const key = await queryKey({ q: query, k });
       const stub = env.QUERY_CACHE.get(env.QUERY_CACHE.idFromName(key));
