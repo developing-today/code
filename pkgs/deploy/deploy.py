@@ -143,6 +143,17 @@ def validate(registry):
             errors.append(
                 f"{where}: targets must be a non-empty list of host/class names"
             )
+        # Targets are printed verbatim by `deploy list`, so restrict them to
+        # the same single-line identifier shape as service names.
+        if (
+            "targets" in defn
+            and isinstance(defn["targets"], list)
+            and all(isinstance(t, str) and t for t in defn["targets"])
+            and any(not NAME_RE.fullmatch(t) for t in defn["targets"])
+        ):
+            errors.append(
+                f"{where}: targets must be host/class names matching {NAME_RE.pattern}"
+            )
         if "class" in defn and not (
             isinstance(defn["class"], str) and defn["class"] in CLASSES
         ):
