@@ -932,6 +932,35 @@ mod replacement_metadata_tests {
     }
 
     #[tokio::test]
+    async fn probe_copy_inherits_source_archive_refs() {
+        let node = LocalNode::open(true).await.unwrap();
+        // Give source.txt an archive of its own: rename another file onto it,
+        // which archives the replaced source.txt and records archive.replace.
+        put(&node, "source.txt", b"original source").await;
+        put(&node, "other.txt", b"replacement").await;
+        let outcome = node.ops().rename("other.txt", "source.txt", false).await.unwrap();
+        let archive = outcome.archived_replaced.expect("replaced source archived");
+        let source_tags = tags_of(&node, "source.txt").await;
+        assert!(has_tag(&source_tags, "archive.replace", &archive), "seed: {source_tags:?}");
+
+        // Copy source -> copy.txt (copy.txt does not exist yet).
+        node.ops().copy("source.txt", "copy.txt").await.unwrap();
+        let copy_tags = tags_of(&node, "copy.txt").await;
+        println!("PROBE copy archive.replace values: {:?}", values(&copy_tags, "archive.replace"));
+        println!("PROBE source archive name: {archive}");
+
+        // Deleting the copy must not touch the source's archive.
+        let deleted = node.ops().delete("copy.txt").await.unwrap();
+        println!("PROBE delete(copy) archives_removed={}", deleted.archives_removed);
+        let archive_still_there = node.blobs().tags().get(&archive).await.unwrap().is_some();
+        println!("PROBE source archive survives delete(copy): {archive_still_there}");
+        // The desirable behaviour:
+        assert!(!has_tag(&copy_tags, "archive.replace", &archive), "copy inherited source archive ref");
+        assert!(archive_still_there, "delete(copy) removed source archive");
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn rename_onto_existing_preserves_replaced_tag_payloads() {
         let node = LocalNode::open(true).await.unwrap();
         put(&node, "source.txt", b"new content").await;
