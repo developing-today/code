@@ -408,7 +408,21 @@ impl LedgerBackend for InMemoryLedger {
                         // failure cached against a posted ID would
                         // break its idempotent `Exists` retry.
                         let failing = &chain[failing_offset];
-                        if !self.transfers.contains_key(&failing.id) {
+                        // But if an earlier leg already broke the
+                        // chain with `Exists`, TigerBeetle never
+                        // attempted this leg at all (the result
+                        // selection below reports only
+                        // `LinkedEventFailed` for it): caching its
+                        // error would refuse a leg that was never
+                        // tried, so only cache when this leg is the
+                        // leg the chain actually broke on.
+                        let chain_broke_at_earlier_exists = matches!(
+                            first_exists_offset,
+                            Some(exists_offset) if exists_offset < failing_offset
+                        );
+                        if !chain_broke_at_earlier_exists
+                            && !self.transfers.contains_key(&failing.id)
+                        {
                             self.failed_transfers.insert(failing.id, error);
                         }
                     }

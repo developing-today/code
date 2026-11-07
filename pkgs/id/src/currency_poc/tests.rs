@@ -257,6 +257,46 @@ fn failed_chain_records_only_the_failing_leg() {
 }
 
 #[test]
+fn exists_break_leaves_later_failing_leg_submittable() {
+    // Codex P2 on PR #6367 (oracle: TigerBeetle breaks a linked
+    // chain at the first non-`Created` leg -- here the earlier
+    // `Exists` leg -- and never attempts the legs after the break):
+    // a later leg whose validation would fail must NOT be recorded
+    // in `failed_transfers`, because it was never attempted; once
+    // its blocker clears it remains submittable.
+    let mut ledger = funded_ledger();
+    let posted = funding_transfer(700, USER_SRC, LP_SRC, 100, SRC);
+    assert_eq!(ledger.create_transfers(&[posted.clone()]), vec![Ok(())]);
+    // Chain: the posted leg byte-identical (an `Exists` break at
+    // offset 0), then a leg debiting an account that does not exist
+    // yet (a hard validation failure at offset 1).
+    let exists_leg = Transfer {
+        linked: true,
+        ..posted
+    };
+    let blocked_leg = funding_transfer(701, 3001, LP_SRC, 100, SRC);
+    let results = ledger.create_transfers(&[exists_leg, blocked_leg.clone()]);
+    assert_eq!(
+        results,
+        vec![
+            Err(TransferError::Exists),
+            Err(TransferError::LinkedEventFailed),
+        ]
+    );
+    // Clear the blocker: create and fund the debit account.
+    let results = ledger.create_accounts(&[account(3001, SRC, false)]);
+    assert!(results.iter().all(|result| result.is_ok()));
+    assert_eq!(
+        ledger.create_transfers(&[funding_transfer(702, ISSUER_SRC, 3001, 1_000, SRC)]),
+        vec![Ok(())]
+    );
+    // The blocked leg now posts on its own -- it was never cached
+    // as failed (a cached failure would return `IdAlreadyFailed`).
+    assert_eq!(ledger.create_transfers(&[blocked_leg]), vec![Ok(())]);
+    assert!(ledger.lookup_transfer(701).is_some());
+}
+
+#[test]
 fn conflicting_submission_does_not_poison_a_posted_transfer() {
     // #6627 (oracle: a posted transfer's byte-identical retry always
     // returns `Exists`): a submission reusing a posted ID with
