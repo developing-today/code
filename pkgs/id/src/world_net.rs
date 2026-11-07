@@ -768,19 +768,52 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
-        match reply["type"].as_str() {
-            Some("compiled") => Ok((
-                reply["module_hash"].as_str().unwrap_or_default().to_owned(),
-                reply["sequence"].as_u64().unwrap_or_default(),
-                reply["diagnostics"].as_str().unwrap_or_default().to_owned(),
-            )),
-            _ => bail!(
+        Self::parse_compile_reply(&reply)
+    }
+
+    /// Parse a `compiled` reply frame into `(module_hash, sequence,
+    /// diagnostics)`.
+    ///
+    /// Factored out of [`WorldClient::compile`] so the reply
+    /// validation can be unit-tested without a live host. All three
+    /// fields constitute the answer — the hash is what callers
+    /// capture, `0` is a real sequence, and diagnostics are the
+    /// compiler's report — so a missing or mistyped field must never
+    /// default: that shape is corruption or version skew and errors
+    /// instead (issue #6620, Phase 1 of #6669).
+    fn parse_compile_reply(reply: &serde_json::Value) -> Result<(String, u64, String)> {
+        if reply["type"] != "compiled" {
+            bail!(
                 "{}",
                 reply["message"]
                     .as_str()
                     .unwrap_or("host refused to compile")
-            ),
+            );
         }
+        let module_hash = match reply.get("module_hash") {
+            Some(serde_json::Value::String(hash)) => hash.clone(),
+            Some(_) => {
+                bail!("host sent a malformed compiled reply: `module_hash` is not a string")
+            }
+            None => bail!("host sent no module hash in compiled reply"),
+        };
+        let sequence = match reply.get("sequence") {
+            Some(value) => match value.as_u64() {
+                Some(sequence) => sequence,
+                None => {
+                    bail!("host sent a malformed compiled reply: `sequence` is not an unsigned integer")
+                }
+            },
+            None => bail!("host sent no sequence in compiled reply"),
+        };
+        let diagnostics = match reply.get("diagnostics") {
+            Some(serde_json::Value::String(diagnostics)) => diagnostics.clone(),
+            Some(_) => {
+                bail!("host sent a malformed compiled reply: `diagnostics` is not a string")
+            }
+            None => bail!("host sent no diagnostics in compiled reply"),
+        };
+        Ok((module_hash, sequence, diagnostics))
     }
 
     /// The world's capability report, as JSON.
@@ -3797,6 +3830,84 @@ mod tests {
         assert_eq!(
             result.err().unwrap().to_string(),
             "host refused to create the world"
+        );
+    }
+
+    #[test]
+    fn compile_reply_requires_all_fields() {
+        // Issue #6620: ("", 0, "") is a plausible-looking success —
+        // an empty hash scripts capture as a compiled module, and
+        // sequence 0 is a fresh world's real first state — so a
+        // `compiled` reply whose module_hash / sequence /
+        // diagnostics field is missing or mistyped must error,
+        // never default. Oracle: the sibling strictness of
+        // parse_create_world_reply — a field that constitutes the
+        // answer is required and typed (#6669 rule: a reply is not
+        // its defaults).
+        let parse = |reply: serde_json::Value| WorldClient::parse_compile_reply(&reply);
+
+        // Well-formed control returns its fields unchanged.
+        assert_eq!(
+            parse(serde_json::json!({"type": "compiled", "module_hash": "abc123", "sequence": 7, "diagnostics": "warn"}))
+                .unwrap(),
+            ("abc123".to_string(), 7, "warn".to_string())
+        );
+        // A genuine sequence 0 and empty diagnostics keep meaning.
+        assert_eq!(
+            parse(serde_json::json!({"type": "compiled", "module_hash": "abc123", "sequence": 0, "diagnostics": ""}))
+                .unwrap(),
+            ("abc123".to_string(), 0, String::new())
+        );
+
+        // Missing fields -> an error naming the field.
+        for (reply, field) in [
+            (
+                serde_json::json!({"type": "compiled", "sequence": 7, "diagnostics": ""}),
+                "module hash",
+            ),
+            (
+                serde_json::json!({"type": "compiled", "module_hash": "abc123", "diagnostics": ""}),
+                "sequence",
+            ),
+            (
+                serde_json::json!({"type": "compiled", "module_hash": "abc123", "sequence": 7}),
+                "diagnostics",
+            ),
+            (serde_json::json!({"type": "compiled"}), "module hash"),
+        ] {
+            let result = parse(reply);
+            assert!(
+                result.is_err(),
+                "missing {field} must error, got {result:?}"
+            );
+            assert!(
+                result.err().unwrap().to_string().contains(field),
+                "error must name the {field} field"
+            );
+        }
+
+        // Mistyped fields -> an error, never a defaulted Ok.
+        for bad_reply in [
+            serde_json::json!({"type": "compiled", "module_hash": 123, "sequence": 7, "diagnostics": ""}),
+            serde_json::json!({"type": "compiled", "module_hash": "abc123", "sequence": "7", "diagnostics": ""}),
+            serde_json::json!({"type": "compiled", "module_hash": "abc123", "sequence": -1, "diagnostics": ""}),
+            serde_json::json!({"type": "compiled", "module_hash": "abc123", "sequence": 7, "diagnostics": 42}),
+            serde_json::json!({"type": "compiled", "module_hash": null, "sequence": 7, "diagnostics": ""}),
+        ] {
+            let result = parse(bad_reply);
+            assert!(
+                result.is_err(),
+                "mistyped field must error, got {result:?}"
+            );
+        }
+
+        // The refusal path still surfaces the host's message.
+        let result = parse(serde_json::json!({"type": "error", "message": "bad admin token"}));
+        assert_eq!(result.err().unwrap().to_string(), "bad admin token");
+        let result = parse(serde_json::json!({"type": "error"}));
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            "host refused to compile"
         );
     }
 
