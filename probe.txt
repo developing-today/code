@@ -1,0 +1,5 @@
+main-laptop 5c172f3d2; core.rs/mod.rs md5 matched sandbox ca2471a3
+CONTROL A revoke-after-issue: chat err=true
+CONTROL B live delegate-from-revoked err=true
+CASE restore=Ok child-of-revoked-parent chat ok=true
+test result: ok. 1 passed
