@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "checkpoints": {},
+  "seen": {},
+  "gaps": [
+    {
+      "id": "gap:kaneo:2026-11-04T07:15:19.522Z",
+      "source": "kaneo",
+      "from": "2026-11-04T07:15:19.522Z",
+      "to": "2026-11-04T07:15:33.462Z",
+      "status": "open",
+      "detectedAt": "2026-11-04T07:15:19.523Z"
+    }
+  ]
+}
