@@ -5136,10 +5136,7 @@ mod tests {
         }
         // An oversized value hidden behind a small duplicate never reaches
         // the size check as a collapsed survivor: the duplicate refuses it.
-        let hidden = format!(
-            r#"{{"k":"{}","k":1}}"#,
-            "v".repeat(MAX_RECORD_VALUE_BYTES)
-        );
+        let hidden = format!(r#"{{"k":"{}","k":1}}"#, "v".repeat(MAX_RECORD_VALUE_BYTES));
         assert!(parse_records(&hidden).is_err());
         // 4097 raw entries collapsing to 4096 distinct keys are refused as
         // duplicates, so the count cap can no longer be evaded by collapse.

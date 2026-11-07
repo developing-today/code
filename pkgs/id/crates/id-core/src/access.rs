@@ -292,10 +292,9 @@ mod tests {
 
     fn captured_load(dir: &Path) -> (Vec<EndpointId>, Vec<String>) {
         let captured = std::sync::Arc::new(CapturedEvents::default());
-        let loaded = tracing::subscriber::with_default(
-            CaptureSubscriber(captured.clone()),
-            || load_allowed_nodes(dir),
-        );
+        let loaded = tracing::subscriber::with_default(CaptureSubscriber(captured.clone()), || {
+            load_allowed_nodes(dir)
+        });
         let lines = captured.lines.lock().unwrap().clone();
         (loaded, lines)
     }
