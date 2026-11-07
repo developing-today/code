@@ -1315,3 +1315,34 @@ mod tests {
         );
     }
 }
+// ---- PROBE (run-local, not for commit) ----
+#[cfg(test)]
+mod probe_scan_pagination {
+    use super::*;
+    #[test]
+    fn probe_page_bound_counts() {
+        // Jobs page: GitHub returns at most per_page=100 jobs, but the run's total_count is 256 (matrix max).
+        // Page 1: 30 in_progress + 70 completed. Real active = 30 + remaining 156 all in_progress = 186.
+        let mut jobs = Vec::new();
+        for i in 0..100 {
+            jobs.push(json!({"id": i, "status": if i < 30 { "in_progress" } else { "completed" }}));
+        }
+        let body = json!({"total_count": 256, "jobs": jobs});
+        let counted = count_active_jobs(&body);
+        println!("PROBE jobs counted={counted} total_count={}", total_count(&body));
+        assert_eq!(counted, 30, "helper counts only the returned page");
+        assert_eq!(total_count(&body), 256);
+        // Runs page: 100 ids returned, total_count 250.
+        let mut runs = Vec::new();
+        for i in 0..100 { runs.push(json!({"id": i})); }
+        let rbody = json!({"total_count": 250, "workflow_runs": runs});
+        let ids = run_ids(&rbody);
+        println!("PROBE runs ids={} total_count={}", ids.len(), total_count(&rbody));
+        assert_eq!(ids.len(), 100);
+        // Forks page: 100 names returned from a body that is one page; helper returns exactly page size.
+        let mut forks = Vec::new();
+        for i in 0..100 { forks.push(json!({"full_name": format!("o/r{i}")})); }
+        assert_eq!(fork_full_names(&json!(forks)).len(), 100);
+        // Queued term contrast: scan uses total_count(&queued) directly (exact), jobs/runs terms do not.
+    }
+}
