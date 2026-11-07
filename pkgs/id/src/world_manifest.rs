@@ -1040,4 +1040,24 @@ native_memory_bytes = 16777216")
             "no drift"
         );
     }
+
+    #[test]
+    fn probe_total_memory_bytes_profile_key_parses() {
+        // PROBE (laneA3, not for commit): a manifest naming the legitimate
+        // WorldExecutionProfile field total_memory_bytes should parse.
+        let text = "[profile]
+total_memory_bytes = 67108864
+";
+        let parsed = parse(text);
+        assert!(parsed.is_ok(), "parse failed: {:?}", parsed.err());
+        assert_eq!(parsed.unwrap().profile.total_memory_bytes, Some(67108864));
+        // And a typo must still be refused.
+        assert!(parse("[profile]
+wasm_fuell = 1
+").is_err());
+        // Round-trip: a manifest carrying the field survives to_toml -> parse.
+        let mut m = WorldManifest::default();
+        m.profile.total_memory_bytes = Some(67108864);
+        assert!(round_trip(&m).is_ok(), "round_trip failed");
+    }
 }
