@@ -1106,7 +1106,9 @@ impl WorldClient {
     ///
     /// # Errors
     ///
-    /// Fails with the host's message if the admin token or profile is refused.
+    /// Fails with the host's message if the admin token or profile is refused,
+    /// or with a malformed-profile error if the reply's `update.requested`
+    /// is missing or does not decode as a `WorldExecutionProfile`.
     pub async fn set_execution_profile(
         &mut self,
         admin_token: &str,
@@ -1122,6 +1124,23 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_execution_profile_reply(&reply)
+    }
+
+    /// Validate an `execution_profile` reply frame for the setter: the
+    /// frame only counts as a successful profile change when its
+    /// `update.requested` is present and decodes as a
+    /// [`crate::world_limits::WorldExecutionProfile`] — the same
+    /// extraction [`WorldClient::execution_profile`] performs for the
+    /// getter (#6635). Before #6777 the setter returned any
+    /// `execution_profile`-tagged frame, so a host that confirmed
+    /// nothing still read as success to the operator printout and to
+    /// manifest apply's `SetProfile` step. On success the frame is
+    /// returned unchanged. Factored out of
+    /// [`WorldClient::set_execution_profile`] so the validation can be
+    /// unit-tested without a live host sending frames no real host
+    /// sends (the `parse_caps_ceiling_reply` pattern, #6636).
+    fn parse_execution_profile_reply(reply: &serde_json::Value) -> Result<serde_json::Value> {
         if reply["type"] != "execution_profile" {
             bail!(
                 "{}",
@@ -1130,7 +1149,14 @@ impl WorldClient {
                     .unwrap_or("host refused the execution profile change")
             );
         }
-        Ok(reply)
+        let requested = reply
+            .get("update")
+            .and_then(|update| update.get("requested"))
+            .context("host returned a malformed execution profile")?;
+        let _: crate::world_limits::WorldExecutionProfile =
+            serde_json::from_value(requested.clone())
+                .context("host returned a malformed execution profile")?;
+        Ok(reply.clone())
     }
 
     /// Read the world's requested execution profile.
@@ -3084,6 +3110,67 @@ mod tests {
 
         // A non-caps_ceiling frame still bails with the host's message.
         let refused = WorldClient::parse_caps_ceiling_reply(&serde_json::json!({
+            "type": "error",
+            "message": "admin token refused",
+        }));
+        assert!(
+            refused
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("admin token refused")
+        );
+    }
+
+    #[test]
+    fn set_execution_profile_reply_requires_a_valid_requested_profile() {
+        // Issue #6777: an `execution_profile` frame whose
+        // `update.requested` is missing or mistyped must not read as a
+        // successful profile change. Driven through the factored reply
+        // parser. Oracle: the #6635 getter extraction in this file —
+        // setter and getter must agree on what a valid
+        // `execution_profile` frame is.
+        let frame = serde_json::json!({
+            "type": "execution_profile",
+            "update": {
+                "requested": {"wasm_fuel": 750_000},
+                "applies_on_next_program_install_or_process_restart": true,
+            },
+            "message": "the requested profile applies on the next install or restart",
+        });
+        let ok = WorldClient::parse_execution_profile_reply(&frame).unwrap();
+        // A well-formed reply returns the frame unchanged.
+        assert_eq!(ok, frame);
+
+        // The default requested profile is the empty object (#6687) and
+        // is valid.
+        let ok_default = WorldClient::parse_execution_profile_reply(&serde_json::json!({
+            "type": "execution_profile",
+            "update": {"requested": {}},
+        }))
+        .unwrap();
+        assert_eq!(ok_default["update"]["requested"], serde_json::json!({}));
+
+        // Missing update, missing requested, and mistyped requested all
+        // refuse with the malformed-profile error.
+        for bad_reply in [
+            serde_json::json!({"type": "execution_profile", "message": "ok"}),
+            serde_json::json!({"type": "execution_profile", "update": {}}),
+            serde_json::json!({"type": "execution_profile", "update": {"requested": null}}),
+            serde_json::json!({"type": "execution_profile", "update": {"requested": 123}}),
+            serde_json::json!({"type": "execution_profile", "update": {"requested": {"wasm_fuel": "unlimited"}}}),
+        ] {
+            let result = WorldClient::parse_execution_profile_reply(&bad_reply);
+            assert!(result.is_err(), "reply {bad_reply} must be refused");
+            let err = result.err().unwrap();
+            assert!(
+                err.to_string().contains("malformed execution profile"),
+                "unexpected error: {err}"
+            );
+        }
+
+        // A non-execution_profile frame still bails with the host's message.
+        let refused = WorldClient::parse_execution_profile_reply(&serde_json::json!({
             "type": "error",
             "message": "admin token refused",
         }));
