@@ -7,11 +7,11 @@
 //! and the relay on loopback must forward securely.
 
 use std::fmt::Debug;
-use std::io::{BufRead, BufReader, Write as _};
+use std::io::{BufRead, BufReader, Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail, ensure};
 use rand::RngExt as _;
@@ -112,7 +112,66 @@ impl MailSink for CommandSink {
     }
 }
 
+/// Absolute time allowed for each SMTP reply, even if the relay keeps trickling bytes.
 const RELAY_TIMEOUT: Duration = Duration::from_secs(10);
+/// RFC 5321's maximum reply line size, including the CRLF terminator.
+const MAX_REPLY_LINE_BYTES: usize = 512;
+
+/// A TCP reader that recalculates its socket timeout against one absolute reply deadline.
+struct DeadlineReader {
+    stream: TcpStream,
+    deadline: Option<Instant>,
+}
+
+impl DeadlineReader {
+    fn new(stream: TcpStream) -> Self {
+        Self {
+            stream,
+            deadline: None,
+        }
+    }
+
+    fn start_reply(&mut self, timeout: Duration) -> Instant {
+        let deadline = Instant::now() + timeout;
+        self.deadline = Some(deadline);
+        deadline
+    }
+}
+
+impl std::io::Read for DeadlineReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let Some(deadline) = self.deadline else {
+            return self.stream.read(buffer);
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(reply_deadline_error());
+        }
+        self.stream.set_read_timeout(Some(remaining))?;
+        match self.stream.read(buffer) {
+            Ok(_) | Err(_) if Instant::now() >= deadline => Err(reply_deadline_error()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                Err(reply_deadline_error())
+            }
+            result => result,
+        }
+    }
+}
+
+fn reply_deadline_error() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "the mail relay reply deadline expired",
+    )
+}
 
 /// Hands mail to an SMTP relay on this machine, with plain SMTP and no login.
 #[derive(Clone, Debug)]
@@ -161,11 +220,10 @@ impl MailSink for SmtpSink {
         );
         let stream = TcpStream::connect_timeout(&self.relay, RELAY_TIMEOUT)
             .context("connect to the mail relay")?;
-        stream.set_read_timeout(Some(RELAY_TIMEOUT))?;
         stream.set_write_timeout(Some(RELAY_TIMEOUT))?;
-        let mut reader = BufReader::new(stream.try_clone()?);
+        let mut reader = BufReader::new(DeadlineReader::new(stream.try_clone()?));
         let mut writer = stream;
-        expect(&mut reader, 220)?;
+        expect_reply(&mut reader, 220)?;
         smtp_command(&mut writer, &mut reader, "EHLO id.local", 250)?;
         smtp_command(
             &mut writer,
@@ -190,7 +248,7 @@ impl MailSink for SmtpSink {
         writer
             .write_all(message.as_bytes())
             .context("write to the mail relay")?;
-        expect(&mut reader, 250)?;
+        expect_reply(&mut reader, 250)?;
         let _ = smtp_command(&mut writer, &mut reader, "QUIT", 221);
         Ok(())
     }
@@ -219,27 +277,40 @@ fn dot_stuffed(body: &str) -> String {
 
 fn smtp_command(
     writer: &mut TcpStream,
-    reader: &mut impl BufRead,
+    reader: &mut BufReader<DeadlineReader>,
     line: &str,
     code: u16,
 ) -> Result<()> {
     writer
         .write_all(format!("{line}\r\n").as_bytes())
         .context("write to the mail relay")?;
-    expect(reader, code)
+    expect_reply(reader, code)
+}
+
+fn expect_reply(reader: &mut BufReader<DeadlineReader>, code: u16) -> Result<()> {
+    expect_reply_with_timeout(reader, code, RELAY_TIMEOUT)
+}
+
+fn expect_reply_with_timeout(
+    reader: &mut BufReader<DeadlineReader>,
+    code: u16,
+    timeout: Duration,
+) -> Result<()> {
+    let deadline = reader.get_mut().start_reply(timeout);
+    let result = expect(reader, code);
+    ensure!(
+        Instant::now() < deadline,
+        "the mail relay reply deadline expired"
+    );
+    result
 }
 
 /// Read one reply, which may span lines, and check its code.
 fn expect(reader: &mut impl BufRead, code: u16) -> Result<()> {
     loop {
-        let mut line = String::new();
-        ensure!(
-            reader
-                .read_line(&mut line)
-                .context("read from the mail relay")?
-                > 0,
-            "the mail relay closed the connection"
-        );
+        let line = read_reply_line(reader).context("read from the mail relay")?;
+        ensure!(!line.is_empty(), "the mail relay closed the connection");
+        let line = String::from_utf8(line).context("the mail relay sent an invalid UTF-8 reply")?;
         let line = line.trim_end();
         ensure!(
             line.get(..3).and_then(|c| c.parse::<u16>().ok()) == Some(code),
@@ -247,6 +318,30 @@ fn expect(reader: &mut impl BufRead, code: u16) -> Result<()> {
         );
         if line.as_bytes().get(3) != Some(&b'-') {
             return Ok(());
+        }
+    }
+}
+
+/// Read one CRLF-terminated reply line without buffering more than the protocol limit.
+fn read_reply_line(reader: &mut impl BufRead) -> std::io::Result<Vec<u8>> {
+    let mut line = Vec::with_capacity(128);
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(line);
+        }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let count = newline.map_or(available.len(), |index| index + 1);
+        if line.len().saturating_add(count) > MAX_REPLY_LINE_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("mail relay reply line exceeds {MAX_REPLY_LINE_BYTES} bytes"),
+            ));
+        }
+        line.extend_from_slice(&available[..count]);
+        reader.consume(count);
+        if newline.is_some() {
+            return Ok(line);
         }
     }
 }
@@ -369,6 +464,58 @@ mod tests {
             seen
         });
         (addr, handle)
+    }
+
+    #[test]
+    fn a_trickling_reply_cannot_extend_its_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let relay = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            for _ in 0..30 {
+                if stream.write_all(b"250-keepalive\r\n").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+
+        let stream = TcpStream::connect(relay).unwrap();
+        let mut reader = BufReader::new(DeadlineReader::new(stream));
+        let started = Instant::now();
+        let error =
+            expect_reply_with_timeout(&mut reader, 250, Duration::from_millis(100)).unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("reply deadline expired"),
+            "{error:#}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        drop(reader);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn an_overlong_reply_line_is_refused_by_the_fake_relay_reader() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let relay = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reply = vec![b'x'; MAX_REPLY_LINE_BYTES + 1];
+            reply[..4].copy_from_slice(b"220 ");
+            reply.extend_from_slice(b"\r\n");
+            stream.write_all(&reply).unwrap();
+        });
+
+        let stream = TcpStream::connect(relay).unwrap();
+        let mut reader = BufReader::new(DeadlineReader::new(stream));
+        let error = expect_reply(&mut reader, 220).unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("reply line exceeds 512 bytes"),
+            "{error:#}"
+        );
+        server.join().unwrap();
     }
 
     #[test]
