@@ -364,6 +364,14 @@ impl Github {
         self.exchange("GET", path, None)
     }
 
+    /// GET a list endpoint completely: page through it with
+    /// `fetch_all_pages` and return one merged body shaped like a
+    /// single-page response (#6605).
+    fn get_paginated(&self, path: &str) -> Result<Value> {
+        let sep = if path.contains('?') { '&' } else { '?' };
+        fetch_all_pages(|page| self.get(&format!("{path}{sep}per_page={PAGE_SIZE}&page={page}")))
+    }
+
     fn post(&self, path: &str, body: &Value) -> Result<Value> {
         self.exchange("POST", path, Some(body))
     }
@@ -372,6 +380,84 @@ impl Github {
 // ---------------------------------------------------------------------------
 // Scan (pure counting over GitHub response shapes, then the live walk)
 // ---------------------------------------------------------------------------
+
+/// Page size for every list the scan reads, and the loud cap on
+/// pages per list: 100 pages x 100 items = 10,000 entries is far
+/// past any real home's lists, and past the cap the read errors
+/// instead of presenting a page-bound count as exact (#6605).
+const PAGE_SIZE: u64 = 100;
+const MAX_PAGES: u64 = 100;
+
+/// The items of one list page: the array of a bare-array body
+/// (forks), or the single array field of an object body
+/// (`workflow_runs` / `jobs` / `workflows`).
+fn page_items(body: &Value) -> Vec<Value> {
+    if let Some(items) = body.as_array() {
+        return items.clone();
+    }
+    if let Some(obj) = body.as_object() {
+        for value in obj.values() {
+            if let Some(items) = value.as_array() {
+                return items.clone();
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// Append `next` page's items onto `merged` (the first page's body,
+/// kept as the shape template); an object body's `total_count` is
+/// rewritten to the merged length so it can never again describe
+/// only the first page.
+fn append_page(merged: &mut Value, next: &Value) {
+    let items = page_items(next);
+    if let Some(arr) = merged.as_array_mut() {
+        arr.extend(items);
+        return;
+    }
+    if let Some(obj) = merged.as_object_mut() {
+        let key = obj
+            .iter()
+            .find(|(_, v)| v.is_array())
+            .map(|(k, _)| k.clone());
+        if let Some(key) = key {
+            if let Some(arr) = obj.get_mut(&key).and_then(|v| v.as_array_mut()) {
+                arr.extend(items);
+                let total = arr.len() as u64;
+                if obj.contains_key("total_count") {
+                    obj.insert("total_count".to_string(), json!(total));
+                }
+            }
+        }
+    }
+}
+
+/// Read a GitHub list to completion (#6605): request pages through
+/// `fetch` (1-based page numbers) until a short page arrives, and
+/// merge them into one body shaped like a single-page response, so
+/// the counting helpers see every item. Counting only the first
+/// page presented a lower bound as the exact `active` number and
+/// could report a saturated home as free. Where a term needs only
+/// a count, the response's `total_count` is the complete answer and
+/// no pagination is needed — that is what the queued-runs term in
+/// `scan_repo` does, deliberately unchanged.
+fn fetch_all_pages<F: FnMut(u64) -> Result<Value>>(mut fetch: F) -> Result<Value> {
+    let mut merged = fetch(1)?;
+    let mut last_len = page_items(&merged).len() as u64;
+    let mut page = 1;
+    while last_len >= PAGE_SIZE {
+        page += 1;
+        if page > MAX_PAGES {
+            return Err(transport_err(format!(
+                "GitHub list exceeds {MAX_PAGES} pages of {PAGE_SIZE};                  refusing to present a truncated count as exact"
+            )));
+        }
+        let next = fetch(page)?;
+        last_len = page_items(&next).len() as u64;
+        append_page(&mut merged, &next);
+    }
+    Ok(merged)
+}
 
 /// Run ids from a `GET .../actions/runs` body.
 fn run_ids(runs_body: &Value) -> Vec<u64> {
@@ -465,20 +551,17 @@ impl RepoScan {
 /// counting rule and the queued-run approximation).
 fn scan_repo(github: &Github, repo: &str) -> Result<RepoScan> {
     let mut active: u64 = 0;
-    let in_progress = github.get(&format!(
-        "/repos/{repo}/actions/runs?status=in_progress&per_page=100"
-    ))?;
+    let in_progress =
+        github.get_paginated(&format!("/repos/{repo}/actions/runs?status=in_progress"))?;
     for run_id in run_ids(&in_progress) {
-        let jobs = github.get(&format!(
-            "/repos/{repo}/actions/runs/{run_id}/jobs?per_page=100"
-        ))?;
+        let jobs = github.get_paginated(&format!("/repos/{repo}/actions/runs/{run_id}/jobs"))?;
         active += count_active_jobs(&jobs);
     }
     let queued = github.get(&format!(
         "/repos/{repo}/actions/runs?status=queued&per_page=100"
     ))?;
     active += total_count(&queued);
-    let workflows = github.get(&format!("/repos/{repo}/actions/workflows?per_page=100"))?;
+    let workflows = github.get_paginated(&format!("/repos/{repo}/actions/workflows"))?;
     Ok(RepoScan {
         repo: repo.to_string(),
         active,
@@ -534,7 +617,7 @@ fn discover_scopes(github: &Github, fleet_repo: &str) -> Result<Vec<String>> {
     for _ in 0..8 {
         let mut next: Vec<String> = Vec::new();
         for repo in &level {
-            let body = github.get(&format!("/repos/{repo}/forks?per_page=100"))?;
+            let body = github.get_paginated(&format!("/repos/{repo}/forks"))?;
             for name in fork_full_names(&body) {
                 if push_scope(&mut scopes, &name) {
                     next.push(name);
@@ -1173,6 +1256,188 @@ mod tests {
         assert_eq!(run_ids(&body), vec![111, 222]);
         assert_eq!(total_count(&body), 2);
         assert_eq!(total_count(&json!({})), 0);
+    }
+
+    #[test]
+    fn paginated_runs_merge_all_pages() {
+        // #6605: 150 in-progress runs over two pages must all be
+        // visited — page 1 alone would visit only 100.
+        let page = |items: Vec<Value>| json!({"total_count": 150, "workflow_runs": items});
+        let mut calls = 0;
+        let merged = fetch_all_pages(|n| {
+            calls += 1;
+            Ok(match n {
+                1 => page((1..=100).map(|i| json!({"id": i})).collect()),
+                _ => page((101..=150).map(|i| json!({"id": i})).collect()),
+            })
+        })
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(run_ids(&merged).len(), 150);
+        assert_eq!(total_count(&merged), 150);
+    }
+
+    #[test]
+    fn paginated_jobs_count_beyond_first_page() {
+        // #6605: one run fanning out to 250 jobs — the active jobs
+        // on pages 2 and 3 count exactly like page 1's.
+        let jobs_page = |statuses: &[&str]| json!({"total_count": 250, "jobs": statuses.iter().map(|s| json!({"status": s})).collect::<Vec<_>>()});
+        let merged = fetch_all_pages(|n| {
+            Ok(match n {
+                1 => jobs_page(
+                    &vec!["in_progress"; 30]
+                        .into_iter()
+                        .chain(vec!["completed"; 70])
+                        .collect::<Vec<_>>(),
+                ),
+                2 => jobs_page(&vec!["queued"; 100]),
+                _ => jobs_page(&vec!["in_progress"; 50]),
+            })
+        })
+        .unwrap();
+        assert_eq!(count_active_jobs(&merged), 180);
+    }
+
+    #[test]
+    fn paginated_workflows_and_forks_beyond_first_page() {
+        // #6605: the pilot workflow hiding on page 2 is present,
+        // and forks past 100 are discovered as scopes.
+        let workflows = fetch_all_pages(|n| {
+            Ok(match n {
+                1 => json!({"total_count": 101, "workflows": (0..100).map(|i| json!({"path": format!(".github/workflows/w{i}.yml"), "state": "active"})).collect::<Vec<_>>() }),
+                _ => json!({"total_count": 101, "workflows": [json!({"path": ".github/workflows/fleet-dispatch-test.yml", "state": "active"})]}),
+            })
+        })
+        .unwrap();
+        assert!(workflow_present(&workflows));
+
+        let forks = fetch_all_pages(|n| {
+            Ok(match n {
+                1 => json!(
+                    (0..100)
+                        .map(|i| json!({"full_name": format!("o/r{i}")}))
+                        .collect::<Vec<_>>()
+                ),
+                _ => json!([json!({"full_name": "o/last"})]),
+            })
+        })
+        .unwrap();
+        let names = fork_full_names(&forks);
+        assert_eq!(names.len(), 101);
+        assert_eq!(names[100], "o/last");
+    }
+
+    #[test]
+    fn pagination_property_generated_page_sequences() {
+        // Property coverage for the pagination state machine
+        // (testing doctrine: state the invariants, generate the
+        // inputs, name the oracles). Invariants over generated page
+        // sequences: (1) the merged items are exactly the served
+        // pages concatenated, order and contents preserved —
+        // oracle: the model item list; (2) the walk requests pages
+        // 1..=k and stops at the first short page, fetching exactly
+        // one extra empty page when the last page is exactly full —
+        // oracle: the request sequence computed from the model;
+        // (3) object bodies keep their shape with total_count
+        // corrected to the merged length. A hand-rolled xorshift
+        // generator keeps the test dependency-free and reproducible
+        // (the seed is the failing input).
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            (state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) as u32
+        };
+        for seed in 0..200u32 {
+            let n = (next() % 451) as usize; // 0..=450 items: 0, short, exact-full, multi-page
+            let model: Vec<Value> = (0..n).map(|i| json!({"id": i})).collect();
+            let pages: Vec<Vec<Value>> = model
+                .chunks(PAGE_SIZE as usize)
+                .map(|c| c.to_vec())
+                .collect();
+            let full_pages = n / PAGE_SIZE as usize;
+            let expected_requests = if n % PAGE_SIZE as usize == 0 {
+                full_pages + 1 // exactly-full last page (or empty list) costs one empty fetch
+            } else {
+                pages.len()
+            };
+            let object_body = seed % 2 == 0;
+            let mut requests: Vec<u64> = Vec::new();
+            let merged = fetch_all_pages(|page_no| {
+                requests.push(page_no);
+                let items = pages
+                    .get((page_no - 1) as usize)
+                    .cloned()
+                    .unwrap_or_default();
+                Ok(if object_body {
+                    json!({"total_count": n, "workflow_runs": items})
+                } else {
+                    json!(items)
+                })
+            })
+            .unwrap();
+            assert_eq!(
+                requests,
+                (1..=expected_requests as u64).collect::<Vec<_>>(),
+                "seed {seed}: request sequence"
+            );
+            if object_body {
+                assert_eq!(
+                    run_ids(&merged),
+                    (0..n as u64).collect::<Vec<_>>(),
+                    "seed {seed}"
+                );
+                assert_eq!(total_count(&merged), n as u64, "seed {seed}");
+            } else {
+                assert_eq!(page_items(&merged), model, "seed {seed}: concatenation");
+            }
+        }
+        // Cap invariant: an endless full-page list is rejected
+        // loudly after exactly MAX_PAGES requests, never truncated
+        // into a plausible count.
+        let mut calls = 0u64;
+        let endless = fetch_all_pages(|_| {
+            calls += 1;
+            Ok(json!(
+                (0..PAGE_SIZE).map(|i| json!({"id": i})).collect::<Vec<_>>()
+            ))
+        });
+        assert!(endless.is_err());
+        assert_eq!(calls, MAX_PAGES);
+    }
+
+    #[test]
+    fn pagination_exact_page_then_empty_and_error_propagates() {
+        // A full page followed by an empty page ends the walk; a
+        // transport error mid-walk fails the scan, never a
+        // truncated count.
+        let mut calls = 0;
+        let merged = fetch_all_pages(|n| {
+            calls += 1;
+            Ok(match n {
+                1 => json!(
+                    (0..100)
+                        .map(|i| json!({"full_name": format!("o/r{i}")}))
+                        .collect::<Vec<_>>()
+                ),
+                _ => json!([]),
+            })
+        })
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(fork_full_names(&merged).len(), 100);
+
+        let failed = fetch_all_pages(|n| {
+            if n == 1 {
+                Ok(json!(
+                    (0..100).map(|i| json!({"id": i})).collect::<Vec<_>>()
+                ))
+            } else {
+                Err(transport_err("boom"))
+            }
+        });
+        assert!(failed.is_err());
     }
 
     #[test]
