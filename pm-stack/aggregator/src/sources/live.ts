@@ -5,10 +5,12 @@
 // provenance strings say exactly which facet is live vs fixture-backed.
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import type { Config } from "../config.ts";
 import { applyBoardDonePolicy, isRetiredDoneTableTitle } from "../board-policy.ts";
 import { isAaSection } from "../aa.ts";
+import { aaCacheFileName, isAaBatchCacheEntry } from "../aa-batches.ts";
+import { isBatchUuid } from "../aa-batch-sql.ts";
 import { isDnsSection } from "../dns.ts";
 import {
   diagnoseOrchestrationSection,
@@ -1677,13 +1679,41 @@ export function liveSource(
               : "fixtures (no fleet feed file yet)";
       return null;
     },
-    async aa(): Promise<AaFeedSection | null> {
+    async aa(batch?: string | null): Promise<AaFeedSection | null> {
       // AA cost explorer: the section rides the fleet feed, read from
       // Supabase ainventory by the collector. Its absent form is a real
       // section (the page renders the reason); a missing section means
       // the collector has not embedded one yet.
       const feed = await getFeed();
       const collection = feed?.meta?.sections.aa;
+      // #3302: a selected historical batch is a collector-built cache file
+      // beside the feed. The feed's latest section carries the index, so the
+      // historical render keeps the same selector list.
+      if (batch !== undefined && batch !== null && batch !== "") {
+        const batchList =
+          feed?.aa && isAaSection(feed.aa) && feed.aa.status === "ok" ? (feed.aa.batches ?? []) : [];
+        if (!isBatchUuid(batch)) {
+          provenance.aa = "live (fleet feed · invalid ?batch value)";
+          return { status: "absent", reason: "invalid batch id", generatedAt: feed?.generatedAt ?? new Date().toISOString() };
+        }
+        try {
+          const parsed: unknown = JSON.parse(
+            await readFile(join(dirname(cfg.feedFile), "aa-batches", aaCacheFileName(batch)), "utf8"),
+          );
+          if (isAaBatchCacheEntry(parsed) && isAaSection(parsed.section) && parsed.section.status === "ok") {
+            provenance.aa = `live (fleet feed · historical batch ${batch.slice(0, 8)} · collected ${parsed.section.generatedAt})`;
+            return { ...parsed.section, batches: batchList };
+          }
+        } catch {
+          // No cache file yet — fall through to the honest absent form.
+        }
+        provenance.aa = `live (fleet feed · batch ${batch.slice(0, 8)} not cached yet)`;
+        return {
+          status: "absent",
+          reason: `batch ${batch} is indexed but its payload has not been built yet — the collector builds a few versions per tick`,
+          generatedAt: feed?.generatedAt ?? new Date().toISOString(),
+        };
+      }
       if (feed?.aa && isAaSection(feed.aa)) {
         const detail =
           feed.aa.status === "ok"
