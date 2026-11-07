@@ -166,13 +166,68 @@ class GoTestReportTests(unittest.TestCase):
                     "Action": "output",
                     "Package": "example.test/mcpx/widgets",
                     "Test": "TestQuarantined",
-                    "Output": "quarantined until 2027-01-01 (https://github.com/example/1)\n",
+                    "Output": "quarantined until 2027-01-01 (https://github.com/developing-today/code/issues/1973)\n",
                 },
             ],
             stored="",
         )
         self.assertEqual(result.returncode, 0)
         self.assertEqual(record["skipped_count"], 0)
+
+    def test_quarantine_expiring_today_remains_exempt(self):
+        result, summary, record = self.run_report(
+            [
+                {
+                    "Action": "skip",
+                    "Package": "example.test/mcpx/widgets",
+                    "Test": "TestQuarantined",
+                },
+                {
+                    "Action": "output",
+                    "Package": "example.test/mcpx/widgets",
+                    "Test": "TestQuarantined",
+                    "Output": "quarantined until 2026-11-02 (https://github.com/developing-today/code/issues/1973)\n",
+                },
+            ],
+            stored="",
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(record["skipped_count"], 0)
+        self.assertIn("1 quarantined under #1973", summary)
+
+    def test_invalid_quarantine_notices_count_against_skip_record(self):
+        invalid_notices = [
+            "quarantined until banana (https://github.com/developing-today/code/issues/1973)",
+            "quarantined until 2026-02-30 (https://github.com/developing-today/code/issues/1973)",
+            "quarantined until 2000-01-01 (https://github.com/developing-today/code/issues/1973)",
+            "this mentions quarantined until 2027-01-01 (https://github.com/developing-today/code/issues/1973)",
+            "quarantined until 2027-01-01 (https://github.com.github.invalid/developing-today/code/issues/1973)",
+            "quarantined until 2027-01-01 (https://github.com/developing-today/code/pull/1973)",
+        ]
+        empty_record = json.dumps({"skipped_count": 0, "skipped": [], "run": "previous"})
+
+        for reason in invalid_notices:
+            with self.subTest(reason=reason):
+                result, summary, record = self.run_report(
+                    [
+                        {
+                            "Action": "skip",
+                            "Package": "example.test/mcpx/widgets",
+                            "Test": "TestQuarantined",
+                        },
+                        {
+                            "Action": "output",
+                            "Package": "example.test/mcpx/widgets",
+                            "Test": "TestQuarantined",
+                            "Output": reason + "\n",
+                        },
+                    ],
+                    stored=empty_record,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("More tests skipped than the record", summary)
+                self.assertNotIn("quarantined under #1973", summary)
+                self.assertIsNone(record)
 
 
 if __name__ == "__main__":
