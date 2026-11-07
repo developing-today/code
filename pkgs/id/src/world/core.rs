@@ -13,6 +13,13 @@ use anyhow::{Context, Result, ensure};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
+mod checkpoint_parts;
+
+use checkpoint_parts::{
+    CheckpointEventPartKind, PendingCheckpointParts, checkpoint_part_json_len,
+    split_checkpoint_events, split_checkpoint_snapshot,
+};
+
 /// Encoded byte size of one admin-history event, or `None` when the event
 /// cannot be serialized at all. Serialization failure is deliberate in the
 /// accounting below (#4633): an unserializable event counts as
@@ -181,6 +188,12 @@ pub struct WorldCore {
     /// rebuilt by journal replay and preserved across compaction by the
     /// checkpoint's `transfers` field.
     pub(crate) handoff_transfers: Vec<HandoffTransferState>,
+    /// The journal-resident native-spill write lease (design #2819,
+    /// phase 2 of issue #3804): rebuilt by journal replay from the
+    /// lease control entries and preserved across compaction by the
+    /// checkpoint's `lease` field. Bootstrap (DO holder, epoch 0) for
+    /// every world that has never spilled.
+    pub(crate) write_lease: WriteLease,
     /// Author keys bound to participants for signed move capture (#2814):
     /// participant id to the player's ed25519 verifying key bytes. A bound
     /// participant's inputs must arrive player-signed (see
@@ -334,6 +347,7 @@ impl WorldCore {
             directory: crate::directory::Directory::new(),
             petnames: crate::petname::Petnames::new(),
             handoff_transfers: Vec::new(),
+            write_lease: WriteLease::bootstrap(),
             author_keys: HashMap::new(),
             move_chains: HashMap::new(),
             signed_moves: Vec::new(),
@@ -527,7 +541,19 @@ impl WorldCore {
                 });
             }
         };
+        let mut checkpoint_parts = PendingCheckpointParts::default();
         for entry in entries {
+            if checkpoint_parts.has_parts()
+                && !matches!(
+                    &entry,
+                    JournalEntry::CheckpointSnapshotPart { .. }
+                        | JournalEntry::CheckpointEventsPart { .. }
+                        | JournalEntry::CheckpointAdminPart { .. }
+                        | JournalEntry::Checkpoint { .. }
+                )
+            {
+                anyhow::bail!("checkpoint parts are not immediately followed by their checkpoint");
+            }
             let required_version = journal_version_required_by(&entry);
             ensure!(
                 journal_version >= required_version,
@@ -792,6 +818,79 @@ impl WorldCore {
                     replay.push(destination_event);
                     core.since_checkpoint = core.since_checkpoint.saturating_add(1);
                 }
+                JournalEntry::LeaseGranted {
+                    holder,
+                    epoch,
+                    expires_at_ms,
+                } => {
+                    core.write_lease
+                        .apply_grant(&holder, epoch, expires_at_ms)?;
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
+                JournalEntry::LeaseRenewed {
+                    holder,
+                    epoch,
+                    expires_at_ms,
+                } => {
+                    core.write_lease
+                        .apply_renew(&holder, epoch, expires_at_ms)?;
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
+                JournalEntry::LeaseHandedOff {
+                    from,
+                    to,
+                    epoch,
+                    expires_at_ms,
+                } => {
+                    core.write_lease
+                        .apply_handoff(&from, &to, epoch, expires_at_ms)?;
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
+                JournalEntry::LeaseRevoked {
+                    former_holder,
+                    epoch,
+                    reason,
+                } => {
+                    core.write_lease
+                        .apply_revoke(&former_holder, epoch, &reason)?;
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
+                JournalEntry::LeaseWriteRejected {
+                    writer,
+                    presented_epoch,
+                    operation_id,
+                    observed_epoch,
+                    reason,
+                    received_at_ms,
+                } => {
+                    core.write_lease.apply_rejection(LeaseWriteRejection {
+                        writer,
+                        presented_epoch,
+                        operation_id,
+                        observed_epoch,
+                        reason,
+                        received_at_ms,
+                    })?;
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
+                JournalEntry::CheckpointSnapshotPart {
+                    sequence,
+                    part_index,
+                    part_count,
+                    bytes,
+                } => checkpoint_parts.push_snapshot(sequence, part_index, part_count, bytes)?,
+                JournalEntry::CheckpointEventsPart {
+                    sequence,
+                    part_index,
+                    part_count,
+                    events,
+                } => checkpoint_parts.push_events(sequence, part_index, part_count, events)?,
+                JournalEntry::CheckpointAdminPart {
+                    sequence,
+                    part_index,
+                    part_count,
+                    events,
+                } => checkpoint_parts.push_admin(sequence, part_index, part_count, events)?,
                 // Audit-only: the install is carried by the `Committed`
                 // `ProgramInstalled` event; this entry records who ordered it
                 // and changes no restored state.
@@ -876,11 +975,32 @@ impl WorldCore {
                     caps_ceiling,
                     schedules,
                     transfers,
-                    snapshot,
-                    events,
-                    admin_history,
+                    lease,
+                    mut snapshot,
+                    mut events,
+                    mut admin_history,
                     open_presence,
                 } => {
+                    if checkpoint_parts.has_parts() {
+                        let (assembled_snapshot, assembled_events, assembled_admin) =
+                            checkpoint_parts.assemble(sequence)?;
+                        ensure!(
+                            snapshot.is_empty() && events.is_empty(),
+                            "split checkpoint duplicates variable-size checkpoint data"
+                        );
+                        let complete = admin_history
+                            .as_ref()
+                            .filter(|history| history.events.is_empty())
+                            .map(|history| history.complete)
+                            .context("split checkpoint is missing admin-history completeness")?;
+                        snapshot = assembled_snapshot;
+                        events = assembled_events;
+                        admin_history = Some(JournalAdminHistory {
+                            events: assembled_admin,
+                            complete,
+                        });
+                        checkpoint_parts = PendingCheckpointParts::default();
+                    }
                     ensure!(
                         core.sequence == 0 && program.is_none(),
                         "journal checkpoint does not come first"
@@ -999,6 +1119,24 @@ impl WorldCore {
                         validated_transfers.push(transfer);
                     }
                     core.handoff_transfers = validated_transfers;
+                    // A checkpoint stands in for the journal it
+                    // compacted, so its lease field is the whole lease
+                    // state: validate the carried history reproduces
+                    // the claimed state before adopting it, exactly as
+                    // replaying the un-compacted lease entries would.
+                    // Lease entries are never written before their
+                    // checkpoint, so the lease here must still be the
+                    // bootstrap state the checkpoint replaces.
+                    if let Some(lease) = lease {
+                        ensure!(
+                            core.write_lease.is_bootstrap(),
+                            "journal checkpoint carries a write lease after lease entries"
+                        );
+                        lease
+                            .validate_history()
+                            .context("invalid write lease in journal checkpoint")?;
+                        core.write_lease = lease;
+                    }
                     // The writer emits one `ScheduleSet` per pending schedule
                     // before the checkpoint, so the two must agree exactly.
                     let listed = schedules.unwrap_or_default();
@@ -1016,6 +1154,10 @@ impl WorldCore {
                 }
             }
         }
+        ensure!(
+            !checkpoint_parts.has_parts(),
+            "checkpoint parts are not followed by their checkpoint"
+        );
         // Sessions end with the process, and a crash skips their leave, so
         // anyone the journal still shows present is gone by now. Replicas
         // (F12.13) skip this synthesis: see `restore_replica`.
@@ -1154,25 +1296,77 @@ impl WorldCore {
         // entity, forget an import receipt, or drop an owner epoch.
         let transfers: Option<Vec<HandoffTransferState>> =
             (!self.handoff_transfers.is_empty()).then(|| self.handoff_transfers.clone());
-        entries.push(JournalEntry::Checkpoint {
-            sequence: self.sequence,
-            module_hash,
-            seed: self.active_seed,
-            provenance: self.active_module_provenance.clone(),
-            execution_profile: Some(self.execution_profile),
-            caps_ceiling,
-            schedules,
-            transfers,
-            snapshot,
-            events: self.events.iter().cloned().collect(),
-            admin_history: Some(JournalAdminHistory {
-                events: self.admin_history.iter().cloned().collect(),
-                complete: self.admin_history_complete,
-            }),
-            // `Some(empty)` means the writer knows no participants are open;
-            // `None` is reserved for legacy checkpoints whose state is unknown.
-            open_presence: Some(self.open_presence.iter().copied().collect()),
-        });
+        // Never compact a lease history that would fail restore
+        // validation into the replacement journal: refuse the
+        // compaction and keep the un-compacted journal instead
+        // (Codex review on PR #5571).
+        if !self.write_lease.is_bootstrap() {
+            self.write_lease
+                .validate_history()
+                .context("write lease history does not validate; keep the journal untrimmed")?;
+        }
+        let checkpoint_events: Vec<WorldEvent> = self.events.iter().cloned().collect();
+        let checkpoint_admin_events: Vec<WorldEvent> = self.admin_history.iter().cloned().collect();
+        // A checkpoint that already fits the per-entry bound stays a single
+        // inline `Checkpoint` entry, exactly as before this change: its
+        // journal keeps the version its contents already require, and older
+        // binaries keep reading it. Only a checkpoint whose assembled
+        // encoding exceeds the bound is split into part entries (which bump
+        // the journal to version 6 via `journal_version_required_by`).
+        let make_checkpoint =
+            |snapshot: String, events: Vec<WorldEvent>, admin_events: Vec<WorldEvent>| {
+                JournalEntry::Checkpoint {
+                    sequence: self.sequence,
+                    module_hash: module_hash.clone(),
+                    seed: self.active_seed,
+                    provenance: self.active_module_provenance.clone(),
+                    execution_profile: Some(self.execution_profile),
+                    caps_ceiling: caps_ceiling.clone(),
+                    schedules: schedules.clone(),
+                    transfers: transfers.clone(),
+                    lease: (!self.write_lease.is_bootstrap()).then(|| self.write_lease.clone()),
+                    snapshot,
+                    events,
+                    admin_history: Some(JournalAdminHistory {
+                        events: admin_events,
+                        complete: self.admin_history_complete,
+                    }),
+                    // `Some(empty)` means the writer knows no participants are
+                    // open; `None` is reserved for legacy checkpoints whose
+                    // state is unknown.
+                    open_presence: Some(self.open_presence.iter().copied().collect()),
+                }
+            };
+        let inline_checkpoint = make_checkpoint(
+            snapshot.clone(),
+            checkpoint_events.clone(),
+            checkpoint_admin_events.clone(),
+        );
+        if checkpoint_part_json_len(&inline_checkpoint)? <= MAX_CHECKPOINT_PART_BYTES {
+            entries.push(inline_checkpoint);
+        } else {
+            entries.extend(split_checkpoint_snapshot(self.sequence, &snapshot)?);
+            entries.extend(split_checkpoint_events(
+                self.sequence,
+                &checkpoint_events,
+                CheckpointEventPartKind::Retained,
+            )?);
+            entries.extend(split_checkpoint_events(
+                self.sequence,
+                &checkpoint_admin_events,
+                CheckpointEventPartKind::Admin,
+            )?);
+            // The variable-size fields ride in the bounded part entries
+            // immediately above; empty placeholders keep the scalar
+            // checkpoint schema stable while older checkpoints remain
+            // readable through the legacy no-parts path in restore.
+            let checkpoint = make_checkpoint(String::new(), Vec::new(), Vec::new());
+            ensure!(
+                checkpoint_part_json_len(&checkpoint)? <= MAX_CHECKPOINT_PART_BYTES,
+                "checkpoint scalar fields exceed the encoded size limit ({MAX_CHECKPOINT_PART_BYTES} bytes); keep the journal untrimmed"
+            );
+            entries.push(checkpoint);
+        }
         // The compacted journal keeps the rollback contract (see
         // `JOURNAL_VERSION`): when the checkpoint re-emits an entry a
         // version-1 binary cannot read, the new header must say so, or the
@@ -1311,6 +1505,13 @@ impl WorldCore {
     #[must_use]
     pub(crate) fn handoff_transfers(&self) -> &[HandoffTransferState] {
         &self.handoff_transfers
+    }
+
+    /// The world's journal-resident native-spill write lease
+    /// (design #2819, phase 2 of issue #3804).
+    #[must_use]
+    pub(crate) fn write_lease(&self) -> &WriteLease {
+        &self.write_lease
     }
 
     /// The per-world resource requests, independent of current server ceilings.

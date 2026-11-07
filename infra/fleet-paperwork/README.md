@@ -83,14 +83,14 @@ Same flow the pm-stack services already use (see `../../pm-stack`):
 python3 fleet_paperwork.py check --repo developing-today/code
 
 # Create (deduped by exact title, verified by readback).
-python3 fleet_paperwork.py create --repo developing-today/opencode \
+python3 fleet_paperwork.py create --repo developing-today-forks/opencode \
   --title "Preserved branch: … — decision needed (merge / cherry-pick / drop)" \
   --label priority/low --body-file body.md
 
 # Comment / close (also verified).
-python3 fleet_paperwork.py comment --repo developing-today/opencode \
+python3 fleet_paperwork.py comment --repo developing-today-forks/opencode \
   --issue 1203 --body-file comment.md
-python3 fleet_paperwork.py close --repo developing-today/opencode --issue 1203
+python3 fleet_paperwork.py close --repo developing-today-forks/opencode --issue 1203
 
 # Generic access: print an installation token (stdout only — every
 # diagnostic goes to stderr, so the capture is clean), then drive gh or

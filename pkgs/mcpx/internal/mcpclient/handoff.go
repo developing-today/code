@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
 )
 
 // StdioHandoff is a stdio child's identity and pipes, enough for another
@@ -252,6 +253,15 @@ func (c *Client) HTTPSession() (HTTPHandoff, bool) {
 // SessionState is the protocol state a resumed client needs, without a handshake.
 func (c *Client) SessionState() Session { return c.session() }
 
+// MarkResumedSession arms the first application-request recovery for a
+// successfully probed cold-restored session. The probe itself is not the
+// caller's first request; after that request succeeds or gets one recovery
+// attempt, later 404s keep the session's ordinary behavior.
+func (c *Client) MarkResumedSession() {
+	c.resumedSession.Store(true)
+	c.resumedFirstRequest.Store(true)
+}
+
 func (c *Client) session() Session {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -274,25 +284,27 @@ func (c *Client) session() Session {
 // commits can hand the pipes back with no bytes consumed.
 func Resume(t Transport, s Session, o Options) *Client {
 	c := &Client{
-		t:              t,
-		pending:        map[int64]chan *rpcResponse{},
-		closeCh:        make(chan struct{}),
-		loopDone:       make(chan struct{}),
-		clientName:     o.ClientName,
-		clientVersion:  o.ClientVersion,
-		onElicit:       o.OnServerRequest,
-		roots:          append([]Root(nil), o.Roots...),
-		modernVersions: o.ModernVersions,
-		probeTimeout:   o.ProbeTimeout,
-		ServerInfo:     s.ServerInfo,
-		Capabilities:   s.Capabilities,
-		Era:            s.Era,
-		Negotiated:     s.Negotiated,
-		Instructions:   s.Instructions,
-		Source:         s.Source,
-		CachedEraWrong: s.CachedEraWrong,
-		metaVersion:    s.MetaVersion,
-		logLevel:       s.LogLevel,
+		t:                        t,
+		pending:                  map[int64]chan *rpcResponse{},
+		closeCh:                  make(chan struct{}),
+		loopDone:                 make(chan struct{}),
+		clientName:               o.ClientName,
+		clientVersion:            o.ClientVersion,
+		onElicit:                 o.OnServerRequest,
+		onURLElicitationRequired: o.OnURLElicitationRequired,
+		roots:                    append([]Root(nil), o.Roots...),
+		root:                     o.Root,
+		modernVersions:           o.ModernVersions,
+		probeTimeout:             o.ProbeTimeout,
+		ServerInfo:               s.ServerInfo,
+		Capabilities:             s.Capabilities,
+		Era:                      s.Era,
+		Negotiated:               s.Negotiated,
+		Instructions:             s.Instructions,
+		Source:                   s.Source,
+		CachedEraWrong:           s.CachedEraWrong,
+		metaVersion:              s.MetaVersion,
+		logLevel:                 s.LogLevel,
 	}
 	if len(c.modernVersions) == 0 {
 		c.modernVersions = ModernVersions
@@ -312,5 +324,13 @@ func (c *Client) Activate() {
 	go c.recvLoop()
 	if c.modern.Load() {
 		c.startListen()
+		return
+	}
+	// A resumed legacy session needs its standalone GET stream reopened,
+	// exactly as finishLegacy opens it on a fresh initialize: without it,
+	// server-initiated requests and list-change notifications that arrive
+	// outside a request's own stream go nowhere after a cold resume.
+	if h, ok := c.t.(interface{ listen() }); ok && spec.AtOrAfter("2025-03-26")(c.Negotiated) {
+		h.listen()
 	}
 }

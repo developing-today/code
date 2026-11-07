@@ -1,6 +1,6 @@
 #!/bin/bash
 # Laptop start wrapper for OpenChamber (fleet pattern, mirrors
-# bin/commandcode-proxy-start.sh). The home-manager unit does not exec
+# the retired bin/muse-proxy-start.sh). The home-manager unit does not exec
 # the serve script directly; it execs this wrapper with the serve
 # script's store path as $1 (openchamberUnitStart in
 # home/common/default.nix).

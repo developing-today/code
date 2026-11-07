@@ -82,7 +82,7 @@ def check(name, cond):
 REAL_RUN = subprocess.run
 
 
-def run_scenario(clone_rc, inventory_result, with_mirror, fail_repos=()):
+def run_scenario(clone_rc, inventory_result, with_mirror, fail_repos=(), extra_lines=()):
     """Run reconcile.main() in a fresh temp root with stubs installed.
 
     clone_rc=None means the clone pass must not be invoked at all.
@@ -103,6 +103,8 @@ def run_scenario(clone_rc, inventory_result, with_mirror, fail_repos=()):
             assert clone_rc is not None, "clone pass ran unexpectedly"
             # Simulate clone_all appending per-repo status records.
             with open(os.path.join(root, "clone-status.jsonl"), "a") as f:
+                for line in extra_lines:
+                    f.write(line + "\n")
                 for repo in fail_repos:
                     f.write(json.dumps({"repo": repo, "status": "fail"}) + "\n")
                 if clone_rc == 0:
@@ -173,5 +175,52 @@ check(
     "report notes clone pass not run",
     "clone pass: not run" in report,
 )
+
+# --- Scenario 4: failed clone pass with a poisoned status file (#6606) --
+# Valid-JSON non-dict lines and an unparseable line land in
+# clone-status.jsonl after the offset, before the real fail record.
+# The failed-clone consumer must ignore them (shared contract:
+# ghb_common.clone_status_record), still name the real failure in the
+# dated report, and still exit 1 — no AttributeError traceback.
+rc, report, calls = run_scenario(
+    clone_rc=1,
+    inventory_result=CLEAN,
+    with_mirror=False,
+    fail_repos=("good-owner/newrepo",),
+    extra_lines=("123", '"fail"', '["owner/bad"]', "null", "true", "{torn line"),
+)
+check("poisoned status file -> reconcile still exits 1", rc == 1)
+check(
+    "poisoned status file -> report still names the real failing repo",
+    "## clone pass failures" in report and "good-owner/newrepo" in report,
+)
+check(
+    "poison shapes never surface as repos",
+    "owner/bad" not in report,
+)
+
+# Direct reader check: _clone_status_entries keeps only dict records;
+# the consumer expression over them returns exactly the valid fails.
+root = tempfile.mkdtemp(prefix="ghb-status-shape-test-")
+with open(os.path.join(root, "clone-status.jsonl"), "w") as f:
+    f.write(json.dumps({"repo": "owner/bad", "status": "fail"}) + "\n")
+    f.write("{torn line\n")
+    for shape in ("123", '"x"', "[]", "null", "true"):
+        f.write(shape + "\n")
+    f.write(json.dumps({"repo": "owner/good", "status": "ok"}) + "\n")
+    f.write(json.dumps({"status": "fail"}) + "\n")
+    f.write(json.dumps({"repo": ["owner/bad2"], "status": "fail"}) + "\n")
+entries = reconcile._clone_status_entries(root, 0)
+check("reader keeps only dict records", all(isinstance(e, dict) for e in entries) and len(entries) == 4)
+consumer = sorted(
+    {
+        e["repo"]
+        for e in entries
+        if e.get("status") == "fail"
+        and isinstance(e.get("repo"), str)
+        and e.get("repo")
+    }
+)
+check("consumer returns exactly the valid fail repos", consumer == ["owner/bad"])
 
 print(f"\n{sum(1 for _, ok in PASS if ok)}/{len(PASS)} checks passed")

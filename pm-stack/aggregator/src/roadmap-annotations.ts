@@ -6,6 +6,7 @@ import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isObjectRef, validateAuthor } from "./comments.ts";
 import type { DashAuthor } from "./model.ts";
+import { quarantineUnreadableStore } from "./store-recovery.ts";
 
 export type RoadmapAnnotationKind = "decision" | "outcome" | "context";
 
@@ -102,7 +103,22 @@ export class RoadmapAnnotationsStore {
       raw = await readFile(this.file, "utf8");
     } catch (err) {
       if ((err as { code?: unknown })?.code === "ENOENT") return;
-      throw err;
+      let quarantined: string;
+      try {
+        quarantined = await quarantineUnreadableStore(this.file);
+      } catch (quarantineErr) {
+        throw new Error(
+          `[roadmap-annotations] refusing to continue because ${this.file} could not be read or quarantined: ${quarantineErr instanceof Error ? quarantineErr.message : String(quarantineErr)}`,
+          { cause: err },
+        );
+      }
+      this.annotations = [];
+      this.aliases = {};
+      console.error(
+        `[roadmap-annotations] WARNING: store ${this.file} could not be read (${err instanceof Error ? err.message : String(err)}); ` +
+          `quarantined the original to ${quarantined} and started empty. The quarantined item holds the prior annotations — do not delete it.`,
+      );
+      return;
     }
     try {
       const parsed: unknown = JSON.parse(raw);

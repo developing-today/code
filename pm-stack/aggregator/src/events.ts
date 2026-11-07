@@ -351,27 +351,115 @@ export function pruneEvents<T extends StreamEvent>(events: readonly T[], now = n
 export interface EventFilter {
   kind?: string;
   ref?: string;
+  refs?: readonly string[];
   actor?: string;
+  project?: string;
+  epic?: string;
+  search?: string;
+  /** Metadata resolved from the live project pool; event records stay source-native. */
+  itemContext?: ReadonlyMap<string, { project?: string | null; epic?: string | null }>;
 }
 
-/** The read surface: newest first, exact-match filters on
- *  kind / ref / actor (case-insensitive, like the views matcher). */
+/** The read surface: newest first, with stable ids breaking equal-time ties. */
 export function filterEvents<T extends StreamEvent>(events: readonly T[], filter: EventFilter = {}): T[] {
   const eq = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
-  // Newest first by PARSED time (#4489 Codex re-review): accepted
-  // timestamps may carry offsets or omit fractional seconds, where a
-  // string comparison misorders them; equal instants keep the later
-  // arrival first, matching append order.
+  const normalizeRef = (ref: string) => ref.replace(/^gh:/i, "").toLowerCase();
+  const refs = [filter.ref, ...(filter.refs ?? [])].filter((ref): ref is string => Boolean(ref));
+  const search = filter.search?.trim().toLowerCase();
+  // Newest first by parsed time. Audit ids break equal-time ties so a
+  // cursor remains stable when later records are appended; legacy
+  // StreamEvent callers without ids retain append-order tie handling.
   return [...events]
     .map((event, index) => ({ event, index }))
-    .sort((a, b) => Date.parse(b.event.at) - Date.parse(a.event.at) || b.index - a.index)
+    .sort((a, b) => {
+      const time = Date.parse(b.event.at) - Date.parse(a.event.at);
+      if (time) return time;
+      const aId = "id" in a.event && typeof a.event.id === "string" ? a.event.id : null;
+      const bId = "id" in b.event && typeof b.event.id === "string" ? b.event.id : null;
+      return aId !== null && bId !== null ? bId.localeCompare(aId) : b.index - a.index;
+    })
     .map(({ event }) => event)
-    .filter(
-      (e) =>
+    .filter((e) => {
+      const context = filter.itemContext?.get(normalizeRef(e.ref));
+      return (
         (!filter.kind || eq(e.kind, filter.kind)) &&
-        (!filter.ref || eq(e.ref, filter.ref)) &&
-        (!filter.actor || eq(e.actor, filter.actor)),
+        (!refs.length || refs.some((ref) => normalizeRef(e.ref) === normalizeRef(ref))) &&
+        (!filter.actor || eq(e.actor, filter.actor)) &&
+        (!filter.project || Boolean(context?.project && eq(context.project, filter.project))) &&
+        (!filter.epic || Boolean(context?.epic && eq(context.epic, filter.epic))) &&
+        (!search || `${e.actor} ${e.kind} ${e.ref} ${e.summary}`.toLowerCase().includes(search))
+      );
+    });
+}
+
+export interface EventPageCursor {
+  at: string;
+  id: string;
+  snapshotAt: string;
+}
+
+export interface EventPage {
+  events: AuditEvent[];
+  nextCursor: string | null;
+  snapshotAt: string;
+}
+
+function compareEventOrder(a: Pick<AuditEvent, "at" | "id">, b: Pick<AuditEvent, "at" | "id">): number {
+  return Date.parse(b.at) - Date.parse(a.at) || b.id.localeCompare(a.id);
+}
+
+export function encodeEventCursor(cursor: EventPageCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+export function decodeEventCursor(value: string | null | undefined): EventPageCursor | null {
+  if (!value) return null;
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as EventPageCursor).at === "string" &&
+      Number.isFinite(Date.parse((parsed as EventPageCursor).at)) &&
+      typeof (parsed as EventPageCursor).id === "string" &&
+      typeof (parsed as EventPageCursor).snapshotAt === "string" &&
+      Number.isFinite(Date.parse((parsed as EventPageCursor).snapshotAt))
+    )
+      return parsed as EventPageCursor;
+  } catch {
+    // An invalid cursor starts a new first page; it never becomes a filter.
+  }
+  return null;
+}
+
+/** Stable descending keyset pagination over a fixed ingestion snapshot. */
+export function pageEvents(
+  events: readonly AuditEvent[],
+  options: { cursor?: string | null; limit?: number } = {},
+): EventPage {
+  const limit = Math.max(1, Math.min(100, Math.floor(options.limit ?? 50) || 50));
+  const cursor = decodeEventCursor(options.cursor);
+  // Compare ingestion timestamps as instants, never lexicographically:
+  // migrated v1 rows keep their original timestamp as `ingestedAt`,
+  // including UTC offsets and missing fractional seconds, and string
+  // order disagrees with instant order for those (Codex P2, PR #5266).
+  const snapshotAt =
+    cursor?.snapshotAt ??
+    events.reduce(
+      (latest, event) => (Date.parse(event.ingestedAt) > Date.parse(latest) ? event.ingestedAt : latest),
+      "1970-01-01T00:00:00.000Z",
     );
+  const snapshotMs = Date.parse(snapshotAt);
+  const visible = events.filter(
+    (event) => Date.parse(event.ingestedAt) <= snapshotMs && (!cursor || compareEventOrder(event, cursor) > 0),
+  );
+  const page = visible.slice(0, limit);
+  const last = page.at(-1);
+  return {
+    events: page,
+    snapshotAt,
+    nextCursor: visible.length > limit && last ? encodeEventCursor({ at: last.at, id: last.id, snapshotAt }) : null,
+  };
 }
 
 /**

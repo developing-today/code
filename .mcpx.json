@@ -11,7 +11,10 @@
     },
     "fff": {
       "command": "/home/user/.local/bin/fff-mcp",
-      "args": []
+      "args": [],
+      "mcpx": {
+        "readOnlyTools": ["find_files", "grep", "multi_grep"]
+      }
     },
     "chrome-devtools": {
       "command": "npx",
@@ -69,11 +72,17 @@
     },
     "fff-nix": {
       "command": "/home/user/.local/bin/fff-mcp",
-      "args": ["/home/user/code"]
+      "args": ["/home/user/code"],
+      "mcpx": {
+        "readOnlyTools": ["find_files", "grep", "multi_grep"]
+      }
     },
     "fff-worktree": {
       "command": "/home/user/.local/bin/fff-mcp",
-      "args": ["/home/user/.local/share/opencode/worktree"]
+      "args": ["/home/user/.local/share/opencode/worktree"],
+      "mcpx": {
+        "readOnlyTools": ["find_files", "grep", "multi_grep"]
+      }
     },
     "codedb": {
       "command": "node",

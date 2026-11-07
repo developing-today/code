@@ -4,6 +4,7 @@
 // projection. Anything a reader cannot reach falls back to fixtures, and the
 // provenance strings say exactly which facet is live vs fixture-backed.
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import type { Config } from "../config.ts";
 import { applyBoardDonePolicy, isRetiredDoneTableTitle } from "../board-policy.ts";
@@ -19,12 +20,14 @@ import {
   coverageFromFeed,
   poolAvailableFromFeed,
   poolFromFeed,
+  projectAuditFromFeed,
   type FleetFeed,
   type SectionDiagnosis,
 } from "../feed.ts";
 import type { RepoCensus } from "../coverage.ts";
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
 import type { NewStreamEvent } from "../events.ts";
+import type { FreshnessInput } from "../freshness.ts";
 import {
   kaneoChangeDeliveries,
   maxUndatedSeqByCard,
@@ -76,6 +79,7 @@ import {
   type SessionRecord,
   type SourceCoverage,
   type UsageView,
+  isValidRef,
   parseRef,
   refsInText,
   refUrl,
@@ -483,7 +487,19 @@ export async function projectorLinks(baseUrl: string, subject: string): Promise<
   const r = await getJson(`${baseUrl}/links?subject=${encodeURIComponent(subject)}`);
   if (!r.ok) return [];
   const rows = (r.json as { links?: ProjectorLinkRow[] }).links ?? [];
-  return rows.map((row) => ({ ref: row.ref, relation: asRelation(row.relation) }));
+  // Stored rows bypass the projector's POST /links gate (legacy/seeded
+  // data), so the shared ref rule (#4952) is applied here at the read
+  // boundary (#6211): a ref parseRef rejects - an unsafe-integer number,
+  // or not owner/repo#N at all - must never reach a renderer, where
+  // refUrl would throw on it and 500 the page. The drop is logged so a
+  // bad registry row stays visible instead of silently vanishing.
+  return rows.flatMap((row) => {
+    if (!isValidRef(row.ref)) {
+      console.error(`[registry] WARNING: dropping projector link with invalid ref ${JSON.stringify(row.ref)} for subject ${subject} (#6211)`);
+      return [];
+    }
+    return [{ ref: row.ref, relation: asRelation(row.relation) }];
+  });
 }
 
 /**
@@ -519,8 +535,8 @@ async function enrichWithRegistryLinks<T extends { links: Link[] }>(
 /** Repo shorthands the orchestrator uses in linedUp titles. */
 const TITLE_REPO_ALIASES: Record<string, string> = {
   code: "developing-today/code",
-  opencode: "developing-today/opencode",
-  openchamber: "developing-today/openchamber",
+  opencode: "developing-today-forks/opencode",
+  openchamber: "developing-today-forks/openchamber",
   nix: "dezren39/nix",
 };
 
@@ -598,6 +614,8 @@ const normTitle = (s: string): string =>
  * - repeats inside the section itself (the same task lined up under
  *   two goals, or twice under one) emit once, keyed by first ref,
  *   else by normalized title.
+ * Only parseRef-accepted refs participate; invalid candidates are logged
+ * and otherwise behave as absent.
  * Tasks with no ref anywhere still emit (title only, no GitHub link).
  */
 export function inFlightBoardItems(section: OrchestrationSection, existing: BoardItem[]): BoardItem[] {
@@ -613,10 +631,16 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
     if (item.linedUpStatus !== "in-progress" && item.linedUpStatus !== "queued" && item.linedUpStatus !== "blocked")
       continue;
     const refs: RefKey[] = [];
-    const add = (ref: RefKey) => {
+    const add = (ref: unknown) => {
+      if (!isValidRef(ref)) {
+        console.error(
+          `[board] WARNING: dropping invalid in-flight ref ${JSON.stringify(ref)} for task ${item.id}`,
+        );
+        return;
+      }
       if (!refs.includes(ref)) refs.push(ref);
     };
-    if (item.ref) add(item.ref);
+    if (item.ref !== undefined && item.ref !== null && item.ref !== "") add(item.ref);
     for (const ref of titleRefs(item.title)) add(ref);
     const remainingRefs = refs.filter((ref) => !existingRefs.has(ref));
     if (refs.length > 0 && remainingRefs.length === 0) continue;
@@ -700,6 +724,9 @@ export function liveSource(
       | boolean
       | { failed: number; failedIds?: string[] }
       | void;
+    /** Separate invalidation sink (#3977); complete Kaneo snapshots are
+     *  keyed by a stable content fingerprint, never added to #1739/#3321. */
+    onFreshness?: (input: FreshnessInput) => Promise<unknown> | unknown;
     // Kaneo polling-gap sink (#3321, Codex P2 on PR #5141): called
     // with (source, gapFrom, failureTime) while polls are failing or
     // partial, and with (source, gapFrom, null) on the first complete
@@ -738,6 +765,43 @@ export function liveSource(
   // In-memory on purpose: a restart re-baselines silently, and the
   // ingestion store's persisted seen set is the durable dedupe.
   let prevKaneoCards: Map<string, KaneoCardSnapshot> | null = null;
+  async function publishKaneoFreshness(board: readonly BoardItem[]): Promise<void> {
+    if (!opts?.onFreshness) return;
+    const cards = board
+      .filter((item) => item.source === "kaneo")
+      .map((item) => ({
+        id: item.id,
+        repo: item.repo,
+        title: item.title,
+        status: item.status,
+        priority: item.priority ?? null,
+        updatedAt: item.updatedAt ?? null,
+        kaneoUrl: item.kaneoUrl ?? null,
+        links: item.links.map((link) => `${link.relation}:${link.ref}`).sort(),
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const snapshot = JSON.stringify(cards);
+    const digest = createHash("sha256").update(snapshot).digest("hex");
+    const occurredAt = cards
+      .map((card) => card.updatedAt)
+      .filter((value): value is string => typeof value === "string" && Number.isFinite(Date.parse(value)))
+      .sort((a, b) => Date.parse(a) - Date.parse(b))
+      .at(-1);
+    try {
+      // Repeated complete polls use the same stable key. If the journal
+      // is unavailable, the next poll retries; no raw card payload is
+      // persisted and only canonical data is reread by consumers.
+      await opts.onFreshness({
+        eventId: `kaneo:${digest}`,
+        source: "kaneo",
+        scope: ["board"],
+        occurredAt: occurredAt ? new Date(occurredAt).toISOString() : null,
+        reason: "source-event",
+      });
+    } catch (err) {
+      console.error(`[freshness] WARNING: kaneo invalidation publish failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
   // #3321: per-card ingested-transition counters (the `seq` on
   // KaneoCardSnapshot), kept outside the snapshot map so a card that
   // leaves the board and later reappears resumes its count instead
@@ -1047,6 +1111,7 @@ export function liveSource(
           await enqueueKaneoIngestion(async () => {
             await seedKaneoSeqFromPersisted();
             await noteKaneoRecovered();
+            await publishKaneoFreshness(board);
             try {
               const cards: KaneoCardSnapshot[] = board
                 .filter((b) => b.source === "kaneo")
@@ -1225,6 +1290,10 @@ export function liveSource(
     async projectsAvailable(): Promise<boolean> {
       const feed = await getFeed();
       return poolAvailableFromFeed(feed);
+    },
+    async projectAudit() {
+      const feed = await getFeed();
+      return projectAuditFromFeed(feed);
     },
     async needsDrew(): Promise<NeedsDrewCensus | null> {
       return needsDrewSweep();
@@ -1636,10 +1705,11 @@ export function liveSource(
       return null;
     },
     async registry(): Promise<SessionRecord[]> {
-      // Slice 3 (#906 §3): feed records (sandbox OpenCode + Jules +
+      // Slice 3 (#906 §3): feed records (sandbox OpenCode +
       // Muse launches) merged with the laptop server's live
       // sessions, accumulated into the durable store.
       const incoming: SessionRecord[] = [];
+      let droppedSessionElements = 0;
       const feed = await getFeed();
       if (feed?.registry) {
         for (const r of feed.registry) if (isSessionRecord(r)) incoming.push(r);
@@ -1647,6 +1717,8 @@ export function liveSource(
       try {
         const mapped = await laptopMapped();
         if (mapped) {
+          // Element-wise drops are surfaced, never swallowed (#2543).
+          droppedSessionElements = mapped.droppedElements;
           for (const e of mapped.entries) {
             incoming.push(recordFromSessionEntry(e, mapped.tokensBySession.get(e.sessionId)));
           }
@@ -1654,6 +1726,10 @@ export function liveSource(
       } catch {
         /* laptop part fails soft, like attention */
       }
+      const droppedNote =
+        droppedSessionElements > 0
+          ? ` · dropped ${droppedSessionElements} malformed OpenCode wire element(s) (#2543)`
+          : "";
       if (incoming.length > 0) {
         const merged = await mergeIntoRegistry(incoming);
         lastRegistryMergedCount = merged.length;
@@ -1662,12 +1738,12 @@ export function liveSource(
         // contribution labelled as what it is. (This string used to
         // headline the incoming batch, so one page carried two counts
         // for "records" with nothing explaining the difference.)
-        provenance.registry = `live (${merged.length} session records · ${incoming.length} from the latest feed · feed ${feed ? feedAgeText(feed.generatedAt) : "absent"})`;
+        provenance.registry = `live (${merged.length} session records · ${incoming.length} from the latest feed · feed ${feed ? feedAgeText(feed.generatedAt) : "absent"})${droppedNote}`;
         return merged;
       }
       const store = await loadRegistryStore();
       lastRegistryMergedCount = store.length;
-      provenance.registry = "store only (no live registry source reachable)";
+      provenance.registry = `store only (no live registry source reachable)${droppedNote}`;
       return store;
     },
     async coverage(): Promise<SourceCoverage[]> {
@@ -1691,19 +1767,6 @@ export function liveSource(
             : laptopSeen === false
               ? "unreachable on the last read — laptop sessions may be missing"
               : "not read yet this process",
-      });
-      const j = feed?.julesSummary;
-      out.push({
-        source: "jules",
-        label: "Jules",
-        wired: Boolean(j),
-        detail: j
-          ? `via the keeper's state (jules-review) · ${j.tracked} tracked now · last keeper run ${j.at ?? "unknown"}${
-              j.total != null
-                ? ` · last run totals: ${j.total} sessions — ${j.completed ?? 0} completed, ${j.failed ?? 0} failed, ${j.inProgress ?? 0} in progress, ${j.awaitingFeedback ?? 0} awaiting feedback (completed runs are pruned by the keeper)`
-                : ""
-            }`
-          : "keeper state not in the feed — Jules sessions are not visible",
       });
       const claudeRecords = (feed?.registry ?? []).filter((r) => r.source === "claude-code");
       out.push({

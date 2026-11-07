@@ -12,8 +12,8 @@
 use super::executor::{ConversionExecutor, ConversionRequest, RateQuote};
 use super::intent::{FileIntentStore, InMemoryIntentStore, IntentRecord, IntentState, IntentStore};
 use super::ledger::{
-    Account, AccountError, AccountFlags, AccountId, InMemoryLedger, LedgerBackend, Transfer,
-    TransferError,
+    Account, AccountBalance, AccountError, AccountFlags, AccountId, InMemoryLedger, LedgerBackend,
+    Transfer, TransferError, TransferId,
 };
 use super::recovery::{ReconcileOutcome, RecoveryPolicy, reconcile};
 
@@ -309,6 +309,66 @@ fn unterminated_chain_does_not_block_terminated_chains() {
     let retry = ledger.create_transfers(&[funding_transfer(722, USER_SRC, LP_SRC, 200, SRC)]);
     assert_eq!(retry, vec![Ok(())]);
     assert!(ledger.lookup_transfer(722).is_some());
+}
+
+#[test]
+fn linked_chain_with_exists_head_leg_posts_nothing_new() {
+    // #6170: parity with TigerBeetle (and the tb_ledger compensation
+    // contract, PR #5072). TigerBeetle breaks a linked chain on ANY
+    // non-Created status: a mixed chain whose head leg is an
+    // idempotent `Exists` resubmission and whose later legs are new
+    // posts NOTHING new \u2014 the head reports `Exists`, the new legs
+    // report `LinkedEventFailed`, and no balances move. The
+    // whole-chain identical resubmit is the one exception: it stays
+    // per-leg `Exists` (the surface the tb_ledger binding presents
+    // after verifying every stored leg), and also moves nothing.
+    let mut ledger = funded_ledger();
+    let leg601 = Transfer {
+        linked: true,
+        ..funding_transfer(601, USER_SRC, LP_SRC, 100, SRC)
+    };
+    let leg602 = funding_transfer(602, LP_SRC, FEE, 100, SRC);
+    let results = ledger.create_transfers(&[leg601.clone(), leg602.clone()]);
+    assert_eq!(results, vec![Ok(()), Ok(())]);
+    let user_after_chain = ledger.account_balance(USER_SRC).unwrap();
+    let lp_after_chain = ledger.account_balance(LP_SRC).unwrap();
+    let fee_after_chain = ledger.account_balance(FEE).unwrap();
+    assert_eq!(user_after_chain.debits_posted, 100);
+    assert_eq!(lp_after_chain.credits_posted, 100);
+    assert_eq!(fee_after_chain.credits_posted, 100);
+
+    // Mixed chain: leg 601 byte-identical (an `Exists` resubmission),
+    // legs 603/604 genuinely new.
+    let leg603 = Transfer {
+        linked: true,
+        ..funding_transfer(603, LP_SRC, USER_SRC, 50, SRC)
+    };
+    let leg604 = funding_transfer(604, USER_SRC, FEE, 50, SRC);
+    let results = ledger.create_transfers(&[leg601.clone(), leg603, leg604]);
+    assert_eq!(
+        results,
+        vec![
+            Err(TransferError::Exists),
+            Err(TransferError::LinkedEventFailed),
+            Err(TransferError::LinkedEventFailed),
+        ]
+    );
+    assert!(ledger.lookup_transfer(603).is_none());
+    assert!(ledger.lookup_transfer(604).is_none());
+    assert_eq!(ledger.account_balance(USER_SRC).unwrap(), user_after_chain);
+    assert_eq!(ledger.account_balance(LP_SRC).unwrap(), lp_after_chain);
+    assert_eq!(ledger.account_balance(FEE).unwrap(), fee_after_chain);
+
+    // Control: the whole-chain identical resubmit stays all-`Exists`
+    // and moves nothing.
+    let results = ledger.create_transfers(&[leg601, leg602]);
+    assert_eq!(
+        results,
+        vec![Err(TransferError::Exists), Err(TransferError::Exists)]
+    );
+    assert_eq!(ledger.account_balance(USER_SRC).unwrap(), user_after_chain);
+    assert_eq!(ledger.account_balance(LP_SRC).unwrap(), lp_after_chain);
+    assert_eq!(ledger.account_balance(FEE).unwrap(), fee_after_chain);
 }
 
 #[test]
@@ -1104,7 +1164,10 @@ fn uppercase_extension_alias_is_scanned_and_blocks_conflicting_put() {
     let alias = dir.join(format!("{:032x}.JSON", 10));
     std::fs::rename(dir.join(canonical_name(10)), &alias).expect("rename to .JSON alias");
 
-    assert_eq!(store.get(10).expect("get via .JSON alias"), Some(original.clone()));
+    assert_eq!(
+        store.get(10).expect("get via .JSON alias"),
+        Some(original.clone())
+    );
     let listed = store.unresolved().expect("listing via .JSON alias");
     assert_eq!(listed, vec![original.clone()]);
 
@@ -1116,7 +1179,9 @@ fn uppercase_extension_alias_is_scanned_and_blocks_conflicting_put() {
         .put(&conflicting)
         .expect_err("conflicting put over the .JSON alias must fail closed");
     assert!(
-        error.to_string().contains("refusing to write conversion 10"),
+        error
+            .to_string()
+            .contains("refusing to write conversion 10"),
         "unexpected put error: {error}"
     );
     // The alias still holds the original record, byte for byte.
@@ -1165,16 +1230,22 @@ fn canonical_file_holding_another_conversions_record_blocks_get_and_put() {
 
     let get_error = store.get(10).expect_err("occupied get must fail closed");
     assert!(
-        get_error.to_string().contains("currently stores conversion 9"),
+        get_error
+            .to_string()
+            .contains("currently stores conversion 9"),
         "unexpected get error: {get_error}"
     );
     let intruder = bare_record(
         10,
         vec![funding_transfer(601, ISSUER_SRC, USER_SRC, 10_000, SRC)],
     );
-    let put_error = store.put(&intruder).expect_err("occupied put must fail closed");
+    let put_error = store
+        .put(&intruder)
+        .expect_err("occupied put must fail closed");
     assert!(
-        put_error.to_string().contains("currently stores conversion 9"),
+        put_error
+            .to_string()
+            .contains("currently stores conversion 9"),
         "unexpected put error: {put_error}"
     );
     assert_eq!(
@@ -1186,7 +1257,10 @@ fn canonical_file_holding_another_conversions_record_blocks_get_and_put() {
     // it, and the listing yields it exactly once.
     assert_eq!(store.get(9).expect("get occupant"), Some(occupant));
     let listed = store.unresolved().expect("listing with an occupant");
-    assert_eq!(listed.iter().map(|r| r.conversion_id).collect::<Vec<_>>(), vec![9]);
+    assert_eq!(
+        listed.iter().map(|r| r.conversion_id).collect::<Vec<_>>(),
+        vec![9]
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1209,11 +1283,13 @@ fn state_only_divergent_copies_resolve_to_the_most_advanced_state() {
     submitted.state = IntentState::Submitted;
     let (other_dir, mut other_store) = empty_file_store("states4578-b");
     other_store.put(&submitted).expect("seed submitted");
-    std::fs::copy(other_dir.join(canonical_name(11)), dir.join(canonical_name(11)))
-        .expect("plant advanced canonical copy");
+    std::fs::copy(
+        other_dir.join(canonical_name(11)),
+        dir.join(canonical_name(11)),
+    )
+    .expect("plant advanced canonical copy");
     let _ = std::fs::remove_dir_all(&other_dir);
-    std::fs::copy(dir.join(canonical_name(11)), dir.join("stray.json"))
-        .expect("plant stray copy");
+    std::fs::copy(dir.join(canonical_name(11)), dir.join("stray.json")).expect("plant stray copy");
     // Downgrade the stray to the Recorded copy's bytes: rewrite it
     // from a fresh store holding only the Recorded record.
     let (old_dir, mut old_store) = empty_file_store("states4578-c");
@@ -1259,7 +1335,9 @@ fn put_never_deletes_a_filesystem_alias_of_the_canonical_file() {
 
     let mut submitted = recorded.clone();
     submitted.state = IntentState::Submitted;
-    store.put(&submitted).expect("state-advancing put over an alias");
+    store
+        .put(&submitted)
+        .expect("state-advancing put over an alias");
 
     assert_eq!(
         store.get(10).expect("get after alias put"),
@@ -1489,7 +1567,12 @@ fn live_failed_conversion_recovery_reports_resubmission_rejected() {
         .expect("read intent")
         .expect("intent still stored");
     assert_eq!(stored.state, IntentState::Submitted);
-    assert!(executor.backend.transfers_with_user_data_128(777).is_empty());
+    assert!(
+        executor
+            .backend
+            .transfers_with_user_data_128(777)
+            .is_empty()
+    );
     assert_eq!(
         executor
             .backend
@@ -1622,11 +1705,15 @@ fn live_crash_before_submission_resubmits_same_ids() {
 #[test]
 #[ignore = "requires the pinned tigerbeetle binary (TIGERBEETLE_POC_BINARY or PATH)"]
 fn live_same_request_twice_posts_once() {
-    // Codex review, PR #5072: resubmitting an already-posted linked
-    // chain must be an idempotent success, as with the in-memory
-    // backend — TigerBeetle reports Exists for the first leg and
+    // #4678: an identical execute() retry against a Posted record is
+    // refused explicitly — terminal intents are final, so the retry
+    // posts nothing a second time. The PR #5072 binding behaviour
+    // this test originally pinned (resubmitting an already-posted
+    // linked chain is an idempotent success at the backend:
+    // TigerBeetle reports Exists for the first leg and
     // LinkedEventFailed for the rest, which the binding translates
-    // back to per-leg Exists after verifying the stored legs.
+    // back to per-leg Exists after verifying the stored legs) is
+    // exercised directly through the backend below instead.
     let (_cluster, mut executor) = live_executor(30028);
     let first = executor.execute(&request()).expect("first execution posts");
     assert_eq!(first.state, IntentState::Posted);
@@ -1636,11 +1723,20 @@ fn live_same_request_twice_posts_once() {
         executor.backend.account_balance(LP_DST).unwrap(),
     );
 
-    let second = executor
+    let error = executor
         .execute(&request())
-        .expect("same-request retry is an idempotent success");
-    assert_eq!(second.state, IntentState::Posted);
-    assert_eq!(second.legs, first.legs);
+        .expect_err("same-request retry of a Posted conversion is refused (#4678)");
+    assert!(
+        format!("{error:#}").contains("Posted"),
+        "retry error names the terminal state: {error:#}"
+    );
+    let resubmitted = executor.backend.create_transfers(&first.legs);
+    assert!(
+        resubmitted
+            .iter()
+            .all(|result| matches!(result, Ok(()) | Err(TransferError::Exists))),
+        "backend resubmission of the posted chain stays idempotent: {resubmitted:?}"
+    );
     assert_eq!(
         executor.backend.account_balance(USER_SRC).unwrap(),
         balances_after_first.0,
@@ -1655,4 +1751,207 @@ fn live_same_request_twice_posts_once() {
         balances_after_first.2
     );
     assert_eq!(executor.backend.transfers_with_user_data_128(777).len(), 3);
+}
+
+// --- #4678: terminal intent states are final -------------------------
+
+#[test]
+fn submit_refuses_abandoned_record() {
+    // A record the recovery scanner abandoned must never reach the
+    // ledger via a direct submit: the refusal happens before any
+    // state write or ledger call.
+    let mut executor = executor();
+    let mut record = executor.prepare(&request()).expect("prepare");
+    record.state = IntentState::Abandoned;
+    executor.store.put(&record).expect("persist Abandoned");
+
+    let error = executor
+        .submit(&mut record)
+        .expect_err("submit must refuse an Abandoned record");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("777") && message.contains("Abandoned"),
+        "error names the conversion and its state: {message}"
+    );
+    assert_eq!(record.state, IntentState::Abandoned);
+    assert_eq!(
+        executor.store.get(777).unwrap().unwrap().state,
+        IntentState::Abandoned,
+        "the persisted record stays Abandoned"
+    );
+    for leg_id in [601, 602, 603] {
+        assert!(
+            executor.backend.lookup_transfer(leg_id).is_none(),
+            "no conversion leg may be posted for an Abandoned intent"
+        );
+    }
+}
+
+#[test]
+fn abandoned_intent_stays_abandoned_on_identical_execute_retry() {
+    // The #4678 resurrection path: prepare persists the intent, the
+    // scanner abandons it, and an identical execute() retry used to
+    // post the legs anyway. The retry must fail, the state must stay
+    // Abandoned, and no leg may reach the ledger.
+    let mut executor = executor();
+    let req = request();
+    executor.prepare(&req).expect("prepare");
+
+    let outcomes = reconcile(
+        &mut executor.backend,
+        &mut executor.store,
+        RecoveryPolicy::Abandon,
+    )
+    .expect("reconcile");
+    assert_eq!(outcomes, vec![(777, ReconcileOutcome::Abandoned)]);
+    assert_eq!(
+        executor.store.get(777).unwrap().unwrap().state,
+        IntentState::Abandoned
+    );
+
+    let error = executor
+        .execute(&req)
+        .expect_err("an identical retry must not resurrect an Abandoned intent");
+    assert!(
+        format!("{error:#}").contains("Abandoned"),
+        "retry error names the terminal state: {error:#}"
+    );
+    assert_eq!(
+        executor.store.get(777).unwrap().unwrap().state,
+        IntentState::Abandoned,
+        "the persisted record stays Abandoned after the retry"
+    );
+    for leg_id in [601, 602, 603] {
+        assert!(
+            executor.backend.lookup_transfer(leg_id).is_none(),
+            "no conversion leg may be posted by the retry"
+        );
+    }
+}
+
+#[test]
+fn execute_retry_on_posted_record_fails_explicitly() {
+    // Already-Posted execute behavior is deliberate: an identical
+    // retry fails explicitly (submit refuses terminal records) and
+    // changes nothing — no resubmission, no state change.
+    let mut executor = executor();
+    let req = request();
+    let posted = executor.execute(&req).expect("first execute");
+    assert_eq!(posted.state, IntentState::Posted);
+
+    let error = executor
+        .execute(&req)
+        .expect_err("a retry of a Posted conversion must fail explicitly");
+    assert!(
+        format!("{error:#}").contains("Posted"),
+        "retry error names the terminal state: {error:#}"
+    );
+    assert_eq!(
+        executor.store.get(777).unwrap().unwrap().state,
+        IntentState::Posted,
+        "the persisted record stays Posted after the retry"
+    );
+}
+
+/// A backend violating the `create_transfers` result contract
+/// (#4669): it reports `keep` `Ok` results and posts nothing, no
+/// matter how many transfers were submitted. Everything else
+/// delegates to a funded in-memory ledger, so lookups honestly
+/// report that no legs are present.
+struct ShortResultBackend {
+    inner: InMemoryLedger,
+    keep: usize,
+}
+
+impl LedgerBackend for ShortResultBackend {
+    fn create_accounts(&mut self, accounts: &[Account]) -> Vec<Result<(), AccountError>> {
+        self.inner.create_accounts(accounts)
+    }
+
+    fn create_transfers(&mut self, _batch: &[Transfer]) -> Vec<Result<(), TransferError>> {
+        (0..self.keep).map(|_| Ok(())).collect()
+    }
+
+    fn lookup_transfer(&self, id: TransferId) -> Option<Transfer> {
+        self.inner.lookup_transfer(id)
+    }
+
+    fn lookup_account(&self, id: AccountId) -> Option<Account> {
+        self.inner.lookup_account(id)
+    }
+
+    fn account_balance(&self, id: AccountId) -> Option<AccountBalance> {
+        self.inner.account_balance(id)
+    }
+
+    fn transfers_with_user_data_128(&self, value: u128) -> Vec<Transfer> {
+        self.inner.transfers_with_user_data_128(value)
+    }
+}
+
+fn short_result_executor(
+    keep: usize,
+) -> ConversionExecutor<ShortResultBackend, InMemoryIntentStore> {
+    ConversionExecutor::new(
+        ShortResultBackend {
+            inner: funded_ledger(),
+            keep,
+        },
+        InMemoryIntentStore::new(),
+    )
+}
+
+#[test]
+fn a_short_create_transfers_result_never_marks_posted() {
+    // #4669: zip() stops at the shorter side, so a backend returning
+    // fewer results than legs used to sail through to Posted with
+    // nothing (or only part) in the ledger. Any length but one result
+    // per leg is a backend failure: submit errors and the record
+    // stays Submitted for the recovery scanner.
+    for keep in [0, 1, 2] {
+        let mut executor = short_result_executor(keep);
+        let error = executor
+            .execute(&request())
+            .expect_err("a short result vector must fail the submission");
+        assert!(
+            error.to_string().contains("results for 3 legs"),
+            "the error should name the short result vector: {error:#}"
+        );
+        assert_eq!(
+            executor.store.get(777).unwrap().unwrap().state,
+            IntentState::Submitted,
+            "keep={keep}: the record must not advance to Posted"
+        );
+    }
+}
+
+#[test]
+fn recovery_resubmit_rejects_a_short_create_transfers_result() {
+    // #4669: the Resubmit path scanned the result vector for a
+    // failure entry, so an empty (or short) vector read as vacuous
+    // success and the record was persisted Posted. A short vector is
+    // a rejected resubmission: the record stays unresolved for a
+    // later scan.
+    for keep in [0, 2] {
+        let mut executor = short_result_executor(keep);
+        let record = executor.prepare(&request()).expect("intent prepared");
+        assert_eq!(record.state, IntentState::Recorded);
+
+        let outcomes = reconcile(
+            &mut executor.backend,
+            &mut executor.store,
+            RecoveryPolicy::Resubmit,
+        )
+        .expect("reconcile");
+        assert_eq!(
+            outcomes,
+            vec![(777, ReconcileOutcome::ResubmissionRejected)],
+            "keep={keep}"
+        );
+        assert_eq!(
+            executor.store.get(777).unwrap().unwrap().state,
+            IntentState::Recorded,
+            "keep={keep}: the record must stay unresolved, not Posted"
+        );
+    }
 }

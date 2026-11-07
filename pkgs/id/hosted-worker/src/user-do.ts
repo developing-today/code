@@ -56,23 +56,14 @@ export class UserDO {
     // Versioned, idempotent schema bootstrap before serving.
     this.ready = state.blockConcurrencyWhile(async () => {
       const sql = this.state.storage.sql;
-      sql.exec(
-        "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-      );
-      sql.exec(
-        "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-      );
-      sql.exec(
-        "INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)",
-        "schema_version", String(SCHEMA_VERSION),
-      );
+      sql.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+      sql.exec("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+      sql.exec("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)", "schema_version", String(SCHEMA_VERSION));
     });
   }
 
   private meta(key: string): string | null {
-    const rows = this.state.storage.sql
-      .exec("SELECT value FROM meta WHERE key = ?", key)
-      .toArray();
+    const rows = this.state.storage.sql.exec("SELECT value FROM meta WHERE key = ?", key).toArray();
     return rows.length === 0 ? null : String(rows[0].value);
   }
 
@@ -84,7 +75,11 @@ export class UserDO {
     const jurisdiction = parseJurisdiction(req.headers.get(HDR_JURISDICTION));
     const runtimeJurisdiction = this.state.id.jurisdiction;
     if (typeof runtimeJurisdiction === "string" && runtimeJurisdiction !== jurisdiction) {
-      throw new FailClosed(409, "jurisdiction_mismatch", "object jurisdiction does not match routed jurisdiction; failing closed");
+      throw new FailClosed(
+        409,
+        "jurisdiction_mismatch",
+        "object jurisdiction does not match routed jurisdiction; failing closed",
+      );
     }
     const boundBinding = this.meta("binding_id");
     const boundJurisdiction = this.meta("jurisdiction");
@@ -94,10 +89,17 @@ export class UserDO {
       // rows are written together before any data route runs.
       this.state.storage.sql.exec(
         "INSERT INTO meta (key, value) VALUES (?, ?), (?, ?)",
-        "binding_id", bindingId, "jurisdiction", jurisdiction,
+        "binding_id",
+        bindingId,
+        "jurisdiction",
+        jurisdiction,
       );
     } else if (boundBinding !== bindingId || boundJurisdiction !== jurisdiction) {
-      throw new FailClosed(409, "identity_mismatch", "object is bound to a different binding/jurisdiction; failing closed");
+      throw new FailClosed(
+        409,
+        "identity_mismatch",
+        "object is bound to a different binding/jurisdiction; failing closed",
+      );
     }
     return { bindingId, jurisdiction };
   }
@@ -126,9 +128,7 @@ export class UserDO {
         return json({ key: kvMatch[1], stored: true });
       }
       if (kvMatch && req.method === "GET") {
-        const rows = this.state.storage.sql
-          .exec("SELECT value FROM kv WHERE key = ?", kvMatch[1])
-          .toArray();
+        const rows = this.state.storage.sql.exec("SELECT value FROM kv WHERE key = ?", kvMatch[1]).toArray();
         if (rows.length === 0) return json({ error: "not_found" }, 404);
         return json({ key: kvMatch[1], value: String(rows[0].value) });
       }

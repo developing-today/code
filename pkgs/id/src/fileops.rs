@@ -27,7 +27,7 @@ use futures_lite::StreamExt;
 use iroh_blobs::{Hash, api::Store};
 use thiserror::Error;
 
-use crate::tags::{TagStore, now_unix};
+use crate::tags::{TagStore, TagValue, now_unix};
 
 const ARCHIVE_IDENTITY_TAG_KEYS: [&[u8]; 5] = [
     b"name",
@@ -180,6 +180,36 @@ pub(crate) async fn claim_archive_name(
     let candidate = free_archive_name(store, name, ts).await?;
     store.tags().set(&candidate, hash).await?;
     Ok(candidate)
+}
+
+/// Provenance metadata keys recorded at a file's first write (#4973):
+/// the origin node and the upload (`created`) timestamp. Listings read
+/// a file's origin and upload time from these tags on its own name.
+pub(crate) const PROVENANCE_TAG_KEYS: [&[u8]; 2] = [b"origin", b"created"];
+
+/// Snapshot `from`'s recorded provenance tags onto `to` (#5383).
+///
+/// An archive alias points at the same blob as its source but lives
+/// under a new name, so without this copy a listing reports the
+/// archive's origin as unknown and origin filtering misses it. Tags
+/// are copied by content hash so the recorded values are preserved
+/// exactly; a source with no recorded provenance leaves `to` with
+/// none — unknown stays unknown, provenance is never invented.
+pub(crate) async fn snapshot_provenance_tags(tags: &TagStore, from: &str, to: &str) -> Result<()> {
+    for key in PROVENANCE_TAG_KEYS {
+        for tag in tags.get_by_key(&tags.global, from.as_bytes(), key).await? {
+            tags.set_tag_hash(
+                &tags.global,
+                to.as_bytes(),
+                &tag.key,
+                tag.value.as_ref().map(TagValue::as_bytes),
+                tag.hash,
+                tag.len,
+            )
+            .await?;
+        }
+    }
+    Ok(())
 }
 
 impl<'a> FileOps<'a> {
@@ -444,6 +474,15 @@ impl<'a> FileOps<'a> {
         } else {
             None
         };
+
+        // The archive alias keeps the source's recorded provenance
+        // (#5383): snapshot it now, before the transfer below moves
+        // (and deletes) the source name's tags onto `to`.
+        if let Some(archive_name) = &archived_original
+            && let Err(e) = snapshot_provenance_tags(self.tags, from, archive_name).await
+        {
+            tracing::warn!("failed to snapshot provenance {from} -> {archive_name}: {e:#}");
+        }
 
         self.store
             .tags()
@@ -893,6 +932,39 @@ mod replacement_metadata_tests {
     }
 
     #[tokio::test]
+    async fn rename_with_archive_preserves_source_provenance_on_archive_alias() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "before.txt", b"original").await;
+        set_singleton(&node, "before.txt", "origin", "node-alpha").await;
+        set_singleton(&node, "before.txt", "created", "1700000000").await;
+
+        // The source's recorded provenance, exactly as stored.
+        let source_tags = tags_of(&node, "before.txt").await;
+        assert_single_value(&source_tags, "origin", "node-alpha");
+        let source_created = values(&source_tags, "created");
+        assert!(!source_created.is_empty(), "{source_tags:?}");
+
+        let rename = node
+            .ops()
+            .rename("before.txt", "after.txt", true)
+            .await
+            .unwrap();
+        let archive = rename.archived_original.unwrap();
+
+        // #5383: the archive alias carries the source's recorded
+        // provenance, not an unknown origin.
+        let archive_tags = tags_of(&node, &archive).await;
+        assert_single_value(&archive_tags, "origin", "node-alpha");
+        assert_eq!(values(&archive_tags, "created"), source_created);
+
+        // The live name keeps its provenance too (tags move with it).
+        let live_tags = tags_of(&node, "after.txt").await;
+        assert_single_value(&live_tags, "origin", "node-alpha");
+        assert_eq!(values(&live_tags, "created"), source_created);
+
+        node.shutdown().await.unwrap();
+    }
+
     async fn rename_onto_existing_moves_replaced_metadata_and_refreshes_archive_identity() {
         let node = LocalNode::open(true).await.unwrap();
         seed_replacement_pair(&node).await;

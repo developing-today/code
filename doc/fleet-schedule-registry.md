@@ -34,6 +34,8 @@ a registry row whose schedule no longer exists is the same defect in
 the other direction. Reviews refresh the `Last review` date and fill
 in any `not recorded` fields the surface now exposes.
 
+When refreshing systemd timer rows (Surface 2b), preserve each timer's complete effective calendar specification — date and time components — exactly as `systemctl --user show` reports it; truncating a spec to a date-only prefix silently changes the documented cadence (issue #5313).
+
 ## Fields
 
 Per schedule, per #4988: surface, name/id, repo/scope, cadence, route
@@ -54,6 +56,23 @@ from live sources: Muse `cron.list` (131 jobs: 120 enabled,
 laptop `systemctl --user list-timers --all` + per-unit timer specs
 (37 timers), and issue #2265 for the Jules pilot. Last review:
 2026-11-03.
+
+Surface 2b re-verified 2026-11-04 by queue task 9317 (lane code-e):
+every row re-read against live `systemctl --user show`
+TimersCalendar/TimersMonotonic on the laptop (the two pm-digest
+timers are not loaded there and were verified against
+`nixos/services/pm-stack/default.nix` instead), and all rows now
+record complete calendar expressions (issue #5313).
+
+Surface 2b reconciled 2026-11-04 by queue task 9751 (lane code-f)
+against live `systemctl --user list-timers --all` (38 timers) and
+`list-unit-files --type=timer` (39 unit files): the stale
+`oc-sumauto.timer` row was removed (`systemctl --user show`
+reports `LoadState=not-found`, no fragment path), the installed-but-
+disabled `opencode-quota-freshness-summary.timer` was added and
+marked disabled per the inclusion policy now stated in the Surface
+2b intro, and the section count was corrected to 39 rows
+(38 enabled + 1 disabled) for issue #5661.
 
 ## Surface 1 — Muse cron (131 jobs)
 
@@ -129,9 +148,9 @@ laptop `systemctl --user list-timers --all` + per-unit timer specs
 | `new-issue-creator-b`                     | New improvement issues — Lane B (offset rotation, up to 10, one repo per run)                     | `interval@30m`                | disabled | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/minutely/new-issue-creator-b__interval@30m.md`                                                                      | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `new-issue-creator-code-a`                | New improvement issues — code Lane A (pinned to developing-today/code, up to 10)                  | `interval@30m`                | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/minutely/new-issue-creator-code-a__interval@30m.md`                                                                 | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `new-issue-creator-code-b`                | New improvement issues — code Lane B (pinned to developing-today/code, up to 10)                  | `interval@30m`                | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/minutely/new-issue-creator-code-b__interval@30m.md`                                                                 | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `new-issue-creator-nix`                   | New improvement issues — nix (pinned to dezren39/nix, up to 10)                                   | `interval@2h`                 | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/new-issue-creator-nix__interval@2h.md`                                                                       | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `new-issue-creator-openchamber`           | New improvement issues — openchamber (pinned to developing-today/openchamber, up to 10)           | `interval@1h`                 | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/new-issue-creator-openchamber__interval@1h.md`                                                               | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `new-issue-creator-opencode`              | New improvement issues — opencode (pinned to developing-today/opencode, up to 10)                 | `interval@1h`                 | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/new-issue-creator-opencode__interval@1h.md`                                                                  | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `new-issue-creator-nix`                   | New improvement issues — nix (pinned to dezren39/darwin-nix, up to 10)                                   | `interval@2h`                 | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/new-issue-creator-nix__interval@2h.md`                                                                       | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `new-issue-creator-openchamber`           | New improvement issues — openchamber (pinned to developing-today-forks/openchamber, up to 10)           | `interval@1h`                 | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/new-issue-creator-openchamber__interval@1h.md`                                                               | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `new-issue-creator-opencode`              | New improvement issues — opencode (pinned to developing-today-forks/opencode, up to 10)                 | `interval@1h`                 | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/new-issue-creator-opencode__interval@1h.md`                                                                  | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `nixpkgs-update-amd`                      | Nixpkgs update for amd — worktree attempt, build-verified, never switches                         | `weekly@Mon,Wed,Fri-06:12:00` | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/weekly/nixpkgs-update-amd__weekly@Mon,Wed,Fri-06:12:00_user_current.md`                                             | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `openai2-popesdrew-token-reshare-nov4`    | OpenAI 2 (popesdrew) token re-share — shared access expires Nov 4, 4:01 PM CST                    | `runonce@2026-11-04T09:12:00` | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/runonce/openai2-popesdrew-token-reshare-nov4__runonce@2026-11-04T09:12:00.md`                                       | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `openchamber-babysitter`                  | OpenChamber babysitter — session rounds every 20 min                                              | `interval@20m`                | disabled | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/minutely/openchamber-babysitter__interval@20m.md`                                                                   | not recorded | not recorded  | not recorded | 2026-11-03  |
@@ -195,70 +214,80 @@ laptop `systemctl --user list-timers --all` + per-unit timer specs
 
 ### 2a. OpenChamber scheduledTasks (16 tasks, laptop stores)
 
-Route/pool for queue-lane tasks is the repo-health queue named in the task name; the claimant/executor task drives the #3026 execution-lane system. Prompt/brief pointers are the task records in the named project store.
+Execution route/pool is recorded separately from work scope: the repo-health queue named in a queue-lane task's name is its work queue (scope), not its execution route/pool. Where a task's actual execution route/pool is known it is listed in the table's execution route / pool column; where it is not known, that column says `not recorded` instead of substituting a queue name. The claimant/executor task drives the #3026 execution-lane system and runs on `opencode-route` / `workhorse` (per `pm-stack/opencode-claimant/install.mjs`). Prompt/brief pointers are the task records in the named project store.
 
-| id                                     | name                                    | cadence (cron, America/Chicago) | enabled | project store                                                         | budget       | kill criteria | created      | last review |
-| -------------------------------------- | --------------------------------------- | ------------------------------- | ------- | --------------------------------------------------------------------- | ------------ | ------------- | ------------ | ----------- |
-| `3fe37e8a-c61b-419c-9e97-769ecd264d5d` | Queue lane (scheduled) - opencode       | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlcg.json`             | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `46984602-51a3-438c-b3a5-f2857811adb1` | Queue lane (scheduled) - openchamber    | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlcg.json`             | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `8d133595-c60c-4dcb-8e82-59b7d0ac9b5a` | Queue lane (scheduled) - nix            | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlcg.json`             | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `8ac61616-3815-4e7b-b33d-840a3829154a` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `9aca43b4-5439-4939-9f71-323f5d32521b` | Queue lane (scheduled) - code           | `20,40 * * * *`                 | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `c29174f1-48e0-4b13-b4ff-9b73ab67e9ab` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `262eb403-3347-4a7c-ba6b-e7bc263ca853` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `335a5d1f-bfc1-4831-99ea-850c8939a727` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `7b47536b-c162-444c-be8a-3a9538cc4cb5` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `1a180ae5-384f-4e71-8d77-08f7b1652c75` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `02cafe76-eafd-4d0b-aaa6-2b7a737d68dc` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `bf419306-c4ef-470f-a553-beabf93239de` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `ec118cad-0fd3-4652-91c4-27432f2f2efd` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `c8b9355e-319a-4640-8096-7ad19480d151` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `aea12c82-c5af-4e5a-9b66-f8e360f87177` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `f1b4a33b-14d5-4a69-9ad6-d221e42e3ac9` | Opencode lane claimant/executor - #3026 | `*/10 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded | not recorded  | not recorded | 2026-11-03  |
+| id                                     | name                                    | cadence (cron, America/Chicago) | enabled | project store                                                         | execution route / pool     | budget       | kill criteria | created      | last review |
+| -------------------------------------- | --------------------------------------- | ------------------------------- | ------- | --------------------------------------------------------------------- | -------------------------- | ------------ | ------------- | ------------ | ----------- |
+| `3fe37e8a-c61b-419c-9e97-769ecd264d5d` | Queue lane (scheduled) - opencode       | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlcg.json`             | not recorded               | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `46984602-51a3-438c-b3a5-f2857811adb1` | Queue lane (scheduled) - openchamber    | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlcg.json`             | not recorded               | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `8d133595-c60c-4dcb-8e82-59b7d0ac9b5a` | Queue lane (scheduled) - nix            | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlcg.json`             | not recorded               | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `8ac61616-3815-4e7b-b33d-840a3829154a` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded               | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `9aca43b4-5439-4939-9f71-323f5d32521b` | Queue lane (scheduled) - code           | `20,40 * * * *`                 | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded               | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `c29174f1-48e0-4b13-b4ff-9b73ab67e9ab` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded               | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `262eb403-3347-4a7c-ba6b-e7bc263ca853` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded               | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `335a5d1f-bfc1-4831-99ea-850c8939a727` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded               | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `7b47536b-c162-444c-be8a-3a9538cc4cb5` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded               | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `1a180ae5-384f-4e71-8d77-08f7b1652c75` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded               | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `02cafe76-eafd-4d0b-aaa6-2b7a737d68dc` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded               | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `bf419306-c4ef-470f-a553-beabf93239de` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded               | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `ec118cad-0fd3-4652-91c4-27432f2f2efd` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded               | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `c8b9355e-319a-4640-8096-7ad19480d151` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded               | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `aea12c82-c5af-4e5a-9b66-f8e360f87177` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded               | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `f1b4a33b-14d5-4a69-9ad6-d221e42e3ac9` | Opencode lane claimant/executor - #3026 | `*/10 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | opencode-route / workhorse | not recorded | not recorded  | not recorded | 2026-11-03  |
 
-### 2b. Laptop systemd user timers (37 timers)
+### 2b. Laptop systemd user timers (39 timers: 38 enabled, 1 installed-but-disabled)
 
-The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitActiveUSec` spec, read live from `systemctl --user show`. Prompt/brief pointer is the unit file in `~/.config/systemd/user/` (or its Nix store target for linked units).
+The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitActiveUSec` spec, read live from `systemctl --user show`. Specs are recorded **complete** — the full effective calendar expression, date **and** time components (e.g. `*-*-* *:*:00`); never truncate a spec to a date-only prefix, because a bare `*-*-*` normalizes to daily at midnight and misstates the cadence (issue #5313). Prompt/brief pointer is the unit file in `~/.config/systemd/user/` (or its Nix store target for linked units). Installed-but-disabled timer units ARE listed in this table and marked `(disabled)` after the unit name: the registry inventories what is installed on the laptop, not only what is currently scheduled, so a disabled unit stays visible until it is uninstalled (reconciled 2026-11-04, issue #5661).
 
-| timer unit                               | cadence spec                             | activates                                  | owner / scope         | budget       | kill criteria | created      | last review |
-| ---------------------------------------- | ---------------------------------------- | ------------------------------------------ | --------------------- | ------------ | ------------- | ------------ | ----------- |
-| `atlas-backup.timer`                     | `OnCalendar=*-*-*`                       | `atlas-backup.service`                     | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `cargo-target-janitor.timer`             | `OnCalendar=*-*-*`                       | `cargo-target-janitor.service`             | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `charge-producer.timer`                  | `OnCalendar=*-*-*`                       | `charge-producer.service`                  | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `cloudflare-quota-export.timer`          | `OnCalendar=*-*-*`                       | `cloudflare-quota-export.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `codex-remote-control-watchdog.timer`    | `OnUnitActiveUSec=5min,OnBootUSec=2min`  | `codex-remote-control-watchdog.service`    | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `cold-store-drill.timer`                 | `OnCalendar=*-*-01`                      | `cold-store-drill.service`                 | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `cold-store-nightly.timer`               | `OnCalendar=*-*-*`                       | `cold-store-nightly.service`               | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `dashboard-backup.timer`                 | `OnCalendar=*-*-*`                       | `dashboard-backup.service`                 | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `fleet-feed-collector.timer`             | `OnUnitActiveUSec=5min,OnBootUSec=2min`  | `fleet-feed-collector.service`             | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `git-maintenance@daily.timer`            | `OnCalendar=Tue..Sun`                    | `git-maintenance@daily.service`            | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `git-maintenance@hourly.timer`           | `OnCalendar=*-*-*`                       | `git-maintenance@hourly.service`           | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `git-maintenance@weekly.timer`           | `OnCalendar=Mon`                         | `git-maintenance@weekly.service`           | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `github-backup-drain.timer`              | `OnUnitActiveUSec=5min,OnBootUSec=3min`  | `github-backup-drain.service`              | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `github-backup-fetch.timer`              | `OnCalendar=*-*-*`                       | `github-backup-fetch.service`              | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `github-backup-reconcile.timer`          | `OnCalendar=Mon`                         | `github-backup-reconcile.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `laptop-autocommit-hatch-personal.timer` | `OnCalendar=*-*-*`                       | `laptop-autocommit-hatch-personal.service` | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `laptop-autocommit-hatch.timer`          | `OnCalendar=*-*-*`                       | `laptop-autocommit-hatch.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `laptop-autocommit-openclaw.timer`       | `OnCalendar=*-*-*`                       | `laptop-autocommit-openclaw.service`       | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `laptop-backups-watchdog.timer`          | `OnCalendar=*-*-*`                       | `laptop-backups-watchdog.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `laptop-repo-keeper.timer`               | `OnCalendar=*-*-*`                       | `laptop-repo-keeper.service`               | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `laptop-untracked-review.timer`          | `OnCalendar=*-*-*`                       | `laptop-untracked-review.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `oc-sumauto.timer`                       | `OnCalendar=*-*-*`                       | `oc-sumauto.service`                       | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `openai-cred-watchdog.timer`             | `OnCalendar=*-*-*`                       | `openai-cred-watchdog.service`             | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `openclaw-backup.timer`                  | `OnCalendar=*-*-*`                       | `openclaw-backup.service`                  | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `opencode-usage-export.timer`            | `OnCalendar=*-*-*`                       | `opencode-usage-export.service`            | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `pm-dashboard-backup.timer`              | `OnCalendar=*-*-*`                       | `pm-dashboard-backup.service`              | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `pm-git-sync.timer`                      | `OnUnitActiveUSec=30s,OnBootUSec=30s`    | `pm-git-sync.service`                      | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `pm-kaneo.timer`                         | `OnUnitActiveUSec=30min,OnBootUSec=1min` | `pm-kaneo.service`                         | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `pm-projector-reconcile.timer`           | `OnCalendar=*-*-*`                       | `pm-projector-reconcile.service`           | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `quota-gatherer.timer`                   | `OnCalendar=*-*-*`                       | `quota-gatherer.service`                   | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `repo-archive-backup.timer`              | `OnCalendar=*-*-*`                       | `repo-archive-backup.service`              | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `repo-universe-issue-check.timer`        | `OnCalendar=*-*-*`                       | `repo-universe-issue-check.service`        | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `supabase-backup.timer`                  | `OnCalendar=*-*-*,OnCalendar=*-*-*`      | `supabase-backup.service`                  | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `sync-models.timer`                      | `OnCalendar=*-*-*`                       | `sync-models.service`                      | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `systemd-tmpfiles-clean.timer`           | `OnUnitActiveUSec=1d,OnStartupUSec=5min` | `systemd-tmpfiles-clean.service`           | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `tldr-update.timer`                      | `OnCalendar=Mon`                         | `tldr-update.service`                      | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `worktree-reaper.timer`                  | `OnCalendar=*-*-*`                       | `worktree-reaper.service`                  | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
+| timer unit                               | cadence spec                                          | activates                                  | owner / scope         | budget       | kill criteria | created      | last review |
+| ---------------------------------------- | ----------------------------------------------------- | ------------------------------------------ | --------------------- | ------------ | ------------- | ------------ | ----------- |
+| `atlas-backup.timer`                     | `OnCalendar=*-*-* 04:47:00`                           | `atlas-backup.service`                     | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `cargo-target-janitor.timer`             | `OnCalendar=*-*-* *:00:00`                            | `cargo-target-janitor.service`             | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `charge-producer.timer`                  | `OnCalendar=*-*-* *:18,48:00`                         | `charge-producer.service`                  | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `cloudflare-quota-export.timer`          | `OnCalendar=*-*-* *:00/15:00`                         | `cloudflare-quota-export.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `codex-remote-control-watchdog.timer`    | `OnUnitActiveUSec=5min,OnBootUSec=2min`               | `codex-remote-control-watchdog.service`    | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `cold-store-drill.timer`                 | `OnCalendar=*-*-01 05:12:00`                          | `cold-store-drill.service`                 | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `cold-store-nightly.timer`               | `OnCalendar=*-*-* 03:12:00`                           | `cold-store-nightly.service`               | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `dashboard-backup.timer`                 | `OnCalendar=*-*-* 04:30:00`                           | `dashboard-backup.service`                 | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `fleet-feed-collector.timer`             | `OnUnitActiveUSec=5min,OnBootUSec=2min`               | `fleet-feed-collector.service`             | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `git-maintenance@daily.timer`            | `OnCalendar=Tue..Sun *-*-* 00:56:00`                  | `git-maintenance@daily.service`            | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `git-maintenance@hourly.timer`           | `OnCalendar=*-*-* 01..23:56:00`                       | `git-maintenance@hourly.service`           | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `git-maintenance@weekly.timer`           | `OnCalendar=Mon *-*-* 00:56:00`                       | `git-maintenance@weekly.service`           | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `github-backup-drain.timer`              | `OnCalendar=*-*-* *:00/5:00,OnBootUSec=3min`           | `github-backup-drain.service`              | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `github-backup-fetch.timer`              | `OnCalendar=*-*-* 00:00:00`                           | `github-backup-fetch.service`              | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `github-backup-reconcile.timer`          | `OnCalendar=Mon *-*-* 00:00:00`                       | `github-backup-reconcile.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `laptop-autocommit-hatch-personal.timer` | `OnCalendar=*-*-* *:*:00`                             | `laptop-autocommit-hatch-personal.service` | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `laptop-autocommit-hatch.timer`          | `OnCalendar=*-*-* *:*:00`                             | `laptop-autocommit-hatch.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `laptop-autocommit-openclaw.timer`       | `OnCalendar=*-*-* *:*:00`                             | `laptop-autocommit-openclaw.service`       | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `laptop-backups-watchdog.timer`          | `OnCalendar=*-*-* 06,12,18:30:00`                     | `laptop-backups-watchdog.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `laptop-repo-keeper.timer`               | `OnCalendar=*-*-* *:23:00`                            | `laptop-repo-keeper.service`               | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `laptop-untracked-review.timer`          | `OnCalendar=*-*-* 07:37:00`                           | `laptop-untracked-review.service`          | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `meta-quota-export.timer`                 | `OnCalendar=*-*-* *:00/15:00`                         | `meta-quota-export.service`                 | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-05  |
+| `openai-cred-watchdog.timer`             | `OnCalendar=*-*-* *:00:00`                            | `openai-cred-watchdog.service`             | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `openclaw-backup.timer`                  | `OnCalendar=*-*-* 04:05:00`                           | `openclaw-backup.service`                  | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `opencode-quota-freshness-summary.timer` (disabled) | `OnCalendar=*-*-* *:00:00`                            | `opencode-quota-freshness-summary.service` | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `opencode-usage-export.timer`            | `OnCalendar=*-*-* *:00/15:00`                         | `opencode-usage-export.service`            | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `pm-dashboard-backup.timer`              | `OnCalendar=*-*-* 04:30:00`                           | `pm-dashboard-backup.service`              | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `pm-digest-daily.timer`                  | `OnCalendar=*-*-* 07:00:00`                           | `pm-digest-daily.service`                  | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `pm-digest-weekly.timer`                 | `OnCalendar=Mon *-*-* 07:05:00`                       | `pm-digest-weekly.service`                 | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `pm-git-sync.timer`                      | `OnUnitActiveUSec=30s,OnBootUSec=30s`                 | `pm-git-sync.service`                      | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `pm-kaneo.timer`                         | `OnUnitActiveUSec=30min,OnBootUSec=1min`              | `pm-kaneo.service`                         | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `pm-projector-reconcile.timer`           | `OnCalendar=*-*-* *:00/15:00`                         | `pm-projector-reconcile.service`           | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `quota-gatherer.timer`                   | `OnCalendar=*-*-* *:00/15:00`                         | `quota-gatherer.service`                   | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `repo-archive-backup.timer`              | `OnCalendar=*-*-* 05:15:00`                           | `repo-archive-backup.service`              | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `repo-universe-issue-check.timer`        | `OnCalendar=*-*-* 00:00:00`                           | `repo-universe-issue-check.service`        | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `supabase-backup.timer`                  | `OnCalendar=*-*-* 04:42:00,OnCalendar=*-*-* 16:42:00` | `supabase-backup.service`                  | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `sync-models.timer`                      | `OnCalendar=*-*-* 00:00:00`                           | `sync-models.service`                      | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `systemd-tmpfiles-clean.timer`           | `OnUnitActiveUSec=1d,OnStartupUSec=5min`              | `systemd-tmpfiles-clean.service`           | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `tldr-update.timer`                      | `OnCalendar=Mon *-*-* 00:00:00`                       | `tldr-update.service`                      | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `worktree-reaper.timer`                  | `OnCalendar=*-*-* *:00:00`                            | `worktree-reaper.service`                  | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-04  |
+
+Retired repository timer: `pm-stack/aggregator/systemd/kill-collector-drill.timer`
+(weekly Sunday 04:17, sandbox system unit) was removed on 2026-11-04 because
+it targeted the retired sandbox collector. The drill script is laptop-only
+(`amd`) until a laptop-hosted schedule is deliberately installed; the live
+sandbox's installed-unit state still requires the operator audit linked from
+issue #1319.
 
 ## Surface 3 — Jules schedules (1 entry, retired)
 
@@ -269,3 +298,16 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 **None others known.** No other Jules schedule exists or is planned;
 the surface is retained in this registry so a future Jules schedule,
 if one is ever created, lands here in the same pass.
+
+## Surface 4 — GitHub Actions schedules (1 entry)
+
+Scheduled workflows in this repo (`.github/workflows/*` with a
+`schedule:` trigger). This surface was added 2026-11-05 with its first
+registered entry (#5451); other scheduled workflows that predate the
+surface are not yet recorded here — that gap is a registry defect of
+the same kind the maintenance rule names, to be backfilled by a later
+review, not silently normalised.
+
+| name/id | repo/scope | cadence | state | owner / scope | prompt/brief pointer | budget | kill criteria | created | last review |
+| ------- | ---------- | ------- | ----- | ------------- | -------------------- | ------ | ------------- | ------- | ----------- |
+| `bws-freshness` (`.github/workflows/bws-freshness.yml`) | developing-today/code | `23 6 * * *` (daily 06:23 UTC) + `workflow_dispatch` | enabled (fixture tests); live check gated off pending a secure credentialed runner (`BWS_FRESHNESS_ENABLED`) | issue #5451 | `.github/workflows/bws-freshness.yml`; check implementation `lib/bws-to-sops.sh --check` | not recorded | Disable the schedule if the fixture tests fail on main repeatedly or the drift-issue automation misfires | 2026-11-05 | 2026-11-05 |

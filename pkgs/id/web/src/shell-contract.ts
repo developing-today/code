@@ -112,6 +112,27 @@ const isInteger = (value: unknown): value is number => typeof value === "number"
 export function parseShellContract(value: unknown): ShellContract {
   if (!isObject(value)) throw new Error("shell contract must be an object");
 
+  // Top-level fields the checks read, mirroring the Rust RawContract: each
+  // is required there, so a document missing one -- or carrying one of the
+  // wrong shape -- fails to load there. Validate them here too, so a
+  // malformed document is rejected at load with a named error instead of
+  // throwing a TypeError at check time (missing routing_fields/projection)
+  // or silently disabling a check (missing max_frame_bytes turns off the
+  // frame cap; a string routing_fields substring-matches field names).
+  if (!isInteger(value.max_frame_bytes) || value.max_frame_bytes < 0) {
+    throw new Error("max_frame_bytes must be a non-negative integer");
+  }
+  if (!Array.isArray(value.routing_fields) || value.routing_fields.some((field) => typeof field !== "string")) {
+    throw new Error("routing_fields must be an array of strings");
+  }
+  if (!isObject(value.projection)) throw new Error("projection must be an object");
+  if (
+    !Array.isArray(value.projection.redacted_keys) ||
+    value.projection.redacted_keys.some((key) => typeof key !== "string")
+  ) {
+    throw new Error("projection.redacted_keys must be an array of strings");
+  }
+
   for (const side of ["client_frames", "server_frames"] as const) {
     const frames = value[side];
     if (!isObject(frames)) throw new Error(`${side} must be an object`);

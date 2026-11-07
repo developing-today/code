@@ -13,7 +13,7 @@
  * Success document (file-export format the #1151 gatherer ingests):
  *   { service: "supabase", source: "file-export/supabase",
  *     status: "ok" | "partial",
- *     measuredAt: <ISO>, project: "muse-dev", ref: <project ref>,
+ *     measuredAt: <ISO>, project: "muse-dev2", ref: <project ref>,
  *     metrics: [ { id: "db-size", used: 1.15, limit: 0.5, unit: "gb",
  *                  source: "management-api:/database/query pg_database_size",
  *                  flag?: "approaching-paid-trigger", detail? } ],
@@ -54,8 +54,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const SOURCE = "file-export/supabase";
-export const DEFAULT_PROJECT_REF = "nltgxorqwxhgfzseiirt"; // muse-dev (#1050)
-export const DEFAULT_SECRET_NAME = "supabase.access-token-muse-cli";
+export const DEFAULT_PROJECT_REF = "keihfchslgjetkmnmzra"; // muse-dev2
+export const DEFAULT_SECRET_NAME = "supabase.muse-dev2.access-token-muse-cli";
 export const API_BASE = "https://api.supabase.com/v1";
 
 /** Supabase Free-plan allowances (supabase.com/pricing, recorded 2026-10-29:

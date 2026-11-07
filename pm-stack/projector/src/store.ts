@@ -362,6 +362,27 @@ export async function deleteLink(db: Client, subject: string, ref: string, relat
   });
 }
 
+/**
+ * Remove an item and everything keyed off it, for a GitHub `issues`
+ * `deleted` event (#4210). Links and comments are projection data with
+ * no consumer independent of the item -- every read joins through it --
+ * so they go with the item row instead of becoming orphans (triage
+ * decision on #4210), with two refinements from review:
+ * - A GitHub item's outbound links are keyed by the namespaced subject
+ *   `gh:<ref>` (schema.sql), not the bare ref; both spellings are
+ *   removed so no writer's rows survive.
+ * - Comment tombstones (deleted = 1) are RETAINED: they are the
+ *   absorbing guard that rejects stale comment replays (see
+ *   upsertComment), and erasing one would let a delayed create/edit
+ *   resurrect a deleted comment. Live comments are removed; the
+ *   tombstone rows are already excluded from default reads.
+ */
+export async function deleteItem(db: Client, ref: string): Promise<void> {
+  await db.execute({ sql: `DELETE FROM pmp_items WHERE ref = ?`, args: [ref] });
+  await db.execute({ sql: `DELETE FROM pmp_comments WHERE ref = ? AND deleted = 0`, args: [ref] });
+  await db.execute({ sql: `DELETE FROM pmp_links WHERE subject IN (?, ?)`, args: [`gh:${ref}`, ref] });
+}
+
 export async function getLinks(db: Client, opts: { subject?: string; ref?: string } = {}): Promise<LinkRow[]> {
   const clauses: string[] = [];
   const args: string[] = [];
@@ -485,4 +506,144 @@ export async function getSubject(db: Client, subject: string): Promise<SubjectVi
     links: links.map((l) => ({ ...l, item: itemByRef.get(l.ref) ?? null })),
     activity,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Hot list (#5204): append-only normalized events + consumer checkpoints
+// ---------------------------------------------------------------------------
+
+export interface HotEventRow {
+  seq: number;
+  event_id: string;
+  delivery_id: string | null;
+  repo: string;
+  event: string;
+  action: string | null;
+  ref: string | null;
+  actor: string | null;
+  source_url: string | null;
+  source_timestamp: string | null;
+  received_at: string;
+}
+
+export interface HotEventInput {
+  eventId: string;
+  deliveryId?: string | null;
+  repo: string;
+  event: string;
+  action?: string | null;
+  ref?: string | null;
+  actor?: string | null;
+  sourceUrl?: string | null;
+  sourceTimestamp?: string | null;
+}
+
+/**
+ * Append normalized hot-list events. Idempotent per event_id: a redelivery
+ * of the same x-github-delivery derives the same event_ids and inserts
+ * nothing twice (INSERT OR IGNORE), while distinct deliveries carry
+ * distinct event_ids and stay distinct rows. Returns the rows inserted.
+ */
+export async function appendHotEvents(db: Client, events: HotEventInput[]): Promise<number> {
+  let inserted = 0;
+  for (const e of events) {
+    const r = await db.execute({
+      sql: `INSERT OR IGNORE INTO pmp_hot_events (
+              event_id, delivery_id, repo, event, action, ref, actor,
+              source_url, source_timestamp, received_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      args: [
+        e.eventId,
+        e.deliveryId ?? null,
+        e.repo,
+        e.event,
+        e.action ?? null,
+        e.ref ?? null,
+        e.actor ?? null,
+        e.sourceUrl ?? null,
+        e.sourceTimestamp ?? null,
+        now(),
+      ],
+    });
+    inserted += r.rowsAffected;
+  }
+  return inserted;
+}
+
+/** The current high-water cursor: the largest seq issued so far (0 when empty). */
+export async function hotHighWater(db: Client): Promise<number> {
+  const r = await db.execute("SELECT COALESCE(MAX(seq), 0) AS hw FROM pmp_hot_events");
+  return Number((r.rows[0] as unknown as { hw: number }).hw);
+}
+
+/**
+ * Bounded ascending page of hot events strictly after `after` (exclusive
+ * cursor), never past `highWater` when one is given: a sweep pins the
+ * high-water the server issued at its start and pages inside that window,
+ * so events arriving mid-sweep are left for the next sweep.
+ */
+export async function listHotEvents(
+  db: Client,
+  opts: { after?: number; limit?: number; highWater?: number } = {},
+): Promise<HotEventRow[]> {
+  const after = opts.after ?? 0;
+  const limit = opts.limit ?? 200;
+  const args: (string | number)[] = [after];
+  let highWaterClause = "";
+  if (opts.highWater !== undefined) {
+    highWaterClause = "AND seq <= ?";
+    args.push(opts.highWater);
+  }
+  args.push(limit);
+  const r = await db.execute({
+    sql: `SELECT * FROM pmp_hot_events WHERE seq > ? ${highWaterClause} ORDER BY seq ASC LIMIT ?`,
+    args,
+  });
+  return r.rows as unknown as HotEventRow[];
+}
+
+/** A consumer's last acked checkpoint cursor (0 when it has never acked). */
+export async function getConsumerCheckpoint(db: Client, consumer: string): Promise<number> {
+  const r = await db.execute({
+    sql: `SELECT cursor FROM pmp_consumer_checkpoints WHERE consumer = ?`,
+    args: [consumer],
+  });
+  return r.rows.length ? Number((r.rows[0] as unknown as { cursor: number }).cursor) : 0;
+}
+
+/**
+ * Acknowledge a consumer checkpoint after a completed sweep. Monotonic: a
+ * stale or repeated ack never moves the cursor backwards. A cursor past
+ * the sweep's server-issued high-water is rejected outright -- a consumer
+ * can only ack events the server actually issued to it. The claimed
+ * high-water is checked against the ledger's own current high-water
+ * (server-controlled state), so a caller cannot mint a future bound and
+ * ack past events that do not exist yet. Returns the stored cursor.
+ */
+export async function ackConsumerCheckpoint(
+  db: Client,
+  consumer: string,
+  cursor: number,
+  highWater: number,
+): Promise<number> {
+  if (!Number.isInteger(cursor) || cursor < 0) throw new Error("invalid_checkpoint_cursor");
+  if (!Number.isInteger(highWater) || highWater < 0) throw new Error("invalid_high_water");
+  if (cursor > highWater) throw new Error("checkpoint_past_high_water");
+  // The bound is validated against server-controlled state, never just the
+  // caller-supplied pair: a high-water the ledger has not actually reached
+  // was never issued, and acking up to it would silently skip the events
+  // that later arrive under those seqs (Codex finding on PR #5327).
+  const serverHighWater = await hotHighWater(db);
+  if (highWater > serverHighWater) throw new Error("high_water_past_server");
+  if (cursor > serverHighWater) throw new Error("checkpoint_past_high_water");
+  await db.execute({
+    sql: `INSERT INTO pmp_consumer_checkpoints (consumer, cursor, updated_at)
+          VALUES (?,?,?)
+          ON CONFLICT(consumer) DO UPDATE SET
+            cursor = excluded.cursor,
+            updated_at = excluded.updated_at
+          WHERE excluded.cursor > pmp_consumer_checkpoints.cursor`,
+    args: [consumer, cursor, now()],
+  });
+  return getConsumerCheckpoint(db, consumer);
 }

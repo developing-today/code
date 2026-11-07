@@ -168,6 +168,7 @@ pub mod chat_presence;
 pub mod cli;
 pub mod commands;
 pub use id_core::connectivity;
+pub mod conversion;
 pub mod currency;
 pub mod currency_poc;
 pub mod dht;
@@ -183,7 +184,6 @@ pub mod directory_mail;
 pub mod directory_view;
 pub use id_core::discovery;
 pub mod didit;
-mod peer_announcement;
 pub mod documents;
 #[cfg(feature = "world")]
 pub mod encryption;
@@ -199,11 +199,15 @@ pub mod groups;
 pub mod helpers;
 pub mod hosted_binding;
 pub mod idset;
+pub mod input_framing;
 pub mod invite;
 pub mod invites;
+pub mod issuer_rotation;
+pub(crate) mod key_envelope;
 pub mod local;
 pub mod local_events;
 pub mod log_sync;
+mod peer_announcement;
 pub use id_core::membership;
 pub mod match_audit;
 pub mod meta_client;
@@ -214,6 +218,7 @@ pub use id_core::petname;
 pub mod protocol;
 pub mod publications;
 pub mod pull_policy;
+pub use id_core::residency;
 pub mod references;
 pub mod rejection;
 pub mod repl;
@@ -222,9 +227,9 @@ pub mod sandbox;
 pub mod search;
 #[cfg(feature = "world")]
 pub mod seitan;
-pub mod session_checkpoint;
 #[cfg(feature = "world")]
 pub mod server_config;
+pub mod session_checkpoint;
 #[cfg(feature = "world")]
 pub mod shell_contract;
 pub mod store;
@@ -236,6 +241,7 @@ pub mod tag_index;
 pub mod tags;
 #[cfg(test)]
 mod test_forgeries;
+pub(crate) mod text;
 pub(crate) use id_core::is_format_char;
 pub(crate) use id_core::time;
 pub use id_core::tuple;
@@ -282,7 +288,7 @@ pub use id_core::qr;
 pub mod web;
 
 // Re-export commonly used types for convenience
-pub use cli::{Cli, Command, TagCommand};
+pub use cli::{Cli, Command, KeyCommand, TagCommand};
 pub use commands::{
     PeekOptions, PeersOptions, ReplContext, ReplContextInner, SearchOptions, ServeInfo,
     ServeOptions, cmd_find, cmd_find_matches, cmd_get_local, cmd_get_multi, cmd_get_one,
@@ -292,9 +298,9 @@ pub use commands::{
     create_serve_lock, get_serve_info, is_process_alive, remove_serve_lock,
 };
 pub use discovery::{
-    ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, PeerAnnouncement,
-    MAX_PEERS, MAX_PEER_NAME_BYTES, PeerDiscovery, PeerInfo, ResolvedConfig,
-    STALE_CHECK_INTERVAL, STALE_THRESHOLD, defaults, parse_defaults, resolve_config,
+    ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, MAX_PEER_NAME_BYTES,
+    MAX_PEERS, PeerAnnouncement, PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL,
+    STALE_THRESHOLD, defaults, parse_defaults, resolve_config,
 };
 pub use helpers::{
     download_output_path, parse_get_spec, parse_put_spec, print_match_cli, print_match_repl,

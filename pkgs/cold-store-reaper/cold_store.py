@@ -68,6 +68,15 @@ MANIFEST_TABLES = ("objects", "bundles", "members", "transfer_ledger", "meta")
 # Batch size is therefore computed per table from its column count against
 # a 90-parameter budget, keeping headroom under the hard limit.
 D1_MAX_PARAMS_PER_QUERY = 100
+
+# Listing bounds (#6602): the Drive and S3 listing loops already refuse
+# stuck/repeated continuation tokens, but a stream of FRESH tokens pages
+# forever. Legitimate backup folders/buckets are orders of magnitude
+# below these caps (Drive pages hold 1000 entries, S3 pages up to 1000
+# keys), so crossing one means the endpoint is not terminating the
+# listing — fail loudly instead of looping.
+LIST_MAX_PAGES = 10_000
+LIST_MAX_RESULTS = 1_000_000
 D1_SYNC_PARAM_BUDGET = 90
 
 
@@ -1220,7 +1229,15 @@ class ColdStore:
             q = f"'{folder_id}' in parents and trashed = false"
             page_token = None
             seen_tokens = set()
+            pages = 0
             while True:
+                pages += 1
+                if pages > LIST_MAX_PAGES or len(out) > LIST_MAX_RESULTS:
+                    raise ColdStoreError(
+                        f"files.list for backups of db {db} exceeded the listing "
+                        f"bound ({LIST_MAX_PAGES} pages / {LIST_MAX_RESULTS} results) "
+                        "without the listing terminating (#6602)"
+                    )
                 params = {
                     "q": q,
                     "fields": "nextPageToken,files(id,name,size,createdTime)",
@@ -1813,8 +1830,16 @@ class ColdStore:
         forever, appending duplicates. Raise instead, naming the
         bucket, so the caller sees a stuck endpoint, not a hang."""
         out: list[dict] = []
+        pages = 0
         token = None
         while True:
+            pages += 1
+            if pages > LIST_MAX_PAGES or len(out) > LIST_MAX_RESULTS:
+                raise ColdStoreError(
+                    f"list of {bucket} exceeded the listing bound "
+                    f"({LIST_MAX_PAGES} pages / {LIST_MAX_RESULTS} results) "
+                    "without the listing terminating (#6602)"
+                )
             query = {"list-type": "2"}
             if token:
                 query["continuation-token"] = token
@@ -2091,6 +2116,13 @@ class ColdStore:
         LastModified stamps, so position-first would mask the age
         verdict entirely.) The scan never deletes.
         """
+        if min_age_days < 0:
+            raise ColdStoreError(
+                f"min_age_days must be >= 0 (got {min_age_days}): a negative"
+                " age floor silently disables the eviction age gate"
+            )
+        if keep_newest < 0:
+            raise ColdStoreError(f"keep_newest must be >= 0 (got {keep_newest})")
         epoch = datetime.min.replace(tzinfo=timezone.utc)
         objects = [
             o
@@ -2102,7 +2134,7 @@ class ColdStore:
             key=lambda o: (o["last_modified"] or epoch, o["key"]),
             reverse=True,
         )
-        protected = {o["key"] for o in newest_first[: max(keep_newest, 0)]}
+        protected = {o["key"] for o in newest_first[:keep_newest]}
         now = datetime.now(timezone.utc)
         min_age = timedelta(days=min_age_days)
         conn = self.db()

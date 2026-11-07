@@ -32,10 +32,9 @@
 #      the drill evidence (that is the drill doing its job: a silent
 #      failure of the honesty signals is a finding, not a drill error).
 #
-# Scheduling: systemd/kill-collector-drill.{service,timer} in this
-# repo's pm-stack/aggregator/systemd/ directory (weekly, in the same
-# style as fleet-feed-collector's units). The flock makes overlap
-# impossible even if a manual run and the timer collide.
+# The old sandbox systemd timer was retired when the collector moved to
+# the laptop. This drill is laptop-only until a laptop-hosted schedule is
+# deliberately installed; the host guard below also protects manual runs.
 #
 # Environment knobs:
 #   PM_DRILL_STATE_DIR     state/lock/result dir (default ~/.local/state/pm-drills)
@@ -65,6 +64,12 @@ die() {
   log "REFUSED/FAILED: $*"
   exit 1
 }
+
+# The collector and aggregator now run on the laptop (amd), not on the
+# sandbox. Never let a stale checkout or copied script stop a sandbox
+# service by mistake.
+HOST="$(hostname -s)"
+[ "$HOST" = "amd" ] || die "must run on laptop host 'amd'; refusing on '$HOST'"
 
 # --- interlock: one drill at a time ---------------------------------------
 exec 9>"$STATE_DIR/kill-collector.lock"
@@ -207,12 +212,12 @@ if [ "${PM_DRILL_NO_POST:-0}" != "1" ] && command -v gh >/dev/null 2>&1; then
   if [ "$OUTCOME" = "passed" ]; then
     gh issue comment "$ISSUE" --repo "$ISSUE_REPO" --body "✅ **Chaos drill passed — kill-collector** (queue task 2667, first slice of this issue, epic #$EPIC)
 
-- Stopped \`$COLLECTOR_TIMER\` on the sandbox at $STARTED_AT; the aggregator's feed-age signal reached the 5-minute \`FEED_STALE_MS\` (#1148) threshold — the honesty signal fired instead of the dashboard presenting a dead feed as fine. Health payload at the signal moment was captured by the drill.
+- Stopped \`$COLLECTOR_TIMER\` on laptop host amd at $STARTED_AT; the aggregator's feed-age signal reached the 5-minute \`FEED_STALE_MS\` (#1148) threshold — the honesty signal fired instead of the dashboard presenting a dead feed as fine. Health payload at the signal moment was captured by the drill.
 - Collector restored (timer restarted + immediate collection run) and restoration confirmed via \`/api/health\`: feed fresh again.
-- Script: \`pm-stack/aggregator/scripts/kill-collector-drill.sh\` (interlocked: flock, incident-flag refusal, refuses to start on an already-stale feed; always restores via trap). Result JSON is written to \`~/.local/state/pm-drills/kill-collector-result.json\` on the sandbox per run." >/dev/null 2>&1 &&
+- Script: \`pm-stack/aggregator/scripts/kill-collector-drill.sh\` (interlocked: flock, incident-flag refusal, refuses to start on an already-stale feed; always restores via trap). Result JSON is written to \`~/.local/state/pm-drills/kill-collector-result.json\` on laptop host amd per run." >/dev/null 2>&1 &&
       log "posted result comment on #$ISSUE" || log "WARN: gh comment on #$ISSUE failed"
   else
-    gh issue create --repo "$ISSUE_REPO" --title "chaos drill FINDING: kill-collector drill did not observe the expected honesty signal" --body "The kill-collector drill (first slice of #$ISSUE, epic #$EPIC) ran at $STARTED_AT and the expected signal did not complete cleanly: signal_fired=$SIGNAL, restoration_confirmed=$CONFIRMED (see \`~/.local/state/pm-drills/kill-collector-result.json\` and \`kill-collector-health-at-signal.json\` on the sandbox for the captured evidence). A dead collector presenting as 'everything is fine' is exactly what #$ISSUE exists to catch — investigate the aggregator's feed-staleness/health path (FEED_STALE_MS, src/health.ts, src/sources/live.ts) before the next drill." >/dev/null 2>&1 &&
+    gh issue create --repo "$ISSUE_REPO" --title "chaos drill FINDING: kill-collector drill did not observe the expected honesty signal" --body "The kill-collector drill (first slice of #$ISSUE, epic #$EPIC) ran at $STARTED_AT and the expected signal did not complete cleanly: signal_fired=$SIGNAL, restoration_confirmed=$CONFIRMED (see \`~/.local/state/pm-drills/kill-collector-result.json\` and \`kill-collector-health-at-signal.json\` on laptop host amd for the captured evidence). A dead collector presenting as 'everything is fine' is exactly what #$ISSUE exists to catch — investigate the aggregator's feed-staleness/health path (FEED_STALE_MS, src/health.ts, src/sources/live.ts) before the next drill." >/dev/null 2>&1 &&
       log "filed finding issue under epic #$EPIC" || log "WARN: gh issue create for the finding failed"
   fi
 fi

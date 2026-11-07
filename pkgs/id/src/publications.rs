@@ -63,8 +63,20 @@ use serde::{Deserialize, Serialize};
 /// with a fresher list can pass their own — this constant is the
 /// fallback for the boot path, which runs before any router exists.
 pub const KNOWN_EXPLORER_ROUTES: &[&str] = &[
-    "/", "/api", "/assets", "/blob", "/edit", "/explore", "/files", "/hash", "/invite", "/peers", "/settings",
-    "/view", "/world", "/ws",
+    "/",
+    "/api",
+    "/assets",
+    "/blob",
+    "/edit",
+    "/explore",
+    "/files",
+    "/hash",
+    "/invite",
+    "/peers",
+    "/settings",
+    "/view",
+    "/world",
+    "/ws",
 ];
 
 /// Where a published program is placed.
@@ -325,10 +337,8 @@ impl Registry {
         }
         let json = serde_json::to_string_pretty(self).context("serialising publications")?;
         let temp = path.with_extension("json.tmp");
-        std::fs::write(&temp, json)
-            .with_context(|| format!("writing {}", temp.display()))?;
-        std::fs::rename(&temp, path)
-            .with_context(|| format!("replacing {}", path.display()))?;
+        std::fs::write(&temp, json).with_context(|| format!("writing {}", temp.display()))?;
+        std::fs::rename(&temp, path).with_context(|| format!("replacing {}", path.display()))?;
         Ok(())
     }
 
@@ -355,9 +365,8 @@ impl Registry {
                 return Ok(Self::default());
             }
             Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("reading publications from {}", path.display())
-                });
+                return Err(error)
+                    .with_context(|| format!("reading publications from {}", path.display()));
             }
         };
         let registry: Self = serde_json::from_str(&text)
@@ -461,10 +470,7 @@ mod tests {
             shadowed_explorer_route("/world", routes).as_deref(),
             Some("/world")
         );
-        assert_eq!(
-            shadowed_explorer_route("/", routes).as_deref(),
-            Some("/")
-        );
+        assert_eq!(shadowed_explorer_route("/", routes).as_deref(), Some("/"));
         assert_eq!(
             shadowed_explorer_route("/api", routes).as_deref(),
             Some("/api")
@@ -525,11 +531,7 @@ mod tests {
             .unwrap();
         let mut other = mount("/arena", false);
         other.world = "other".to_string();
-        assert!(
-            registry
-                .publish(other, KNOWN_EXPLORER_ROUTES)
-                .is_err()
-        );
+        assert!(registry.publish(other, KNOWN_EXPLORER_ROUTES).is_err());
         assert_eq!(registry.publications.len(), 1);
     }
 
@@ -557,10 +559,7 @@ mod tests {
 
     #[test]
     fn save_load_round_trips_and_missing_file_is_empty() {
-        let dir = std::env::temp_dir().join(format!(
-            "id-publications-test-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("id-publications-test-{}", std::process::id()));
         let file = dir.join("publications.json");
         let missing = Registry::load(&file).unwrap();
         assert!(missing.publications.is_empty());
