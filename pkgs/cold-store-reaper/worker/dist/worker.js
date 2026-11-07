@@ -670,20 +670,92 @@ var Decompress = /* @__PURE__ */ (function() {
 
 // src/decoder.js
 var ExpansionLimitError = class extends Error {
-  constructor(limit, produced) {
+  constructor(limit, produced, message) {
     super(
-      `zstd frame expands past the expected size: limit ${limit} bytes, already produced ${produced} bytes`
+      message ?? `zstd frame expands past the expected size: limit ${limit} bytes, already produced ${produced} bytes \u2014 refusing to return unverified bytes`
     );
     this.name = "ExpansionLimitError";
     this.limit = limit;
   }
 };
 var INPUT_SLICE_BYTES = 16 * 1024;
+var MIN_WINDOW_ALLOWANCE_BYTES = 8 * 1024 * 1024;
+var ZSTD_MAGIC = 4247762216;
+var SKIPPABLE_MAGIC_MIN = 407710288;
+var SKIPPABLE_MAGIC_MAX = 407710303;
+function parseZstdFrameHeader(bytes) {
+  let off = 0;
+  for (; ; ) {
+    if (bytes.length - off < 5) return null;
+    const view2 = new DataView(bytes.buffer, bytes.byteOffset + off);
+    const magic = view2.getUint32(0, true);
+    if (magic >= SKIPPABLE_MAGIC_MIN && magic <= SKIPPABLE_MAGIC_MAX) {
+      if (bytes.length - off < 8) return null;
+      off += 8 + view2.getUint32(4, true);
+      continue;
+    }
+    if (magic !== ZSTD_MAGIC) return null;
+    break;
+  }
+  const head = off + 4;
+  const descriptor = bytes[head];
+  const fcsCode = descriptor >> 6;
+  const singleSegment = (descriptor & 32) !== 0;
+  const dictIdCode = descriptor & 3;
+  const dictIdBytes = [0, 1, 2, 4][dictIdCode];
+  const fcsBytes = singleSegment ? [1, 2, 4, 8][fcsCode] : [0, 2, 4, 8][fcsCode];
+  const headerLength = 1 + (singleSegment ? 0 : 1) + dictIdBytes + fcsBytes;
+  if (bytes.length - head < headerLength) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset + head);
+  let pos = 1;
+  let windowSize;
+  if (singleSegment) {
+    windowSize = null;
+  } else {
+    const wd = view.getUint8(pos);
+    pos += 1;
+    const windowLog = 10 + (wd >> 3);
+    const windowBase = 2 ** windowLog;
+    windowSize = windowBase + windowBase / 8 * (wd & 7);
+  }
+  pos += dictIdBytes;
+  let contentSize = null;
+  if (fcsBytes > 0) {
+    if (fcsBytes === 8) {
+      const v = view.getBigUint64(pos, true);
+      contentSize = v > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(v);
+    } else {
+      let v = 0;
+      for (let i = fcsBytes - 1; i >= 0; i--) v = v * 256 + view.getUint8(pos + i);
+      contentSize = fcsBytes === 2 ? v + 256 : v;
+    }
+  }
+  if (singleSegment) windowSize = contentSize;
+  return { contentSize, windowSize };
+}
 function decompressFrame(frameBytes, maxPlainBytes) {
   if (!Number.isSafeInteger(maxPlainBytes) || maxPlainBytes < 0) {
     throw new TypeError(
       `decompressFrame requires a non-negative integer byte limit, got ${maxPlainBytes}`
     );
+  }
+  const header = parseZstdFrameHeader(frameBytes);
+  if (header !== null) {
+    if (header.contentSize !== null && header.contentSize > maxPlainBytes) {
+      throw new ExpansionLimitError(
+        maxPlainBytes,
+        header.contentSize,
+        `zstd frame declares a content size of ${header.contentSize} bytes, past the expected size (limit ${maxPlainBytes} bytes) \u2014 refusing to return unverified bytes`
+      );
+    }
+    const windowCap = Math.max(maxPlainBytes, MIN_WINDOW_ALLOWANCE_BYTES);
+    if (header.windowSize !== null && header.windowSize > windowCap) {
+      throw new ExpansionLimitError(
+        maxPlainBytes,
+        header.windowSize,
+        `zstd frame declares a ${header.windowSize}-byte window, over the ${windowCap}-byte bound for an expected size of ${maxPlainBytes} bytes \u2014 refusing to return unverified bytes`
+      );
+    }
   }
   const chunks = [];
   let total = 0;
@@ -874,10 +946,7 @@ var BundleFlight = class {
       plain = decompressFrame(frame, expectedSize);
     } catch (err2) {
       if (err2 instanceof ExpansionLimitError) {
-        throw new HttpError(
-          502,
-          `zstd frame expands past the expected ${expectedSize} bytes \u2014 refusing to return unverified bytes`
-        );
+        throw new HttpError(502, err2.message);
       }
       throw new HttpError(502, "zstd frame decompression failed");
     }

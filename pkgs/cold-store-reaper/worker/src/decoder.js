@@ -15,16 +15,27 @@ import { Decompress } from "fzstd";
 // the expected size (plus one output block of slack), never the
 // frame's declared or actual expansion.
 //
+// The output bound alone is not enough: fzstd's Decompress allocates
+// the frame header's declared window on the first push, before any
+// output flows (Codex P1 on PR #6726), and a header can declare a
+// huge window — or a huge content size — over a tiny payload. The
+// header is therefore parsed and refused up front when its declared
+// content size exceeds the limit, or when its window exceeds the
+// larger of the limit and MIN_WINDOW_ALLOWANCE_BYTES (encoders
+// legitimately use windows up to a few MiB even for small objects:
+// the reaper's own packer runs zstd -3, whose window caps at 2 MiB).
+//
 // This module is the single decoder implementation for the whole package:
 // the Worker bundles it (esbuild -> dist/worker.js) and the local proof
 // test (test/run-local-proof.mjs) imports it directly, so the code that is
 // tested locally is byte-for-byte the code that ships.
 
 export class ExpansionLimitError extends Error {
-  constructor(limit, produced) {
+  constructor(limit, produced, message) {
     super(
-      `zstd frame expands past the expected size: limit ${limit} bytes, ` +
-        `already produced ${produced} bytes`,
+      message ??
+        `zstd frame expands past the expected size: limit ${limit} bytes, ` +
+          `already produced ${produced} bytes — refusing to return unverified bytes`,
     );
     this.name = "ExpansionLimitError";
     this.limit = limit;
@@ -32,12 +43,95 @@ export class ExpansionLimitError extends Error {
 }
 
 const INPUT_SLICE_BYTES = 16 * 1024;
+const MIN_WINDOW_ALLOWANCE_BYTES = 8 * 1024 * 1024;
+
+const ZSTD_MAGIC = 0xfd2fb528;
+const SKIPPABLE_MAGIC_MIN = 0x184d2a50;
+const SKIPPABLE_MAGIC_MAX = 0x184d2a5f;
+
+/** Parse the first real frame's header. Returns
+ * { contentSize: number | null, windowSize: number }, or null when
+ * the header cannot be positively parsed (too short, bad magic,
+ * truncated) — in which case the streaming decoder is left to
+ * succeed or fail exactly as it would without the pre-check. Only a
+ * positively parsed violation is refused up front. */
+function parseZstdFrameHeader(bytes) {
+  let off = 0;
+  for (;;) {
+    if (bytes.length - off < 5) return null;
+    const view = new DataView(bytes.buffer, bytes.byteOffset + off);
+    const magic = view.getUint32(0, true);
+    if (magic >= SKIPPABLE_MAGIC_MIN && magic <= SKIPPABLE_MAGIC_MAX) {
+      if (bytes.length - off < 8) return null;
+      off += 8 + view.getUint32(4, true);
+      continue;
+    }
+    if (magic !== ZSTD_MAGIC) return null;
+    break;
+  }
+  const head = off + 4;
+  const descriptor = bytes[head];
+  const fcsCode = descriptor >> 6;
+  const singleSegment = (descriptor & 0x20) !== 0;
+  const dictIdCode = descriptor & 0x03;
+  const dictIdBytes = [0, 1, 2, 4][dictIdCode];
+  const fcsBytes = singleSegment ? [1, 2, 4, 8][fcsCode] : [0, 2, 4, 8][fcsCode];
+  const headerLength = 1 + (singleSegment ? 0 : 1) + dictIdBytes + fcsBytes;
+  if (bytes.length - head < headerLength) return null;
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset + head);
+  let pos = 1;
+  let windowSize;
+  if (singleSegment) {
+    windowSize = null; // set from the content size below
+  } else {
+    const wd = view.getUint8(pos);
+    pos += 1;
+    const windowLog = 10 + (wd >> 3);
+    const windowBase = 2 ** windowLog;
+    windowSize = windowBase + (windowBase / 8) * (wd & 0x07);
+  }
+  pos += dictIdBytes;
+  let contentSize = null;
+  if (fcsBytes > 0) {
+    if (fcsBytes === 8) {
+      const v = view.getBigUint64(pos, true);
+      contentSize = v > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(v);
+    } else {
+      let v = 0;
+      for (let i = fcsBytes - 1; i >= 0; i--) v = v * 256 + view.getUint8(pos + i);
+      contentSize = fcsBytes === 2 ? v + 256 : v;
+    }
+  }
+  if (singleSegment) windowSize = contentSize;
+  return { contentSize, windowSize };
+}
 
 export function decompressFrame(frameBytes, maxPlainBytes) {
   if (!Number.isSafeInteger(maxPlainBytes) || maxPlainBytes < 0) {
     throw new TypeError(
       `decompressFrame requires a non-negative integer byte limit, got ${maxPlainBytes}`,
     );
+  }
+  const header = parseZstdFrameHeader(frameBytes);
+  if (header !== null) {
+    if (header.contentSize !== null && header.contentSize > maxPlainBytes) {
+      throw new ExpansionLimitError(
+        maxPlainBytes,
+        header.contentSize,
+        `zstd frame declares a content size of ${header.contentSize} bytes, past the ` +
+          `expected size (limit ${maxPlainBytes} bytes) — refusing to return unverified bytes`,
+      );
+    }
+    const windowCap = Math.max(maxPlainBytes, MIN_WINDOW_ALLOWANCE_BYTES);
+    if (header.windowSize !== null && header.windowSize > windowCap) {
+      throw new ExpansionLimitError(
+        maxPlainBytes,
+        header.windowSize,
+        `zstd frame declares a ${header.windowSize}-byte window, over the ${windowCap}-byte ` +
+          `bound for an expected size of ${maxPlainBytes} bytes — refusing to return unverified bytes`,
+      );
+    }
   }
   const chunks = [];
   let total = 0;

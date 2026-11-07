@@ -208,11 +208,9 @@ export class BundleFlight {
       plain = decompressFrame(frame, expectedSize);
     } catch (err) {
       if (err instanceof ExpansionLimitError) {
-        throw new HttpError(
-          502,
-          `zstd frame expands past the expected ${expectedSize} bytes — ` +
-            "refusing to return unverified bytes",
-        );
+        // The decoder's message names the exact bound that fired
+        // (declared content size, declared window, produced output).
+        throw new HttpError(502, err.message);
       }
       throw new HttpError(502, "zstd frame decompression failed");
     }

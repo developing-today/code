@@ -133,7 +133,7 @@ async function expect502(name, job, messagePart) {
 // The sha would match and the frame is well-formed: only the bound
 // can refuse this run, and it must do so with the 502 shape.
 await expect502("rehydrate refuses a frame expanding past the job size with a 502",
-  bombJob({ size: 1024 * 1024 }), "expands past the expected");
+  bombJob({ size: 1024 * 1024 }), "past the expected size");
 
 // A job whose size never arrived (or is not numeric) fails closed
 // instead of falling back to unbounded decompression.
@@ -149,6 +149,143 @@ await expect502("rehydrate fails closed when the job size is not numeric",
   restore();
   check("rehydrate serves an exact-size frame whose sha256 matches",
     result.bytes.length === bombPlain.length && result.sha256 === bombSha);
+}
+
+// --- frame-header pre-check (Codex P1 on PR #6726) -----------------
+//
+// fzstd's Decompress allocates the header's declared window on the
+// first push, before any output flows, so the output bound alone
+// cannot stop a header-driven allocation. These hand-built frames
+// carry a small raw-block payload under an inflated header; the
+// pre-check must refuse them before the streaming decoder runs.
+
+function rawBlockFrame(content, windowLog) {
+  // Non-single-segment frame, no FCS, no checksum, no dictID, one
+  // raw (stored) block: the payload needs no compression machinery,
+  // so the header bytes are exactly what this test says they are.
+  const wd = (windowLog - 10) << 3; // mantissa 0 -> window = 2**windowLog
+  const blockHeader = (content.length << 3) | 1; // last block, raw type
+  return new Uint8Array([
+    0x28, 0xb5, 0x2f, 0xfd, // zstd magic, little-endian
+    0x00, // frame header descriptor
+    wd,
+    blockHeader & 0xff, (blockHeader >> 8) & 0xff, (blockHeader >> 16) & 0xff,
+    ...content,
+  ]);
+}
+
+const smallContent = new TextEncoder().encode("w".repeat(256));
+
+{
+  // A 512 MiB declared window over a 256-byte payload: refused even
+  // though the payload would fit the limit exactly.
+  let err = null;
+  try {
+    decompressFrame(rawBlockFrame(smallContent, 29), smallContent.length);
+  } catch (e) {
+    err = e;
+  }
+  check("decoder refuses a 512 MiB declared window over a small payload up front",
+    err instanceof ExpansionLimitError && String(err.message).includes("window"),
+  `got ${err}`);
+}
+
+{
+  // An 8 MiB declared window is within the allowance (encoders use
+  // windows of a few MiB for small objects): the frame decodes.
+  const plain = decompressFrame(rawBlockFrame(smallContent, 23), smallContent.length);
+  check("decoder accepts a declared window within the allowance and decodes the payload",
+    Buffer.from(plain).equals(Buffer.from(smallContent)));
+}
+
+{
+  // A 16 MiB window is over the allowance for a small object but
+  // under a 32 MiB expected size: the cap scales with the limit.
+  const plain = decompressFrame(rawBlockFrame(smallContent, 24), 32 * 1024 * 1024);
+  check("decoder accepts a declared window under a larger expected-size cap",
+    Buffer.from(plain).equals(Buffer.from(smallContent)));
+}
+
+{
+  // Declared content size (4-byte FCS) of 1,000,000 over a 10-byte
+  // raw payload, limit 100: refused on the header, before decoding.
+  const blockHeader = (10 << 3) | 1;
+  const frame = new Uint8Array([
+    0x28, 0xb5, 0x2f, 0xfd,
+    0x80, // FCS field size code 2 -> 4-byte frame content size
+    0x00, // window descriptor: 1 KiB window
+    0x40, 0x42, 0x0f, 0x00, // FCS = 1,000,000 little-endian
+    blockHeader & 0xff, (blockHeader >> 8) & 0xff, (blockHeader >> 16) & 0xff,
+    ...new TextEncoder().encode("0123456789"),
+  ]);
+  let err = null;
+  try {
+    decompressFrame(frame, 100);
+  } catch (e) {
+    err = e;
+  }
+  check("decoder refuses a declared content size past the expected size up front",
+    err instanceof ExpansionLimitError && String(err.message).includes("content size"),
+  `got ${err}`);
+}
+
+// --- property coverage (Codex P1 on PR #6726; testing doctrine) ----
+//
+// ORACLES (named): (1) round-trip -- the generated plaintext itself:
+// a limit at or above its length must reproduce it byte-for-byte;
+// (2) bound -- a limit below its length must throw
+// ExpansionLimitError, never return truncated or over-limit bytes.
+// The generator is a fixed-seed mulberry32, so the cases are a
+// deterministic regression pin, not a fuzz run.
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+{
+  const rnd = mulberry32(0x6590);
+  const shapes = [
+    (n) => new Uint8Array(n), // zeros: maximum expansion ratio
+    (n) => Uint8Array.from({ length: n }, () => Math.floor(rnd() * 256)), // incompressible
+    (n) => Uint8Array.from({ length: n }, (_, i) => (i * 7 + 3) % 251), // periodic
+    (n) => new TextEncoder().encode(("cold store property line\n").repeat(Math.ceil(n / 25)).slice(0, n)),
+  ];
+  let cases = 0;
+  let propFailures = 0;
+  for (const shape of shapes) {
+    for (const n of [0, 1, 2, 17, 100, 1000, 4097, 65536]) {
+      const plain = shape(n);
+      const frame = new Uint8Array(zstdCompressSync(plain));
+      for (const limit of [plain.length, plain.length + 1000]) {
+        cases += 1;
+        try {
+          const out = decompressFrame(frame, limit);
+          if (!Buffer.from(out).equals(Buffer.from(plain))) propFailures += 1;
+        } catch {
+          propFailures += 1;
+        }
+      }
+      if (plain.length > 0) {
+        cases += 1;
+        let err = null;
+        try {
+          decompressFrame(frame, plain.length - 1);
+        } catch (e) {
+          err = e;
+        }
+        if (!(err instanceof ExpansionLimitError)) propFailures += 1;
+      }
+    }
+  }
+  check(`property: round-trip and bound hold across ${cases} generated cases`,
+    propFailures === 0, `${propFailures} violated cases`);
 }
 
 if (failures > 0) {
