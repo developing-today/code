@@ -1802,9 +1802,28 @@ impl WorldClient {
                     .with_context(|| format!("invalid record in page for sequence {sequence}"))?;
             }
 
-            // Check cursor validation: next_after must equal the last key of this page
-            let next_after = reply["next_after"].as_str();
-            if let Some(next) = next_after {
+            // Disposition the cursor strictly (#6778): the host's
+            // typed frame (ServerFrame::Records, world/actor.rs)
+            // serializes next_after as a string or null — null (or
+            // absent) ends the listing, a string continues it, and
+            // any other type is a malformed reply, never a silent
+            // end-of-listing. Same shape as parse_admin_history_cursor
+            // below and the SSH drain's records_cursor.
+            let next_after: Option<String> = match reply.get("next_after") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::String(next)) => Some(next.clone()),
+                Some(other) => anyhow::bail!(
+                    "malformed records reply: next_after must be a string or null, got {}",
+                    match other {
+                        serde_json::Value::Bool(_) => "boolean",
+                        serde_json::Value::Number(_) => "number",
+                        serde_json::Value::Array(_) => "array",
+                        serde_json::Value::Object(_) => "object",
+                        _ => "unknown",
+                    }
+                ),
+            };
+            if let Some(next) = &next_after {
                 // Validate that next_after matches the last key in this page
                 if let Some((last_key, _)) = page.iter().next_back() {
                     anyhow::ensure!(
@@ -1822,7 +1841,7 @@ impl WorldClient {
                 // Validate that the cursor advanced from what we sent
                 if let Some(cursor) = &after {
                     anyhow::ensure!(
-                        next > cursor.as_str(),
+                        next.as_str() > cursor.as_str(),
                         "records cursor did not advance: next_after={next:?}, previous cursor={cursor:?}"
                     );
                 }
@@ -1830,7 +1849,7 @@ impl WorldClient {
 
             pages.push((sequence, page));
             match next_after {
-                Some(next) => after = Some(next.to_owned()),
+                Some(next) => after = Some(next),
                 None => return Ok(pages),
             }
         }
@@ -2891,6 +2910,24 @@ mod tests {
         assert!(
             format!("{err:?}").contains("does not match last key"),
             "mismatched cursor must be refused: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_records_client_rejects_mistyped_cursor() {
+        // next_after as a number: present but mistyped must be
+        // refused as malformed (#6778), never read as the final page
+        // while the host may hold more records.
+        let page = serde_json::json!({
+            "type": "records",
+            "sequence": 7,
+            "records": {"a": 1},
+            "next_after": 42,
+        });
+        let err = rogue_records(vec![page]).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("next_after"),
+            "mistyped cursor error must name next_after: {err:?}"
         );
     }
 
