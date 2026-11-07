@@ -41,6 +41,9 @@ type ImportsMode string
 const (
 	ImportsOff    ImportsMode = "off"
 	ImportsReport ImportsMode = "report"
+	// ImportsPrepare requests resolution for a future materialisation step.
+	// Resolve can build the dependency set, but this stage never installs it.
+	ImportsPrepare ImportsMode = "prepare"
 )
 
 // DynamicImportMode selects what a computed dynamic import does.
@@ -138,6 +141,12 @@ type denoPos struct {
 
 // Graph is the parsed result of one `deno info --json` run.
 type Graph struct {
+	// Roots are the entry modules supplied to deno info.
+	Roots []string
+	// Edges retains resolved edges as well as Missing. Resolve needs the
+	// successful file edges to find project boundaries; the graph report
+	// alone used to discard precisely that information.
+	Edges []ImportEdge
 	// Missing is every unresolved edge, in source order by importer.
 	Missing []MissingSpecifier
 	// LocalFiles is every module deno read from disk; these are the files
@@ -156,6 +165,9 @@ func ParseGraph(data []byte) (*Graph, error) {
 		return nil, fmt.Errorf("parse deno info output: %w", err)
 	}
 	g := &Graph{}
+	for _, root := range info.Roots {
+		g.Roots = append(g.Roots, fileURLToPath(root))
+	}
 	broken := map[string]string{}
 	for _, m := range info.Modules {
 		if m.Error != "" {
@@ -182,7 +194,7 @@ func ParseGraph(data []byte) (*Graph, error) {
 			continue
 		}
 		for _, d := range m.Dependencies {
-			for _, edge := range []*denoEdge{d.Code, d.Type} {
+			for edgeIndex, edge := range []*denoEdge{d.Code, d.Type} {
 				if edge == nil {
 					continue
 				}
@@ -200,6 +212,22 @@ func ParseGraph(data []byte) (*Graph, error) {
 						Err: edge.Error,
 					})
 					continue
+				}
+				// Preserve resolved module edges for stage 2. Type-only
+				// edges are distinguished so a later prepare stage can
+				// decide whether they belong in the runtime environment.
+				if edge.Specifier != "" {
+					g.Edges = append(g.Edges, ImportEdge{
+						From:      fileURLToPath(m.Specifier),
+						Specifier: d.Specifier,
+						Resolved:  fileURLToPath(edge.Specifier),
+						Span: &SourceSpan{
+							Path:      fileURLToPath(m.Specifier),
+							Line:      edge.Span.Start.Line + 1,
+							Character: edge.Span.Start.Character + 1,
+						},
+						TypeOnly: edgeIndex == 1,
+					})
 				}
 				errText, isBroken := broken[edge.Specifier]
 				if !isBroken {
@@ -362,7 +390,7 @@ func CheckImports(ctx context.Context, denoBin, entry string, mode ImportsMode, 
 // script runs under, and report a valid import as missing (Codex
 // review, PR #2575). An empty execDir inherits the caller's working
 // directory, which is exactly what the execution does.
-func CheckImportsResolved(ctx context.Context, denoBin, entry string, mode ImportsMode, dynamicMode DynamicImportMode, timeout time.Duration, runtimeArgs []string, execDir string) *Report {
+func CheckImportsResolved(ctx context.Context, denoBin, entry string, mode ImportsMode, dynamicMode DynamicImportMode, timeout time.Duration, runtimeArgs []string, execDir string, resolve ...ResolveOptions) *Report {
 	r := &Report{}
 	if mode == ImportsOff || mode == "" {
 		return r
@@ -431,6 +459,16 @@ func CheckImportsResolved(ctx context.Context, denoBin, entry string, mode Impor
 			continue
 		}
 		dynamics = append(dynamics, ScanDynamicImports(f, string(b))...)
+	}
+	if len(resolve) > 0 {
+		_, report := ResolveGraph(cctx, g, resolve[0], dynamics, dynamicMode)
+		if mode == ImportsPrepare {
+			report.Add(Problem{
+				What:  "the dependency set was resolved, but materialising it is stage 3 and is not part of this build",
+				Where: "script.imports",
+			})
+		}
+		return report
 	}
 	return ReportGraph(g, dynamics, dynamicMode)
 }

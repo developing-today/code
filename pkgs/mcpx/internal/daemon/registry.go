@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/catalog"
@@ -27,6 +28,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/policy"
 	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 	"github.com/developing-today/code/pkgs/mcpx/internal/secrets"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
@@ -48,7 +50,15 @@ type Registry struct {
 	paths Paths
 	hash  string
 
-	mu sync.RWMutex
+	// reloadMu serializes configuration swaps with asynchronous cleanup from
+	// earlier swaps. A cleanup must not remove sessions created by a later
+	// reload that re-adds the same server name.
+	reloadMu sync.Mutex
+	// pendingSessionCleanup protects persisted records until the removed
+	// pool has drained and can terminate them with its last live config.
+	// Access is serialized by reloadMu.
+	pendingSessionCleanup map[string]int
+	mu                    sync.RWMutex
 	// pools may be shared between names; views never are. A view carries the
 	// per-name presentation -- namespace, tool subset, prelude, profiles --
 	// that must not follow the shared process.
@@ -107,6 +117,9 @@ type Registry struct {
 	// wait for them. Both are memory only; see internal/secrets.
 	secrets *secrets.Store
 	board   *secrets.Board
+	// writeLedger persists post-dispatch calls whose outcome could not be
+	// established, so a restart cannot make a retry silently unsafe.
+	writeLedger *WriteLedger
 }
 
 // leaseState remembers which pool keys a caller created, so releasing a
@@ -199,18 +212,23 @@ func NewRegistry(cfg *config.Config, paths Paths, logf func(string, ...any)) (*R
 		return nil, err
 	}
 	raw, _ := json.Marshal(cfg.MCPServers)
+	writeLedger, err := OpenWriteLedger(paths.State, cfg.Sources...)
+	if err != nil {
+		return nil, err
+	}
 
 	r := &Registry{
-		cfg:     cfg,
-		paths:   paths,
-		hash:    HashConfig(raw),
-		pools:   make(map[string]*pool.Pool, len(servers)),
-		views:   make(map[string]*config.Resolved, len(servers)),
-		leases:  map[string]*leaseState{},
-		asks:    newAskTable(),
-		logf:    logf,
-		secrets: secrets.NewStore(),
-		board:   secrets.NewBoard(defaults.SecretRequestRetention),
+		cfg:         cfg,
+		paths:       paths,
+		hash:        HashConfig(raw),
+		pools:       make(map[string]*pool.Pool, len(servers)),
+		views:       make(map[string]*config.Resolved, len(servers)),
+		leases:      map[string]*leaseState{},
+		asks:        newAskTable(),
+		logf:        logf,
+		secrets:     secrets.NewStore(),
+		board:       secrets.NewBoard(defaults.SecretRequestRetention),
+		writeLedger: writeLedger,
 	}
 	r.loadSessions()
 	if paths.State != "" {
@@ -1545,6 +1563,14 @@ func (r *Registry) Warm(ctx context.Context, force bool) map[string]error {
 		if blocker, _ := r.blocked(p.Config()); blocker != nil {
 			continue
 		}
+		// A caller-scoped server (its definition references
+		// ${mcpx.root}/${mcpx.cwd}) cannot start from this background
+		// pass, which has no caller: defer it to the first
+		// caller-backed refresh rather than recording a guaranteed
+		// rootless-start failure as its error (PR #5135).
+		if p.CallerScoped() {
+			continue
+		}
 		wg.Add(1)
 		go func(p *pool.Pool) {
 			defer wg.Done()
@@ -2191,11 +2217,23 @@ func failureStatus(err error) int {
 	var hidden HiddenTool
 	var secret SecretRequired
 	var denied ErrWriteDenied
+	var notConfirmed ErrNotConfirmed
 	var argDenied ErrArgumentRuleDenied
+	var unknownOutcome ErrUnknownOutcome
 	switch {
+	case errors.As(err, &unknownOutcome):
+		// The daemon has durable state that makes repeating this write unsafe.
+		return http.StatusConflict
 	case errors.As(err, &denied):
 		// The write policy refused the call: a permission answer, not
 		// a bad request and not an upstream failure.
+		return http.StatusForbidden
+	case errors.As(err, &notConfirmed):
+		// The confirmation gate refused the call (#6116): nobody
+		// confirmed it -- in a headless session, nobody could. That
+		// is a permission answer like the write policy's, not an
+		// upstream failure; answering 502 here made the gate
+		// indistinguishable from a tool that ran and broke.
 		return http.StatusForbidden
 	case errors.As(err, &secret):
 		// A conflict with the state of the daemon, not a fault in the request
@@ -2260,12 +2298,101 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 		return nil, err
 	}
 	defer r.joinAsk(ctx, server, rs.Key)()
-	res, err := p.Call(withRequestedCallTimeout(ctx), rs, effTool, effArgs)
+	res, err := r.callWithLedger(withRequestedCallTimeout(ctx), p, server, effTool, effArgs, rs, "call")
 
 	if err != nil {
 		return nil, r.explainCall(ctx, server, tool, args, err)
 	}
 	return res, nil
+}
+
+func toolReadOnly(p *pool.Pool, tool string) bool {
+	if p == nil {
+		return false
+	}
+	tools, _, at := p.CachedSchemas()
+	// A missing, invalidated, or expired catalogue cannot be trusted to
+	// exempt the call: Pool.Invalidate clears the timestamp but retains
+	// the old tools, and an expired deadline means the annotations may
+	// no longer hold. Conservatively treat all of those as a write.
+	if at.IsZero() || p.SchemaExpired() {
+		return false
+	}
+	for _, candidate := range tools {
+		if candidate.Name == tool {
+			return policy.Classify(candidate.Annotations).ReadOnly
+		}
+	}
+	// Missing annotations are conservatively treated as a write.
+	return false
+}
+
+func (r *Registry) callWithLedger(ctx context.Context, p *pool.Pool, server, tool string, args any, rs config.ResolvedScope, surface string) (json.RawMessage, error) {
+	var dispatched atomic.Bool
+	callCtx := mcpclient.WithToolCallDispatchHook(ctx, func() { dispatched.Store(true) })
+	result, err := p.Call(callCtx, rs, tool, args)
+	if err != nil && dispatched.Load() && !toolReadOnly(p, tool) && r.writeLedger != nil && !mcpclient.IsConclusiveUpstreamError(err) {
+		return nil, r.recordUnknownOutcome(p, server, tool, args, surface)
+	}
+	return result, err
+}
+
+// ledgerLookupFor finds an unknown-outcome block affecting server, across
+// every name sharing its pool. Pools are shared by process identity, so an
+// alias added later must not lose the block recorded under the earlier
+// creating name: all names mapping to the same pool are checked, plus the
+// requested and canonical spellings.
+func (r *Registry) ledgerLookupFor(server string, p *pool.Pool) (unknownWriteRecord, bool) {
+	if r.writeLedger == nil {
+		return unknownWriteRecord{}, false
+	}
+	seen := map[string]bool{}
+	var candidates []string
+	add := func(name string) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		candidates = append(candidates, name)
+	}
+	add(server)
+	add(r.CanonicalName(server))
+	if p != nil {
+		add(p.Name())
+		r.mu.RLock()
+		for name, other := range r.pools {
+			if other == p {
+				add(name)
+			}
+		}
+		r.mu.RUnlock()
+	}
+	for _, name := range candidates {
+		if record, blocked := r.writeLedger.Lookup(name); blocked {
+			return record, true
+		}
+	}
+	return unknownWriteRecord{}, false
+}
+
+func (r *Registry) recordUnknownOutcome(p *pool.Pool, fallbackServer, tool string, args any, surface string) error {
+	// Record under the requested server's canonical name so `mcpx writes
+	// clear <server>` names the same key the refusal names, and so the
+	// block survives a restart that changes which alias created the pool.
+	server := r.CanonicalName(fallbackServer)
+	if server == "" {
+		server = fallbackServer
+	}
+	if server == "" && p != nil {
+		server = p.Name()
+	}
+	digest := sha256.Sum256([]byte(policy.CanonicalArgs(args)))
+	record := unknownWriteRecord{
+		Server: server, Tool: tool,
+		ArgsSHA256: hex.EncodeToString(digest[:]),
+		At:         time.Now().UTC(), Surface: surface,
+	}
+	return ErrUnknownOutcome{Record: record, PersistenceError: r.writeLedger.Record(record)}
 }
 
 // resolveAndGuard picks the instance key for a tool call and applies the
@@ -2313,7 +2440,7 @@ func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, to
 		// Not asked by the write policy: the destructive floor still
 		// gets its say. Under ask the policy already asked once, and
 		// asking twice about one call would be noise, not consent.
-		if err := r.confirmDestructive(ctx, p, effTool, cc); err != nil {
+		if err := r.confirmDestructive(ctx, p, server, effTool, cc); err != nil {
 			return config.ResolvedScope{}, "", nil, err
 		}
 	}

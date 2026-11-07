@@ -59,7 +59,18 @@ pub fn reconcile<B: LedgerBackend, S: IntentStore>(
     policy: RecoveryPolicy,
 ) -> Result<Vec<(u128, ReconcileOutcome)>> {
     let mut outcomes = Vec::new();
-    for mut record in store.unresolved().context("listing unresolved intents")? {
+    let records = store.unresolved().context("listing unresolved intents")?;
+    // Entries the listing skipped (#4125) stay on disk for an
+    // operator; surface each one distinctly here instead of letting
+    // it pass silently, and reconcile everything readable regardless.
+    for unreadable in store.unreadable_entries() {
+        eprintln!(
+            "[recovery] skipping unreadable intent entry {}: {}",
+            unreadable.path.display(),
+            unreadable.reason
+        );
+    }
+    for mut record in records {
         // A leg vector is the scanner's only statement of what must
         // be in the ledger, so it must name at least one transfer and
         // each transfer at most once (#4133): an empty vector would

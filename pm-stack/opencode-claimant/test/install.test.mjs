@@ -13,6 +13,9 @@ import {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const prompt = await readFile(join(here, "..", "prompt.md"), "utf8");
+const recoveryMigration = await readFile(
+  join(here, "..", "migration-0022.sql"), "utf8",
+);
 const installer = join(here, "..", "install.mjs");
 
 async function makeStores() {
@@ -88,6 +91,35 @@ describe("buildTask", () => {
                           "opencode-claimant", "poll.py"]) {
       expect(prompt).toContain(needle);
     }
+  });
+
+  test("recovery clears both bindings atomically before relaunch", () => {
+    const deletion = prompt.indexOf("DELETE /api/session/<id>");
+    const recovery = prompt.indexOf(
+      "opencode-claimant-recovery:zero-message-deleted",
+    );
+    expect(deletion).toBeGreaterThanOrEqual(0);
+    expect(recovery).toBeGreaterThan(deletion);
+    expect(prompt).toContain("do not fall back to a progress-only checkpoint");
+    expect(recoveryMigration).toContain(
+      "t.progress ->> 'session_id' is distinct from p_session_id",
+    );
+    expect(recoveryMigration).toContain(
+      "row_out.session_id is distinct from p_session_id",
+    );
+    expect(recoveryMigration).toContain(
+      "recovery attempts exhausted for task %",
+    );
+    expect(recoveryMigration).toContain(
+      "set session_id = null, updated_at = now()",
+    );
+    expect(recoveryMigration).toContain(
+      "set attempts = coalesce(attempts, 0) + 1",
+    );
+    expect(recoveryMigration).toContain("'stage', 'launch_failed'");
+    expect(recoveryMigration).toContain(
+      "'launch_failed_session_id', p_session_id",
+    );
   });
 
   test("rejects a foreign prompt", () => {

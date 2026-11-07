@@ -1,5 +1,7 @@
 use super::*;
 
+pub(crate) use crate::text::sanitize_chat;
+
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
@@ -67,6 +69,23 @@ pub(crate) fn hex_decode_32(encoded: &str) -> Option<[u8; 32]> {
 }
 
 pub(crate) fn sanitize_display_name(name: &str) -> String {
+    // #4711: trim again after the 48-char cap. The pre-cap trim alone
+    // let truncation land on a whitespace character, minting a 48-char
+    // name ending in whitespace — a fixed point of neither sanitizer,
+    // which the #2960 restore check then refused, leaving the journal
+    // unrestorable. The final trim makes every minted name a fixed
+    // point of this function.
+    pre_fix_sanitize_display_name(name).trim().to_owned()
+}
+
+/// The display-name sanitizer as it existed before #4711 added the
+/// post-truncation trim: control and format characters stripped,
+/// trimmed, then capped at 48 chars — with no trim after the cap, so a
+/// name whose 48th character was whitespace was minted with trailing
+/// whitespace. Journals written by that mint can legitimately carry
+/// such names, and restore accepts those for journal compatibility
+/// (see the #2960 check in `WorldCore::restore`).
+pub(crate) fn pre_fix_sanitize_display_name(name: &str) -> String {
     name.chars()
         .filter(|ch| !ch.is_control() && !crate::petname::is_format_char(*ch))
         .collect::<String>()
@@ -92,20 +111,40 @@ pub(crate) fn legacy_sanitize_display_name(name: &str) -> String {
         .to_owned()
 }
 
-pub(crate) fn sanitize_chat(text: &str) -> String {
-    text.chars()
-        .filter(|ch| {
-            (!ch.is_control() || *ch == '\n' || *ch == '\t')
-                && (!crate::petname::is_format_char(*ch) || *ch == '\u{200c}' || *ch == '\u{200d}')
-        })
-        .collect::<String>()
-        .trim()
-        .to_owned()
+/// Whether `name` is a display name the pre-#4711 mint could have
+/// produced. That mint returned the first 48 chars of a control- and
+/// format-stripped, trimmed string, so a producible name contains no
+/// stripped characters, never starts with whitespace, is at most 48
+/// chars, and — unless it fills the whole 48-char budget — is fully
+/// trimmed: trailing whitespace was only possible when truncation
+/// landed on it at exactly 48 chars. (Such names are not fixed points
+/// of the pre-fix sanitizer — re-applying it trims them — so restore
+/// cannot recognize them by equality; see the #2960 check in
+/// `WorldCore::restore`.)
+pub(crate) fn is_pre_fix_mint_display_name(name: &str) -> bool {
+    if name
+        .chars()
+        .next()
+        .is_none_or(|first| first.is_whitespace())
+    {
+        return false;
+    }
+    if name
+        .chars()
+        .any(|ch| ch.is_control() || crate::petname::is_format_char(ch))
+    {
+        return false;
+    }
+    let count = name.chars().count();
+    count == 48 || (count < 48 && name.trim() == name)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{legacy_sanitize_display_name, sanitize_chat, sanitize_display_name};
+    use super::{
+        is_pre_fix_mint_display_name, legacy_sanitize_display_name, pre_fix_sanitize_display_name,
+        sanitize_chat, sanitize_display_name,
+    };
 
     #[test]
     fn display_name_strips_bidi_override() {
@@ -149,6 +188,60 @@ mod tests {
             sanitize_display_name(&format!("\u{7}{exactly_48}")),
             exactly_48
         );
+    }
+
+    #[test]
+    fn display_name_truncation_never_leaves_trailing_whitespace() {
+        // #4711 boundary shapes: whitespace landing exactly on the
+        // 48-char cap is trimmed after truncation, and every minted
+        // name is a fixed point of the sanitizer.
+        let cases = [
+            (
+                format!("{} {}", "a".repeat(47), "b".repeat(10)),
+                "a".repeat(47),
+            ),
+            (
+                format!("{}  {}", "a".repeat(46), "b".repeat(10)),
+                "a".repeat(46),
+            ),
+            (
+                format!("{}\u{a0}{}", "a".repeat(47), "b".repeat(10)),
+                "a".repeat(47),
+            ),
+        ];
+        for (input, expected) in cases {
+            let minted = sanitize_display_name(&input);
+            assert_eq!(minted, expected, "input: {input:?}");
+            assert_eq!(sanitize_display_name(&minted), minted);
+        }
+        // A full 48-char name with no boundary whitespace is untouched.
+        let exactly_48 = "x".repeat(48);
+        assert_eq!(sanitize_display_name(&exactly_48), exactly_48);
+    }
+
+    #[test]
+    fn pre_fix_sanitizer_reproduces_boundary_names_restore_must_accept() {
+        // The pre-#4711 mint produced exactly this 48-char name ending
+        // in a space; journals carrying it must remain restorable.
+        let boundary = format!("{} ", "a".repeat(47));
+        assert_eq!(
+            pre_fix_sanitize_display_name(&format!("{} {}", "a".repeat(47), "b".repeat(10))),
+            boundary
+        );
+        // It is recognizable as a pre-fix mint output even though it
+        // is not a fixed point of the pre-fix sanitizer (re-applying
+        // that sanitizer trims it), and the current sanitizer maps it
+        // to its trim.
+        assert!(is_pre_fix_mint_display_name(&boundary));
+        assert_eq!(sanitize_display_name(&boundary), "a".repeat(47));
+        // Names no mint path could produce are not pre-fix outputs:
+        // short-but-untrimmed, over-length, control-bearing, or
+        // leading-whitespace names.
+        assert!(!is_pre_fix_mint_display_name("Ada "));
+        assert!(!is_pre_fix_mint_display_name(&"a".repeat(49)));
+        assert!(!is_pre_fix_mint_display_name("a\u{7}b"));
+        assert!(!is_pre_fix_mint_display_name(" Ada"));
+        assert!(is_pre_fix_mint_display_name("Ada"));
     }
 
     #[test]

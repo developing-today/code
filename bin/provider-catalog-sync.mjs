@@ -36,11 +36,18 @@
 // through a reviewable PR.
 //
 // #4544 split: the tracked configured default no longer carries the model
-// catalogs sync-models owns (antigravity-direct, openai-codex, google,
+// catalogs sync-models owns (antigravity-direct, google,
 // openai, cloudflare-gateway) — those live in the runtime overlay
 // (~/.local/state/opencode/opencode-runtime.jsonc). This tool diffs the
 // merged effective config (default + overlay; --runtime-config) and skips
 // the sync-owned providers on --apply; sync-models owns their writes.
+//
+// Config resolution (#4588): this tool's target is the tracked configured
+// default — an explicit --config wins, then OPENCODE_CATALOG_SYNC_CONFIG,
+// then <repo>/.opencode/opencode.jsonc. OPENCODE_CONFIG_PATH is never the
+// target: it is sync-models' variable and since #4544 it names the runtime
+// overlay, which this tool only reads (via --runtime-config) to compute the
+// merged effective config.
 //
 // Sources: laptop proxies are enumerated over HTTP on 127.0.0.1 (run this on
 // the laptop, or pass --source-dir with <port>.json snapshots for an offline
@@ -53,17 +60,42 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+// #2953 (define, don't assign): store an externally-spelled key with
+// define semantics, so "__proto__" becomes an own property instead of
+// invoking the Object.prototype setter and "constructor"/"toString"
+// shadow like any other key.
+const defineValue = (obj, key, value) => {
+  Object.defineProperty(obj, key, { value, writable: true, enumerable: true, configurable: true });
+  return value;
+};
+
+
 // ---------------------------------------------------------------------------
 // Provider source table. `modelsDev` is the provider id in models.dev's
 // api.json used as cross-check (null = no meaningful cross-check).
 // ---------------------------------------------------------------------------
 const PROVIDER_SOURCES = {
-  'claude-code': { kind: 'proxy', port: 18749, modelsDev: null },
-  commandcode: { kind: 'proxy', port: 18748, modelsDev: 'commandcode' },
-  'openai-codex': { kind: 'proxy', port: 18744, modelsDev: 'openai' },
-  chatgpt: { kind: 'proxy', port: 18744, modelsDev: 'openai' },
-  'antigravity-agy': { kind: 'proxy', port: 18743, modelsDev: null },
-  'antigravity-ls': { kind: 'proxy', port: 18745, modelsDev: null },
+  // No claude-code / commandcode / antigravity-agy / antigravity-ls
+  // / openai-codex entries: their CLI proxies were removed in the
+  // 2026-11-06 proxy-infra decommission (claude-code and
+  // commandcode were repointed to native fork providers on
+  // 2026-11-05; the antigravity doors retired 2026-10-30; the
+  // openai-codex provider was deleted 2026-11-03 and its door
+  // retired with the rest). Their catalogs are native-owned now,
+  // so they report 'no-source-configured'.
+  // One deliberately synthetic proxy-kind source: 'fixture-proxy'
+  // is the enumeration machinery's worked example, kept after the
+  // last real proxy source (the codex-proxy 'chatgpt' entry) was
+  // removed 2026-11-06 on Drew's ruling (kill record:
+  // developing-today-forks/opencode#1825). The CLI control fixtures
+  // (#3449/#4588) exercise the validated-addition path through this
+  // entry's source-dir snapshot, and no live proxy-kind source
+  // remains. No live config names a fixture-proxy provider, so the
+  // entry is dormant; a run that ever names one reports the
+  // tolerated enumeration failure against the fixture port :18799
+  // (nothing listens there by design) and falls back to
+  // cross-check only.
+  'fixture-proxy': { kind: 'proxy', port: 18799, modelsDev: 'openai' },
   deepseek: { kind: 'crosscheck', modelsDev: 'deepseek' },
   groq: { kind: 'crosscheck', modelsDev: 'groq' },
   meta: { kind: 'crosscheck', modelsDev: 'meta' },
@@ -79,11 +111,11 @@ const PROVIDER_SOURCES = {
     kind: 'unverifiable',
     note: 'No catalog block of its own; resolves through the fork built-in catalog (models.dev feed).',
   },
-  'opencode-go.personal': {
+  'opencode-go.drewrypope': {
     kind: 'unverifiable',
     note: 'No catalog block of its own; resolves through the fork built-in catalog (models.dev feed).',
   },
-  'opencode-go.lab': {
+  'opencode-go.popesdrew': {
     kind: 'unverifiable',
     note: 'No catalog block of its own; resolves through the fork built-in catalog (models.dev feed).',
   },
@@ -423,7 +455,7 @@ function commonSuffix(names) {
   const counts = {};
   for (const n of names) {
     const m = n.match(/(\([^)]*\))\s*$/);
-    if (m) counts[m[1]] = (counts[m[1]] ?? 0) + 1;
+    if (m) defineValue(counts, m[1], (Object.hasOwn(counts, m[1]) ? counts[m[1]] : 0) + 1);
   }
   const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
   return best ? best[0] : null;
@@ -486,14 +518,35 @@ async function fetchJson(url, timeoutMs = 15000) {
   return res.json();
 }
 
+function modelIdsFromProxyResponse(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error('response body must be a non-null object');
+  }
+  if (!Object.prototype.hasOwnProperty.call(data, 'data')) {
+    throw new Error('response body is missing data');
+  }
+  if (!Array.isArray(data.data)) {
+    throw new Error('response data must be an array');
+  }
+  return data.data.map((model, index) => {
+    if (!model || typeof model !== 'object' || Array.isArray(model)) {
+      throw new Error(`response data[${index}] must be an object`);
+    }
+    if (typeof model.id !== 'string' || model.id.trim().length === 0) {
+      throw new Error(`response data[${index}].id must be a non-empty string`);
+    }
+    return model.id;
+  });
+}
+
 async function enumerateProxy(port, sourceDir) {
   if (sourceDir) {
     const file = path.join(sourceDir, `${port}.json`);
     const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return (data.data ?? []).map((m) => m.id);
+    return modelIdsFromProxyResponse(data);
   }
   const data = await fetchJson(`http://127.0.0.1:${port}/v1/models`, 10000);
-  return (data.data ?? []).map((m) => m.id);
+  return modelIdsFromProxyResponse(data);
 }
 
 async function loadModelsDev(spec) {
@@ -510,7 +563,6 @@ async function loadModelsDev(spec) {
 // but never writes them into the tracked configured default on --apply.
 export const SYNC_OWNED_PROVIDERS = new Set([
   'antigravity-direct',
-  'openai-codex',
   'google',
   'openai',
   'cloudflare-gateway',
@@ -522,7 +574,22 @@ export function deepMergeProviders(base, over) {
   const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
   if (!isObj(base) || !isObj(over)) return over;
   const out = { ...base };
-  for (const k of Object.keys(over)) out[k] = deepMergeProviders(base[k], over[k]);
+  const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+  for (const k of Object.keys(over)) {
+    // #4957 (design #2953): the overlay is an external file, so a key it
+    // spells must become an own data property at every depth. A plain
+    // `out[k] = ...` is a [[Set]] write: for `__proto__` that invokes the
+    // inherited accessor and moves the prototype instead of storing the
+    // value. Define the leaf explicitly. The own-property check also keeps
+    // a missing base key from resolving through the prototype chain
+    // (base["__proto__"] would otherwise be Object.prototype itself).
+    Object.defineProperty(out, k, {
+      value: deepMergeProviders(hasOwn(base, k) ? base[k] : undefined, over[k]),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
   return out;
 }
 
@@ -560,7 +627,7 @@ export async function runSync({ configPath, modelsDevSpec, sourceDir, runtimeCon
     providers: {},
     totals: { additions_validated: 0, additions_unverified: 0, vanishings: 0, unverifiable: 0 },
   };
-  // Cache proxy enumerations: openai-codex and chatgpt share one door.
+  // Cache proxy enumerations by port: providers sharing one door share one fetch.
   const proxyCache = new Map();
   for (const [providerId, block] of Object.entries(providers)) {
     const configIds = Object.keys(block?.models ?? {});
@@ -568,7 +635,7 @@ export async function runSync({ configPath, modelsDevSpec, sourceDir, runtimeCon
     const entry = { config_count: configIds.length };
     if (!src) {
       entry.status = 'no-source-configured';
-      report.providers[providerId] = entry;
+      defineValue(report.providers, providerId, entry);
       continue;
     }
     entry.source = src.kind;
@@ -586,7 +653,7 @@ export async function runSync({ configPath, modelsDevSpec, sourceDir, runtimeCon
       entry.status = 'unverifiable';
       entry.note = src.note;
       report.totals.unverifiable += 1;
-      report.providers[providerId] = entry;
+      defineValue(report.providers, providerId, entry);
       continue;
     }
     if (src.kind === 'proxy') {
@@ -617,7 +684,7 @@ export async function runSync({ configPath, modelsDevSpec, sourceDir, runtimeCon
     for (const k of ['additions_validated', 'additions_unverified', 'vanishings']) {
       report.totals[k] += entry[k]?.length ?? 0;
     }
-    report.providers[providerId] = entry;
+    defineValue(report.providers, providerId, entry);
   }
   return { report, configText, config };
 }
@@ -679,7 +746,7 @@ export function renderPrBody(report, addedByProvider) {
 // Apply validated additions to the config text. Returns { text, added }.
 export function applyAdditions(configText, config, report, modelsDev) {
   let text = configText;
-  const added = {};
+  const added = new Map();
   for (const [pid, e] of Object.entries(report.providers)) {
     const ids = e.additions_validated ?? [];
     if (!ids.length) continue;
@@ -690,11 +757,12 @@ export function applyAdditions(configText, config, report, modelsDev) {
       const clonedFrom = entry._clonedFrom;
       delete entry._clonedFrom;
       text = insertModelEntry(text, pid, id, entry);
-      (added[pid] ??= []).push(id);
+      if (!added.has(pid)) added.set(pid, []);
+      added.get(pid).push(id);
       if (clonedFrom) console.error(`[catalog-sync] ${pid}/${id}: variants cloned from sibling ${clonedFrom}`);
     }
   }
-  return { text, added };
+  return { text, added: Object.fromEntries(added) };
 }
 
 // Catalog-only guard: parse before/after and prove nothing outside the
@@ -817,6 +885,18 @@ export function parseArgs(argv) {
   return { options, flags };
 }
 
+// Resolution order for the catalog target (#4588): explicit --config,
+// then the catalog-sync-specific OPENCODE_CATALOG_SYNC_CONFIG, then the
+// tracked configured default. OPENCODE_CONFIG_PATH is deliberately not
+// consulted — since #4544 it names the runtime overlay (sync-models' file).
+export function resolveConfigPath({ options, env, root }) {
+  return (
+    options['--config'] ??
+    env.OPENCODE_CATALOG_SYNC_CONFIG ??
+    path.join(root, '.opencode', 'opencode.jsonc')
+  );
+}
+
 async function main(argv) {
   const { options, flags } = parseArgs(argv);
   if (flags.has('--help')) {
@@ -825,8 +905,7 @@ async function main(argv) {
   }
   const opt = (name, dflt) => options[name] ?? dflt;
   const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
-  const configPath =
-    process.env.OPENCODE_CONFIG_PATH || opt('--config', path.join(root, '.opencode', 'opencode.jsonc'));
+  const configPath = resolveConfigPath({ options, env: process.env, root });
   const runtimeConfigPath = opt(
     '--runtime-config',
     process.env.OPENCODE_RUNTIME_CONFIG ||
@@ -869,9 +948,9 @@ async function main(argv) {
       console.log(
         `[catalog-sync] skipping ${pid}: ${entry.additions_validated.length} validated addition(s) owned by sync-models (runtime overlay)`,
       );
-      applyReport.providers[pid] = { ...entry, additions_validated: [] };
+      defineValue(applyReport.providers, pid, { ...entry, additions_validated: [] });
     } else {
-      applyReport.providers[pid] = entry;
+      defineValue(applyReport.providers, pid, entry);
     }
   }
   const { text, added } = applyAdditions(configText, config, applyReport, modelsDev);

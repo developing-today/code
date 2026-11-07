@@ -78,7 +78,16 @@ export function parseModel(input: unknown): ModelRef | null {
     if (slash <= 0 || slash === t.length - 1) {
       throw new ValidationError(`model: string form must be "provider/model", got ${JSON.stringify(input)}`);
     }
-    return { providerID: t.slice(0, slash), id: t.slice(slash + 1) };
+    // Hold the string form to the same standard as the object form below:
+    // each segment is trimmed, and an empty segment after trimming is
+    // rejected. A hint like "anthropic / claude-sonnet" must not launch a
+    // session against a provider named "anthropic ".
+    const providerID = t.slice(0, slash).trim();
+    const id = t.slice(slash + 1).trim();
+    if (!providerID || !id) {
+      throw new ValidationError(`model: string form must be "provider/model", got ${JSON.stringify(input)}`);
+    }
+    return { providerID, id };
   }
   if (typeof input === "object") {
     const o = input as Record<string, unknown>;

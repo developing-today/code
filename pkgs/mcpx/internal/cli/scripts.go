@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
 	"github.com/developing-today/code/pkgs/mcpx/internal/recipes"
 	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
 	"github.com/developing-today/code/pkgs/mcpx/internal/searchpath"
@@ -37,8 +38,10 @@ const ScriptExt = ".ts"
 // ScriptExtensions are tried in order for a name given without one. The
 // order is deliberate: a project holding both foo.ts and foo.js is almost
 // always compiling one into the other, and the source is what someone means
-// to run.
-var ScriptExtensions = []string{".ts", ".mts", ".js", ".mjs"}
+// to run. ".py" is last because it is a different language rather than a
+// different compilation of the same one: a name with both foo.ts and foo.py
+// is TypeScript's by default, the way every run without a language is.
+var ScriptExtensions = []string{".ts", ".mts", ".js", ".mjs", ".py"}
 
 // scriptPath resolves the configured search path, splicing the built-in list
 // wherever the user left a null.
@@ -240,13 +243,19 @@ func splitPathList(v string) []string {
 }
 
 // looksLikePath reports whether an argument should be used verbatim rather
-// than resolved as a script name.
+// than resolved as a script name. Every script extension counts, not only
+// the one a new script is suggested with: `mcpx run report.py` names a file
+// even before it exists.
 func looksLikePath(arg string) bool {
-	return strings.ContainsRune(arg, filepath.Separator) ||
-		strings.HasSuffix(arg, ScriptExt) ||
-		strings.HasSuffix(arg, ".js") ||
-		strings.HasSuffix(arg, ".mts") ||
-		arg == "-"
+	if strings.ContainsRune(arg, filepath.Separator) || arg == "-" {
+		return true
+	}
+	for _, ext := range ScriptExtensions {
+		if strings.HasSuffix(arg, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveScript turns `mcpx run report` into a concrete file. A name that
@@ -352,6 +361,26 @@ func refuseRecipeHoles(arg string) error {
 		head, name, file, name, strings.Join(assign, " "))
 }
 
+// scriptExtension is the script extension a file name carries, or "" when it
+// is not a script. The list is ScriptExtensions, so a language added to
+// named-script resolution is also listed and shown without extra work.
+func scriptExtension(name string) string {
+	for _, ext := range ScriptExtensions {
+		if strings.HasSuffix(name, ext) {
+			return ext
+		}
+	}
+	return ""
+}
+
+// generatedClientNames are the client modules the runner writes beside the
+// scripts that import them, one per script language. They are machinery, not
+// scripts a user would run, so `mcpx scripts` does not list them.
+var generatedClientNames = map[string]bool{
+	runner.ClientFileName:     true,
+	codegen.Python.ClientFile: true,
+}
+
 // ScriptEntry is one discoverable script.
 type ScriptEntry struct {
 	Name     string `json:"name"`
@@ -374,19 +403,19 @@ func discoverScripts() ([]ScriptEntry, error) {
 		}
 		names := make([]string, 0, len(entries))
 		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ScriptExt) {
+			if e.IsDir() || scriptExtension(e.Name()) == "" {
 				continue
 			}
-			// The generated client lives beside the scripts that import it; it
-			// is machinery, not something a user would run.
-			if e.Name() == runner.ClientFileName {
+			// The generated clients live beside the scripts that import them;
+			// they are machinery, not something a user would run.
+			if generatedClientNames[e.Name()] {
 				continue
 			}
 			names = append(names, e.Name())
 		}
 		sort.Strings(names)
 		for _, n := range names {
-			name := strings.TrimSuffix(n, ScriptExt)
+			name := strings.TrimSuffix(n, scriptExtension(n))
 			path := filepath.Join(dir, n)
 			entry := ScriptEntry{Name: name, Path: path, Dir: dir, Summary: scriptSummary(path)}
 			if claimed[name] {

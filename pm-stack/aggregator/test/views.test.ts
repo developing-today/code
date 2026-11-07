@@ -162,6 +162,61 @@ describe("views store (#1276)", () => {
     expect(quarantined).toHaveLength(1);
     expect(readFileSync(join(dir, quarantined[0]), "utf8")).toBe(raw);
   });
+
+  // #4979: Date.parse rolled day-overflow stamps over (2026-02-30 ->
+  // 2026-03-02) and accepted non-ISO strings; the store gate now uses
+  // the shared isIsoDate contract like every sibling store gate.
+  test.each([
+    ["impossible createdAt", { createdAt: "2026-02-30T10:00:00.000Z", updatedAt: "2026-03-01T10:00:00.000Z" }],
+    ["impossible updatedAt", { createdAt: "2026-03-01T10:00:00.000Z", updatedAt: "2026-04-31T10:00:00.000Z" }],
+    ["non-ISO createdAt", { createdAt: "March 2, 2026", updatedAt: "2026-03-01T10:00:00.000Z" }],
+    ["non-leap Feb 29 createdAt", { createdAt: "2026-02-29T10:00:00.000Z", updatedAt: "2026-03-01T10:00:00.000Z" }],
+  ])("a view with an %s stamp is quarantined on load", async (_label, stamps) => {
+    const { dir, file, store } = tmpStore();
+    const raw = JSON.stringify({
+      version: 1,
+      views: [
+        {
+          id: "vw-1",
+          name: "Stamped",
+          owner: drewKey,
+          filters: { repo: "a/b" },
+          isDefault: false,
+          ...stamps,
+        },
+      ],
+    });
+    writeFileSync(file, raw);
+
+    expect(await store.all()).toEqual([]);
+    const quarantined = readdirSync(dir).filter((f) => f.startsWith("views.json.corrupt-"));
+    expect(quarantined).toHaveLength(1);
+    expect(readFileSync(join(dir, quarantined[0]), "utf8")).toBe(raw);
+  });
+
+  test("a view with a leap-date stamp loads normally", async () => {
+    const { dir, file, store } = tmpStore();
+    const raw = JSON.stringify({
+      version: 1,
+      views: [
+        {
+          id: "vw-1",
+          name: "Leap",
+          owner: drewKey,
+          filters: { repo: "a/b" },
+          isDefault: false,
+          createdAt: "2024-02-29T10:00:00.000Z",
+          updatedAt: "2024-02-29T10:00:00.000Z",
+        },
+      ],
+    });
+    writeFileSync(file, raw);
+
+    const all = await store.all();
+    expect(all).toHaveLength(1);
+    expect(all[0].createdAt).toBe("2024-02-29T10:00:00.000Z");
+    expect(readdirSync(dir).filter((f) => f.startsWith("views.json.corrupt-"))).toHaveLength(0);
+  });
 });
 
 const items: ViewItemLike[] = [

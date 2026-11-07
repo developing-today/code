@@ -335,7 +335,7 @@ fn bridge(node: &Node) -> Option<GroupEvent> {
         }),
         GroupAction::Remove { member } => GroupBody::Member(MemberOp::Remove {
             member: member_key(member)?,
-            successor: None,
+            mode: crate::groups::RemoveMode::Revoke,
         }),
         GroupAction::Promote { member, access } | GroupAction::Demote { member, access } => {
             GroupBody::Member(MemberOp::SetRole {
@@ -594,8 +594,8 @@ mod tests {
         }
         // The concurrent roots come out smallest-ID first.
         let ids = reference.unwrap();
-        let smaller_first = (Hash::digest([11]) < Hash::digest([12]))
-            == (ids[0] == Hash::digest([11]));
+        let smaller_first =
+            (Hash::digest([11]) < Hash::digest([12])) == (ids[0] == Hash::digest([11]));
         assert!(smaller_first);
     }
 
@@ -621,4 +621,3 @@ mod tests {
         assert_eq!(ids, expected);
     }
 }
-
