@@ -1,0 +1,66 @@
+
+ RUN  v5.0.5 /home/user/git/fleet/probe-2026-10-30-laneA-upload-destroy/pkgs/id/web
+
+stdout | src/probe-upload-destroy.test.ts > probe: upload completes after view.destroy() > observes success-path and failure-path behaviour
+PROBE claimed: true
+
+stdout | src/probe-upload-destroy.test.ts > probe: upload completes after view.destroy() > observes success-path and failure-path behaviour
+PROBE warns after success-after-destroy: [["[image-upload] Upload failed for a.png:","TypeError: Cannot read properties of null (reading 'matchesNode')"]]
+PROBE old view doc after completion: doc(paragraph(image, "hello world"))
+PROBE unhandled rejections: []
+
+stdout | src/probe-upload-destroy.test.ts > probe: upload completes after view.destroy() > observes success-path and failure-path behaviour
+PROBE warns after failure-after-destroy: [["[image-upload] Upload failed for a.png:","Error: network down"]]
+PROBE unhandled rejections (failure): []
+
+ ✓ src/probe-upload-destroy.test.ts (1 test) 129ms
+⎯⎯⎯⎯⎯⎯ Unhandled Errors ⎯⎯⎯⎯⎯⎯
+
+Vitest caught 2 unhandled errors during the test run.
+This might cause false positive tests. Resolve unhandled errors to make sure your tests are not affected.
+
+⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯
+TypeError: Cannot read properties of null (reading 'matchesNode')
+ ❯ EditorView.updateStateInner node_modules/prosemirror-view/dist/index.js:5594:49
+ ❯ EditorView.updateState node_modules/prosemirror-view/dist/index.js:5566:14
+ ❯ EditorView.dispatch node_modules/prosemirror-view/dist/index.js:5944:14
+ ❯ src/image-upload.ts:255:12
+    253|       const removeTr = view.state.tr;
+    254|       removeTr.setMeta(imageUploadKey, { type: "remove", id } satisfie…
+    255|       view.dispatch(removeTr);
+       |            ^
+    256|     });
+    257| }
+ ❯ processTicksAndRejections node:internal/process/task_queues:104:5
+
+This error originated in "src/probe-upload-destroy.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+The last test to run before this error was "observes success-path and failure-path behaviour". This means either:
+- the error was thrown while Vitest was running this test, or
+- the error was thrown after the test completed, and this was the most recent test at that point.
+
+⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯
+TypeError: Cannot read properties of null (reading 'matchesNode')
+ ❯ EditorView.updateStateInner node_modules/prosemirror-view/dist/index.js:5594:49
+ ❯ EditorView.updateState node_modules/prosemirror-view/dist/index.js:5566:14
+ ❯ EditorView.dispatch node_modules/prosemirror-view/dist/index.js:5944:14
+ ❯ src/image-upload.ts:255:12
+    253|       const removeTr = view.state.tr;
+    254|       removeTr.setMeta(imageUploadKey, { type: "remove", id } satisfie…
+    255|       view.dispatch(removeTr);
+       |            ^
+    256|     });
+    257| }
+
+This error originated in "src/probe-upload-destroy.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+The last test to run before this error was "observes success-path and failure-path behaviour". This means either:
+- the error was thrown while Vitest was running this test, or
+- the error was thrown after the test completed, and this was the most recent test at that point.
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+     Errors  2 errors
+   Start at  13:46:27
+   Duration  1.01s (environment 59%, tests 16%, import 14%, transform 8%, worker 4%)
+
