@@ -211,26 +211,43 @@ class GenerateTest(unittest.TestCase):
         self.assertIn("developing-today-forks/some-tool", out)
         self.assertIn("developing-today-forks/opencode", out)
 
+    def run_gen_omitting(self, *omit: str) -> subprocess.CompletedProcess:
+        captures = {
+            "--org-json": "org.json",
+            "--forks-org-json": "forks-org.json",
+            "--user-json": "user.json",
+        }
+        argv = [sys.executable, str(GENERATE)]
+        for flag, filename in captures.items():
+            if flag not in omit:
+                argv += [flag, str(self.dir / filename)]
+        argv += [
+            "--census",
+            str(self.dir / "census.md"),
+            "--output",
+            str(self.out),
+        ]
+        return subprocess.run(argv, capture_output=True, text=True)
+
     def test_offline_mode_requires_both_captures(self) -> None:
         # Omitting a capture without --live must fail, not silently
         # regenerate with that source emptied (deleting every
         # GitHub-only repo from the omitted source).
-        proc = subprocess.run(
-            [
-                sys.executable,
-                str(GENERATE),
-                "--org-json",
-                str(self.dir / "org.json"),
-                "--census",
-                str(self.dir / "census.md"),
-                "--output",
-                str(self.out),
-            ],
-            capture_output=True,
-            text=True,
-        )
+        proc = self.run_gen_omitting("--forks-org-json", "--user-json")
         self.assertNotEqual(proc.returncode, 0)
         self.assertFalse(self.out.exists())
+
+    def test_offline_mode_requires_each_capture_singly(self) -> None:
+        # Each capture omitted on its own must fail, name the missing
+        # flag, and write no output (#6612: omitting only
+        # --forks-org-json used to exit 0 with the whole forks org
+        # silently dropped from the artifact).
+        for flag in ("--org-json", "--forks-org-json", "--user-json"):
+            with self.subTest(flag=flag):
+                proc = self.run_gen_omitting(flag)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn(flag, proc.stderr)
+                self.assertFalse(self.out.exists())
 
     def test_idempotent_zero_diff_on_unchanged_inputs(self) -> None:
         first = self.run_gen()
