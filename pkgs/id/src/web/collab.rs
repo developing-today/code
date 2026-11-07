@@ -507,6 +507,16 @@ pub enum CollabMessage {
     },
 }
 
+/// True when `data` is exactly one complete `MessagePack` value with no bytes after it.
+fn is_single_msgpack_value(data: &[u8]) -> bool {
+    let mut cursor = std::io::Cursor::new(data);
+    let mut de = rmp_serde::Deserializer::new(&mut cursor);
+    if serde::de::IgnoredAny::deserialize(&mut de).is_err() {
+        return false;
+    }
+    usize::try_from(cursor.position()).is_ok_and(|consumed| consumed == data.len())
+}
+
 impl CollabMessage {
     /// Encode message to `MessagePack` bytes.
     pub fn encode(&self) -> Vec<u8> {
@@ -553,6 +563,13 @@ impl CollabMessage {
     /// Decode message from `MessagePack` bytes.
     pub fn decode(data: &[u8]) -> Option<Self> {
         use rmp_serde::decode::from_slice;
+
+        // A frame is exactly one MessagePack value: refuse trailing bytes so a
+        // message has one byte spelling and a concatenated second message is
+        // never silently dropped (#6349).
+        if !is_single_msgpack_value(data) {
+            return None;
+        }
 
         // MessagePack tuples are encoded as arrays. The first element is the message type.
         // We decode the whole thing for each message type. This is slightly inefficient
@@ -1668,6 +1685,79 @@ mod tests {
 
         // Malformed data
         assert!(CollabMessage::decode(&[0x93, 0x00]).is_none());
+    }
+
+    #[test]
+    fn test_collab_message_decode_refuses_trailing_bytes() {
+        let msgs = [
+            CollabMessage::Auth {
+                token: "secret-token".to_owned(),
+            },
+            CollabMessage::Steps {
+                version: 3,
+                steps: vec![serde_json::json!({"a": 1})],
+                client_id: 7,
+            },
+            CollabMessage::Ack { version: 42 },
+        ];
+        for m in msgs {
+            let bytes = m.encode();
+            assert_eq!(
+                CollabMessage::decode(&bytes).map(|d| d.encode()),
+                Some(bytes.clone())
+            );
+            let mut with_byte = bytes.clone();
+            with_byte.push(0xff);
+            assert!(CollabMessage::decode(&with_byte).is_none());
+            let mut with_garbage = bytes.clone();
+            with_garbage.extend_from_slice(b"garbage!!");
+            assert!(CollabMessage::decode(&with_garbage).is_none());
+            let mut with_second = bytes.clone();
+            with_second.extend_from_slice(&bytes);
+            assert!(CollabMessage::decode(&with_second).is_none());
+        }
+    }
+
+    #[test]
+    fn test_collab_message_decode_refuses_every_variant_with_suffix() {
+        let msgs = [
+            CollabMessage::Init {
+                version: 1,
+                doc: serde_json::json!({"t": "doc"}),
+                mode: "raw".to_owned(),
+            },
+            CollabMessage::Update {
+                steps: vec![serde_json::json!(1)],
+                client_ids: vec![2],
+            },
+            CollabMessage::Cursor {
+                client_id: 1,
+                head: 2,
+                anchor: 3,
+                name: Some("n".to_owned()),
+                idle_secs: Some(4),
+            },
+            CollabMessage::Error {
+                error: "e".to_owned(),
+            },
+            CollabMessage::CursorRemove { client_id: 9 },
+            CollabMessage::NewVersion {
+                hash: "h".to_owned(),
+                name: "n".to_owned(),
+            },
+            CollabMessage::AuthOk {
+                client_id: 1,
+                name: "n".to_owned(),
+                token: "t".to_owned(),
+            },
+        ];
+        for m in msgs {
+            let bytes = m.encode();
+            assert!(CollabMessage::decode(&bytes).is_some(), "{m:?} round-trips");
+            let mut suffixed = bytes;
+            suffixed.push(0x00);
+            assert!(CollabMessage::decode(&suffixed).is_none(), "{m:?} + suffix");
+        }
     }
 
     #[test]
