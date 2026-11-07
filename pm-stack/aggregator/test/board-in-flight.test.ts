@@ -93,7 +93,7 @@ describe("titleRefs", () => {
       "developing-today/opencode#927",
       "developing-today-forks/kaneo#42",
       "dezren39/nix#889",
-      "developing-today/openchamber#492",
+      "developing-today-forks/openchamber#492",
     ]);
   });
 });
@@ -244,8 +244,8 @@ describe("inFlightBoardItems", () => {
     ]);
 
     expect(out).toHaveLength(1);
-    expect(out[0].links.map((link) => link.ref)).toEqual(["developing-today/openchamber#492"]);
-    expect(out[0].repo).toBe("developing-today/openchamber");
+    expect(out[0].links.map((link) => link.ref)).toEqual(["developing-today-forks/openchamber#492"]);
+    expect(out[0].repo).toBe("developing-today-forks/openchamber");
   });
 
   test("does not let a title-only collision hide a task with distinct refs", () => {
@@ -299,7 +299,7 @@ describe("inFlightBoardItems", () => {
     expect(by944?.links.map((l) => l.ref)).toContain("developing-today/code#985");
     expect(out.find((i) => i.title.includes("#889"))?.repo).toBe("dezren39/nix");
     expect(out.find((i) => i.title.includes("#492"))?.links.map((l) => l.ref)).toEqual([
-      "developing-today/openchamber#492",
+      "developing-today-forks/openchamber#492",
     ]);
   });
 });
@@ -356,8 +356,8 @@ describe("renderBoard in-flight lane", () => {
     ]);
     const html = renderBoard([...lane, ...existing], items, provenance);
 
-    expect(html).toContain('href="https://github.com/developing-today/openchamber/issues/492"');
-    expect(html.match(/href="https:\/\/github.com\/developing-today\/openchamber\/issues\/492"/g)).toHaveLength(1);
+    expect(html).toContain('href="https://github.com/developing-today-forks/openchamber/issues/492"');
+    expect(html.match(/href="https:\/\/github.com\/developing-today-forks\/openchamber\/issues\/492"/g)).toHaveLength(1);
     expect(html.match(/href="https:\/\/github.com\/developing-today\/code\/issues\/944"/g)).toHaveLength(1);
   });
 });
