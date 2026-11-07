@@ -9,6 +9,7 @@ import {
   buildIncidentPayload,
   buildTestPayload,
   classEnabled,
+  createAlertsStoreGetter,
   duplicateWouldRepeatDelivery,
   incidentObjectRef,
   incidentUrl,
@@ -21,15 +22,57 @@ import {
   toPublicSubscription,
   validateNewIncident,
   validateNewSubscription,
-  type AlertsStore,
+  AlertsStore,
+  type AlertsStore as AlertsStoreType,
   type Incident,
   type PushSubscriptionRow,
 } from "../src/alerts.ts";
 import { isForeignSwScript, type PushOutcome, type PushTarget } from "../src/push.ts";
 import { renderAlerts } from "../src/render.ts";
 import type { Provenance } from "../src/model.ts";
-import { sqlInt, sqlJson, sqlStr } from "../src/supabase.ts";
+import { sqlInt, sqlJson, sqlStr, type SupabaseClient } from "../src/supabase.ts";
 import type { Config } from "../src/config.ts";
+
+describe("getAlertsStore retry-after-null memoization", () => {
+  test("retries a null client, shares the next in-flight attempt, and caches success", async () => {
+    let clientCalls = 0;
+    let resolveFirst!: (value: SupabaseClient | null) => void;
+    const firstResult = new Promise<SupabaseClient | null>((resolve) => {
+      resolveFirst = resolve;
+    });
+    let resolveRetry!: (value: SupabaseClient | null) => void;
+    const retryResult = new Promise<SupabaseClient | null>((resolve) => {
+      resolveRetry = resolve;
+    });
+    const fakeClient: SupabaseClient = {
+      ref: "test-project",
+      async query<T>() {
+        return [] as T[];
+      },
+    };
+    const getStore = createAlertsStoreGetter(async () => {
+      clientCalls += 1;
+      return clientCalls === 1 ? firstResult : retryResult;
+    });
+
+    const initial = getStore();
+    const concurrentInitial = getStore();
+    expect(clientCalls).toBe(1);
+    resolveFirst(null);
+    expect(await Promise.all([initial, concurrentInitial])).toEqual([null, null]);
+
+    const first = getStore();
+    const second = getStore();
+    expect(clientCalls).toBe(2);
+    resolveRetry(fakeClient);
+
+    const [store, concurrentStore] = await Promise.all([first, second]);
+    expect(store).not.toBeNull();
+    expect(store).toBe(concurrentStore);
+    expect(await getStore()).toBe(store);
+    expect(clientCalls).toBe(2);
+  });
+});
 
 describe("sql literals", () => {
   test("single quotes double", () => {
@@ -73,6 +116,31 @@ describe("class + quiet merges (design §1/§2)", () => {
       enabled: true,
     });
   });
+  test("out-of-range quiet times fall back per field (#3686)", () => {
+    // 99:99 and 24:60 keep the shape but are not real clock times —
+    // each malformed field independently retains its DEFAULT_QUIET value.
+    expect(mergeQuiet({ start: "99:99" }).start).toBe("23:00");
+    expect(mergeQuiet({ end: "24:60" }).end).toBe("07:00");
+    expect(mergeQuiet({ start: "24:00" }).start).toBe("23:00");
+    expect(mergeQuiet({ end: "12:60" }).end).toBe("07:00");
+    // Mixed: one bad field falls back while the good field is kept.
+    expect(mergeQuiet({ start: "99:99", end: "23:59" })).toEqual({
+      start: "23:00",
+      end: "23:59",
+      tz: "America/Chicago",
+      enabled: true,
+    });
+  });
+  test("boundary clock times 00:00 and 23:59 are accepted (#3686)", () => {
+    expect(mergeQuiet({ start: "00:00" }).start).toBe("00:00");
+    expect(mergeQuiet({ end: "23:59" }).end).toBe("23:59");
+    expect(mergeQuiet({ start: "00:00", end: "23:59" })).toEqual({
+      start: "00:00",
+      end: "23:59",
+      tz: "America/Chicago",
+      enabled: true,
+    });
+  });
   test("invalid quiet timezone falls back to the default", () => {
     expect(mergeQuiet({ tz: "Not/AZone" }).tz).toBe("America/Chicago");
   });
@@ -107,6 +175,57 @@ describe("class + quiet merges (design §1/§2)", () => {
     // 2026-01-15T05:30Z = Jan 14 23:30 CST — dead center of the window.
     expect(inQuietHours(off, new Date("2026-01-15T05:30:00Z"))).toBe(false);
     expect(inQuietHours(off, new Date("2026-01-15T12:59:00Z"))).toBe(false);
+  });
+});
+
+describe("stored subscription preference reads (#4978)", () => {
+  test("invalid stored quiet fields fall back per field without rewriting rows", async () => {
+    const invalidQuiet = { start: "99:99", end: "24:60", tz: "Not/AZone", enabled: true };
+    const validQuiet = { start: "22:30", end: "06:15", tz: "UTC", enabled: true };
+    const rawRows: PushSubscriptionRow[] = [
+      {
+        id: "sub-invalid",
+        endpoint: "https://push.example/invalid",
+        p256dh: "p256dh",
+        auth: "auth",
+        classes: { incident: true },
+        quiet: invalidQuiet,
+        user_agent: null,
+        created_at: "2026-11-01T00:00:00Z",
+        last_seen_at: "2026-11-01T00:00:00Z",
+        gone_count: 0,
+      },
+      {
+        id: "sub-valid",
+        endpoint: "https://push.example/valid",
+        p256dh: "p256dh",
+        auth: "auth",
+        classes: { incident: true },
+        quiet: validQuiet,
+        user_agent: null,
+        created_at: "2026-11-02T00:00:00Z",
+        last_seen_at: "2026-11-02T00:00:00Z",
+        gone_count: 0,
+      },
+    ];
+    const queries: string[] = [];
+    const db: SupabaseClient = {
+      ref: "test",
+      async query<T>(sql: string): Promise<T[]> {
+        queries.push(sql);
+        return rawRows as unknown as T[];
+      },
+    };
+
+    const loaded = await new AlertsStore(db).listSubscriptions();
+
+    expect(loaded.map((row) => row.quiet)).toEqual([
+      { start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true },
+      validQuiet,
+    ]);
+    expect(inQuietHours(loaded[0].quiet, new Date("2026-01-15T12:00:00Z"))).toBe(true);
+    expect(rawRows.map((row) => row.quiet)).toEqual([invalidQuiet, validQuiet]);
+    expect(queries).toEqual(["select * from alerts.push_subscriptions order by created_at"]);
   });
 });
 
@@ -240,7 +359,60 @@ function alertTickStore(
     noteSubscriptionAlive: async () => {},
     noteSubscriptionGone: async () => "marked" as const,
   };
-  return { store: store as unknown as AlertsStore, calls };
+  return { store: store as unknown as AlertsStoreType, calls };
+}
+
+function pendingIncidentStore(rows: Incident[]): AlertsStore {
+  const db: SupabaseClient = {
+    ref: "test",
+    async query<T>(sql: string): Promise<T[]> {
+      const orderColumn = /order by (first_seen_at|delivered_at)/i.exec(sql)?.[1] as
+        | "first_seen_at"
+        | "delivered_at"
+        | undefined;
+      if (!orderColumn) throw new Error(`unexpected query: ${sql}`);
+      const isDeliveryQuery = /delivered_at is null/i.test(sql);
+      const limit = Number(/limit (\d+)/i.exec(sql)?.[1]);
+      const cursorMatch = /and \((first_seen_at|delivered_at), id\) (>|<=) \('([^']+)', '([^']+)'\)/i.exec(sql);
+      const candidates = rows
+        .filter((row) => (isDeliveryQuery ? row.delivered_at === null : row.delivered_at !== null))
+        .filter((row) => {
+          if (!cursorMatch) return true;
+          const [, column, operator, timestamp, id] = cursorMatch;
+          const value = column === "first_seen_at" ? row.first_seen_at : row.delivered_at!;
+          const comparison = value.localeCompare(timestamp) || row.id.localeCompare(id);
+          return operator === ">" ? comparison > 0 : comparison <= 0;
+        })
+        .sort((a, b) => {
+          const aValue = orderColumn === "first_seen_at" ? a.first_seen_at : a.delivered_at!;
+          const bValue = orderColumn === "first_seen_at" ? b.first_seen_at : b.delivered_at!;
+          return aValue.localeCompare(bValue) || a.id.localeCompare(b.id);
+        })
+        .slice(0, limit);
+      return candidates as T[];
+    },
+  };
+  const store = new AlertsStore(db);
+  Object.assign(store, {
+    listSubscriptions: async () => [
+      {
+        id: "sub-1",
+        endpoint: "https://push.example/sub-1",
+        p256dh: "p256dh",
+        auth: "auth",
+        classes: { incident: true },
+        quiet: { start: "23:00", end: "07:00", tz: "UTC" },
+        user_agent: null,
+        created_at: "2026-11-01T00:00:00Z",
+        last_seen_at: "2026-11-01T00:00:00Z",
+        gone_count: 0,
+      },
+    ],
+    logSend: async () => {},
+    noteSubscriptionAlive: async () => {},
+    noteSubscriptionGone: async () => "marked" as const,
+  });
+  return store;
 }
 
 const failedSend = async (_target: PushTarget, _payload: unknown): Promise<PushOutcome> => ({
@@ -251,6 +423,49 @@ const failedSend = async (_target: PushTarget, _payload: unknown): Promise<PushO
 const successfulSend = async (_target: PushTarget, _payload: unknown): Promise<PushOutcome> => ({
   ok: true,
   status: 201,
+});
+
+describe("pending alert batch fairness", () => {
+  const incidents = (delivered: boolean) =>
+    Array.from({ length: 21 }, (_, index) => {
+      const timestamp = new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString();
+      return {
+        ...incident,
+        id: `00000000-0000-0000-0000-${String(index + 1).padStart(12, "0")}`,
+        first_seen_at: timestamp,
+        delivered_at: delivered ? timestamp : null,
+      };
+    });
+
+  test("a newer incident gets a delivery attempt after the oldest batch keeps failing", async () => {
+    const rows = incidents(false);
+    const store = pendingIncidentStore(rows);
+    const attempted: string[] = [];
+
+    const failingPush = async (_target: PushTarget, payload: unknown): Promise<PushOutcome> => {
+      attempted.push((payload as { objectRef: string }).objectRef);
+      return failedSend(_target, payload);
+    };
+    await runAlertTick(tickConfig, store, failingPush);
+    await runAlertTick(tickConfig, store, failingPush);
+
+    expect(attempted).toContain(`incident:${rows[20].id}`);
+  });
+
+  test("a newer incident gets an escalation attempt after the oldest batch keeps failing", async () => {
+    const rows = incidents(true);
+    const store = pendingIncidentStore(rows);
+    const attempted: string[] = [];
+
+    const failingPush = async (_target: PushTarget, payload: unknown): Promise<PushOutcome> => {
+      attempted.push((payload as { objectRef: string }).objectRef);
+      return failedSend(_target, payload);
+    };
+    await runAlertTick(tickConfig, store, failingPush);
+    await runAlertTick(tickConfig, store, failingPush);
+
+    expect(attempted).toContain(`incident:${rows[20].id}`);
+  });
 });
 
 describe("alert tick delivery state", () => {
@@ -471,7 +686,16 @@ describe("push subscription redaction (#3693)", () => {
     // Serialize exactly as the /api/push/subscriptions handlers do.
     const getBody = JSON.stringify({ subscriptions: [row].map(toPublicSubscription) });
     const postBody = JSON.stringify({ subscription: toPublicSubscription(row) });
-    const expectedFields = ["id", "endpoint", "classes", "quiet", "user_agent", "created_at", "last_seen_at", "gone_count"];
+    const expectedFields = [
+      "id",
+      "endpoint",
+      "classes",
+      "quiet",
+      "user_agent",
+      "created_at",
+      "last_seen_at",
+      "gone_count",
+    ];
     for (const body of [getBody, postBody]) {
       expect(body).not.toContain(sentinelP256dh);
       expect(body).not.toContain(sentinelAuth);

@@ -196,8 +196,108 @@ pub fn shell_capture(cmd: &str) -> Result<String> {
 /// until its closing quote, backslash escapes are not interpreted, and
 /// an unterminated quote makes the rest of the line quoted (so no
 /// occurrence is found in it).
-fn find_unquoted(haystack: &str, needle: &str) -> Option<usize> {
-    find_unquoted_from(haystack, needle, &[], 0)
+/// Byte spans of `$(...)` command substitutions (nesting-aware) and
+/// backtick spans in the raw source `line`, found with the module's
+/// quoting contract: a span only opens outside quotes, `$(...)`
+/// paren matching is quote-aware inside, and an unterminated span
+/// runs to the end of the line (the substitution stages report that
+/// error when they run). A `<<` inside one of these spans is shell
+/// source, not REPL syntax, so stage-1 heredoc detection must skip
+/// it (#4562).
+fn substitution_spans(line: &str) -> Vec<(usize, usize)> {
+    let chars: Vec<(usize, char)> = line.char_indices().collect();
+    let mut spans = Vec::new();
+    let mut k = 0;
+    let mut quote: Option<char> = None;
+    while k < chars.len() {
+        let (i, c) = chars[k];
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                }
+                k += 1;
+            }
+            None => {
+                if c == '\'' || c == '"' {
+                    quote = Some(c);
+                    k += 1;
+                } else if c == '$' && chars.get(k + 1).is_some_and(|&(_, next)| next == '(') {
+                    let mut depth = 1;
+                    let mut j = k + 2;
+                    let mut inner: Option<char> = None;
+                    while j < chars.len() {
+                        let (_, d) = chars[j];
+                        match inner {
+                            Some(q) => {
+                                if d == q {
+                                    inner = None;
+                                }
+                            }
+                            None => match d {
+                                '\'' | '"' => inner = Some(d),
+                                '(' => depth += 1,
+                                ')' => {
+                                    depth -= 1;
+                                    if depth == 0 {
+                                        break;
+                                    }
+                                }
+                                _ => {}
+                            },
+                        }
+                        j += 1;
+                    }
+                    let end = if j < chars.len() {
+                        chars[j].0 + 1
+                    } else {
+                        line.len()
+                    };
+                    spans.push((i, end));
+                    k = if j < chars.len() { j + 1 } else { chars.len() };
+                } else if c == '`' {
+                    let mut j = k + 1;
+                    while j < chars.len() && chars[j].1 != '`' {
+                        j += 1;
+                    }
+                    let end = if j < chars.len() {
+                        chars[j].0 + 1
+                    } else {
+                        line.len()
+                    };
+                    spans.push((i, end));
+                    k = if j < chars.len() { j + 1 } else { chars.len() };
+                } else {
+                    k += 1;
+                }
+            }
+        }
+    }
+    spans
+}
+
+/// First `<<` in `line` that is genuine REPL syntax: outside quotes
+/// (via `find_unquoted_from`) and outside `$(...)`/backtick spans
+/// (#4562). A `<<<` here-string keeps the old stage-1 behavior — the
+/// line is left alone for the here-string stage — so the search stops
+/// there instead of looking further.
+fn find_heredoc_start(line: &str) -> Option<usize> {
+    let spans = substitution_spans(line);
+    let mut from = 0;
+    while let Some(pos) = find_unquoted_from(line, "<<", &[], from) {
+        if let Some(&(_, end)) = spans.iter().find(|&&(a, b)| pos >= a && pos < b) {
+            // Inside a substitution body: not source syntax. The span
+            // end (past `)` / the closing backtick) is unquoted source,
+            // so resuming there keeps the caller's contract.
+            from = end;
+            continue;
+        }
+        if line[pos + 2..].starts_with('<') {
+            return None;
+        }
+        return Some(pos);
+    }
+    None
 }
 
 /// Whether byte index `idx` lies inside a protected span. Protected
@@ -209,6 +309,99 @@ fn find_unquoted(haystack: &str, needle: &str) -> Option<usize> {
 /// operator behind it (#1585, Codex review).
 fn is_protected(protected: &[(usize, usize)], idx: usize) -> bool {
     protected.iter().any(|&(a, b)| idx >= a && idx < b)
+}
+
+/// Byte spans of backtick substitutions in `source`, honouring the
+/// module's quoting contract and the protected spans: a backtick only
+/// opens a span outside quotes and outside protected text, and the
+/// closing backtick is the next unprotected backtick (the backtick
+/// stage's own rule). An unterminated span runs to the end of the
+/// line; the backtick stage reports that error when it runs. The
+/// $(...) stage uses these spans to leave a `$(` that is backtick
+/// body alone: the whole body is shell code and `shell_capture`
+/// expands its own substitutions when the backtick stage executes
+/// it (#4562 — without this, the $(...) stage misreads the `$((` of
+/// an arithmetic expansion inside backticks as a substitution whose
+/// command is a no-op subshell, eating the expansion).
+fn backtick_spans(source: &str, protected: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let chars: Vec<(usize, char)> = source.char_indices().collect();
+    let mut spans = Vec::new();
+    let mut k = 0;
+    let mut quote: Option<char> = None;
+    while k < chars.len() {
+        let (i, c) = chars[k];
+        if is_protected(protected, i) {
+            k += 1;
+            continue;
+        }
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                }
+                k += 1;
+            }
+            None => {
+                if c == '\'' || c == '"' {
+                    quote = Some(c);
+                    k += 1;
+                } else if c == '$' && chars.get(k + 1).is_some_and(|&(_, next)| next == '(') {
+                    // A $(...) body is shell code consumed by that
+                    // substitution: a backtick inside it (e.g. an
+                    // escaped literal in $(printf \`) is not a
+                    // top-level backtick opener and must not hide
+                    // later substitutions (Codex review, PR #4600).
+                    let mut depth = 1;
+                    let mut j = k + 2;
+                    let mut inner: Option<char> = None;
+                    while j < chars.len() {
+                        let (ci, d) = chars[j];
+                        if is_protected(protected, ci) {
+                            j += 1;
+                            continue;
+                        }
+                        match inner {
+                            Some(q) => {
+                                if d == q {
+                                    inner = None;
+                                }
+                            }
+                            None => match d {
+                                '\'' | '"' => inner = Some(d),
+                                '(' => depth += 1,
+                                ')' => {
+                                    depth -= 1;
+                                    if depth == 0 {
+                                        break;
+                                    }
+                                }
+                                _ => {}
+                            },
+                        }
+                        j += 1;
+                    }
+                    k = if j < chars.len() { j + 1 } else { chars.len() };
+                } else if c == '`' {
+                    let mut j = k + 1;
+                    while j < chars.len()
+                        && !(chars[j].1 == '`' && !is_protected(protected, chars[j].0))
+                    {
+                        j += 1;
+                    }
+                    let end = if j < chars.len() {
+                        chars[j].0 + 1
+                    } else {
+                        source.len()
+                    };
+                    spans.push((i, end));
+                    k = if j < chars.len() { j + 1 } else { chars.len() };
+                } else {
+                    k += 1;
+                }
+            }
+        }
+    }
+    spans
 }
 
 /// `find_unquoted`, searching from byte offset `from` (a point the
@@ -346,7 +539,6 @@ fn has_trailing_placeholder(cmd: &str) -> bool {
     t == "-" || t.ends_with(" -")
 }
 
-
 /// `cmd` with every here-string (`<<<` plus its content) removed.
 /// Here-string content is literal data, not command syntax: a `-`
 /// payload (`<<< -`) is not a trailing placeholder, and a quoted
@@ -412,7 +604,8 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
     }
 
     // Check for heredoc: put - name <<EOF
-    if let Some(heredoc_start) = find_unquoted(line, "<<") {
+    // A `<<` inside $(...)/backticks is shell source, not a heredoc (#4562).
+    if let Some(heredoc_start) = find_heredoc_start(line) {
         let after = &line[heredoc_start + 2..];
         // Check it's not <<< (here-string)
         if !after.starts_with('<') {
@@ -511,7 +704,18 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
         let mut substituted = String::with_capacity(source.len());
         let mut new_protected: Vec<(usize, usize)> = Vec::new();
         let mut pos = 0;
-        while let Some(start) = find_unquoted_from(&source, "$(", &protected, pos) {
+        // A `$(` inside a backtick span is backtick body, not a
+        // substitution this stage owns: the backtick stage executes
+        // the whole body as shell code (#4562). `search` is the scan
+        // cursor; `pos` stays the copy cursor, so skipped text is
+        // still copied verbatim for the backtick stage.
+        let bt_spans = backtick_spans(&source, &protected);
+        let mut search = 0;
+        while let Some(start) = find_unquoted_from(&source, "$(", &protected, search) {
+            if let Some(&(_, span_end)) = bt_spans.iter().find(|&&(a, b)| start >= a && start < b) {
+                search = span_end;
+                continue;
+            }
             let mut depth = 1;
             let mut end = start + 2;
             let mut quote: Option<char> = None;
@@ -558,6 +762,7 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
             substituted.push_str(&output);
             new_protected.push((span_start, substituted.len()));
             pos = end + 1;
+            search = pos;
         }
         let chunk_base = substituted.len();
         substituted.push_str(&source[pos..]);
@@ -841,10 +1046,12 @@ mod tests {
         for quote in ['\'', '"'] {
             let line = format!("echo $(exit 3) <<< {quote}literal |> -{quote} |> put name -");
             let error = preprocess_repl_line(&line).unwrap_err().to_string();
-            assert!(error.contains("trailing '-' content placeholder"), "{error}");
+            assert!(
+                error.contains("trailing '-' content placeholder"),
+                "{error}"
+            );
         }
     }
-
 
     #[test]
     fn test_pipe_rhs_here_string_dash_payload_is_literal() {
@@ -914,15 +1121,10 @@ mod tests {
         // the placeholder error must win and the file must not exist:
         // rejection precedes every stage that executes shell code
         // (Codex review, PR #3096).
-        let marker = std::env::temp_dir().join(format!(
-            "mcpx-repl-side-effect-{}",
-            std::process::id()
-        ));
+        let marker =
+            std::env::temp_dir().join(format!("mcpx-repl-side-effect-{}", std::process::id()));
         let _ = std::fs::remove_file(&marker);
-        let line = format!(
-            "echo $(touch {}) |> put name -",
-            marker.display()
-        );
+        let line = format!("echo $(touch {}) |> put name -", marker.display());
         let result = preprocess_repl_line(&line);
         assert!(
             result
@@ -1048,6 +1250,87 @@ mod tests {
             ReplInput::Ready(s) => assert_eq!(s, "get a<<b"),
             _ => panic!("expected Ready"),
         }
+    }
+
+    #[test]
+    fn test_preprocess_unquoted_heredoc_marker_inside_substitution() {
+        // #4562: an unquoted `<<` inside $(...) is shell source (here a
+        // shift expression, so the shell result is deterministic), not a
+        // REPL heredoc.
+        match preprocess_repl_line("get $(echo $((1<<3)))").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get 8"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_heredoc_marker_inside_nested_substitution() {
+        // #4562: nesting-aware — the marker in the inner $(...) is
+        // skipped too.
+        match preprocess_repl_line("get $(echo $(echo $((1<<2))))").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get 4"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_heredoc_marker_inside_backticks() {
+        // #4562: same skip rule for backtick spans.
+        match preprocess_repl_line("get `echo $((1<<3))`").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get 8"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_backtick_inside_substitution_hides_nothing() {
+        // Codex review, PR #4600: an escaped literal backtick inside a
+        // $(...) body is not a top-level backtick opener; the later
+        // substitution must still expand.
+        match preprocess_repl_line("get $(printf \\`) $(echo hi)").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get ` hi"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_shell_redirect_inside_substitution_is_not_heredoc() {
+        // #4562 acceptance shape: `$(echo a<<b)` executes the
+        // substitution (the shell reads an empty heredoc body) instead
+        // of hijacking the line into NeedMore with delimiter `b)`.
+        match preprocess_repl_line("get $(echo a<<b)").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get a"),
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_genuine_heredoc_after_substitution() {
+        // Skipping in-span markers must not hide a real top-level `<<`.
+        match preprocess_repl_line("get $(echo hi) <<EOF").unwrap() {
+            ReplInput::NeedMore {
+                delimiter,
+                original_line,
+                ..
+            } => {
+                assert_eq!(delimiter, "EOF");
+                assert_eq!(original_line, "get $(echo hi)");
+            }
+            _ => panic!("expected NeedMore"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_unterminated_substitution_with_marker_is_error() {
+        // An unterminated span swallows its `<<`; the error surfaces
+        // from the substitution stage instead of a garbage NeedMore.
+        let error = preprocess_repl_line("get $(echo a<<b").unwrap_err();
+        assert!(error.to_string().contains("unterminated $(...)"), "{error}");
+        let error = preprocess_repl_line("get `echo a<<b").unwrap_err();
+        assert!(
+            error.to_string().contains("unterminated backtick"),
+            "{error}"
+        );
     }
 
     #[test]

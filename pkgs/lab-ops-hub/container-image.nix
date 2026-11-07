@@ -16,12 +16,13 @@ let
     sha256 = "sha256-EjZqHKObBfIOeHZnMRVV87HB3pPq/WBkmRJWyFxmZu8=";
   };
   pkgs = import nixpkgs { };
+  python = pkgs.python3.withPackages (ps: [ ps.idna ]);
 in
 pkgs.dockerTools.buildLayeredImage {
   name = "lab-ops-hub-crawlercontainer";
   tag = "v5";
   contents = [
-    pkgs.python3
+    python
     pkgs.cacert
     pkgs.bash
     pkgs.coreutils
@@ -34,14 +35,14 @@ pkgs.dockerTools.buildLayeredImage {
   config = {
     WorkingDir = "/app";
     Cmd = [
-      "${pkgs.python3}/bin/python3"
+      "${python}/bin/python3"
       "/app/app.py"
     ];
     ExposedPorts = {
       "8080/tcp" = { };
     };
     Env = [
-      "PATH=${pkgs.python3}/bin:${pkgs.coreutils}/bin:${pkgs.bash}/bin:/bin:/usr/bin"
+      "PATH=${python}/bin:${pkgs.coreutils}/bin:${pkgs.bash}/bin:/bin:/usr/bin"
       # Nix python ships no CA bundle config; without this, outbound HTTPS
       # fails CERTIFICATE_VERIFY_FAILED inside the container.
       "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"

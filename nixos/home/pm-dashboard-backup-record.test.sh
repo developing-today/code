@@ -104,8 +104,8 @@ run_scenario() {
     dump_script="$home/dump-ok.sh"
     {
       printf '#!%s\n' "$BASH"
-      printf '%s\n' 'mkdir -p "$HOME/backups/db-dumps/$1"'
-      printf '%s\n' 'printf "{}\n" > "$HOME/backups/db-dumps/$1/dump.sql"'
+      printf '%s\n' 'mkdir -p "$HOME/backups/pm-stack/$1"'
+      printf '%s\n' 'printf "{}\n" > "$HOME/backups/pm-stack/$1/dump.sql"'
     } >"$dump_script"
     chmod +x "$dump_script"
   elif [[ $dump_mode == "fail" ]]; then

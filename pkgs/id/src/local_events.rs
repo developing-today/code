@@ -25,7 +25,7 @@ use crate::chain::{ChainExt, Event, MAX_AFTER, sign};
 use crate::documents::{DOCUMENT_KIND, DocumentRef, REMOVAL_KIND};
 use crate::event_store::{EventStore, Ingest};
 use crate::notes::{
-    AppliedNote, CREATE_KIND as NOTE_CREATE_KIND, NoteOp, NoteRecord,
+    AppliedNote, CREATE_KIND as NOTE_CREATE_KIND, NoteFoldError, NoteOp, NoteRecord,
     REVISE_KIND as NOTE_REVISE_KIND, check_note_op, fold_notes,
 };
 use crate::search::{Hit, ValueMatch, search_store};
@@ -170,6 +170,45 @@ pub struct Published {
 /// Every applied event's entry by ID, and every applied event's parents by ID.
 type Log = (HashMap<Hash, Entry>, HashMap<Hash, Vec<Hash>>);
 
+/// Folds store note events while quarantining malformed remote revisions.
+///
+/// Unknown/foreign-parent revisions are removed first. If the remaining same-note graph is
+/// cyclic, remove a revision identified by the strict fold and repeat so its dependents are
+/// quarantined too; unrelated healthy notes remain readable.
+fn fold_remote_notes(
+    mut applied: Vec<AppliedNote>,
+) -> std::result::Result<Vec<NoteRecord>, NoteFoldError> {
+    loop {
+        let owners: HashMap<Hash, Hash> = applied
+            .iter()
+            .map(|event| match &event.op {
+                NoteOp::Create { .. } => (event.id, event.id),
+                NoteOp::Revise { note, .. } => (event.id, *note),
+            })
+            .collect();
+        let before = applied.len();
+        applied.retain(|event| match &event.op {
+            NoteOp::Create { .. } => true,
+            NoteOp::Revise { note, parents, .. } => {
+                owners.get(note) == Some(note)
+                    && parents
+                        .iter()
+                        .all(|parent| owners.get(parent) == Some(note))
+            }
+        });
+        if applied.len() != before {
+            continue;
+        }
+
+        match fold_notes(&applied) {
+            Err(NoteFoldError::CyclicParent { revision, .. }) => {
+                applied.retain(|event| event.id != revision);
+            }
+            result => return result,
+        }
+    }
+}
+
 /// The event store, and the key the node signs its events with.
 #[derive(Debug)]
 pub struct LocalEvents {
@@ -237,8 +276,12 @@ impl LocalEvents {
         tags: &[(String, Option<String>)],
     ) -> Result<Published> {
         let document = DocumentRef::for_bytes(media_type, content)?;
+        let mut seen = HashSet::with_capacity(tags.len());
         for (name, value) in tags {
             check_tag(name, value.as_deref())?;
+            if !seen.insert((name, value)) {
+                bail!("a publish names the same tag twice");
+            }
         }
         let id = self.record(DOCUMENT_KIND, None, Some(document.clone()), None, None, &[])?;
         let mut claims = Vec::with_capacity(tags.len());
@@ -266,8 +309,10 @@ impl LocalEvents {
         self.record(SET_KIND, Some(op), None, None, None, &[])
     }
 
-    /// Clears every live claim named `name` on `subject`, whoever set it. Nothing to clear is an
-    /// error.
+    /// Clears every live claim named `name` on `subject`, whoever set it, by recording
+    /// `tag.clear` markers naming them. Nothing to clear is an error. A marker hides a claim
+    /// in the default view only when this node's key authored the claim or is an admin of the
+    /// group owning the subject (#2090); the markers are recorded either way.
     ///
     /// One `tag.clear` event names at most [`MAX_CLEAR_CLAIMS`] claims, so a name with more live
     /// claims than that is cleared by several events, in the order [`EventStore::tag_claims`]
@@ -360,7 +405,7 @@ impl LocalEvents {
         Ok((count, event))
     }
 
-    /// The live claims on `subject`, sorted by claim ID.
+    /// The live claims on `subject` in the default view, sorted by claim ID.
     ///
     /// # Errors
     ///
@@ -490,39 +535,11 @@ impl LocalEvents {
                 _ => None,
             })
             .collect();
-        // Quarantine invalid remote revisions (PR #3908 Codex P1): ingest
-        // applies a signed note.revise after checking only its shape, so a
-        // peer can land a revision naming an unknown note or parent, and
-        // the strict fold would then fail every note query in the store --
-        // notes(), note_history(), and revise_note() with it. Drop,
-        // repeatedly (a revision that names a dropped one as parent goes
-        // too), every revise whose note has no create here or whose
-        // parents are not revisions of that note. The events stay in the
-        // store; valid notes fold exactly as before.
-        let mut applied = applied;
-        loop {
-            let owners: HashMap<Hash, Hash> = applied
-                .iter()
-                .map(|event| match &event.op {
-                    NoteOp::Create { .. } => (event.id, event.id),
-                    NoteOp::Revise { note, .. } => (event.id, *note),
-                })
-                .collect();
-            let before = applied.len();
-            applied.retain(|event| match &event.op {
-                NoteOp::Create { .. } => true,
-                NoteOp::Revise { note, parents, .. } => {
-                    owners.get(note) == Some(note)
-                        && parents
-                            .iter()
-                            .all(|parent| owners.get(parent) == Some(note))
-                }
-            });
-            if applied.len() == before {
-                break;
-            }
-        }
-        Ok(fold_notes(&applied)?)
+        // Ingest checks only a revision's shape, not whether its note graph
+        // can be folded. Quarantine invalid remote revisions so one bad event
+        // cannot disable notes(), note_history(), or revise_note() for the
+        // healthy notes in this store. The events stay in the store.
+        Ok(fold_remote_notes(applied)?)
     }
 
     /// The note `note`: its revisions in ID order and its current heads.
@@ -711,6 +728,8 @@ impl LocalEvents {
             removes,
             note,
             link: None,
+            checkpoint: None,
+            rotation: None,
         };
         let event = sign(&self.key, chain.next_seq, chain.head, None, ext)?;
         match self.store.ingest(&event.bytes, now_ms())? {
@@ -892,9 +911,19 @@ mod tests {
     fn test_clear_spanning_more_authors_than_the_cap_clears_exactly_its_claims() {
         // Regression for #1736: 40 authors hold a claim named "topic" on the
         // subject -- more distinct authors than MAX_AFTER, so the clear must
-        // split by author. Exactly those claims are removed: a claim with a
-        // different name on the same subject, and a same-name claim on a
-        // different subject, both survive.
+        // split by author. The markers name exactly those claims, and each
+        // named claim sits in its marker's causal past, which is what removes
+        // a claim in the fold (crate::tag_claims). A claim with a different
+        // name on the same subject, and a same-name claim on a different
+        // subject, are named by no marker.
+        //
+        // The view the claims are read through is role-aware (#2090, the
+        // owner decision on #185): the default view hides a claim only when
+        // the marker's poster is the claim's author or an admin of the group
+        // owning the subject. The clearing node here (key 0) is neither, and
+        // the subject has no owning group, so its markers do not hide the
+        // claims in tags_on -- the naming and causal-past assertions are the
+        // part #1736 broke, and they are what this test pins.
         let dir = tempfile::TempDir::new().unwrap();
         let subject = id(201);
         let other_subject = id(202);
@@ -906,9 +935,58 @@ mod tests {
         let mut events = LocalEvents::open(dir.path(), key(0)).unwrap();
         let (cleared, _) = events.clear_tag(subject, "topic").unwrap();
         assert_eq!(cleared, 40);
-        let remaining = events.tags_on(subject).unwrap();
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].name, "other");
+
+        let (entries, parents) = events.log().unwrap();
+        let mut claim_author: HashMap<Hash, AuthorKey> = HashMap::new();
+        let mut topic_claims: HashSet<Hash> = HashSet::new();
+        for entry in entries.values() {
+            if let Entry::Set {
+                id,
+                author,
+                subject: on,
+                name,
+                ..
+            } = entry
+            {
+                claim_author.insert(*id, *author);
+                if *on == subject && name == "topic" {
+                    topic_claims.insert(*id);
+                }
+            }
+        }
+        assert_eq!(topic_claims.len(), 40);
+        let mut named: HashSet<Hash> = HashSet::new();
+        let mut markers = 0usize;
+        for entry in entries.values() {
+            let Entry::Clear { id, claims, .. } = entry else {
+                continue;
+            };
+            markers += 1;
+            // One marker names claims of at most MAX_AFTER distinct authors:
+            // the split respects the same cap as the frontier it rides on.
+            let authors: HashSet<AuthorKey> =
+                claims.iter().map(|claim| claim_author[claim]).collect();
+            assert!(authors.len() <= MAX_AFTER, "a marker spans {authors:?}");
+            // Each named claim sits in this marker's causal past.
+            let seen = parents
+                .get(id)
+                .map(|named_parents| crate::tag_claims::causal_past(named_parents, &parents))
+                .unwrap_or_default();
+            for claim in claims {
+                assert!(named.insert(*claim), "a claim is named by two markers");
+                assert!(
+                    seen.contains(claim),
+                    "a named claim is outside its marker's causal past"
+                );
+            }
+        }
+        // The clear split, and together the markers name exactly the 40
+        // "topic" claims on the subject -- nothing else.
+        assert!(markers > 1, "the clear did not split: {markers} marker(s)");
+        assert_eq!(named, topic_claims);
+        // The default view (#2090): this poster's markers hide nothing, so
+        // every claim on the subject is still listed.
+        assert_eq!(events.tags_on(subject).unwrap().len(), 41);
         assert_eq!(events.tags_on(other_subject).unwrap().len(), 1);
     }
 
@@ -937,9 +1015,11 @@ mod tests {
         assert_eq!(record.heads, vec![merged]);
         assert_eq!(record.revisions.len(), 4);
         // A parent that is not a revision of this note is refused before signing.
-        assert!(events
-            .revise_note(note, "text/markdown", b"bad", &[id(222)])
-            .is_err());
+        assert!(
+            events
+                .revise_note(note, "text/markdown", b"bad", &[id(222)])
+                .is_err()
+        );
     }
 
     #[test]
@@ -968,6 +1048,8 @@ mod tests {
                     parents: vec![id(223)],
                 }),
                 link: None,
+                checkpoint: None,
+                rotation: None,
             },
         )
         .unwrap();
@@ -977,9 +1059,61 @@ mod tests {
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].id, note);
         assert!(events.note_history(note).is_ok());
-        assert!(events
-            .revise_note(note, "text/markdown", b"second", &[note])
-            .is_ok());
+        assert!(
+            events
+                .revise_note(note, "text/markdown", b"second", &[note])
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_cyclic_remote_revisions_do_not_disable_healthy_notes() {
+        fn applied_create(byte: u8) -> AppliedNote {
+            AppliedNote {
+                id: id(byte),
+                author: [1; 32],
+                op: NoteOp::Create {
+                    content: DocumentRef::for_bytes("text/markdown", b"note").unwrap(),
+                },
+            }
+        }
+
+        fn applied_revise(event: u8, note: u8, parents: &[u8]) -> AppliedNote {
+            AppliedNote {
+                id: id(event),
+                author: [1; 32],
+                op: NoteOp::Revise {
+                    note: id(note),
+                    content: DocumentRef::for_bytes("text/markdown", b"revision").unwrap(),
+                    parents: parents.iter().map(|parent| id(*parent)).collect(),
+                },
+            }
+        }
+
+        for cyclic in [
+            vec![applied_revise(21, 20, &[21])],
+            vec![applied_revise(21, 20, &[22]), applied_revise(22, 20, &[21])],
+            vec![
+                applied_revise(21, 20, &[22]),
+                applied_revise(22, 20, &[23]),
+                applied_revise(23, 20, &[21]),
+            ],
+        ] {
+            let mut events = vec![
+                applied_create(10),
+                applied_revise(11, 10, &[10]),
+                applied_create(20),
+            ];
+            events.extend(cyclic);
+            events.push(applied_revise(24, 20, &[21]));
+
+            let notes = fold_remote_notes(events).unwrap();
+            assert_eq!(notes.len(), 2);
+            assert_eq!(notes[0].id, id(10));
+            assert_eq!(notes[0].revisions.len(), 2);
+            assert_eq!(notes[1].id, id(20));
+            assert_eq!(notes[1].revisions.len(), 1);
+        }
     }
 
     #[test]
@@ -1038,6 +1172,44 @@ mod tests {
         assert!(check_tag("e\u{301}", None).is_err());
     }
 
+    #[test]
+    fn test_publish_refuses_a_repeated_tag_pair_before_recording() {
+        // Regression for #4772: a repeated exact (name, value) pair in one
+        // publish call recorded two identical live claims. The batch must be
+        // refused before anything is recorded, like the sibling validators
+        // (tag.clear claim lists, ChainExt.after, note.revise parents).
+        let (_dir, mut events) = open_events();
+        assert!(events.frontier().unwrap().is_empty());
+        for tags in [
+            vec![
+                ("city".to_owned(), Some("Seattle".to_owned())),
+                ("city".to_owned(), Some("Seattle".to_owned())),
+            ],
+            vec![("city".to_owned(), None), ("city".to_owned(), None)],
+        ] {
+            assert!(events.publish("text/plain", b"hello", &tags).is_err());
+            assert!(
+                events.frontier().unwrap().is_empty(),
+                "a refused publish records nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn test_publish_accepts_distinct_pairs_sharing_a_name() {
+        // Same name with different values, and bare plus valued, are distinct
+        // claims and must stay legal — only the exact pair repeats refuse.
+        let (_dir, mut events) = open_events();
+        let tags = vec![
+            ("city".to_owned(), Some("Seattle".to_owned())),
+            ("city".to_owned(), Some("Portland".to_owned())),
+            ("city".to_owned(), None),
+        ];
+        let published = events.publish("text/plain", b"hello", &tags).unwrap();
+        assert_eq!(published.claims.len(), 3);
+        assert_eq!(events.tags_on(published.id).unwrap().len(), 3);
+    }
+
     fn open_events() -> (tempfile::TempDir, LocalEvents) {
         let dir = tempfile::tempdir().unwrap();
         let events = LocalEvents::open(dir.path(), SigningKey::from_bytes(&[7; 32])).unwrap();
@@ -1087,11 +1259,13 @@ mod tests {
         );
         // The returned ID is the final chunk's, the one that completes the clear.
         assert_eq!(chunks.last().unwrap().0, event);
-        assert!(events
-            .tags_on(subject)
-            .unwrap()
-            .iter()
-            .all(|claim| claim.name != "topic"));
+        assert!(
+            events
+                .tags_on(subject)
+                .unwrap()
+                .iter()
+                .all(|claim| claim.name != "topic")
+        );
         // Other names, and the same name on other subjects, are untouched.
         assert_eq!(events.tags_on(subject).unwrap().len(), 1);
         assert_eq!(events.tags_on(other_subject).unwrap().len(), 1);

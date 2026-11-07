@@ -70,8 +70,7 @@ function updateMatchCount(view: EditorView): void {
     return;
   }
   const total = countMatches(view);
-  panelState.matchCountEl.textContent =
-    total === 0 ? "No results" : `${total} match${total === 1 ? "" : "es"}`;
+  panelState.matchCountEl.textContent = total === 0 ? "No results" : `${total} match${total === 1 ? "" : "es"}`;
 }
 
 /**
@@ -92,10 +91,8 @@ function searchStateChanged(prevState: EditorState, state: EditorState): boolean
 function syncQuery(view: EditorView): void {
   const searchText = panelState.searchInput?.value ?? "";
   const replaceText = panelState.replaceInput?.value ?? "";
-  const caseCheckbox =
-    panelState.panelEl?.querySelector<HTMLInputElement>("#search-case");
-  const regexCheckbox =
-    panelState.panelEl?.querySelector<HTMLInputElement>("#search-regex");
+  const caseCheckbox = panelState.panelEl?.querySelector<HTMLInputElement>("#search-case");
+  const regexCheckbox = panelState.panelEl?.querySelector<HTMLInputElement>("#search-regex");
 
   const query = new SearchQuery({
     search: searchText,
@@ -208,12 +205,8 @@ function setupPanelEvents(): void {
   });
 
   // Case/regex toggles
-  panelEl
-    .querySelector("#search-case")
-    ?.addEventListener("change", () => syncQuery(view));
-  panelEl
-    .querySelector("#search-regex")
-    ?.addEventListener("change", () => syncQuery(view));
+  panelEl.querySelector("#search-case")?.addEventListener("change", () => syncQuery(view));
+  panelEl.querySelector("#search-regex")?.addEventListener("change", () => syncQuery(view));
 }
 
 /** Open find panel, optionally showing replace. */
@@ -226,24 +219,16 @@ function openPanel(view: EditorView, showReplace: boolean): void {
   // is detached with the old container and its handlers still point at the
   // destroyed view — and no production code calls destroySearchPanel() on
   // teardown. Rebind instead of "opening" a detached node (#718).
-  if (
-    panelState.panelEl &&
-    (panelState.view !== view || panelState.panelEl.parentElement !== container)
-  ) {
+  if (panelState.panelEl && (panelState.view !== view || panelState.panelEl.parentElement !== container)) {
     destroySearchPanel();
   }
 
   if (!panelState.panelEl) {
     panelState.panelEl = createPanel(container);
     panelState.searchInput = panelState.panelEl.querySelector("#search-input");
-    panelState.replaceInput =
-      panelState.panelEl.querySelector("#replace-input");
-    panelState.matchCountEl = panelState.panelEl.querySelector(
-      "#search-match-count",
-    );
-    panelState.replaceRow = panelState.panelEl.querySelector(
-      "#search-replace-row",
-    );
+    panelState.replaceInput = panelState.panelEl.querySelector("#replace-input");
+    panelState.matchCountEl = panelState.panelEl.querySelector("#search-match-count");
+    panelState.replaceRow = panelState.panelEl.querySelector("#search-replace-row");
     panelState.view = view;
     setupPanelEvents();
   }

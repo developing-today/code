@@ -80,4 +80,4 @@ Run `bun run scripts/check-epic-conformance.ts` from `pm-stack/aggregator/` to a
 
 ## Related repositories
 
-`mcpx` is consumed by `dezren39/nix` (the macOS flake), `developing-today/opencode` and `developing-today/openchamber`. This repo is the primary source for `mcpx`. Changes to it land here first.
+`mcpx` is consumed by `dezren39/nix` (the macOS flake), `developing-today-forks/opencode` and `developing-today-forks/openchamber`. This repo is the primary source for `mcpx`. Changes to it land here first.

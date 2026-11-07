@@ -10,6 +10,7 @@ import {
   unsetPoolCount,
   validateProjectConfigs,
   type ProjectConfig,
+  type ProjectRepoCard,
 } from "../src/project-config.ts";
 import { buildProgramData, buildProgramLive, PROGRAM, programRefs, TRACKED_REFS } from "../src/program.ts";
 import { renderProgram, renderProgramProject } from "../src/render.ts";
@@ -255,7 +256,10 @@ describe("project registry", () => {
     const cloudNext = (cloud.editorial?.next ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
     expect(cloudNext).toContain("OCI signup resolution");
     expect(cloudNext).toContain("CPCOE-29381");
-    expect(cloudNext).toContain("Free-services pass");
+    // #1059: the free-services adoption record was published 2026-11-03, so the
+    // entry now lives in done (doc/2026-11-03T18-30-00Z_record_free_services_adoption.md).
+    const cloudDone = (cloud.editorial?.done ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
+    expect(cloudDone).toContain("Free-services pass — adoption decisions recorded");
     // The 2026-10-26 SaaS review list must stay named in the entry.
     for (const svc of [
       "boats.cloud",
@@ -270,11 +274,12 @@ describe("project registry", () => {
       "GCP",
       "AWS",
     ]) {
-      expect(cloudNext).toContain(svc);
+      expect(cloudDone).toContain(svc);
     }
-    // boats.cloud caveat (CodeRabbit nitpick on PR #2406): it stays unverified and untouched.
-    expect(cloudNext).toContain("unverified");
-    expect(cloudNext).toContain("untouched");
+    // boats.cloud is recorded unverifiable (not left open), and nothing is adopted yet.
+    expect(cloudDone).toContain("unverifiable");
+    expect(cloudDone).toContain("nothing is adopted yet");
+    expect(cloudDone).toContain("pending Drew");
     const cloudLongTerm = (cloud.editorial?.longTerm ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
     expect(cloudLongTerm).toContain("Egress offload");
     expect(cloudLongTerm).toContain("zero-egress");
@@ -314,7 +319,7 @@ describe("project registry", () => {
     expect(refs).toContain("dezren39/nix#512");
   });
 
-  test("validation catches duplicates and malformed entries", () => {
+  test("validation catches duplicates, malformed refs, and impossible dates", () => {
     const base: ProjectConfig = {
       id: "x-proj",
       title: "X",
@@ -333,6 +338,24 @@ describe("project registry", () => {
     ]);
     expect(bad.some((e) => e.includes("not a slug"))).toBe(true);
     expect(bad.some((e) => e.includes("malformed ref"))).toBe(true);
+    for (const ref of ["a/b/c#12", "a$/b#12", "a+b/c#3"]) {
+      const errors = validateProjectConfigs([{ ...base, trackedRefs: [ref] }]);
+      expect(errors.some((e) => e.includes("malformed ref"))).toBe(true);
+    }
+    expect(validateProjectConfigs([{ ...base, trackedRefs: ["developing-today/code#1"] }])).toEqual([]);
+
+    const repoCard: ProjectRepoCard = {
+      repo: "owner/repo",
+      role: "project",
+      openIssues: 1,
+      openIssuesAsOf: "2024-02-29",
+      trackedRefs: [],
+    };
+    expect(validateProjectConfigs([{ ...base, repoCards: [repoCard] }])).toEqual([]);
+    for (const date of ["2026-02-30", "2026-13-01", "2026-00-00", "2026-04-31", "2026-02-29"]) {
+      const errors = validateProjectConfigs([{ ...base, repoCards: [{ ...repoCard, openIssuesAsOf: date }] }]);
+      expect(errors.some((e) => e.includes("openIssuesAsOf"))).toBe(true);
+    }
     const badLinks = validateProjectConfigs([
       {
         ...base,
@@ -471,7 +494,12 @@ describe("renderProgramProject", () => {
     expect(fleetHtml).toContain("1,119 open issues");
     // Per-repo cards + sweep health render (#1126).
     expect(fleetHtml).toContain("Per-repo cards");
-    for (const repo of ["developing-today/code", "developing-today/opencode", "developing-today/openchamber", "dezren39/nix"]) {
+    for (const repo of [
+      "developing-today/code",
+      "developing-today/opencode",
+      "developing-today/openchamber",
+      "dezren39/nix",
+    ]) {
       expect(fleetHtml).toContain(repo);
     }
     expect(fleetHtml).toContain("Open issues (GitHub search, 2026-10-29)");
@@ -481,9 +509,20 @@ describe("renderProgramProject", () => {
 
   test("detail builder splits pool and roadmap by repo for the fleet cards (#1126)", () => {
     const pool = [
-      poolItem({ area: "fleet-ops", repo: "developing-today/code", ref: "developing-today/code#1", title: "code item" }),
+      poolItem({
+        area: "fleet-ops",
+        repo: "developing-today/code",
+        ref: "developing-today/code#1",
+        title: "code item",
+      }),
       poolItem({ area: "fleet-ops", repo: "dezren39/nix", ref: "dezren39/nix#2", number: 2, title: "nix item" }),
-      poolItem({ area: "pm-dashboard", repo: "developing-today/code", ref: "developing-today/code#3", number: 3, title: "other area" }),
+      poolItem({
+        area: "pm-dashboard",
+        repo: "developing-today/code",
+        ref: "developing-today/code#3",
+        number: 3,
+        title: "other area",
+      }),
     ];
     const fleet = projectConfigById("repo-fleet")!;
     const detail = buildProjectDetail(fleet, new Map(), pool, FIXTURE_ROADMAP);

@@ -1435,7 +1435,7 @@ export async function call(serverOrTool: string, toolOrArgs?: any, args?: unknow
 /** Execute multiple tool calls in a single turn. */
 export async function batch(
   calls: Array<{ server?: string; namespace?: string; tool: string; args?: unknown; arguments?: unknown }>,
-  options?: { stopOnError?: boolean; parallel?: boolean }
+  options?: { stopOnError?: boolean; parallel?: boolean; safePrefix?: boolean }
 ): Promise<Array<{ index: number; server?: string; tool: string; status: string; result?: any; error?: string; isError?: boolean }>> {
   const resp = await TRANSPORT.fetch(base() + "/v1/batch", {
     method: "POST",
@@ -1457,6 +1457,7 @@ export async function batch(
       })),
       stopOnError: options?.stopOnError ?? true,
       parallel: options?.parallel ?? false,
+      safePrefix: options?.safePrefix ?? false,
     }),
   });
   const body = await resp.json();

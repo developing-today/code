@@ -21,11 +21,15 @@
 //     state.json persists the keys already shown. Absent file = the
 //     pre-#1057 hand-fed charges only. No balances or debt data ever
 //     pass through: candidates are charge evidence only.
-//   - jules-review-state.json — keeper supervision entries annotate
-//     matching sessions as evidence.
 //   - orchestration.json — the orchestration job's latest section
-//     (#899: tiers, dependencies, goal measurements), embedded as-is
-//     after a structural check; absent/malformed = section omitted.
+//     (#899: tiers, dependencies, goal measurements), embedded only
+//     after normalizeOrchestrationSection accepts it (the collector
+//     gate in the publisher -> collector -> aggregator contract,
+//     #1176); absent/malformed = section omitted. The publisher's
+//     pre-publish gate is `bun run contract:check -- --publisher
+//     <path>` (scripts/check-contract-corpus.ts), which runs this
+//     same validator; the shared corpus lives in
+//     test/contract-corpus/v1/.
 //   - the org GitHub Project "Developing Today" (#4, #910 stage 5) —
 //     read via GraphQL Projects v2 into the feed's `projects` pool.
 //     Token plumbing: GITHUB_PROJECT_TOKEN / GH_TOKEN from the env
@@ -45,7 +49,7 @@
 //     the Test_Runs data, and the price event log's v_current_prices),
 //     read through v_latest_import_batch via the Management API SQL endpoint.
 //     Token plumbing mirrors the Projects read: the Bitwarden secret
-//     named `supabase.access-token-muse-cli` (the sbp_ management
+//     named `supabase.muse-dev2.access-token-muse-cli` (the sbp_ management
 //     token), resolved by resolveBwsSecret and sent only to
 //     api.supabase.com. Any failure embeds the section in its absent
 //     form ({status:"absent", reason}) — the feed never fails over it.
@@ -54,7 +58,7 @@
 //     leaves); an unreadable config omits only the coverage.
 //
 // Usage: bun run scripts/collect-fleet-feed.ts [--out <path>]
-// Env overrides: QUOTA_VIEW_PATH, JULES_STATE_PATH, OPENCODE_SERVER_URL
+// Env overrides: QUOTA_VIEW_PATH, OPENCODE_SERVER_URL
 // (SANDBOX_OPENCODE_URL legacy alias), OPENCODE_SESSION_SOURCE,
 // OPENCODE_SERVER_PASSWORD_FILE, ORCHESTRATION_PATH, DNS_REGISTER_PATH,
 // CLAUDE_LAUNCH_RECORDS_PATH, QUOTA_REGISTRY_PATH (the hub's PAYG/charges
@@ -64,22 +68,17 @@
 // the feed's snapshots field for the laptop store to ingest),
 // CHARGE_CANDIDATES_PATH / CHARGES_SURFACED_STATE_PATH (#1057: the
 // producer's candidates file and the collector's surfaced-once state),
-// SUPABASE_PROJECT_REF (else the Bitwarden supabase.project-ref secret;
+// SUPABASE_PROJECT_REF (else the Bitwarden supabase.muse-dev2.project-ref secret;
 // fallback default: the muse-dev2 project),
 // AA_OPENCODE_CONFIG_PATH (default: the repo's .opencode/opencode.jsonc).
 import { execFile } from "node:child_process";
-import { access, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { access, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dnsSectionFromRegister, dnsSectionFromRegisterJson, parseDnsRegister } from "../src/dns.ts";
-import {
-  disabledProvidersFromConfig,
-  aaAbsent,
-  aaSectionFromSupabase,
-  isAaSection,
-  type AaRawPayload,
-} from "../src/aa.ts";
+import { aaAbsent, aaSectionFromSupabase, isAaSection, type AaRawPayload } from "../src/aa.ts";
 import {
   feedSectionStatus,
   normalizeOrchestrationSection,
@@ -89,11 +88,11 @@ import {
   type FleetFeed,
 } from "../src/feed.ts";
 import { computeCheckoutDrift } from "../src/checkout-drift.ts";
+import { assembleCollectorFeed } from "../src/feed-contract.ts";
 import type {
   AaFeedSection,
   AaSection,
   DnsSection,
-  JulesSummary,
   OrchestrationSection,
   QuotaPool,
   SessionFeedEntry,
@@ -114,12 +113,101 @@ import type { ProjectPoolItem } from "../src/model.ts";
 import { REPOS } from "../src/model.ts";
 import type { RepoCensus } from "../src/coverage.ts";
 import { parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
-import { droppedJulesItemCount, julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
+import type { FreshnessInput } from "../src/freshness.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
 const HIDDEN = join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files");
+
+export type FleetFeedPublication = Readonly<{
+  /** Absolute destination path that was replaced. */
+  path: string;
+  /** SHA-256 of the exact UTF-8 bytes published. */
+  sha256: string;
+  /** Number of UTF-8 bytes published. */
+  sizeBytes: number;
+}>;
+
+type PublicationTempFile = {
+  writeFile(contents: string): Promise<void>;
+  close(): Promise<void>;
+};
+
+/** File operations are injectable so failure cleanup can be exercised without platform-specific permissions. */
+export type FleetFeedPublicationFileOps = {
+  openTemp(path: string): Promise<PublicationTempFile>;
+  rename(from: string, to: string): Promise<void>;
+  unlink(path: string): Promise<void>;
+};
+
+const publicationFileOps: FleetFeedPublicationFileOps = {
+  async openTemp(path) {
+    const file = await open(path, "wx");
+    return {
+      async writeFile(contents) {
+        await file.writeFile(contents, { encoding: "utf8" });
+      },
+      close: () => file.close(),
+    };
+  },
+  rename,
+  unlink,
+};
+
+/**
+ * Publish one complete feed atomically. The returned metadata exists only
+ * after the same-directory rename succeeds, so callers can safely use it
+ * as the basis for a post-publication freshness invalidation.
+ */
+export async function publishFleetFeed(
+  outputPath: string,
+  contents: string,
+  fileOps: FleetFeedPublicationFileOps = publicationFileOps,
+): Promise<FleetFeedPublication> {
+  const path = resolve(outputPath);
+  const tempPath = join(dirname(path), "." + basename(path) + "." + process.pid + "." + randomUUID() + ".tmp");
+  let tempCreated = false;
+  try {
+    const tempFile = await fileOps.openTemp(tempPath);
+    tempCreated = true;
+    try {
+      await tempFile.writeFile(contents);
+    } finally {
+      await tempFile.close();
+    }
+    await fileOps.rename(tempPath, path);
+  } catch (error) {
+    if (tempCreated) await fileOps.unlink(tempPath).catch(() => {});
+    throw error;
+  }
+
+  return {
+    path,
+    sha256: createHash("sha256").update(contents, "utf8").digest("hex"),
+    sizeBytes: Buffer.byteLength(contents, "utf8"),
+  };
+}
+
+/** The notice is submitted only after the atomic replacement succeeds.
+ *  The generation + digest identity makes a retried notice idempotent. */
+export async function publishFleetFeedWithInvalidation(
+  outputPath: string,
+  contents: string,
+  generatedAt: string,
+  notify: (input: FreshnessInput) => Promise<unknown>,
+  fileOps: FleetFeedPublicationFileOps = publicationFileOps,
+): Promise<FleetFeedPublication> {
+  const publication = await publishFleetFeed(outputPath, contents, fileOps);
+  await notify({
+    eventId: `fleet-feed:${generatedAt}:${publication.sha256}`,
+    source: "fleet-feed",
+    scope: ["feed"],
+    occurredAt: Number.isFinite(Date.parse(generatedAt)) ? new Date(generatedAt).toISOString() : null,
+    reason: "source-event",
+  });
+  return publication;
+}
 
 // Strict operator-argument contract (#3352, #3509): the only accepted
 // forms are no arguments or one documented separated `--out <path>`.
@@ -155,7 +243,6 @@ const quotaViewPath =
     HOME,
     "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
   );
-const julesStatePath = process.env.JULES_STATE_PATH ?? join(HIDDEN, "jules-review-state.json");
 const orchestrationPath = process.env.ORCHESTRATION_PATH ?? join(HIDDEN, "orchestration.json");
 const dnsRegisterPath =
   process.env.DNS_REGISTER_PATH ??
@@ -169,6 +256,8 @@ const snapshotOutboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN
 const chargeCandidatesPath = process.env.CHARGE_CANDIDATES_PATH ?? join(HIDDEN, "charges-candidates.json");
 const chargesSurfacedStatePath = process.env.CHARGES_SURFACED_STATE_PATH ?? join(HIDDEN, "charges-surfaced-state.json");
 const opencodeConfigPath = process.env.AA_OPENCODE_CONFIG_PATH ?? join(PKG, "..", "..", ".opencode", "opencode.jsonc");
+const opencodeRuntimeConfigPath =
+  process.env.AA_OPENCODE_RUNTIME_CONFIG_PATH ?? join(HOME, ".local", "state", "opencode", "opencode-runtime.jsonc");
 const serverUrl = process.env.OPENCODE_SERVER_URL ?? process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096";
 /** Session source label for the scraped server: the collector's home host
  * decides — the laptop collector labels its local server
@@ -182,50 +271,33 @@ const passwordFile =
 function poolFor(provider: string, model: string): string | null {
   switch (provider) {
     case "meta":
-      return "meta:high-usage";
+      return "meta";
     case "claude-code":
       return "anthropic:claude-pro";
     case "openai":
     case "openai-codex":
     case "chatgpt":
-      return "openai:codex";
+      // Keep aligned with the pool IDs in ../src/quota-extract.ts; matching below is exact.
+      return "openai.main";
     case "openai.alternate":
       return "openai.alternate";
     case "cline-pass":
-      return "cline-pass:cline-pass";
+      return "cline-pass";
     case "opendesign":
-      return "opendesign:go";
+      return "opendesign";
     case "deepseek":
-      return "deepseek:api";
+      return "deepseek";
+    case "antigravity-direct":
     case "antigravity-ls":
     case "antigravity-agy":
     case "google":
-      return model.startsWith("gemini") ? "antigravity:gemini" : "antigravity:claude-gpt";
+      return model.startsWith("gemini") ? "antigravity-direct.gemini" : "antigravity-direct.claude-gpt";
     default:
       // opencode-go is deliberately unattributed in slice 1: which
       // workspace (Personal vs Lab) a sandbox session burns is not
       // visible from the session list alone.
       return null;
   }
-}
-
-/** sessionId -> "keeper <action> <at>" from jules-review-state.json. */
-async function supervisionNotes(): Promise<Map<string, string>> {
-  const notes = new Map<string, string>();
-  try {
-    const state = JSON.parse(await readFile(julesStatePath, "utf8")) as {
-      opencode_supervision?: { at?: string; action?: string; error?: string; outcome?: string }[];
-    };
-    for (const entry of state.opencode_supervision ?? []) {
-      const text = `${entry.error ?? ""}\n${entry.outcome ?? ""}`;
-      for (const m of text.matchAll(/ses_[A-Za-z0-9]+/g)) {
-        notes.set(m[0], `keeper ${entry.action ?? "assessed"} ${entry.at ?? ""}`.trim());
-      }
-    }
-  } catch {
-    /* annotations are best-effort */
-  }
-  return notes;
 }
 
 /**
@@ -465,13 +537,15 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
   const lastGood = await readAaLastGood();
   const degrade = (reason: string): AaFeedSection =>
     lastGood ? { ...lastGood.section, stale: true, staleReason: reason } : aaAbsent(reason, generatedAt);
-  const token = await resolveBwsSecret("supabase.access-token-muse-cli");
+  const token = await resolveBwsSecret("supabase.muse-dev2.access-token-muse-cli");
   if (!token) return degrade("no Supabase management token available (bws)");
-  // Project ref: env override, else the Bitwarden supabase.project-ref
+  // Project ref: env override, else the Bitwarden supabase.muse-dev2.project-ref
   // secret (the same resolve-by-name discipline as the token), else the
   // muse-dev2 project — never the retired muse-dev project.
   const ref =
-    process.env.SUPABASE_PROJECT_REF ?? (await resolveBwsSecret("supabase.project-ref")) ?? "keihfchslgjetkmnmzra";
+    process.env.SUPABASE_PROJECT_REF ??
+    (await resolveBwsSecret("supabase.muse-dev2.project-ref")) ??
+    "keihfchslgjetkmnmzra";
   const fingerprint = await opencodeConfigFingerprint();
   // Cheap batch probe first (code#3332): the payload only changes on a
   // new import or a config change, so most ticks reuse the last good
@@ -505,7 +579,15 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
   } catch {
     console.error("collector: opencode.jsonc unreadable; AA coverage omitted this run");
   }
-  const section = aaSectionFromSupabase(raw, configText, generatedAt);
+  // #4544: the sync-models-owned provider catalogs live in the runtime
+  // overlay; read it when present so AA coverage sees the effective config.
+  let runtimeText: string | null = null;
+  try {
+    runtimeText = await readFile(opencodeRuntimeConfigPath, "utf8");
+  } catch {
+    runtimeText = null;
+  }
+  const section = aaSectionFromSupabase(raw, configText, generatedAt, runtimeText);
   if (!section) return degrade("Supabase payload failed its structural check");
   await writeAaLastGood({ batch: section.batch, configFingerprint: fingerprint, section });
   return section;
@@ -527,20 +609,14 @@ async function main(): Promise<void> {
   let quotaViewText = "";
   try {
     quotaViewText = await readFile(quotaViewPath, "utf8");
-    // #1114: enforce the deployed config's disabled_providers at pool
-    // assembly. The config read mirrors the AA section's; an unreadable
-    // config leaves the set empty (fail soft, pools unfiltered).
-    let disabledProviderIds: ReadonlySet<string> = new Set();
-    try {
-      disabledProviderIds = disabledProvidersFromConfig(await readFile(opencodeConfigPath, "utf8"));
-    } catch {
-      console.error("collector: opencode.jsonc unreadable; quota disabled_providers filter inactive this run");
-    }
-    pools = extractQuotaPools(quotaViewText, now, disabledProviderIds, (poolId, providerId) =>
-      console.error(
-        `collector: quota pool ${poolId} filtered — provider ${providerId} is in disabled_providers (#1114)`,
-      ),
-    );
+    // Pass-through (Drew, 2026-11-03): pool assembly applies NO
+    // disabled_providers filter. The #1114 filter dropped every pool
+    // whose direct config door was disabled — including live pools
+    // burned through model routes and measured by OpenCode (meta, the
+    // Antigravity splits, commandcode, anthropic:claude-pro, deepseek
+    // at removal time). The board displays the OpenCode quota read;
+    // the dated reads extracted here are only its fail-soft fallback.
+    pools = extractQuotaPools(quotaViewText, now);
     markSection("quota", "ok");
   } catch (err) {
     console.error(`collector: quota view unreadable (${sanitizeCollectionError(err)}); emitting no pools`);
@@ -616,11 +692,6 @@ async function main(): Promise<void> {
       for (const e of mapped.entries) {
         registry.push(recordFromSessionEntry(e, mapped.tokensBySession.get(e.sessionId)));
       }
-      const notes = await supervisionNotes();
-      for (const e of attention) {
-        const note = notes.get(e.sessionId);
-        if (note) e.supervisionNote = note;
-      }
       // Burn attribution: sessions the server holds active right now.
       const simple = mapped.entries.map((e) => ({
         id: e.sessionId,
@@ -645,32 +716,6 @@ async function main(): Promise<void> {
   } catch (err) {
     console.error(`collector: OpenCode server read failed (${sanitizeCollectionError(err)}); attention empty`);
     markSection("attention", "error", err);
-  }
-
-  // --- Jules sessions + keeper totals (slice 2, #898 §5) ------------------
-  let jules: JulesSummary | undefined;
-  let julesState: unknown;
-  let julesReadable = false;
-  try {
-    julesState = JSON.parse(await readFile(julesStatePath, "utf8")) as unknown;
-    julesReadable = true;
-  } catch (err) {
-    console.error("collector: jules-review state unreadable; no Jules sessions this run");
-    markSection("julesSummary", isMissingInput(err) ? "skipped" : "error", err);
-  }
-  if (julesReadable) {
-    const state = julesState as JulesReviewState;
-    const entries = mapJulesItems(state);
-    if (entries.length) attention = [...attention, ...entries];
-    for (const e of entries) registry.push(recordFromSessionEntry(e));
-    jules = julesSummary(state);
-    const dropped = droppedJulesItemCount(state);
-    if (dropped > 0) {
-      console.error(
-        `collector: jules-review state malformed; skipped ${dropped} item(s), kept ${entries.length} session(s)`,
-      );
-    }
-    markSection("julesSummary", "ok");
   }
 
   // --- Muse launch records (#906 §3) --------------------------------
@@ -899,14 +944,12 @@ async function main(): Promise<void> {
   // instead of lying quietly. Fail-soft: any git problem becomes
   // state "unknown" with the reason, never a failed collection.
   const checkout = await computeCheckoutDrift(join(PKG, "..", ".."));
-  const feed: FleetFeed = {
-    version: 1,
+  const feed: FleetFeed = assembleCollectorFeed({
     generatedAt: now.toISOString(),
     checkout,
     meta: { sections: sectionStatuses },
     quota: { pools, burn: [], choices: computeChoices(pools, now.getTime()) },
     attention,
-    julesSummary: jules,
     ...(orchestration ? { orchestration } : {}),
     ...(dns ? { dns } : {}),
     ...(registry.length ? { registry } : {}),
@@ -919,11 +962,20 @@ async function main(): Promise<void> {
     ...(projects ? { projects } : {}),
     ...(coverage ? { coverage } : {}),
     aa,
-  };
-  await writeFile(outPath, JSON.stringify(feed, null, 2));
+  });
+  const freshnessUrl = process.env.PM_AGG_FRESHNESS_URL ?? "http://127.0.0.1:4871/publish";
+  await publishFleetFeedWithInvalidation(outPath, JSON.stringify(feed, null, 2), feed.generatedAt, async (input) => {
+    const response = await fetch(freshnessUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) throw new Error(`freshness publisher returned ${response.status}`);
+  });
   const withReads = pools.filter((p) => p.windows.length > 0).length;
   console.log(
-    `collector: wrote ${outPath} — ${pools.length} pools (${withReads} with reads), ${attention.length} sessions (${sessionSource} + jules${jules ? `, ${jules.tracked} jules tracked` : ""})` +
+    `collector: wrote ${outPath} — ${pools.length} pools (${withReads} with reads), ${attention.length} sessions (${sessionSource})` +
       (orchestration ? `, orchestration ${orchestration.runId}` : ", no orchestration section") +
       (dns ? `, dns ${dns.entries.length} domains` : ", no dns section") +
       (saas
@@ -939,4 +991,4 @@ async function main(): Promise<void> {
   );
 }
 
-await main();
+if (import.meta.main) await main();
