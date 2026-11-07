@@ -85,6 +85,30 @@ class ValidateStateTests(unittest.TestCase):
         self.assertEqual(clean, {})
         self.assertIn("top level", problems[0])
 
+    def test_drain_bookkeeping_entries_are_preserved(self):
+        # drain_queue.py keeps its coalescing state in the same file:
+        # drain_last::<repo> is a numeric timestamp, drain_fail::<repo>
+        # an object. Validation must not drop them (Codex review, PR
+        # #6696) — fetch_mirrors.main() writes the state back.
+        clean, problems = ghb_common.validate_state(
+            {
+                "a/b": {"last_fetch": 1},
+                "drain_last::a/b": 1760000000.5,
+                "drain_fail::a/b": {"count": 2, "first": 1, "last": 2},
+            }
+        )
+        self.assertEqual(problems, [])
+        self.assertEqual(clean["drain_last::a/b"], 1760000000.5)
+        self.assertEqual(clean["drain_fail::a/b"]["count"], 2)
+
+    def test_drain_last_with_wrong_shape_is_named_and_dropped(self):
+        clean, problems = ghb_common.validate_state(
+            {"drain_last::a/b": "soon", "drain_last::c/d": True}
+        )
+        self.assertEqual(clean, {})
+        self.assertEqual(len(problems), 2)
+        self.assertIn("drain_last::a/b", problems[0])
+
     def test_non_list_fail_days_is_reset_with_problem(self):
         clean, problems = ghb_common.validate_state(
             {"a/b": {"fail_days": "2026-01-01"}}

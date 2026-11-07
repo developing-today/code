@@ -180,6 +180,12 @@ def validate_state(state, source="state.json"):
     a non-list "fail_days" inside an entry is reset to [] under the
     same rule. A non-object top level invalidates the whole file as
     a single named problem.
+
+    Bookkeeping keys written by the webhook drainer are state too,
+    under their own shapes: "drain_last::<repo>" is a numeric
+    timestamp and "drain_fail::<repo>" is an object. They are
+    validated under those shapes and preserved — dropping them
+    would erase the drainer's coalescing window every daily fetch.
     """
     if not isinstance(state, dict):
         return {}, [
@@ -188,6 +194,15 @@ def validate_state(state, source="state.json"):
         ]
     clean, problems = {}, []
     for repo, entry in state.items():
+        if repo.startswith("drain_last::"):
+            if isinstance(entry, (int, float)) and not isinstance(entry, bool):
+                clean[repo] = entry
+            else:
+                problems.append(
+                    f"{source}: entry for {repo!r} is {_shape(entry)}, "
+                    f"expected a number — dropped"
+                )
+            continue
         if not isinstance(entry, dict):
             problems.append(
                 f"{source}: entry for {repo!r} is {_shape(entry)}, "
