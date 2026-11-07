@@ -226,7 +226,7 @@ mod tests {
     }
 
     fn hash(n: u8) -> Hash {
-        Hash::new([n; 32])
+        Hash::from([n; 32])
     }
 
     fn set(entries: Vec<Entry>, excludes: Vec<Entry>) -> WriterSet {
