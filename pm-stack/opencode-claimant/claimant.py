@@ -1,499 +1,713 @@
 #!/usr/bin/env python3
 """
-OpenCode lane claimant/executor - Slice 1 implementation
+OpenCode lane claimant/executor - Slice 1 implementation (#3026)
 
-This script implements the opencode execution lane claimant/executor for slice 1 of #3026.
-It handles:
-1. Supervision of bound sessions (checking for stuck/zero-message sessions)
-2. Candidate discovery from the four opencode queues
-3. Session creation and binding with atomic operations
-4. Prompt delivery to worker sessions
-5. Fire logging and reporting
+This script implements the deterministic claim/bind/launch/record process
+for opencode-lane tasks. It runs as an OpenChamber scheduled task on the
+laptop and launches worker sessions itself.
 
-Mode: shadow (default) or live (read from ~/.local/state/opencode-claimant/mode)
-
-Usage: python3 pm-stack/opencode-claimant/claimant.py
+MODE: shadow (default) or live
+- shadow: Discovery and verification only, no execution
+- live: Full execution including claiming, binding, and launching
 """
 
+import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Tuple
 
 # Constants
-MODE_FILE = Path.home() / ".local" / "state" / "opencode-claimant" / "mode"
-FIRES_FILE = Path.home() / ".local" / "state" / "opencode-claimant" / "fires.jsonl"
-STATE_DIR = Path.home() / ".local" / "state" / "opencode-claimant"
-
 QUEUES = [
     "repo-health-code-pilot",
     "repo-health-opencode-pilot",
     "repo-health-openchamber-pilot",
-    "repo-health-nix-pilot",
+    "repo-health-nix-pilot"
 ]
-
-REPO_QUEUE_CMD = Path.home() / "fleet-brokers" / "bin" / "repo-queue"
-PRIMARY_CLONE = Path.home() / "git" / "code"
-
-# Concurrency cap
-CONCURRENCY_CAP = 36
+REPO_QUEUE_CLI = "/home/user/fleet-brokers/bin/repo-queue"
+OPENCODE_SERVER = "http://127.0.0.1:13420"
+ACTIVE_WINDOW_MS = 30 * 60 * 1000  # 30 minutes
+CONCURRENCY_CAP = 36  # Active root sessions across the fleet
+STATE_DIR = Path.home() / ".local" / "state" / "opencode-claimant"
+FIRE_LOG = STATE_DIR / "fires.jsonl"
+MODE_FILE = STATE_DIR / "mode"
 
 # Recovery launched_by values
-LAUNCHED_BY_RECOVERY_ZERO_MESSAGE = "opencode-claimant-recovery:zero-message-deleted"
-LAUNCHED_BY_RECOVERY_GONE_SESSION = "opencode-claimant-recovery:gone-session"
+LAUNCHED_BY_ZERO_MESSAGE = "opencode-claimant-recovery:zero-message-deleted"
+LAUNCHED_BY_GONE_SESSION = "opencode-claimant-recovery:gone-session"
 
 
-def read_mode() -> str:
-    """Read the execution mode from the mode file."""
-    if not MODE_FILE.exists():
-        return "shadow"
-    
+def get_mode() -> str:
+    """Read the mode from the mode file. Default to 'shadow' if missing/unreadable."""
     try:
-        mode = MODE_FILE.read_text().strip().lower()
-        if mode in ("shadow", "live"):
-            return mode
-        return "shadow"
+        if MODE_FILE.exists():
+            mode = MODE_FILE.read_text().strip()
+            if mode in ("shadow", "live"):
+                return mode
     except Exception:
-        return "shadow"
+        pass
+    return "shadow"
 
 
-def ensure_state_dir() -> None:
-    """Ensure the state directory exists."""
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def log_fire(mode: str, candidates: List[Dict], launched: List[Dict], cap_room: int, skips: List[Dict]) -> None:
-    """Append a fire log entry to fires.jsonl."""
-    ensure_state_dir()
-    
-    fire_entry = {
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-        "mode": mode,
-        "candidates_seen": candidates,
-        "sessions_launched": launched,
-        "cap_room": cap_room,
-        "skips": skips,
-    }
-    
-    with FIRES_FILE.open("a") as f:
-        f.write(json.dumps(fire_entry) + "\n")
-
-
-def run_poll() -> Dict[str, Any]:
-    """Run poll.py to discover candidates and get system state."""
-    poll_script = PRIMARY_CLONE / "pm-stack" / "opencode-claimant" / "poll.py"
-    
-    if not poll_script.exists():
-        raise FileNotFoundError(f"poll.py not found at {poll_script}")
-    
-    # Run poll.py from the primary clone
-    import subprocess
-    result = subprocess.run(
-        ["python3", str(poll_script)],
-        cwd=str(PRIMARY_CLONE),
-        capture_output=True,
-        text=True,
-        timeout=30
-    )
-    
-    if result.returncode != 0:
-        raise RuntimeError(f"poll.py failed: {result.stderr}")
-    
+def run_command(cmd: List[str], check: bool = True) -> subprocess.CompletedProcess:
+    """Run a shell command and return the result."""
     try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"poll.py returned invalid JSON: {e}")
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if check and result.returncode != 0:
+            raise subprocess.CalledProcessError(
+                result.returncode, cmd, result.stdout, result.stderr
+            )
+        return result
+    except subprocess.CalledProcessError as e:
+        print(f"Command failed: {' '.join(cmd)}", file=sys.stderr)
+        print(f"stdout: {e.stdout}", file=sys.stderr)
+        print(f"stderr: {e.stderr}", file=sys.stderr)
+        raise
 
 
-def get_active_root_session_count() -> int:
-    """Get the count of active root sessions from the OpenCode server."""
-    import requests
-    
+def get_active_root_sessions() -> Tuple[int, List[Dict]]:
+    """
+    Get the count of active root sessions and their details.
+    Returns: (cap_room, active_sessions)
+    """
     try:
-        response = requests.get("http://127.0.0.1:13420/api/session", timeout=5)
-        response.raise_for_status()
-        sessions = response.json()
+        # Call poll.py to get the session count and details
+        result = run_command([
+            sys.executable,
+            str(Path(__file__).parent / "poll.py"),
+            "--cap-only"
+        ])
         
-        active_count = 0
-        for session in sessions:
-            # Count root sessions that are active (no terminal marker, activity in last 30 min)
-            if session.get("is_root", False):
-                # Check for terminal markers
-                has_terminal = any(
-                    marker in session.get("outcome", "") or 
-                    marker in session.get("time", {}).get("idle", "")
-                    for marker in ["idle", "outcome"]
-                )
-                
-                if not has_terminal:
-                    active_count += 1
-        
-        return active_count
+        data = json.loads(result.stdout)
+        cap_room = data.get("cap_room", 0)
+        active_sessions = data.get("active_sessions", [])
+        return cap_room, active_sessions
     except Exception as e:
-        print(f"Warning: Could not get active session count: {e}")
-        return -1  # Unknown
+        print(f"Failed to get active sessions: {e}", file=sys.stderr)
+        return None, []
 
 
-def supervision_step(mode: str) -> List[Dict]:
+def get_candidates() -> List[Dict]:
     """
-    Step 1: Supervision - check bound sessions for recovery candidates.
-    
-    Returns list of tasks that need recovery (bound but stuck/zero-message sessions).
+    Discover candidate tasks using poll.py.
+    Returns list of unbound opencode-lane tasks.
     """
-    if mode != "live":
+    try:
+        result = run_command([
+            sys.executable,
+            str(Path(__file__).parent / "poll.py"),
+            "--candidates"
+        ])
+        data = json.loads(result.stdout)
+        return data.get("candidates", [])
+    except Exception as e:
+        print(f"Failed to get candidates: {e}", file=sys.stderr)
         return []
-    
-    recovery_candidates = []
-    
-    # Get all claimed opencode-lane tasks with bound session IDs
-    for queue in QUEUES:
-        try:
-            # Use repo-queue to list tasks
-            result = subprocess.run(
-                [str(REPO_QUEUE_CMD), "list", "--worker", "opencode-claimant", "--queue", queue],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            if result.returncode == 0:
-                tasks = json.loads(result.stdout)
-                for task in tasks:
-                    if task.get("lane") == "opencode" and task.get("session_id"):
-                        session_id = task["session_id"]
-                        
-                        # Check if session exists and is progressing
-                        try:
-                            session_response = requests.get(
-                                f"http://127.0.0.1:13420/api/session/{session_id}",
-                                timeout=5
-                            )
-                            
-                            if session_response.status_code == 200:
-                                session = session_response.json()
-                                # Check for terminal state
-                                has_terminal = any(
-                                    marker in session.get("outcome", "") or 
-                                    marker in session.get("time", {}).get("idle", "")
-                                    for marker in ["idle", "outcome", "completed", "failed"]
-                                )
-                                
-                                if not has_terminal:
-                                    # Session exists and is active - nothing to do
-                                    continue
-                            else:
-                                # Session gone from server
-                                pass
-                        except Exception:
-                            # Could not verify session - leave bound
-                            continue
-                        
-                        # Session is gone or stuck - check if recovery is possible
-                        # Check task attempts and lease
-                        if task.get("attempts", 0) < task.get("max_attempts", 5):
-                            # Verify zero messages first
-                            try:
-                                messages = requests.get(
-                                    f"http://127.0.0.1:13420/api/session/{session_id}/messages",
-                                    timeout=5
-                                )
-                                
-                                if messages.status_code == 200:
-                                    message_count = len(messages.json())
-                                    if message_count == 0:
-                                        recovery_candidates.append({
-                                            "task_id": task["id"],
-                                            "session_id": session_id,
-                                            "reason": "zero_message"
-                                        })
-                            except Exception:
-                                # Could not read messages - treat as unknown state
-                                pass
-        except Exception as e:
-            print(f"Warning: Supervision check failed for queue {queue}: {e}")
-    
-    # Process recovery candidates
-    for candidate in recovery_candidates:
-        task_id = candidate["task_id"]
-        session_id = candidate["session_id"]
-        
-        try:
-            # Delete the zero-message session
-            delete_response = requests.delete(
-                f"http://127.0.0.1:13420/api/session/{session_id}",
-                timeout=5
-            )
-            
-            if delete_response.status_code == 200:
-                # Attempt recovery via atomic bind operation
-                bind_result = subprocess.run(
-                    [
-                        str(REPO_QUEUE_CMD),
-                        "bind", task_id,
-                        "--worker", "opencode-claimant",
-                        "--session-id", session_id,
-                        "--launched-by", LAUNCHED_BY_RECOVERY_ZERO_MESSAGE
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-                
-                if bind_result.returncode == 0:
-                    print(f"Recovered task {task_id}: deleted zero-message session {session_id}")
-                    # Task is now unbound and eligible for next fire
-                else:
-                    print(f"Failed to recover task {task_id}: {bind_result.stderr}")
-            else:
-                print(f"Failed to delete session {session_id} for task {task_id}")
-        except Exception as e:
-            print(f"Error during recovery of task {task_id}: {e}")
-    
-    return recovery_candidates
 
 
-def gate_step() -> bool:
+def get_stuck_bound() -> List[Dict]:
     """
-    Step 2: Gate - check if there are any unbound opencode-lane candidates.
-    
-    Returns True if there are candidates to process, False otherwise.
+    Get stuck_bound tasks from poll.py.
+    Returns list of tasks that need recovery.
     """
     try:
-        poll_data = run_poll()
-        candidates = poll_data.get("candidates", [])
-        
-        # Filter for unbound opencode-lane tasks
-        unbound_opencode = [
-            c for c in candidates
-            if c.get("lane") == "opencode" and not c.get("session_id")
-        ]
-        
-        return len(unbound_opencode) > 0
+        result = run_command([
+            sys.executable,
+            str(Path(__file__).parent / "poll.py"),
+            "--stuck-bound"
+        ])
+        data = json.loads(result.stdout)
+        return data.get("stuck_bound", [])
     except Exception as e:
-        print(f"Gate check failed: {e}")
+        print(f"Failed to get stuck_bound tasks: {e}", file=sys.stderr)
+        return []
+
+
+def verify_session_exists(session_id: str) -> Optional[Dict]:
+    """
+    Verify a session exists and is active via OpenCode server API.
+    Returns session info if exists, None otherwise.
+    """
+    try:
+        import requests
+        url = f"{OPENCODE_SERVER}/api/session/{session_id}"
+        response = requests.get(url, timeout=5)
+        
+        if response.status_code == 200:
+            return response.json()
+        elif response.status_code == 404:
+            return None
+        else:
+            print(f"Unexpected status {response.status_code} checking session {session_id}", 
+                  file=sys.stderr)
+            return None
+    except Exception as e:
+        print(f"Failed to verify session {session_id}: {e}", file=sys.stderr)
+        return None
+
+
+def get_session_messages(session_id: str) -> List[Dict]:
+    """
+    Get messages for a session via OpenCode server API.
+    Returns list of messages, empty if none.
+    """
+    try:
+        import requests
+        url = f"{OPENCODE_SERVER}/api/session/{session_id}/messages"
+        response = requests.get(url, timeout=5)
+        
+        if response.status_code == 200:
+            return response.json().get("messages", [])
+        else:
+            print(f"Failed to get messages for session {session_id}: status {response.status_code}",
+                  file=sys.stderr)
+            return []
+    except Exception as e:
+        print(f"Failed to get messages for session {session_id}: {e}", file=sys.stderr)
+        return []
+
+
+def delete_session(session_id: str) -> bool:
+    """
+    Delete a session via OpenCode server API.
+    Returns True if successful, False otherwise.
+    """
+    try:
+        import requests
+        url = f"{OPENCODE_SERVER}/api/session/{session_id}"
+        response = requests.delete(url, timeout=5)
+        
+        if response.status_code == 200:
+            return True
+        else:
+            print(f"Failed to delete session {session_id}: status {response.status_code}",
+                  file=sys.stderr)
+            return False
+    except Exception as e:
+        print(f"Failed to delete session {session_id}: {e}", file=sys.stderr)
         return False
 
 
-def cap_step() -> int:
+def recover_stuck_bound_task(task_id: str, session_id: str, attempts: int, max_attempts: int) -> bool:
     """
-    Step 3: Cap - check if we're at the concurrency limit.
-    
-    Returns cap_room (available slots) or -1 if unknown.
+    Recover a stuck_bound task by deleting the session and reclaiming the task.
+    Returns True if recovery succeeded, False otherwise.
     """
-    active_count = get_active_root_session_count()
+    print(f"Attempting to recover stuck_bound task {task_id} with session {session_id}")
     
-    if active_count == -1:
-        return -1
+    # Step a: Verify zero messages
+    messages = get_session_messages(session_id)
+    if messages:
+        print(f"Session {session_id} has {len(messages)} messages, not recovering", file=sys.stderr)
+        return False
     
-    cap_room = max(0, CONCURRENCY_CAP - active_count)
-    return cap_room
+    # Step b: Delete the session
+    if not delete_session(session_id):
+        print(f"Failed to delete session {session_id}, aborting recovery", file=sys.stderr)
+        return False
+    
+    # Determine launched_by value based on attempts
+    if attempts < max_attempts:
+        launched_by = LAUNCHED_BY_ZERO_MESSAGE
+        recovery_type = "zero-message-deleted"
+    else:
+        launched_by = LAUNCHED_BY_GONE_SESSION
+        recovery_type = "gone-session"
+    
+    # Step c: Reclaim the task atomically
+    try:
+        cmd = [
+            REPO_QUEUE_CLI,
+            "bind", task_id,
+            "--worker", "opencode-claimant",
+            "--session-id", session_id,
+            "--launched-by", launched_by
+        ]
+        result = run_command(cmd)
+        
+        if result.returncode == 0:
+            print(f"Successfully recovered task {task_id} via {recovery_type}")
+            return True
+        else:
+            print(f"Failed to reclaim task {task_id}: {result.stderr}", file=sys.stderr)
+            return False
+    except Exception as e:
+        print(f"Exception during task recovery: {e}", file=sys.stderr)
+        return False
 
 
-def launch_step(mode: str, cap_room: int) -> List[Dict]:
+def supervision_step() -> List[Dict]:
     """
-    Step 4: Launch - create sessions and bind tasks.
-    
-    Returns list of successfully launched sessions.
+    Step 1: Supervision - Check bound sessions and recover stuck_bound tasks.
+    Returns list of tasks that were recovered.
     """
-    if cap_room <= 0:
-        return []
+    recovered_tasks = []
     
-    launched = []
-    skips = []
+    # Get stuck_bound tasks
+    stuck_bound = get_stuck_bound()
+    
+    for task in stuck_bound:
+        task_id = task.get("id")
+        session_id = task.get("session_id")
+        attempts = task.get("attempts", 0)
+        max_attempts = task.get("max_attempts", 5)
+        
+        if not task_id or not session_id:
+            print(f"Skipping invalid stuck_bound entry: {task}", file=sys.stderr)
+            continue
+        
+        # Verify session exists
+        session_info = verify_session_exists(session_id)
+        
+        if session_info is None:
+            # Session is gone, attempt recovery if attempts remain
+            if attempts < max_attempts:
+                if recover_stuck_bound_task(task_id, session_id, attempts, max_attempts):
+                    recovered_tasks.append({
+                        "task_id": task_id,
+                        "session_id": session_id,
+                        "reason": "gone-session-recovered"
+                    })
+            else:
+                # Attempts exhausted, terminally fail the task
+                fail_cmd = [
+                    REPO_QUEUE_CLI,
+                    "fail", task_id,
+                    "--worker", task.get("worker_id", "unknown"),
+                    "--error", f"bound session {session_id} unavailable without terminal outcome; attempts exhausted",
+                    "--reason-class", "deterministic",
+                    "--execution", json.dumps({
+                        "lane": "opencode",
+                        "session_id": session_id,
+                        "fallback_reason": "launch_failed_attempts_exhausted"
+                    })
+                ]
+                try:
+                    run_command(fail_cmd)
+                    print(f"Terminally failed task {task_id} due to exhausted attempts")
+                except Exception as e:
+                    print(f"Failed to terminally fail task {task_id}: {e}", file=sys.stderr)
+        else:
+            # Session exists but has no messages - check if it's active
+            messages = get_session_messages(session_id)
+            
+            # Check if session is in active set (no terminal marker, recent activity)
+            is_active = session_info.get("time", {}).get("idle") is None and \
+                       session_info.get("outcome") is None
+            
+            if not is_active and not messages:
+                # Stuck session with no activity and no messages - recover if attempts remain
+                if attempts < max_attempts:
+                    if recover_stuck_bound_task(task_id, session_id, attempts, max_attempts):
+                        recovered_tasks.append({
+                            "task_id": task_id,
+                            "session_id": session_id,
+                            "reason": "zero-message-stuck-recovered"
+                        })
+                else:
+                    # Attempts exhausted
+                    if delete_session(session_id):
+                        fail_cmd = [
+                            REPO_QUEUE_CLI,
+                            "fail", task_id,
+                            "--worker", task.get("worker_id", "unknown"),
+                            "--error", f"bound session {session_id} stuck without progress; attempts exhausted",
+                            "--reason-class", "deterministic",
+                            "--execution", json.dumps({
+                                "lane": "opencode",
+                                "session_id": session_id,
+                                "fallback_reason": "launch_failed_attempts_exhausted"
+                            })
+                        ]
+                        try:
+                            run_command(fail_cmd)
+                            print(f"Terminally failed task {task_id} due to exhausted attempts (stuck session)")
+                        except Exception as e:
+                            print(f"Failed to terminally fail task {task_id}: {e}", file=sys.stderr)
+            elif is_active:
+                # Session is active, leave it bound
+                print(f"Session {session_id} is active, leaving task {task_id} bound")
+            else:
+                # Has messages or other activity, leave it bound
+                print(f"Session {session_id} has activity/messages, leaving task {task_id} bound")
+    
+    return recovered_tasks
+
+
+def create_worker_session(task: Dict) -> Optional[str]:
+    """
+    Step 4b: Create a worker session for the task.
+    Returns session_id if successful, None otherwise.
+    """
+    task_id = task.get("id")
+    issue = task.get("issue")
+    packet = task.get("packet", {})
+    route = packet.get("route") or "workhorse"  # Default route
+    
+    # Determine model based on route
+    model_map = {
+        "workhorse": {"providerID": "opencode-route", "id": "workhorse"},
+        "specialist": {"providerID": "opencode-route", "id": "specialist"},
+        "summit": {"providerID": "opencode-route", "id": "summit"}
+    }
+    model = model_map.get(route, model_map["workhorse"])
+    
+    # Create session payload
+    payload = {
+        "location": {
+            "directory": "/home/user/git/code"  # Primary repo directory
+        },
+        "title": f"opencode-lane: {issue}",
+        "model": model,
+        "agent": "build"
+    }
     
     try:
-        poll_data = run_poll()
-        candidates = poll_data.get("candidates", [])
+        import requests
+        url = f"{OPENCODE_SERVER}/api/session"
+        headers = {"Content-Type": "application/json"}
+        response = requests.post(url, json=payload, timeout=10)
         
-        # Sort by queue priority (order in QUEUES list)
-        # Filter for unbound opencode-lane tasks with correct stage
-        unbound_opencode = [
-            c for c in candidates
-            if c.get("lane") == "opencode" 
-            and not c.get("session_id")
-            and c.get("stage") in ("handed_off", "launch_failed")
-        ]
-        
-        for candidate in unbound_opencode:
-            if cap_room <= 0:
-                skips.append({
-                    "task_id": candidate["id"],
-                    "reason": "cap_saturated"
-                })
-                continue
+        if response.status_code == 200:
+            session_data = response.json()
+            session_id = session_data.get("id")
             
-            task_id = candidate["id"]
-            worker_id = candidate.get("worker_id", "unknown")
-            issue = candidate.get("issue", "")
-            packet = candidate.get("packet", {})
-            
-            # Step 4a: Re-verify task state
-            try:
-                poll_data = run_poll()
-                task = next((t for t in poll_data.get("candidates", []) if t.get("id") == task_id), None)
-                
-                if not task or task.get("lane") != "opencode" or task.get("session_id"):
-                    skips.append({
-                        "task_id": task_id,
-                        "reason": "task_state_changed"
-                    })
-                    continue
-            except Exception as e:
-                skips.append({
-                    "task_id": task_id,
-                    "reason": f"verification_failed: {str(e)}"
-                })
-                continue
-            
-            # Step 4b: Create worker session
-            session_create_body = {
-                "location": {
-                    "directory": str(PRIMARY_CLONE)
-                },
-                "title": f"Queue task {task_id} - {issue}",
-                "model": {
-                    "id": "workhorse",
-                    "providerID": "opencode-route"
-                },
-                "agent": "build"
-            }
-            
-            try:
-                create_response = requests.post(
-                    "http://127.0.0.1:13420/api/session",
-                    json=session_create_body,
-                    timeout=10
-                )
-                
-                if create_response.status_code != 200:
-                    raise RuntimeError(f"Session creation failed: {create_response.text}")
-                
-                session = create_response.json()
-                session_id = session.get("id")
-                
-                # Verify location before proceeding
-                if session.get("location", {}).get("directory") != str(PRIMARY_CLONE):
-                    # Wrong location - delete and skip
-                    requests.delete(
-                        f"http://127.0.0.1:13420/api/session/{session_id}",
-                        timeout=5
-                    )
-                    skips.append({
-                        "task_id": task_id,
-                        "reason": "session_wrong_location"
-                    })
-                    continue
-                
-                # Step 4c: Bind the session
-                bind_result = subprocess.run(
-                    [
-                        str(REPO_QUEUE_CMD),
-                        "bind", task_id,
-                        "--worker", "opencode-claimant",
-                        "--session-id", session_id
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-                
-                if bind_result.returncode != 0:
-                    # Bind failed - delete session and skip
-                    requests.delete(
-                        f"http://127.0.0.1:13420/api/session/{session_id}",
-                        timeout=5
-                    )
-                    skips.append({
-                        "task_id": task_id,
-                        "reason": "bind_failed"
-                    })
-                    continue
-                
-                # Step 4d: Send prompt to bound session
-                # The worker should use: repo-queue with --worker <worker_id> and the execution context
-                prompt = f"""
-Execute queue task {task_id}
-Issue: {issue}
-Packet: {json.dumps(packet, indent=2)}
-
-You are a build agent working on this opencode-lane task.
-Use --worker {worker_id} for all queue CLI operations.
-Heartbeat while working to keep the claim lease alive.
-Finish with: complete, park, block, or fail --execution '{{...}}'
-"""
-                
-                # In a real implementation, this would send the prompt via the session API
-                # For now, we just record the successful launch
-                
-                launched.append({
-                    "task_id": task_id,
-                    "session_id": session_id,
-                    "worker_id": worker_id,
-                    "timestamp": datetime.utcnow().isoformat() + "Z"
-                })
-                
-                cap_room -= 1
-                
-            except Exception as e:
-                skips.append({
-                    "task_id": task_id,
-                    "reason": f"launch_error: {str(e)}"
-                })
-                
+            # Verify location before proceeding
+            location = session_data.get("location", {})
+            if location.get("directory") == "/home/user/git/code":
+                print(f"Created session {session_id} for task {task_id}")
+                return session_id
+            else:
+                # Wrong location - delete and fail
+                print(f"Session {session_id} created at wrong location: {location.get('directory')}",
+                      file=sys.stderr)
+                delete_url = f"{OPENCODE_SERVER}/api/session/{session_id}"
+                requests.delete(delete_url, timeout=5)
+                return None
+        else:
+            print(f"Failed to create session for task {task_id}: status {response.status_code}",
+                  file=sys.stderr)
+            print(f"Response: {response.text}", file=sys.stderr)
+            return None
     except Exception as e:
-        print(f"Launch step failed: {e}")
+        print(f"Exception creating session for task {task_id}: {e}", file=sys.stderr)
+        return None
+
+
+def bind_and_launch(task: Dict, session_id: str) -> bool:
+    """
+    Steps 4c-4e: Bind the session to the task and send the worker prompt.
+    Returns True if successful, False otherwise.
+    """
+    task_id = task.get("id")
+    worker_id = task.get("worker_id")
+    issue = task.get("issue")
+    packet = task.get("packet", {})
     
-    return launched
+    if not worker_id:
+        print(f"Task {task_id} has no worker_id, cannot bind", file=sys.stderr)
+        return False
+    
+    # Step 4c: Bind the session
+    try:
+        bind_cmd = [
+            REPO_QUEUE_CLI,
+            "bind", task_id,
+            "--worker", "opencode-claimant",
+            "--session-id", session_id
+        ]
+        result = run_command(bind_cmd)
+        
+        if result.returncode != 0:
+            print(f"Failed to bind session {session_id} to task {task_id}: {result.stderr}",
+                  file=sys.stderr)
+            return False
+        
+        # Checkpoint as launched
+        checkpoint_cmd = [
+            REPO_QUEUE_CLI,
+            "checkpoint", task_id,
+            "--worker", worker_id,
+            "--stage", "launched",
+            "--execution", json.dumps({
+                "lane": "opencode",
+                "session_id": session_id
+            })
+        ]
+        result = run_command(checkpoint_cmd)
+        
+        if result.returncode != 0:
+            print(f"Failed to checkpoint task {task_id}: {result.stderr}", file=sys.stderr)
+            return False
+        
+        print(f"Bound and checkpointed task {task_id} to session {session_id}")
+        
+        # Step 4d: Send worker prompt
+        # The prompt should instruct the worker to work THIS task
+        prompt = f"""
+You are a worker for queue task {task_id} (issue: {issue}).
+
+This task is claimed and lane-bound to opencode execution lane.
+
+WORK ON THIS TASK ONLY. Do not claim or work on other tasks.
+
+Use the repo-queue CLI with --worker {worker_id} for all operations:
+- repo-queue heartbeat <id> --worker {worker_id}
+- repo-queue checkpoint <id> --worker {worker_id} --stage <stage>
+- repo-queue complete <id> --worker {worker_id}
+- etc.
+
+When finished, use the appropriate terminal verb with:
+--execution '{{"lane": "opencode", "session_id": "{session_id}"}}'
+
+Task details:
+{json.dumps(packet, indent=2)}
+"""
+        
+        import requests
+        url = f"{OPENCODE_SERVER}/api/session/{session_id}/message"
+        payload = {
+            "text": prompt,
+            "type": "user"
+        }
+        response = requests.post(url, json=payload, timeout=10)
+        
+        if response.status_code == 200:
+            print(f"Sent prompt to session {session_id} for task {task_id}")
+            
+            # Step 4e: Post agent-note
+            note_cmd = [
+                REPO_QUEUE_CLI,
+                "agent-note", task_id,
+                "--state", "handed off",
+                "--text", f"Task {task_id} handed off to session {session_id}"
+            ]
+            result = run_command(note_cmd)
+            
+            if result.returncode == 0:
+                print(f"Posted agent-note for task {task_id}")
+                return True
+            else:
+                print(f"Failed to post agent-note: {result.stderr}", file=sys.stderr)
+                return False
+        else:
+            print(f"Failed to send prompt to session {session_id}: status {response.status_code}",
+                  file=sys.stderr)
+            return False
+            
+    except Exception as e:
+        print(f"Exception during bind/launch for task {task_id}: {e}", file=sys.stderr)
+        return False
+
+
+def log_fire(mode: str, candidates: List[Dict], launched: List[Dict], 
+             cap_room: Optional[int], skips: List[Dict]) -> None:
+    """
+    Step 6: Append fire log entry.
+    """
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        
+        entry = {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "mode": mode,
+            "candidates_seen": len(candidates),
+            "sessions_launched": len(launched),
+            "cap_room": cap_room,
+            "launched": launched,
+            "skips": skips
+        }
+        
+        with FIRE_LOG.open("a") as f:
+            f.write(json.dumps(entry) + "\n")
+        
+        print(f"Fire logged: {json.dumps(entry, indent=2)}")
+    except Exception as e:
+        print(f"Failed to log fire: {e}", file=sys.stderr)
+
+
+def should_skip_task(task: Dict) -> Tuple[bool, str]:
+    """
+    Check if a task should be skipped based on issue labels.
+    Returns (should_skip, reason)
+    """
+    issue = task.get("issue", "")
+    
+    # Check for labels that should prevent auto-launch
+    skip_labels = ["held", "user/owned", "do-not-merge", "do-not-auto-edit"]
+    
+    # In a real implementation, we would fetch issue details
+    # For now, we'll skip based on common patterns in the issue field
+    issue_lower = issue.lower()
+    
+    for label in skip_labels:
+        if label in issue_lower:
+            return True, f"issue contains '{label}' label"
+    
+    return False, ""
 
 
 def main():
-    """Main entry point for the claimant/executor."""
-    mode = read_mode()
+    parser = argparse.ArgumentParser(description="OpenCode lane claimant/executor")
+    parser.add_argument("--dry-run", action="store_true", 
+                        help="Run in dry-run mode (equivalent to shadow)")
+    args = parser.parse_args()
     
-    print(f"OpenCode claimant starting in {mode} mode")
+    # Determine mode
+    mode = "live" if not args.dry_run else "shadow"
+    actual_mode = get_mode()
+    
+    if actual_mode == "shadow":
+        print("Running in SHADOW mode (discovery only)")
+        mode = "shadow"
+    elif mode == "live" and actual_mode != "live":
+        print(f"Mode file specifies '{actual_mode}', running in {actual_mode} mode")
+        mode = actual_mode
+    
+    print(f"Starting fire in {mode} mode")
     
     # Step 1: Supervision (always runs in live mode)
+    recovered_tasks = []
     if mode == "live":
-        print("Running supervision step...")
-        supervision_step(mode)
+        print("\n=== Step 1: Supervision ===")
+        recovered_tasks = supervision_step()
+        print(f"Recovered {len(recovered_tasks)} stuck_bound tasks")
     
-    # Step 2: Gate
-    print("Running gate step...")
-    has_candidates = gate_step()
+    # Step 2: Gate - Check if we have any candidates
+    print("\n=== Step 2: Gate ===")
+    candidates = get_candidates()
     
-    if not has_candidates:
-        print("No unbound opencode-lane candidates found. Exiting.")
-        log_fire(mode, [], [], 0, [{"reason": "no_candidates"}])
+    if not candidates:
+        print("No unbound opencode-lane candidates found")
+        log_fire(mode, candidates, [], None, [])
         return 0
     
-    # Step 3: Cap
-    print("Running cap step...")
-    cap_room = cap_step()
+    print(f"Found {len(candidates)} unbound opencode-lane candidates")
     
-    if cap_room == -1:
-        print("Warning: Could not determine cap room. Exiting.")
-        log_fire(mode, [], [], -1, [{"reason": "cap_unknown"}])
+    # Step 3: Cap - Check concurrency limit
+    print("\n=== Step 3: Cap ===")
+    cap_room, active_sessions = get_active_root_sessions()
+    
+    if cap_room is None:
+        print("Failed to determine cap_room, aborting fire")
+        log_fire(mode, candidates, [], None, [])
         return 1
     
     if cap_room <= 0:
-        print(f"Cap saturated ({CONCURRENCY_CAP} active sessions). Exiting.")
-        log_fire(mode, [], [], cap_room, [{"reason": "cap_saturated"}])
+        print(f"Cap reached (cap_room={cap_room}), aborting fire")
+        log_fire(mode, candidates, [], cap_room, [])
         return 0
     
-    print(f"Cap room: {cap_room} sessions available")
+    print(f"Cap room available: {cap_room} sessions")
     
-    # Step 4: Launch
-    print("Running launch step...")
-    launched = launch_step(mode, cap_room)
+    # Filter candidates by priority (highest queue priority first)
+    # QUEUES list defines priority order
+    prioritized = []
+    for queue in QUEUES:
+        queue_candidates = [c for c in candidates if c.get("queue") == queue]
+        prioritized.extend(queue_candidates)
     
-    # Step 5: Terminal states (handled by workers)
+    # Also include any candidates not in our queues (shouldn't happen but be safe)
+    prioritized.extend([c for c in candidates if c.get("queue") not in QUEUES])
+    
+    print(f"Prioritized {len(prioritized)} candidates")
+    
+    # Step 4: Launch candidates while cap room remains
+    print("\n=== Step 4: Launch ===")
+    launched = []
+    skips = []
+    
+    for task in prioritized:
+        if len(launched) >= cap_room:
+            print(f"Cap reached, stopping after {len(launched)} launches")
+            break
+        
+        task_id = task.get("id")
+        
+        # Re-verify task is still valid candidate
+        current_candidates = get_candidates()
+        current_task = next((c for c in current_candidates if c.get("id") == task_id), None)
+        
+        if not current_task:
+            reason = "no longer a candidate (claimed by another lane)"
+            print(f"Skipping task {task_id}: {reason}")
+            skips.append({
+                "task_id": task_id,
+                "reason": reason
+            })
+            continue
+        
+        # Check for skip labels
+        should_skip, skip_reason = should_skip_task(current_task)
+        if should_skip:
+            print(f"Skipping task {task_id}: {skip_reason}")
+            skips.append({
+                "task_id": task_id,
+                "reason": skip_reason
+            })
+            continue
+        
+        # Mode-specific handling
+        if mode == "shadow":
+            # In shadow mode, we would-launch but don't actually launch
+            session_id = f"would-be-session-{task_id}"
+            print(f"[SHADOW] Would launch task {task_id} as session {session_id}")
+            launched.append({
+                "task_id": task_id,
+                "session_id": session_id,
+                "mode": "shadow"
+            })
+            continue
+        
+        # Live mode: actual execution
+        print(f"\nProcessing task {task_id}")
+        
+        # Step 4b: Create worker session
+        session_id = create_worker_session(current_task)
+        if not session_id:
+            reason = "session_creation_failed"
+            print(f"Failed to create session for task {task_id}")
+            skips.append({
+                "task_id": task_id,
+                "reason": reason
+            })
+            continue
+        
+        # Steps 4c-4e: Bind and launch
+        if bind_and_launch(current_task, session_id):
+            launched.append({
+                "task_id": task_id,
+                "session_id": session_id,
+                "mode": "live"
+            })
+        else:
+            reason = "bind_or_launch_failed"
+            print(f"Failed to bind/launch task {task_id}")
+            skips.append({
+                "task_id": task_id,
+                "reason": reason
+            })
+            # Clean up the created session
+            delete_session(session_id)
+    
     # Step 6: Log fire
-    print(f"Fire complete. Launched {len(launched)} sessions.")
+    print("\n=== Step 6: Fire Log ===")
+    log_fire(mode, candidates, launched, cap_room, skips)
     
-    log_fire(mode, [], launched, cap_room, [])
+    print(f"\nFire completed in {mode} mode:")
+    print(f"  Candidates seen: {len(candidates)}")
+    print(f"  Sessions launched: {len(launched)}")
+    print(f"  Tasks skipped: {len(skips)}")
+    print(f"  Cap room: {cap_room}")
     
     return 0
 
