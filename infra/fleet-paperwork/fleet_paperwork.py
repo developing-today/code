@@ -281,13 +281,28 @@ def ledger_append(action: str, repo: str, number: str, detail: str) -> None:
 
 def find_by_exact_title(client: AppClient, repo: str, title: str) -> dict | None:
     """Search-API lookup, filtered to byte-exact title equality (the search
-    itself matches title+body text, so the filter is what makes it a dedupe)."""
+    itself matches title+body text, so the filter is what makes it a dedupe).
+
+    Issues only, on two layers (#6697): the query carries `type:issue` AND
+    the filter skips items with a `pull_request` key, because the search
+    index contains PRs and a same-titled PR is not an already-filed issue —
+    treating it as one made `create` exit 0 having filed nothing. The scan
+    pages through the matches (the Search API serves at most 1000 results)
+    so an exact-title issue past the first page is still found."""
     token = client.token_for(repo.split("/")[0])
-    q = urllib.parse.quote(f'repo:{repo} "{title}"')
-    _, data = http("GET", f"/search/issues?q={q}&per_page=20", token)
-    for item in data.get("items", []):
-        if item.get("title") == title:
-            return item
+    q = urllib.parse.quote(f'repo:{repo} type:issue "{title}"')
+    for page in range(1, 11):
+        _, data = http(
+            "GET", f"/search/issues?q={q}&per_page=100&page={page}", token
+        )
+        items = data.get("items", [])
+        for item in items:
+            if "pull_request" in item:
+                continue
+            if item.get("title") == title:
+                return item
+        if len(items) < 100:
+            return None
     return None
 
 
