@@ -57,6 +57,7 @@
  *                  OpenCode has been down past the window). Exit 4.
  *   schema-drift   a candidate DB lacks the v2 tables. Exit 5.
  *   read-failed    any other read error. Exit 6.
+ *   invalid-argument numeric option is not positive and finite. Exit 2.
  */
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -314,11 +315,21 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === "--db") args.db = argv[++i];
     else if (a === "--out-dir") args.outDir = argv[++i];
-    else if (a === "--window-hours") args.windowHours = Number(argv[++i]);
-    else if (a === "--fresh-hours") args.freshHours = Number(argv[++i]);
-    else throw new Error(`unknown argument: ${a}`);
+    else if (a === "--window-hours" || a === "--fresh-hours") {
+      const value = argv[i + 1];
+      const hours = Number(value?.startsWith("--") ? undefined : value);
+      if (a === "--window-hours") args.windowHours = hours;
+      else args.freshHours = hours;
+      if (value != null && !value.startsWith("--")) i += 1;
+    } else throw new Error(`unknown argument: ${a}`);
   }
   return args;
+}
+
+function requirePositiveFinite(value, option) {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new ExportError("invalid-argument", 2, `${option} must be a positive finite number`);
+  }
 }
 
 /** One exporter tick. Injectable `now`/`home` keep the tests offline
@@ -333,6 +344,8 @@ export async function run({
   const outDir = args.outDir ?? join(home, "atlas/opencode-usage-export");
   const attemptedAt = new Date(now).toISOString();
   try {
+    requirePositiveFinite(args.windowHours, "--window-hours");
+    requirePositiveFinite(args.freshHours, "--fresh-hours");
     const explicit = args.db ?? env.OPENCODE_USAGE_DB ?? null;
     const candidates = explicit ? [explicit] : defaultCandidatePaths(home);
     const state = await readState(outDir);
