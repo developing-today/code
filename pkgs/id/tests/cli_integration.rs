@@ -4207,6 +4207,51 @@ mod serve_tests {
         server.stop();
     }
 
+    /// A later bind failure aborts startup before any listener is served or
+    /// the serve lock advertises a partial topology.
+    #[test]
+    #[cfg(feature = "web")]
+    fn test_serve_web_later_listener_bind_failure_does_not_leave_partial_startup() {
+        let tmp = TempDir::new().unwrap();
+        let first_reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let first_addr = first_reservation.local_addr().unwrap();
+        drop(first_reservation);
+
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let occupied_addr = occupied.local_addr().unwrap();
+        let first_addr_text = first_addr.to_string();
+        let occupied_addr_text = occupied_addr.to_string();
+        let output = run_cmd(
+            &[
+                "serve",
+                "--ephemeral",
+                "--no-relay",
+                "--no-gossip",
+                "--no-mdns",
+                "--web",
+                "--web-listen",
+                &first_addr_text,
+                "--web-listen",
+                &occupied_addr_text,
+            ],
+            tmp.path(),
+        );
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "startup should fail: {stderr}");
+        assert!(
+            stderr.contains(&format!("failed to bind listener {occupied_addr}")),
+            "error should identify the listener that failed: {stderr}"
+        );
+        assert!(
+            !tmp.path().join(SERVE_LOCK).exists(),
+            "failed startup must not publish a partial listener set"
+        );
+        let reclaimed = std::net::TcpListener::bind(first_addr)
+            .expect("the listener bound before the failure must be released");
+        drop(reclaimed);
+    }
+
     /// Explicit legacy flags conflict with `--web-listen` through the real
     /// CLI value-source handling in `main`.
     #[test]
