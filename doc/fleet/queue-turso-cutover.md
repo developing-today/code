@@ -1,8 +1,9 @@
 # Queue core on Turso — cutover runbook (#6741)
 
-**Status:** backend BUILT and PROVEN live 2026-11-06; production
-broker still on Postgres (default unchanged). Cutover = the env
-flip in step 2 below, executed as its own change.
+**Status:** backend BUILT and PROVEN live 2026-11-06. Cutover is
+GO as soon as the backup load (§ Cutover step 2) verifies — Drew,
+2026-11-06 21:52 CST; it does NOT wait for the Postgres backfill,
+which is a later manual follow-up (§ After cutover).
 
 **Why:** the queue core (`agent.tasks`, `leases`, `lanes`,
 `workers`, `checkpoints`, `repo_task_lane_ledger`) was the one
@@ -73,36 +74,57 @@ Against the real `muse-queue` DB, through the real client verbs:
    Verify the installed binary answers `fleet queue health`
    against a Turso-backed test broker on a side port (as in the
    proof) before touching the production broker.
-2. **Flip:** set `QUEUE_BROKER_BACKEND=turso` in the queue-broker
-   unit env on the laptop and restart the unit. Nothing else
-   changes: clients, claimant, and worker runbooks already speak
-   only to the broker. **Drain decision first:** the Turso queue
-   starts empty. Either (a) flip while the GitHub fallback is
-   carrying work (PG is down anyway — there is nothing to drain
-   until PG returns), or (b) if PG has returned, let PG claims
-   drain to zero, export any open queued/parked/blocked PG tasks,
-   and re-enqueue them into Turso preserving dedupe keys. Option
-   (a) is the expected path while #6619 is open.
-3. **Verify:** `fleet queue health` names the Turso host; run one
-   labeled proof cycle (the #6741 packet shape) on the production
-   broker; watch the first real lane claims land in the Turso
-   `events` table.
-4. **Soak:** GitHub fallback mode stays ACTIVE as the bridge
+2. **Backup load:** populate `muse-queue` from the fleet's last
+   DIY R2 backup of muse-dev2 (prefix `pg/muse-dev2`, agent
+   schema; the restored export's location, row counts, and
+   coverage timestamp are recorded on #6619). Copy the queue-core
+   tables (`tasks`, `leases`, `workers`, `checkpoints`,
+   `repo_task_lane_ledger`) in as-is — no row-perfect verification
+   (Drew, 2026-11-06 21:51 CST); a sanity count readback against
+   the backup record is the check. The queue therefore comes up
+   holding real state as of the backup, not empty. **In-flight
+   claims in the restored data:** their `lease_until` values are
+   in the past by cutover time, so the queue's normal lease-expiry
+   semantics handle them — the first claims against the Turso
+   broker run `expire_leases`, returning those rows to `queued`
+   with their bindings cleared; no worker from the backup era
+   holds anything live. (The two labeled #6741 proof tasks,
+   ids 1–2, are also in the table — both `done`.)
+3. **Flip:** add a systemd drop-in for `queue-broker.service`
+   (the fastlane pattern): `Environment=QUEUE_BROKER_BACKEND=turso`
+   and `ExecStart` repointed at the step-1 build; daemon-reload;
+   restart the unit. Nothing else changes: clients, claimant, and
+   worker runbooks already speak only to the broker. The broker
+   resolves the Turso token from the secrets broker by name
+   (`turso.muse-queue-rw-token`) — no token file in the unit.
+4. **Verify:** `fleet queue health` names the Turso host and shows
+   the restored queues; run one labeled proof cycle (the #6741
+   packet shape) through the production broker; watch the first
+   real lane claims land in the Turso `events` table.
+5. **Soak:** GitHub fallback mode stays ACTIVE as the bridge
    until the Turso broker has carried a full day of real claims;
    workers keep routing to fallback whenever `fleet queue health`
    fails, per runbook §0a.
 
-## Interaction with the PG staged-recovery sequence
+## After cutover: the Postgres backfill (manual, unscheduled)
 
-**Unaffected.** If Postgres returns before cutover, the staged
-sequence still runs in its order — outbox reconciliation (17) →
-monitor requeue (16) → 142-at-cap requeue → migration finalize
-scripts (`migrate_slice6_mirror.py`, then `finalize_pg.py`). The
-requeues target the PG queue; if the flip (step 2) has already
-happened when PG returns, run the export half of the finalize
-scripts and the mirror drops, but skip the requeues — the work
-they would revive is re-enqueued into Turso per step 2(b) or has
-already been carried by the fallback.
+The gap between the backup's coverage point and the crash
+(data plane down 2026-11-06 19:25Z) is **not** a cutover gate.
+Whenever the Postgres data plane becomes available again, one
+manual step ports the missing changes into Turso: tasks created,
+completed, or transitioned in the gap, identified by comparing
+PG `agent.tasks` (and its ledger) against the Turso tables by
+dedupe key / task identity. **If the two sources conflict on a
+task, Postgres (the later state) wins.** The action outbox is
+drained separately, against the GitHub fallback, by its own lane
+— it is no longer part of this sequence — and the earlier staged
+monitor (16) / 142-at-cap requeues are superseded: their work is
+carried by the fallback or re-derived from GitHub issues. The
+migration finalize scripts (`migrate_slice6_mirror.py`,
+`finalize_pg.py`) remain PG-side hygiene for decommission time,
+unrelated to the queue. After the backfill, muse-dev2 is
+**decommissioned: left in place, unused — never deleted**
+(Drew's data plan, 2026-11-06 21:49 CST).
 
 ## Rollback
 
@@ -157,8 +179,11 @@ the rollback complete.
 
 ## What still touches Postgres after the queue cutover
 
-The delete-the-project checklist. Nothing below was moved or
-dropped by #6741.
+The decommission checklist. Per Drew's data plan (2026-11-06),
+muse-dev2 is **decommissioned — left in place, unused — never
+deleted**; every item below is a move-or-retire decision that
+stands between here and that decommission, and nothing below was
+moved or dropped by #6741.
 
 - **agent.events (PG stream, ~196k rows, FK → tasks)** — its
   queue-transition writers are replaced by the Turso `events`
@@ -168,9 +193,10 @@ dropped by #6741.
   export-or-abandon per the #5690 append-stream class.
 - **pg_cron jobs** (`agent-expire-leases` every minute,
   `agent-prune-events` daily, `park-revalidation-daily`) — they
-  die with the project. Expire is covered inside claim; prune
-  (30-day retention) and park revalidation need small ports to a
-  broker-side periodic task (deviations 4–5).
+  live inside the project and become irrelevant at decommission
+  (expire is covered inside claim); prune (30-day retention) and
+  park revalidation need small ports to a broker-side periodic
+  task (deviations 4–5).
 - **ci.events + the `github-ci` Edge Function** — the writer runs
   ON Supabase (Edge Functions), upserts PG, and dual-writes Turso
   `ci_events` (live since 2026-11-06). The morning-readout reader
@@ -189,8 +215,8 @@ dropped by #6741.
   ainventory relational core (`models`, `measurement_events`,
   `price_events`, `provider_policies`, `benchmark_results` + the
   views over them) is KEEP-on-Postgres BY DESIGN — not a leftover;
-  deleting the project needs a deliberate re-home decision for
-  that core.
+  full decommission waits on a deliberate re-home decision for
+  that core (until then the project stays partially live for it).
 - **Slice-1 `sources` remainder (#5695)** — 5 rows exist only in
   PG (`automation`/`finance`/`home`/`research` sources; D1
   `muse-config` holds the other 49 of 54). Moving takes one PG
@@ -215,5 +241,5 @@ dropped by #6741.
   vault 1 — the 41-table RETIRE class)** — no fleet consumer was
   found in the audits; the only platform dependency is Edge
   Functions hosting (the `github-ci` receiver above). Re-home
-  that function first; nothing else needs moving, and deleting
-  the project is what retires these.
+  that function first; nothing else needs moving — these stay
+  in the decommissioned project, unused, like everything else.
