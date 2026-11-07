@@ -688,6 +688,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn probe_read_records_collapses_duplicate_keys_in_a_value() {
+        let host = Node::spawn().await;
+        let store = RecordsStore::open(&host.docs, None).await.unwrap();
+        // Raw value bytes carry key "k" twice: an oversized first value
+        // (raw size > MAX_RECORD_VALUE_BYTES) and a small second value.
+        let raw = format!(
+            r#"{{"k":"{}","k":"small"}}"#,
+            "x".repeat(MAX_RECORD_VALUE_BYTES + 100)
+        );
+        assert!(raw.len() > MAX_RECORD_VALUE_BYTES, "raw {} bytes", raw.len());
+        write_raw(&store, "dup", raw.clone().into_bytes()).await;
+        let read = read_records(&store.doc, &host.blobs).await;
+        println!("PROBE read_records duplicate-value result: {read:?}");
+        // Bug expectation: Ok, collapsed to the small second value.
+        let read = read.expect("PROBE: duplicate-key value is accepted (bug)");
+        assert_eq!(read["dup"], serde_json::json!({"k": "small"}));
+        // Publish-side oracle: parse_records refuses the same duplicate at depth.
+        let doc = format!(r#"{{"dup":{raw}}}"#);
+        let parsed = crate::world::parse_records(&doc);
+        println!("PROBE parse_records duplicate-value result: {parsed:?}");
+        assert!(parsed.is_err(), "PROBE: parse_records must refuse duplicates");
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn read_records_refuses_too_many_records() {
         let host = Node::spawn().await;
         let store = RecordsStore::open(&host.docs, None).await.unwrap();
