@@ -372,7 +372,7 @@
       "path": "docs/configuration.md",
       "chapter": null,
       "role": "included",
-      "lines": 636,
+      "lines": 1103,
       "note": "reference (#144) and L2 (#146); the book links to it rather than duplicating it. internal/settings/docs_test.go reads it"
     },
     {
@@ -803,6 +803,13 @@
       "note": "a five-line scratch list, not a chapter"
     },
     {
+      "path": "TESTING.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 98,
+      "note": "agent test-tier policy for the mcpx module (#1966), referenced by scripts/affected-tests.py; operational guidance, not a compendium page"
+    },
+    {
       "path": "docs/overview.md",
       "chapter": null,
       "role": "not-compendium",
@@ -843,6 +850,41 @@
       "role": "not-compendium",
       "lines": 3,
       "note": "docs-history change fragment for #3064 (artifact copy semantics); history metadata consumed by the docs-history tooling, not a compendium page"
+    },
+    {
+      "path": "docs/changes/prototasks-cancel-grace.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 3,
+      "note": "docs-history change fragment for #2499 (protoTasks.cancelGrace); history metadata consumed by the docs-history tooling, not a compendium page"
+    },
+    {
+      "path": "docs/changes/proxy-timeout.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 3,
+      "note": "docs-history change fragment for #2114 (proxy.timeout); history metadata consumed by the docs-history tooling, not a compendium page"
+    },
+    {
+      "path": "docs/changes/docs-history-tool.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 3,
+      "note": "docs-history change fragment describing the metadata and fragment workflow; consumed by the docs-history tooling, not a compendium page"
+    },
+    {
+      "path": "docs/changes/protocol-capability-claims.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 3,
+      "note": "docs-history change fragment for #1930 (protocol capability claims); history metadata consumed by the docs-history tooling, not a compendium page"
+    },
+    {
+      "path": "docs/changes/research-and-findings-chapter.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 3,
+      "note": "docs-history change fragment for #1871 (research and incidental findings chapter); history metadata consumed by the docs-history tooling, not a compendium page"
     },
     {
       "path": "docs/cli.md",
@@ -897,7 +939,7 @@
       "path": "docs/level-2-page-map.md",
       "chapter": "maintaining-these-docs",
       "role": "chapter-source",
-      "lines": 152,
+      "lines": 154,
       "note": "the map of level-2 guide pages (#146-#148): which page covers what"
     },
     {
@@ -906,6 +948,13 @@
       "role": "chapter-source",
       "lines": 217,
       "note": "MCP as mcpx speaks it: the protocol surface in one page"
+    },
+    {
+      "path": "docs/modes.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 148,
+      "note": "modes: how a client reaches a daemon, how the daemon reaches a server, and mcpx itself as a server — the level-2 guide (#4821)"
     },
     {
       "path": "docs/opencode-plugin-v2.md",

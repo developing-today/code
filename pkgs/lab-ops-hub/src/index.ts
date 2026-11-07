@@ -3,6 +3,7 @@ import { DurableObject } from "cloudflare:workers";
 import {
   computeBudget,
   crawlFetcher,
+  extractHtml,
   fetchFollowingValidatedRedirects,
   parseJsonObjectBody,
   readResponseTextCapped,
@@ -13,6 +14,7 @@ import {
   validateMachineBody,
   validateNoteBody,
   validateTaskBody,
+  fileResponseForKey,
 } from "./lib";
 
 // ---------------------------------------------------------------------------
@@ -206,13 +208,10 @@ async function crawlFallback(url: string) {
   // Cap the body read at the container's 2,000,000 bytes (#481): res.text()
   // would buffer a huge page whole in the Worker's memory.
   const html = await readResponseTextCapped(res);
-  const title = html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() ?? "";
-  const links = (html.match(/<a\s/gi) ?? []).length;
-  const text = html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  // Extraction matches the container Extractor exactly (#569):
+  // extractHtml in lib.ts mirrors its HTMLParser semantics and both
+  // doors are pinned by the paired fixtures in test/.
+  const { title, links, text } = extractHtml(html);
   return { title, excerpt: text.slice(0, 500), links, status_code: res.status, text: text.slice(0, 20000) };
 }
 
@@ -390,11 +389,7 @@ export default {
       }
       const fileMatch = p.match(/^\/api\/files\/(.+)$/);
       if (fileMatch && req.method === "GET") {
-        const obj = await env.FILES.get(decodeURIComponent(fileMatch[1]));
-        if (!obj) return json({ error: "not found in R2" }, 404);
-        return new Response(obj.body, {
-          headers: { "content-type": obj.httpMetadata?.contentType ?? "application/octet-stream" },
-        });
+        return fileResponseForKey(fileMatch[1], (key) => env.FILES.get(key));
       }
 
       // Live board (Durable Object, one global room)

@@ -58,6 +58,9 @@ type Timing struct {
 	// 0 (disabled) arrives here as -1, because a zero Timing in tests must
 	// still mean "the store's default", not "disabled".
 	TaskWindowPerMinute int
+	// TaskCancelGrace is the cooperative-cancellation window
+	// (protoTasks.cancelGrace).
+	TaskCancelGrace time.Duration
 }
 
 func (t Timing) resolved() Timing {
@@ -96,6 +99,9 @@ func (t Timing) resolved() Timing {
 	}
 	if t.TaskMaxPerRequestor <= 0 {
 		t.TaskMaxPerRequestor = tasks.DefaultMaxPerRequestor
+	}
+	if t.TaskCancelGrace <= 0 {
+		t.TaskCancelGrace = tasks.DefaultCancelGrace
 	}
 	return t
 }

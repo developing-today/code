@@ -2,6 +2,7 @@
 // whether they are looking at fixtures or live readers — swapping one for
 // the other is a config change (PM_AGG_SOURCE), not a code change.
 import type { SectionDiagnosis } from "./feed.ts";
+import type { NeedsDrewCensus } from "./needs-drew.ts";
 import type { RepoCensus } from "./coverage.ts";
 import type {
   AaFeedSection,
@@ -32,11 +33,21 @@ export interface Source {
   items(refs: RefKey[]): Promise<Map<RefKey, GhItem>>;
   /** The comment projection for the refs, PR-interior comments included. */
   comments(refs: RefKey[]): Promise<Comment[]>;
+  /** The latest comment per ref, guaranteed per ref (#1279): the bulk
+   * comments() read applies one row limit across all requested refs, so
+   * a busy batch can omit an item's latest comment entirely. Briefs only
+   * need the latest, and need it for every item. Optional — callers fall
+   * back to comments() when a source does not provide it. */
+  latestComments?(refs: RefKey[]): Promise<Comment[]>;
   /** Quota + throughput view (#851). */
   quota(): Promise<QuotaView>;
   /** Usage & billing hub view: family-2 SaaS services, PAYG lines,
-   * charges evidence, bubble flags, and snapshot history (hub §3). */
+   * charges evidence, bubble flags, and snapshot history (hub §3). Read-only. */
   usage(): Promise<UsageView>;
+  /** Land the latest feed-carried usage snapshots into the local store.
+   * Optional: live mode runs this from its background writer tick, never
+   * as a side effect of a page/read request. */
+  ingestSnapshots?(): Promise<number>;
   /** Raw session feed for the "needs you" view (#852), pre-classification. */
   attention(): Promise<SessionFeedEntry[]>;
   /** The orchestration job's latest section (#899); null = not measured yet. */
@@ -61,6 +72,12 @@ export interface Source {
    * feed carried no projects section, so coverage renders the pool as
    * unavailable instead of zero. Optional, like coverageCensus. */
   projectsAvailable?(): Promise<boolean>;
+  /** The Needs-Drew label census (#1226): open user/review +
+   *  user/escalated items across the four repos, labels as a read-only
+   *  source. Optional like coverageCensus: sources that cannot census
+   *  omit it and the attention view renders the census as unavailable
+   *  instead of as an empty queue. */
+  needsDrew?(): Promise<NeedsDrewCensus | null>;
   /** Which session sources are wired, for the coverage note (slice 2). */
   coverage(): Promise<SourceCoverage[]>;
   provenance(): Provenance;

@@ -12,8 +12,9 @@ use super::token::Token;
 
 /// An invite as the admin's chain records it, plus the joiner it admitted.
 ///
-/// A Seitan invite is single use, as Keybase's is. Expiry and revocation are local rules here. Keybase's V2 invites
-/// carry neither (see the module notes in `mod.rs`).
+/// This local invite object admits at most one joiner. Keybase's normal sequential old-style V2 flow also records
+/// completion in team chain state rather than an invite use count (see the source references and concurrency caveat
+/// in `mod.rs`). Expiry, revocation, and the freshness window enforced here are local admission rules.
 #[derive(Clone, Debug)]
 pub struct Invite {
     id: InviteId,

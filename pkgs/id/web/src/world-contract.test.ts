@@ -2,12 +2,28 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { Conformance, checkClientFrame, checkServerFrame, type ShellContract } from "./shell-contract";
+import {
+  Conformance,
+  checkClientFrame,
+  checkServerFrame,
+  parseShellContract,
+  type ShellContract,
+} from "./shell-contract";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const contract = JSON.parse(
+const contractDocument: unknown = JSON.parse(
   readFileSync(resolve(here, "../../contract/shell-contract.v1.json"), "utf8"),
-) as ShellContract;
+);
+const contract = parseShellContract(contractDocument);
+
+function withFieldType(side: "client" | "server", frameName: string, fieldName: string, type: string): ShellContract {
+  const malformed = structuredClone(contract);
+  const frames = side === "client" ? malformed.client_frames : malformed.server_frames;
+  const frame = frames[frameName];
+  if (!frame) throw new Error(`missing ${side} frame ${frameName}`);
+  (frame.fields as Record<string, unknown>)[fieldName] = type;
+  return malformed;
+}
 
 /** The world page markup, read from the Rust template so the test cannot drift from it. */
 function worldPageMarkup(): string {
@@ -22,6 +38,98 @@ function worldPageMarkup(): string {
 describe("shell contract validator", () => {
   const cap = "cap";
 
+  it("validates every client and server field spec when loading a contract", () => {
+    expect(parseShellContract(contractDocument)).toEqual(contract);
+
+    const malformedClient = withFieldType("client", "chat", "text", "u65");
+    expect(() => parseShellContract(malformedClient)).toThrow("chat.text: unknown field type `u65`");
+
+    const malformedServer = withFieldType("server", "view", "sequence", "u65");
+    expect(() => parseShellContract(malformedServer)).toThrow("view.sequence: unknown field type `u65`");
+  });
+
+  it("rejects malformed constraint values when loading a contract", () => {
+    const badEnum = structuredClone(contract);
+    (badEnum.client_frames.chat!.fields as Record<string, unknown>).text = { type: "string", enum: 7 };
+    expect(() => parseShellContract(badEnum)).toThrow("chat.text: enum must be an array of strings");
+
+    const badBound = structuredClone(contract);
+    (badBound.client_frames.chat!.fields as Record<string, unknown>).text = { type: "string", max_bytes: "9" };
+    expect(() => parseShellContract(badBound)).toThrow("chat.text: max_bytes must be a finite number");
+  });
+
+  it("rejects malformed top-level fields when loading a contract (#4323)", () => {
+    const without = (key: string): Record<string, unknown> => {
+      const malformed = structuredClone(contract) as unknown as Record<string, unknown>;
+      delete malformed[key];
+      return malformed;
+    };
+
+    expect(() => parseShellContract(without("routing_fields"))).toThrow("routing_fields must be an array of strings");
+    expect(() => parseShellContract(without("projection"))).toThrow("projection must be an object");
+    expect(() => parseShellContract(without("max_frame_bytes"))).toThrow(
+      "max_frame_bytes must be a non-negative integer",
+    );
+
+    const stringRouting = structuredClone(contract) as unknown as Record<string, unknown>;
+    stringRouting.routing_fields = "world";
+    expect(() => parseShellContract(stringRouting)).toThrow("routing_fields must be an array of strings");
+
+    const mixedRouting = structuredClone(contract) as unknown as Record<string, unknown>;
+    mixedRouting.routing_fields = ["world", 7];
+    expect(() => parseShellContract(mixedRouting)).toThrow("routing_fields must be an array of strings");
+
+    const stringProjection = structuredClone(contract) as unknown as Record<string, unknown>;
+    stringProjection.projection = "world_state";
+    expect(() => parseShellContract(stringProjection)).toThrow("projection must be an object");
+
+    const withoutRedacted = structuredClone(contract) as unknown as Record<string, unknown>;
+    withoutRedacted.projection = {};
+    expect(() => parseShellContract(withoutRedacted)).toThrow("projection.redacted_keys must be an array of strings");
+
+    const mixedRedacted = structuredClone(contract) as unknown as Record<string, unknown>;
+    mixedRedacted.projection = { redacted_keys: ["seed", 7] };
+    expect(() => parseShellContract(mixedRedacted)).toThrow("projection.redacted_keys must be an array of strings");
+
+    const negativeCap = structuredClone(contract) as unknown as Record<string, unknown>;
+    negativeCap.max_frame_bytes = -1;
+    expect(() => parseShellContract(negativeCap)).toThrow("max_frame_bytes must be a non-negative integer");
+
+    const fractionalCap = structuredClone(contract) as unknown as Record<string, unknown>;
+    fractionalCap.max_frame_bytes = 1.5;
+    expect(() => parseShellContract(fractionalCap)).toThrow("max_frame_bytes must be a non-negative integer");
+  });
+
+  it("returns violations instead of throwing for malformed field specs", () => {
+    const malformedClient = withFieldType("client", "chat", "text", "u65");
+    const clientCheck = checkClientFrame(malformedClient, { type: "chat", text: "hi" }, "joined");
+    expect(clientCheck).toEqual({
+      ok: false,
+      error: expect.stringContaining("chat.text"),
+    });
+    if (!clientCheck.ok) expect(clientCheck.error).toContain("unknown field type `u65`");
+
+    const malformedServer = withFieldType("server", "view", "sequence", "u65");
+    const serverCheck = checkServerFrame(malformedServer, {
+      type: "view",
+      sequence: 1,
+      data: "x",
+      surface: null,
+      view_revision: 1,
+    });
+    expect(serverCheck).toEqual({
+      ok: false,
+      error: expect.stringContaining("view.sequence"),
+    });
+    if (!serverCheck.ok) expect(serverCheck.error).toContain("unknown field type `u65`");
+
+    const session = new Conformance(malformedClient);
+    session.client({ type: "join", capability: cap, after: null, world: null });
+    expect(session.phase).toBe("joined");
+    expect(() => session.client({ type: "chat", text: "hi" })).not.toThrow();
+    expect(session.violations).toEqual([{ index: 1, side: "client", message: expect.stringContaining("chat.text") }]);
+  });
+
   it("accepts the frames a joined shell sends", () => {
     expect(checkClientFrame(contract, { type: "join", capability: cap, after: null, world: null }, "opening")).toEqual({
       ok: true,
@@ -30,7 +138,9 @@ describe("shell contract validator", () => {
     expect(checkClientFrame(contract, { type: "resize", width: 500, height: 200 }, "joined").ok).toBe(true);
     expect(checkClientFrame(contract, { type: "input", data_hex: "1b5b41" }, "joined").ok).toBe(true);
     expect(checkClientFrame(contract, { type: "records", capability: cap, after: "k" }, "joined").ok).toBe(true);
-    expect(checkServerFrame(contract, { type: "view", sequence: 1, data: "x", surface: null }).ok).toBe(true);
+    expect(
+      checkServerFrame(contract, { type: "view", sequence: 1, data: "x", surface: null, view_revision: 1 }).ok,
+    ).toBe(true);
   });
 
   it.each([
@@ -67,7 +177,9 @@ describe("shell contract validator", () => {
     expect(seed(2 ** 53).ok).toBe(true);
     // u64::MAX as it arrives from wire JSON: already rounded by the parser.
     expect(seed(JSON.parse("18446744073709551615") as number).ok).toBe(true);
-    expect(checkServerFrame(contract, { type: "view", sequence: 2 ** 53, data: "x", surface: null }).ok).toBe(true);
+    expect(
+      checkServerFrame(contract, { type: "view", sequence: 2 ** 53, data: "x", surface: null, view_revision: 1 }).ok,
+    ).toBe(true);
     expect(checkServerFrame(contract, { type: "records", sequence: 2 ** 53, records: {} }).ok).toBe(true);
   });
 
@@ -80,7 +192,9 @@ describe("shell contract validator", () => {
     expect(over64.ok).toBe(false);
     if (!over64.ok) expect(over64.error).toContain("18446744073709551615");
     expect(seed(1e100).ok).toBe(false);
-    expect(checkServerFrame(contract, { type: "view", sequence: 2 ** 65, data: "x", surface: null }).ok).toBe(false);
+    expect(
+      checkServerFrame(contract, { type: "view", sequence: 2 ** 65, data: "x", surface: null, view_revision: 1 }).ok,
+    ).toBe(false);
   });
 
   it("still enforces the u64 bounds JS can check exactly (#1441)", () => {
@@ -181,6 +295,10 @@ class FakeSocket extends EventTarget {
     this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(frame) }));
   }
 
+  deliverRaw(data: string): void {
+    this.dispatchEvent(new MessageEvent("message", { data }));
+  }
+
   sent(type: string): Array<Record<string, unknown>> {
     return this.transcript
       .filter((entry) => entry.from === "client" && (entry.frame as { type?: string }).type === type)
@@ -247,7 +365,7 @@ describe("web shell conformance", () => {
       type: "snapshot",
       snapshot: { world_id: "lobby", current_sequence: 4, participants: [{ id: 1, display_name: "ada" }], seed: 0 },
     });
-    session.deliver({ type: "view", sequence: 4, data: "hello", surface: null });
+    session.deliver({ type: "view", sequence: 4, data: "hello", surface: null, view_revision: 1 });
     expect(q("[data-world-view]").textContent).toBe("hello");
     expect(session.sent("records")).toEqual([{ type: "records", capability: "guest-capability" }]);
     session.deliver({ type: "records", sequence: 4, records: { a: 1 }, next_after: "a" });
@@ -342,5 +460,54 @@ describe("web shell conformance", () => {
         "resize",
       ].sort(),
     );
+  });
+
+  it("rejects malformed frames and bad chunk_bytes in the upload handler (#5034)", async () => {
+    root = document.querySelector<HTMLElement>("[data-world-app]") as HTMLElement;
+    const status = () => q("[data-world-status]").textContent;
+    const startUpload = (): FakeSocket => {
+      q<HTMLInputElement>("[data-world-admin]").value = "admin-secret";
+      setFiles(q<HTMLInputElement>("[data-world-module]"), [
+        new File([new Uint8Array(9000).fill(7)], "game.wasm", { type: "application/wasm" }),
+      ]);
+      q<HTMLButtonElement>("[data-world-install]").click();
+      const upload = FakeSocket.all.at(-1) as FakeSocket;
+      upload.open();
+      return upload;
+    };
+
+    // Non-object frames: error status + socket closed, never a throw or a hang.
+    for (const raw of ["null", "123", '"hi"', "[1,2]"]) {
+      const upload = startUpload();
+      upload.deliverRaw(raw);
+      expect(status()).toBe("Host returned an invalid upload response");
+      expect(upload.readyState).toBe(FakeSocket.CLOSED);
+      expect(upload.sent("install_chunk")).toHaveLength(0);
+    }
+
+    // Fractional and string chunk_bytes take the invalid-chunk-size path.
+    for (const chunkBytes of [100.5, "512"]) {
+      const upload = startUpload();
+      upload.deliver({ type: "upload_ready", chunk_bytes: chunkBytes as unknown as number });
+      expect(status()).toBe("Host returned an invalid module chunk size");
+      expect(upload.readyState).toBe(FakeSocket.CLOSED);
+      expect(upload.sent("install_chunk")).toHaveLength(0);
+      expect(upload.sent("install_end")).toHaveLength(0);
+    }
+  });
+
+  it("rejects malformed frames in the compile handler (#5034)", async () => {
+    root = document.querySelector<HTMLElement>("[data-world-app]") as HTMLElement;
+    const status = () => q("[data-world-status]").textContent;
+    q<HTMLInputElement>("[data-world-admin]").value = "admin-secret";
+    setFiles(q<HTMLInputElement>("[data-world-source]"), [new File(["app [main!] {}"], "main.roc")]);
+    const before = FakeSocket.all.at(-1) as FakeSocket;
+    q<HTMLButtonElement>("[data-world-compile]").click();
+    await vi.waitFor(() => expect(FakeSocket.all.at(-1)).not.toBe(before));
+    const compiler = FakeSocket.all.at(-1) as FakeSocket;
+    compiler.open();
+    compiler.deliverRaw("null");
+    expect(status()).toBe("Host returned an invalid compile response");
+    expect(compiler.readyState).toBe(FakeSocket.CLOSED);
   });
 });

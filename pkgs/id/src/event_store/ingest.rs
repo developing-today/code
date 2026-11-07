@@ -59,6 +59,12 @@
 //! not present, so an event of another author that names a voided event still applies. This is
 //! the Phase 1 rule. It has no membership or authority model to void by, so authority-based
 //! voiding (decision 1) replaces it in Phase 2 (P2.3).
+
+//! A session checkpoint's  is a dependency of the same kind (#3794): the
+//! checkpoint waits while the predecessor is absent, and a stored predecessor is verified —
+//! the same author's checkpoint, the same session header, the previous segment number —
+//! before the checkpoint may apply. A predecessor that fails the verification refuses the
+//! checkpoint as malformed.
 //!
 //! Held events count too. Two held events at one sequence number are a fork, though
 //! neither is applied. Held events are rows on disk, so a restart keeps them, and a conflict
@@ -666,16 +672,26 @@ fn settle(
             Settled::Refused(refusal)
         }
         Decision::Wait(deps) => {
-            if let Some(action) = action {
-                store_action(m.txn, &id, action)?;
+            let hold = m.hold(event, deps, false, now)?;
+            if hold == Hold::Held {
+                // #2916: the action is written only once the event is
+                // actually held. Writing it before the hold persisted the
+                // refused event's action whenever the same call committed
+                // for an unrelated reason (e.g. an expiry).
+                if let Some(action) = action {
+                    store_action(m.txn, &id, action)?;
+                }
             }
-            held(m.hold(event, deps, false, now)?)
+            held(hold)
         }
         Decision::Park => {
-            if let Some(action) = action {
-                store_action(m.txn, &id, action)?;
+            let hold = m.hold(event, Vec::new(), true, now)?;
+            if hold == Hold::Held {
+                if let Some(action) = action {
+                    store_action(m.txn, &id, action)?;
+                }
             }
-            held(m.hold(event, Vec::new(), true, now)?)
+            held(hold)
         }
     };
     Ok(settled)
@@ -806,6 +822,36 @@ fn decide_in(
     // proof header is present but never stored, so it is parked too: waiting for it would wait on
     // a dependency that is already present.
     let mut waits = missing_deps(txn, &event.header.extensions.after)?;
+    // A session checkpoint names its predecessor checkpoint (#3794), and the predecessor is
+    // a dependency like an `after` hash: absent, the checkpoint waits for it; present only
+    // as a fork proof header, it can never link, so the checkpoint is parked. A stored
+    // predecessor must be this author's checkpoint carrying the same session header (the
+    // session's signed-once binding) at the previous segment number — anything else is a
+    // broken segment chain, and the checkpoint is refused.
+    if let Some(checkpoint) = &event.header.extensions.checkpoint {
+        if let Some(prev_id) = checkpoint.segment.prev_checkpoint {
+            match stored_by_id(txn, &prev_id)? {
+                Some(prev) => {
+                    let predecessor = author_of(&prev) == author
+                        && prev.header.extensions.checkpoint.as_ref().is_some_and(
+                            |prev_checkpoint| {
+                                prev_checkpoint.header == checkpoint.header
+                                    && prev_checkpoint.segment.segment_seq + 1
+                                        == checkpoint.segment.segment_seq
+                            },
+                        );
+                    if !predecessor {
+                        return Ok(Decision::Refuse(Refusal::Malformed(
+                            "a session checkpoint's prev_checkpoint is not the previous                              segment's checkpoint of the same session"
+                                .to_owned(),
+                        )));
+                    }
+                }
+                None if is_present(txn, &prev_id)? => return Ok(Decision::Park),
+                None => waits.push(prev_id),
+            }
+        }
+    }
     if seq > 0 {
         let linked = match event.header.backlink {
             Some(backlink) => {
@@ -989,7 +1035,7 @@ fn is_stored(txn: &WriteTransaction, id: &Hash) -> Result<bool, StoreError> {
 
 /// Whether `id` is a fork proof header of `author`. A header stays one after a later proof drops
 /// it, so the check reads the presence index, not the current proof.
-fn is_proof_header(
+pub(super) fn is_proof_header(
     txn: &WriteTransaction,
     author: &AuthorKey,
     id: &Hash,
@@ -1022,6 +1068,18 @@ fn stored_event(
 ) -> Result<Event, StoreError> {
     stored_at(txn, author, seq)?
         .ok_or_else(|| corrupt("an applied sequence number has no stored event"))
+}
+
+/// The stored event with this ID, applied or voided, if there is one. Reads the `hashes`
+/// index for the event's position, then the event at that position.
+fn stored_by_id(txn: &WriteTransaction, id: &Hash) -> Result<Option<Event>, StoreError> {
+    let hashes = txn.open_table(HASHES)?;
+    let Some(position) = hashes.get(id.as_bytes().as_slice())? else {
+        return Ok(None);
+    };
+    let events = txn.open_table(EVENTS)?;
+    let row = events.get(position.value())?;
+    row.map(|row| decode_stored(row.value())).transpose()
 }
 
 /// The `after` hashes that are not present yet.
@@ -1097,6 +1155,10 @@ mod tests {
             tag: None,
             document: None,
             removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1468,6 +1530,163 @@ mod tests {
         store.check_invariants().unwrap();
     }
 
+    /// A `session.checkpoint` event (#3794) is an ordinary verified event to
+    /// the store: it waits for an `after` hash it names like any other kind,
+    /// is released by that event's arrival, and reads back byte for byte.
+    #[test]
+    fn test_a_session_checkpoint_waits_and_round_trips() {
+        use crate::session_checkpoint::{
+            MacScope, SegmentCheckpoint, SessionCheckpoint, SessionHeader,
+        };
+
+        let (_dir, mut store) = open();
+        let x = key(21);
+        let y = key(22);
+        let x0 = event(&x, 0, None, Vec::new(), "x");
+        let ext = ChainExt {
+            kind: "session.checkpoint".to_owned(),
+            group: None,
+            after: vec![x0.id],
+            tag: None,
+            document: None,
+            removes: None,
+            note: None,
+            link: None,
+            checkpoint: Some(SessionCheckpoint {
+                header: SessionHeader {
+                    session_id: Hash::digest(b"session"),
+                    purpose: "collab editing".to_owned(),
+                    participants: vec![y.verifying_key()],
+                    started_ms: 1_000,
+                    nonce: Hash::digest(b"nonce"),
+                    mac_key_commitment: Hash::digest(b"mac key"),
+                    mac_scope: MacScope::Shared,
+                },
+                segment: SegmentCheckpoint {
+                    segment_seq: 0,
+                    prev_checkpoint: None,
+                    root: Hash::digest(b"root"),
+                    event_count: 3,
+                    start_ms: 1_000,
+                    end_ms: 1_500,
+                    audit_blob: None,
+                },
+            }),
+            rotation: None,
+        };
+        let y0 = sign(&y, 0, None, None, ext).unwrap();
+        assert_eq!(ingest(&mut store, &y0), Ingest::Waiting { id: y0.id });
+        assert_eq!(
+            ingest(&mut store, &x0),
+            Ingest::Accepted {
+                id: x0.id,
+                released: vec![y0.id],
+            }
+        );
+        assert_eq!(store.event(&author(&y), 0).unwrap(), Some(y0));
+        store.check_invariants().unwrap();
+    }
+
+    /// A signed `session.checkpoint` event for `key` at chain position `seq`:
+    /// segment `segment_seq` of one fixed session, naming `prev` as its
+    /// predecessor checkpoint.
+    fn checkpoint_event(
+        key: &SigningKey,
+        seq: SeqNum,
+        backlink: Option<Hash>,
+        segment_seq: u64,
+        prev: Option<Hash>,
+    ) -> Event {
+        use crate::session_checkpoint::{
+            MacScope, SegmentCheckpoint, SessionCheckpoint, SessionHeader,
+        };
+
+        let ext = ChainExt {
+            kind: "session.checkpoint".to_owned(),
+            group: None,
+            after: Vec::new(),
+            tag: None,
+            document: None,
+            removes: None,
+            note: None,
+            link: None,
+            checkpoint: Some(SessionCheckpoint {
+                header: SessionHeader {
+                    session_id: Hash::digest(b"session"),
+                    purpose: "collab editing".to_owned(),
+                    participants: vec![key.verifying_key()],
+                    started_ms: 1_000,
+                    nonce: Hash::digest(b"nonce"),
+                    mac_key_commitment: Hash::digest(b"mac key"),
+                    mac_scope: MacScope::Shared,
+                },
+                segment: SegmentCheckpoint {
+                    segment_seq,
+                    prev_checkpoint: prev,
+                    root: Hash::digest(b"root"),
+                    event_count: 3,
+                    start_ms: 1_000,
+                    end_ms: 1_500,
+                    audit_blob: None,
+                },
+            }),
+            rotation: None,
+        };
+        sign(key, seq, backlink, None, ext).unwrap()
+    }
+
+    /// The verifier walk for checkpoints (#3794): a checkpoint whose
+    /// predecessor is not yet stored waits for it and is released by its
+    /// arrival, exactly like an `after` dependency.
+    #[test]
+    fn test_a_checkpoint_waits_for_its_predecessor() {
+        let (_dir, mut store) = open();
+        let y = key(23);
+        let seg0 = checkpoint_event(&y, 0, None, 0, None);
+        let seg1 = checkpoint_event(&y, 1, Some(seg0.id), 1, Some(seg0.id));
+        assert_eq!(ingest(&mut store, &seg1), Ingest::Waiting { id: seg1.id });
+        assert_eq!(
+            ingest(&mut store, &seg0),
+            Ingest::Accepted {
+                id: seg0.id,
+                released: vec![seg1.id],
+            }
+        );
+        store.check_invariants().unwrap();
+    }
+
+    /// A checkpoint that skips a segment — its predecessor is segment 0 but
+    /// it claims segment 3 — is refused, not applied.
+    #[test]
+    fn test_a_checkpoint_that_skips_a_segment_is_refused() {
+        let (_dir, mut store) = open();
+        let y = key(24);
+        let seg0 = checkpoint_event(&y, 0, None, 0, None);
+        ingest(&mut store, &seg0);
+        let seg3 = checkpoint_event(&y, 1, Some(seg0.id), 3, Some(seg0.id));
+        assert!(matches!(
+            ingest(&mut store, &seg3),
+            Ingest::Refused(Refusal::Malformed(_))
+        ));
+        store.check_invariants().unwrap();
+    }
+
+    /// A checkpoint whose `prev_checkpoint` names an event that is not a
+    /// checkpoint of the same session is refused.
+    #[test]
+    fn test_a_checkpoint_naming_a_foreign_predecessor_is_refused() {
+        let (_dir, mut store) = open();
+        let y = key(25);
+        let plain = event(&y, 0, None, Vec::new(), "message");
+        ingest(&mut store, &plain);
+        let seg1 = checkpoint_event(&y, 1, Some(plain.id), 1, Some(plain.id));
+        assert!(matches!(
+            ingest(&mut store, &seg1),
+            Ingest::Refused(Refusal::Malformed(_))
+        ));
+        store.check_invariants().unwrap();
+    }
+
     #[test]
     fn test_an_after_hash_naming_a_voided_event_is_applied() {
         let (_dir, mut store) = open();
@@ -1659,6 +1878,10 @@ mod tests {
                 tag: None,
                 document: None,
                 removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
             };
             sign(&signer, seq, backlink, None, ext).unwrap()
         };
@@ -1691,6 +1914,10 @@ mod tests {
             tag: None,
             document: None,
             removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
         (event, body)
@@ -2601,6 +2828,98 @@ mod tests {
         assert!(!store.is_waiting(&events[2].id));
     }
 
+    /// The action keys in the actions table, read straight from the db.
+    fn action_keys(store: &EventStore) -> Vec<Vec<u8>> {
+        let txn = store.db.begin_read().unwrap();
+        txn.open_table(ACTIONS)
+            .unwrap()
+            .iter()
+            .unwrap()
+            .map(|row| row.unwrap().0.value().to_vec())
+            .collect()
+    }
+
+    #[test]
+    fn test_a_waiting_full_refusal_persists_no_action_even_when_the_call_expires() {
+        // #2916 probe, as a regression: per-author cap 1, max age 1s.
+        // B's seq-1 event is held at t=0 (due at t=1000); A's seq-2 event is
+        // held at t=500, putting A at cap. A's seq-3 group event must wait
+        // behind the held seq-2, so the pool refuses it WaitingFull. Run the
+        // refusal twice: once with nothing due (control), and once at t=1000
+        // where the same call expires B's event and so commits.
+        let create = GroupAction::Create {
+            initial_members: vec![(individual(&key(52)), p2panda_auth::Access::manage())],
+        };
+        for now in [500, 1_000] {
+            let dir = tempfile::tempdir().unwrap();
+            let limits = WaitingLimits::new(1, 1_000);
+            let b_events = chain_of(&key(51), 2);
+            let a_events = chain_of(&key(52), 4);
+            let refused_id = a_events[3].id;
+            {
+                let mut store = reopen(&dir, limits, 0);
+                assert_eq!(
+                    store.ingest(&b_events[1].bytes, 0).unwrap(),
+                    Ingest::Waiting { id: b_events[1].id }
+                );
+                assert_eq!(
+                    store.ingest(&a_events[2].bytes, 500).unwrap(),
+                    Ingest::Waiting { id: a_events[2].id }
+                );
+                assert_eq!(
+                    store
+                        .ingest_with_action(&a_events[3].bytes, Some(&create), now)
+                        .unwrap(),
+                    Ingest::Refused(Refusal::WaitingFull)
+                );
+                assert!(!store.is_waiting(&refused_id));
+            }
+            // After reopening, the refused event left no action row behind,
+            // whichever way its call ended.
+            let store = reopen(&dir, limits, 0);
+            assert!(
+                !store.is_waiting(&refused_id),
+                "the refused event is not waiting at t={now}"
+            );
+            assert_eq!(
+                action_keys(&store),
+                Vec::<Vec<u8>>::new(),
+                "no actions row persists for the refused event at t={now}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_a_held_group_event_keeps_its_action() {
+        // The other half of the #2916 contract: an event the pool does hold
+        // keeps its action, so a later release reads it back.
+        let dir = tempfile::tempdir().unwrap();
+        let limits = WaitingLimits::new(2, WEEK_MS);
+        let a_events = chain_of(&key(52), 4);
+        let create = GroupAction::Create {
+            initial_members: vec![(individual(&key(52)), p2panda_auth::Access::manage())],
+        };
+        {
+            let mut store = reopen(&dir, limits, 0);
+            assert_eq!(
+                store.ingest(&a_events[2].bytes, 0).unwrap(),
+                Ingest::Waiting { id: a_events[2].id }
+            );
+            assert_eq!(
+                store
+                    .ingest_with_action(&a_events[3].bytes, Some(&create), 0)
+                    .unwrap(),
+                Ingest::Waiting { id: a_events[3].id }
+            );
+        }
+        let store = reopen(&dir, limits, 0);
+        assert_eq!(
+            action_keys(&store),
+            vec![a_events[3].id.as_bytes().to_vec()],
+            "the held event's action survives a reopen"
+        );
+    }
+
     #[test]
     fn test_a_smaller_cap_on_reopen_drops_the_later_arrivals() {
         let dir = tempfile::tempdir().unwrap();
@@ -2785,6 +3104,118 @@ mod tests {
         // A proof header never applies, so it stays held for good. It is neither stored nor held
         // if the fork drops it.
         assert!(store.is_waiting(&held.id), "a held proof header stays held");
+        store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_a_hold_of_an_arrived_key_is_skipped_and_leaves_no_row() {
+        // #3911: the ordinary hold path refuses a key the pool has already
+        // arrived, without a duplicate release. The pool does not hold it, and
+        // no row survives the transaction.
+        let (_dir, mut store) = open();
+        let signer = key(60);
+        let events = chain_of(&signer, 2);
+        store
+            .transact(0, |m| {
+                let held = m.hold(events[1].clone(), vec![events[0].id], false, 0)?;
+                assert_eq!(held, waiting_rows::Hold::Held);
+                let released = m.release(&events[1].id, 0)?;
+                assert!(released.is_empty());
+                Ok(((), true))
+            })
+            .unwrap();
+
+        // Simulate a durable stale row for the key after it has arrived. The
+        // skipped hold must remove that row in its own transaction; release
+        // itself already deleted the original row above.
+        let stale = Row {
+            id: events[1].id,
+            author: author(&signer),
+            seq: 1,
+            arrived_at: 0,
+            arrival: 0,
+            deps: vec![events[0].id],
+            bytes: events[1].bytes.clone(),
+        };
+        store.write(|txn| waiting_rows::put(txn, &stale)).unwrap();
+        let again = store
+            .transact(0, |m| {
+                let again = m.hold(events[1].clone(), vec![events[0].id], false, 0)?;
+                Ok((again, true))
+            })
+            .unwrap();
+        assert_eq!(again, waiting_rows::Hold::Skipped);
+        assert!(!store.is_waiting(&events[1].id));
+        assert!(store.waiting_ids().unwrap().is_empty());
+        store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_a_proof_header_parked_for_good_survives_a_reopen() {
+        // #3911, design #4000 phase 3a: a held event that a fork turns into a
+        // proof header stays parked through the explicit held-for-good route,
+        // even though the header is marked arrived -- and the park survives a
+        // reopen with its first arrival time, its proof, and its conflicts.
+        let (dir, mut store) = open();
+        let signer = key(61);
+        let who = author(&signer);
+        let missing = Hash::digest(b"an event that is never delivered");
+        let held = event(&signer, 1, Some(missing), Vec::new(), "message");
+        let rival = event(&signer, 1, Some(missing), Vec::new(), "rival");
+        assert_eq!(ingest(&mut store, &held), Ingest::Waiting { id: held.id });
+        assert!(matches!(
+            ingest(&mut store, &rival),
+            Ingest::Fork { seq: 1, .. }
+        ));
+        assert!(store.is_waiting(&held.id));
+        store.check_invariants().unwrap();
+        drop(store);
+        let store = reopen(&dir, WaitingLimits::default(), 0);
+        store.check_invariants().unwrap();
+        assert!(
+            store.is_waiting(&held.id),
+            "the proof park survives a reopen"
+        );
+        let proof = store.fork_proof(&who).unwrap().expect("a proof is stored");
+        assert_eq!(
+            [proof.first.id, proof.second.id],
+            sorted(&held.id, &rival.id)
+        );
+        drop(store);
+        // The park keeps its first arrival time: due at WEEK_MS, not a reopen
+        // later, and gone once it is due.
+        let store = reopen(&dir, WaitingLimits::default(), WEEK_MS - 1);
+        assert!(store.is_waiting(&held.id));
+        drop(store);
+        let store = reopen(&dir, WaitingLimits::default(), WEEK_MS);
+        assert!(!store.is_waiting(&held.id));
+        assert!(store.waiting_ids().unwrap().is_empty());
+        store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_a_row_for_an_already_stored_event_is_dropped_on_open() {
+        // #3911: a waiting row whose event is already stored is stale --
+        // restoring it would hold an already-decided event again. The reopen
+        // drops the row in the same transaction and opens cleanly.
+        let (dir, mut store) = open();
+        let signer = key(62);
+        let events = chain_of(&signer, 2);
+        ingest_all(&mut store, &events);
+        let stale = Row {
+            id: events[0].id,
+            author: author(&signer),
+            seq: 0,
+            arrived_at: 0,
+            arrival: 0,
+            deps: vec![Hash::digest(b"a dependency that never arrives")],
+            bytes: events[0].bytes.clone(),
+        };
+        store.write(|txn| waiting_rows::put(txn, &stale)).unwrap();
+        drop(store);
+        let store = reopen(&dir, WaitingLimits::default(), 0);
+        assert!(!store.is_waiting(&events[0].id));
+        assert!(store.waiting_ids().unwrap().is_empty());
         store.check_invariants().unwrap();
     }
 

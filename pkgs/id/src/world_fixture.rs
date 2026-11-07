@@ -1,15 +1,13 @@
 //! Session recording to replayable fixtures.
 //!
 //! A fixture is a JSON Lines file: a header line, then one line per retained,
-//! sequenced event, in order. [`record`] reads one from a live world through a
-//! join capability; [`replay`] runs one offline through the sandbox under a
+//! sequenced or host-originated event, in journal order. [`record`] reads one
+//! from a live world through an admin-authorized export; [`replay`] runs one offline through the sandbox under a
 //! seed the operator supplies. A fixture holds no seed, no capability, and no
 //! module bytes, and it adds no authority to the capability that recorded it.
 //! [`verify`] replays a fixture twice and compares the records after every
 //! event, as the determinism self-check behind `id world verify`.
 //! The design record is `doc/2026-10-17T09-00-00Z_feature_world_fixtures`.
-
-use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Map, Value};
@@ -32,12 +30,6 @@ pub const MAX_FIXTURE_BYTES: u64 = 128 * 1024 * 1024;
 
 /// The `name` of the install boundary in an `other` line.
 pub const INSTALL_NAME: &str = "program_installed";
-
-/// How long a recording waits for its joined history to reach the head.
-const READ_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Attempts at reading module info and records at one head before giving up.
-const HEAD_ATTEMPTS: usize = 3;
 
 /// The first line of a fixture: which world, which module, the head, and the
 /// records the head must reproduce. Never the seed.
@@ -77,7 +69,7 @@ pub enum FixtureEvent {
         bytes: Vec<u8>,
     },
     /// A host event the program received: presence, capability results, ticks.
-    /// Host events are never sequenced, and a live recording never has one.
+    /// It is available only in an admin-authorized export and is never sequenced.
     System {
         /// The event's JSON.
         event: String,
@@ -293,7 +285,8 @@ pub fn encode(header: &FixtureHeader, events: &[FixtureEvent]) -> String {
 /// # Errors
 ///
 /// An unknown version, a malformed or unexpected line, a blank line, or a
-/// window whose sequences are not contiguous or do not end at the header's.
+/// window whose sequenced events are not contiguous, exceed the header's
+/// sequence, or (when complete) do not start at one and reach the header.
 pub fn decode(text: &str) -> Result<Fixture> {
     let mut lines = text.lines();
     let header = decode_header(lines.next().context("the fixture is empty")?)?;
@@ -306,41 +299,25 @@ pub fn decode(text: &str) -> Result<Fixture> {
     Ok(Fixture { header, events })
 }
 
-/// Read `capability`'s world into a fixture: its retained sequenced history up
-/// to the head, and the records at that head.
-///
-/// Module info and records are read first and must agree on the head, so the
-/// fixture is one consistent state. The history is then read through a join
-/// from sequence zero. A join is the only way to read sequenced events, so
-/// this needs nothing a join capability does not already have.
+/// Read a world into a fixture through the host's admin-authorized export.
+/// Sequenced and host-originated events, as well as their order and the records
+/// at the head, are captured by one actor operation.
 ///
 /// # Errors
 ///
-/// A refused capability, a broken stream, a history that does not reach the
-/// head in time, or a world that keeps moving between the reads.
-pub async fn record(client: &mut WorldClient, capability: &str) -> Result<Fixture> {
-    for _ in 0..HEAD_ATTEMPTS {
-        let info = client.info_details(capability).await?;
-        let (head, records) = client.records_sequenced(capability, None).await?;
-        if head != info.current_sequence {
-            continue;
-        }
-        let history =
-            tokio::time::timeout(READ_TIMEOUT, read_history(client, capability, head)).await;
-        let (history, complete) =
-            history.context("the history did not reach the recorded sequence in time")??;
-        let events: Vec<FixtureEvent> = history.iter().map(FixtureEvent::from).collect();
-        let header = FixtureHeader {
-            world_id: info.world_id,
-            module_hash: info.active_module_hash,
-            current_sequence: head,
-            complete,
-            records: Some(records),
-        };
-        check_window(&header, &events)?;
-        return Ok(Fixture { header, events });
-    }
-    bail!("the world kept changing while it was recorded; try again")
+/// A missing or invalid admin token, a broken stream, or malformed history.
+pub async fn record(client: &mut WorldClient, admin_token: &str) -> Result<Fixture> {
+    let history = client.admin_event_history(admin_token).await?;
+    let events: Vec<FixtureEvent> = history.events.iter().map(FixtureEvent::from).collect();
+    let header = FixtureHeader {
+        world_id: history.world_id,
+        module_hash: history.module_hash,
+        current_sequence: history.current_sequence,
+        complete: history.complete,
+        records: Some(history.records),
+    };
+    check_window(&header, &events)?;
+    Ok(Fixture { header, events })
 }
 
 /// Check that `wasm` is the module the fixture was recorded under.
@@ -369,12 +346,16 @@ pub fn check_module(header: &FixtureHeader, wasm: &[u8]) -> Result<()> {
 /// fixture supplies only inputs and the records they must reproduce.
 ///
 /// A window that does not start at sequence one is refused unless
-/// `allow_partial` is set, and its result is never compared.
+/// `allow_partial` is set; its records are compared only when the retained
+/// window still covers the final program epoch (it contains the last
+/// install). A recording that spans an install replays segmented at the
+/// install boundaries, one fresh instance per epoch, mirroring the journal
+/// restore, which clears its replay at every install.
 ///
 /// # Errors
 ///
-/// A partial window without `allow_partial`; a recording that spans an
-/// install; an event kind that cannot be replayed; or a guest failure.
+/// A partial window without `allow_partial`; an event kind that cannot be
+/// replayed; or a guest failure in any segment.
 #[cfg(feature = "sandbox")]
 pub fn replay(
     runner: &Sandbox,
@@ -385,23 +366,32 @@ pub fn replay(
     let header = &fixture.header;
     ensure!(
         header.complete || allow_partial,
-        "the fixture is partial: its history does not start at sequence 1, so a fresh replay cannot reproduce it; pass --allow-partial to replay the retained window, whose records are then not compared"
+        "the fixture is partial: its history does not start at sequence 1, so a fresh replay cannot reproduce it; pass --allow-partial to replay the retained window; its records are compared only when the window still covers the final program epoch"
     );
     ensure!(
         header.module_hash.is_some(),
         "the fixture records no active module, so there is nothing to replay"
     );
-    let start = replay_start(&fixture.events)?;
+    let segments = segments(&fixture.events)?;
     let mut world = runner.instantiate(seed)?;
-    for event in &fixture.events[start..] {
-        if let Some(world_event) = replay_event(event) {
-            WorldProgram::update(&mut world, &world_event)
-                .with_context(|| format!("replay sequence {}", world_event.sequence))?;
+    for (index, segment) in segments.iter().enumerate() {
+        if index > 0 {
+            world = runner.instantiate(seed)?;
+        }
+        for event in *segment {
+            if let Some(world_event) = replay_event(event) {
+                WorldProgram::update(&mut world, &world_event)
+                    .with_context(|| format!("replay sequence {}", world_event.sequence))?;
+            }
         }
     }
     let records = WorldProgram::records(&mut world).context("replay records")?;
     let view = String::from_utf8(world.view()?).context("the replayed view is not UTF-8")?;
-    let verdict = verdict(header, records.as_deref())?;
+    let verdict = verdict(
+        header,
+        records.as_deref(),
+        final_epoch_covered(header, &fixture.events),
+    )?;
     Ok(Replayed {
         records,
         view: Some(view),
@@ -418,12 +408,9 @@ pub fn replay(
 /// a divergence that appears mid-stream and later reconverges, and it does not
 /// trust the header.
 ///
-/// Caveat (#242): host-originated events are not retained in the event
-/// stream, so a live recording never contains them. Verification covers the
-/// fixture's recorded events only: both replays omit host events equally, so
-/// a guest whose live behaviour depended on them can pass verify while still
-/// replaying to a header mismatch. Verify proves the recorded fixture
-/// replays deterministically, nothing more.
+/// Host-originated events in an admin-authorized fixture are replayed in their
+/// recorded order alongside participant inputs. Verification still proves
+/// determinism of the fixture, not correctness of any host policy.
 ///
 /// # Errors
 ///
@@ -461,28 +448,37 @@ fn replay_collecting(
     let header = &fixture.header;
     ensure!(
         header.complete || allow_partial,
-        "the fixture is partial: its history does not start at sequence 1, so a fresh replay cannot reproduce it; pass --allow-partial to replay the retained window, whose records are then not compared"
+        "the fixture is partial: its history does not start at sequence 1, so a fresh replay cannot reproduce it; pass --allow-partial to replay the retained window; its records are compared only when the window still covers the final program epoch"
     );
     ensure!(
         header.module_hash.is_some(),
         "the fixture records no active module, so there is nothing to replay"
     );
-    let start = replay_start(&fixture.events)?;
+    let segments = segments(&fixture.events)?;
     let mut world = runner.instantiate(seed)?;
     let mut snapshots = Vec::new();
-    for event in &fixture.events[start..] {
-        if let Some(world_event) = replay_event(event) {
-            WorldProgram::update(&mut world, &world_event)
-                .with_context(|| format!("replay sequence {}", world_event.sequence))?;
-            snapshots.push(RecordSnapshot {
-                sequence: world_event.sequence,
-                records: snapshot_records(&mut world)?,
-            });
+    for (index, segment) in segments.iter().enumerate() {
+        if index > 0 {
+            world = runner.instantiate(seed)?;
+        }
+        for event in *segment {
+            if let Some(world_event) = replay_event(event) {
+                WorldProgram::update(&mut world, &world_event)
+                    .with_context(|| format!("replay sequence {}", world_event.sequence))?;
+                snapshots.push(RecordSnapshot {
+                    sequence: world_event.sequence,
+                    records: snapshot_records(&mut world)?,
+                });
+            }
         }
     }
     let records = WorldProgram::records(&mut world).context("replay records")?;
     let view = String::from_utf8(world.view()?).context("the replayed view is not UTF-8")?;
-    let verdict = verdict(header, records.as_deref())?;
+    let verdict = verdict(
+        header,
+        records.as_deref(),
+        final_epoch_covered(header, &fixture.events),
+    )?;
     let final_records = match records.as_deref() {
         Some(text) => parse_records(text).context("the replayed records")?,
         None => Records::new(),
@@ -690,8 +686,9 @@ fn bool_field(object: &Map<String, Value>, key: &str) -> Result<bool> {
         .with_context(|| format!("field `{key}` must be a boolean"))
 }
 
-/// Check that the sequenced events are contiguous, start at one when the
-/// header claims completeness, and end at the header's sequence. Host events
+/// Check that the sequenced events are contiguous and stay at or before the
+/// header's sequence. Complete history starts at one and reaches the head;
+/// partial history may end earlier or contain only host events. Host events
 /// carry no sequence and are skipped.
 fn check_window(header: &FixtureHeader, events: &[FixtureEvent]) -> Result<()> {
     let mut previous: Option<u64> = None;
@@ -701,6 +698,11 @@ fn check_window(header: &FixtureHeader, events: &[FixtureEvent]) -> Result<()> {
         }
         let sequence = event.sequence();
         ensure!(sequence >= 1, "sequence 0 is reserved for host events");
+        ensure!(
+            sequence <= header.current_sequence,
+            "event sequence {sequence} is beyond the header sequence {}",
+            header.current_sequence
+        );
         match previous {
             None => ensure!(
                 !header.complete || sequence == 1,
@@ -714,87 +716,19 @@ fn check_window(header: &FixtureHeader, events: &[FixtureEvent]) -> Result<()> {
         previous = Some(sequence);
     }
     match previous {
-        Some(last) => ensure!(
+        Some(last) if header.complete => ensure!(
             last == header.current_sequence,
-            "the history ends at sequence {last}, but the header is at sequence {}",
+            "complete history ends at sequence {last}, but the header is at sequence {}",
             header.current_sequence
         ),
+        Some(_) => {}
         None => ensure!(
-            header.current_sequence == 0,
-            "the header is at sequence {} but no events were recorded",
+            !header.complete || header.current_sequence == 0,
+            "complete history is at sequence {} but has no sequenced events",
             header.current_sequence
         ),
     }
     Ok(())
-}
-
-/// Read the joined history up to and including `head`, in order. Returns the
-/// sequenced events and whether they start at sequence one.
-///
-/// A host that answers the join with a snapshot has trimmed history past
-/// sequence one. The snapshot's newest events that reach `head` are the window,
-/// and that window is never complete.
-async fn read_history(
-    client: &mut WorldClient,
-    capability: &str,
-    head: u64,
-) -> Result<(Vec<WorldEvent>, bool)> {
-    if head == 0 {
-        return Ok((Vec::new(), true));
-    }
-    client
-        .send_json(&serde_json::json!({
-            "type": "join",
-            "capability": capability,
-            "after": 0,
-        }))
-        .await?;
-    let mut history: Vec<WorldEvent> = Vec::new();
-    loop {
-        let frame = client
-            .recv_json()
-            .await?
-            .context("host closed before the history reached the recorded sequence")?;
-        match frame["type"].as_str() {
-            Some("event") => {
-                let event: WorldEvent = serde_json::from_value(frame["event"].clone())
-                    .context("decode a world event")?;
-                ensure!(
-                    event.sequence >= 1 && event.sequence <= head,
-                    "the host sent sequence {} while the recording was at {head}",
-                    event.sequence
-                );
-                let reached = event.sequence == head;
-                history.push(event);
-                if reached {
-                    let complete = history.first().is_some_and(|event| event.sequence == 1);
-                    return Ok((history, complete));
-                }
-            }
-            Some("snapshot") => {
-                let events: Vec<WorldEvent> =
-                    serde_json::from_value(frame["snapshot"]["events"].clone())
-                        .context("decode the snapshot's events")?;
-                let window: Vec<WorldEvent> = events
-                    .into_iter()
-                    .filter(|event| event.sequence <= head)
-                    .collect();
-                ensure!(
-                    window.last().is_some_and(|event| event.sequence == head),
-                    "the retained history no longer reaches sequence {head}; try again"
-                );
-                return Ok((window, false));
-            }
-            Some("error") => bail!(
-                "{}",
-                frame["message"]
-                    .as_str()
-                    .unwrap_or("the world refused the history")
-            ),
-            // Views and other frames carry nothing the fixture keeps.
-            _ => {}
-        }
-    }
 }
 
 /// Whether `event` is the install boundary.
@@ -803,12 +737,15 @@ fn is_install(event: &FixtureEvent) -> bool {
     matches!(event, FixtureEvent::Other { name, .. } if name == INSTALL_NAME)
 }
 
-/// Where a replay begins: the last install, which stands in for the fresh
-/// instance that the seed creates. Chat and earlier installs may precede it,
-/// because no program saw them. An input or a host event may not, because a
-/// different module ran it.
+/// The segments a replay feeds, one per program epoch: an install opens a
+/// new segment. This mirrors the journal restore, which clears its replay
+/// at every install (world/core.rs): state never carries across an install,
+/// so each segment replays in a fresh instance under the fixture's one
+/// recorded module, and only the final segment's records and view are the
+/// replay's result. A segment the program rejects fails the replay, so a
+/// fixture with an unreplayable segment is still refused.
 #[cfg(feature = "sandbox")]
-fn replay_start(events: &[FixtureEvent]) -> Result<usize> {
+fn segments(events: &[FixtureEvent]) -> Result<Vec<&[FixtureEvent]>> {
     for event in events {
         if let FixtureEvent::Other { sequence, name } = event {
             ensure!(
@@ -817,25 +754,32 @@ fn replay_start(events: &[FixtureEvent]) -> Result<usize> {
             );
         }
     }
-    let Some(last) = events.iter().rposition(is_install) else {
-        return Ok(0);
-    };
-    let installed = events[last].sequence();
-    for event in &events[..last] {
-        let ran_before = match event {
-            FixtureEvent::Chat { .. } | FixtureEvent::Other { .. } => None,
-            FixtureEvent::Input { sequence, .. } => {
-                Some(format!("the input at sequence {sequence}"))
-            }
-            FixtureEvent::System { .. } => Some("a host event".to_owned()),
-        };
-        if let Some(what) = ran_before {
-            bail!(
-                "the recording spans a module install at sequence {installed}: {what} ran under an earlier module, and a fixture replays under one module; record after the last install"
-            );
+    let mut starts = vec![0];
+    for (index, event) in events.iter().enumerate() {
+        if index > 0 && is_install(event) {
+            starts.push(index);
         }
     }
-    Ok(last)
+    let mut out = Vec::with_capacity(starts.len());
+    for (position, &start) in starts.iter().enumerate() {
+        let end = starts.get(position + 1).copied().unwrap_or(events.len());
+        out.push(&events[start..end]);
+    }
+    Ok(out)
+}
+
+/// Whether the retained events still cover the final program epoch from
+/// its install, so replaying the final segment is a complete replay of
+/// that epoch and its records can be compared with the header's.
+#[cfg(feature = "sandbox")]
+fn final_epoch_covered(header: &FixtureHeader, events: &[FixtureEvent]) -> bool {
+    let has_install = events.iter().any(is_install);
+    let reaches_head = events
+        .iter()
+        .rev()
+        .find(|event| event.sequence() != 0)
+        .is_some_and(|event| event.sequence() == header.current_sequence);
+    has_install && reaches_head
 }
 
 /// The event a replay feeds the program, or `None` for events it never sees.
@@ -863,11 +807,17 @@ fn replay_event(event: &FixtureEvent) -> Option<WorldEvent> {
     }
 }
 
-/// Compare the replayed records with the header's. A partial window is never
-/// compared; a program that keeps no records replays to an empty map.
+/// Compare the replayed records with the header's. A partial window is
+/// compared only when it still covers the final program epoch (see
+/// [`final_epoch_covered`]); a program that keeps no records replays to an
+/// empty map.
 #[cfg(feature = "sandbox")]
-fn verdict(header: &FixtureHeader, records: Option<&str>) -> Result<Verdict> {
-    if !header.complete {
+fn verdict(
+    header: &FixtureHeader,
+    records: Option<&str>,
+    final_epoch_covered: bool,
+) -> Result<Verdict> {
+    if !header.complete && !final_epoch_covered {
         return Ok(Verdict::NotCompared("partial history"));
     }
     let Some(expected) = &header.records else {
@@ -1024,6 +974,7 @@ mod tests {
             (header(0, true), vec![input(1, 1, "a")]),
             (header(2, false), vec![input(0, 1, "a"), input(1, 1, "b")]),
             (header(2, true), vec![input(2, 1, "a")]),
+            (header(3, false), vec![input(4, 1, "a")]),
         ];
         for (bad_header, events) in cases {
             let text = encode(&bad_header, &events);
@@ -1031,6 +982,19 @@ mod tests {
         }
         let partial = encode(&header(6, false), &[input(5, 1, "a"), input(6, 1, "b")]);
         assert!(decode(&partial).is_ok(), "a partial window must decode");
+        let system = FixtureEvent::System {
+            event: r#"{"cap":"time.tick"}"#.to_owned(),
+        };
+        let partial_host_tail = encode(&header(6, false), &[input(4, 1, "a"), system.clone()]);
+        assert!(
+            decode(&partial_host_tail).is_ok(),
+            "a partial window may end before its current sequence"
+        );
+        let partial_host_only = encode(&header(6, false), &[system]);
+        assert!(
+            decode(&partial_host_only).is_ok(),
+            "a partial window may retain only host events"
+        );
     }
 
     fn snapshot(sequence: u64, records: &str) -> RecordSnapshot {
@@ -1097,7 +1061,7 @@ mod tests {
 
     #[test]
     fn check_module_refuses_a_different_module() {
-        let wasm: &[u8] = include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm");
+        let wasm: &[u8] = include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
         let other: &[u8] = include_bytes!("../examples/roc-counter/counter.wasm");
         let mut recorded = header(0, true);
         assert!(check_module(&recorded, wasm).is_err(), "no module recorded");
@@ -1117,11 +1081,11 @@ mod tests {
 
         use super::*;
         use crate::sandbox::SandboxLimits;
-        use crate::world::{WorldCore, WorldHandle, WorldLimits, WorldScopes};
+        use crate::world::{CapabilityBounds, WorldCore, WorldHandle, WorldLimits, WorldScopes};
         use crate::world_net::{WORLD_ALPN, WorldProtocol};
         use crate::world_session::WorldService;
 
-        const TIC_TAC_TOE: &[u8] = include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm");
+        const TIC_TAC_TOE: &[u8] = include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
 
         /// A tic-tac-toe game as a live instance plays it: a leading install,
         /// one chat line, and five moves. Returns the runner and the fixture a
@@ -1188,6 +1152,78 @@ mod tests {
         }
 
         #[test]
+        fn checked_in_session_snapshot_hashes_are_stable() {
+            const EXPECTED_SNAPSHOTS: &[(u64, &str)] = &[
+                (
+                    3,
+                    "df60a55b4fe5303e1a769073e78e0fdb3febf9771a3d54ca8867fea5dcfa85fb",
+                ),
+                (
+                    4,
+                    "106ec01c72ca951854c493419f42d63123a041ffb90bb88d15487d33aa587c34",
+                ),
+                (
+                    5,
+                    "5f1a21e7982fcedda44d4fd00a59607179d123bcc5d1ae834067db61b568c119",
+                ),
+                (
+                    6,
+                    "9d47f9be7afe3d2a965992b49c38e8e30b8217adfd5c18c76904d0ecd193abb5",
+                ),
+                (
+                    7,
+                    "c95eed39e456d648b240018390710c9221a9f823fe5c98e0521b53fafcbe31f2",
+                ),
+            ];
+
+            let fixture_text = include_str!("../tests/fixtures/tic-tac-toe-determinism.jsonl");
+            let fixture = decode(fixture_text).unwrap();
+            check_module(&fixture.header, TIC_TAC_TOE).unwrap();
+            let runner = Sandbox::compile(TIC_TAC_TOE, SandboxLimits::default()).unwrap();
+            let segments = segments(&fixture.events).unwrap();
+            let mut world = runner.instantiate(7).unwrap();
+
+            let mut snapshots = 0;
+            for (index, segment) in segments.iter().enumerate() {
+                if index > 0 {
+                    world = runner.instantiate(7).unwrap();
+                }
+                for event in *segment {
+                    let Some(world_event) = replay_event(event) else {
+                        continue;
+                    };
+                    WorldProgram::update(&mut world, &world_event).unwrap();
+                    let snapshot = world.snapshot().unwrap().unwrap();
+                    let actual = blake3::hash(&snapshot).to_hex().to_string();
+                    let Some(expected) = EXPECTED_SNAPSHOTS.get(snapshots) else {
+                        panic!(
+                            "snapshot digest mismatch at sequence {}: expected no further snapshot, actual {}",
+                            world_event.sequence, actual
+                        );
+                    };
+                    assert_eq!(
+                        world_event.sequence, expected.0,
+                        "snapshot sequence differs from the checked-in session"
+                    );
+                    assert_eq!(
+                        actual, expected.1,
+                        "snapshot digest mismatch at sequence {}: expected {}, actual {}",
+                        world_event.sequence, expected.1, actual
+                    );
+                    snapshots += 1;
+                }
+            }
+            if let Some((sequence, expected)) = EXPECTED_SNAPSHOTS.get(snapshots) {
+                panic!(
+                    "snapshot digest mismatch at sequence {sequence}: expected {expected}, actual <missing>"
+                );
+            }
+
+            let replayed = replay(&runner, 7, &fixture, false).unwrap();
+            assert_eq!(replayed.verdict, Verdict::Match);
+        }
+
+        #[test]
         fn a_nondeterministic_guest_fails_verify() {
             // The sandbox gives a guest no nondeterminism channel: it receives
             // no imports (no clock, no random source; see sandbox.rs), so no
@@ -1228,21 +1264,104 @@ mod tests {
 
         #[test]
         fn fixture_spanning_a_reinstall_is_refused() {
+            // The refusal stays for a fixture one of whose segments cannot
+            // be replayed: here the first segment's input is not valid
+            // UTF-8, which the program rejects outright, so that segment
+            // cannot be replayed and the recording is refused as before.
             let (runner, base) = checked_in_game();
-            let reinstalled = Fixture {
+            let unreplayable = Fixture {
                 header: base.header.clone(),
+                events: vec![
+                    install(1),
+                    FixtureEvent::Input {
+                        sequence: 2,
+                        participant_id: 1,
+                        bytes: vec![0xff],
+                    },
+                    install(3),
+                    input(4, 2, "3"),
+                ],
+            };
+            assert!(replay(&runner, 7, &unreplayable, false).is_err());
+
+            // A fixture that records no module at all is likewise refused.
+            let mut no_module = base;
+            no_module.header.module_hash = None;
+            assert!(replay(&runner, 7, &no_module, false).is_err());
+        }
+
+        #[test]
+        fn fixture_spanning_a_reinstall_replays_segmented_at_installs() {
+            let (runner, base) = checked_in_game();
+            // The final segment alone determines the records: the install at
+            // sequence 3 opens a fresh epoch, so the move at sequence 2 ran
+            // under the earlier epoch and is cleared, exactly as the journal
+            // restore clears its replay at an install.
+            let mut live = runner.instantiate(7).unwrap();
+            live.update(2, b"3").unwrap();
+            let records =
+                parse_records(&String::from_utf8(live.records().unwrap().unwrap()).unwrap())
+                    .unwrap();
+            let spanning = Fixture {
+                header: FixtureHeader {
+                    current_sequence: 4,
+                    records: Some(records),
+                    ..base.header.clone()
+                },
                 events: vec![install(1), input(2, 1, "0"), install(3), input(4, 2, "3")],
             };
-            let error = replay(&runner, 7, &reinstalled, false)
-                .unwrap_err()
-                .to_string();
-            assert!(error.contains("record after the last install"), "{error}");
+            let replayed = replay(&runner, 7, &spanning, false).unwrap();
+            assert_eq!(replayed.verdict, Verdict::Match);
+        }
 
-            let input_first = Fixture {
-                header: base.header,
-                events: vec![input(1, 1, "0"), install(2), input(3, 2, "3")],
+        #[test]
+        fn partial_fixture_covering_the_final_epoch_is_compared() {
+            let (runner, base) = checked_in_game();
+            // A front-truncated partial window still reaches the head and
+            // contains the last install, so its records remain comparable.
+            let mut live = runner.instantiate(7).unwrap();
+            live.update(2, b"3").unwrap();
+            live.update(1, b"4").unwrap();
+            let records =
+                parse_records(&String::from_utf8(live.records().unwrap().unwrap()).unwrap())
+                    .unwrap();
+            let partial = Fixture {
+                header: FixtureHeader {
+                    current_sequence: 5,
+                    complete: false,
+                    records: Some(records),
+                    ..base.header
+                },
+                events: vec![install(3), input(4, 2, "3"), input(5, 1, "4")],
             };
-            assert!(replay(&runner, 7, &input_first, false).is_err());
+            assert!(replay(&runner, 7, &partial, false).is_err());
+            let replayed = replay(&runner, 7, &partial, true).unwrap();
+            assert_eq!(replayed.verdict, Verdict::Match);
+        }
+
+        #[test]
+        fn partial_fixture_ending_before_header_sequence_is_not_compared() {
+            let (runner, base) = checked_in_game();
+            let mut live = runner.instantiate(7).unwrap();
+            live.update(2, b"3").unwrap();
+            live.update(1, b"4").unwrap();
+            let records =
+                parse_records(&String::from_utf8(live.records().unwrap().unwrap()).unwrap())
+                    .unwrap();
+            let partial = Fixture {
+                header: FixtureHeader {
+                    current_sequence: 5,
+                    complete: false,
+                    records: Some(records),
+                    ..base.header
+                },
+                // The retained window contains the final install, but ends
+                // before the head sequence recorded in the header.
+                events: vec![install(3), input(4, 2, "3")],
+            };
+
+            let replayed = replay(&runner, 7, &partial, true).unwrap();
+            assert_eq!(replayed.verdict, Verdict::NotCompared("partial history"));
         }
 
         #[test]
@@ -1292,6 +1411,22 @@ mod tests {
         }
 
         #[test]
+        fn verify_agrees_but_mismatches_a_tampered_header() {
+            // #1539: the two replays agree with each other at every step,
+            // yet both mismatch the fixture header — the case verify used
+            // to report as a plain success.
+            let (runner, mut fixture) = checked_in_game();
+            fixture.header.records =
+                Some(parse_records(r#"{"board":"XXXXXXXXX","plays":9,"winner":"X"}"#).unwrap());
+            let verification = verify(&runner, 7, &fixture, false).unwrap();
+            assert!(verification.is_deterministic());
+            assert_eq!(verification.divergence, None);
+            assert_eq!(verification.first.verdict, Verdict::Mismatch);
+            assert_eq!(verification.second.verdict, Verdict::Mismatch);
+            assert_eq!(verification.first.records, verification.second.records);
+        }
+
+        #[test]
         fn tampered_header_records_are_a_mismatch() {
             let (runner, mut fixture) = checked_in_game();
             fixture.header.records =
@@ -1301,7 +1436,7 @@ mod tests {
         }
 
         #[test]
-        fn host_events_missing_from_a_fixture_are_a_mismatch() {
+        fn territory_fixture_replays_host_events_interleaved_with_inputs() {
             let wasm: &[u8] = include_bytes!("../examples/territory/territory.wasm");
             let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
             let joined = |id: u64, name: &str| {
@@ -1315,7 +1450,6 @@ mod tests {
             live.update(0, joined(2, "bob").as_bytes()).unwrap();
             live.update(2, b"l ").unwrap();
             let records = String::from_utf8(live.records().unwrap().unwrap()).unwrap();
-            // A recorder sees only the inputs: the two joins are host events.
             let fixture = Fixture {
                 header: FixtureHeader {
                     world_id: "lobby".to_owned(),
@@ -1324,10 +1458,20 @@ mod tests {
                     complete: true,
                     records: Some(parse_records(&records).unwrap()),
                 },
-                events: vec![install(1), input(2, 1, "l "), input(3, 2, "l ")],
+                events: vec![
+                    install(1),
+                    FixtureEvent::System {
+                        event: joined(1, "ann"),
+                    },
+                    input(2, 1, "l "),
+                    FixtureEvent::System {
+                        event: joined(2, "bob"),
+                    },
+                    input(3, 2, "l "),
+                ],
             };
             let replayed = replay(&runner, 7, &fixture, false).unwrap();
-            assert_eq!(replayed.verdict, Verdict::Mismatch);
+            assert_eq!(replayed.verdict, Verdict::Match);
         }
 
         /// A loopback endpoint that uses no relay or discovery.
@@ -1389,7 +1533,7 @@ mod tests {
             let (router, addr) = serve(service).await;
             let client_ep = endpoint().await;
             let mut client = WorldClient::connect(&client_ep, addr).await.unwrap();
-            let fixture = record(&mut client, ann.expose()).await.unwrap();
+            let fixture = record(&mut client, "admin").await.unwrap();
             client.close();
 
             assert_eq!(fixture.header.world_id, "lobby");
@@ -1423,6 +1567,87 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn recording_replays_host_presence_from_admin_history() {
+            let wasm: &[u8] = include_bytes!("../examples/territory/territory.wasm");
+            let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+            core.ledger
+                .set_granted(std::collections::BTreeSet::from(["players".to_owned()]));
+            let world = WorldHandle::spawn(core);
+            let service = WorldService::new(world.clone(), Some("admin".to_owned()))
+                .with_blob_store(MemStore::new().into());
+            service
+                .install_wasm(Some("admin"), wasm.to_vec(), 7, &module_hash(wasm))
+                .await
+                .unwrap();
+            let (_, capability) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+
+            let (router, addr) = serve(service).await;
+            let client_ep = endpoint().await;
+            let mut player = WorldClient::connect(&client_ep, addr.clone())
+                .await
+                .unwrap();
+            player
+                .send_json(&serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                }))
+                .await
+                .unwrap();
+            let snapshot = player.recv_json().await.unwrap().unwrap();
+            assert_eq!(snapshot["type"], "snapshot");
+            player
+                .send_json(&serde_json::json!({
+                    "type": "input",
+                    "data_hex": "6c20",
+                }))
+                .await
+                .unwrap();
+            let mut saw_input = false;
+            for _ in 0..8 {
+                let received =
+                    tokio::time::timeout(std::time::Duration::from_secs(10), player.recv_json())
+                        .await
+                        .expect("timed out waiting for the participant input event")
+                        .unwrap();
+                let Some(frame) = received else {
+                    break;
+                };
+                if frame["type"] == "event" {
+                    assert_eq!(frame["event"]["kind"]["kind"], "input");
+                    saw_input = true;
+                    break;
+                }
+            }
+            assert!(saw_input, "participant did not receive its input event");
+
+            let mut admin = WorldClient::connect(&client_ep, addr).await.unwrap();
+            let fixture = record(&mut admin, "admin").await.unwrap();
+            let joined = fixture.events.iter().position(|event| {
+                matches!(
+                    event,
+                    FixtureEvent::System { event }
+                        if event.contains("\"cap\":\"players\"")
+                            && event.contains("\"event\":\"joined\"")
+                )
+            });
+            let input = fixture
+                .events
+                .iter()
+                .position(|event| matches!(event, FixtureEvent::Input { sequence: 2, .. }));
+            assert!(joined.is_some_and(|joined| input.is_some_and(|input| joined < input)));
+            let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+            assert_eq!(
+                replay(&runner, 7, &fixture, false).unwrap().verdict,
+                Verdict::Match
+            );
+
+            player.close();
+            admin.close();
+            client_ep.close().await;
+            router.shutdown().await.unwrap();
+        }
+
+        #[tokio::test]
         async fn a_trimmed_history_records_as_incomplete_and_replays_only_partially() {
             let wasm = TIC_TAC_TOE.to_vec();
             let limits = WorldLimits {
@@ -1447,7 +1672,7 @@ mod tests {
             let (router, addr) = serve(service).await;
             let client_ep = endpoint().await;
             let mut client = WorldClient::connect(&client_ep, addr).await.unwrap();
-            let fixture = record(&mut client, ann.expose()).await.unwrap();
+            let fixture = record(&mut client, "admin").await.unwrap();
             client.close();
 
             assert!(!fixture.header.complete);
@@ -1461,6 +1686,53 @@ mod tests {
                 Verdict::NotCompared("partial history")
             );
 
+            client_ep.close().await;
+            router.shutdown().await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_reopened_partial_checkpoint_records_and_decodes_its_admin_fixture() {
+            let wasm = TIC_TAC_TOE.to_vec();
+            let limits = WorldLimits {
+                retained_events: 2,
+                ..WorldLimits::default()
+            };
+            let mut core = WorldCore::new("lobby", limits.clone()).unwrap();
+            core.active_module_hash = Some(module_hash(&wasm));
+            core.active_seed = 7;
+            let (_, capability) = core
+                .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+                .unwrap();
+            for cell in ["0", "3", "1"] {
+                core.input(&capability, cell.as_bytes()).unwrap();
+            }
+            assert!(!core.admin_history_complete);
+
+            let checkpoint = core.checkpoint_entries("snapshot".to_owned()).unwrap();
+            let reopened = WorldCore::restore("lobby", limits, checkpoint).unwrap();
+            assert!(!reopened.core.admin_history_complete);
+            let world = WorldHandle::spawn(reopened.core);
+            let service = WorldService::new(world, Some("admin".to_owned()))
+                .with_blob_store(MemStore::new().into());
+            let (router, addr) = serve(service).await;
+            let client_ep = endpoint().await;
+            let mut client = WorldClient::connect(&client_ep, addr).await.unwrap();
+
+            let fixture = record(&mut client, "admin").await.unwrap();
+            assert!(!fixture.header.complete);
+            assert_eq!(fixture.header.current_sequence, 3);
+            assert_eq!(
+                fixture
+                    .events
+                    .iter()
+                    .map(FixtureEvent::sequence)
+                    .collect::<Vec<_>>(),
+                vec![2, 3]
+            );
+            let text = encode(&fixture.header, &fixture.events);
+            assert_eq!(decode(&text).unwrap(), fixture);
+
+            client.close();
             client_ep.close().await;
             router.shutdown().await.unwrap();
         }

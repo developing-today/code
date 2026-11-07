@@ -41,12 +41,10 @@ export function isNonNegative(v: unknown): v is number {
  * validates nothing.
  */
 export function isPercentOf(limit: unknown): (v: unknown) => v is number {
-  return (v: unknown): v is number =>
-    isFiniteNumber(v) && isFiniteNumber(limit) && v >= 0 && v <= limit;
+  return (v: unknown): v is number => isFiniteNumber(v) && isFiniteNumber(limit) && v >= 0 && v <= limit;
 }
 
-const ISO_DATE_RE =
-  /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(Z|[+-]\d{2}:\d{2})?)?$/;
+const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(Z|[+-]\d{2}:\d{2})?)?$/;
 
 function isLeapYear(year: number): boolean {
   return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
@@ -79,7 +77,12 @@ export function parseIsoDate(v: unknown): Date | null {
   const second = m[6] === undefined ? 0 : Number(m[6]);
   if (hour > 23 || minute > 59 || second > 59) return null;
   const fracMs = m[7] === undefined ? 0 : Number((m[7] + "000").slice(0, 3));
-  let ms = Date.UTC(year, month - 1, day, hour, minute, second, fracMs);
+  // Date.UTC maps years 0-99 to 1900-1999. Build from the epoch and set
+  // the literal UTC year instead, preserving the accepted four-digit year.
+  const utcDate = new Date(0);
+  utcDate.setUTCFullYear(year, month - 1, day);
+  utcDate.setUTCHours(hour, minute, second, fracMs);
+  let ms = utcDate.getTime();
   const offset = m[8];
   if (offset !== undefined && offset !== "Z") {
     const sign = offset.startsWith("+") ? 1 : -1;
@@ -89,7 +92,7 @@ export function parseIsoDate(v: unknown): Date | null {
     ms -= sign * (offH * 3_600_000 + offM * 60_000);
   }
   const d = new Date(ms);
-  // Re-check: Date.UTC rolls overflow components into neighbouring
+  // Re-check: Date setters normalize overflow components into neighbouring
   // months/years, so the round trip must reproduce the UTC components
   // exactly for offset-free forms (an explicit offset legitimately
   // shifts the UTC clock reading, so only the instant is checked there
@@ -142,9 +145,7 @@ export function isTimestampNotFuture(
  * that is a shape failure for the caller's reject path, not an empty
  * success.
  */
-export function arrayOf<T>(
-  guard: (v: unknown) => v is T,
-): (v: unknown) => { values: T[]; dropped: number } | null {
+export function arrayOf<T>(guard: (v: unknown) => v is T): (v: unknown) => { values: T[]; dropped: number } | null {
   return (v: unknown) => {
     if (!Array.isArray(v)) return null;
     const values: T[] = [];

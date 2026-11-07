@@ -102,6 +102,11 @@ pub fn encode_body(action: &GroupAction<AuthId, ()>) -> Result<Vec<u8>, BodyErro
                     initial_members.len()
                 )));
             }
+            if has_duplicate_member(initial_members) {
+                return Err(BodyError::Unencodable(
+                    "create lists the same member more than once (duplicate member)".to_owned(),
+                ));
+            }
             let pairs = initial_members
                 .iter()
                 .map(|(member, access)| member_and_access(member, access))
@@ -218,6 +223,21 @@ fn access_value(access: &Access<()>) -> Result<Value<'static>, BodyError> {
     Ok(Value::Unsigned(level))
 }
 
+/// Whether a `create` member list names the same member more than once, at any access
+/// levels. A founding membership must be a set: the group fold refuses a repeated member
+/// and the membership layer would collapse the pair by map order, so the codec refuses
+/// the shape instead of letting the founding membership depend on the reader.
+fn has_duplicate_member(members: &[(GroupMember<AuthId>, Access<()>)]) -> bool {
+    members
+        .iter()
+        .enumerate()
+        .any(|(index, (member, _access))| {
+            members[..index]
+                .iter()
+                .any(|(earlier, _access)| earlier == member)
+        })
+}
+
 /// Decodes the args of one kind. The kind table is the one in the module docs.
 fn decode_kind(kind: &str, args: &Value<'static>) -> Result<GroupAction<AuthId, ()>, BodyError> {
     match kind {
@@ -240,6 +260,11 @@ fn decode_kind(kind: &str, args: &Value<'static>) -> Result<GroupAction<AuthId, 
                     Ok((decode_member(member)?, decode_access(access)?))
                 })
                 .collect::<Result<Vec<_>, BodyError>>()?;
+            if has_duplicate_member(&initial_members) {
+                return Err(BodyError::Shape(
+                    "create lists the same member more than once (duplicate member)".to_owned(),
+                ));
+            }
             Ok(GroupAction::Create { initial_members })
         }
         "join" | "promote" | "demote" => {
@@ -268,16 +293,26 @@ fn decode_kind(kind: &str, args: &Value<'static>) -> Result<GroupAction<AuthId, 
     }
 }
 
-/// `[kind, id]` back to a member.
+/// `[kind, id]` back to a member. The outer kind must agree with the inner identity tag:
+/// kind `0` (individual) holds a key (tag `0`), kind `1` (group) holds a group hash (tag `1`).
+/// A contradictory pair is refused so one identity can never acquire both membership semantics.
 fn decode_member(value: &Value<'static>) -> Result<GroupMember<AuthId>, BodyError> {
     let [kind, id] = list(value, 2)? else {
         return Err(BodyError::Shape("a member has two items".to_owned()));
     };
     let id = decode_auth(id)?;
-    match unsigned(kind)? {
-        0 => Ok(GroupMember::Individual(id)),
-        1 => Ok(GroupMember::Group(id)),
-        other => Err(BodyError::Shape(format!("member kind {other}"))),
+    match (unsigned(kind)?, &id) {
+        (0, AuthId::Key(_)) => Ok(GroupMember::Individual(id)),
+        (1, AuthId::Group(_)) => Ok(GroupMember::Group(id)),
+        (0, AuthId::Group(_)) => Err(BodyError::Shape(
+            "an individual member (kind 0) holds a group identity (tag 1), expected a key (tag 0)"
+                .to_owned(),
+        )),
+        (1, AuthId::Key(_)) => Err(BodyError::Shape(
+            "a group member (kind 1) holds a key identity (tag 0), expected a group hash (tag 1)"
+                .to_owned(),
+        )),
+        (other, _) => Err(BodyError::Shape(format!("member kind {other}"))),
     }
 }
 
@@ -506,6 +541,80 @@ mod tests {
     }
 
     #[test]
+    fn test_encode_refuses_a_create_with_a_duplicate_member() {
+        // The same member at conflicting levels, and the identical pair twice: both
+        // are refused as unencodable, naming the duplication.
+        for second in [Access::write(), Access::read()] {
+            let action = GroupAction::Create {
+                initial_members: vec![
+                    (individual(1), Access::read()),
+                    (individual(2), Access::write()),
+                    (individual(1), second),
+                ],
+            };
+            let err = encode_body(&action).unwrap_err();
+            assert!(
+                matches!(err, BodyError::Unencodable(_)),
+                "a duplicate create member is unencodable: {err}"
+            );
+            assert!(
+                err.to_string().contains("duplicate"),
+                "the refusal names the duplication: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_decode_refuses_a_create_with_a_duplicate_member() {
+        // Hand-built CBOR, since encode_body (correctly) will not produce this shape:
+        // the same member at conflicting levels (read=1, write=2), and identically twice.
+        let pair = |level: u64| {
+            Value::Array(vec![
+                Value::Array(vec![
+                    Value::Unsigned(0),
+                    Value::ByteString(auth_bytes(&key(1)).into()),
+                ]),
+                Value::Unsigned(level),
+            ])
+        };
+        for pairs in [vec![pair(1), pair(2)], vec![pair(1), pair(1)]] {
+            let body = Value::Array(vec![
+                Value::TextString(TAG.into()),
+                Value::Unsigned(VERSION),
+                Value::TextString("create".into()),
+                Value::Array(pairs),
+            ])
+            .encode();
+            let err = decode_body(&body).unwrap_err();
+            assert!(
+                matches!(err, BodyError::Shape(_)),
+                "a duplicate create member is a shape refusal: {err}"
+            );
+            assert!(
+                err.to_string().contains("duplicate"),
+                "the refusal names the duplication: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_a_create_with_distinct_members_still_round_trips() {
+        // Control: distinct members at the same access level are not duplicates.
+        let action = GroupAction::Create {
+            initial_members: vec![
+                (individual(1), Access::read()),
+                (individual(2), Access::read()),
+                (
+                    GroupMember::Group(AuthId::Group(Hash::digest(b"a group"))),
+                    Access::read(),
+                ),
+            ],
+        };
+        let body = encode_body(&action).unwrap();
+        assert_eq!(decode_body(&body).unwrap(), Some(action));
+    }
+
+    #[test]
     fn test_an_access_with_conditions_is_not_encoded() {
         let action = GroupAction::Add {
             member: individual(1),
@@ -561,6 +670,52 @@ mod tests {
             "tag 2 is not an identity"
         );
         assert!(decode_body(&tagged(0, 33)).is_err(), "34 bytes is too long");
+    }
+
+    #[test]
+    fn test_a_member_kind_must_match_its_identity_tag() {
+        let body_with = |kind: &str, outer_kind: u64, id: &AuthId, with_access: bool| {
+            let member = Value::Array(vec![
+                Value::Unsigned(outer_kind),
+                Value::ByteString(auth_bytes(id).into()),
+            ]);
+            let args = if with_access {
+                Value::Array(vec![member, Value::Unsigned(1)])
+            } else {
+                Value::Array(vec![member])
+            };
+            Value::Array(vec![
+                Value::TextString(TAG.into()),
+                Value::Unsigned(VERSION),
+                Value::TextString(kind.into()),
+                args,
+            ])
+            .encode()
+        };
+        let key_id = key(7);
+        let group_id = AuthId::Group(Hash::digest(b"a group"));
+        // Matching pairs decode for remove and for join.
+        assert!(decode_body(&body_with("remove", 0, &key_id, false)).is_ok());
+        assert!(decode_body(&body_with("remove", 1, &group_id, false)).is_ok());
+        assert!(decode_body(&body_with("join", 0, &key_id, true)).is_ok());
+        assert!(decode_body(&body_with("join", 1, &group_id, true)).is_ok());
+        // Contradictory pairs are refused as shapes for remove and for join.
+        for (kind, with_access) in [("remove", false), ("join", true)] {
+            assert!(
+                matches!(
+                    decode_body(&body_with(kind, 0, &group_id, with_access)),
+                    Err(BodyError::Shape(_))
+                ),
+                "an outer individual holding a group hash is refused for {kind}"
+            );
+            assert!(
+                matches!(
+                    decode_body(&body_with(kind, 1, &key_id, with_access)),
+                    Err(BodyError::Shape(_))
+                ),
+                "an outer group holding a key is refused for {kind}"
+            );
+        }
     }
 
     #[test]

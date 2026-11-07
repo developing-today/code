@@ -712,7 +712,11 @@ test("fetchFollowingValidatedRedirects follows only urllib redirect statuses", a
       "https://example.com/start": { status, location: "/final" },
       "https://example.com/final": { status: 200 },
     });
-    assert.equal((await fetchFollowingValidatedRedirects("https://example.com/start", fetchFn)).status, 200, `${status}`);
+    assert.equal(
+      (await fetchFollowingValidatedRedirects("https://example.com/start", fetchFn)).status,
+      200,
+      `${status}`,
+    );
   }
 
   for (const status of [300, 304]) {

@@ -1,3 +1,5 @@
+import { HTML5_ENTITIES, MAX_HTML5_ENTITY_KEY_LENGTH } from "./html5-entities.ts";
+
 // Pure helpers for Lab Ops Hub: crawl-target validation (#441), the
 // /api/budget computation (#442), and upload R2 key derivation (#2478).
 // Kept free of Worker bindings so they can be unit-tested with plain
@@ -467,4 +469,383 @@ export function validateTaskBody(body: Record<string, unknown>): Validated<{ tit
 // function; callers pass crypto.randomUUID().
 export function uploadKey(name: string, now: number, rand: string = crypto.randomUUID()): string {
   return `uploads/${now}-${rand}-${name.replace(/[^\w.\-]+/g, "_")}`;
+}
+
+// Decode the path suffix before looking up an uploaded file. Keep this
+// route-specific response logic pure so malformed keys and the 404 control
+// can be covered without constructing a Worker environment.
+export async function fileResponseForKey(
+  encodedKey: string,
+  getFile: (key: string) => Promise<{
+    body: ReadableStream<Uint8Array> | null;
+    httpMetadata?: { contentType?: string };
+  } | null>,
+): Promise<Response> {
+  let key: string;
+  try {
+    key = decodeURIComponent(encodedKey);
+  } catch {
+    return new Response(JSON.stringify({ error: "bad file key encoding" }, null, 2), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  const obj = await getFile(key);
+  if (!obj) {
+    return new Response(JSON.stringify({ error: "not found in R2" }, null, 2), {
+      status: 404,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  return new Response(obj.body, {
+    headers: { "content-type": obj.httpMetadata?.contentType ?? "application/octet-stream" },
+  });
+}
+
+// --- HTML extraction (#569) -------------------------------------------------
+// extractHtml mirrors the container crawler's Extractor (container/app.py,
+// an html.parser.HTMLParser) so the Worker fallback in index.ts and the
+// container return identical {title, links, text} for the same page:
+// - links counts every <a> start tag (bare <a> and <a/> included), never
+//   anchors inside scripts, styles, or comments;
+// - title is the concatenated character data of <title> (entities decoded),
+//   and title data never leaks into text;
+// - text is the remaining character data with script/style content
+//   skipped (an unclosed script/style swallows the rest of the document,
+//   as HTMLParser's CDATA mode does), chunks joined with one space and
+//   whitespace collapsed — the same `" ".join` + `\s+` collapse app.py
+//   applies. Paired fixtures: test/extractor-fixtures.json, exercised by
+//   both test/extractor.test.ts and test/test_extractor_parity.py.
+// - <title> and <textarea> are RCDATA elements (#4008): content is
+//   character data (entities decoded, markup literal) up to the matching
+//   close tag — title data goes to title, textarea data to text.
+// - <iframe>, <xmp>, <noembed>, and <noframes> are raw-text elements
+//   (#4008): content is likewise literal up to the matching close tag
+//   (anchors inside never count), and HTMLParser reports it verbatim —
+//   no entity decoding — as ordinary character data.
+
+// HTML numeric character-reference normalization: the same remapping
+// html.unescape applies for the container's HTMLParser. C1 controls
+// 0x80-0x9F map to their Windows-1252 characters; NUL, surrogates, and
+// out-of-range values become U+FFFD. Other invalid controls and Unicode
+// noncharacters are dropped, matching html.unescape.
+const NUMERIC_REF_REMAP: Record<number, number> = {
+  0x80: 0x20ac,
+  0x81: 0x0081,
+  0x82: 0x201a,
+  0x83: 0x0192,
+  0x84: 0x201e,
+  0x85: 0x2026,
+  0x86: 0x2020,
+  0x87: 0x2021,
+  0x88: 0x02c6,
+  0x89: 0x2030,
+  0x8a: 0x0160,
+  0x8b: 0x2039,
+  0x8c: 0x0152,
+  0x8d: 0x008d,
+  0x8e: 0x017d,
+  0x8f: 0x008f,
+  0x90: 0x0090,
+  0x91: 0x2018,
+  0x92: 0x2019,
+  0x93: 0x201c,
+  0x94: 0x201d,
+  0x95: 0x2022,
+  0x96: 0x2013,
+  0x97: 0x2014,
+  0x98: 0x02dc,
+  0x99: 0x2122,
+  0x9a: 0x0161,
+  0x9b: 0x203a,
+  0x9c: 0x0153,
+  0x9d: 0x009d,
+  0x9e: 0x017e,
+  0x9f: 0x0178,
+};
+
+function normalizeNumericRef(code: number): number | null {
+  if (code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return 0xfffd;
+  if (
+    (code >= 0x1 && code <= 0x8) ||
+    code === 0xb ||
+    (code >= 0xe && code <= 0x1f) ||
+    code === 0x7f ||
+    (code >= 0xfdd0 && code <= 0xfdef) ||
+    (code & 0xffff) === 0xfffe ||
+    (code & 0xffff) === 0xffff
+  ) {
+    return null;
+  }
+  return NUMERIC_REF_REMAP[code] ?? code;
+}
+
+export function decodeHtmlEntities(data: string): string {
+  const decoded: string[] = [];
+  let copyFrom = 0;
+  let i = 0;
+  const numericReference = /&#([xX][0-9a-fA-F]+|\d+);?/y;
+  while (i < data.length) {
+    if (data[i] !== "&") {
+      i += 1;
+      continue;
+    }
+
+    if (data[i + 1] === "#") {
+      numericReference.lastIndex = i;
+      const numeric = numericReference.exec(data);
+      if (numeric) {
+        const body = numeric[1];
+        const hex = body[0] === "x" || body[0] === "X";
+        const code = Number.parseInt(body.slice(hex ? 1 : 0), hex ? 16 : 10);
+        const normalized = normalizeNumericRef(code);
+        decoded.push(data.slice(copyFrom, i), normalized === null ? "" : String.fromCodePoint(normalized));
+        i += numeric[0].length;
+        copyFrom = i;
+        continue;
+      }
+    } else {
+      let end = i + 1;
+      while (end < data.length && end - (i + 1) < MAX_HTML5_ENTITY_KEY_LENGTH && /[A-Za-z0-9;]/.test(data[end])) {
+        end += 1;
+      }
+      let matched = false;
+      for (let matchEnd = end; matchEnd > i + 1; matchEnd -= 1) {
+        const entity = HTML5_ENTITIES.get(data.slice(i + 1, matchEnd));
+        if (entity !== undefined) {
+          decoded.push(data.slice(copyFrom, i), entity);
+          i = matchEnd;
+          copyFrom = i;
+          matched = true;
+          break;
+        }
+      }
+      if (matched) continue;
+    }
+    i += 1;
+  }
+  decoded.push(data.slice(copyFrom));
+  return decoded.join("");
+}
+
+// A '/' marks a start tag self-closing only where a new attribute could
+// begin (after the tag name, whitespace, or a quoted value) AND it is
+// the final character before '>': <script / > is an open script tag to
+// HTMLParser, not a self-closing one. A '/' ending an UNQUOTED attribute
+// value is part of the value: <script src=/x/> is likewise an open
+// script tag, not a self-closing one.
+function isSelfClosingTag(inner: string, nameEnd: number): boolean {
+  let k = nameEnd;
+  const len = inner.length;
+  while (k < len) {
+    while (k < len && /\s/.test(inner[k])) k += 1;
+    if (k >= len) return false;
+    if (inner[k] === "/") return k === len - 1;
+    while (k < len && !/[\s=/]/.test(inner[k])) k += 1; // attribute name
+    let m = k;
+    while (m < len && /\s/.test(inner[m])) m += 1;
+    if (m < len && inner[m] === "=") {
+      m += 1;
+      while (m < len && /\s/.test(inner[m])) m += 1;
+      if (m < len && (inner[m] === '"' || inner[m] === "'")) {
+        const q = inner[m];
+        m += 1;
+        while (m < len && inner[m] !== q) m += 1;
+        if (m < len) m += 1;
+      } else {
+        // Unquoted value: everything up to whitespace ('/' included).
+        while (m < len && !/\s/.test(inner[m])) m += 1;
+      }
+      k = m;
+    }
+  }
+  return false;
+}
+
+export function extractHtml(html: string): { title: string; links: number; text: string } {
+  let title = "";
+  let links = 0;
+  const textChunks: string[] = [];
+  let skipDepth = 0;
+  // Raw-text modes: script/style are HTMLParser CDATA elements;
+  // <title>/<textarea> are RCDATA (character data, entities decoded,
+  // markup literal); <iframe>/<xmp>/<noembed>/<noframes> are raw text
+  // (character data verbatim). In every mode only the matching close
+  // tag is markup, so anchors inside never count as links (#4008).
+  let cdataTag: string | null = null;
+
+  const handleData = (raw: string) => {
+    if (raw === "") return;
+    const data = decodeHtmlEntities(raw);
+    if (cdataTag === "title") title += data;
+    else if (skipDepth === 0) textChunks.push(data);
+  };
+  // Raw-text element data: HTMLParser reports it verbatim — no entity
+  // decoding — and the container Extractor appends it to text like any
+  // other character data.
+  const handleRawData = (raw: string) => {
+    if (raw === "") return;
+    if (skipDepth === 0) textChunks.push(raw);
+  };
+  const handleCdataData = (raw: string) => {
+    if (cdataTag === "iframe" || cdataTag === "xmp" || cdataTag === "noembed" || cdataTag === "noframes")
+      handleRawData(raw);
+    else handleData(raw);
+  };
+  const handleStartTag = (tag: string, selfClosing: boolean) => {
+    if (
+      tag === "title" ||
+      tag === "textarea" ||
+      tag === "iframe" ||
+      tag === "xmp" ||
+      tag === "noembed" ||
+      tag === "noframes"
+    ) {
+      if (!selfClosing) cdataTag = tag;
+    } else if (tag === "a") links += 1;
+    else if (tag === "script" || tag === "style") {
+      skipDepth += 1;
+      if (selfClosing) skipDepth -= 1;
+      else cdataTag = tag;
+    }
+  };
+  const handleEndTag = (tag: string) => {
+    if ((tag === "script" || tag === "style") && skipDepth > 0) skipDepth -= 1;
+  };
+
+  let i = 0;
+  const n = html.length;
+  while (i < n) {
+    if (cdataTag !== null) {
+      // HTMLParser CDATA mode: only the matching close tag is markup.
+      const close = new RegExp(`</${cdataTag}(?=[\\s/>])`, "i").exec(html.slice(i));
+      if (close === null) {
+        // EOF inside the element. For the #4008 elements (textarea and
+        // the raw-text four) the container never sees the tail:
+        // HTMLParser fed without close() — app.py only calls feed() —
+        // leaves an unterminated raw-text/RCDATA region unflushed, so
+        // its content is dropped, not delivered.
+        if (
+          cdataTag !== "textarea" &&
+          cdataTag !== "iframe" &&
+          cdataTag !== "xmp" &&
+          cdataTag !== "noembed" &&
+          cdataTag !== "noframes"
+        ) {
+          handleCdataData(html.slice(i));
+        }
+        i = n;
+        break;
+      }
+      handleCdataData(html.slice(i, i + close.index));
+      i += close.index;
+      // Consume the close tag here, tolerantly: HTMLParser accepts
+      // recoverable end tags carrying trailing attributes
+      // (</script foo>), which the strict end-tag pattern in the normal
+      // path rejects -- skipDepth would stay set and the rest of the
+      // document would be discarded.
+      const closeTag = new RegExp(`</${cdataTag}[^>]*>`, "i").exec(html.slice(i));
+      const closedTag = cdataTag;
+      cdataTag = null;
+      if (closeTag !== null) {
+        handleEndTag(closedTag);
+        i += closeTag[0].length;
+      }
+      continue;
+    }
+    const lt = html.indexOf("<", i);
+    if (lt === -1) {
+      handleData(html.slice(i));
+      break;
+    }
+    if (lt > i) handleData(html.slice(i, lt));
+    i = lt;
+    if (html.startsWith("<!--", i)) {
+      // Comment ends per HTMLParser: --> or --!>, plus the abrupt
+      // empty-comment forms <!--> and <!--->.
+      if (html.startsWith(">", i + 4)) {
+        i += 5;
+        continue;
+      }
+      if (html.startsWith("->", i + 4)) {
+        i += 6;
+        continue;
+      }
+      const m = /--!?>/.exec(html.slice(i + 4));
+      i = m === null ? n : i + 4 + m.index + m[0].length;
+      continue;
+    }
+    const next = html[i + 1] ?? "";
+    if (next === "!" || next === "?") {
+      const end = html.indexOf(">", i + 2);
+      i = end === -1 ? n : end + 1;
+      continue;
+    }
+    if (next === "/") {
+      // End tags may carry (invalid but recoverable) attributes, which
+      // HTMLParser consumes rather than emitting as text: </p foo>
+      // still closes the paragraph. The match is bounded at the next
+      // '>' up front: an unbounded name-plus-remainder pattern
+      // backtracks quadratically on an incomplete end tag at EOF
+      // (</p followed by a long letter run and no '>').
+      const gt = html.indexOf(">", i);
+      const m = gt === -1 ? null : /^<\/([a-zA-Z][^\s/>]*)/.exec(html.slice(i, gt + 1));
+      if (m === null) {
+        if (gt === -1 && /^<\/[a-zA-Z]/.test(html.slice(i))) {
+          // Incomplete end tag at EOF: HTMLParser drops it.
+          i = n;
+          continue;
+        }
+        handleData("<");
+        i += 1;
+        continue;
+      }
+      handleEndTag(m[1].toLowerCase());
+      i = gt + 1;
+      continue;
+    }
+    if (/[a-zA-Z]/.test(next)) {
+      // Start tag: scan to the closing '>' without letting a quoted
+      // attribute value end the tag early.
+      let j = i + 1;
+      let quote = "";
+      let lastSig = "";
+      while (j < n) {
+        const ch = html[j];
+        if (quote !== "") {
+          if (ch === quote) {
+            quote = "";
+            lastSig = ch;
+          }
+        } else if ((ch === '"' || ch === "'") && lastSig === "=") {
+          // A quote opens a quoted value only where a value begins
+          // (right after '='); a quote inside an unquoted value, as in
+          // <a href=/it's>, is data, as HTMLParser tokenizes it.
+          quote = ch;
+        } else if (ch === ">") break;
+        else if (!/\s/.test(ch)) lastSig = ch;
+        j += 1;
+      }
+      if (j >= n) {
+        handleData(html.slice(i)); // unterminated tag: HTMLParser emits it as data
+        break;
+      }
+      const inner = html.slice(i + 1, j);
+      const nameMatch = /^([a-zA-Z][^\s/>]*)/.exec(inner);
+      if (nameMatch === null) {
+        handleData("<");
+        i += 1;
+        continue;
+      }
+      handleStartTag(nameMatch[1].toLowerCase(), isSelfClosingTag(inner, nameMatch[1].length));
+      i = j + 1;
+      continue;
+    }
+    handleData("<");
+    i += 1;
+  }
+
+  const text = textChunks.join(" ").replace(/\s+/g, " ").trim();
+  return { title: title.trim(), links, text };
 }

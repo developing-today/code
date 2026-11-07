@@ -11,7 +11,7 @@ You turn a reconciled concept into GitHub issues that a fresh agent with no cont
 - **`fanout` (S5)**: a zero-context agent given only the parent issue URL creates one child issue per facet, each a complete handoff, then records them all in the design's initial research stages and in the main reference.
 - **`orchestration` (end of S5)**: the same agent writes one issue whose job is to run subagents against the child issues. `design-orchestrate` executes it.
 
-The stage contract is in [stages.md](/planning/workflow/stages.md), issue rules in [records.md](/planning/workflow/records.md), body templates in [templates](/planning/workflow/templates/). Commands below are `python3 -I scripts/research_workflow.py <command>` from the repository root; `<pkg>` is `doc/<UTC>_research_<slug>`.
+The stage contract is in [stages.md](../../../planning/workflow/stages.md), issue rules in [records.md](../../../planning/workflow/records.md), body templates in [templates](../../../planning/workflow/templates). Commands below are `python3 -I scripts/research_workflow.py <command>` from the repository root; `<pkg>` is `doc/<UTC>_research_<slug>`.
 
 ## Load or not
 
@@ -32,7 +32,7 @@ Do not load for:
 
 ## Ownership and parallelism
 
-One agent per concept runs `parent`, and one per parent issue runs `fanout` then `orchestration`, so concepts move through S4 and S5 in parallel. You are the only writer of the issues you create and, while you hold the concept lease, of the concept's state block. `main.md` and `design.md` change only inside this concept's own sections and only through your PR. You never edit another concept's issues or sections. Boot, lease, heartbeat and final-report rules are in [collaboration.md](/planning/workflow/collaboration.md).
+One agent per concept runs `parent`, and one per parent issue runs `fanout` then `orchestration`, so concepts move through S4 and S5 in parallel. You are the only writer of the issues you create and, while you hold the concept lease, of the concept's state block. `main.md` and `design.md` change only inside this concept's own sections and only through your PR. You never edit another concept's issues or sections. Boot, lease, heartbeat and final-report rules are in [collaboration.md](../../../planning/workflow/collaboration.md).
 
 **No recursion.** `parent` does not fan out. `fanout` creates child issues and one orchestration issue, and runs none of them. Child issues are leaves: their workers never fan out further or run this skill, and they report new work to the orchestrator instead. Subagents you launch (validators, searchers) are read-only leaves.
 

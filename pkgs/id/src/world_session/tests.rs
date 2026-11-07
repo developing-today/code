@@ -1,8 +1,9 @@
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use proptest::prelude::*;
     use tokio::sync::mpsc;
 
-    use ed25519_dalek::SigningKey;
+    use ed25519_dalek::{Signer, SigningKey};
 
     use super::*;
     use crate::directory::{Actor, Level, Member};
@@ -191,6 +192,97 @@ mod tests {
         let view = peer.next().await.unwrap();
         assert_eq!(view["type"], "view");
         assert_eq!(view["sequence"].as_u64(), Some(latest_sequence));
+    }
+
+    #[tokio::test]
+    async fn admin_history_is_admin_only_and_system_events_stay_off_join_streams() {
+        struct Players;
+        impl crate::world::WorldProgram for Players {
+            fn wants(&mut self) -> anyhow::Result<Option<String>> {
+                Ok(Some(
+                    serde_json::json!({"v": 1, "subscribe": ["players"]}).to_string(),
+                ))
+            }
+        }
+
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.ledger
+            .set_granted(std::collections::BTreeSet::from(["players".to_owned()]));
+        let world = WorldHandle::spawn_with_program(core, Box::new(Players));
+        let (_, capability) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()));
+
+        let mut joiner = Peer::connect(service.clone(), SessionConfig::default());
+        joiner
+            .say(serde_json::json!({
+                "type": "join",
+                "capability": capability.expose(),
+            }))
+            .await;
+        assert_eq!(joiner.next().await.unwrap()["type"], "snapshot");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(75), joiner.from_server.recv())
+                .await
+                .is_err(),
+            "the join event must not enter the participant stream"
+        );
+
+        let mut missing = Peer::connect(service.clone(), SessionConfig::default());
+        missing
+            .say(serde_json::json!({"type": "event_history_admin"}))
+            .await;
+        assert_eq!(missing.next().await.unwrap()["type"], "error");
+
+        let mut denied = Peer::connect(service.clone(), SessionConfig::default());
+        denied
+            .say(serde_json::json!({
+                "type": "event_history_admin",
+                "admin_token": capability.expose(),
+            }))
+            .await;
+        assert_eq!(denied.next().await.unwrap()["message"], "admin denied");
+
+        world
+            .input(capability.clone(), b"move".to_vec())
+            .await
+            .unwrap();
+        let input = joiner.next().await.unwrap();
+        assert_eq!(input["type"], "event");
+        assert_eq!(input["event"]["kind"]["kind"], "input");
+
+        let mut admin = Peer::connect(service, SessionConfig::default());
+        admin
+            .say(serde_json::json!({
+                "type": "event_history_admin",
+                "admin_token": "admin",
+            }))
+            .await;
+        let begin = admin.next().await.unwrap();
+        assert_eq!(begin["type"], "event_history_begin");
+        assert_eq!(begin["event_count"], 2);
+        let joined = admin.next().await.unwrap();
+        assert_eq!(joined["type"], "event_history_event");
+        assert_eq!(joined["event"]["kind"]["kind"], "system");
+        assert!(
+            joined["event"]["kind"]["data"]["event"]
+                .as_str()
+                .unwrap()
+                .contains("joined")
+        );
+        let input = admin.next().await.unwrap();
+        assert_eq!(input["type"], "event_history_event");
+        assert_eq!(input["event"]["kind"]["kind"], "input");
+        let records = admin.next().await.unwrap();
+        assert_eq!(records["type"], "records");
+        assert_eq!(records["sequence"], 1);
+    }
+
+    #[tokio::test]
+    async fn cloned_service_allocates_distinct_ids_for_connections() {
+        let service = service(None);
+        let another_connection = service.clone();
+
+        assert!(service.next_session_id() != another_connection.next_session_id());
     }
 
     #[tokio::test]
@@ -559,6 +651,33 @@ mod tests {
         let service = WorldService::new(world, Some("admin".to_owned())).with_module_dir(modules);
         assert_eq!(service.stored_module_bytes(&hash).await.unwrap(), bytes);
         assert!(service.stored_module_bytes(&"0".repeat(64)).await.is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// PR #4708 Codex P2: a read-only replica clears its blob store so
+    /// uploads stay refused, which also removed the only source
+    /// `module_bytes` would serve from, so an authorized `DownloadModule`
+    /// always returned "module bytes are unavailable". The restored
+    /// module lives in the module directory; `module_bytes` falls back
+    /// to it while uploads stay refused (no blob store to pin into).
+    #[tokio::test]
+    async fn module_bytes_fall_back_to_the_module_directory_without_blobs() {
+        let dir = std::env::temp_dir().join(format!("id-module-bytes-test-{}", std::process::id()));
+        let modules = crate::world_store::ModuleDir::new(dir.clone());
+        let bytes: &[u8] = b"restored-module-bytes";
+        let hash = modules.save(bytes).unwrap();
+
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        // No blob store attached, as on a replica; `adopt_module` then
+        // only advertises the hash, exactly like the replica restore path.
+        let service = WorldService::new(world, Some("admin".to_owned())).with_module_dir(modules);
+        service.adopt_module(bytes.to_vec()).await.unwrap();
+        assert_eq!(
+            service.active_module_hash().await.as_deref(),
+            Some(hash.as_str())
+        );
+        assert_eq!(service.module_bytes(&hash).await.unwrap(), bytes);
+        assert!(service.module_bytes(&"0".repeat(64)).await.is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1029,6 +1148,169 @@ mod tests {
         assert_eq!(bin.next().await.unwrap()["type"], "error");
     }
 
+    #[tokio::test]
+    async fn first_frame_rejects_duplicate_json_keys_at_every_depth() {
+        const FRAMES: [(&str, &str); 7] = [
+            (
+                "identical type",
+                r#"{"type":"join","type":"join","capability":"x"}"#,
+            ),
+            (
+                "conflicting type",
+                r#"{"type":"join","type":"chat","capability":"x"}"#,
+            ),
+            (
+                "world duplicate with last value",
+                r#"{"type":"join","capability":"x","world":"lobby","world":"other"}"#,
+            ),
+            (
+                "world duplicate with first value",
+                r#"{"world":"other","world":"lobby","type":"join","capability":"x"}"#,
+            ),
+            (
+                "capability",
+                r#"{"type":"join","capability":"x","capability":"y"}"#,
+            ),
+            (
+                "admin token",
+                r#"{"type":"invite","admin_token":"x","admin_token":"y","display_name":"ann"}"#,
+            ),
+            (
+                "nested signed nonce",
+                r#"{"type":"join","capability":"x","signed":{"key":"k","at":1,"nonce":"one","nonce":"two","signature":"s"}}"#,
+            ),
+        ];
+
+        for (case, text) in FRAMES {
+            let mut peer = Peer::connect(service(None), SessionConfig::default());
+            peer.say_text(text).await;
+            let reply = peer.next().await.unwrap();
+            assert_eq!(reply["type"], "error", "{case}: {reply}");
+            assert_eq!(
+                reply["message"], "first frame must be a valid join or invite request",
+                "{case}: {reply}"
+            );
+            assert!(peer.next().await.is_none(), "{case}");
+            peer.task.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn joined_frame_rejects_duplicate_json_keys_at_every_depth() {
+        const FRAMES: [(&str, &str); 7] = [
+            (
+                "identical type",
+                r#"{"type":"chat","type":"chat","text":"hi"}"#,
+            ),
+            (
+                "conflicting type",
+                r#"{"type":"chat","type":"input","text":"hi","data_hex":""}"#,
+            ),
+            (
+                "world duplicate with last value",
+                r#"{"type":"chat","text":"hi","world":"lobby","world":"other"}"#,
+            ),
+            (
+                "world duplicate with first value",
+                r#"{"world":"other","world":"lobby","type":"chat","text":"hi"}"#,
+            ),
+            (
+                "capability",
+                r#"{"type":"chat","text":"hi","capability":"x","capability":"y"}"#,
+            ),
+            (
+                "admin token",
+                r#"{"type":"set_isolation","isolation":"isolated","admin_token":"x","admin_token":"y"}"#,
+            ),
+            (
+                "nested signed nonce",
+                r#"{"type":"set_isolation","isolation":"isolated","signed":{"key":"k","at":1,"nonce":"one","nonce":"two","signature":"s"}}"#,
+            ),
+        ];
+
+        let svc = service(None);
+        let (_, capability) = svc
+            .world()
+            .issue("ann".to_owned(), WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let mut peer = Peer::connect(svc, SessionConfig::default());
+        peer.say(serde_json::json!({"type": "join", "capability": capability.expose()}))
+            .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+
+        for (case, text) in FRAMES {
+            peer.say_text(text).await;
+            let reply = peer.next().await.unwrap();
+            assert_eq!(reply["type"], "error", "{case}: {reply}");
+            assert_eq!(reply["message"], "invalid world frame", "{case}: {reply}");
+        }
+
+        peer.to_server.send(Inbound::Closed).await.unwrap();
+        peer.task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn query_frame_rejects_duplicate_json_keys_before_join() {
+        // Regression test for the PR #6508 review finding: frames received
+        // after a valid query/info first frame were parsed straight into
+        // ClientFrame, so duplicate keys in fields the frame type ignores
+        // collapsed silently and a join carrying them still entered the
+        // joined phase. Oracle: the strict duplicate-key parser — any
+        // repeated key at any depth refuses the frame before conversion.
+        let svc = service(None);
+        let (_, capability) = svc
+            .world()
+            .issue("ann".to_owned(), WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let cap = capability.expose().to_owned();
+
+        let frames: [(&str, String); 3] = [
+            (
+                "duplicate ignored world field",
+                format!(
+                    r#"{{"type":"join","capability":"{cap}","world":"lobby","world":"other"}}"#
+                ),
+            ),
+            (
+                "duplicate unknown field",
+                format!(r#"{{"type":"join","capability":"{cap}","bogus":1,"bogus":2}}"#),
+            ),
+            (
+                "duplicate inside ignored nested object",
+                format!(r#"{{"type":"join","capability":"{cap}","extra":{{"a":1,"a":2}}}}"#),
+            ),
+        ];
+
+        for (case, text) in frames {
+            let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+            peer.say(serde_json::json!({"type": "info", "capability": cap}))
+                .await;
+            assert_eq!(peer.next().await.unwrap()["type"], "module_info", "{case}");
+            peer.say_text(&text).await;
+            let reply = peer.next().await.unwrap();
+            assert_eq!(reply["type"], "error", "{case}: {reply}");
+            assert_eq!(reply["message"], "invalid world frame", "{case}: {reply}");
+            assert!(peer.next().await.is_none(), "{case}");
+            peer.task.await.unwrap();
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn duplicate_json_keys_are_rejected_at_any_nesting_depth(
+            key in "[a-zA-Z_][a-zA-Z0-9_]{0,15}",
+            depth in 0usize..8,
+        ) {
+            let duplicate = format!(r#"{{"{key}":0,"{key}":1}}"#);
+            let nested = (0..depth).fold(duplicate, |value, _| {
+                format!(r#"{{"nested":{value}}}"#)
+            });
+            prop_assert!(parse_json_without_duplicate_keys(&nested).is_err());
+        }
+    }
+
     #[test]
     fn invite_lifetimes_default_to_a_week_and_stop_at_thirty_days() {
         let now = 1_000_000;
@@ -1479,6 +1761,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn directory_frame_lists_worlds_without_an_admin_token() {
+        let (hub, _) = memory_hub(crate::world_hub::HubLimits::default());
+        let mut admin = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        admin
+            .say(serde_json::json!({"type":"create_world","admin_token":"admin","world":"arena"}))
+            .await;
+        assert_eq!(admin.next().await.unwrap()["type"], "world_created");
+
+        // No token at all: the directory is public metadata (#812).
+        let mut guest = Peer::connect_hub(hub, SessionConfig::default());
+        guest.say(serde_json::json!({"type":"directory"})).await;
+        let listed = guest.next().await.unwrap();
+        assert_eq!(listed["type"], "worlds");
+        assert_eq!(listed["default"], "lobby");
+        assert_eq!(listed["worlds"][0]["name"], "arena");
+        assert_eq!(listed["worlds"][0]["presence"], 0);
+    }
+
+    #[tokio::test]
     async fn unauthenticated_frames_cannot_create_or_probe_worlds() {
         let (hub, opener) = memory_hub(crate::world_hub::HubLimits::default());
         for frame in [
@@ -1495,6 +1796,63 @@ mod tests {
             0,
             "nothing was opened or created by outsiders"
         );
+    }
+
+    #[tokio::test]
+    async fn routed_admin_history_authenticates_before_lookup_and_never_creates() {
+        let (hub, opener) = memory_hub(crate::world_hub::HubLimits::default());
+        invite_into(&hub, "arena", "ann").await;
+        let opens = opener.opens.load(std::sync::atomic::Ordering::SeqCst);
+
+        for world in ["arena", "missing"] {
+            let mut denied = Peer::connect_hub(hub.clone(), SessionConfig::default());
+            denied
+                .say(serde_json::json!({
+                    "type": "event_history_admin",
+                    "admin_token": "wrong",
+                    "world": world,
+                }))
+                .await;
+            assert_eq!(denied.next().await.unwrap()["message"], "admin denied");
+        }
+        assert_eq!(
+            opener.opens.load(std::sync::atomic::Ordering::SeqCst),
+            opens,
+            "invalid admin tokens are rejected without resolving either route"
+        );
+
+        let mut missing = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        missing
+            .say(serde_json::json!({
+                "type": "event_history_admin",
+                "admin_token": "admin",
+                "world": "missing",
+            }))
+            .await;
+        assert_eq!(missing.next().await.unwrap()["message"], "unknown world");
+        assert_eq!(
+            opener.known.lock().unwrap().clone(),
+            vec!["arena".to_owned()],
+            "an authenticated history read does not create a missing world"
+        );
+        assert_eq!(
+            opener.opens.load(std::sync::atomic::Ordering::SeqCst),
+            opens,
+            "a non-creating history read does not open the world"
+        );
+
+        let mut existing = Peer::connect_hub(hub, SessionConfig::default());
+        existing
+            .say(serde_json::json!({
+                "type": "event_history_admin",
+                "admin_token": "admin",
+                "world": "arena",
+            }))
+            .await;
+        let begin = existing.next().await.unwrap();
+        assert_eq!(begin["type"], "event_history_begin");
+        assert_eq!(begin["world_id"], "arena");
+        assert_eq!(existing.next().await.unwrap()["type"], "records");
     }
 
     #[tokio::test]
@@ -1736,6 +2094,51 @@ mod tests {
             .install_wasm(Some("admin"), wasm, 1, &hash)
             .await
             .expect("raw modules stay supported by default");
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn module_trust_list_allows_empty_refuses_unsigned_and_accepts_trusted_signer() {
+        use iroh_blobs::store::mem::MemStore;
+
+        let wasm = include_bytes!("../../examples/roc-counter/counter.wasm").to_vec();
+        let hash = module_hash(&wasm);
+
+        let empty = WorldService::new(
+            WorldHandle::spawn(WorldCore::new("empty-trust", WorldLimits::default()).unwrap()),
+            Some("admin".to_owned()),
+        )
+        .with_blob_store(MemStore::new().into());
+        empty
+            .install_wasm(Some("admin"), wasm.clone(), 1, &hash)
+            .await
+            .expect("empty trust list keeps legacy installs working");
+
+        let signer = SigningKey::from_bytes(&[42; 32]);
+        let trusted = WorldService::new(
+            WorldHandle::spawn(WorldCore::new("trusted", WorldLimits::default()).unwrap()),
+            Some("admin".to_owned()),
+        )
+        .with_blob_store(MemStore::new().into())
+        .with_module_trust_keys(vec![signer.verifying_key().to_bytes()]);
+        assert_eq!(
+            trusted
+                .install_wasm(Some("admin"), wasm.clone(), 1, &hash)
+                .await,
+            Err(InstallError::UntrustedModule),
+            "a non-empty trust list refuses unsigned uploads"
+        );
+
+        let mut message = b"developing-today/id-world-module/v1\0".to_vec();
+        message.extend_from_slice(blake3::hash(&wasm).as_bytes());
+        let signature = ModuleSignature {
+            public_key: hex_encode(&signer.verifying_key().to_bytes()),
+            signature: hex_encode(&signer.sign(&message).to_bytes()),
+        };
+        trusted
+            .install_wasm_with_signature(Some("admin"), wasm, 2, &hash, Some(&signature))
+            .await
+            .expect("a trust-listed signer may install the module");
     }
 
     #[cfg(feature = "sandbox")]

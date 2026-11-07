@@ -41,7 +41,8 @@ use std::io::Write;
 
 use super::{ReplInput, continue_heredoc, preprocess_repl_line};
 use crate::{
-    FindMatch, MatchKind, PeekOptions, ReplContext, SearchOptions, is_node_id, print_match_repl,
+    FindMatch, MatchKind, PeekOptions, ReplContext, SearchOptions, download_output_path,
+    is_node_id, print_match_repl,
 };
 
 /// Run the interactive REPL.
@@ -614,9 +615,8 @@ impl FindArgs<'_> {
         if self.first.is_some() && self.last.is_some() {
             anyhow::bail!("--first and --last cannot be used together");
         }
-        // #3059: an explicit zero limit is an error, never a silent empty result. (A
-        // nonnumeric value keeps the #2009 behaviour: it falls back to the default of 1
-        // in the parsers, so only a parsed 0 reaches this check.)
+        // #3059: an explicit zero limit is an error, never a silent empty result.
+        // Nonnumeric option values are rejected by the argument parsers.
         if self.first == Some(0) {
             anyhow::bail!("--first must be at least 1 (got 0)");
         }
@@ -652,6 +652,32 @@ impl FindArgs<'_> {
 /// - `--last [N]`: Return only last N matches (default 1)
 /// - `--count`: Print count instead of matches
 /// - `--exclude PATTERN`: Exclude matches containing pattern (repeatable)
+fn required_value<'a>(rest: &[&'a str], i: &mut usize) -> Result<&'a str> {
+    let flag = rest[*i];
+    let value = rest
+        .get(*i + 1)
+        .copied()
+        .filter(|value| !value.is_empty() && (!value.starts_with('-') || *value == "-"))
+        .ok_or_else(|| anyhow::anyhow!("{flag} requires a value"))?;
+    *i += 1;
+    Ok(value)
+}
+
+/// Like `required_value`, but for `--exclude`: exclusion patterns are
+/// data, and a pattern may legitimately start with a single hyphen (e.g.
+/// `--exclude -draft`). Double-hyphen tokens are reserved for flags; use
+/// another spelling for patterns that begin with `--`.
+fn required_pattern<'a>(rest: &[&'a str], i: &mut usize) -> Result<&'a str> {
+    let flag = rest[*i];
+    let value = rest
+        .get(*i + 1)
+        .copied()
+        .filter(|value| !value.is_empty() && !value.starts_with("--"))
+        .ok_or_else(|| anyhow::anyhow!("{flag} requires a value"))?;
+    *i += 1;
+    Ok(value)
+}
+
 fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> Result<FindArgs<'a>> {
     let mut args = FindArgs {
         queries: Vec::new(),
@@ -683,22 +709,23 @@ fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> Result<Find
         } else if arg == "--file" {
             args.to_file = true;
         } else if let Some(path) = arg.strip_prefix('>') {
+            anyhow::ensure!(
+                !path.is_empty(),
+                "redirect > requires a non-empty output path"
+            );
             args.output_file = Some(path);
             args.to_file = true;
+        } else if arg == "-o" || arg == "--output" {
+            args.output_file = Some(required_value(rest, &mut i)?);
+            args.to_file = true;
         } else if arg == "--dir" {
-            if i + 1 < rest.len() {
-                args.dir = Some(rest[i + 1]);
-                i += 1;
-            }
+            args.dir = Some(required_value(rest, &mut i)?);
         } else if arg == "--format" {
-            if i + 1 < rest.len() {
-                let value = rest[i + 1];
-                if matches!(value, "tag" | "group" | "union") {
-                    args.format = value;
-                } else {
-                    args.format_error = Some(value);
-                }
-                i += 1;
+            let value = required_value(rest, &mut i)?;
+            if matches!(value, "tag" | "group" | "union") {
+                args.format = value;
+            } else {
+                args.format_error = Some(value);
             }
         } else if arg == "--tag" {
             args.format = "tag";
@@ -707,37 +734,42 @@ fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> Result<Find
         } else if arg == "--union" {
             args.format = "union";
         } else if arg == "--first" {
-            // --first with optional number argument
-            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
-                if let Ok(n) = rest[i + 1].parse::<usize>() {
-                    args.first = Some(n);
-                    i += 1;
-                } else {
-                    args.first = Some(1); // default to 1
-                }
+            // --first with optional number argument; a `>file`
+            // redirection token is not the number (it is handled by
+            // the output branch below), so `--first >out.txt` keeps
+            // the default limit of 1.
+            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') && !rest[i + 1].starts_with('>')
+            {
+                let value = rest[i + 1];
+                args.first =
+                    Some(value.parse::<usize>().map_err(|_| {
+                        anyhow::anyhow!("--first requires an integer (got {value:?})")
+                    })?);
+                i += 1;
             } else {
                 args.first = Some(1); // default to 1
             }
         } else if arg == "--last" {
-            // --last with optional number argument
-            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
-                if let Ok(n) = rest[i + 1].parse::<usize>() {
-                    args.last = Some(n);
-                    i += 1;
-                } else {
-                    args.last = Some(1); // default to 1
-                }
+            // --last with optional number argument; same
+            // redirection exclusion as --first.
+            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') && !rest[i + 1].starts_with('>')
+            {
+                let value = rest[i + 1];
+                args.last =
+                    Some(value.parse::<usize>().map_err(|_| {
+                        anyhow::anyhow!("--last requires an integer (got {value:?})")
+                    })?);
+                i += 1;
             } else {
                 args.last = Some(1); // default to 1
             }
         } else if arg == "--count" {
             args.count = true;
         } else if arg == "--exclude" {
-            if i + 1 < rest.len() {
-                args.exclude.push(rest[i + 1]);
-                i += 1;
-            }
-        } else if !arg.starts_with('-') {
+            args.exclude.push(required_pattern(rest, &mut i)?);
+        } else if arg.starts_with('-') {
+            anyhow::bail!("unknown flag: {arg}");
+        } else {
             args.queries.push(arg);
         }
         i += 1;
@@ -806,11 +838,16 @@ async fn handle_find_command(
     if filtered_matches.len() == 1 {
         let (_, m) = &filtered_matches[0];
         let output = if args.to_file {
-            args.output_file.unwrap_or(&m.name)
+            match args.output_file {
+                // Explicit user path stays the user's choice.
+                Some(path) => path.to_owned(),
+                // Match-derived default: confine via the shared CLI ruling.
+                None => download_output_path(None, &m.name)?,
+            }
         } else {
-            "-"
+            "-".to_owned()
         };
-        return ctx.get(&m.name, Some(output)).await;
+        return ctx.get(&m.name, Some(&output)).await;
     }
 
     // Multiple matches - interactive selection
@@ -876,8 +913,13 @@ async fn handle_search_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<(
     // If --file or >filename, also output first match to file
     if args.to_file {
         let (_, m) = &filtered_matches[0];
-        let output = args.output_file.unwrap_or(&m.name);
-        ctx.get(&m.name, Some(output)).await
+        let output = match args.output_file {
+            // Explicit user path stays the user's choice.
+            Some(path) => path.to_owned(),
+            // Match-derived default: confine via the shared CLI ruling.
+            None => download_output_path(None, &m.name)?,
+        };
+        ctx.get(&m.name, Some(&output)).await
     } else {
         Ok(())
     }
@@ -1068,20 +1110,43 @@ async fn output_all_matches_filtered(
     format: &str,
 ) -> Result<()> {
     if let Some(dir_path) = dir {
+        // Preflight every destination through the shared final-component
+        // ruling before creating the directory or writing anything, so a
+        // single unsafe name or basename collision writes nothing (mirrors
+        // the CLI `plan_download_paths` batch refusal, #2178).
+        let mut seen = std::collections::HashSet::new();
+        let mut destinations = std::collections::HashMap::new();
+        let mut plan: Vec<(&(String, FindMatch), String)> = Vec::new();
+        for entry @ (_, m) in filtered_matches {
+            let key = format!("{}:{}", m.hash, m.name);
+            if !seen.insert(key) {
+                continue;
+            }
+            let output_path = match download_output_path(Some(dir_path), &m.name) {
+                Ok(path) => path,
+                Err(e) => {
+                    println!("error: {e}");
+                    return Ok(());
+                }
+            };
+            if let Some(previous) = destinations.insert(output_path.clone(), m.name.as_str()) {
+                println!(
+                    "refusing bulk download: destination collision between matches {:?} and {:?} at {:?}",
+                    previous, m.name, output_path
+                );
+                return Ok(());
+            }
+            plan.push((entry, output_path));
+        }
         if let Err(e) = std::fs::create_dir_all(dir_path) {
             println!("error creating directory: {e}");
             return Ok(());
         }
-        let mut seen = std::collections::HashSet::new();
-        for (query, m) in filtered_matches {
-            let key = format!("{}:{}", m.hash, m.name);
-            if seen.insert(key) {
-                let output_path = format!("{}/{}", dir_path, m.name);
-                if let Err(e) = ctx.get(&m.name, Some(&output_path)).await {
-                    println!("error: {e}");
-                } else {
-                    print_match_repl(query, m, format);
-                }
+        for ((query, m), output_path) in plan {
+            if let Err(e) = ctx.get(&m.name, Some(&output_path)).await {
+                println!("error: {e}");
+            } else {
+                print_match_repl(query, m, format);
             }
         }
     } else {
@@ -1121,6 +1186,58 @@ fn parse_selection(sel: &str, match_count: usize) -> Option<Vec<usize>> {
         None
     } else {
         Some(selections)
+    }
+}
+
+trait MatchGetter {
+    async fn get_match(&mut self, name: &str, destination: Option<&str>) -> Result<()>;
+}
+
+impl MatchGetter for ReplContext {
+    async fn get_match(&mut self, name: &str, destination: Option<&str>) -> Result<()> {
+        self.get(name, destination).await
+    }
+}
+
+async fn output_selected_matches_to_dir<G: MatchGetter>(
+    ctx: &mut G,
+    selections: &[usize],
+    filtered_matches: &[(String, FindMatch)],
+    dir_path: &str,
+) {
+    // Preflight the selected destinations through the shared final-component
+    // ruling before writing anything, so one unsafe name or basename
+    // collision writes nothing (batch refusal, consistent with #2178).
+    let mut destinations = std::collections::HashMap::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut plan: Vec<(&FindMatch, String)> = Vec::new();
+    for n in selections {
+        let (_, m) = &filtered_matches[n - 1];
+        // Identical matches listed twice (overlapping queries) are one
+        // download, not a collision (Codex review on PR #4472).
+        if !seen.insert(format!("{}:{}", m.hash, m.name)) {
+            continue;
+        }
+        let output_path = match download_output_path(Some(dir_path), &m.name) {
+            Ok(path) => path,
+            Err(e) => {
+                println!("error: {e}");
+                return;
+            }
+        };
+        if let Some(previous) = destinations.insert(output_path.clone(), m.name.as_str()) {
+            println!(
+                "refusing bulk download: destination collision between matches {:?} and {:?} at {:?}",
+                previous, m.name, output_path
+            );
+            return;
+        }
+        plan.push((m, output_path));
+    }
+    for (m, output_path) in plan {
+        if let Err(e) = ctx.get_match(&m.name, Some(&output_path)).await {
+            println!("error: {e}");
+        }
     }
 }
 
@@ -1199,22 +1316,56 @@ async fn select_and_output_matches_filtered(
                 println!("error creating directory: {e}");
                 return Ok(());
             }
-            for n in &selections {
-                let (_, m) = &filtered_matches[n - 1];
-                let output_path = format!("{}/{}", dir_path, m.name);
-                if let Err(e) = ctx.get(&m.name, Some(&output_path)).await {
-                    println!("error: {e}");
-                }
-                if let Err(e) = ctx.get(&m.name, Some("-")).await {
-                    println!("error: {e}");
-                }
-            }
+            output_selected_matches_to_dir(ctx, &selections, filtered_matches, dir_path).await;
         } else if to_file {
-            for n in &selections {
-                let (_, m) = &filtered_matches[n - 1];
-                let output = output_file.unwrap_or(&m.name);
-                if let Err(e) = ctx.get(&m.name, Some(output)).await {
-                    println!("error: {e}");
+            // Preflight match-derived defaults through the shared ruling so
+            // colliding basenames are refused before any write; an explicit
+            // user path stays the user's choice.
+            if output_file.is_some() {
+                for n in &selections {
+                    let (_, m) = &filtered_matches[n - 1];
+                    let output = output_file.unwrap_or(&m.name);
+                    if let Err(e) = ctx.get(&m.name, Some(output)).await {
+                        println!("error: {e}");
+                    }
+                }
+            } else {
+                let mut destinations = std::collections::HashSet::new();
+                let mut seen = std::collections::HashSet::new();
+                let mut plan: Vec<(&FindMatch, String)> = Vec::new();
+                let mut refused = false;
+                for n in &selections {
+                    let (_, m) = &filtered_matches[n - 1];
+                    // Identical matches listed twice are one download,
+                    // not a collision (Codex review on PR #4472).
+                    if !seen.insert(format!("{}:{}", m.hash, m.name)) {
+                        continue;
+                    }
+                    match download_output_path(None, &m.name) {
+                        Ok(output) => {
+                            if !destinations.insert(output.clone()) {
+                                println!(
+                                    "refusing bulk download: destination collision at {:?}",
+                                    output
+                                );
+                                refused = true;
+                                break;
+                            }
+                            plan.push((m, output));
+                        }
+                        Err(e) => {
+                            println!("error: {e}");
+                            refused = true;
+                            break;
+                        }
+                    }
+                }
+                if !refused {
+                    for (m, output) in plan {
+                        if let Err(e) = ctx.get(&m.name, Some(&output)).await {
+                            println!("error: {e}");
+                        }
+                    }
                 }
             }
         } else {
@@ -1257,41 +1408,55 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> Result<(FindArgs<'a>, PeekOptions)> 
         } else if arg == "--all" {
             find_args.all = true;
         } else if arg == "-o" || arg == "--output" {
-            if i + 1 < rest.len() {
-                find_args.output_file = Some(rest[i + 1]);
-                i += 1;
-            }
+            find_args.output_file = Some(required_value(rest, &mut i)?);
+        } else if let Some(path) = arg.strip_prefix('>') {
+            // Mirror parse_find_args: `>file` redirects the preview to
+            // a file (the peek handler already honors output_file).
+            anyhow::ensure!(
+                !path.is_empty(),
+                "redirect > requires a non-empty output path"
+            );
+            find_args.output_file = Some(path);
+            find_args.to_file = true;
         } else if arg == "--first" {
-            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
-                if let Ok(n) = rest[i + 1].parse::<usize>() {
-                    find_args.first = Some(n);
-                    i += 1;
-                } else {
-                    find_args.first = Some(1);
-                }
+            // A `>file` redirection token is not the number (handled
+            // by the output branch above), so `--first >out.txt`
+            // keeps the default limit of 1.
+            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') && !rest[i + 1].starts_with('>')
+            {
+                let value = rest[i + 1];
+                find_args.first =
+                    Some(value.parse::<usize>().map_err(|_| {
+                        anyhow::anyhow!("--first requires an integer (got {value:?})")
+                    })?);
+                i += 1;
             } else {
                 find_args.first = Some(1);
             }
         } else if arg == "--last" {
-            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
-                if let Ok(n) = rest[i + 1].parse::<usize>() {
-                    find_args.last = Some(n);
-                    i += 1;
-                } else {
-                    find_args.last = Some(1);
-                }
+            // Same redirection exclusion as --first.
+            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') && !rest[i + 1].starts_with('>')
+            {
+                let value = rest[i + 1];
+                find_args.last =
+                    Some(value.parse::<usize>().map_err(|_| {
+                        anyhow::anyhow!("--last requires an integer (got {value:?})")
+                    })?);
+                i += 1;
             } else {
                 find_args.last = Some(1);
             }
         } else if arg == "--exclude" {
-            if i + 1 < rest.len() {
-                find_args.exclude.push(rest[i + 1]);
-                i += 1;
-            }
+            find_args.exclude.push(required_pattern(rest, &mut i)?);
         } else if arg == "--lines" || arg == "-n" {
-            if i + 1 < rest.len()
-                && let Ok(n) = rest[i + 1].parse::<usize>()
+            // Same redirection exclusion: `--lines >out.txt` keeps
+            // the default line count and lets the `>` branch run.
+            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') && !rest[i + 1].starts_with('>')
             {
+                let value = rest[i + 1];
+                let n = value
+                    .parse::<usize>()
+                    .map_err(|_| anyhow::anyhow!("--lines requires an integer (got {value:?})"))?;
                 peek_opts.lines = n;
                 i += 1;
             }
@@ -1305,7 +1470,9 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> Result<(FindArgs<'a>, PeekOptions)> 
             peek_opts.words = true;
         } else if arg == "--quiet" || arg == "-q" {
             peek_opts.quiet = true;
-        } else if !arg.starts_with('-') {
+        } else if arg.starts_with('-') {
+            anyhow::bail!("unknown flag: {arg}");
+        } else {
             find_args.queries.push(arg);
         }
         i += 1;
@@ -1316,6 +1483,16 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> Result<(FindArgs<'a>, PeekOptions)> 
     if peek_opts.lines == 0 {
         anyhow::bail!("--lines must be at least 1 (got 0)");
     }
+    // The CLI declares both pairs conflicts_with (cli.rs); accepting
+    // both would silently render only one member (#3890).
+    anyhow::ensure!(
+        !(peek_opts.head_only && peek_opts.tail_only),
+        "--head-only and --tail-only cannot be used together"
+    );
+    anyhow::ensure!(
+        !(peek_opts.chars && peek_opts.words),
+        "--chars and --words cannot be used together"
+    );
     Ok((find_args, peek_opts))
 }
 
@@ -1541,6 +1718,123 @@ fn print_peek_words(
 mod tests {
     use super::*;
 
+    #[derive(Default)]
+    struct RecordingGetter {
+        calls: Vec<(String, Option<String>)>,
+    }
+
+    impl MatchGetter for RecordingGetter {
+        async fn get_match(&mut self, name: &str, destination: Option<&str>) -> Result<()> {
+            self.calls
+                .push((name.to_owned(), destination.map(str::to_owned)));
+            Ok(())
+        }
+    }
+
+    fn test_find_match(name: &str) -> (String, FindMatch) {
+        (
+            "query".to_owned(),
+            FindMatch {
+                hash: iroh_blobs::Hash::from_bytes([0; 32]),
+                name: name.to_owned(),
+                kind: MatchKind::Exact,
+                is_hash_match: false,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn test_interactive_dir_fetches_each_selected_match_once_to_its_file() {
+        let matches = vec![test_find_match("one.txt"), test_find_match("two.txt")];
+
+        let mut single = RecordingGetter::default();
+        output_selected_matches_to_dir(&mut single, &[1], &matches, "downloads").await;
+        assert_eq!(
+            single.calls,
+            vec![("one.txt".to_owned(), Some("downloads/one.txt".to_owned()))]
+        );
+
+        let mut multiple = RecordingGetter::default();
+        output_selected_matches_to_dir(&mut multiple, &[1, 2], &matches, "downloads").await;
+        assert_eq!(
+            multiple.calls,
+            vec![
+                ("one.txt".to_owned(), Some("downloads/one.txt".to_owned())),
+                ("two.txt".to_owned(), Some("downloads/two.txt".to_owned())),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_interactive_dir_confines_traversal_to_final_component() {
+        // #2307: match-derived directory destinations must never escape the
+        // requested directory; the shared final-component ruling applies.
+        let cases = [
+            ("../victim.txt", "downloads/victim.txt"),
+            ("../../x", "downloads/x"),
+            ("a/../../y", "downloads/y"),
+            ("/tmp/x", "downloads/x"),
+            ("/absolute.txt", "downloads/absolute.txt"),
+            ("plain.txt", "downloads/plain.txt"),
+            ("my file.txt", "downloads/my file.txt"),
+            ("ünïcode_ß.txt", "downloads/ünïcode_ß.txt"),
+        ];
+        for (name, expected) in cases {
+            let matches = vec![test_find_match(name)];
+            let mut rec = RecordingGetter::default();
+            output_selected_matches_to_dir(&mut rec, &[1], &matches, "downloads").await;
+            assert_eq!(
+                rec.calls,
+                vec![(name.to_owned(), Some(expected.to_owned()))],
+                "name {name:?} must be confined to its final component"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_interactive_dir_refuses_names_without_final_component() {
+        // Names with no final component are refused and nothing is written.
+        for name in ["", "..", "/", "trailing/"] {
+            let matches = vec![test_find_match(name)];
+            let mut rec = RecordingGetter::default();
+            output_selected_matches_to_dir(&mut rec, &[1], &matches, "downloads").await;
+            assert!(
+                rec.calls.is_empty(),
+                "name {name:?} must refuse without writing"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_interactive_dir_refuses_basename_collisions_without_partial_writes() {
+        // Distinct matches reducing to the same final component are refused
+        // as a batch before any write (consistent with #2178 CLI batching).
+        let matches = vec![test_find_match("a/same.txt"), test_find_match("b/same.txt")];
+        let mut rec = RecordingGetter::default();
+        output_selected_matches_to_dir(&mut rec, &[1, 2], &matches, "downloads").await;
+        assert!(
+            rec.calls.is_empty(),
+            "colliding basenames must write nothing, got {:?}",
+            rec.calls
+        );
+    }
+
+    #[tokio::test]
+    async fn test_interactive_dir_duplicate_identical_selections_fetch_once() {
+        // Overlapping queries can list the same (hash, name) match twice;
+        // selecting both entries is one download, not a basename collision.
+        let matches = vec![test_find_match("report.txt"), test_find_match("report.txt")];
+        let mut rec = RecordingGetter::default();
+        output_selected_matches_to_dir(&mut rec, &[1, 2], &matches, "downloads").await;
+        assert_eq!(
+            rec.calls,
+            vec![(
+                "report.txt".to_owned(),
+                Some("downloads/report.txt".to_owned())
+            )]
+        );
+    }
+
     #[test]
     fn test_substitute_heredoc_content_midline() {
         // Supported form: the placeholder sits before the name, and
@@ -1611,14 +1905,63 @@ mod tests {
             parse_find_args(&["q", "--last"], "tag").unwrap().last,
             Some(1)
         );
-        assert_eq!(
-            parse_find_args(&["q", "--first", "abc"], "tag")
-                .unwrap()
-                .first,
-            Some(1)
-        );
+        assert_eq!(parse_peek_args(&["q", "--first"]).unwrap().0.first, Some(1));
+        assert_eq!(parse_peek_args(&["q", "--last"]).unwrap().0.last, Some(1));
         // Peek without --lines keeps the default of 5.
         assert_eq!(parse_peek_args(&["q"]).unwrap().1.lines, 5);
+    }
+
+    #[test]
+    fn test_parse_rejects_nonnumeric_result_limit_values() {
+        for (flag, value) in [("--first", "two"), ("--last", "abc")] {
+            let find_error = parse_find_args(&["q", flag, value], "tag")
+                .err()
+                .expect("find parser should reject a nonnumeric limit");
+            assert!(find_error.to_string().contains(flag));
+            assert!(find_error.to_string().contains(value));
+
+            let peek_error = parse_peek_args(&["q", flag, value])
+                .err()
+                .expect("peek parser should reject a nonnumeric limit");
+            assert!(peek_error.to_string().contains(flag));
+            assert!(peek_error.to_string().contains(value));
+        }
+
+        for flag in ["--lines", "-n"] {
+            let error = parse_peek_args(&["q", flag, "abc"])
+                .err()
+                .expect("peek parser should reject a nonnumeric line count");
+            assert!(error.to_string().contains("abc"));
+        }
+    }
+
+    #[test]
+    fn test_parse_peek_args_with_output_file_redirect() {
+        // #4161: peek learns the `>file` redirect find already has.
+        let (args, _) = parse_peek_args(&["q", ">out.txt"]).unwrap();
+        assert_eq!(args.queries, vec!["q"]);
+        assert!(args.to_file);
+        assert_eq!(args.output_file, Some("out.txt"));
+
+        // A redirect after an optional numeric flag is not its value:
+        // the flag keeps its default and the redirect still applies.
+        let (args, _) = parse_peek_args(&["q", "--first", ">out.txt"]).unwrap();
+        assert_eq!(args.first, Some(1));
+        assert_eq!(args.output_file, Some("out.txt"));
+
+        let (args, _) = parse_peek_args(&["q", "--last", ">out.txt"]).unwrap();
+        assert_eq!(args.last, Some(1));
+        assert_eq!(args.output_file, Some("out.txt"));
+
+        let (args, opts) = parse_peek_args(&["q", "--lines", ">out.txt"]).unwrap();
+        assert_eq!(opts.lines, 5);
+        assert_eq!(args.output_file, Some("out.txt"));
+
+        // A real numeric value still parses before the redirect.
+        let (args, opts) = parse_peek_args(&["q", "--lines", "3", ">out.txt"]).unwrap();
+        assert_eq!(opts.lines, 3);
+        assert_eq!(args.queries, vec!["q"]);
+        assert_eq!(args.output_file, Some("out.txt"));
     }
 
     fn test_parse_find_args_basic() {
@@ -1628,6 +1971,93 @@ mod tests {
         assert!(!args.prefer_name);
         assert!(!args.all);
         assert_eq!(args.format, "union");
+    }
+
+    #[test]
+    fn test_find_rejects_malformed_flags_and_redirects() {
+        for (tokens, expected) in [
+            (vec!["report", "--bogus"], "--bogus"),
+            (vec!["report", "--fist", "2"], "--fist"),
+            (vec!["report", "--dir"], "--dir"),
+            (vec!["report", "--exclude"], "--exclude"),
+            (vec!["report", "--format"], "--format"),
+            (vec!["report", "-o"], "-o"),
+            (vec!["report", "--output", "--all"], "--output"),
+            (vec!["report", ">"], ">"),
+        ] {
+            let error = parse_find_args(&tokens, "union").err().unwrap().to_string();
+            assert!(error.contains(expected), "{tokens:?}: {error}");
+        }
+        // Invalid --format values are carried as format_error for the
+        // handlers to report (main's 3488a51ac design, which superseded
+        // this branch's original immediate parse error on rebase).
+        let args = parse_find_args(&["report", "--format", "yaml"], "union").unwrap();
+        assert_eq!(args.format_error, Some("yaml"));
+        assert_eq!(
+            parse_find_args(&["report", "-o", "out"], "union")
+                .unwrap()
+                .output_file,
+            Some("out")
+        );
+        assert_eq!(
+            parse_find_args(&["report", "--exclude", "-draft"], "union")
+                .unwrap()
+                .exclude,
+            vec!["-draft"]
+        );
+        // A double-dash option is not swallowed as an exclusion pattern;
+        // single-dash patterns remain supported (#2274).
+        for tokens in [
+            vec!["report", "--dir", "--all"],
+            vec!["report", "--format", "--tag"],
+            vec!["report", "--exclude", "--count"],
+        ] {
+            let error = parse_find_args(&tokens, "union").err().unwrap().to_string();
+            assert!(error.contains("requires a value"), "{tokens:?}: {error}");
+            assert!(!error.contains(tokens[2]), "{tokens:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn test_peek_rejects_malformed_flags_and_missing_values() {
+        for (tokens, expected) in [
+            (vec!["report", "--bogus"], "--bogus"),
+            (vec!["report", "--fist", "2"], "--fist"),
+            (vec!["report", "-o"], "-o"),
+            (vec!["report", "--output"], "--output"),
+            (vec!["report", "--exclude"], "--exclude"),
+            (vec!["report", "--lines", "wrong"], "wrong"),
+            (vec!["report", ">"], ">"),
+        ] {
+            let error = parse_peek_args(&tokens).err().unwrap().to_string();
+            assert!(error.contains(expected), "{tokens:?}: {error}");
+        }
+        // A bare --lines/-n keeps the default line count, matching the
+        // merged-first set's bare --first/--last default design (#4072).
+        assert_eq!(
+            parse_peek_args(&["report", "--exclude", "-draft"])
+                .unwrap()
+                .0
+                .exclude,
+            vec!["-draft"]
+        );
+        for tokens in [
+            vec!["report", "-o", "--quiet"],
+            vec!["report", "--output", "--quiet"],
+            vec!["report", "--exclude", "--all"],
+        ] {
+            let error = parse_peek_args(&tokens).err().unwrap().to_string();
+            assert!(error.contains("requires a value"), "{tokens:?}: {error}");
+            assert!(!error.contains(tokens[2]), "{tokens:?}: {error}");
+        }
+        assert_eq!(parse_peek_args(&["report", "--lines"]).unwrap().1.lines, 5);
+        assert_eq!(
+            parse_peek_args(&["report", "-n", "--quiet"])
+                .unwrap()
+                .1
+                .lines,
+            5
+        );
     }
 
     #[test]
@@ -1729,6 +2159,24 @@ mod tests {
 
         assert!(parse_find_args(&["query", "--first", "2"], "union").is_ok());
         assert!(parse_find_args(&["query", "--last", "3"], "union").is_ok());
+    }
+
+    #[test]
+    fn test_parse_find_args_first_before_redirection_keeps_default() {
+        // `--first >out.txt`: the redirection token is the output
+        // option, not the optional number (Codex P2 on PR #4072).
+        let args = parse_find_args(&["query", "--first", ">out.txt"], "union").unwrap();
+        assert_eq!(args.first, Some(1));
+        assert_eq!(args.output_file, Some("out.txt"));
+        assert!(args.to_file);
+    }
+
+    #[test]
+    fn test_parse_find_args_last_before_redirection_keeps_default() {
+        let args = parse_find_args(&["query", "--last", ">out.txt"], "union").unwrap();
+        assert_eq!(args.last, Some(1));
+        assert_eq!(args.output_file, Some("out.txt"));
+        assert!(args.to_file);
     }
 
     #[test]
@@ -1874,6 +2322,9 @@ mod tests {
         let rest = vec!["readme", "-o", "out.txt"];
         let (find_args, _) = parse_peek_args(&rest).unwrap();
         assert_eq!(find_args.output_file, Some("out.txt"));
+
+        let (find_args, _) = parse_peek_args(&["readme", "--output", "out.txt"]).unwrap();
+        assert_eq!(find_args.output_file, Some("out.txt"));
     }
 
     #[test]
@@ -1888,6 +2339,34 @@ mod tests {
 
         assert!(parse_peek_args(&["readme", "--first", "2"]).is_ok());
         assert!(parse_peek_args(&["readme", "--last", "3"]).is_ok());
+    }
+
+    #[test]
+    fn test_parse_peek_args_rejects_head_only_and_tail_only_together() {
+        let err = parse_peek_args(&["readme", "--head-only", "--tail-only"])
+            .err()
+            .expect("conflicting peek modes should be rejected");
+        assert_eq!(
+            err.to_string(),
+            "--head-only and --tail-only cannot be used together"
+        );
+
+        assert!(parse_peek_args(&["readme", "--head-only"]).is_ok());
+        assert!(parse_peek_args(&["readme", "--tail-only"]).is_ok());
+    }
+
+    #[test]
+    fn test_parse_peek_args_rejects_chars_and_words_together() {
+        let err = parse_peek_args(&["readme", "--chars", "--words"])
+            .err()
+            .expect("conflicting peek units should be rejected");
+        assert_eq!(
+            err.to_string(),
+            "--chars and --words cannot be used together"
+        );
+
+        assert!(parse_peek_args(&["readme", "--chars"]).is_ok());
+        assert!(parse_peek_args(&["readme", "--words"]).is_ok());
     }
 
     #[test]

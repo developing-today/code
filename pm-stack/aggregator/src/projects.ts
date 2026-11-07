@@ -10,8 +10,9 @@
 // whose fetch is injectable for tests), shared by the collector and
 // the live source so the wire shape is parsed exactly once.
 import type { GhItem, OrchestrationSection, ProjectAudit, ProjectPoolItem, RefKey } from "./model.ts";
-import { refKey } from "./model.ts";
+import { isValidRef, refKey } from "./model.ts";
 import { isRecord, isTimestampNotFuture } from "./validate.ts";
+import { workItemRefSet } from "./work-items.ts";
 
 export const PROJECT_ID = "PVT_kwDOAZNvF84Bouay";
 export const PROJECT_URL = "https://github.com/orgs/developing-today/projects/4";
@@ -40,8 +41,8 @@ export const PROJECT_QUERY = `query($id: ID!, $cursor: String) {
           databaseId
           type
           content {
-            ... on Issue { number title state url repository { nameWithOwner } updatedAt author { login } labels(first: 20) { nodes { name } } parent { number url repository { nameWithOwner } } blockedBy(first: 50) { nodes { number url repository { nameWithOwner } } } blocking(first: 50) { nodes { number url repository { nameWithOwner } } } }
-            ... on PullRequest { number title state url repository { nameWithOwner } updatedAt author { login } isDraft }
+            ... on Issue { number title state url repository { nameWithOwner } updatedAt closedAt author { login } labels(first: 20) { nodes { name } } parent { number url repository { nameWithOwner } } blockedBy(first: 50) { nodes { number url repository { nameWithOwner } } } blocking(first: 50) { nodes { number url repository { nameWithOwner } } } }
+            ... on PullRequest { number title state url repository { nameWithOwner } updatedAt mergedAt closedAt author { login } isDraft }
             ... on DraftIssue { title }
           }
           fieldValues(first: 100) {
@@ -73,6 +74,8 @@ interface GqlContent {
   url?: string;
   repository?: { nameWithOwner?: string } | null;
   updatedAt?: string;
+  closedAt?: string;
+  mergedAt?: string;
   author?: { login?: string } | null;
   isDraft?: boolean;
   labels?: { nodes?: { name?: string }[] } | null;
@@ -84,7 +87,9 @@ interface GqlContent {
 }
 interface GqlItem {
   id?: string;
-  databaseId?: number;
+  // ProjectV2Item.databaseId is a nullable Int in the GraphQL schema:
+  // null is a valid upstream shape, normalized away in parseProjectItems.
+  databaseId?: number | null;
   type?: string;
   content?: GqlContent | null;
   fieldValues?: { nodes?: (GqlFieldValue | null)[] } | null;
@@ -161,8 +166,11 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
     const blocks = !isPr ? (c.blocking?.nodes ?? []).map(edgeRef).filter((x): x is RefKey => x !== null) : [];
     out.push({
       id: item.id,
-      databaseId: item.databaseId,
-      url: projectItemUrl(item.databaseId, projectUrl),
+      // Normalize the nullable GraphQL databaseId to the model's optional
+      // number: null becomes absent, so a valid item is never dropped by
+      // isProjectPoolItem for an upstream null (Codex P2 on PR #4181).
+      databaseId: item.databaseId ?? undefined,
+      url: projectItemUrl(item.databaseId ?? undefined, projectUrl),
       projectUrl,
       ref: refKey({ repo, number: c.number }),
       repo,
@@ -175,6 +183,8 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
       labels: (c.labels?.nodes ?? []).map((l) => l?.name).filter((x): x is string => typeof x === "string"),
       author: c.author?.login ?? "",
       updatedAt: c.updatedAt ?? "",
+      ...(c.closedAt ? { closedAt: c.closedAt } : {}),
+      ...(c.mergedAt ? { mergedAt: c.mergedAt } : {}),
       status: singleSelect(item, "Status"),
       area: singleSelect(item, "Area"),
       horizon: singleSelect(item, "Horizon"),
@@ -326,6 +336,7 @@ export async function fetchProjectSnapshot(
   const auditItems: GqlItem[] = [];
   let firstPage: unknown;
   let cursor: string | null = null;
+  let lastPageInfo: ReturnType<typeof projectPageInfo> | null = null;
   for (let page = 0; page < 10; page++) {
     const res = await fetchFn("https://api.github.com/graphql", {
       method: "POST",
@@ -346,7 +357,9 @@ export async function fetchProjectSnapshot(
     parsedItems.push(...parseProjectItems(json));
     const info = projectPageInfo(json);
     if (!info.hasNextPage) {
-      if (auditItems.length !== info.totalCount) {
+      if (auditItems.length < info.totalCount) {
+        // Shortfall only: overlapping pages can over-deliver nodes, but
+        // fewer nodes than the board total means the export lost items.
         throw new Error(`github GraphQL project export incomplete (${auditItems.length}/${info.totalCount} items)`);
       }
       return {
@@ -355,7 +368,7 @@ export async function fetchProjectSnapshot(
       };
     }
     if (!info.endCursor || info.endCursor === cursor) throw new Error("github GraphQL project pagination did not advance");
-    if (page === 9) throw new Error("github GraphQL project exceeds the 1,000-item export limit");
+    if (page === 9) throw new Error(`github project pool truncated at 10-page cap (totalCount: ${info.totalCount})`);
     cursor = info.endCursor;
   }
   throw new Error("github GraphQL project pagination ended unexpectedly");
@@ -372,9 +385,9 @@ export async function fetchProjectPool(
 
 /** Structural check for a pool entry in a feed (collector + live share
  * it, and the feed.ts section gate delegates to it — the two sides can
- * never drift). Edge fields (#2399) are absence-friendly but
- * shape-strict when present: a malformed edge fails the item, never
- * the section. */
+ * never drift). Edge fields (#2399) are absence-friendly, but every
+ * present ref must satisfy the shared isValidRef rule: a malformed edge
+ * fails the item, never the section. */
 export function isProjectPoolItem(v: unknown): v is ProjectPoolItem {
   if (typeof v !== "object" || v === null) return false;
   const p = v as Partial<ProjectPoolItem>;
@@ -383,13 +396,35 @@ export function isProjectPoolItem(v: unknown): v is ProjectPoolItem {
     typeof p.ref === "string" &&
     typeof p.repo === "string" &&
     typeof p.number === "number" &&
+    Number.isInteger(p.number) &&
+    p.number > 0 &&
     typeof p.issueUrl === "string" &&
     typeof p.title === "string" &&
+    // url/projectUrl/contentKind and the Project single-select fields are
+    // required by the model and dereferenced by board/item renders; the
+    // gate must own their shapes (#2418).
+    typeof p.url === "string" &&
+    typeof p.projectUrl === "string" &&
+    (p.contentKind === "issue" || p.contentKind === "pr") &&
+    (p.status === null || typeof p.status === "string") &&
+    (p.area === null || typeof p.area === "string") &&
+    (p.horizon === null || typeof p.horizon === "string") &&
+    (p.kind === null || typeof p.kind === "string") &&
+    // Optional fields stay absence-friendly, but a present value must
+    // match its declared type: labels feeds .map/.includes in renders,
+    // so a string or non-string array crashes instead of dropping (#2418).
+    (p.databaseId === undefined || typeof p.databaseId === "number") &&
+    (p.draft === undefined || typeof p.draft === "boolean") &&
+    (p.labels === undefined || (Array.isArray(p.labels) && p.labels.every((x) => typeof x === "string"))) &&
+    (p.author === undefined || typeof p.author === "string") &&
+    (p.updatedAt === undefined || typeof p.updatedAt === "string") &&
+    (p.closedAt === undefined || typeof p.closedAt === "string") &&
+    (p.mergedAt === undefined || typeof p.mergedAt === "string") &&
     (p.state === "open" || p.state === "closed" || p.state === "merged") &&
-    (p.parentRef === undefined || typeof p.parentRef === "string") &&
-    (p.epicRef === undefined || typeof p.epicRef === "string") &&
-    (p.blockedBy === undefined || (Array.isArray(p.blockedBy) && p.blockedBy.every((x) => typeof x === "string"))) &&
-    (p.blocks === undefined || (Array.isArray(p.blocks) && p.blocks.every((x) => typeof x === "string")))
+    (p.parentRef === undefined || isValidRef(p.parentRef)) &&
+    (p.epicRef === undefined || isValidRef(p.epicRef)) &&
+    (p.blockedBy === undefined || (Array.isArray(p.blockedBy) && p.blockedBy.every(isValidRef))) &&
+    (p.blocks === undefined || (Array.isArray(p.blocks) && p.blocks.every(isValidRef)))
   );
 }
 
@@ -426,23 +461,21 @@ export type DerivedProjectState = "Todo" | "In Progress" | "Done";
  * therefore disagrees with an "In Progress" derivation, and the
  * /projects page shows that disagreement rather than hiding it.
  */
-export function derivedProjectState(p: ProjectPoolItem, section?: OrchestrationSection | null): DerivedProjectState {
+export function derivedProjectState(
+  p: ProjectPoolItem,
+  section?: OrchestrationSection | null,
+  additionalInProgressRefs?: ReadonlySet<RefKey>,
+): DerivedProjectState {
   if (p.state === "closed" || p.state === "merged") return "Done";
-  if (section && refInOrchestration(p.ref, section)) return "In Progress";
+  if ((section && refInOrchestration(p.ref, section)) || additionalInProgressRefs?.has(p.ref)) return "In Progress";
   return "Todo";
 }
 
 function refInOrchestration(ref: RefKey, section: OrchestrationSection): boolean {
-  for (const t of [...section.tiers.needsDrew, ...section.tiers.needsOrchestrator]) {
-    if (t.ref === ref) return true;
-  }
-  for (const g of section.goals) {
-    for (const t of g.linedUp) if (t.ref === ref) return true;
-  }
-  for (const d of section.dependencies) {
-    if (d.ref === ref || d.taskRef === ref) return true;
-  }
-  return false;
+  // #1206: the canonical projection's ref set — one assembly answers
+  // "does this ref appear in the section" for every page, instead of
+  // this module rescanning tiers, goals, and dependencies itself.
+  return workItemRefSet(section).has(ref);
 }
 
 /** The disagreement to display, or null when both sides agree (or the
@@ -450,8 +483,9 @@ function refInOrchestration(ref: RefKey, section: OrchestrationSection): boolean
 export function projectDisagreement(
   p: ProjectPoolItem,
   section?: OrchestrationSection | null,
+  additionalInProgressRefs?: ReadonlySet<RefKey>,
 ): { project: string; derived: DerivedProjectState } | null {
   if (!p.status) return null;
-  const derived = derivedProjectState(p, section);
+  const derived = derivedProjectState(p, section, additionalInProgressRefs);
   return p.status === derived ? null : { project: p.status, derived };
 }

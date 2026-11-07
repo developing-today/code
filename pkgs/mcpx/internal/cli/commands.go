@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
 	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
 	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
@@ -459,6 +460,8 @@ func (a *App) CmdBatch(ctx context.Context, args []string) error {
 	file := fs.String("file", "", "path to JSON file containing calls")
 	parallel := fs.Bool("parallel", false, "execute calls concurrently")
 	stopOnError := fs.Bool("stop-on-error", true, "stop on first error")
+	safePrefix := fs.Bool("safe-prefix", false,
+		"execute only the safe prefix: stop before the first destructive-annotated call and report the rest skipped (#1927)")
 	if err := parseFlags(a, fs, args); err != nil {
 		return err
 	}
@@ -497,6 +500,7 @@ func (a *App) CmdBatch(ctx context.Context, args []string) error {
 			Calls       []BatchCallItem `json:"calls"`
 			Parallel    *bool           `json:"parallel"`
 			StopOnError *bool           `json:"stopOnError"`
+			SafePrefix  *bool           `json:"safePrefix"`
 		}
 		if err := json.Unmarshal(data, &obj); err != nil {
 			return fmt.Errorf("parsing batch JSON: %w", err)
@@ -508,13 +512,16 @@ func (a *App) CmdBatch(ctx context.Context, args []string) error {
 		if obj.StopOnError != nil && *stopOnError {
 			*stopOnError = *obj.StopOnError
 		}
+		if obj.SafePrefix != nil && !*safePrefix {
+			*safePrefix = *obj.SafePrefix
+		}
 	}
 
 	c, err := a.ensure(ctx)
 	if err != nil {
 		return err
 	}
-	resp, err := c.Batch(ctx, calls, *stopOnError, *parallel, a.callContext(*session, *session))
+	resp, err := c.Batch(ctx, calls, *stopOnError, *parallel, *safePrefix, a.callContext(*session, *session))
 	if err != nil {
 		if a.JSON {
 			a.outCallFailure(err)
@@ -649,13 +656,16 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	noLauncher := fs.Bool("no-launcher", false,
 		"run the script with no launcher: no globals, no capture, no wrapper")
 	typecheck := fs.String("typecheck", "",
-		"check the program before running it: off, on, strict")
+		"check the program before running it: off, types, strict (on aliases types)")
 	promptFlag := fs.String("prompt", "",
 		"synthesize and execute a script from a natural language prompt")
 	validateFlag := fs.Bool("validate", false,
 		"validate script structure, tool signatures, and syntax without executing")
 	repairFlag := fs.Bool("repair", false,
 		"automatically attempt script repair using configured model if execution fails")
+	dryRunFlag := fs.Bool("dry-run", false,
+		"run the script with every tool call intercepted (#1927): nothing executes, "+
+			"each call is reported and answered with a synthetic result")
 
 	allowRepeat := newRepeatable()
 	fs.Var(allowRepeat, "allow-repeat",
@@ -840,7 +850,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if elsewhere {
 		return a.execOnDaemon(ctx, c, fs, inline, ns, sessionKey, eo,
 			execRemoteFlags{timeout: *timeout, runtime: *rt, permissions: *perms,
-				export: *export, session: sessionKey, shape: shape})
+				export: *export, session: sessionKey, shape: shape, dryRun: *dryRunFlag})
 	}
 	// This process is about to start the script, so it checks first. The
 	// daemon would refuse a script it was asked to run; this one is not asked.
@@ -867,6 +877,21 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if gerr != nil {
 		// Editor convenience only; never fail a run for it.
 		globalsSrc = ""
+	}
+	// The client a script gets is the client of its language (#1917 Phase
+	// 2). The language is only known once the file is resolved, which
+	// happens below; fetching the Python pair here is one local round trip
+	// and never fails the run -- a daemon without the route leaves clients
+	// empty and the run as it was.
+	clients := map[string]runner.Client{}
+	if py, pyerr := c.ClientModuleLanguage(ctx, codegen.Python.Name, ns, "", a.Profile); pyerr == nil && py != clientSrc {
+		// A daemon from before #1917 Phase 2 ignores ?language and answers
+		// with the TypeScript module; installing that as mcpx_client.py
+		// would be worse than no client at all, so an identical body means
+		// "this daemon has no Python client" and the run keeps the raw
+		// notice instead.
+		pyGlobals, _ := c.GlobalsLanguage(ctx, codegen.Python.Name, ns, a.Profile)
+		clients[codegen.Python.Name] = runner.Client{Module: py, Globals: pyGlobals}
 	}
 
 	// --runtime is hand-written, so the registry's script.runtime only
@@ -968,6 +993,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		Stdout:         a.stdoutOverride,
 		ClientSource:   clientSrc,
 		GlobalsSource:  globalsSrc,
+		Clients:        clients,
 		CaptureConsole: shape.captureConsole,
 		Runtime:        runtimePref,
 		Interpreter:    interpreterPref,
@@ -1037,6 +1063,9 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	opts.TypeCheck = shape.typecheck
 	opts.Imports = shape.imports
 	opts.ImportsOnDynamic = shape.importsOnDynamic
+	opts.ImportsOnMissing = shape.importsOnMissing
+	opts.ImportsCrossProject = shape.importsCrossProject
+	opts.ImportsNetwork = shape.importsNetwork
 	opts.Launcher, opts.LauncherName = shape.launcher, shape.launcherName
 	opts.PlaceholderFiles = PlaceholderFiles()
 	opts.AllowRepeat = shape.allowRepeat
@@ -1117,11 +1146,17 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		// Only worth failing for when the caller actually asked for files.
 		return serr
 	}
+	depsOpts, derr := a.depsOptions(mustGetwd(), opts.File)
+	if derr != nil {
+		return derr
+	}
 	svc := a.localService(store, c.Socket())
 	wire := execsvc.Options{
 		Session:   sessionKey,
 		Output:    eo.Output,
 		Artifacts: eo.artifactOptions(mustGetwd()),
+		Deps:      depsOpts,
+		DryRun:    *dryRunFlag,
 	}
 	if wire.Artifacts != nil {
 		wire.Capabilities = []string{execsvc.CapabilityArtifacts}
@@ -2279,6 +2314,9 @@ type scriptShape struct {
 	env                        map[string]string
 	typecheck                  string
 	imports, importsOnDynamic  string
+	importsOnMissing           string
+	importsCrossProject        string
+	importsNetwork             string
 	launcher, launcherName     string
 	allowRepeat                []string
 	captureConsole             bool
@@ -2384,15 +2422,17 @@ func (a *App) resolveScriptShape(cfg *config.Config, f scriptFlags) (scriptShape
 	sh.onSuccess = cfg.ScriptPhase("onSuccess", sh.hooks.phaseValues("script.onSuccess", f.onSuccess))
 	sh.onError = cfg.ScriptPhase("onError", sh.hooks.phaseValues("script.onError", f.onError))
 
-	// Read from the resolved set, so the value is whichever layer won: the
-	// short --typecheck spelling, the generated --script-typecheck, a
-	// variable, or the config file.
-	sh.typecheck = firstNonEmpty(f.typecheck, a.Settings().String("script.typecheck"))
+	// Read the canonical setting after resolution so legacy path, variable,
+	// and flag spellings all pass through the same value normalization.
+	sh.typecheck = a.Settings().String("script.check")
 
 	// No short flag spelling: the registry value is the whole story, from
 	// the generated --script-imports flag, a variable, or the config file.
 	sh.imports = a.Settings().String("script.imports")
 	sh.importsOnDynamic = a.Settings().String("script.importsOnDynamic")
+	sh.importsOnMissing = a.Settings().String("script.importsOnMissing")
+	sh.importsCrossProject = a.Settings().String("script.importsCrossProject")
+	sh.importsNetwork = a.Settings().String("script.importsNetwork")
 
 	if f.noLauncher && f.launcher != "" {
 		return sh, errors.New("--launcher and --no-launcher contradict each other; " +

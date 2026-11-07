@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   attentionSorted,
   buildAttention,
@@ -23,10 +25,14 @@ import {
   type BoardItem,
   type GhItem,
   type ProvenanceDetail,
+  type QuotaView,
   type RefKey,
   type RoadmapRow,
   type SessionFeedEntry,
 } from "../src/model.ts";
+import type { HealthView } from "../src/health.ts";
+import type { QueueView } from "../src/queue-view.ts";
+import type { AuditEvent } from "../src/events.ts";
 import {
   FIXTURE_ATTENTION,
   FIXTURE_BOARD,
@@ -42,6 +48,8 @@ import {
   renderRoadmap,
   renderSessions,
   renderToday,
+  renderTodayBody,
+  renderTodayShell,
 } from "../src/render.ts";
 
 const items = new Map(FIXTURE_ITEMS.map((i) => [i.ref, i]));
@@ -56,6 +64,14 @@ describe("ref parsing", () => {
       "see https://github.com/developing-today/code/pull/752 and https://github.com/dezren39/nix/issues/501",
     );
     expect(refs.sort()).toEqual(["developing-today/code#752", "dezren39/nix#501"].sort());
+  });
+  test("skips URLs with unsafe numbers while keeping valid refs", () => {
+    const refs = refsInText(
+      "bad https://github.com/developing-today/code/issues/99999999999999999999 " +
+        "bad https://github.com/developing-today/code/pull/9007199254740992 " +
+        "good https://github.com/developing-today/code/issues/123",
+    );
+    expect(refs).toEqual(["developing-today/code#123"]);
   });
   test("refUrl builds issue vs pr paths", () => {
     expect(refUrl("developing-today/code#752", "pr")).toBe("https://github.com/developing-today/code/pull/752");
@@ -198,6 +214,9 @@ describe("horizon calendar-date validation (#1628)", () => {
     expect(ymdLabel("2026-13-15")).toBe("2026-13-15");
     expect(ymdLabel("2026-02-30")).toBe("2026-02-30");
     expect(ymdLabel("2026-10-24")).toBe("Sat Oct 24");
+    expect(ymdLabel("2026-10-25xyz")).toBe("Sun Oct 25");
+    expect(ymdLabel("2026-10-25 (today)")).toBe("Sun Oct 25");
+    expect(ymdLabel("2026-10-25T99")).toBe("Sun Oct 25");
     expect(monthLabel("2026-13")).toBe("2026-13");
     expect(monthLabel("2026-00")).toBe("2026-00");
     expect(monthLabel("2026-10")).toBe("October 2026");
@@ -275,7 +294,6 @@ describe("render smoke (fixtures)", () => {
       item.title,
       item.id,
       item.links,
-      item.notes,
       await src.items(refs),
       await src.comments(refs),
       src.provenance(),
@@ -283,6 +301,53 @@ describe("render smoke (fixtures)", () => {
     expect(html).toContain("Linked issues / PRs");
     expect(html).toContain("Activity stream");
     expect(html).toContain("developing-today/openchamber#210");
+    expect(html).not.toContain("Planning notes");
+    expect(html).not.toContain("PM-stack design & phase plan");
+  });
+  test("item activity reuses shared events and discloses unknown freshness and partial coverage", async () => {
+    const src = fixtureSource();
+    const item = FIXTURE_BOARD.find((b) => b.id.includes("aggregator")) as BoardItem;
+    const event: AuditEvent = {
+      version: 2,
+      id: "event-1",
+      at: "2026-11-03T10:00:00.000Z",
+      ingestedAt: "2026-11-03T10:00:01.000Z",
+      actor: "watchdog",
+      kind: "watchdog-event",
+      ref: "developing-today/openchamber#210",
+      summary: "source stale",
+      attribution: { confidence: "unknown", asserted: false },
+      source: { identity: "watchdog" },
+      prevHash: "0".repeat(64),
+      hash: "f".repeat(64),
+    };
+    const refs = allRefs([item]);
+    const html = renderItem(
+      item.title,
+      item.id,
+      item.links,
+      await src.items(refs),
+      await src.comments(refs),
+      src.provenance(),
+      {
+        dashComments: [],
+        formRef: item.id,
+        formOpts: { identities: [] },
+        sessions: [],
+        activity: {
+          events: [event],
+          globalHref: "/events?ref=developing-today%2Fopenchamber%23210",
+          gaps: [],
+          coverage: [],
+        },
+      },
+    );
+    expect(html).toContain("watchdog-event");
+    expect(html).toContain("View these events in the global river");
+    expect(html).toContain("Freshness: unknown");
+    expect(html).toContain("not establish complete coverage");
+    expect(html).toContain("No known activity gaps");
+    expect(html).toContain('class="tblwrap"');
   });
   test("quota view renders pools and model-choice guidance", async () => {
     const src = fixtureSource();
@@ -290,6 +355,17 @@ describe("render smoke (fixtures)", () => {
     expect(html).toContain("Quota + throughput");
     expect(html).toContain("Headroom for a new session");
     expect(html).toContain("Antigravity");
+  });
+  test("fresh manual refresh renders a neutral refreshing marker", async () => {
+    const src = fixtureSource();
+    const html = renderQuota(await src.quota(), src.provenance(), await src.usage(), undefined, {
+      stale: false,
+      refreshing: true,
+      triggered: true,
+      lastTriggerAt: "2026-11-03T14:00:00.000Z",
+    });
+    expect(html).toContain("refreshing — the quota gatherer is running; reload for updated data");
+    expect(html).not.toContain("quotas were stale");
   });
   test("attention view renders the tiered needs-you page", async () => {
     const src = fixtureSource();
@@ -349,6 +425,148 @@ describe("freshness chips (#1138)", () => {
     expect(html).toContain("quota · live");
     expect(html).not.toContain("dns · fixtures");
     expect(html).not.toContain("registry · live");
+  });
+
+  test("Today surfaces QueueView next-up rows and marks stale queue inputs", async () => {
+    const src = fixtureSource();
+    const today = deriveToday(FIXTURE_BOARD, FIXTURE_ROADMAP, items, null);
+    const attention = buildAttention(await src.attention(), null);
+    const queue: QueueView = {
+      generatedAt: "2026-11-01T12:00:00Z",
+      inProgress: [],
+      blocked: [],
+      doneRecently: [],
+      nextUp: [
+        {
+          id: "next-1",
+          title: "Ship the dashboard",
+          repo: "developing-today/code",
+          status: "queued",
+          source: "project pool",
+          why: "today horizon pick",
+          blockedBy: ["developing-today/code#42"],
+        },
+      ],
+    };
+    const quota = await src.quota();
+    const coverage = await src.coverage();
+    const html = renderTodayBody(today, attention, quota, coverage, null, false, queue, true);
+    expect(html).toContain('class="today-next-up"');
+    expect(html).toContain("Ship the dashboard");
+    expect(html).toContain("today horizon pick");
+    expect(html).toContain("developing-today/code#42");
+    expect(html).toContain('class="badge stale" title="Queue inputs are stale or unavailable; see /health">stale inputs</span>');
+
+    const fresh = renderTodayBody(today, attention, quota, coverage, null, false, queue, false);
+    expect(fresh).not.toContain("stale inputs");
+  });
+
+  test("Today system strip shows cached health, freshness, quota errors, and fail-soft unknowns", async () => {
+    const src = fixtureSource();
+    const today = deriveToday(FIXTURE_BOARD, FIXTURE_ROADMAP, items, null);
+    const attention = buildAttention(await src.attention(), null);
+    const quota = {
+      pools: [],
+      burn: [],
+      choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] },
+      gatherer: {
+        generatedAt: "2026-11-01T00:00:00Z",
+        source: "test",
+        tickAt: null,
+        ok: true,
+        providers: [],
+      },
+    } satisfies QuotaView;
+    const healthy = {
+      status: "ok",
+      mode: "live",
+      degraded: false,
+      services: [
+        { def: { id: "kaneo", name: "Kaneo", probe: "http" }, state: "up", ok: true, detail: "HTTP 200" },
+        { def: { id: "pad", name: "Pad", probe: "http" }, state: "up", ok: true, detail: "HTTP 200" },
+        {
+          def: { id: "fleet-feed", name: "Fleet-feed collector", probe: "feed" },
+          state: "up",
+          ok: true,
+          detail: "fresh",
+        },
+        {
+          def: { id: "orchestration", name: "Orchestration pass", probe: "section" },
+          state: "up",
+          ok: true,
+          detail: "live",
+        },
+      ],
+      feed: { ageMs: 4 * 60_000 },
+      jobs: { orchestration: { state: "live", ageMs: 39 * 60_000 } },
+    } as unknown as HealthView;
+
+    const html = renderToday(today, attention, quota, await src.coverage(), src.provenance(), undefined, healthy);
+    expect(html).toContain("stack 2/2 up");
+    expect(html).toContain("feed 4m");
+    expect(html).toContain("orchestrator 39m");
+    expect(html).toContain("quota reads OK");
+    expect(html).toContain('href="/health"');
+    expect(html).toContain('href="/quota"');
+    // Phase C: page CSS is the external /assets/app.css build now; the
+    // 480px today-strip rule lives in its source (src/ui.css).
+    expect(html).toContain('href="/assets/app.css"');
+    expect(readFileSync(join(import.meta.dir, "..", "src", "ui.css"), "utf8")).toContain("@media (max-width: 480px)");
+    const fragmentBody = renderTodayBody(today, attention, quota, await src.coverage(), healthy);
+    expect(fragmentBody).toContain("stack 2/2 up");
+
+    const degraded = {
+      ...healthy,
+      degraded: true,
+      services: [
+        { def: { id: "kaneo", name: "Kaneo", probe: "http" }, state: "down", ok: false, detail: "connection refused" },
+        { def: { id: "pad", name: "Pad", probe: "http" }, state: "up", ok: true, detail: "HTTP 200" },
+      ],
+      feed: { ageMs: 16 * 60_000 },
+      jobs: { orchestration: { state: "stale", ageMs: 2 * 60 * 60_000 } },
+    } as unknown as HealthView;
+    const quotaErrors = {
+      ...quota,
+      gatherer: {
+        ...quota.gatherer,
+        ok: false,
+        providers: [{ state: "error" }, { state: "error" }],
+      },
+    } as unknown as QuotaView;
+    const degradedHtml = renderToday(
+      today,
+      attention,
+      quotaErrors,
+      await src.coverage(),
+      src.provenance(),
+      undefined,
+      degraded,
+    );
+    expect(degradedHtml).toContain("Kaneo down");
+    expect(degradedHtml).toContain("feed 16m");
+    expect(degradedHtml).toContain("orchestrator stale");
+    expect(degradedHtml).toContain("quota errors 2");
+    expect(degradedHtml).toMatch(/today-health-link warn[^>]*>feed 16m<\/a>/);
+
+    const unknownHtml = renderToday(
+      today,
+      attention,
+      quota,
+      await src.coverage(),
+      src.provenance(),
+      undefined,
+      null,
+      true,
+    );
+    expect(unknownHtml).toContain("stack unknown");
+    expect(unknownHtml).toContain("feed unknown");
+    expect(unknownHtml).toContain("orchestrator unknown");
+    expect(unknownHtml).toContain("quota unknown");
+    expect(unknownHtml).not.toContain("quota reads OK");
+
+    const shell = renderTodayShell(src.provenance(), undefined, healthy, quota);
+    expect(shell.indexOf('class="today-health-strip"')).toBeLessThan(shell.indexOf('class="skel"'));
+    expect(shell).toContain("stack 2/2 up");
   });
 
   test("no detail, no chips — older callers render as before", async () => {
