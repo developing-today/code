@@ -264,7 +264,7 @@ describe("fixture source", () => {
     expect(board.length).toBeGreaterThan(0);
     expect(rows.length).toBe(23); // the real Grist seed (grew 16 → 23 with the cluster/id rows)
     const crossRepo = board.find((b) => b.id.includes("aggregator"));
-    expect(crossRepo?.links.some((l) => l.ref.startsWith("developing-today/openchamber"))).toBe(true);
+    expect(crossRepo?.links.some((l) => l.ref.startsWith("developing-today-forks/openchamber"))).toBe(true);
   });
 });
 
@@ -300,7 +300,7 @@ describe("render smoke (fixtures)", () => {
     );
     expect(html).toContain("Linked issues / PRs");
     expect(html).toContain("Activity stream");
-    expect(html).toContain("developing-today/openchamber#210");
+    expect(html).toContain("developing-today-forks/openchamber#210");
     expect(html).not.toContain("Planning notes");
     expect(html).not.toContain("PM-stack design & phase plan");
   });
