@@ -94,6 +94,24 @@ service rehomed as `fleet serve search`) to the same rule, with its
 own pinned headers. Intentional changes land in both copies in the same PR;
 intentional header changes update the guard script in the same PR.
 
+## Workflow and composite-action validation (#5743)
+
+`.github/workflows/workflow-lint.yml` is a **basic-tier** check
+(job `basic: workflow lint`): on pull requests touching
+`.github/workflows/**` or `.github/actions/**`, and on merge
+groups, it runs `.github/scripts/check-workflows.sh`, which lints
+the complete workflow set with actionlint (shellcheck over `run:`
+blocks at `-S warning` when shellcheck is available, matching the
+mcpx leg) and shape-validates every `.github/actions/*/action.yml`
+(actionlint parses every file it is given as a workflow, so action
+metadata gets a dedicated validator in the same script). The mcpx
+actionlint leg stays scoped to the mcpx workflows (#1996); this is
+its generic counterpart. Shell contract tests live in
+`.github/scripts/check-workflows.test.sh` and run in the same job
+against valid and deliberately invalid workflow/action fixtures.
+actionlint is a pinned release binary, checksum-verified in the
+workflow before use.
+
 ## OpenCode metered-provider config guard
 
 `.github/workflows/opencode-config-guard.yml` runs the static guard and
@@ -139,6 +157,7 @@ main-breakage rate (issues labelled `main-broken`) proves out.
 | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
 | nix ci                                                         | — (PR and merge-group proxy check is in the dedicated workflow below)                               | proxy port fallbacks + full flake-check (formatting auto-fixed on main by the auto-format workflow) | schedule in nix-ci.yml                                           |
 | proxy-port-fallbacks                                           | `basic: proxy port fallbacks` on `pull_request` and `merge_group`                                   | — (main copy remains in nix-ci.yml)                                                                 | —                                                                |
+| workflow-lint | `basic: workflow lint` on `pull_request` (paths `.github/workflows/**`, `.github/actions/**`) and `merge_group` | — | — |
 | id                                                             | guard + affected-crate matrix (`id-pr-checks.txt`)                                                  | + full `nix flake check ./pkgs/id` job                                                              | schedule in id-check.yml + id-e2e-nightly.yml (full flake check) |
 | mcpx conformance                                               | spec-parity leg only (measured 28s exec, run 40801660942, 2026-10-29 — under the 5m fast-leg limit) | all conformance legs + records + spec-parity                                                        | — (main covers it)                                               |
 | id bench                                                       | — (removed)                                                                                         | yes                                                                                                 | —                                                                |

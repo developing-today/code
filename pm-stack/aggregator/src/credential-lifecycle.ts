@@ -1,4 +1,5 @@
 import type { QuotaCurrentEntry } from "./model.ts";
+import { isIsoDate } from "./validate.ts";
 
 export type CredentialLifecycleState =
   | "ok"
@@ -106,10 +107,9 @@ export function isCredentialLifecycleRow(value: unknown): value is CredentialLif
     typeof row.label === "string" &&
     typeof row.state === "string" &&
     states.includes(row.state as CredentialLifecycleState) &&
-    typeof row.measuredAt === "string" &&
+    isIsoDate(row.measuredAt) &&
     (row.credentialId === undefined || typeof row.credentialId === "string") &&
-    (row.expiresAt === undefined ||
-      (typeof row.expiresAt === "string" && Number.isFinite(Date.parse(row.expiresAt)))) &&
+    (row.expiresAt === undefined || isIsoDate(row.expiresAt)) &&
     (row.reason === undefined || typeof row.reason === "string") &&
     (row.userAction === undefined ||
       (typeof row.userAction === "object" &&

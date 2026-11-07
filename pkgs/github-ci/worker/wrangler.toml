@@ -1,0 +1,27 @@
+# github-ci Worker (#5693): the GitHub webhook receiver, re-homed off
+# the Supabase Edge Function of the same name. Deployed to the fleet
+# Cloudflare account. Dark until the #5693 cutover steps run: no
+# webhook points here until a repo-level dual-run webhook is added.
+#
+# Secrets (wrangler secret put; values never in this file):
+#   GITHUB_WEBHOOK_SECRET   HMAC gate; NEW value minted for this
+#                           Worker, vaulted in BWS by name
+#                           (cloudflare.github-ci-webhook-secret).
+#                           The org/App flip rotates again (#5693).
+#   TURSO_PLATFORM_TOKEN    turso.fleet-platform-rw-token (ci_events)
+#   TURSO_QUEUE_TOKEN       turso.fleet-queue-rw-token (agent events,
+#                           snapshots, watermarks)
+name = "github-ci"
+main = "src/index.ts"
+compatibility_date = "2025-09-15"
+workers_dev = true
+
+[vars]
+TURSO_PLATFORM_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io"
+TURSO_QUEUE_URL = "https://fleet-queue-dezren39.aws-us-east-1.turso.io"
+# EVENTS_BROKER_URL is intentionally unset: the queue broker
+# (/events-append, #5690) listens on the tailnet only, which a Worker
+# cannot reach. When a public broker route exists, set this var and
+# the Worker POSTs there instead of writing the sink table directly;
+# until then it performs the sink write itself (the exact INSERT the
+# broker's /events-append verb and the Edge Function's turso sink do).

@@ -30,6 +30,18 @@
 //! record execution, health aggregation). Every deviation from the
 //! PG behavior is listed in the cutover runbook.
 //!
+//! agent.events (#5690): the PG stream's queue-transition writers
+//! are this backend's `event()` calls (same dispatch, same database
+//! as the task write — the closest libSQL gets to the PG RPCs'
+//! single-transaction coupling; see doc/fleet/agent-events-turso.md
+//! for the full writer/reader inventory and the coupling verdict).
+//! The non-queue writers (github-ci webhooks, fleet-fetch) and the
+//! stream's consumers get broker verbs here: /events-append,
+//! /events-seen (the event_seen ready-condition primitive),
+//! /events-count (observability + health), /events-prune (the
+//! prune_events port). All of it exists only on this backend; the
+//! Postgres dispatch is untouched.
+//!
 //! Atomicity: libSQL is single-writer. A claim is ONE conditional
 //! UPDATE whose WHERE clause re-checks claimability (status in
 //! queued/parked with a due not_before, attempts left) against the
@@ -354,7 +366,7 @@ impl Clone for Arg {
     }
 }
 
-const SCHEMA: [&str; 10] = [
+const SCHEMA: [&str; 12] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, title TEXT, body TEXT, \
@@ -400,6 +412,8 @@ const SCHEMA: [&str; 10] = [
         kind TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '{}', \
         created_at TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS events_task ON events(task_id, id)",
+    "CREATE INDEX IF NOT EXISTS events_kind_ts ON events(kind, created_at)",
+    "CREATE INDEX IF NOT EXISTS events_created ON events(created_at)",
 ];
 
 // ---------------------------------------------------------------------------
@@ -481,6 +495,149 @@ fn event(
         ],
     )?;
     Ok(())
+}
+
+/// Parse an /events-append request: kind is required and must be a
+/// non-empty string; worker_id/task_id optional (the PG stream's
+/// non-queue writers always wrote task_id NULL); detail defaults {}.
+fn parse_event_append(
+    req: &Value,
+) -> Result<(Option<String>, Option<i64>, String, Value), String> {
+    let kind = req_str(req, "kind")
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| "kind is required".to_string())?
+        .to_string();
+    let worker = req_str(req, "worker_id").map(str::to_string);
+    let task_id = req_i64(req, "task_id");
+    let detail = req.get("detail").cloned().unwrap_or_else(|| json!({}));
+    Ok((worker, task_id, kind, detail))
+}
+
+/// Retention cutoff for /events-prune: rows strictly older than
+/// keep_days (clamped to 1..=3650, mirroring prune_events(30)'s
+/// fixed 30-day default at the call site) are deleted.
+fn prune_cutoff(now: i64, keep_days: i64) -> String {
+    let days = keep_days.clamp(1, 3650);
+    iso(now - days * 86_400)
+}
+
+fn verb_events_append(t: &TursoBackend, req: &Value) -> Value {
+    let (worker, task_id, kind, detail) = match parse_event_append(req) {
+        Ok(v) => v,
+        Err(e) => return fail(2, e),
+    };
+    let work = (|| -> Result<Value, TErr> {
+        let now = now_iso();
+        let res = t.exec(
+            "INSERT INTO events (worker_id, task_id, kind, detail, created_at) \
+             VALUES (?, ?, ?, ?, ?)",
+            &[
+                arg_str(worker.as_deref()),
+                task_id.map(Arg::Int).unwrap_or(Arg::Null),
+                Arg::Text(kind.clone()),
+                Arg::Text(detail.to_string()),
+                Arg::Text(now),
+            ],
+        )?;
+        Ok(json!({"id": res.last_insert_rowid.unwrap_or(0), "kind": kind}))
+    })();
+    match work {
+        Ok(v) => ok(json!({"row": v})),
+        Err(e) => terr(e),
+    }
+}
+
+/// The event_seen primitive: has an event of `kind` been recorded
+/// for `task_id`? Replaces the PG revalidate_parked_tasks() EXISTS
+/// subquery, which cannot reach across databases; a broker-side
+/// revalidator sweeper calls this per parked task (cutover doc).
+fn verb_events_seen(t: &TursoBackend, req: &Value) -> Value {
+    let (Some(task_id), Some(kind)) = (req_i64(req, "task_id"), req_str(req, "kind")) else {
+        return fail(2, "task_id and kind are required".to_string());
+    };
+    let kind = kind.to_string();
+    let work = (|| -> Result<Value, TErr> {
+        let rows = t.query_objs(
+            "SELECT COUNT(*) AS n, MAX(created_at) AS latest FROM events \
+             WHERE task_id = ? AND kind = ?",
+            &[Arg::Int(task_id), Arg::Text(kind.clone())],
+            &[],
+        )?;
+        let first = rows.into_iter().next().unwrap_or(json!({}));
+        let n = first.get("n").and_then(|v| v.as_i64()).unwrap_or(0);
+        Ok(json!({
+            "task_id": task_id,
+            "kind": kind,
+            "seen": n > 0,
+            "count": n,
+            "latest_created_at": first
+                .get("latest")
+                .cloned()
+                .unwrap_or(Value::Null),
+        }))
+    })();
+    match work {
+        Ok(v) => ok(json!({"row": v})),
+        Err(e) => terr(e),
+    }
+}
+
+/// Observability shape parity with the ad-hoc PG queries
+/// (count by kind, optionally since an ISO timestamp).
+fn verb_events_count(t: &TursoBackend, req: &Value) -> Value {
+    let mut sql = "SELECT COUNT(*) AS n FROM events WHERE 1 = 1".to_string();
+    let mut args: Vec<Arg> = Vec::new();
+    if let Some(k) = req_str(req, "kind") {
+        sql += " AND kind = ?";
+        args.push(Arg::Text(k.to_string()));
+    }
+    if let Some(since) = req_str(req, "since") {
+        sql += " AND created_at > ?";
+        args.push(Arg::Text(since.to_string()));
+    }
+    let work = (|| -> Result<Value, TErr> {
+        let rows = t.query_objs(&sql, &args, &[])?;
+        let n = rows
+            .into_iter()
+            .next()
+            .and_then(|r| r.get("n").and_then(|v| v.as_i64()))
+            .unwrap_or(0);
+        Ok(json!({"count": n}))
+    })();
+    match work {
+        Ok(v) => ok(json!({"row": v})),
+        Err(e) => terr(e),
+    }
+}
+
+/// prune_events port: delete events older than keep_days (default
+/// 30, the PG cron's argument) and self-log an events_pruned row,
+/// like the PG function. PG ran this daily at 04:17 via pg_cron;
+/// post-cutover a timer calls this verb (cutover doc).
+fn verb_events_prune(t: &TursoBackend, req: &Value) -> Value {
+    let keep_days = req_i64(req, "keep_days").unwrap_or(30);
+    let cutoff = prune_cutoff(now_unix(), keep_days);
+    let work = (|| -> Result<Value, TErr> {
+        let deleted = t
+            .exec(
+                "DELETE FROM events WHERE created_at < ?",
+                &[Arg::Text(cutoff.clone())],
+            )?
+            .affected;
+        event(
+            t,
+            Some("prune_events"),
+            None,
+            "events_pruned",
+            &json!({"deleted": deleted, "cutoff": cutoff, "keep_days": keep_days.clamp(1, 3650)}),
+        )?;
+        Ok(json!({"deleted": deleted, "cutoff": cutoff}))
+    })();
+    match work {
+        Ok(v) => ok(json!({"row": v})),
+        Err(e) => terr(e),
+    }
 }
 
 fn touch_worker(t: &TursoBackend, worker: &str, task_id: Option<i64>) -> Result<(), TErr> {
@@ -1555,6 +1712,7 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
                     "queue": q, "queued": 0, "claimed": 0, "parked": 0,
                     "blocked": 0, "done": 0, "cancelled": 0, "failed": 0,
                     "total": 0, "oldest_queued_at": Value::Null,
+                    "terminal_events_24h": 0, "terminal_events_7d": 0,
                 })
             });
             let status = r
@@ -1575,6 +1733,50 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
                         r.get("oldest_queued_at").cloned().unwrap_or(Value::Null),
                     );
                 }
+            }
+        }
+        // Terminal-event counters, the agent.repo_queue_health
+        // view's terminal_events_24h/7d (#5690): events and tasks
+        // share this database, so the JOIN the PG view did is a
+        // local query here — no cross-database problem.
+        let mut tsql = "SELECT t.queue AS queue, COUNT(*) AS n7, \
+               SUM(CASE WHEN e.created_at > ? THEN 1 ELSE 0 END) AS n24 \
+             FROM events e JOIN tasks t ON t.id = e.task_id \
+             WHERE e.kind IN ('completed', 'failed') AND e.created_at > ?"
+            .to_string();
+        let mut targs: Vec<Arg> = vec![
+            Arg::Text(iso(now_unix() - 86_400)),
+            Arg::Text(iso(now_unix() - 7 * 86_400)),
+        ];
+        if let Some(q) = &queue_filter {
+            tsql += " AND t.queue = ?";
+            targs.push(Arg::Text(q.clone()));
+        }
+        tsql += " GROUP BY t.queue";
+        let trows = t.query_objs(&tsql, &targs, &[])?;
+        for r in &trows {
+            let q = r
+                .get("queue")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let entry = by_queue.entry(q.clone()).or_insert_with(|| {
+                json!({
+                    "queue": q, "queued": 0, "claimed": 0, "parked": 0,
+                    "blocked": 0, "done": 0, "cancelled": 0, "failed": 0,
+                    "total": 0, "oldest_queued_at": Value::Null,
+                    "terminal_events_24h": 0, "terminal_events_7d": 0,
+                })
+            });
+            if let Some(obj) = entry.as_object_mut() {
+                obj.insert(
+                    "terminal_events_24h".to_string(),
+                    r.get("n24").cloned().unwrap_or(json!(0)),
+                );
+                obj.insert(
+                    "terminal_events_7d".to_string(),
+                    r.get("n7").cloned().unwrap_or(json!(0)),
+                );
             }
         }
         Ok(Value::Array(by_queue.into_iter().map(|(_, v)| v).collect()))
@@ -1649,6 +1851,10 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/list" => verb_list(t, req),
         "/health" => verb_health(t, req),
         "/signal-count" => verb_signal_count(t, req),
+        "/events-append" => verb_events_append(t, req),
+        "/events-seen" => verb_events_seen(t, req),
+        "/events-count" => verb_events_count(t, req),
+        "/events-prune" => verb_events_prune(t, req),
         _ => fail(2, format!("unknown command {path}")),
     }
 }
@@ -1705,6 +1911,33 @@ mod tests {
         let (out2, cleared2) = clear_binding(&json!({"keep": 1}), "x");
         assert!(cleared2.is_none());
         assert_eq!(out2, json!({"keep": 1}));
+    }
+
+    #[test]
+    fn event_append_requires_a_kind() {
+        assert!(parse_event_append(&json!({})).is_err());
+        assert!(parse_event_append(&json!({"kind": "  "})).is_err());
+        let (w, tid, kind, detail) = parse_event_append(
+            &json!({"kind": "push", "worker_id": "github-webhook"}),
+        )
+        .unwrap();
+        assert_eq!(kind, "push");
+        assert_eq!(w.as_deref(), Some("github-webhook"));
+        assert_eq!(tid, None);
+        assert_eq!(detail, json!({}));
+        let (_, tid2, _, _) = parse_event_append(
+            &json!({"kind": "claimed", "task_id": 42, "detail": {"a": 1}}),
+        )
+        .unwrap();
+        assert_eq!(tid2, Some(42));
+    }
+
+    #[test]
+    fn prune_cutoff_clamps_and_subtracts_days() {
+        let now = 1_794_020_400; // 2026-11-07T03:00:00Z
+        assert_eq!(prune_cutoff(now, 30), iso(now - 30 * 86_400));
+        assert_eq!(prune_cutoff(now, 0), iso(now - 86_400));
+        assert_eq!(prune_cutoff(now, 99_999), iso(now - 3650 * 86_400));
     }
 
     #[test]

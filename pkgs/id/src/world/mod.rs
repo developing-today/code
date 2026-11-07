@@ -35,6 +35,7 @@ mod actor;
 mod clock;
 mod core;
 mod handle;
+pub mod hotness;
 mod metrics;
 mod replica;
 mod replication;
@@ -50,7 +51,10 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub(crate) use core::AdminHistoryByteLedger;
 pub use core::WorldCore;
 pub use handle::WorldHandle;
-pub use metrics::{HistogramSnapshot, MetricsSnapshot, WorldMetrics};
+pub use hotness::{FiredSignal, HotnessBand, HotnessReport, HotnessSignal};
+pub use metrics::{
+    HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,
+};
 pub use replica::{
     ReplicaCursor, ReplicaRestore, parse_replica_journal, restore_replica_entries,
     restore_replica_entries_with_runtime, restore_replica_journal,

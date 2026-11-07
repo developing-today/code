@@ -38,6 +38,16 @@ CREATE INDEX IF NOT EXISTS pmp_items_repo ON pmp_items(repo);
 CREATE INDEX IF NOT EXISTS pmp_items_state ON pmp_items(state);
 CREATE INDEX IF NOT EXISTS pmp_items_kind ON pmp_items(kind);
 
+-- Item deletion markers (#6782): a deleted issue/PR must stay deleted.
+-- GitHub numbers are never reused within a repo, so a durable marker keyed
+-- by ref makes deletions absorbing for stale webhook/reconcile replays
+-- (the item-level mirror of the pmp_comments tombstone contract).
+CREATE TABLE IF NOT EXISTS pmp_item_deletions (
+  ref               TEXT PRIMARY KEY,        -- "owner/repo#123"
+  source_updated_at TEXT NOT NULL,           -- the deleted item's updated_at at the delete event
+  fetched_at        TEXT NOT NULL            -- ISO-8601 when the marker was written/refreshed
+);
+
 -- ---------------------------------------------------------------------------
 -- Comments across all four repos, including PR-interior comments that Kaneo
 -- never syncs (reviews and review/line comments). This is the unified

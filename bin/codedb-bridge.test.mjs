@@ -260,3 +260,27 @@ test('daemon errors and an unreachable daemon surface as MCP errors naming the c
   assert.equal(badArg.result.isError, true);
   assert.match(badArg.result.content[0].text, /"regex"/);
 });
+
+test('null or non-object daemon bodies are isError results, never a throw or a "null" success (#6917)', async () => {
+  const handle = createHandler({
+    fetchFn: stubFetch({
+      '/explore/tree': null,
+      '/explore/search?q=x': null,
+      '/explore/outline?path=a.ts': 'weird',
+      '/explore/hot': [1, 2],
+    }),
+    daemonUrl: 'http://127.0.0.1:7719',
+  });
+  const tree = await call(handle, 'codedb_tree', {});
+  assert.equal(tree.result.isError, true);
+  assert.match(tree.result.content[0].text, /null JSON body for \/explore\/tree/);
+  const search = await call(handle, 'codedb_search', { query: 'x' });
+  assert.equal(search.result.isError, true);
+  assert.match(search.result.content[0].text, /null JSON body/);
+  const outline = await call(handle, 'codedb_outline', { path: 'a.ts' });
+  assert.equal(outline.result.isError, true);
+  assert.match(outline.result.content[0].text, /string JSON body/);
+  const hot = await call(handle, 'codedb_hot', {});
+  assert.equal(hot.result.isError, true);
+  assert.match(hot.result.content[0].text, /array JSON body/);
+});

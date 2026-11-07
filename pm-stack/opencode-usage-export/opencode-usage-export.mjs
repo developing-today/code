@@ -301,11 +301,20 @@ async function writeDocument(outDir, doc) {
 }
 
 async function readState(outDir) {
+  let parsed;
   try {
-    return JSON.parse(await readFile(join(outDir, "state.json"), "utf8"));
+    parsed = JSON.parse(await readFile(join(outDir, "state.json"), "utf8"));
   } catch {
     return {};
   }
+  // Valid JSON of the wrong shape (null, an array, a bare string/number)
+  // is not state: treat it like a missing file instead of dereferencing
+  // it downstream (#6915). Only a string storePath is a previous path;
+  // anything else would fabricate a moved report in resolveStore.
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  return {
+    storePath: typeof parsed.storePath === "string" && parsed.storePath ? parsed.storePath : null,
+  };
 }
 
 /** Validate one hour-valued flag (#4739). The exporter is fail-closed:

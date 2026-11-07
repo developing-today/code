@@ -59,6 +59,16 @@ describe("normalizeResetAt", () => {
     expect(normalizeResetAt(null)).toBeNull();
     expect(normalizeResetAt(0)).toBeNull();
   });
+  test("impossible and non-ISO date strings are null (#4968)", () => {
+    expect(normalizeResetAt("2026-02-30")).toBeNull();
+    expect(normalizeResetAt("2026-04-31")).toBeNull();
+    expect(normalizeResetAt("2026-02-29")).toBeNull(); // 2026 is not a leap year
+    expect(normalizeResetAt("March 2, 2026")).toBeNull();
+  });
+  test("valid date-only and leap-day strings pass (#4968)", () => {
+    expect(normalizeResetAt("2026-03-02")).toBe("2026-03-02T00:00:00.000Z");
+    expect(normalizeResetAt("2024-02-29")).toBe("2024-02-29T00:00:00.000Z");
+  });
 });
 
 describe("entryFromResult", () => {
@@ -889,7 +899,7 @@ describe("pool splits (#1331)", () => {
   });
 
   const antigravityResult = (models: Record<string, Record<string, number>>): QuotaProviderResult => ({
-    providerId: "antigravity",
+    providerId: "_antigravity",
     providerName: "Antigravity",
     ok: true,
     configured: true,
@@ -921,11 +931,11 @@ describe("pool splits (#1331)", () => {
       }),
       TICK,
     );
-    expect(entry.serviceId).toBe("antigravity");
+    expect(entry.serviceId).toBe("_antigravity");
     expect(entry.windows).toHaveLength(6);
     const split = entriesWithPoolSplits([entry]);
     expect(split).toHaveLength(3);
-    expect(split[0].serviceId).toBe("antigravity");
+    expect(split[0].serviceId).toBe("_antigravity");
     const gemini = split.find((e) => e.serviceId === ANTIGRAVITY_GEMINI_SERVICE_ID)!;
     expect(gemini.windows.map((w) => [w.name, w.pctOfLimit])).toEqual([
       ["5h", 70],
@@ -957,13 +967,13 @@ describe("pool splits (#1331)", () => {
     const geminiOnly = entriesWithPoolSplits([
       entryFromResult(antigravityResult({ "gemini-flash": { weekly: 55 } }), TICK),
     ]);
-    expect(geminiOnly.map((e) => e.serviceId).sort()).toEqual(["antigravity", ANTIGRAVITY_GEMINI_SERVICE_ID]);
+    expect(geminiOnly.map((e) => e.serviceId).sort()).toEqual(["_antigravity", ANTIGRAVITY_GEMINI_SERVICE_ID]);
   });
 
   test("Antigravity error lapses both pools; unconfigured splits nothing", () => {
     const err = entryFromResult(
       {
-        providerId: "antigravity",
+        providerId: "_antigravity",
         ok: false,
         configured: true,
         error: "Failed to refresh Antigravity token",
@@ -973,7 +983,7 @@ describe("pool splits (#1331)", () => {
     );
     const split = entriesWithPoolSplits([err]);
     expect(split.map((e) => e.serviceId).sort()).toEqual([
-      "antigravity",
+      "_antigravity",
       ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID,
       ANTIGRAVITY_GEMINI_SERVICE_ID,
     ]);
@@ -983,11 +993,11 @@ describe("pool splits (#1331)", () => {
     }
     const unconfigured = entriesWithPoolSplits([
       entryFromResult(
-        { providerId: "antigravity", ok: false, configured: false, error: "Not configured", usage: null },
+        { providerId: "_antigravity", ok: false, configured: false, error: "Not configured", usage: null },
         TICK,
       ),
     ]);
-    expect(unconfigured.map((e) => e.serviceId)).toEqual(["antigravity"]);
+    expect(unconfigured.map((e) => e.serviceId)).toEqual(["_antigravity"]);
   });
 });
 

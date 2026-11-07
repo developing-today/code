@@ -316,6 +316,43 @@ class GenerateTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             gen.decode_pages(json.dumps([{"full_name": "a/b"}, None]), source="cap X")
 
+    def test_field_level_wrong_shapes_fail_named(self) -> None:
+        # #6814: fields inside an object entry are validated at the
+        # same gate — a malformed full_name, a non-string or
+        # newline-bearing html_url, or a string "false" fork must be
+        # a named ValueError, not a corrupt artifact or a silently
+        # un-watched repo.
+        spec = importlib.util.spec_from_file_location("generate", GENERATE)
+        gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gen)
+        good = {"full_name": "developing-today/code"}
+        bad_entries = [
+            {"full_name": ""},
+            {"full_name": "noslash"},
+            {"full_name": "a/b\n  - name: evil/injected"},
+            {"full_name": "/leading"},
+            {**good, "html_url": 12345},
+            {**good, "html_url": ["x", "y"]},
+            {**good, "html_url": "https://example.com\n  - name: evil/injected"},
+            {**good, "fork": "false"},
+            {**good, "fork": 0},
+        ]
+        for entry in bad_entries:
+            with self.assertRaises(ValueError, msg=f"entry accepted: {entry!r}"):
+                gen.decode_pages(json.dumps([entry]), source="cap Y")
+        # Control: well-formed fields, and absent html_url/fork,
+        # pass exactly as before.
+        self.assertEqual(gen.decode_pages(json.dumps([repo("a/b", fork=True)])), [repo("a/b", fork=True)])
+        self.assertEqual(gen.decode_pages(json.dumps([good])), [good])
+
+    def test_newline_full_name_capture_fails_named_end_to_end(self) -> None:
+        (self.dir / "org.json").write_text(
+            json.dumps(ORG + [{"full_name": "a/b\n  - name: evil/injected", "html_url": "https://github.com/a/b", "fork": False}])
+        )
+        proc = self.run_gen_raw()
+        self.assert_wrong_shape_fails_named(proc)
+        self.assertIn("full_name", proc.stderr)
+
     def test_idempotent_zero_diff_on_unchanged_inputs(self) -> None:
         first = self.run_gen()
         second = self.run_gen()

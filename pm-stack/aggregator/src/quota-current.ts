@@ -336,13 +336,14 @@ function summarize(file: QuotaCurrentFile, nowMs: number): GathererSummary {
  * "turso" is a SaaS usage row (its display surface is the SaaS cards,
  * via overlayTursoUsage), and "antigravity" / "opencode-go" are the
  * COMBINED account rows whose pool-level rendering is their split
- * rows (antigravity-direct.gemini / antigravity-direct.claude-gpt and
+ * rows (_antigravity.gemini / _antigravity.claude-gpt — pre-rename:
+ * antigravity-direct.gemini / antigravity-direct.claude-gpt — and
  * opencode-go.drewrypope / opencode-go.popesdrew, produced by
  * entriesWithPoolSplits in quota-gather-map.ts). Synthesizing pools
  * for them would double-render the same read. Every OTHER serviceId
  * the read reports renders as a pool — see the synthesis below.
  */
-const NON_POOL_SERVICE_IDS: ReadonlySet<string> = new Set(["turso", "antigravity", "opencode-go"]);
+const NON_POOL_SERVICE_IDS: ReadonlySet<string> = new Set(["turso", "antigravity", "_antigravity", "opencode-go"]);
 
 /**
  * Overlay a parsed quota-current document onto a quota view. Pure:
