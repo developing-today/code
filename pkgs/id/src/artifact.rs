@@ -1103,6 +1103,53 @@ mod tests {
         })
     }
 
+    #[test]
+    fn probe_home_declared_duplicate_server_pair_accepted() {
+        let server = HomeServer {
+            endpoint: endpoint_of(7),
+            world_id: "home".to_owned(),
+        };
+        let dup = Kind::HomeDeclared(HomeDeclared {
+            account: public(1),
+            servers: vec![server.clone(), server],
+        });
+        let mut log = ArtifactLog::default();
+        let artifact = log.sign(&key(1), &dup).unwrap();
+        let stored = log.insert(artifact);
+        println!("PROBE dup-pair insert: {stored:?}");
+        println!(
+            "PROBE dup-pair declared server count: {:?}",
+            log.declared(&public(1)).map(|d| d.servers.len())
+        );
+        assert!(stored.is_ok(), "current code accepts a duplicated server pair");
+        // Control: two distinct endpoints are accepted.
+        let distinct = Kind::HomeDeclared(HomeDeclared {
+            account: public(2),
+            servers: vec![
+                HomeServer { endpoint: endpoint_of(7), world_id: "home".to_owned() },
+                HomeServer { endpoint: endpoint_of(8), world_id: "home".to_owned() },
+            ],
+        });
+        let mut log2 = ArtifactLog::default();
+        let artifact2 = log2.sign(&key(2), &distinct).unwrap();
+        let stored2 = log2.insert(artifact2);
+        println!("PROBE distinct insert: {stored2:?}");
+        assert!(stored2.is_ok());
+        // Same endpoint, different world: also accepted today (legitimate shape).
+        let two_worlds = Kind::HomeDeclared(HomeDeclared {
+            account: public(3),
+            servers: vec![
+                HomeServer { endpoint: endpoint_of(7), world_id: "home".to_owned() },
+                HomeServer { endpoint: endpoint_of(7), world_id: "away".to_owned() },
+            ],
+        });
+        let mut log3 = ArtifactLog::default();
+        let artifact3 = log3.sign(&key(3), &two_worlds).unwrap();
+        let stored3 = log3.insert(artifact3);
+        println!("PROBE same-endpoint-two-worlds insert: {stored3:?}");
+        assert!(stored3.is_ok());
+    }
+
     fn document(text: &str) -> Kind {
         Kind::Document(Document {
             media_type: "application/json".to_owned(),
