@@ -31,6 +31,8 @@ pub enum Capability {
     ProxyConnect,
     /// `fleet proxy serve` — the session broker.
     ProxyServe,
+    /// `fleet proxy splice` — the raw TCP stream relay.
+    ProxyRawSplice,
     /// `fleet queue …` — the repo-queue client surface.
     Queue,
     /// `fleet serve queue-broker` — the queue broker daemon role.
@@ -57,6 +59,7 @@ impl Capability {
         match self {
             Capability::ProxyConnect => "proxy-connect",
             Capability::ProxyServe => "proxy-serve",
+            Capability::ProxyRawSplice => "proxy-raw-splice",
             Capability::Queue => "queue",
             Capability::QueueBroker => "queue-broker",
             Capability::SecretsBroker => "secrets-broker",
@@ -73,6 +76,7 @@ impl Capability {
     pub const ALL: &'static [Capability] = &[
         Capability::ProxyConnect,
         Capability::ProxyServe,
+        Capability::ProxyRawSplice,
         Capability::Queue,
         Capability::QueueBroker,
         Capability::SecretsBroker,
@@ -110,6 +114,7 @@ pub fn serve_capabilities() -> CapabilitySet {
     capability_set(&[
         Capability::ProxyConnect,
         Capability::ProxyServe,
+        Capability::ProxyRawSplice,
         Capability::QueueBroker,
         Capability::SecretsBroker,
         Capability::SearchServe,
@@ -119,7 +124,7 @@ pub fn serve_capabilities() -> CapabilitySet {
 
 /// The `fleet-connect` build: the proxy client and nothing else (§2).
 pub fn connect_capabilities() -> CapabilitySet {
-    capability_set(&[Capability::ProxyConnect])
+    capability_set(&[Capability::ProxyConnect, Capability::ProxyRawSplice])
 }
 
 /// A shipped build variant (§2). The variant is a property of the
@@ -235,11 +240,15 @@ pub const DOMAINS: &[Domain] = &[
     },
     Domain {
         name: "proxy",
-        summary: "The session proxy: serve the broker socket, or connect and init a client through it.",
-        capabilities: &[Capability::ProxyServe, Capability::ProxyConnect],
+        summary: "The session proxy: serve the broker socket, connect clients, or splice raw TCP streams.",
+        capabilities: &[
+            Capability::ProxyServe,
+            Capability::ProxyConnect,
+            Capability::ProxyRawSplice,
+        ],
         primary: Capability::ProxyConnect,
         aliases: &["laptop-agent-broker"],
-        subcommands: &["serve", "connect", "init"],
+        subcommands: &["serve", "connect", "init", "splice"],
     },
     Domain {
         name: "dispatch",
@@ -337,6 +346,7 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), count, "capability ids must be unique");
         assert!(ids.contains(&"proxy-connect"));
+        assert!(ids.contains(&"proxy-raw-splice"));
         assert!(ids.contains(&"queue"));
     }
 

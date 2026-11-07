@@ -27,6 +27,8 @@ pub const DEFAULT_BROKER_SOCKET: &str = ".cache/laptop-agent/broker.sock";
 pub const PORT_LAPTOP_AGENT: u16 = 4799;
 pub const PORT_SECRETS_BROKER: u16 = 4800;
 pub const PORT_QUEUE_BROKER: u16 = 4801;
+/// RustDesk's direct-access TCP endpoint on the laptop.
+pub const PORT_RUSTDESK: u16 = 21118;
 /// Broker idle exit (§4: retained from the Python broker — a warmth
 /// cache that exits when cold is a feature on a shared sandbox).
 pub const DEFAULT_IDLE_EXIT_SECS: u64 = 3600;
@@ -304,7 +306,7 @@ impl Config {
                 return Err(ConfigError::Read {
                     path: path.to_path_buf(),
                     message: e.to_string(),
-                })
+                });
             }
         };
         cfg.validate(path)?;
@@ -322,9 +324,7 @@ impl Config {
     fn validate(&self, path: &std::path::Path) -> Result<(), ConfigError> {
         let reject = |field: &str, default: u64| ConfigError::Parse {
             path: path.to_path_buf(),
-            message: format!(
-                "{field} must not be 0; omit the field for the default ({default})"
-            ),
+            message: format!("{field} must not be 0; omit the field for the default ({default})"),
         };
         if self.proxy.egress_proxy_port == Some(0) {
             return Err(reject(
@@ -336,10 +336,7 @@ impl Config {
             return Err(reject("[dispatch] port", u64::from(PORT_DISPATCH)));
         }
         if self.proxy.idle_exit_secs == Some(0) {
-            return Err(reject(
-                "[proxy] idle_exit_secs",
-                DEFAULT_IDLE_EXIT_SECS,
-            ));
+            return Err(reject("[proxy] idle_exit_secs", DEFAULT_IDLE_EXIT_SECS));
         }
         Ok(())
     }
@@ -419,8 +416,9 @@ impl Config {
     /// The routing table: config's `[proxy] services`, or the
     /// built-in table matching today's live system — 4799 the
     /// (Python) laptop-agent daemon, 4800/4801 the fleet broker
-    /// roles (§4: a serve build without a role advertises a map
-    /// without its port; the table is how that is said).
+    /// roles, and 21118 RustDesk direct access (§4: a serve build
+    /// without a role advertises a map without its port; the table
+    /// is how that is said).
     pub fn services(&self) -> Vec<ServiceConfig> {
         if !self.proxy.services.is_empty() {
             return self.proxy.services.clone();
@@ -430,6 +428,7 @@ impl Config {
             (PORT_LAPTOP_AGENT, "laptop-agent", "python".to_string()),
             (PORT_SECRETS_BROKER, "secrets-broker", fleet_version.clone()),
             (PORT_QUEUE_BROKER, "queue-broker", fleet_version),
+            (PORT_RUSTDESK, "rustdesk", "rustdesk-direct-v1".to_string()),
         ]
         .into_iter()
         .map(|(port, name, version)| ServiceConfig {
@@ -615,11 +614,13 @@ mod tests {
     fn services_default_to_the_live_table() {
         let cfg = Config::default();
         let services = cfg.services();
-        assert_eq!(services.len(), 3);
+        assert_eq!(services.len(), 4);
         assert_eq!(services[0].port, PORT_LAPTOP_AGENT);
         assert_eq!(services[0].name, "laptop-agent");
         assert_eq!(services[1].port, PORT_SECRETS_BROKER);
         assert_eq!(services[2].port, PORT_QUEUE_BROKER);
+        assert_eq!(services[3].port, PORT_RUSTDESK);
+        assert_eq!(services[3].name, "rustdesk");
         assert!(services.iter().all(|s| s.version.is_some()));
         assert_eq!(cfg.target_host(), DEFAULT_TARGET_HOST);
         assert_eq!(cfg.egress_proxy_port(), DEFAULT_EGRESS_PROXY_PORT);

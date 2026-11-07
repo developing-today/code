@@ -40,7 +40,7 @@ use fleet_proxy_proto::{
 };
 
 use crate::http::{HttpConn, HttpError};
-use crate::tunnel::{Egress, connect_tunnel, egress_from_env};
+use crate::tunnel::{Egress, connect_raw_tunnel, connect_tunnel, egress_from_env};
 
 /// Keepalive cadence (the Python's KEEPALIVE_S).
 const KEEPALIVE_S: u64 = 180;
@@ -255,6 +255,21 @@ struct Broker {
 }
 
 impl Broker {
+    fn open_raw_tunnel(&self, port: u16) -> Result<TcpStream, String> {
+        let target = self.config.target_host();
+        let stream = if self.config.proxy_direct() {
+            connect_raw_tunnel(None, target, port)
+        } else {
+            let egress = self
+                .egress
+                .as_ref()
+                .ok_or_else(|| "HTTPS_PROXY must be set (runtime proxy env)".to_string())?;
+            connect_raw_tunnel(Some(egress), target, port)
+        }
+        .map_err(|e| format!("raw tunnel to {target}:{port}: {e}"))?;
+        Ok(stream)
+    }
+
     fn open_conn(&self, port: u16) -> Result<HttpConn, String> {
         let target = self.config.target_host();
         let stream: TcpStream = if self.config.proxy_direct() {
@@ -456,6 +471,7 @@ fn parse_request(frame: &serde_json::Value) -> Result<Request, String> {
 }
 
 fn serve_session(broker: &Broker, mut stream: UnixStream) {
+    let mut client_supports_raw_splice = false;
     let first = match read_frame(&mut stream) {
         Ok(f) => f,
         Err(_) => return, // probe connects and closes; the Python exits the same way
@@ -482,10 +498,22 @@ fn serve_session(broker: &Broker, mut stream: UnixStream) {
             );
             return;
         }
+        client_supports_raw_splice = hello
+            .capabilities
+            .iter()
+            .any(|cap| cap == fleet_registry::Capability::ProxyRawSplice.id());
+        let services = broker.services_map();
+        let raw_splice_available = services
+            .get(&fleet_config::PORT_RUSTDESK.to_string())
+            .is_some_and(|service| service.name == "rustdesk");
+        let mut capabilities = vec![fleet_registry::Capability::ProxyServe.id().to_string()];
+        if raw_splice_available {
+            capabilities.push(fleet_registry::Capability::ProxyRawSplice.id().to_string());
+        }
         let resp = HelloResponse {
             proto: fleet_proxy_proto::PROTO_MAJOR,
-            services: broker.services_map(),
-            capabilities: vec![fleet_registry::Capability::ProxyServe.id().to_string()],
+            services,
+            capabilities,
         };
         if write_frame(&mut stream, &fleet_proxy_proto::hello_response_frame(&resp)).is_err() {
             return;
@@ -512,6 +540,49 @@ fn serve_session(broker: &Broker, mut stream: UnixStream) {
     loop {
         match read_frame(&mut stream) {
             Ok(frame) => {
+                if let Some(raw_splice) = frame.get("raw_splice") {
+                    let port = raw_splice
+                        .get("port")
+                        .and_then(|value| value.as_u64())
+                        .and_then(|value| u16::try_from(value).ok());
+                    let service_available = broker
+                        .services_map()
+                        .get(&fleet_config::PORT_RUSTDESK.to_string())
+                        .is_some_and(|service| service.name == "rustdesk");
+                    if !client_supports_raw_splice
+                        || port != Some(fleet_config::PORT_RUSTDESK)
+                        || !service_available
+                    {
+                        let _ = write_frame(
+                            &mut stream,
+                            &serde_json::json!({
+                                "raw_splice": {"error": "raw-splice capability or service unavailable"}
+                            }),
+                        );
+                        return;
+                    }
+                    broker.last_used.store(now_secs(), Ordering::Relaxed);
+                    match broker.open_raw_tunnel(fleet_config::PORT_RUSTDESK) {
+                        Ok(tunnel) => {
+                            if write_frame(
+                                &mut stream,
+                                &serde_json::json!({"raw_splice": {"ready": true}}),
+                            )
+                            .is_err()
+                            {
+                                return;
+                            }
+                            let _ = crate::raw_stream::relay(stream, tunnel);
+                        }
+                        Err(why) => {
+                            let _ = write_frame(
+                                &mut stream,
+                                &serde_json::json!({"raw_splice": {"error": why}}),
+                            );
+                        }
+                    }
+                    return;
+                }
                 let reply = handle_request(broker, &frame);
                 if write_frame(&mut stream, &reply).is_err() {
                     return;

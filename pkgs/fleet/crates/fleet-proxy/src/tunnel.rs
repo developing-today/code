@@ -142,10 +142,30 @@ pub fn connect_tunnel(
     target_host: &str,
     target_port: u16,
 ) -> std::io::Result<TcpStream> {
+    connect_tunnel_with_timeout(egress, target_host, target_port, true)
+}
+
+/// Open a raw stream tunnel without the HTTP-shaped idle timeouts.
+/// The CONNECT handshake still uses [`CONNECT_TIMEOUT`]; only the
+/// established byte stream is unbounded.
+pub fn connect_raw_tunnel(
+    egress: Option<&Egress>,
+    target_host: &str,
+    target_port: u16,
+) -> std::io::Result<TcpStream> {
+    connect_tunnel_with_timeout(egress, target_host, target_port, false)
+}
+
+fn connect_tunnel_with_timeout(
+    egress: Option<&Egress>,
+    target_host: &str,
+    target_port: u16,
+    http_timeouts: bool,
+) -> std::io::Result<TcpStream> {
     match egress {
         None => {
             let stream = TcpStream::connect((target_host, target_port))?;
-            tune(&stream);
+            tune(&stream, http_timeouts);
             Ok(stream)
         }
         Some(egress) => {
@@ -186,15 +206,20 @@ pub fn connect_tunnel(
                     format!("CONNECT refused: {status_line}"),
                 ));
             }
-            tune(&stream);
+            tune(&stream, http_timeouts);
             Ok(stream)
         }
     }
 }
 
-fn tune(stream: &TcpStream) {
-    stream.set_read_timeout(Some(TUNNEL_READ_TIMEOUT)).ok();
-    stream.set_write_timeout(Some(TUNNEL_WRITE_TIMEOUT)).ok();
+fn tune(stream: &TcpStream, http_timeouts: bool) {
+    if http_timeouts {
+        stream.set_read_timeout(Some(TUNNEL_READ_TIMEOUT)).ok();
+        stream.set_write_timeout(Some(TUNNEL_WRITE_TIMEOUT)).ok();
+    } else {
+        stream.set_read_timeout(None).ok();
+        stream.set_write_timeout(None).ok();
+    }
     stream.set_nodelay(true).ok();
 }
 
@@ -237,5 +262,43 @@ mod tests {
     fn egress_rejects_a_hostless_url() {
         assert!(egress_from_url("http://:3128", 3130).is_err());
         assert!(egress_from_url("", 3130).is_err());
+    }
+
+    #[test]
+    fn raw_direct_tunnel_has_no_http_timeouts() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let peer = std::thread::spawn(move || listener.accept().unwrap());
+        let stream = connect_raw_tunnel(None, "127.0.0.1", addr.port()).unwrap();
+        let (_peer, _) = peer.join().unwrap();
+        assert_eq!(stream.read_timeout().unwrap(), None);
+        assert_eq!(stream.write_timeout().unwrap(), None);
+    }
+
+    #[test]
+    fn raw_connect_tunnel_clears_timeouts_after_handshake() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let proxy = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .unwrap();
+        });
+        let egress = Egress {
+            host: "127.0.0.1".to_string(),
+            port: addr.port(),
+            authorization: "Basic dTpw".to_string(),
+        };
+        let stream = connect_raw_tunnel(Some(&egress), "laptop", 21118).unwrap();
+        proxy.join().unwrap();
+        assert_eq!(stream.read_timeout().unwrap(), None);
+        assert_eq!(stream.write_timeout().unwrap(), None);
     }
 }
