@@ -277,6 +277,43 @@ fn conflicting_submission_does_not_poison_a_posted_transfer() {
 }
 
 #[test]
+fn resubmitted_failed_transfer_returns_id_already_failed_after_cause_fixed() {
+    // #6628 (oracle: the `IdAlreadyFailed` variant's doc comment and
+    // the live binding's `Status::IdAlreadyFailed` mapping in
+    // tb_ledger.rs): a transfer that failed is remembered by ID, and
+    // resubmitting that ID returns `IdAlreadyFailed` -- even after
+    // the original failure's cause has been fixed, it must not
+    // return the stale stored error (here `DebitAccountNotFound`).
+    let mut ledger = InMemoryLedger::new();
+    let transfer = funding_transfer(700, USER_SRC, LP_SRC, 100, SRC);
+    // Neither account exists yet: the transfer fails and its ID is
+    // recorded as failed.
+    assert_eq!(
+        ledger.create_transfers(&[transfer.clone()]),
+        vec![Err(TransferError::DebitAccountNotFound)]
+    );
+    // Fix the cause: create both accounts and fund the debit side,
+    // so the same transfer would now post if it were a fresh ID.
+    let results = ledger.create_accounts(&[
+        account(ISSUER_SRC, SRC, false),
+        account(USER_SRC, SRC, false),
+        account(LP_SRC, SRC, false),
+    ]);
+    assert!(results.iter().all(|result| result.is_ok()));
+    assert_eq!(
+        ledger.create_transfers(&[funding_transfer(701, ISSUER_SRC, USER_SRC, 1_000, SRC)]),
+        vec![Ok(())]
+    );
+    // Resubmission of the failed ID is still refused, with
+    // `IdAlreadyFailed`, and nothing posts.
+    assert_eq!(
+        ledger.create_transfers(&[transfer]),
+        vec![Err(TransferError::IdAlreadyFailed)]
+    );
+    assert!(ledger.lookup_transfer(700).is_none());
+}
+
+#[test]
 fn single_unterminated_linked_transfer_rejected() {
     // #4121: a lone transfer with `linked: true` promises a following
     // leg; the batch ending there leaves the chain open, so nothing

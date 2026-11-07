@@ -184,9 +184,13 @@ impl InMemoryLedger {
         staged: &mut HashMap<AccountId, AccountBalance>,
         staged_transfers: &HashMap<TransferId, Transfer>,
     ) -> Result<(), TransferError> {
-        // Check if this transfer ID was previously recorded as failed
-        if let Some(error) = self.failed_transfers.get(&transfer.id) {
-            return Err(*error);
+        // A transfer ID previously recorded as failed is refused
+        // with `IdAlreadyFailed`, matching the variant's contract
+        // above and the live binding's status mapping (tb_ledger.rs)
+        // -- never the stored original error, which goes stale once
+        // its cause is fixed (#6628).
+        if self.failed_transfers.contains_key(&transfer.id) {
+            return Err(TransferError::IdAlreadyFailed);
         }
         
         if let Some(existing) = self.transfers.get(&transfer.id) {
@@ -387,8 +391,9 @@ impl LedgerBackend for InMemoryLedger {
                     // Record failed transfer IDs for IdAlreadyFailed behavior.
                     // When a transfer fails for its own reason (validation/balance
                     // errors), TigerBeetle remembers the ID and refuses resubmission.
-                    // We record the specific error so that future submissions of these IDs
-                    // return the same error.
+                    // The stored error is kept for diagnosis; future
+                    // submissions of the ID are refused with
+                    // `IdAlreadyFailed`, not the stored error (#6628).
                     // Only record failures that are transfer-level errors (not chain-level failures).
                     if !matches!(
                         error,
