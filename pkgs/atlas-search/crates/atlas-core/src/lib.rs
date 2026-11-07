@@ -38,6 +38,10 @@ pub mod shards;
 pub mod turso;
 pub mod types;
 
+/// Maximum neighbor chunks search expansion may attach to each result.
+/// Keep this aligned with the service's get-chunk neighbors ceiling.
+pub const MAX_EXPAND_NEIGHBORS: usize = 100;
+
 pub use backend::SearchBackend;
 pub use embed::{AtlasEmbedder, FixedEmbedder, QUERY_PROMPT, QueryEmbedder};
 pub use error::{Error, Result};

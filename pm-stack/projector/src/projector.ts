@@ -5,6 +5,7 @@ import type {
   upsertItem,
   upsertComment,
   markCommentDeleted,
+  deleteItem,
   recordPush,
   ItemRow,
   CommentRow,
@@ -17,6 +18,7 @@ export interface ProjectorStore {
   upsertItem(i: Omit<ItemRow, "fetched_at">): Promise<void>;
   upsertComment(c: Omit<CommentRow, "fetched_at">): Promise<void>;
   markCommentDeleted(c: Omit<CommentRow, "fetched_at">): Promise<void>;
+  deleteItem(ref: string): Promise<void>;
   recordPush(p: {
     deliveryId: string;
     repo: string;
@@ -227,7 +229,20 @@ export async function applyEvent(
   switch (event) {
     case "issues": {
       const issue = payload.issue;
-      if (issue) await applyIssue(issue);
+      if (issue && payload.action === "deleted") {
+        // A deleted issue must leave the read model, not be re-upserted
+        // by its own deletion event (#4210).
+        const ref = itemRef(repo, issue.number);
+        await store.deleteItem(ref);
+        addRef(ref);
+        hot(`issue:${issue.id ?? issue.number}`, {
+          ref,
+          actor: senderLogin,
+          sourceUrl: iso(issue.html_url),
+          sourceTimestamp: iso(issue.updated_at) ?? iso(issue.created_at),
+        });
+        wrote = true;
+      } else if (issue) await applyIssue(issue);
       break;
     }
     case "pull_request": {

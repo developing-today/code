@@ -22,6 +22,7 @@
 
 pub mod backoff;
 pub mod bin_args;
+mod home;
 pub mod log;
 pub mod token_file;
 
@@ -31,6 +32,8 @@ pub mod client;
 pub mod fallback;
 #[cfg(feature = "queue-broker")]
 pub mod queue_broker;
+#[cfg(feature = "queue-broker")]
+pub mod turso_queue;
 #[cfg(feature = "secrets-broker")]
 pub mod secrets_broker;
 #[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]

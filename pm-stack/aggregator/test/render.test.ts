@@ -93,8 +93,8 @@ describe("execution strip", () => {
     expect(strip.merged.map((i) => i.ref)).toContain("developing-today/code#752");
     expect(strip.review.map((i) => i.ref)).toContain("developing-today/code#763");
     expect(strip.implementing.map((i) => i.ref)).toContain("developing-today/code#900");
-    // #762 is labelled ready-for-agent, so it counts as implementing.
-    expect(strip.implementing.map((i) => i.ref)).toContain("developing-today/code#762");
+    // The label alone is not evidence that the harness picked the issue up.
+    expect(strip.queued.map((i) => i.ref)).toContain("developing-today/code#762");
   });
   test("records unresolved refs", () => {
     const strip = executionStrip([{ ref: "nowhere/repo#9999", relation: "tracks" }], items);
@@ -303,6 +303,25 @@ describe("render smoke (fixtures)", () => {
     expect(html).toContain("developing-today/openchamber#210");
     expect(html).not.toContain("Planning notes");
     expect(html).not.toContain("PM-stack design & phase plan");
+  });
+  test("item page shows explicit harness dispatch state with provenance", () => {
+    const item = FIXTURE_BOARD[0];
+    const html = renderItem(item.title, item.id, item.links, items, [], fixtureSource().provenance(), {
+      dashComments: [],
+      formRef: item.id,
+      formOpts: { identities: [] },
+      sessions: [],
+      dispatchStates: [
+        {
+          ref: "developing-today/code#762",
+          state: "not picked up",
+          provenance: { source: "ready-for-agent fixture state", observedAt: "2026-11-04T00:00:00Z" },
+        },
+      ],
+    });
+    expect(html).toContain("ready-for-agent dispatch");
+    expect(html).toContain("not picked up");
+    expect(html).toContain("ready-for-agent fixture state checked 2026-11-04T00:00:00Z");
   });
   test("item activity reuses shared events and discloses unknown freshness and partial coverage", async () => {
     const src = fixtureSource();

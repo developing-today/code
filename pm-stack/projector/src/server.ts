@@ -60,6 +60,7 @@ function libsqlStore(db: Client): ProjectorStore {
     upsertItem: (i) => store.upsertItem(db, i),
     upsertComment: (c) => store.upsertComment(db, c),
     markCommentDeleted: (c) => store.markCommentDeleted(db, c),
+    deleteItem: (ref) => store.deleteItem(db, ref),
     recordPush: (p) => store.recordPush(db, p),
     appendHotEvents: (events) => store.appendHotEvents(db, events),
   };

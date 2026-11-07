@@ -171,7 +171,16 @@ while the installed 0.1.0 binaries kept answering
 backend-down shifts.
 
 Build ONE artifact from current `main` and deploy that same build to
-both installs:
+both installs. If the build fails in the cargo vendor step with
+`no matching package named '<crate>' found ... required by package
+'atlas-core'` (or another atlas crate), `pkgs/fleet/Cargo.lock` has
+drifted from the atlas-search path dependencies again — the fleet
+lock covers their external dependencies too (see `default.nix`).
+Regenerate it before building:
+
+```sh
+(cd pkgs/fleet && cargo update --workspace)
+```
 
 ```sh
 nix build .#fleet

@@ -9,7 +9,7 @@
 import { readFile } from "node:fs/promises";
 import type { UnmatchedCharge } from "./charges-match.ts";
 import type { CheckoutDrift } from "./checkout-drift.ts";
-import { isProjectPoolItem } from "./projects.ts";
+import { isProjectAudit, isProjectPoolItem } from "./projects.ts";
 import { isRepoCensus, type RepoCensus } from "./coverage.ts";
 import { isSessionRecord } from "./registry.ts";
 import {
@@ -33,6 +33,7 @@ import type {
   PaygLine,
   PoolFreshness,
   ProjectPoolItem,
+  ProjectAudit,
   QuotaCredentialRow,
   QuotaPool,
   QuotaView,
@@ -120,6 +121,8 @@ export interface FleetFeed {
    * state, read by the collector via GraphQL. Absent when the
    * collector had no Projects token or the read failed. */
   projects?: ProjectPoolItem[];
+  /** Scheduled Project #4 audit snapshot (fields, views, totals, and distributions). */
+  projectAudit?: ProjectAudit;
   /** Project #4 coverage census (#1220): per-repo open-issue and
    * gate-label counts from the collector's Search API reads, embedded
    * beside the projects section. Absent when the collector had no
@@ -160,7 +163,13 @@ export function sanitizeCollectionError(value: unknown): string {
     .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]+|xox[baprs]-[A-Za-z0-9-]+)/gi, "[redacted]")
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted]")
     .replace(
-      /\b((?:access[_-]?token|refresh[_-]?token|token|api[_-]?key|password|secret|authorization)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi,
+      // Quoted keys (#3966): JSON bodies embed credentials as
+      // {"api_key": "v"}, {'password': 'v'}, or nested {"secret":
+      // "v"} — the keyword is wrapped in quotes, so allow an
+      // optional quote on each side of the name. `key` covers bare
+      // URL credential params (?key=..., &api_key=...); the value
+      // stops at & so sibling params survive.
+      /(["']?\b(?:access[_-]?token|refresh[_-]?token|token|api[_-]?key|password|secret|key|authorization)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;&]+)/gi,
       "$1[redacted]",
     )
     .replace(/(https?:\/\/)[^/@\s:]+(?::[^/@\s]*)?@/gi, "$1[redacted]@")
@@ -218,8 +227,7 @@ const LINED_UP_STATUSES: readonly string[] = ["in-progress", "queued", "blocked"
 // element fields directly (t.horizon, s.blocker), so a record alone is
 // not enough — the fields it dereferences must be the right shapes, or
 // the designed invalid-section fallback never happens and the consumer
-// throws (or silently renders falsified state) instead. linedUp
-// blockedBy stays out of scope here (#4316 owns the nested shape).
+// throws (or silently renders falsified state) instead.
 function isLinedUpElement(v: unknown): boolean {
   if (!isRecord(v)) return false;
   return (
@@ -234,7 +242,15 @@ function isLinedUpElement(v: unknown): boolean {
     // string that is not a GitHub ref stays valid at the gate — goal
     // ids are legitimate lined-up refs in live data (#6149); consumers
     // guard those with isValidRef at the render (#6149/#6205).
-    (v.ref === undefined || typeof v.ref === "string")
+    (v.ref === undefined || typeof v.ref === "string") &&
+    // #4316: blockedBy is a DependencyRef[] — the same shape the
+    // top-level dependencies array is gated with (isDependencyElement).
+    // Ungated, a malformed blockedBy passed the section as valid and
+    // its blockers were silently dropped by the canonical layer
+    // (asBlockers), rendering a blocked task as unblocked. Absence is
+    // fine; a present value must be an array of dependency elements.
+    (v.blockedBy === undefined ||
+      (Array.isArray(v.blockedBy) && v.blockedBy.every(isDependencyElement)))
   );
 }
 
@@ -485,6 +501,11 @@ export function poolFromFeed(feed: Partial<FleetFeed> | null | undefined): Proje
  * individual malformed items drop in poolFromFeed. */
 export function poolAvailableFromFeed(feed: Partial<FleetFeed> | null | undefined): boolean {
   return Array.isArray(feed?.projects);
+}
+
+/** Fail-soft read of the scheduled Project #4 audit snapshot. */
+export function projectAuditFromFeed(feed: Partial<FleetFeed> | null | undefined): ProjectAudit | null {
+  return isProjectAudit(feed?.projectAudit) ? feed.projectAudit : null;
 }
 
 /** Fail-soft read of the coverage census from a parsed feed: absent

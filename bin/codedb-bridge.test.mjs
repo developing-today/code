@@ -57,6 +57,32 @@ test('unhonourable arguments are rejected by name, never silently ignored (#3352
   assert.throws(() => routeForTool('codedb_read', { path: 'x' }), /unknown tool "codedb_read"/);
 });
 
+test('regex, scope and compact are rejected by name for every advertised tool (#4197)', () => {
+  const args = {
+    codedb_tree: {},
+    codedb_outline: { path: 'a/b.rs' },
+    codedb_symbol: { name: 'IdentityStore' },
+    codedb_search: { query: 'IdentityStore' },
+    codedb_word: { word: 'IdentityStore' },
+    codedb_hot: {},
+    codedb_deps: { path: 'a/b.rs' },
+  };
+  for (const { name } of CODEDB_TOOLS) {
+    for (const key of ['regex', 'scope', 'compact']) {
+      assert.throws(
+        () => routeForTool(name, { ...args[name], [key]: true }),
+        /argument ".*"/,
+        `${name} must reject ${key}: true`
+      );
+    }
+  }
+});
+
+test('misnamed limit arguments are rejected instead of silently ignored (#4197)', () => {
+  assert.throws(() => routeForTool('codedb_search', { query: 'x', limit: 5 }), /argument "limit"/);
+  assert.throws(() => routeForTool('codedb_hot', { max_results: 2 }), /argument "max_results"/);
+});
+
 const stubFetch = (routes) => async (url) => {
   const path = url.replace('http://127.0.0.1:7719', '');
   if (!(path in routes)) return { ok: false, status: 404, json: async () => ({ error: 'not found' }) };
