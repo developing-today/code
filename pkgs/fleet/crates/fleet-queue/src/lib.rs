@@ -21,6 +21,7 @@
 //! migration's standing rollback inventory (design note §7).
 
 pub mod backoff;
+pub mod bin_args;
 pub mod log;
 pub mod token_file;
 
