@@ -31,7 +31,7 @@ const FIXTURE = `{
   "provider": {
     "proxy-a": {
       "npm": "@ai-sdk/openai-compatible",
-      "options": { "baseURL": "http://127.0.0.1:18744/v1" },
+      "options": { "baseURL": "http://127.0.0.1:18799/v1" },
       "models": {
         "gpt-1-sol": {
           "name": "GPT-1 Sol (codex)",
@@ -60,10 +60,10 @@ const runSnapshot = async (snapshot) => {
   const configPath = path.join(dir, 'config.jsonc');
   fs.writeFileSync(configPath, JSON.stringify({
     provider: {
-      chatgpt: { models: { 'model-a': {}, 'model-b': {} } },
+      'fixture-proxy': { models: { 'model-a': {}, 'model-b': {} } },
     },
   }));
-  fs.writeFileSync(path.join(sourceDir, '18744.json'), JSON.stringify(snapshot));
+  fs.writeFileSync(path.join(sourceDir, '18799.json'), JSON.stringify(snapshot));
   try {
     return await runSync({ configPath, modelsDevSpec: null, sourceDir });
   } finally {
@@ -79,9 +79,9 @@ for (const [name, snapshot] of [
 ]) {
   test(`runSync marks proxy snapshot with ${name} as not-enumerable`, async () => {
     const { report } = await runSnapshot(snapshot);
-    const entry = report.providers.chatgpt;
+    const entry = report.providers['fixture-proxy'];
     assert.equal(entry.status, 'not-enumerable');
-    assert.match(entry.note, /proxy :18744 enumeration failed:/);
+    assert.match(entry.note, /proxy :18799 enumeration failed:/);
     assert.equal(entry.live_count, undefined);
     assert.equal(entry.vanishings_basis, undefined);
   });
@@ -89,7 +89,7 @@ for (const [name, snapshot] of [
 
 test('runSync preserves the valid proxy snapshot report', async () => {
   const { report } = await runSnapshot({ data: [{ id: 'model-a' }, { id: 'model-b' }] });
-  const entry = report.providers.chatgpt;
+  const entry = report.providers['fixture-proxy'];
   assert.equal(entry.live_count, 2);
   assert.deepEqual(entry.additions_validated, []);
   assert.deepEqual(entry.vanishings, []);
@@ -356,10 +356,10 @@ function controlFixture() {
   const configPath = path.join(dir, 'opencode.jsonc');
   const configText = `{
   "provider": {
-    "chatgpt": {
+    "fixture-proxy": {
       "npm": "@ai-sdk/openai-compatible",
       "models": {
-        "acme-1": { "name": "Acme 1 (chatgpt)" }
+        "acme-1": { "name": "Acme 1 (fixture-proxy)" }
       }
     }
   }
@@ -368,7 +368,7 @@ function controlFixture() {
   fs.writeFileSync(configPath, configText);
   const sourceDir = path.join(dir, 'src');
   fs.mkdirSync(sourceDir);
-  fs.writeFileSync(path.join(sourceDir, '18744.json'), JSON.stringify({ data: [{ id: 'acme-1' }, { id: 'acme-2' }] }));
+  fs.writeFileSync(path.join(sourceDir, '18799.json'), JSON.stringify({ data: [{ id: 'acme-1' }, { id: 'acme-2' }] }));
   const modelsDev = path.join(dir, 'models-dev.json');
   fs.writeFileSync(modelsDev, '{}');
   return { configPath, configText, sourceDir, modelsDev };
@@ -418,14 +418,14 @@ test('CLI: OPENCODE_CONFIG_PATH pointing at the overlay does not redirect the ta
     ['--config', configPath, '--runtime-config', overlayPath, '--models-dev', modelsDev, '--source-dir', sourceDir, '--json'],
     { OPENCODE_CONFIG_PATH: overlayPath },
   );
-  // The tracked file carries chatgpt/acme-1 and the snapshot adds acme-2:
+  // The tracked file carries fixture-proxy/acme-1 and the snapshot adds acme-2:
   // a run against the tracked default reports the validated addition (exit 3).
   // Against the overlay (the bug) it would report config=overlay and exit 0.
   assert.equal(r.status, 3, `stdout: ${r.stdout} stderr: ${r.stderr}`);
   const report = JSON.parse(r.stdout);
   assert.equal(report.config, configPath);
   assert.equal(report.runtime_overlay, overlayPath);
-  assert.ok(report.providers.chatgpt, `providers: ${Object.keys(report.providers)}`);
+  assert.ok(report.providers['fixture-proxy'], `providers: ${Object.keys(report.providers)}`);
 });
 
 // ---------------------------------------------------------------------------
