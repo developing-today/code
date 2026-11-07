@@ -17,6 +17,16 @@
 name: pm-aggregator tests
 
 on:
+  pull_request:
+    paths:
+      - "pm-stack/**"
+      - ".github/workflows/pm-aggregator-tests.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "pm-stack/**"
+      - ".github/workflows/pm-aggregator-tests.yml"
   workflow_dispatch:
 
 permissions:
@@ -52,6 +62,9 @@ jobs:
     name: aggregator tests and typecheck
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      PM_AGG_SOURCE: fixtures
+      PM_AGG_DEV: "1"
     defaults:
       run:
         working-directory: pm-stack/aggregator

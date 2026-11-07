@@ -87,10 +87,10 @@ describe("titleRefs", () => {
   test("keeps mixed shorthand and explicit refs, including GitHub URL refs", () => {
     expect(
       titleRefs(
-        "nix #889 blocked on developing-today-forks/kaneo#42; openchamber #492 mirrors https://github.com/developing-today/opencode/issues/927",
+        "nix #889 blocked on developing-today-forks/kaneo#42; openchamber #492 mirrors https://github.com/developing-today-forks/opencode/issues/927",
       ),
     ).toEqual([
-      "developing-today/opencode#927",
+      "developing-today-forks/opencode#927",
       "developing-today-forks/kaneo#42",
       "dezren39/nix#889",
       "developing-today-forks/openchamber#492",
