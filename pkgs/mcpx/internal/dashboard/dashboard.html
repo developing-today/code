@@ -569,19 +569,27 @@
       <div class="view-tabs" role="tablist">
         <button
           class="view-tab active"
+          id="tab-browse"
+          role="tab"
+          aria-selected="true"
+          aria-controls="view-body"
           data-view="browse"
           onclick="showView('browse')"
         >
           Browse
         </button>
-        <button class="view-tab" data-view="log" onclick="showView('log')">
+        <button class="view-tab" id="tab-log" role="tab" aria-selected="false" aria-controls="view-body" data-view="log" onclick="showView('log')">
           Log
         </button>
-        <button class="view-tab" data-view="stats" onclick="showView('stats')">
+        <button class="view-tab" id="tab-stats" role="tab" aria-selected="false" aria-controls="view-body" data-view="stats" onclick="showView('stats')">
           Stats
         </button>
         <button
           class="view-tab"
+          id="tab-servers"
+          role="tab"
+          aria-selected="false"
+          aria-controls="view-body"
           data-view="servers"
           onclick="showView('servers')"
         >
@@ -589,6 +597,10 @@
         </button>
         <button
           class="view-tab"
+          id="tab-sessions"
+          role="tab"
+          aria-selected="false"
+          aria-controls="view-body"
           data-view="sessions"
           onclick="showView('sessions')"
         >
@@ -596,6 +608,10 @@
         </button>
         <button
           class="view-tab"
+          id="tab-storage"
+          role="tab"
+          aria-selected="false"
+          aria-controls="view-body"
           data-view="storage"
           onclick="showView('storage')"
         >
@@ -617,7 +633,7 @@
         <label for="browse-ns">Namespace</label>
         <select id="browse-ns" onchange="loadView('browse')"></select>
       </div>
-      <div id="view-body">
+      <div id="view-body" role="tabpanel" aria-labelledby="tab-browse">
         <div class="view-note">Loading…</div>
       </div>
     </main>
@@ -993,15 +1009,39 @@
         currentView = name;
         document
           .querySelectorAll(".view-tab")
-          .forEach((b) =>
-            b.classList.toggle("active", b.dataset.view === name),
-          );
+          .forEach((b) => {
+            b.classList.toggle("active", b.dataset.view === name);
+            b.setAttribute("aria-selected", String(b.dataset.view === name));
+          });
+        document
+          .getElementById("view-body")
+          .setAttribute("aria-labelledby", "tab-" + name);
         document.getElementById("stats-controls").style.display =
           name === "stats" ? "flex" : "none";
         document.getElementById("browse-controls").style.display =
           name === "browse" ? "flex" : "none";
         loadView(name);
       }
+
+      document
+        .querySelector(".view-tabs")
+        ?.addEventListener("keydown", (e) => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key))
+            return;
+          const tabs = [...document.querySelectorAll(".view-tab")];
+          const i = tabs.indexOf(document.activeElement);
+          if (i < 0) return;
+          e.preventDefault();
+          const n =
+            e.key === "Home"
+              ? 0
+              : e.key === "End"
+                ? tabs.length - 1
+                : (i + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) %
+                  tabs.length;
+          tabs[n].focus();
+          showView(tabs[n].dataset.view);
+        });
 
       async function loadView(name) {
         const body = document.getElementById("view-body");
