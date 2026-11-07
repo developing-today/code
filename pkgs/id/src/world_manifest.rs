@@ -170,6 +170,13 @@ pub fn parse(text: &str) -> Result<WorldManifest> {
 /// instead: a typo'd limit key (`wasm_fuell = 1`) must fail loudly
 /// instead of silently leaving the live profile alone (#2876).
 ///
+/// This probe is a hand-maintained mirror of `WorldExecutionProfile`'s
+/// fields and MUST gain a line for every field that struct gains:
+/// #5268 was exactly the drift where `total_memory_bytes` (#557) never
+/// got its line and every manifest naming it failed as "unknown field".
+/// The `profile_probe_covers_every_profile_field` test below pins the
+/// mirror to the struct so the drift cannot recur silently.
+///
 /// The probe deserializes through the typed TOML deserializer, never
 /// `toml::Value` — whose integers are `i64`-capped — so full-width
 /// `u64` values the real types accept (a `seed` or `wasm_fuel` above
@@ -198,6 +205,8 @@ fn reject_unknown_profile_keys(text: &str) -> Result<()> {
         native_cpu_seconds: Option<serde::de::IgnoredAny>,
         #[serde(default)]
         native_call_deadline_ms: Option<serde::de::IgnoredAny>,
+        #[serde(default)]
+        total_memory_bytes: Option<serde::de::IgnoredAny>,
     }
 
     let _: ProfileProbe = toml::from_str(text).map_err(anyhow::Error::new)?;
@@ -574,6 +583,45 @@ wasm_fuel = 5_000_000
         // itself because the profile struct stays lenient for host JSON.
         let err = parse("[profile]\nwasm_fuell = 1").unwrap_err();
         assert!(format!("{err}").contains("wasm_fuell"), "{err}");
+    }
+
+    #[test]
+    fn total_memory_bytes_profile_key_parses_and_round_trips() {
+        // #5268: total_memory_bytes is a real WorldExecutionProfile
+        // field (#557) that the #2876 probe never learned, so any
+        // manifest naming it failed parse as an unknown field.
+        let manifest = parse("[profile]\ntotal_memory_bytes = 268435456").unwrap();
+        assert_eq!(manifest.profile.total_memory_bytes, Some(268_435_456));
+        assert_eq!(round_trip(&manifest).unwrap(), manifest);
+    }
+
+    #[test]
+    fn total_memory_bytes_zero_is_rejected() {
+        // The value the probe now admits still goes through
+        // WorldExecutionProfile::validate: a zero budget is refused.
+        assert!(parse("[profile]\ntotal_memory_bytes = 0").is_err());
+    }
+
+    #[test]
+    fn profile_probe_covers_every_profile_field() {
+        // #5268 drift guard: this literal names EVERY field of
+        // WorldExecutionProfile with no `..` rest pattern, so adding a
+        // field to that struct breaks this test's compilation until
+        // the author also adds the field to ProfileKeysProbe above —
+        // the probe is a hand mirror, and this is what keeps it
+        // honest. Values sit exactly on the validate() floors.
+        let profile = WorldExecutionProfile {
+            wasm_fuel: Some(1),
+            wasm_memory_bytes: Some(65_536),
+            wasm_message_bytes: Some(1),
+            native_memory_bytes: Some(16_777_216),
+            native_cpu_seconds: Some(1),
+            native_call_deadline_ms: Some(1),
+            total_memory_bytes: Some(1),
+        };
+        let table = toml::to_string(&profile).unwrap();
+        let manifest = parse(&format!("[profile]\n{table}")).unwrap();
+        assert_eq!(manifest.profile, profile);
     }
 
     #[test]
