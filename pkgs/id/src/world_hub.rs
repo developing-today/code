@@ -218,12 +218,14 @@ struct HubInner {
 #[derive(Clone)]
 pub struct WorldHub {
     inner: Arc<HubInner>,
+    pinned_world: Option<Arc<str>>,
 }
 
 impl std::fmt::Debug for WorldHub {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorldHub")
             .field("default_world", &self.inner.default_world)
+            .field("pinned_world", &self.pinned_world)
             .field("open", &self.open_count())
             .finish_non_exhaustive()
     }
@@ -442,13 +444,34 @@ impl WorldHub {
                     limits.signed_boot_window,
                 )),
             }),
+            pinned_world: None,
+        }
+    }
+
+    /// Return a view of this hub restricted to one already-bound world.
+    ///
+    /// The shared hub remains unchanged; the returned clone rejects other
+    /// names before leasing or creating a world, and treats an omitted name
+    /// as the bound world. This is used by program-only web listeners.
+    #[must_use]
+    pub(crate) fn pinned_to(&self, world: &str) -> Self {
+        let pinned_world = self
+            .pinned_world
+            .clone()
+            .unwrap_or_else(|| Arc::<str>::from(world));
+        Self {
+            inner: Arc::clone(&self.inner),
+            // A pin can only narrow an existing view, never replace it.
+            pinned_world: Some(pinned_world),
         }
     }
 
     /// Name sessions get when they name no world.
     #[must_use]
     pub fn default_world(&self) -> &str {
-        &self.inner.default_world
+        self.pinned_world
+            .as_deref()
+            .unwrap_or(&self.inner.default_world)
     }
 
     /// Whether `token` is the process-wide admin token.
@@ -511,12 +534,18 @@ impl WorldHub {
         name: Option<&str>,
         admin: Option<&str>,
     ) -> Result<WorldLease, ResolveError> {
-        let name = name.unwrap_or(&self.inner.default_world);
+        let name = match self.pinned_world.as_deref() {
+            Some(pinned) if name.is_some_and(|requested| requested != pinned) => {
+                return Err(ResolveError::UnknownWorld);
+            }
+            Some(pinned) => pinned,
+            None => name.unwrap_or(&self.inner.default_world),
+        };
         validate_world_name(name).map_err(|_| ResolveError::InvalidName)?;
         let permit = Arc::clone(&self.inner.sessions)
             .try_acquire_owned()
             .map_err(|_| ResolveError::Busy)?;
-        let create = admin.is_some_and(|token| self.admin_ok(token));
+        let create = self.pinned_world.is_none() && admin.is_some_and(|token| self.admin_ok(token));
         self.lease_with(name, create, permit).await
     }
 
@@ -632,6 +661,13 @@ impl WorldHub {
     ///
     /// Fails if the world cannot be opened.
     pub async fn open_default(&self) -> Result<WorldService> {
+        if self.pinned_world.is_some() {
+            let lease = self
+                .lease(None, None)
+                .await
+                .map_err(|e| anyhow::anyhow!("open default world: {}", e.message()))?;
+            return Ok(lease.service().clone());
+        }
         tracing::info!("serve startup: open_default acquiring session permit (#190 breadcrumb)");
         let permit = Arc::clone(&self.inner.sessions)
             .acquire_owned()
@@ -656,6 +692,22 @@ impl WorldHub {
     /// See [`ResolveError`]; hubs without an opener cannot create worlds.
     pub async fn create(&self, name: &str) -> Result<bool, ResolveError> {
         validate_world_name(name).map_err(|_| ResolveError::InvalidName)?;
+        if let Some(pinned) = self.pinned_world.as_deref() {
+            if name != pinned {
+                return Err(ResolveError::UnknownWorld);
+            }
+            let exists = self
+                .inner
+                .opener
+                .as_ref()
+                .is_some_and(|opener| opener.exists(name))
+                || self
+                    .inner
+                    .slots
+                    .lock()
+                    .is_ok_and(|slots| slots.contains_key(name));
+            return exists.then_some(false).ok_or(ResolveError::UnknownWorld);
+        }
         let opener = self
             .inner
             .opener
@@ -695,6 +747,11 @@ impl WorldHub {
         }
         names
             .into_iter()
+            .filter(|(name, _)| {
+                self.pinned_world
+                    .as_deref()
+                    .is_none_or(|pinned| name.as_str() == pinned)
+            })
             .map(|(name, (open, presence))| WorldInfo {
                 name,
                 open,
@@ -746,7 +803,12 @@ impl WorldHub {
                 let Some(inner) = weak.upgrade() else {
                     return;
                 };
-                let closed = Self { inner }.evict_idle(idle).await;
+                let closed = Self {
+                    inner,
+                    pinned_world: None,
+                }
+                .evict_idle(idle)
+                .await;
                 if closed > 0 {
                     tracing::info!("world hub: closed {closed} idle world(s)");
                 }
@@ -766,7 +828,12 @@ impl WorldHub {
                 let Some(inner) = weak.upgrade() else {
                     return;
                 };
-                Self { inner }.flush_outboxes(&endpoint).await;
+                Self {
+                    inner,
+                    pinned_world: None,
+                }
+                .flush_outboxes(&endpoint)
+                .await;
             }
         })
     }
@@ -875,6 +942,50 @@ mod tests {
     fn new_hub(opener: &Arc<MemoryOpener>, limits: HubLimits) -> WorldHub {
         let opener: Arc<dyn WorldOpener> = opener.clone();
         WorldHub::new(opener, Some("admin".to_owned()), "lobby", limits)
+    }
+
+    #[tokio::test]
+    async fn pinned_hub_rejects_other_worlds_before_leasing_or_creating_them() {
+        let opener = MemoryOpener::new(false);
+        let dyn_opener: Arc<dyn WorldOpener> = opener.clone();
+        let hub = WorldHub::new(
+            dyn_opener,
+            Some("admin".to_owned()),
+            "arena",
+            HubLimits::default(),
+        );
+        hub.create("arena").await.unwrap();
+        opener.known.lock().unwrap().push("other".to_owned());
+
+        let pinned = hub.pinned_to("arena");
+        let opens_before = opener.opens.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(pinned.default_world(), "arena");
+        assert_eq!(
+            pinned
+                .list()
+                .into_iter()
+                .map(|world| world.name)
+                .collect::<Vec<_>>(),
+            ["arena"]
+        );
+        let default = pinned.lease(None, None).await.unwrap();
+        assert_eq!(default.name(), "arena");
+        drop(default);
+
+        assert!(matches!(
+            pinned.lease(Some("other"), Some("admin")).await,
+            Err(ResolveError::UnknownWorld)
+        ));
+        assert!(matches!(
+            pinned.create("other").await,
+            Err(ResolveError::UnknownWorld)
+        ));
+        assert_eq!(
+            opener.opens.load(std::sync::atomic::Ordering::SeqCst),
+            opens_before,
+            "rejecting the foreign world must not call the opener"
+        );
+        assert_eq!(pinned.open_count(), 1);
     }
 
     #[test]

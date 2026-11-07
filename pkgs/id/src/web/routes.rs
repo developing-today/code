@@ -521,7 +521,8 @@ pub fn create_program_router(mut state: AppState, world_name: &str) -> Router {
     let world_state = super::world_ws::WorldWebState {
         hub: state.world.clone(),
         cookie_secure: state.cookie_secure,
-    };
+    }
+    .pinned_to(world_name);
     let router = Router::new()
         .route("/", get(program_page_handler))
         .route("/assets/{*path}", get(assets_handler))
@@ -3125,8 +3126,9 @@ mod upload_router_tests {
 
     use axum::{
         body::{Body, to_bytes},
-        http::Request,
+        http::{Request, StatusCode},
     };
+    use futures::{SinkExt as _, StreamExt as _};
     use iroh::endpoint::{Endpoint, RelayMode, presets};
     use iroh_blobs::{api::Store, store::mem::MemStore};
     use iroh_docs::protocol::Docs;
@@ -3241,6 +3243,245 @@ mod upload_router_tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn program_router_pins_the_world_http_and_websocket_bridge() {
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        let opener = crate::world_hub::testing::MemoryOpener::new(false);
+        let dyn_opener: Arc<dyn crate::world_hub::WorldOpener> = opener.clone();
+        let hub = crate::world_hub::WorldHub::new(
+            dyn_opener,
+            Some("admin".to_owned()),
+            "lobby",
+            crate::world_hub::HubLimits::default(),
+        );
+        hub.create("lobby").await.unwrap();
+        hub.create("arena").await.unwrap();
+        hub.create("other").await.unwrap();
+        let arena = hub.lease(Some("arena"), None).await.unwrap();
+        let arena_capability = arena
+            .service()
+            .invite(Some("admin"), "arena guest".to_owned(), None, None)
+            .await
+            .unwrap()
+            .capability;
+        drop(arena);
+        let other = hub.lease(Some("other"), None).await.unwrap();
+        let other_capability = other
+            .service()
+            .invite(Some("admin"), "other guest".to_owned(), None, None)
+            .await
+            .unwrap()
+            .capability;
+        drop(other);
+
+        state.world = Some(hub);
+        let app = create_program_router(state, "arena");
+
+        // The bound world remains available, including the default when the
+        // bridge request omits its world name.
+        let bound_invite = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/world/invite")
+                    .header("content-type", "application/json")
+                    .header("x-world-admin-token", "admin")
+                    .body(Body::from(r#"{"display_name":"bound guest"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bound_invite.status(), StatusCode::OK);
+        let bound_host_view = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/world/host-view?world=arena")
+                    .header("x-world-admin-token", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bound_host_view.status(), StatusCode::OK);
+        let default_host_view = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/world/host-view")
+                    .header("x-world-admin-token", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(default_host_view.status(), StatusCode::OK);
+        let default_host_view_body = to_bytes(default_host_view.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let default_host_view_json: serde_json::Value =
+            serde_json::from_slice(&default_host_view_body).unwrap();
+        assert_eq!(default_host_view_json["snapshot"]["world_id"], "arena");
+        let bound_directory = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/world/directory?world=arena")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bound_directory.status(), StatusCode::OK);
+        let bound_directory_write = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/world/directory")
+                    .header("content-type", "application/json")
+                    .header("x-world-admin-token", "admin")
+                    .body(Body::from(r#"{"world":"arena","action":"view"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bound_directory_write.status(), StatusCode::OK);
+        let explore = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/explore")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(explore.status(), StatusCode::OK);
+
+        // Naming another hosted world is refused across every HTTP entry
+        // point, before its admin token can open or create that world.
+        let other_invite = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/world/invite")
+                    .header("content-type", "application/json")
+                    .header("x-world-admin-token", "admin")
+                    .body(Body::from(
+                        r#"{"display_name":"other guest","world":"other"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(other_invite.status(), StatusCode::NOT_FOUND);
+        let other_host_view = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/world/host-view?world=other")
+                    .header("x-world-admin-token", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(other_host_view.status(), StatusCode::NOT_FOUND);
+        let other_directory_read = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/world/directory?world=other")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(other_directory_read.status(), StatusCode::NOT_FOUND);
+        let other_directory_write = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/world/directory")
+                    .header("content-type", "application/json")
+                    .header("x-world-admin-token", "admin")
+                    .body(Body::from(r#"{"world":"other","action":"view"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(other_directory_write.status(), StatusCode::NOT_FOUND);
+
+        // The same pin applies to WebSocket joins, not just the HTTP bridge.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let (mut bound_socket, _) =
+            tokio_tungstenite::connect_async(format!("ws://{addr}/ws/world"))
+                .await
+                .unwrap();
+        bound_socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                serde_json::json!({
+                    "type": "join",
+                    "capability": arena_capability,
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let bound_frame =
+            tokio::time::timeout(std::time::Duration::from_secs(5), bound_socket.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        let tokio_tungstenite::tungstenite::Message::Text(bound_text) = bound_frame else {
+            panic!("expected a bound-world snapshot frame");
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&bound_text).unwrap()["snapshot"]["world_id"],
+            "arena"
+        );
+
+        let (mut other_socket, _) =
+            tokio_tungstenite::connect_async(format!("ws://{addr}/ws/world"))
+                .await
+                .unwrap();
+        other_socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                serde_json::json!({
+                    "type": "join",
+                    "capability": other_capability,
+                    "world": "other",
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let other_frame =
+            tokio::time::timeout(std::time::Duration::from_secs(5), other_socket.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        let tokio_tungstenite::tungstenite::Message::Text(other_text) = other_frame else {
+            panic!("expected a refused-world error frame");
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&other_text).unwrap()["message"],
+            "unknown world"
+        );
     }
 
     #[tokio::test]
