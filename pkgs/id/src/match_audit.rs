@@ -1163,6 +1163,31 @@ mod tests {
     }
 
     #[test]
+    fn probe_sign_footer_refuses_unsupported_version() {
+        let log = fixture();
+        let mut header = log.header.clone();
+        header.version = FORMAT_VERSION_V0 + 1;
+        let result = sign_footer(&key(1), &header, log.entries[1].hash, &log.metadata, &log.footer);
+        assert!(result.is_err(), "sign_footer signed an unsupported-version header: {result:?}");
+    }
+
+    #[test]
+    fn probe_sign_footer_refuses_duplicate_roster() {
+        let log = fixture();
+        let mut header = log.header.clone();
+        let duplicate = header.players[0].clone();
+        header.players.push(duplicate);
+        let result = sign_footer(&key(1), &header, log.entries[1].hash, &log.metadata, &log.footer);
+        assert!(result.is_err(), "sign_footer signed a duplicate-roster header: {result:?}");
+    }
+
+    #[test]
+    fn probe_sign_footer_control_accepts_valid() {
+        let log = fixture();
+        assert!(sign_footer(&key(1), &log.header, log.entries[1].hash, &log.metadata, &log.footer).is_ok());
+    }
+
+    #[test]
     fn sign_header_and_footer_accept_roster_signers() {
         let log = fixture();
         for player in [key(1), key(2)] {
