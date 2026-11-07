@@ -1,4 +1,8 @@
 //! Serve mode (design sections 2-3; developing-today/code#5354).
+//! Source of the verbatim copy in pkgs/fleet's fleet-search crate,
+//! rehomed in #5604 (`fleet serve search`): the Atlas service must
+//! behave identically under either name, so mirror every change
+//! there. Drift guard: .github/scripts/check-fleet-search-parity.sh.
 //!
 //! One process holds the shared query embedder, a Turso backend
 //! carrying a read-only token, a bounded job scheduler, and an

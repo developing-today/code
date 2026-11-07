@@ -26,6 +26,8 @@ pub mod token_file;
 
 #[cfg(feature = "client")]
 pub mod client;
+#[cfg(feature = "client")]
+pub mod fallback;
 #[cfg(feature = "queue-broker")]
 pub mod queue_broker;
 #[cfg(feature = "secrets-broker")]

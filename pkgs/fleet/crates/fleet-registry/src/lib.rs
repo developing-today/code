@@ -223,6 +223,7 @@ pub const DOMAINS: &[Domain] = &[
             "complete",
             "health",
             "signal",
+            "fallback",
         ],
     },
     Domain {

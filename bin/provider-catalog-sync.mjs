@@ -83,17 +83,19 @@ const PROVIDER_SOURCES = {
   // openai-codex provider was deleted 2026-11-03 and its door
   // retired with the rest). Their catalogs are native-owned now,
   // so they report 'no-source-configured'.
-  // The chatgpt entry stays as the enumeration machinery's worked
-  // example ONLY: its provider definition was deleted 2026-11-03
-  // with openai-codex and the door program was retired
-  // 2026-11-06, but the CLI control fixtures (#3449/#4588)
-  // exercise the validated-addition path through this entry's
-  // source-dir snapshot and no other proxy-kind source remains.
-  // No live config names a chatgpt provider, so the entry is
-  // dormant; a run that ever names one reports the tolerated
-  // enumeration failure against the dead :18744 and falls back
-  // to cross-check only.
-  chatgpt: { kind: 'proxy', port: 18744, modelsDev: 'openai' },
+  // One deliberately synthetic proxy-kind source: 'fixture-proxy'
+  // is the enumeration machinery's worked example, kept after the
+  // last real proxy source (the codex-proxy 'chatgpt' entry) was
+  // removed 2026-11-06 on Drew's ruling (kill record:
+  // developing-today-forks/opencode#1825). The CLI control fixtures
+  // (#3449/#4588) exercise the validated-addition path through this
+  // entry's source-dir snapshot, and no live proxy-kind source
+  // remains. No live config names a fixture-proxy provider, so the
+  // entry is dormant; a run that ever names one reports the
+  // tolerated enumeration failure against the fixture port :18799
+  // (nothing listens there by design) and falls back to
+  // cross-check only.
+  'fixture-proxy': { kind: 'proxy', port: 18799, modelsDev: 'openai' },
   deepseek: { kind: 'crosscheck', modelsDev: 'deepseek' },
   groq: { kind: 'crosscheck', modelsDev: 'groq' },
   meta: { kind: 'crosscheck', modelsDev: 'meta' },
