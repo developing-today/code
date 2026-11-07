@@ -109,7 +109,20 @@ function historyForBuckets(buckets: number[], remaining: number): ItemHistoryCut
     for (let k = 0; k < count; k++) closes.push(i + 1);
   });
   for (let k = 0; k < remaining; k++) closes.push(null);
-  return history(closes.length, closes).slice(0, 5);
+  // Build only the four primary transitions plus the as-of cutoff. The
+  // generated cases normally stay small, but the capped-trial regression
+  // has 100,001 open children; constructing the unused later cutoffs would
+  // multiply that fixture's memory use without changing the history.
+  return W.slice(0, 5).map((at, week) =>
+    cutoff(
+      at,
+      closes.map((closedAt, i) =>
+        item(i + 1, {
+          state: closedAt !== null && closedAt <= week ? "closed" : "open",
+        }),
+      ),
+    ),
+  );
 }
 
 function etaWeeks(eta: { p50: string | null; p80: string | null; asOf: string }): { p50: number; p80: number } {
@@ -347,6 +360,20 @@ describe("deriveEpicEta", () => {
         expect(w.p80).toBe(exact);
       }
     }
+  });
+
+  test("withholds quantiles beyond the capped simulation horizon (#6386)", () => {
+    // Oracle: [1, 1, 1, 1] completes exactly one unit per week, so
+    // 100,001 remaining units cannot finish within the 100,000-week
+    // horizon. Neither percentile may publish the cap as a completion.
+    const eta = deriveEpicEta({
+      subjectRef: EPIC,
+      cutoffs: historyForBuckets([1, 1, 1, 1], 100_001),
+    });
+
+    expect(eta.p50).toBeNull();
+    expect(eta.p80).toBeNull();
+    expect(eta.limitations.join(" ")).toContain("simulation horizon");
   });
 
   test("all-zero borrowed baseline buckets: still no_measurable_pace, no dates (#5274)", () => {

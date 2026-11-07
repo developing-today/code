@@ -43,10 +43,10 @@ import type { RefKey } from "./model.ts";
 
 // forecast/v2 (#5274): the ETA pace derivation is the design §1
 // resampling estimator, replacing v1's median/lower-quartile pace.
-// Outputs for the same inputs change materially (bursty scopes with
-// a zero median bucket now forecast instead of returning
-// no_measurable_pace), so the model version bumps.
-export const FORECAST_MODEL_VERSION = "forecast/v2";
+// forecast/v3 (#6386) preserves capped, unfinished trials as
+// right-censored observations instead of recording the cap as a
+// completion; quantiles beyond the simulation horizon are unavailable.
+export const FORECAST_MODEL_VERSION = "forecast/v3";
 export const STALL_MODEL_VERSION = "stall-risk/v1";
 
 /** At/above this score an item is surfaced as "at risk" (§3). */
@@ -125,8 +125,8 @@ const RESAMPLE_TRIALS = 4096;
 /** Per-trial week cap: with any positive bucket a trial finishes
  * almost surely long before this; the cap only bounds pathological
  * inputs (a huge remaining count over near-zero pace) so the pure
- * function always terminates. A capped trial reads as that many
- * weeks, which is conservative for both percentiles. */
+ * function always terminates. An unfinished trial at the cap is
+ * right-censored, not a completion at that week. */
 const RESAMPLE_MAX_WEEKS = 100_000;
 
 /**
@@ -134,14 +134,16 @@ const RESAMPLE_MAX_WEEKS = 100_000;
  * completion buckets (zero weeks included — they are observations,
  * not gaps) with replacement until the drawn completions cover the
  * remaining units; the number of drawn weeks is one sample of the
- * weeks-to-complete distribution. Returns the sorted samples.
+ * weeks-to-complete distribution. A trial still unfinished at the cap
+ * is right-censored (null), not a completion. Returns sorted samples,
+ * with censored trials after every completed trial.
  * Precondition: the buckets' total is positive (the caller returns
  * no_measurable_pace otherwise — resampling all-zero buckets can
  * only draw zero and no trial would ever finish).
  */
-function resampledWeeksToComplete(buckets: number[], remainingUnits: number): number[] {
+function resampledWeeksToComplete(buckets: number[], remainingUnits: number): (number | null)[] {
   const rng = mulberry32(estimatorSeed(buckets, remainingUnits));
-  const samples: number[] = [];
+  const samples: (number | null)[] = [];
   for (let trial = 0; trial < RESAMPLE_TRIALS; trial++) {
     let completed = 0;
     let weeks = 0;
@@ -149,15 +151,21 @@ function resampledWeeksToComplete(buckets: number[], remainingUnits: number): nu
       completed += buckets[Math.floor(rng() * buckets.length)]!;
       weeks++;
     }
-    samples.push(weeks);
+    samples.push(completed >= remainingUnits ? weeks : null);
   }
-  return samples.sort((a, b) => a - b);
+  return samples.sort((a, b) => {
+    if (a === null) return b === null ? 0 : 1;
+    if (b === null) return -1;
+    return a - b;
+  });
 }
 
-/** Nearest-rank percentile of an ascending-sorted sample. */
-function percentile(sortedXs: number[], q: number): number {
+/** Nearest-rank percentile of an ascending sample with right-censored
+ * observations represented as null/+infinity. A percentile whose rank
+ * falls among censored trials is beyond the simulated horizon. */
+function percentile(sortedXs: (number | null)[], q: number): number | null {
   const idx = Math.min(sortedXs.length - 1, Math.max(0, Math.ceil(q * sortedXs.length) - 1));
-  return sortedXs[idx]!;
+  return sortedXs[idx] ?? null;
 }
 
 export type ForecastConfidence = "high" | "medium" | "low" | "unavailable";
@@ -418,15 +426,26 @@ export function deriveEpicEta(input: EpicEtaInput): EpicEta {
   // the median weeks-to-complete; P80 is the conservative (slower)
   // tail of the same distribution, so P50 <= P80 by construction.
   const weeksToComplete = resampledWeeksToComplete(paceSeries, remainingUnits);
-  result.p50 = etaDateForWeeks(asOf, percentile(weeksToComplete, 0.5));
-  if (result.p50 === null) {
-    limitations.push("P50 horizon exceeds the representable date range; no P50 date is returned");
+  const p50Weeks = percentile(weeksToComplete, 0.5);
+  if (p50Weeks === null) {
+    limitations.push(`P50 exceeds the ${RESAMPLE_MAX_WEEKS}-week simulation horizon; no P50 date is returned`);
+  } else {
+    result.p50 = etaDateForWeeks(asOf, p50Weeks);
+    if (result.p50 === null) {
+      limitations.push("P50 horizon exceeds the representable date range; no P50 date is returned");
+    }
   }
-  result.p80 = etaDateForWeeks(asOf, percentile(weeksToComplete, 0.8));
-  if (result.p80 === null) {
-    limitations.push("P80 horizon exceeds the representable date range; no P80 date is returned");
+  const p80Weeks = percentile(weeksToComplete, 0.8);
+  if (p80Weeks === null) {
+    limitations.push(`P80 exceeds the ${RESAMPLE_MAX_WEEKS}-week simulation horizon; no P80 date is returned`);
+  } else {
+    result.p80 = etaDateForWeeks(asOf, p80Weeks);
+    if (result.p80 === null) {
+      limitations.push("P80 horizon exceeds the representable date range; no P80 date is returned");
+    }
   }
 
+  if (result.p50 === null && result.p80 === null) result.confidence = "unavailable";
   if (result.status === "forecast") {
     const comparisonRate = comparison.length > 0 ? completionsComparison / comparison.length : 0;
     const primaryRate = completionsPrimary / primary.length;
