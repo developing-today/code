@@ -69,6 +69,41 @@ func TestClearStaleSocketPreservesSymlink(t *testing.T) {
 	}
 }
 
+func TestClearStaleSocketPreservesSymlinkToStaleSocket(t *testing.T) {
+	// The permutation that pins Lstat over Stat (#5742, Codex review):
+	// with Stat, a symlink to a stale socket reports ModeSocket, the
+	// dial fails, and cleanup removes the symlink. The symlink must
+	// be preserved as a symlink, and its target left alone.
+	dir := t.TempDir()
+	target := filepath.Join(dir, "stale.sock")
+	ln, err := net.Listen("unix", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(dir, "daemon.sock")
+	if err := os.Symlink(target, sock); err != nil {
+		t.Fatal(err)
+	}
+	s := staleSocketTestServer(t, sock)
+	if err := s.clearStaleSocket(); err == nil {
+		t.Fatal("expected a startup error for a symlink at the socket path")
+	}
+	fi, err := os.Lstat(sock)
+	if err != nil {
+		t.Fatalf("symlink was removed: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("entry at the socket path is no longer a symlink: %v", fi.Mode())
+	}
+	if _, err := os.Lstat(target); err != nil {
+		t.Fatalf("symlink target (stale socket) was removed: %v", err)
+	}
+}
+
 func TestClearStaleSocketRemovesStaleSocket(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "daemon.sock")
 	ln, err := net.Listen("unix", sock)
