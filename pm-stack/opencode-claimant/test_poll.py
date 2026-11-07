@@ -10,8 +10,11 @@ never count.
 """
 
 import importlib.util
+import json
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 _spec = importlib.util.spec_from_file_location(
     "poll", Path(__file__).resolve().parent / "poll.py"
@@ -291,6 +294,89 @@ class TestIsStuckBound(unittest.TestCase):
                 NOW,
             )
         )
+
+
+class TestFetchClaimedRows(unittest.TestCase):
+    class Response:
+        def __init__(self, value):
+            self.value = json.dumps(value).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return self.value
+
+    def fetch(self, rows, limit=None):
+        with tempfile.TemporaryDirectory() as directory:
+            token_file = Path(directory) / "token"
+            token_file.write_text("test-token")
+            captured = {}
+
+            def open_request(request, timeout):
+                captured["request"] = request
+                captured["timeout"] = timeout
+                return self.Response({"ok": True, "rows": rows})
+
+            changes = [
+                patch.object(poll, "BROKER_TOKEN_FILE", str(token_file)),
+                patch.object(poll, "BROKER_URL", "https://queue.example/"),
+                patch.object(poll.urllib.request, "urlopen", side_effect=open_request),
+            ]
+            if limit is not None:
+                changes.append(patch.object(poll, "BROKER_LIST_LIMIT", limit))
+            with changes[0], changes[1], changes[2]:
+                if limit is not None:
+                    with changes[3]:
+                        errors = []
+                        result = poll.fetch_claimed_rows("repo-health-code-pilot", errors)
+                else:
+                    errors = []
+                    result = poll.fetch_claimed_rows("repo-health-code-pilot", errors)
+            return result, errors, captured
+
+    def test_posts_read_only_rich_list_and_normalizes_rows(self):
+        raw = {
+            "id": 42,
+            "queue": "repo-health-code-pilot",
+            "status": "claimed",
+            "worker_id": "repo-worker",
+            "lease_until": EXPIRED,
+            "lane_id": "code-a",
+            "progress": {"lane": "opencode", "stage": "handed_off"},
+        }
+        rows, errors, captured = self.fetch([raw])
+        request = captured["request"]
+        self.assertEqual(errors, [])
+        self.assertEqual(rows[0]["id"], 42)
+        self.assertEqual(rows[0]["progress"]["stage"], "handed_off")
+        self.assertEqual(request.full_url, "https://queue.example/list")
+        self.assertEqual(request.method, "POST")
+        self.assertEqual(request.get_header("X-agent-token"), "test-token")
+        self.assertEqual(json.loads(request.data), {
+            "queue": "repo-health-code-pilot",
+            "status": "claimed",
+            "limit": poll.BROKER_LIST_LIMIT,
+            "rich": True,
+        })
+
+    def test_empty_rich_list_is_a_valid_empty_queue(self):
+        rows, errors, _ = self.fetch([])
+        self.assertEqual(rows, [])
+        self.assertEqual(errors, [])
+
+    def test_limit_sized_response_fails_closed_as_incomplete(self):
+        rows, errors, _ = self.fetch([{"id": 1}, {"id": 2}], limit=2)
+        self.assertEqual(rows, [])
+        self.assertIn("completeness unknown", errors[0]["error"])
+
+    def test_malformed_row_fails_closed_for_the_queue(self):
+        rows, errors, _ = self.fetch([{"id": 1}, None])
+        self.assertEqual(rows, [])
+        self.assertIn("malformed row", errors[0]["error"])
 
 
 class TestFetchSessions(unittest.TestCase):
