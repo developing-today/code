@@ -67,6 +67,14 @@ let
       rustc = atlasSearchToolchain;
     };
   };
+  # Which artifact the atlas-search user unit runs (#5604, fleet
+  # step 5 residual). true: `fleet serve search`, the Atlas service
+  # rehomed into the fleet multicall binary. false: the standalone
+  # atlas-search artifact's `serve` — the kept rollback, one flag
+  # flip. Same config (service.json), same wire, same port either way.
+  # Flipping this only changes what the NEXT home-manager activation
+  # installs; it never restarts the live unit by itself.
+  atlasSearchServeViaFleet = true;
   # The fleet multicall package (pkgs/fleet), built with the
   # toolchain pinned by its own rust-toolchain.toml — the
   # atlas-search pattern above. Used as the broker units'
@@ -810,8 +818,8 @@ in
   # door's behaviour is lost. bin/opencode-route-proxy.mjs, its
   # start script and test were removed in the same change.
 
-  # Atlas search service (code#5350 step 5, #5355): the packaged
-  # atlas-search binary's serve mode — one resident Snowflake
+  # Atlas search service (code#5350 step 5, #5355): the Atlas
+  # service — one resident Snowflake
   # embedder shared by every client, the job protocol with its
   # in-memory temp store + dedupe cache, and per-client ceiling
   # caps enforced from ~/.local/state/atlas-search/service.json
@@ -829,6 +837,13 @@ in
   # added Install.WantedBy below, issued the real client
   # tokens via `atlas-search init`, and created the
   # tailscale serve mapping.
+  #
+  # #5604 (fleet step 5 residual): ExecStart is `fleet serve search`
+  # (atlasSearchServeViaFleet above) — the same service rehomed into
+  # the fleet binary. The unit name, config, port and wire are
+  # unchanged; rollback is atlasSearchServeViaFleet = false (the
+  # standalone `atlas-search serve`), a single re-point. `init` and
+  # `fetch-model` stay on the standalone atlas-search on PATH.
   systemd.user.services.atlas-search = {
     Unit = {
       Description = "Atlas search service (hybrid corpus search, serve mode)";
@@ -836,7 +851,11 @@ in
       Wants = [ "network-online.target" ];
     };
     Service = {
-      ExecStart = "${atlasSearch}/bin/atlas-search serve";
+      ExecStart =
+        if atlasSearchServeViaFleet then
+          "${fleetPkgs.fleet}/bin/fleet serve search"
+        else
+          "${atlasSearch}/bin/atlas-search serve";
       Restart = "on-failure";
       RestartSec = 3;
     };

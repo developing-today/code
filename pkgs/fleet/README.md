@@ -12,12 +12,10 @@ the hello negotiation and the PATH shims. Step 4 (#5432) landed
 the dispatch domain — a thin client over pm-stack dispatch. Step 5
 (#5433) landed the search domain — the atlas-search client surface
 over the live Atlas service, gated on the #5350 step-6 cutover.
-Step 6 (#5554) landed the secrets verb. With search in, every
-domain in the registry runs for real in the full build; the one
-remaining stub is the search _serve role_ (`fleet serve search`):
-the atlas user unit still points at the standalone atlas-search
-service, and re-pointing it is tracked separately from this epic's
-client-surface step.
+Step 6 (#5554) landed the secrets verb. #5604 landed the search
+_serve role_ (`fleet serve search`): the Atlas service itself,
+rehomed from the atlas-search bin crate. With it, every domain and
+every serve role in the registry runs for real in the full build.
 
 ## Layout
 
@@ -80,6 +78,21 @@ crates/fleet-search/        the search domain (step 5): the
                             writers are ported verbatim from the
                             atlas-search bin so service envelopes
                             print byte-identically.
+                            The `serve` cargo feature (#5604) adds
+                            the service role: `fleet serve search`
+                            (also spelled `atlas-search serve` via
+                            argv0) — server.rs is a parity-guarded
+                            verbatim copy of atlas-search's service,
+                            serve.rs the role glue (arg surface,
+                            lazy shared embedder, read-only Turso
+                            backend). atlas-core / atlas-embed /
+                            atlas-proto are consumed by relative
+                            path from pkgs/atlas-search, untouched,
+                            which is why default.nix builds from the
+                            pkgs/ tree. The standalone atlas-search
+                            artifact stays buildable: it is the
+                            single-step rollback of the unit
+                            re-point (home/common: atlasSearchServeViaFleet).
 crates/fleet-dispatch/      the dispatch domain (step 4): a THIN
                             client over pm-stack's pm-dispatch —
                             `dispatch status` (GET /health),
@@ -110,7 +123,7 @@ their domain through argv0.
 | nix attr               | profile | capabilities                                                           |
 | ---------------------- | ------- | ---------------------------------------------------------------------- |
 | `fleet`                | full    | all ten                                                                |
-| `fleet-serve`          | serve   | proxy-connect, proxy-serve, queue-broker, secrets-broker, search-serve |
+| `fleet-serve`          | serve   | proxy-connect, proxy-serve, queue-broker, secrets-broker, search-serve, secrets |
 | `fleet-static`         | full    | all nine (musl static; the sandbox's artifact)                         |
 | `fleet-connect`        | connect | proxy-connect (dynamic)                                                |
 | `fleet-connect-static` | connect | proxy-connect (musl static, runs anywhere)                             |
