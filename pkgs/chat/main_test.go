@@ -14,16 +14,6 @@ import (
 	"github.com/charmbracelet/ssh"
 )
 
-import (
-	"context"
-	"errors"
-	"os"
-	"testing"
-	"time"
-
-	"github.com/charmbracelet/ssh"
-)
-
 func TestRunServerTreatsShutdownAsCleanStop(t *testing.T) {
 	signals := make(chan os.Signal, 1)
 	signals <- os.Interrupt
