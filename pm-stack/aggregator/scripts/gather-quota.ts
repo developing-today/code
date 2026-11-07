@@ -121,6 +121,7 @@ import {
 import { SnapshotStore, isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
 import { safeProviderReason } from "../src/credential-lifecycle.ts";
 import { renewOpenDesignSession, type OpenDesignCredentialLike } from "../src/opendesign-renewal.ts";
+import { readProviderAuthAlerts } from "../src/provider-auth-alerts.ts";
 import { renewMetaSession } from "../src/meta-renewal.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -727,12 +728,24 @@ async function main(): Promise<number> {
     durationMs: Date.now() - started,
     perProvider,
   };
+  // #6671: embed the keeper alert projection so the board/readout
+  // surfaces a dying provider session within one gather cycle. The
+  // keepers ran earlier this tick; reading their state files back
+  // also covers a keeper that failed before writing (missing/stale
+  // project as "keeper not reporting", never silence). Fail-soft:
+  // the reader never throws.
+  const providerAuth = await readProviderAuthAlerts({
+    opendesign:
+      process.env.OPENDESIGN_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "opendesign-renewal.json"),
+    meta: process.env.META_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "meta-renewal.json"),
+  });
   const file: QuotaCurrentFile = {
     version: 1,
     generatedAt: tickAt,
     source: GATHERER_SOURCE,
     heartbeat,
     providers: entries,
+    providerAuth,
   };
   await writeAtomic(currentPath, JSON.stringify(file, null, 2) + "\n");
   await writeHeartbeat(heartbeat);
