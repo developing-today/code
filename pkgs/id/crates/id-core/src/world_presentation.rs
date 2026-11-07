@@ -781,7 +781,22 @@ fn style_sequence(fg: u8, bg: u8, bold: bool) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
     use serde_json::json;
+
+    #[derive(Deserialize)]
+    struct ScreenCellParityCorpus {
+        cases: Vec<ScreenCellParityCase>,
+    }
+
+    #[derive(Deserialize)]
+    struct ScreenCellParityCase {
+        name: String,
+        width: u16,
+        height: u16,
+        expected_valid: bool,
+        cells: Vec<ScreenCell>,
+    }
 
     fn screen(value: Value) -> Result<Option<WorldSurface>> {
         parse_surface(&value.to_string())
@@ -806,6 +821,43 @@ mod tests {
 
     fn grid(width: usize, height: usize, fill: &str) -> ScreenSurface {
         ScreenSurface::from_cells(width, height, vec![cell(fill); width * height]).unwrap()
+    }
+
+    #[test]
+    fn rust_screen_presenter_matches_the_shared_web_parity_corpus() {
+        let corpus: ScreenCellParityCorpus = serde_json::from_str(include_str!(
+            "../../../web/src/test-fixtures/screen-cell-parity.json"
+        ))
+        .unwrap();
+
+        let case_names: Vec<_> = corpus.cases.iter().map(|case| case.name.as_str()).collect();
+        for required_case in [
+            "CJK wide character",
+            "astral-plane emoji",
+            "ZWJ emoji sequence",
+            "warning sign with emoji variation selector",
+            "non-empty continuation cell",
+            "wide character declared with the wrong width",
+        ] {
+            assert!(
+                case_names.contains(&required_case),
+                "missing {required_case:?}"
+            );
+        }
+        for case in corpus.cases {
+            let surface = ScreenSurface {
+                version: 1,
+                width: case.width,
+                height: case.height,
+                cells: case.cells,
+            };
+            assert_eq!(
+                surface.render_ansi().is_some(),
+                case.expected_valid,
+                "Rust screen presenter verdict for {:?}",
+                case.name
+            );
+        }
     }
 
     #[test]
