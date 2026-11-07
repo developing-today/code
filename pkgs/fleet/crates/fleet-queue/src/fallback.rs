@@ -1345,5 +1345,32 @@ mod tests {
                 prop_assert!(events.iter().any(|e| e.kind == MarkerKind::Claim && e.worker == h));
             }
         }
+
+        /// #6667 calendar invariant: parse_ts accepts a (year, month,
+        /// day) triple iff that day actually exists. Oracle: the
+        /// inverse pair days_from_civil/civil_from_days \u2014 a triple
+        /// is a real date iff the round trip returns it unchanged
+        /// (normalization moves impossible dates into the next
+        /// month, so their round trip differs).
+        #[test]
+        fn parse_ts_accepts_exactly_real_dates(
+            year in 1600i64..2400,
+            month in 1u32..=12,
+            day in 1u32..=31,
+        ) {
+            let s = format!("{year:04}-{month:02}-{day:02}T00:00:00Z");
+            let real = civil_from_days(days_from_civil(year, month, day)) == (year, month, day);
+            prop_assert_eq!(parse_ts(&s).is_some(), real, "{}", s);
+            if real {
+                prop_assert_eq!(parse_ts(&s), Some(days_from_civil(year, month, day) * 86_400));
+            }
+        }
+
+        /// Round-trip property over arbitrary epochs (#6667
+        /// acceptance: parse_ts(format_ts(e)) == Some(e)).
+        #[test]
+        fn ts_round_trip_any_epoch(epoch in -31_622_400i64..4_102_444_800) {
+            prop_assert_eq!(parse_ts(&format_ts(epoch)), Some(epoch));
+        }
     }
 }
