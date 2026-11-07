@@ -40,10 +40,24 @@ function args(): { corpus: string; publisher: string | null } {
   let corpus = DEFAULT_CORPUS;
   let publisher: string | null = process.env.ORCHESTRATION_PATH ?? null;
   const rest = process.argv.slice(2);
+  // A value that is missing, empty, or flag-like is a usage error (#6930):
+  // `--corpus --publisher` used to take "--publisher" as the corpus dir and
+  // die with a raw ENOENT stack, and `--publisher --corpus` blamed the
+  // publisher file for the operator's missing value, instead of giving the
+  // usage error the sibling aggregator CLIs give for the same mistake.
+  const valueAfter = (i: number): string => {
+    const value: string | undefined = rest[i + 1];
+    if (value === undefined || value === "" || value.startsWith("--")) usage();
+    return value;
+  };
   for (let i = 0; i < rest.length; i++) {
-    if (rest[i] === "--corpus" && rest[i + 1]) corpus = rest[++i];
-    else if (rest[i] === "--publisher" && rest[i + 1]) publisher = rest[++i];
-    else usage();
+    if (rest[i] === "--corpus") {
+      corpus = valueAfter(i);
+      i++;
+    } else if (rest[i] === "--publisher") {
+      publisher = valueAfter(i);
+      i++;
+    } else usage();
   }
   return { corpus, publisher };
 }
