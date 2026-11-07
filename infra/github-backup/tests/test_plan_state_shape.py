@@ -20,6 +20,7 @@ import contextlib
 import io
 import json
 import os
+import random
 import sys
 import tempfile
 import unittest
@@ -216,6 +217,171 @@ class ManifestShapeTests(unittest.TestCase):
             self.assertEqual(list(manifest["mirrors"]), ["a/b"])
             self.assertIn("entry 1", err.getvalue())
             self.assertIn("c/d", err.getvalue())
+
+
+class ShapePropertyTests(unittest.TestCase):
+    """Property tests for the validators (testing doctrine: parsers
+    and validators carry invariants, and a generator hammers them).
+
+    Stdlib-only: a seeded `random.Random` generates arbitrary
+    JSON-shaped values. Oracles are independent restatements of the
+    shape contract, not the implementation:
+
+    - plan oracle: an entry is valid iff it is a dict whose "repo"
+      is a string; the valid entries, in order, are exactly the
+      accepted ones, and every invalid entry yields one problem.
+    - state oracle: a top-level value is valid iff per-repo values
+      are dicts (with fail_days absent or a list), drain_last::
+      values are non-bool numbers, and drain_fail:: values are
+      dicts; valid inputs survive validation unchanged, validation
+      is idempotent, and a poison entry never changes the verdict
+      on its siblings.
+    """
+
+    SEED = 6637
+    CASES = 2000
+
+    def gen_value(self, rng, depth=0):
+        kinds = ["dict", "list", "str", "int", "float", "bool", "none"]
+        if depth >= 3:
+            kinds = ["str", "int", "bool", "none"]
+        kind = rng.choice(kinds)
+        if kind == "dict":
+            keys = rng.sample(
+                ["repo", "size_kb", "fail_days", "last_fetch", "x"],
+                rng.randint(0, 3),
+            )
+            return {k: self.gen_value(rng, depth + 1) for k in keys}
+        if kind == "list":
+            return [self.gen_value(rng, depth + 1) for _ in range(rng.randint(0, 3))]
+        if kind == "str":
+            return rng.choice(["a/b", "c/d", "true", "", "2026-01-01"])
+        if kind == "int":
+            return rng.randint(-5, 10**6)
+        if kind == "float":
+            return rng.uniform(-5, 10**6)
+        if kind == "bool":
+            return rng.choice([True, False])
+        return None
+
+    def gen_plan(self, rng):
+        if rng.random() < 0.1:
+            return self.gen_value(rng)
+        plan = []
+        for _ in range(rng.randint(0, 6)):
+            r = rng.random()
+            if r < 0.45:
+                plan.append({"repo": rng.choice(["a/b", "c/d", "e/f"])})
+            elif r < 0.6:
+                entry = {"repo": rng.choice(["a/b", "c/d"])}
+                entry["size_kb"] = rng.randint(0, 100)
+                plan.append(entry)
+            else:
+                plan.append(self.gen_value(rng))
+        return plan
+
+    @staticmethod
+    def plan_oracle(plan):
+        if not isinstance(plan, list):
+            return [], 1
+        valid = [
+            e
+            for e in plan
+            if isinstance(e, dict) and isinstance(e.get("repo"), str)
+        ]
+        return valid, len(plan) - len(valid)
+
+    def test_plan_invariants_over_generated_inputs(self):
+        rng = random.Random(self.SEED)
+        for _ in range(self.CASES):
+            plan = self.gen_plan(rng)
+            # Round-trip through JSON: the validators only ever see
+            # json.load output.
+            plan = json.loads(json.dumps(plan))
+            entries, problems = ghb_common.validate_plan(plan)
+            want_entries, want_problems = self.plan_oracle(plan)
+            self.assertEqual(entries, want_entries)
+            self.assertEqual(len(problems), want_problems)
+            for e in entries:
+                self.assertIsInstance(e["repo"], str)
+
+    @staticmethod
+    def state_oracle(state):
+        if not isinstance(state, dict):
+            return {}, 1
+        clean, problems = {}, 0
+        for key, value in state.items():
+            if key.startswith("drain_last::"):
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    clean[key] = value
+                else:
+                    problems += 1
+                continue
+            if not isinstance(value, dict):
+                problems += 1
+                continue
+            entry = dict(value)
+            days = entry.get("fail_days")
+            if days is not None and not isinstance(days, list):
+                entry["fail_days"] = []
+                problems += 1
+            clean[key] = entry
+        return clean, problems
+
+    def gen_state(self, rng):
+        if rng.random() < 0.1:
+            return self.gen_value(rng)
+        state = {}
+        for _ in range(rng.randint(0, 5)):
+            r = rng.random()
+            if r < 0.4:
+                state[rng.choice(["a/b", "c/d"])] = {
+                    "last_fetch": rng.randint(0, 10**6),
+                    "fail_days": ["2026-01-01"],
+                }
+            elif r < 0.55:
+                state[f"drain_last::{rng.choice(['a/b', 'c/d'])}"] = rng.uniform(
+                    0, 10**6
+                )
+            elif r < 0.65:
+                state[f"drain_fail::{rng.choice(['a/b', 'c/d'])}"] = {
+                    "count": rng.randint(0, 5),
+                    "first": 1,
+                    "last": 2,
+                }
+            else:
+                key = rng.choice(
+                    ["a/b", "c/d", "drain_last::a/b", "drain_fail::c/d", "zz"]
+                )
+                state[key] = self.gen_value(rng)
+        return state
+
+    def test_state_invariants_over_generated_inputs(self):
+        rng = random.Random(self.SEED + 1)
+        for _ in range(self.CASES):
+            state = json.loads(json.dumps(self.gen_state(rng)))
+            clean, problems = ghb_common.validate_state(state)
+            want_clean, want_problems = self.state_oracle(state)
+            self.assertEqual(clean, want_clean)
+            self.assertEqual(len(problems), want_problems)
+            # Idempotence: a validated state validates clean.
+            again, again_problems = ghb_common.validate_state(clean)
+            self.assertEqual(again, clean)
+            self.assertEqual(again_problems, [])
+
+    def test_poison_entry_never_changes_sibling_verdicts(self):
+        rng = random.Random(self.SEED + 2)
+        poisons = [123, "oops", [1], None, True, {"name": "x"}, {"repo": 7}]
+        for _ in range(500):
+            plan = self.gen_plan(rng)
+            if not isinstance(plan, list):
+                continue
+            plan = json.loads(json.dumps(plan))
+            base_entries, base_problems = ghb_common.validate_plan(plan)
+            poisoned = plan + [rng.choice(poisons)]
+            entries, problems = ghb_common.validate_plan(poisoned)
+            self.assertEqual(entries, base_entries)
+            self.assertEqual(len(problems), len(base_problems) + 1)
 
 
 if __name__ == "__main__":
