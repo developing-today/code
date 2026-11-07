@@ -1,0 +1,997 @@
+{
+  "schema_version": 1,
+  "audit": {
+    "tree_commit": "8295e70cbd240c912f60cdec24c1aafcd373e224",
+    "actions_api_audited_at": "2026-11-05T18:58:12Z",
+    "source": "GitHub Actions workflows API",
+    "workflow_count": 55,
+    "states": {
+      "active": 36,
+      "disabled_manually": 19
+    },
+    "note": "Enablement is point-in-time state, not evidence that a suite ran. Workflow states below share this audit timestamp."
+  },
+  "contract": ".github/ci-policy.md#test-suite-coverage-contract-6185-phase-1-6186",
+  "scope": {
+    "included": "Product test suites on current main. Inventory is grouped by crate or distinct test invocation; named exceptions are separate entries.",
+    "boundaries": [
+      {
+        "path": "pkgs/id/**",
+        "decision": "in_scope",
+        "rule": "Per-crate suite grouping, with separately named hosted-worker, Roc, NixOS, ARM snapshot, and native-shell exceptions."
+      },
+      {
+        "path": "pkgs/mcpx/**",
+        "decision": "in_scope",
+        "rule": "Per-crate Go suite grouping, with separately named plugin, conformance, real-software, container, and packaging suites."
+      },
+      {
+        "path": "doc/**/spikes/**",
+        "decision": "out_of_scope",
+        "reason": "Experimental/research scratch projects are not product suites."
+      },
+      {
+        "path": "doc/**/research-round*/**",
+        "decision": "out_of_scope",
+        "reason": "Experimental/research scratch projects are not product suites."
+      },
+      {
+        "path": "pavex/**",
+        "decision": "out_of_scope",
+        "reason": "Vendored Pavex tree; not a product-root package."
+      },
+      {
+        "path": "pkgs/id/vendor/**",
+        "decision": "out_of_scope",
+        "reason": "Vendored dependencies are not first-party product suites and are not members of the id workspace test run."
+      },
+      {
+        "category": "fixtures, golden data, and test helper/generator files",
+        "decision": "not_a_suite",
+        "reason": "Data and helpers are inputs to suites, not independently invoked test suites."
+      }
+    ]
+  },
+  "excluded_suites": [
+    {
+      "path": "pkgs/id/vendor/p2panda-encryption/src/data_scheme/tests.rs",
+      "reason": "Vendored dependency test; not included in the id Cargo workspace and not a first-party product suite."
+    },
+    {
+      "path": "pkgs/id/vendor/p2panda-sync/**",
+      "reason": "Vendored dependency; its test/dev dependencies were removed and no runnable suite is retained."
+    }
+  ],
+  "status_legend": {
+    "mapped": "A venue and invocation are identified; this does not assert that all five coverage rules are proven or that the suite has a successful run.",
+    "uncovered": "No usable registered venue is present; the row names the Phase 2 follow-up or the design tracker where a follow-up must be filed.",
+    "uncovered-in-fact": "The suite currently has no evidenced successful run under the five-rule contract, even if a workflow is enabled."
+  },
+  "filed_family_issues": [
+    5935, 5942, 5946, 5952, 5992, 5993, 6065, 6082, 6084, 6085, 6091, 6092,
+    6093, 6099, 5582, 5937, 5945, 5951, 6034, 6081, 6090, 6094, 6095, 6178, 6179
+  ],
+  "uncovered_count": 46,
+  "uncovered_count_definition": "Number of suite rows whose status is uncovered or uncovered-in-fact; mapped rows do not assert the five-rule contract is fully proven.",
+  "suites": [
+    {
+      "id": "id.rust.unit",
+      "paths": ["pkgs/id/src/**", "pkgs/id/crates/id-core/src/**"],
+      "invocation": "cd pkgs/id && cargo test --all-features --lib",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / Run PR check (test-unit)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "id.rust.integration",
+      "paths": ["pkgs/id/tests/*.rs"],
+      "invocation": "bash scripts/test-shard-sandbox.sh <shard> 4 (four partitions)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-shard-0..3",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "PR shards skip serve_tests; the separate test-int flake check runs cargo test --all-features --test cli_integration outside the PR list."
+    },
+    {
+      "id": "id.rust.crash-gate",
+      "paths": ["pkgs/id/tests/crash/**"],
+      "invocation": "cargo test --release --features web --test crash with sampled, sweep, control, and ingest filters",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / crash-gate-{sampled,sweep,control,ingest}; full flake aggregate",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "id.web.unit",
+      "paths": ["pkgs/id/web/src/*.test.ts"],
+      "invocation": "cd pkgs/id/web && bun run test (vitest run)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-web-unit",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "id.roc.library",
+      "paths": [
+        "pkgs/id/examples/roc-world/**",
+        "pkgs/id/examples/roc-cap-demo/roc-cap-demo-test.sh"
+      ],
+      "invocation": "bash scripts/roc-test.sh (roc-test flake check)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / roc-test",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [5957],
+      "notes": "Includes roc-cap-demo-test.sh through scripts/roc-test.sh; fails closed if the pinned Roc compiler is missing (#813)."
+    },
+    {
+      "id": "id.roc.examples",
+      "paths": ["pkgs/id/examples/roc-world/**"],
+      "invocation": "roc-examples flake check: rebuild examples, run sandbox/world tests, cargo test --test toolchain_pin",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / roc-examples",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "id.web.playwright",
+      "paths": ["pkgs/id/e2e/tests/*.spec.ts"],
+      "invocation": "node node_modules/@playwright/test/cli.js test <spec> (one invocation per spec)",
+      "venue": {
+        "workflow": ".github/workflows/id-e2e-nightly.yml",
+        "job_step": "check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "Also included in id-check full flake on main, not its PR check list; moved off PR path for runtime (#292)."
+    },
+    {
+      "id": "id.nixos.vm",
+      "paths": [
+        "pkgs/id/nix/tests/serve-test.nix",
+        "pkgs/id/nix/tests/e2e-test.nix",
+        "pkgs/id/nix/tests/integration-test.nix",
+        "pkgs/id/nix/tests/playwright-e2e-test.nix"
+      ],
+      "invocation": "nix flake check for nixos-serve, nixos-e2e, nixos-integration, and nixos-playwright-e2e (runNixOSTest)",
+      "venue": {
+        "workflow": ".github/workflows/id-e2e-nightly.yml",
+        "job_step": "check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "Heavy VM/KVM checks moved off the PR path (#292)."
+    },
+    {
+      "id": "id.world-snapshot-arm64",
+      "paths": ["pkgs/id/src/world_fixture.rs"],
+      "invocation": "cargo test -p id --lib world_fixture::tests::replay_tests::checked_in_session_snapshot_hashes_are_stable -- --exact",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "world-snapshot-arm64 / Run the checked-in session snapshot test natively",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "id.hosted-worker.routing",
+      "paths": ["pkgs/id/hosted-worker/test/routing.test.ts"],
+      "invocation": "cd pkgs/id/hosted-worker && npm test (node --test test/routing.test.ts)",
+      "venue": {
+        "workflow": ".github/workflows/id-hosted-worker-tests.yml",
+        "job_step": "hosted-worker-tests / Run the hosted-worker routing suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [6095]
+    },
+    {
+      "id": "id.native-shell.transcript",
+      "paths": ["pkgs/id/crates/id-native-shell/tests/transcript.rs"],
+      "invocation": "cargo test -p id-native-shell (manual invocation; no workflow invocation found)",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 5582,
+      "reason": "Non-default workspace member; no CI, flake, check-all, or just recipe runs the transcript suite."
+    },
+    {
+      "id": "id.bench.compare-script",
+      "paths": [".github/scripts/id-bench-compare.test.sh"],
+      "invocation": "bash .github/scripts/id-bench-compare.test.sh",
+      "venue": {
+        "workflow": ".github/workflows/id-bench.yml",
+        "job_step": "Test the compare script",
+        "state": "disabled_manually",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "related_issues": [1619],
+      "reason": "The registered id-bench workflow is disabled_manually."
+    },
+    {
+      "id": "mcpx.go.unit",
+      "paths": ["pkgs/mcpx/**/*.go"],
+      "path_excludes": ["pkgs/mcpx/internal/e2e/**"],
+      "invocation": "go test $pkgs -count=1; package.nix also computes Go test packages",
+      "venue": {
+        "workflow": ".github/workflows/mcpx-test.yml",
+        "job_step": "unit job",
+        "state": "disabled_manually",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "reason": "The canonical test workflow is disabled; Nix sandbox exclusions are documented under #2686."
+    },
+    {
+      "id": "mcpx.go.e2e",
+      "paths": ["pkgs/mcpx/internal/e2e/**"],
+      "invocation": "go test ./internal/e2e -run ^($RUN_PATTERN)$ -count=1 -json",
+      "venue": {
+        "workflow": ".github/workflows/mcpx-test.yml",
+        "job_step": "e2e job",
+        "state": "disabled_manually",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "reason": "The only registered shard venue is disabled_manually (#1994)."
+    },
+    {
+      "id": "mcpx.go.stress",
+      "paths": ["pkgs/mcpx/**/*.go"],
+      "invocation": "PR changed packages: go test -race -shuffle=<seed> -count=10; nightly: go test ./... -race -shuffle=<seed> -count=3",
+      "venue": {
+        "workflow": ".github/workflows/mcpx.yml",
+        "job_step": "stress-pr / stress-nightly",
+        "state": "disabled_manually",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "reason": "Non-gating flake-detection venue is disabled (#1973)."
+    },
+    {
+      "id": "mcpx.scripts.gotest-report",
+      "paths": ["pkgs/mcpx/scripts/test_gotest_report.py"],
+      "invocation": "cd pkgs/mcpx && python3 scripts/test_gotest_report.py",
+      "venue": {
+        "workflow": ".github/workflows/mcpx.yml",
+        "job_step": "test / Unit and end-to-end tests",
+        "state": "disabled_manually",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "reason": "The registered mcpx workflow is disabled_manually."
+    },
+    {
+      "id": "mcpx.scripts.affected-untracked",
+      "paths": ["pkgs/mcpx/scripts/tests/test_affected_untracked.py"],
+      "invocation": "python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_affected_untracked.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/mcpx-test.yml",
+        "job_step": "Affected-test selector regressions",
+        "state": "disabled_manually",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "related_issues": [3320],
+      "reason": "The registered mcpx-test workflow is disabled_manually."
+    },
+    {
+      "id": "mcpx.plugin.v1",
+      "paths": ["pkgs/mcpx/plugin/opencode/mcpx/*.test.ts"],
+      "invocation": "bun test plugin/opencode/mcpx/",
+      "venue": {
+        "workflow": ".github/workflows/mcpx.yml",
+        "job_step": "plugin / bun test",
+        "state": "disabled_manually",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "reason": "The registered v1 plugin workflow is disabled_manually.",
+      "notes": "Five files; live-daemon ops cases require OPS_LIVE_SOCKET. Root .opencode mirror is diff-checked, not a separate suite."
+    },
+    {
+      "id": "mcpx.plugin.v2",
+      "paths": [
+        "pkgs/mcpx/plugin/opencode/v2/permission.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/sampling.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/tool-filter.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/tools.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/v2.test.ts"
+      ],
+      "invocation": "bun test plugin/opencode/v2/ (61 tests at filing)",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6092,
+      "reason": "mcpx.yml only invokes the v1 plugin directory; no v2 workflow reference exists."
+    },
+    {
+      "id": "mcpx.conformance.official",
+      "paths": [
+        "pkgs/mcpx/internal/conformance/**",
+        "pkgs/mcpx/scripts/conformance.sh"
+      ],
+      "invocation": "bash scripts/conformance.sh $out (pinned upstream suite; nine legs)",
+      "venue": {
+        "workflow": ".github/workflows/mcpx-conformance.yml",
+        "job_step": "leg matrix / Run the leg",
+        "state": "disabled_manually",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "reason": "The official conformance workflow is disabled_manually.",
+      "notes": "Not a branch-protection block. Upstream skips and OAuth client limitations are documented in the workflow/spec."
+    },
+    {
+      "id": "mcpx.realsoftware",
+      "paths": ["pkgs/mcpx/internal/e2e/real_*_test.go"],
+      "invocation": "go test -tags realsoftware -run ^TestReal ./internal/e2e -count=1 -v -timeout 30m",
+      "venue": {
+        "workflow": ".github/workflows/mcpx-realsoftware-nightly.yml",
+        "job_step": "real-software nightly test job",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "Pinned local servers; real-registry internet leg is intentionally omitted (#65, #1990)."
+    },
+    {
+      "id": "mcpx.container.tier2",
+      "paths": [
+        "pkgs/mcpx/scripts/tier2-containers.sh",
+        "pkgs/mcpx/Containerfile"
+      ],
+      "invocation": "docker build and tier2-containers.sh legs: alpine-nonexec, alpine-bunmusl-exec, scratch, distroless-static, distroless-cc-deno",
+      "venue": {
+        "workflow": ".github/workflows/mcpx-tier2-containers.yml",
+        "job_step": "image and legs",
+        "state": "disabled_manually",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "reason": "The tier-2 container workflow is disabled_manually.",
+      "notes": "Tier-2 main/nightly verification, not a PR gate (#1987)."
+    },
+    {
+      "id": "mcpx.package.artifact",
+      "paths": ["pkgs/mcpx/package.nix", "pkgs/mcpx/packaging-test.sh"],
+      "invocation": "checks.mcpx-packaging (artifact version, wrapper/PATH, man page, completions, stdio handshake)",
+      "venue": {
+        "workflow": ".github/workflows/mcpx-nixbuild.yml",
+        "job_step": "nix-build / Packaging test",
+        "state": "disabled_manually",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "related_issues": [1981],
+      "reason": "The registered packaging-check workflow is disabled_manually."
+    },
+    {
+      "id": "scripts.program-tending",
+      "paths": ["scripts/tests/test_program_tending.py"],
+      "invocation": "python3 scripts/tests/test_program_tending.py (candidate; exact command not established)",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 5935,
+      "reason": "Not included by scripts-test.yml or research-workflow.yml."
+    },
+    {
+      "id": "infra.fleet-paperwork",
+      "paths": ["infra/fleet-paperwork/tests/test_fleet_paperwork.py"],
+      "invocation": "Python test; exact command not established",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 5942,
+      "reason": "No workflow, flake, or recipe venue found."
+    },
+    {
+      "id": "infra.worktree-reaper",
+      "paths": ["infra/worktree-reaper/tests/test_worktree_reaper.py"],
+      "invocation": "Python test; exact command not established",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 5946,
+      "reason": "Systemd runs the reaper, not its test suite."
+    },
+    {
+      "id": "infra.cargo-target-janitor",
+      "paths": [
+        "infra/cargo-target-janitor/tests/test_cargo_target_janitor.py"
+      ],
+      "invocation": "Python test; exact command not established",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 5952,
+      "reason": "Hourly service runs the janitor, not its tests."
+    },
+    {
+      "id": "t3code.seed-providers",
+      "paths": ["pkgs/t3code-seed-providers/test_seed.py"],
+      "invocation": "Python test; exact command not established",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 5992,
+      "reason": "Production service invokes seed.sh; no test venue found."
+    },
+    {
+      "id": "pm-stack.pm-git-sync",
+      "paths": ["pm-stack/scripts/pm-git-sync.test.sh"],
+      "invocation": "bash pm-stack/scripts/pm-git-sync.test.sh",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 5993,
+      "reason": "No workflow invokes this suite."
+    },
+    {
+      "id": "pm-stack.tailnet-bindings",
+      "paths": ["pm-stack/scripts/tailnet-bindings.test.sh"],
+      "invocation": "bash pm-stack/scripts/tailnet-bindings.test.sh",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 5993,
+      "reason": "No workflow invokes this suite; self-skip must not count as green (#5993)."
+    },
+    {
+      "id": "opencode-config-normalize",
+      "paths": ["pkgs/opencode-config-normalize/normalize_test.sh"],
+      "invocation": "bash pkgs/opencode-config-normalize/normalize_test.sh",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6065,
+      "reason": "No test venue found."
+    },
+    {
+      "id": "id-mail.deploy",
+      "paths": ["nixos/services/id-mail/worker/deploy.test.mjs"],
+      "invocation": "cd nixos/services/id-mail/worker && npm test",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6082,
+      "reason": "Package test exists, but no workflow venue was found."
+    },
+    {
+      "id": "id-mail.runtime",
+      "paths": ["nixos/services/id-mail/worker/runtime.test.mjs"],
+      "invocation": "npm test (scope not confirmed)",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6082,
+      "reason": "Test file exists; invocation and coverage are unconfirmed."
+    },
+    {
+      "id": "quota-exporters",
+      "paths": [
+        "pm-stack/opencode-usage-export/opencode-usage-export.test.mjs",
+        "pm-stack/cloudflare-export/cloudflare-quota-export.test.mjs",
+        "pm-stack/supabase-export/supabase-quota-export.test.mjs"
+      ],
+      "invocation": "Node/Bun tests; exact per-package commands not established",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6084,
+      "reason": "Three exporter suites have no venue."
+    },
+    {
+      "id": "github-backup.worker",
+      "paths": ["infra/github-backup/worker/test/index.test.mjs"],
+      "invocation": "node --test worker/test/index.test.mjs (candidate; no workflow invocation found)",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6085,
+      "reason": "Active Python workflow tests do not include worker/."
+    },
+    {
+      "id": "opencode-claimant.install",
+      "paths": ["pm-stack/opencode-claimant/test/install.test.mjs"],
+      "invocation": "cd pm-stack/opencode-claimant && bun test test/install.test.mjs",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6091,
+      "reason": "No workflow invokes the install suite."
+    },
+    {
+      "id": "pkarr-worker",
+      "paths": [
+        "pkgs/pkarr-worker/test/deploy-args.test.ts",
+        "pkgs/pkarr-worker/test/worker.test.ts"
+      ],
+      "invocation": "cd pkgs/pkarr-worker && npm test (Vitest)",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6093,
+      "reason": "Clean-checkout execution is broken by lockfile mismatch and Vitest/pool-workers incompatibility; make runnable before wiring."
+    },
+    {
+      "id": "chat.go",
+      "paths": ["pkgs/chat/main_test.go"],
+      "invocation": "cd pkgs/chat && go test ./...",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6099,
+      "reason": "go-modules-build.yml builds/vets but does not run tests, and is disabled_manually."
+    },
+    {
+      "id": "ready-for-agent.shell",
+      "paths": [
+        "pm-stack/ready-for-agent/test-install.sh",
+        "pm-stack/ready-for-agent/test-apply-config.sh"
+      ],
+      "invocation": "bash <path> (one invocation per file)",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6179,
+      "reason": "No venue found."
+    },
+    {
+      "id": "pm-stack.aggregator",
+      "paths": [
+        "pm-stack/aggregator/test/*.test.ts",
+        "pm-stack/aggregator/src/*.test.ts"
+      ],
+      "invocation": "cd pm-stack/aggregator && bun test",
+      "venue": {
+        "workflow": ".github/workflows/pm-aggregator-tests.yml",
+        "job_step": "aggregator test job",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "pm-stack.aggregator.contract-corpus",
+      "paths": [
+        "pm-stack/aggregator/test/contract-corpus.test.ts",
+        "pm-stack/aggregator/test/contract-collector.test.ts"
+      ],
+      "invocation": "bun test test/contract-corpus.test.ts test/contract-collector.test.ts",
+      "venue": {
+        "workflow": ".github/workflows/pm-aggregator-tests.yml",
+        "job_step": "contract corpus test step",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "pm-stack.projector",
+      "paths": ["pm-stack/projector/test/*.test.ts"],
+      "invocation": "cd pm-stack/projector && bun test",
+      "venue": {
+        "workflow": ".github/workflows/pm-aggregator-tests.yml",
+        "job_step": "projector test job",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "pm-stack.dispatch",
+      "paths": ["pm-stack/dispatch/test/*.test.ts"],
+      "invocation": "cd pm-stack/dispatch && bun test",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test dispatch",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [6090]
+    },
+    {
+      "id": "pm-stack.claimant.poll",
+      "paths": ["pm-stack/opencode-claimant/test_poll.py"],
+      "invocation": "python3 -m unittest pm-stack/opencode-claimant/test_poll.py",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Python claimant test step",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "related_issues": [5951],
+      "reason": "PR #5953 added the step, but no successful post-change run is evidenced. Latest API run is still queued on a non-main branch; prior main runs were cancelled or failed."
+    },
+    {
+      "id": "pm-stack.grist.choice-options",
+      "paths": ["pm-stack/grist/test_update_choice_options.py"],
+      "invocation": "python3 -m unittest discover -s pm-stack/grist -p 'test_*.py'",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Python Grist test step",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "related_issues": [5951],
+      "reason": "PR #5953 added the step, but no successful post-change run is evidenced. Latest API run is still queued on a non-main branch; prior main runs were cancelled or failed."
+    },
+    {
+      "id": "pm-stack.seed-smoke",
+      "paths": ["pm-stack/scripts/seed-smoke.test.sh"],
+      "invocation": "bash pm-stack/scripts/seed-smoke.test.sh",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "seed smoke test",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "pm-stack.deploy-install-smoke",
+      "paths": ["pm-stack/scripts/deploy-install-smoke.test.sh"],
+      "invocation": "bash pm-stack/scripts/deploy-install-smoke.test.sh",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "deploy install smoke test",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "pm-stack.external-comms.quarantine",
+      "paths": ["pm-stack/external-comms/test_push_quarantine.py"],
+      "invocation": "cd pm-stack/external-comms && python3 -m unittest test_push_quarantine.py",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test external-comms push-quarantine Python suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [6217],
+      "notes": "Current workflow YAML has workflow_dispatch plus push/pull_request path filters for external-comms; the registry records configuration, not an automatic coverage claim."
+    },
+    {
+      "id": "pm-stack.meta-exporter",
+      "paths": ["pm-stack/meta-exporter/meta-quota-export.test.mjs"],
+      "invocation": "node --test pm-stack/meta-exporter/meta-quota-export.test.mjs",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6185,
+      "reason": "Added to current main after the initial inventory; no workflow invokes it. Phase 2 follow-up must be filed."
+    },
+    {
+      "id": "github-backup.python",
+      "paths": ["infra/github-backup/tests/test_*.py"],
+      "invocation": "Run each matched Python file; fail if the glob is empty",
+      "venue": {
+        "workflow": ".github/workflows/github-backup-tests.yml",
+        "job_step": "tests",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [5937]
+    },
+    {
+      "id": "repo-universe.python",
+      "paths": [
+        "scripts/fleet/repo-universe/test_generate.py",
+        "scripts/fleet/repo-universe/test_check_issues.py"
+      ],
+      "invocation": "python3 -m unittest discover -s scripts/fleet/repo-universe -p 'test_*.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/repo-universe-tests.yml",
+        "job_step": "tests",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [5945]
+    },
+    {
+      "id": "agent-backup.shell",
+      "paths": ["pkgs/agent-backup/test-backup.sh"],
+      "invocation": "bash pkgs/agent-backup/test-backup.sh",
+      "venue": {
+        "workflow": ".github/workflows/agent-backup-tests.yml",
+        "job_step": "agent-backup-tests / Run the agent-backup regression suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [6178],
+      "notes": "Workflow YAML also has a push-to-main path filter; no trigger changes are part of Phase 1."
+    },
+    {
+      "id": "openai-cred-watchdog.python",
+      "paths": [
+        "nixos/services/openai-cred-watchdog/openai-cred-watchdog.test.py"
+      ],
+      "invocation": "python3 openai-cred-watchdog.test.py",
+      "venue": {
+        "workflow": ".github/workflows/openai-cred-watchdog-tests.yml",
+        "job_step": "openai-cred-watchdog-tests / Run the openai-cred-watchdog suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [6094],
+      "notes": "Workflow YAML also has a push-to-main path filter; no trigger changes are part of Phase 1."
+    },
+    {
+      "id": "cf-container-hello.python",
+      "paths": [
+        "pkgs/cf-container-hello/test/test_probe_hardening.py",
+        "pkgs/cf-container-hello/test/test_name_decode.py"
+      ],
+      "invocation": "npm test (Python unittest discovery)",
+      "venue": {
+        "workflow": ".github/workflows/cf-container-hello.yml",
+        "job_step": "test",
+        "state": "disabled_manually",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "reason": "Only registered workflow is manually disabled."
+    },
+    {
+      "id": "cold-store-reaper.python",
+      "paths": [
+        "pkgs/cold-store-reaper/tests/test_cold_store.py",
+        "pkgs/cold-store-reaper/tests/test_nightly_backup.py",
+        "pkgs/cold-store-reaper/tests/test_export_turso.py"
+      ],
+      "invocation": "Python unittest discovery",
+      "venue": {
+        "workflow": ".github/workflows/cold-store-reaper.yml",
+        "job_step": "python-tests",
+        "state": "disabled_manually",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "reason": "Only registered workflow is manually disabled."
+    },
+    {
+      "id": "cold-store-reaper.worker",
+      "paths": [
+        "pkgs/cold-store-reaper/worker/test/run-local-proof.mjs",
+        "pkgs/cold-store-reaper/worker/test/range-ignored.test.mjs"
+      ],
+      "invocation": "cd pkgs/cold-store-reaper/worker && npm test",
+      "venue": {
+        "workflow": ".github/workflows/cold-store-reaper.yml",
+        "job_step": "worker-proof",
+        "state": "disabled_manually",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "reason": "Only registered workflow is manually disabled."
+    },
+    {
+      "id": "lab-ops-hub",
+      "paths": [
+        "pkgs/lab-ops-hub/test/*.test.ts",
+        "pkgs/lab-ops-hub/test/test_container_validate.py",
+        "pkgs/lab-ops-hub/test/test_html5_entity_corpus.py",
+        "pkgs/lab-ops-hub/test/test_extractor_parity.py"
+      ],
+      "invocation": "npm test (TypeScript and Python suites)",
+      "venue": {
+        "workflow": ".github/workflows/lab-ops-hub.yml",
+        "job_step": "test",
+        "state": "disabled_manually",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "reason": "Only registered workflow is manually disabled."
+    },
+    {
+      "id": "ci.production-line-limit",
+      "paths": [".github/scripts/check-production-line-limit.test.sh"],
+      "invocation": "bash .github/scripts/check-production-line-limit.test.sh",
+      "venue": {
+        "workflow": ".github/workflows/production-line-guard.yml",
+        "job_step": "Guard contract tests (#1411)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [1411]
+    },
+    {
+      "id": "bin.node-tests",
+      "paths": ["bin/*.test.mjs"],
+      "invocation": "node --test bin/*.test.mjs",
+      "venue": {
+        "workflow": ".github/workflows/bin-tests.yml",
+        "job_step": "node test job",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [6081]
+    },
+    {
+      "id": "scripts.direct-python",
+      "paths": [
+        "scripts/tests/test_update_nixpkgs_inputs.py",
+        "scripts/tests/test_worker_preflight.py",
+        "scripts/tests/test_bitwarden_load_secrets.py"
+      ],
+      "invocation": "python3 <file> (each explicitly listed in workflow)",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "direct script tests",
+        "state": "disabled_manually",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "reason": "The registered scripts-test workflow is disabled_manually."
+    },
+    {
+      "id": "scripts.research-workflow",
+      "paths": [
+        "scripts/tests/test_research_workflow.py",
+        "scripts/tests/test_research_workflow_items.py",
+        "scripts/tests/test_research_workflow_live.py",
+        "scripts/tests/test_sync_research_workflow.py",
+        "scripts/tests/test_plan_check.py"
+      ],
+      "invocation": "python3 unittest discovery for test_*workflow*.py; python3 scripts/tests/test_plan_check.py; python3 scripts/research_workflow.py check --repo-root .",
+      "venue": {
+        "workflow": ".github/workflows/research-workflow.yml",
+        "job_step": "workflow checks and unit tests",
+        "state": "disabled_manually",
+        "dispatchable": true
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "reason": "The registered research-workflow workflow is disabled_manually."
+    },
+    {
+      "id": "scripts.auto-format-workflow",
+      "paths": ["scripts/tests/test_auto_format_workflow.py"],
+      "invocation": "python3 scripts/tests/test_auto_format_workflow.py",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6185,
+      "reason": "No venue found; Phase 2 follow-up must be filed."
+    },
+    {
+      "id": "nixos.home.shell-checks",
+      "paths": [
+        "nixos/home/laptop-backups-watchdog.test.sh",
+        "nixos/home/pm-dashboard-backup*.test.sh",
+        "nixos/home/laptop-autocommit-in-progress.test.sh",
+        "nixos/home/laptop-autocommit-merge-abort.test.sh",
+        "nixos/home/laptop-repo-keeper.test.sh",
+        "nixos/home/laptop-untracked-review.test.sh",
+        "nixos/home/openclaw-backup.test.sh"
+      ],
+      "invocation": "nix flake check (make-laptop-backups-checks)",
+      "venue": {
+        "kind": "flake-check",
+        "check": "root flake checks from lib/default.nix",
+        "state": "not_run_by_active_workflow",
+        "dispatchable": false
+      },
+      "status": "uncovered-in-fact",
+      "phase3_issue": 6187,
+      "related_issues": [6034],
+      "reason": "Root flake check is not invoked by active nix-ci.yml, which evaluates outputs with nix eval."
+    },
+    {
+      "id": "atlas-search.rust",
+      "paths": [
+        "pkgs/atlas-search/crates/atlas-search/tests/cli_parity.rs",
+        "pkgs/atlas-search/crates/atlas-embed/tests/gate_a.rs",
+        "pkgs/atlas-search/crates/atlas-core/tests/parity.rs",
+        "pkgs/atlas-search/crates/**/src/**"
+      ],
+      "invocation": "cd pkgs/atlas-search && cargo test --workspace --all-targets",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6185,
+      "reason": "Flake checks.default exists, but no workflow invocation was confirmed; Phase 2 follow-up must be filed."
+    },
+    {
+      "id": "fleet.rust",
+      "paths": ["pkgs/fleet/crates/**/src/**"],
+      "invocation": "cd pkgs/fleet && cargo test --workspace",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6185,
+      "reason": "Inline tests exist; no active workflow invocation was confirmed. Package Nix definition has cargoTestFlags."
+    },
+    {
+      "id": "web-gen-api.e2e",
+      "paths": ["pkgs/web-gen-api/end2end/tests/example.spec.ts"],
+      "invocation": "End-to-end package runner not confirmed",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6185,
+      "reason": "An end2end/package.json exists, but runner and venue were not confirmed."
+    },
+    {
+      "id": "web-gen-api-axum.e2e",
+      "paths": ["pkgs/web-gen-api-axum/end2end/tests/example.spec.ts"],
+      "invocation": "End-to-end package runner not confirmed",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6185,
+      "reason": "An end2end/package.json and tests/shell.nix exist, but runner and venue were not confirmed."
+    },
+    {
+      "id": "roc.cli-template",
+      "paths": ["pkgs/roc/platforms/rust-basic-cli-template/ci/all_tests.sh"],
+      "invocation": "bash pkgs/roc/platforms/rust-basic-cli-template/ci/all_tests.sh",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6185,
+      "reason": "Standalone template test driver; product-boundary disposition and venue need Phase 2 follow-up."
+    },
+    {
+      "id": "hello.nix-prelude",
+      "paths": ["pkgs/hello/nix-prelude/hello-nix-hello/main.rs"],
+      "invocation": "Rust test module; package invocation not confirmed",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6185,
+      "reason": "Embedded test module found; no test manifest or workflow invocation confirmed."
+    },
+    {
+      "id": "mcpx-fix-test-guard.shell",
+      "paths": [".github/scripts/check-mcpx-fix-test.test.sh"],
+      "invocation": "bash .github/scripts/check-mcpx-fix-test.test.sh",
+      "venue": {
+        "workflow": ".github/workflows/mcpx-fix-test-guard.yml",
+        "job_step": "main contract tests",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "android-connectivity.manual-probe",
+      "paths": ["test-android-connectivity.sh"],
+      "invocation": "bash test-android-connectivity.sh (manual device probe)",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6185,
+      "reason": "Root-level device/connectivity probe has no venue; confirm whether it is a product test suite or a manual diagnostic in Phase 2."
+    }
+  ],
+  "waivers": []
+}
