@@ -29,13 +29,17 @@ function usageError(message: string): never {
   process.exit(2);
 }
 
-/** The token after `--<name>`, refused when it is missing or is itself a flag:
+/** The token after `--<name>`, refused when it is missing, empty or whitespace-only, or is itself a flag:
  * a flag token accepted as a value would be consumed a second time as a flag
- * in its own right, and the corrupted record appended with exit 0 (#3415). */
+ * in its own right, and the corrupted record appended with exit 0 (#3415);
+ * an empty value was recorded verbatim until #6895 (an empty --id record
+ * has no identity and folds into every other empty-id record at the
+ * registry merge). The empty check matches the settled sibling guards
+ * (post-alert.ts, collect-fleet-feed.ts, append-usage-snapshots.ts). */
 function valueAfter(index: number, name: string): string {
   const value = process.argv[index + 1];
-  if (value === undefined || value.startsWith("--")) {
-    usageError(`--${name} requires a value that is not a flag`);
+  if (value === undefined || value.trim() === "" || value.startsWith("--")) {
+    usageError(`--${name} requires a value that is neither empty nor a flag`);
   }
   return value;
 }
