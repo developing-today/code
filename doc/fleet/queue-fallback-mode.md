@@ -48,7 +48,13 @@ issues themselves until the backend returns.
   unmarked comments do **not** renew a claim.
 - **Contested** = a second claim marker landed while the holder's
   claim was live (someone bypassed the tool). Neither worker
-  proceeds; the fleet monitor or a human resolves it on the issue.
+  proceeds while the contest is younger than the lease. A contest
+  is not permanent (#6668): it ages out one lease window after it
+  lands if the challenger posts no further claim, and a release
+  from the challenger clears it at once. The holder may heartbeat
+  while contested; once the contest has aged out, the holder's
+  last activity governs — live if the holder kept heartbeating,
+  stale and claimable if everyone went silent.
 
 ## The verbs
 
