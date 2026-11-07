@@ -3635,6 +3635,7 @@ mod tests {
             .unwrap();
     }
 
+    #[test]
     fn test_cli_rejects_first_and_last_together() {
         std::thread::Builder::new()
             .stack_size(8 * 1024 * 1024)
