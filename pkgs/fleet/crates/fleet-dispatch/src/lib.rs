@@ -874,6 +874,28 @@ mod tests {
         assert!(err.message().contains("--bogus"));
     }
 
+
+    #[test]
+    fn probe_dechunked_len_huge_chunk_size() {
+        // controls: the existing pins
+        assert_eq!(dechunked_len(b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n"), Some(9));
+        assert_eq!(dechunked_len(b"4\r\nWi"), None);
+        // dechunk() itself guards the declared size before slicing:
+        assert_eq!(dechunk(b"ffffffffffffffff\r\nXX"), Vec::<u8>::new());
+        // the completeness checker on the same peer-declared size:
+        let r = std::panic::catch_unwind(|| dechunked_len(b"ffffffffffffffff\r\nXX"));
+        match &r {
+            Ok(v) => println!("PROBE huge-MAX: returned {v:?}"),
+            Err(_) => println!("PROBE huge-MAX: PANIC (overflow in dechunked_len)"),
+        }
+        let r2 = std::panic::catch_unwind(|| dechunked_len(b"fffffffffffffffe\r\nXX"));
+        match &r2 {
+            Ok(v) => println!("PROBE huge-MAX-1: returned {v:?}"),
+            Err(_) => println!("PROBE huge-MAX-1: PANIC (overflow in dechunked_len)"),
+        }
+        println!("PROBE DONE panics={} {}", r.is_err(), r2.is_err());
+    }
+
     #[test]
     fn usage_errors_exit_2_and_transport_3() {
         assert_eq!(usage("x").exit_code(), 2);
