@@ -10,8 +10,9 @@
 //!
 //! Receipt contract (#3231): a known-kind artifact is acceptable on receipt
 //! only when it satisfies the same rules its in-tree builder must satisfy —
-//! enforced in [`SignedArtifact::parsed`] before [`ArtifactLog`] stores or
-//! replays it, and at the producer seams that build each kind. The generic
+//! enforced in [`SignedArtifact::parsed`] for strict receipts and at the
+//! producer seams that build each kind. Peer receipt has one version-aware
+//! legacy path for the old `home_declared` world-ID length bound. The generic
 //! builders mirror receipt (#5623): [`SignedArtifact::sign`] and
 //! [`SignedArtifact::sign_after`] run the same `parsed` check before
 //! returning, so an in-tree caller can no longer mint a signed known-kind
@@ -22,7 +23,9 @@
 //! not deduplicated or normalized. Unknown kinds keep the forward-compatible
 //! rule above: envelope only, stored, never applied. A rule added after an
 //! artifact was legitimately stored does not brick replay of its log — the
-//! replay path (`parsed_for_replay`) carries each such grandfathered rule.
+//! replay path (`parsed_for_replay`) carries each such grandfathered rule. Live receipt uses the
+//! signed format-version cutoff; only an unmarked/pre-cutoff `home_declared` world-ID length may
+//! be tolerated, and that exception is recorded in the pull outcome.
 //!
 //! An artifact may also name, in `after`, the hashes of artifacts its author
 //! had applied before writing it. Those names are signed, so a receiver can
@@ -79,6 +82,15 @@ pub const MAX_WORLD_ID_BYTES: usize = 64;
 pub const MAX_AFTER: usize = 32;
 /// The largest content a document may carry, as serialized JSON.
 pub const MAX_DOCUMENT_BYTES: usize = 64 * 1024;
+/// The signed artifact format version emitted by this release.
+pub const ARTIFACT_FORMAT_VERSION: u32 = 1;
+/// Versions at or after this one enforce the strict `home_declared` world-ID bound.
+pub const STRICT_HOME_WORLD_ID_FORMAT_VERSION: u32 = 1;
+
+fn is_strict_format_version(version: Option<u32>) -> bool {
+    version.is_some_and(|version| version >= STRICT_HOME_WORLD_ID_FORMAT_VERSION)
+}
+
 /// The kind of a friend removal.
 pub const FRIEND_REMOVE: &str = "friend_remove";
 /// Pending friendship requests a single friend removal can void.
@@ -111,6 +123,9 @@ pub struct SignedArtifact {
     /// Hashes of artifacts the author had applied before this one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub after: Vec<String>,
+    /// Signed artifact format version. Missing on artifacts made before versioning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format_version: Option<u32>,
     /// Hex SHA-256 over the signed body.
     pub hash: String,
     /// Hex Ed25519 signature over the signed body.
@@ -122,6 +137,8 @@ struct SignedBody<'a> {
     author: &'a str,
     seq: u64,
     prev: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format_version: Option<u32>,
     kind: &'a str,
     body: &'a serde_json::Value,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -132,6 +149,7 @@ fn signed_bytes(
     author: &str,
     seq: u64,
     prev: &str,
+    format_version: Option<u32>,
     kind: &str,
     body: &serde_json::Value,
     after: &[String],
@@ -140,6 +158,7 @@ fn signed_bytes(
         author,
         seq,
         prev,
+        format_version,
         kind,
         body,
         after: after.to_vec(),
@@ -251,12 +270,22 @@ fn check_key(key: &str) -> Result<()> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ParseMode {
+    Strict,
+    Replay,
+    LegacyReceive,
+}
+
 /// The `home_declared` rules, shared by receipt ([`SignedArtifact::parsed`])
-/// and the directory's producer seam ([`Directory::declare_home`]) so a
-/// declaration is refused before it is signed under the same rules that
-/// refuse it on receipt (#3187). With `replay` set, the bounds added for
-/// #3187 do not apply, so a declaration accepted before them still replays.
-pub(crate) fn check_home_declared(author: &str, body: &HomeDeclared, replay: bool) -> Result<()> {
+/// and the directory's producer seam ([`Directory::declare_home`]). Replay
+/// retains historical leniency; legacy receipt is narrower and only bypasses
+/// the world-ID byte bound.
+pub(crate) fn check_home_declared(
+    author: &str,
+    body: &HomeDeclared,
+    mode: ParseMode,
+) -> Result<()> {
     check_key(&body.account)?;
     if author != body.account {
         return Err(forbidden(
@@ -275,7 +304,7 @@ pub(crate) fn check_home_declared(author: &str, body: &HomeDeclared, replay: boo
     for server in &body.servers {
         let target =
             check_target(&server.endpoint).map_err(|error| forbidden(format!("{error:#}")))?;
-        if !replay && targets.iter().any(|prior| prior.id == target.id) {
+        if mode != ParseMode::Replay && targets.iter().any(|prior| prior.id == target.id) {
             return Err(forbidden("a declaration names each endpoint at most once"));
         }
         targets.push(target);
@@ -284,10 +313,10 @@ pub(crate) fn check_home_declared(author: &str, body: &HomeDeclared, replay: boo
         if server.world_id.is_empty() {
             return Err(forbidden("a home server needs a world ID"));
         }
-        if replay {
+        if mode == ParseMode::Replay {
             continue;
         }
-        if server.world_id.len() > MAX_WORLD_ID_BYTES {
+        if mode != ParseMode::LegacyReceive && server.world_id.len() > MAX_WORLD_ID_BYTES {
             return Err(forbidden(format!(
                 "a home server's world ID is 1 to {MAX_WORLD_ID_BYTES} bytes"
             )));
@@ -371,6 +400,18 @@ impl SignedArtifact {
         Self::build_signed(key, seq, prev, kind, body, Vec::new())
     }
 
+    /// Sign an artifact in the pre-versioned wire format, bypassing body rules.
+    #[cfg(test)]
+    pub(crate) fn sign_legacy_unchecked(
+        key: &SigningKey,
+        seq: u64,
+        prev: &str,
+        kind: &str,
+        body: serde_json::Value,
+    ) -> Result<Self> {
+        Self::build_signed_version(key, seq, prev, kind, body, Vec::new(), None)
+    }
+
     fn build_signed(
         key: &SigningKey,
         seq: u64,
@@ -379,10 +420,30 @@ impl SignedArtifact {
         body: serde_json::Value,
         after: Vec<String>,
     ) -> Result<Self> {
+        Self::build_signed_version(
+            key,
+            seq,
+            prev,
+            kind,
+            body,
+            after,
+            Some(ARTIFACT_FORMAT_VERSION),
+        )
+    }
+
+    fn build_signed_version(
+        key: &SigningKey,
+        seq: u64,
+        prev: &str,
+        kind: &str,
+        body: serde_json::Value,
+        after: Vec<String>,
+        format_version: Option<u32>,
+    ) -> Result<Self> {
         ensure!(seq >= 1, "an artifact's sequence number starts at 1");
         Self::check_after(&after)?;
         let author = hex_encode(&key.verifying_key().to_bytes());
-        let bytes = signed_bytes(&author, seq, prev, kind, &body, &after)?;
+        let bytes = signed_bytes(&author, seq, prev, format_version, kind, &body, &after)?;
         Ok(Self {
             hash: hex_encode(&Sha256::digest(&bytes)),
             signature: hex_encode(&key.sign(&bytes).to_bytes()),
@@ -392,6 +453,7 @@ impl SignedArtifact {
             kind: kind.to_owned(),
             body,
             after,
+            format_version,
         })
     }
 
@@ -471,6 +533,7 @@ impl SignedArtifact {
             &self.author,
             self.seq,
             &self.prev,
+            self.format_version,
             &self.kind,
             &self.body,
             &self.after,
@@ -498,18 +561,47 @@ impl SignedArtifact {
     /// Fails with [`Refusal::Forbidden`] when a known kind is malformed or its
     /// author may not make it.
     pub fn parsed(&self) -> Result<Option<Kind>> {
-        self.parsed_mode(false)
+        self.parsed_mode(ParseMode::Strict)
     }
 
-    /// [`SignedArtifact::parsed`] for history a log already holds: the
-    /// `home_declared` bounds added for #3187 do not apply, so a declaration
-    /// accepted before them still replays (mirroring how replay skips the
-    /// frame check in `store`). New receipts always go through `parsed`.
+    /// [`SignedArtifact::parsed`] for history a log already holds. Replay
+    /// retains its historical leniency; live legacy receipt uses the narrower
+    /// `parsed_for_legacy_receive` only before the signed strict-version cutoff.
     pub(crate) fn parsed_for_replay(&self) -> Result<Option<Kind>> {
-        self.parsed_mode(true)
+        self.parsed_mode(ParseMode::Replay)
     }
 
-    fn parsed_mode(&self, replay: bool) -> Result<Option<Kind>> {
+    /// Strict receipt validation except for the legacy world-ID byte bound.
+    /// Called only after the author's chain position is classified as legacy.
+    fn parsed_for_legacy_receive(&self) -> Result<(Option<Kind>, Option<LegacyArtifactNote>)> {
+        let kind = self.parsed_mode(ParseMode::LegacyReceive)?;
+        let note = match kind.as_ref() {
+            Some(Kind::HomeDeclared(declared)) => {
+                let world_ids: Vec<LegacyWorldIdBound> = declared
+                    .servers
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, server)| server.world_id.len() > MAX_WORLD_ID_BYTES)
+                    .map(|(server_index, server)| LegacyWorldIdBound {
+                        server_index,
+                        bytes: server.world_id.len(),
+                    })
+                    .collect();
+                (!world_ids.is_empty()).then(|| LegacyArtifactNote {
+                    author: self.author.clone(),
+                    seq: self.seq,
+                    reason: LegacyArtifactReason::HomeDeclaredWorldIdOverBound {
+                        world_ids,
+                        max_bytes: MAX_WORLD_ID_BYTES,
+                    },
+                })
+            }
+            _ => None,
+        };
+        Ok((kind, note))
+    }
+
+    fn parsed_mode(&self, mode: ParseMode) -> Result<Option<Kind>> {
         match self.kind.as_str() {
             FRIEND_REMOVE => {
                 let body: FriendRemove = self.decode()?;
@@ -536,7 +628,7 @@ impl SignedArtifact {
                 // the #3187 grandfathering below: a removal stored before
                 // this rule still replays, and its effect on the
                 // removed-request set is idempotent.
-                if !replay {
+                if mode != ParseMode::Replay {
                     let mut named = HashSet::with_capacity(body.requests.len());
                     if body.requests.iter().any(|request| !named.insert(request)) {
                         return Err(forbidden("a friend removal names the same request twice"));
@@ -554,7 +646,7 @@ impl SignedArtifact {
             }
             HOME_DECLARED => {
                 let body: HomeDeclared = self.decode()?;
-                check_home_declared(&self.author, &body, replay)?;
+                check_home_declared(&self.author, &body, mode)?;
                 Ok(Some(Kind::HomeDeclared(body)))
             }
             DOCUMENT => {
@@ -565,7 +657,7 @@ impl SignedArtifact {
                 // The NFC rule (#3192) postdates logs the producer
                 // path legitimately wrote; replay grandfathers it
                 // (#5625), fresh receipt stays strict.
-                if !replay && !is_nfc(&body.media_type) {
+                if mode != ParseMode::Replay && !is_nfc(&body.media_type) {
                     return Err(forbidden("a document's media type is not NFC"));
                 }
                 let size = serde_json::to_vec(&body.content)
@@ -586,13 +678,15 @@ impl SignedArtifact {
                 if body.name.is_empty() || body.name.len() > 64 {
                     return Err(forbidden("a tag's name is 1 to 64 bytes"));
                 }
-                if !replay && !is_nfc(&body.name) {
+                if mode != ParseMode::Replay && !is_nfc(&body.name) {
                     return Err(forbidden("a tag's name is not NFC"));
                 }
                 if body.value.as_ref().is_some_and(|value| value.len() > 256) {
                     return Err(forbidden("a tag's value is at most 256 bytes"));
                 }
-                if !replay && body.value.as_ref().is_some_and(|value| !is_nfc(value)) {
+                if mode != ParseMode::Replay
+                    && body.value.as_ref().is_some_and(|value| !is_nfc(value))
+                {
                     return Err(forbidden("a tag's value is not NFC"));
                 }
                 Ok(Some(Kind::Tag(body)))
@@ -616,6 +710,44 @@ pub enum Stored {
     Duplicate,
 }
 
+/// An accepted pre-cutoff artifact that needed a compatibility exception.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LegacyArtifactNote {
+    /// The signing account.
+    pub author: String,
+    /// The position in the signing account's chain.
+    pub seq: u64,
+    /// The exact legacy condition tolerated.
+    pub reason: LegacyArtifactReason,
+}
+
+/// A narrowly tolerated condition on a legacy artifact.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LegacyArtifactReason {
+    /// A legacy home declaration contains world IDs longer than the current bound.
+    HomeDeclaredWorldIdOverBound {
+        /// Offending servers and their UTF-8 byte lengths.
+        world_ids: Vec<LegacyWorldIdBound>,
+        /// Current maximum length in bytes.
+        max_bytes: usize,
+    },
+}
+
+/// The location and byte length of one legacy over-bound world ID.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LegacyWorldIdBound {
+    /// Zero-based index in the declaration's `servers` list.
+    pub server_index: usize,
+    /// World ID length in UTF-8 bytes.
+    pub bytes: usize,
+}
+
+struct InsertOutcome {
+    stored: Stored,
+    kind: Option<Kind>,
+    legacy_note: Option<LegacyArtifactNote>,
+}
+
 /// Every author's chain of verified artifacts, in sequence order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ArtifactLog {
@@ -632,23 +764,62 @@ impl ArtifactLog {
     /// match. An artifact that one frame cannot carry is [`Refusal::Forbidden`],
     /// since no page could ever send it. The log is unchanged on error.
     pub fn insert(&mut self, artifact: SignedArtifact) -> Result<Stored> {
-        self.store(artifact, true)
+        self.store(artifact, true, ParseMode::Strict)
+            .map(|outcome| outcome.stored)
     }
 
-    /// [`ArtifactLog::insert`], with the frame check only when `frame_check` is set.
-    /// Opening a file replays its lines without the check, so a line the file held
-    /// before the check still loads.
-    fn store(&mut self, artifact: SignedArtifact, frame_check: bool) -> Result<Stored> {
-        if frame_check {
-            artifact.verify()?;
-            artifact.parsed()?;
-        } else {
-            // Trusted local replay (open / open_read_only only): the
-            // grandfathered-rule twins. Remote receipt goes through
-            // `insert` and never reaches this branch (#5625).
-            artifact.verify_for_replay()?;
-            artifact.parsed_for_replay()?;
+    /// Insert an artifact received from a peer, using its signed format version
+    /// and this author's strict-version boundary to select receipt validation.
+    pub(crate) fn insert_received(
+        &mut self,
+        artifact: SignedArtifact,
+    ) -> Result<(Stored, Option<Kind>, Option<LegacyArtifactNote>)> {
+        let mode = self.receive_mode(&artifact);
+        let outcome = self.store(artifact, true, mode)?;
+        Ok((outcome.stored, outcome.kind, outcome.legacy_note))
+    }
+
+    fn receive_mode(&self, artifact: &SignedArtifact) -> ParseMode {
+        match artifact.format_version {
+            Some(version) if version < STRICT_HOME_WORLD_ID_FORMAT_VERSION => {
+                ParseMode::LegacyReceive
+            }
+            Some(_) => ParseMode::Strict,
+            None => {
+                let first_strict = self
+                    .chains
+                    .get(&artifact.author)
+                    .into_iter()
+                    .flatten()
+                    .filter(|held| is_strict_format_version(held.format_version))
+                    .map(|held| held.seq)
+                    .min();
+                if first_strict.map_or(true, |seq| artifact.seq < seq) {
+                    ParseMode::LegacyReceive
+                } else {
+                    ParseMode::Strict
+                }
+            }
         }
+    }
+
+    /// Insert with an explicit validation mode. Replay omits the frame check and
+    /// retains all historical replay rules; live receipt does not.
+    fn store(
+        &mut self,
+        artifact: SignedArtifact,
+        frame_check: bool,
+        mode: ParseMode,
+    ) -> Result<InsertOutcome> {
+        match mode {
+            ParseMode::Replay => artifact.verify_for_replay()?,
+            ParseMode::Strict | ParseMode::LegacyReceive => artifact.verify()?,
+        }
+        let (kind, legacy_note) = match mode {
+            ParseMode::Strict => (artifact.parsed()?, None),
+            ParseMode::Replay => (artifact.parsed_for_replay()?, None),
+            ParseMode::LegacyReceive => artifact.parsed_for_legacy_receive()?,
+        };
         let size = encoded_len(&artifact);
         if frame_check && page_frame_bytes().saturating_add(size) > MAX_FRAME_BYTES {
             return Err(forbidden(format!(
@@ -668,7 +839,11 @@ impl ArtifactLog {
                 .get(usize::try_from(artifact.seq - 1)?)
                 .is_some_and(|at| at.hash == artifact.hash);
             return if same {
-                Ok(Stored::Duplicate)
+                Ok(InsertOutcome {
+                    stored: Stored::Duplicate,
+                    kind,
+                    legacy_note,
+                })
             } else {
                 Err(Refusal::Conflict(format!(
                     "artifact {} of this account is already held as a different one",
@@ -699,7 +874,11 @@ impl ArtifactLog {
             .entry(artifact.author.clone())
             .or_default()
             .push(artifact);
-        Ok(Stored::New)
+        Ok(InsertOutcome {
+            stored: Stored::New,
+            kind,
+            legacy_note,
+        })
     }
 
     /// Every held artifact, author by author, each in sequence order.
@@ -829,7 +1008,7 @@ impl ArtifactLog {
             }
             let artifact: SignedArtifact = serde_json::from_str(line)
                 .with_context(|| format!("artifact line {} is corrupt", number + 1))?;
-            log.store(artifact, false)
+            log.store(artifact, false, ParseMode::Replay)
                 .with_context(|| format!("artifact line {} is refused", number + 1))?;
         }
         Ok(log)
@@ -856,7 +1035,7 @@ impl ArtifactLog {
             }
             let artifact: SignedArtifact = serde_json::from_str(line)
                 .with_context(|| format!("artifact line {} is corrupt", number + 1))?;
-            log.store(artifact, false)
+            log.store(artifact, false, ParseMode::Replay)
                 .with_context(|| format!("artifact line {} is refused", number + 1))?;
         }
         Ok(log)
@@ -921,6 +1100,8 @@ pub struct PageOutcome {
     pub stored: usize,
     /// Artifacts already held.
     pub duplicates: usize,
+    /// Typed compatibility notes for legacy artifacts accepted in this page.
+    pub legacy: Vec<LegacyArtifactNote>,
     /// The first artifact refused. Nothing after it is applied, since later
     /// artifacts in a chain depend on it.
     pub refused: Option<PageRefusal>,
@@ -945,13 +1126,19 @@ pub fn apply_page(
     let mut outcome = PageOutcome::default();
     for artifact in page {
         let refusal = if artifact.author == account {
-            match directory.receive_artifact(artifact) {
-                Ok(Stored::New) => {
+            match directory.receive_artifact_with_outcome(artifact) {
+                Ok((Stored::New, note)) => {
                     outcome.stored += 1;
+                    if let Some(note) = note {
+                        outcome.legacy.push(note);
+                    }
                     None
                 }
-                Ok(Stored::Duplicate) => {
+                Ok((Stored::Duplicate, note)) => {
                     outcome.duplicates += 1;
+                    if let Some(note) = note {
+                        outcome.legacy.push(note);
+                    }
                     None
                 }
                 Err(error) => Some(format!("{error:#}")),
@@ -1216,6 +1403,7 @@ pub async fn pull_within(
         let outcome = apply_page(directory, account, &page);
         total.stored += outcome.stored;
         total.duplicates += outcome.duplicates;
+        total.legacy.extend(outcome.legacy);
         if outcome.refused.is_some() {
             total.refused = outcome.refused;
             break;
@@ -1313,7 +1501,8 @@ mod tests {
     ) -> SignedArtifact {
         let (name, body) = kind.encode().unwrap();
         let author = hex_encode(&key.verifying_key().to_bytes());
-        let bytes = signed_bytes(&author, seq, prev, name, &body, &after).unwrap();
+        let format_version = Some(ARTIFACT_FORMAT_VERSION);
+        let bytes = signed_bytes(&author, seq, prev, format_version, name, &body, &after).unwrap();
         SignedArtifact {
             hash: hex_encode(&Sha256::digest(&bytes)),
             signature: hex_encode(&key.sign(&bytes).to_bytes()),
@@ -1323,6 +1512,7 @@ mod tests {
             kind: name.to_owned(),
             body,
             after,
+            format_version,
         }
     }
 
@@ -1525,7 +1715,7 @@ mod tests {
         // it, but replay does not brick the log that already holds it.
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(FILE);
-        let legacy = SignedArtifact::sign_unchecked(
+        let legacy = SignedArtifact::sign_legacy_unchecked(
             &key(1),
             1,
             "",
@@ -2166,6 +2356,169 @@ mod tests {
         assert_eq!(away.artifacts().head_seq(&ann), 1);
     }
 
+    #[tokio::test]
+    async fn a_pull_continues_after_a_pre_cutoff_overlong_home_world_id() {
+        let ann = public(1);
+        let legacy = SignedArtifact::sign_legacy_unchecked(
+            &key(1),
+            1,
+            "",
+            HOME_DECLARED,
+            json!({
+                "account": ann,
+                "servers": [{"endpoint": endpoint_of(7), "world_id": "w".repeat(65)}]
+            }),
+        )
+        .unwrap();
+        let strict = SignedArtifact::sign(
+            &key(1),
+            2,
+            &legacy.hash,
+            DOCUMENT,
+            json!({"media_type": "application/json", "content": {"text": "after legacy"}}),
+        )
+        .unwrap();
+
+        let world = WorldHandle::spawn(WorldCore::new("home", WorldLimits::default()).unwrap());
+        let service = WorldService::new(world, None);
+        for artifact in [&legacy, &strict] {
+            let outcome = service
+                .directory(
+                    Caller::default(),
+                    DirectoryAction::ReceiveArtifact {
+                        artifact: artifact.clone(),
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(outcome.stored, Some(Stored::New));
+        }
+
+        let server = endpoint().await;
+        let _router = Router::builder(server.clone())
+            .accept(
+                PULL_ALPN,
+                ArtifactPullProtocol::new(WorldHub::single(service)),
+            )
+            .spawn();
+        let client = endpoint().await;
+        let mut away = Directory::new();
+        let outcome = pull(&client, loopback(&server), &ann, &mut away)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.stored, 2);
+        assert!(outcome.refused.is_none());
+        assert_eq!(away.artifacts().head_seq(&ann), 2);
+        assert_eq!(outcome.legacy.len(), 1);
+        assert_eq!(outcome.legacy[0].author, ann);
+        assert_eq!(outcome.legacy[0].seq, 1);
+        assert_eq!(
+            outcome.legacy[0].reason,
+            LegacyArtifactReason::HomeDeclaredWorldIdOverBound {
+                world_ids: vec![LegacyWorldIdBound {
+                    server_index: 0,
+                    bytes: 65,
+                }],
+                max_bytes: MAX_WORLD_ID_BYTES,
+            }
+        );
+        assert_eq!(
+            away.artifacts().declared(&public(1)).unwrap().servers[0].world_id,
+            "w".repeat(65)
+        );
+    }
+
+    #[test]
+    fn legacy_receipt_only_bypasses_the_world_id_bound_before_the_strict_version() {
+        let oversized = || home_server(endpoint_of(7), &"w".repeat(65));
+        let legacy = SignedArtifact::sign_legacy_unchecked(
+            &key(1),
+            1,
+            "",
+            HOME_DECLARED,
+            json!({"account": public(1), "servers": [oversized()]}),
+        )
+        .unwrap();
+        let mut receiver = Directory::new();
+        let (stored, note) = receiver.receive_artifact_with_outcome(&legacy).unwrap();
+        assert_eq!(stored, Stored::New);
+        assert!(note.is_some());
+
+        let strict = home_declared_with(vec![oversized()]);
+        assert_eq!(strict.format_version, Some(ARTIFACT_FORMAT_VERSION));
+        assert!(strict.parsed().is_err());
+        assert!(Directory::new().receive_artifact(&strict).is_err());
+
+        let next = SignedArtifact::sign(
+            &key(1),
+            2,
+            &legacy.hash,
+            DOCUMENT,
+            json!({"media_type": "application/json", "content": null}),
+        )
+        .unwrap();
+        assert_eq!(receiver.receive_artifact(&next).unwrap(), Stored::New);
+
+        // An explicit pre-cutoff version is authoritative even after this
+        // author's first strict-version artifact; only an absent marker uses
+        // chain position as its fallback.
+        let explicit_pre_cutoff = SignedArtifact::build_signed_version(
+            &key(1),
+            3,
+            &next.hash,
+            HOME_DECLARED,
+            json!({"account": public(1), "servers": [oversized()]}),
+            Vec::new(),
+            Some(0),
+        )
+        .unwrap();
+        let (stored, note) = receiver
+            .receive_artifact_with_outcome(&explicit_pre_cutoff)
+            .unwrap();
+        assert_eq!(stored, Stored::New);
+        assert!(note.is_some());
+
+        let unmarked_after_cutoff = SignedArtifact::sign_legacy_unchecked(
+            &key(1),
+            4,
+            &explicit_pre_cutoff.hash,
+            HOME_DECLARED,
+            json!({"account": public(1), "servers": [oversized()]}),
+        )
+        .unwrap();
+        assert!(receiver.receive_artifact(&unmarked_after_cutoff).is_err());
+        assert_eq!(receiver.artifacts().head_seq(&public(1)), 3);
+
+        let mut tampered = legacy.clone();
+        tampered.body["servers"][0]["world_id"] = json!("changed".repeat(20));
+        let error = Directory::new().receive_artifact(&tampered).unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<Refusal>(),
+                Some(Refusal::Unauthenticated(_))
+            ),
+            "{error:#}"
+        );
+
+        let malformed_legacy = SignedArtifact::sign_legacy_unchecked(
+            &key(2),
+            1,
+            "",
+            HOME_DECLARED,
+            json!({
+                "account": public(2),
+                "servers": [{"endpoint": "not an endpoint", "world_id": "w".repeat(65)}]
+            }),
+        )
+        .unwrap();
+        assert!(
+            Directory::new()
+                .receive_artifact(&malformed_legacy)
+                .is_err()
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn a_silent_or_never_closing_pull_peer_does_not_pin_the_handler() {
         // #2087 regression: accept waited forever for the request
@@ -2459,6 +2812,39 @@ mod tests {
     }
 
     #[test]
+    fn unmarked_artifacts_keep_the_pre_versioned_signed_bytes() {
+        let legacy =
+            SignedArtifact::sign_legacy_unchecked(&key(1), 1, "", "future_kind", json!("x"))
+                .unwrap();
+        let old_bytes = format!(
+            r#"{{"author":"{}","seq":1,"prev":"","kind":"future_kind","body":"x"}}"#,
+            public(1)
+        )
+        .into_bytes();
+
+        assert_eq!(
+            signed_bytes(&public(1), 1, "", None, "future_kind", &json!("x"), &[]).unwrap(),
+            old_bytes
+        );
+        assert_eq!(
+            legacy.hash,
+            hex_encode(&Sha256::digest(&old_bytes)),
+            "the absent version marker must not change old hashes"
+        );
+        assert!(legacy.verify().is_ok());
+        assert!(
+            serde_json::to_value(&legacy)
+                .unwrap()
+                .get("format_version")
+                .is_none()
+        );
+
+        let mut marked = SignedArtifact::sign(&key(1), 1, "", "future_kind", json!("x")).unwrap();
+        marked.format_version = None;
+        assert!(marked.verify().is_err(), "the version marker is signed");
+    }
+
+    #[test]
     fn parsed_home_declaration_refuses_duplicate_endpoints() {
         let distinct = home_declared_with(vec![
             home_server(endpoint_of(7), "home"),
@@ -2487,14 +2873,34 @@ mod tests {
 
     #[test]
     fn a_legacy_home_declaration_still_replays() {
-        // A declaration accepted before the #3187 bounds (here: a world ID
-        // past MAX_WORLD_ID_BYTES) must not brick reopening its log: replay
-        // is lenient, while a fresh receipt of the same artifact is refused.
+        // An unmarked declaration from before the signed strict-version
+        // cutoff (here: a world ID past MAX_WORLD_ID_BYTES) can be received
+        // through the version-aware peer path and must still replay later.
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(FILE);
-        let legacy = home_declared_with(vec![home_server(endpoint_of(7), &"w".repeat(65))]);
+        let legacy = SignedArtifact::sign_legacy_unchecked(
+            &key(1),
+            1,
+            "",
+            HOME_DECLARED,
+            json!({
+                "account": public(1),
+                "servers": [{"endpoint": endpoint_of(7), "world_id": "w".repeat(65)}]
+            }),
+        )
+        .unwrap();
         assert!(legacy.parsed().is_err());
+        // Generic log insertion remains strict; only the chain-aware receipt
+        // path may identify and narrowly accept a legacy position.
         assert!(ArtifactLog::default().insert(legacy.clone()).is_err());
+        let mut receiver = Directory::new();
+        assert!(
+            receiver
+                .receive_artifact_with_outcome(&legacy)
+                .unwrap()
+                .1
+                .is_some()
+        );
         append(&path, &legacy).unwrap();
 
         let reopened = ArtifactLog::open(&path).unwrap();
@@ -2629,7 +3035,8 @@ mod tests {
     fn an_artifact_under_a_small_order_key_is_refused() {
         let author = hex_encode(&IDENTITY_KEY);
         let body = serde_json::json!({});
-        let bytes = signed_bytes(&author, 1, "", "note", &body, &[]).unwrap();
+        let format_version = Some(ARTIFACT_FORMAT_VERSION);
+        let bytes = signed_bytes(&author, 1, "", format_version, "note", &body, &[]).unwrap();
         let artifact = SignedArtifact {
             author,
             seq: 1,
@@ -2637,6 +3044,7 @@ mod tests {
             kind: "note".to_owned(),
             body,
             after: Vec::new(),
+            format_version,
             hash: hex_encode(&Sha256::digest(&bytes)),
             signature: hex_encode(&identity_forgery()),
         };
