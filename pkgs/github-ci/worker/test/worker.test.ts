@@ -93,6 +93,13 @@ describe("github-ci worker", () => {
     expect(sqlSeen).toContain("github:developing-today/code:999:1:completed");
   });
 
+  it("fails the delivery (500) when Turso answers a results-less 200 for the ci_events insert (#6949)", async () => {
+    fetchMock.get(PLATFORM).intercept({ path: "/v2/pipeline", method: "POST" }).reply(200, "{}");
+    const res = await post(runPayload, "workflow_run", await sign(runPayload));
+    expect(res.status).toBe(500);
+    expect(await res.text()).toContain("turso pipeline failed: malformed response");
+  });
+
   it("skips non-completed runs without touching Turso", async () => {
     const p = JSON.stringify({
       action: "requested",
