@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import type { BoardItem, GhItem, OrchestrationSection, Provenance } from "../src/model.ts";
+import { describe, expect, spyOn, test } from "bun:test";
+import type { BoardItem, GhItem, OrchestrationSection, Provenance, RefKey } from "../src/model.ts";
 import { renderBoard } from "../src/render.ts";
 import { inFlightBoardItems, titleRefs } from "../src/sources/live.ts";
 
@@ -130,6 +130,94 @@ describe("inFlightBoardItems", () => {
     );
     expect(out).toHaveLength(1);
     expect(out[0].links).toEqual([{ ref: "developing-today/code#958", relation: "tracks" }]);
+    expect(out[0].repo).toBe("developing-today/code");
+  });
+
+  test("a goal-id ref is dropped and the task remains title-only with a trace", () => {
+    const trace = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const out = inFlightBoardItems(
+        section([task("Goal-level planning", "in-progress", { ref: "goal_a243772844c3" as RefKey })]),
+        [],
+      );
+
+      expect(out).toHaveLength(1);
+      expect(out[0].repo).toBe("");
+      expect(out[0].links).toEqual([]);
+      expect(trace).toHaveBeenCalledWith(expect.stringContaining("dropping invalid in-flight ref"));
+    } finally {
+      trace.mockRestore();
+    }
+  });
+
+  test("a non-string ref is dropped and the task remains title-only", () => {
+    const trace = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const out = inFlightBoardItems(
+        section([task("Numeric external ref", "queued", { ref: 12345 as unknown as RefKey })]),
+        [],
+      );
+
+      expect(out).toHaveLength(1);
+      expect(out[0].repo).toBe("");
+      expect(out[0].links).toEqual([]);
+      expect(trace).toHaveBeenCalledWith(expect.stringContaining("dropping invalid in-flight ref"));
+    } finally {
+      trace.mockRestore();
+    }
+  });
+
+  test("a bare-number ref is dropped and the task remains title-only", () => {
+    const trace = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const out = inFlightBoardItems(
+        section([task("Bare-number external ref", "queued", { ref: "812" as RefKey })]),
+        [],
+      );
+
+      expect(out).toHaveLength(1);
+      expect(out[0].repo).toBe("");
+      expect(out[0].links).toEqual([]);
+      expect(trace).toHaveBeenCalledWith(expect.stringContaining("dropping invalid in-flight ref"));
+    } finally {
+      trace.mockRestore();
+    }
+  });
+
+  test("an unsafe title-derived GitHub number is dropped", () => {
+    const trace = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const out = inFlightBoardItems(section([task("code #9007199254740992 needs follow-up", "queued")]), []);
+
+      expect(out).toHaveLength(1);
+      expect(out[0].repo).toBe("");
+      expect(out[0].links).toEqual([]);
+      expect(trace).toHaveBeenCalledWith(expect.stringContaining("dropping invalid in-flight ref"));
+    } finally {
+      trace.mockRestore();
+    }
+  });
+
+  test("a poisoned ref does not hide healthy tasks in the same lane", () => {
+    const trace = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const out = inFlightBoardItems(
+        section([
+          task("Healthy linked work", "in-progress", { ref: "developing-today/code#958" }),
+          task("Poisoned title-only work", "queued", { ref: "goal_a243772844c3" as RefKey }),
+        ]),
+        [],
+      );
+
+      expect(out.map((item) => item.title)).toEqual(["Healthy linked work", "Poisoned title-only work"]);
+      expect(out[0].repo).toBe("developing-today/code");
+      expect(out[0].links).toEqual([{ ref: "developing-today/code#958", relation: "tracks" }]);
+      expect(out[1].repo).toBe("");
+      expect(out[1].links).toEqual([]);
+      expect(trace).toHaveBeenCalledWith(expect.stringContaining("dropping invalid in-flight ref"));
+    } finally {
+      trace.mockRestore();
+    }
   });
 
   test("dedupes matched refs and ref-less title matches against Kaneo cards", () => {

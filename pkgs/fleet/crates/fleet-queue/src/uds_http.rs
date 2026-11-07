@@ -108,16 +108,32 @@ fn read_request(stream: &mut UnixStream) -> Option<HttpRequest> {
     let method = req_line.next()?.to_string();
     let target = req_line.next()?.to_string();
     let mut headers = Vec::new();
-    let mut content_length = 0usize;
+    // Content-Length follows the fleet strict doctrine (the
+    // fleet-proxy http.rs oracle, #6527): an unparsable value is
+    // malformed — never "no body", which would dispatch the request
+    // with its body silently dropped — and duplicate headers must
+    // agree. Rejection is `None`: no request, no handler dispatch.
+    // The oversized-length clamp below is unchanged (#6515 owns the
+    // clamp semantics); duplicates are compared before clamping.
+    let mut declared_length: Option<usize> = None;
     for line in lines {
         if let Some((k, v)) = line.split_once(':') {
             let (k, v) = (k.trim().to_string(), v.trim().to_string());
             if k.eq_ignore_ascii_case("content-length") {
-                content_length = v.parse().unwrap_or(0).min(MAX_BODY_BYTES);
+                let Ok(parsed) = v.parse::<usize>() else {
+                    return None;
+                };
+                if let Some(prev) = declared_length {
+                    if prev != parsed {
+                        return None;
+                    }
+                }
+                declared_length = Some(parsed);
             }
             headers.push((k, v));
         }
     }
+    let content_length = declared_length.map(|n| n.min(MAX_BODY_BYTES)).unwrap_or(0);
     let mut body = buf[head_end..].to_vec();
     while body.len() < content_length {
         match stream.read(&mut chunk) {
@@ -242,5 +258,195 @@ mod tests {
         assert!(resp.contains("\"target\":\"/healthz\""), "resp: {resp}");
         assert!(resp.contains("\"token\":\"t0ken\""), "resp: {resp}");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    // #6527: Content-Length validation. The oracle is the response
+    // (or its absence) plus the handler invocation count: a rejected
+    // shape must never reach the handler, so no response is written
+    // and the connection closes with an empty read.
+    fn serve_counting(
+        tag: &str,
+    ) -> (
+        std::path::PathBuf,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let path = temp_socket(tag);
+        let listener = bind_socket(&path).unwrap().unwrap();
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = std::sync::Arc::clone(&calls);
+        std::thread::spawn(move || {
+            serve(listener, move |req| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                (200, req.body.clone())
+            });
+        });
+        (path, calls)
+    }
+
+    fn roundtrip(path: &std::path::Path, request: &[u8]) -> String {
+        let mut stream = UnixStream::connect(path).unwrap();
+        stream.write_all(request).unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).unwrap();
+        resp
+    }
+
+    #[test]
+    fn unparsable_content_length_is_rejected_before_the_handler() {
+        use std::sync::atomic::Ordering;
+        for (tag, value) in [("cl-alpha", "abc"), ("cl-negative", "-5"), ("cl-empty", "")] {
+            let (path, calls) = serve_counting(tag);
+            let request = format!(
+                "POST /healthz HTTP/1.1\r\nHost: uds\r\nContent-Length: {value}\r\n\r\n{{}}"
+            );
+            let resp = roundtrip(&path, request.as_bytes());
+            assert_eq!(
+                resp, "",
+                "value {value:?} must get no response, got: {resp}"
+            );
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                0,
+                "handler must not run for Content-Length: {value:?}"
+            );
+            let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn conflicting_duplicate_content_lengths_are_rejected_before_the_handler() {
+        use std::sync::atomic::Ordering;
+        let (path, calls) = serve_counting("cl-conflict");
+        let resp = roundtrip(
+            &path,
+            b"POST /healthz HTTP/1.1\r\nHost: uds\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\n{}",
+        );
+        assert_eq!(
+            resp, "",
+            "conflicting duplicates must get no response, got: {resp}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn conflicting_duplicate_content_lengths_reversed_are_rejected() {
+        use std::sync::atomic::Ordering;
+        let (path, calls) = serve_counting("cl-conflict-rev");
+        let resp = roundtrip(
+            &path,
+            b"POST /healthz HTTP/1.1\r\nHost: uds\r\nContent-Length: 3\r\nContent-Length: 2\r\n\r\n{}",
+        );
+        assert_eq!(
+            resp, "",
+            "conflicting duplicates (reverse order) must get no response, got: {resp}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn identical_duplicate_content_lengths_are_accepted() {
+        use std::sync::atomic::Ordering;
+        let (path, calls) = serve_counting("cl-agree");
+        let resp = roundtrip(
+            &path,
+            b"POST /healthz HTTP/1.1\r\nHost: uds\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\n{}",
+        );
+        assert!(resp.starts_with("HTTP/1.1 200"), "resp: {resp}");
+        assert!(
+            resp.ends_with("{}"),
+            "handler must receive the body, resp: {resp}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    // Property-based coverage of the #6527 Content-Length invariants
+    // (Codex review on PR #6529; the oracle is the invariant itself,
+    // per the repo testing doctrine — the fixed examples above stay
+    // as smoke coverage). Oracle: a request shape the strict doctrine
+    // rejects must never reach the handler (no response, zero calls);
+    // a shape it accepts must dispatch exactly once with the declared
+    // body intact.
+    fn prop_socket() -> (
+        std::path::PathBuf,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, Ordering::SeqCst);
+        serve_counting(&format!("cl-prop-{n}"))
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(48))]
+
+        #[test]
+        fn unparsable_content_length_never_dispatches(
+            value in prop_oneof![
+                "[a-z]{1,6}",
+                "-[0-9]{1,4}",
+                "[0-9]{1,4}[a-z]",
+                "[0-9]\\.[0-9]{1,3}",
+            ],
+        ) {
+            use std::sync::atomic::Ordering;
+            // The strategies above can never spell a non-negative
+            // integer, so the oracle is decidable for every case.
+            prop_assume!(value.parse::<usize>().is_err());
+            let (path, calls) = prop_socket();
+            let request = format!(
+                "POST /healthz HTTP/1.1\r\nHost: uds\r\nContent-Length: {value}\r\n\r\n{{}}"
+            );
+            let resp = roundtrip(&path, request.as_bytes());
+            prop_assert_eq!(resp, "", "value {:?} must get no response", value);
+            prop_assert_eq!(
+                calls.load(Ordering::SeqCst),
+                0,
+                "handler must not run for Content-Length: {:?}",
+                value
+            );
+            let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        }
+
+        #[test]
+        fn conflicting_duplicate_content_lengths_never_dispatch_in_either_order(
+            a in 0..1000usize,
+            b in 0..1000usize,
+            swap in any::<bool>(),
+        ) {
+            use std::sync::atomic::Ordering;
+            prop_assume!(a != b);
+            let (first, second) = if swap { (b, a) } else { (a, b) };
+            let (path, calls) = prop_socket();
+            let request = format!(
+                "POST /healthz HTTP/1.1\r\nHost: uds\r\nContent-Length: {first}\r\nContent-Length: {second}\r\n\r\n{{}}"
+            );
+            let resp = roundtrip(&path, request.as_bytes());
+            prop_assert_eq!(resp, "", "conflicting {}/{} must get no response", first, second);
+            prop_assert_eq!(calls.load(Ordering::SeqCst), 0);
+            let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        }
+
+        #[test]
+        fn agreeing_duplicate_content_lengths_dispatch_with_body_intact(
+            body_text in "[a-z]{0,32}",
+        ) {
+            use std::sync::atomic::Ordering;
+            let n = body_text.len();
+            let (path, calls) = prop_socket();
+            let request = format!(
+                "POST /healthz HTTP/1.1\r\nHost: uds\r\nContent-Length: {n}\r\nContent-Length: {n}\r\n\r\n{body_text}"
+            );
+            let resp = roundtrip(&path, request.as_bytes());
+            prop_assert!(resp.starts_with("HTTP/1.1 200"), "resp: {}", resp);
+            prop_assert!(resp.ends_with(&body_text), "body must arrive intact, resp: {}", resp);
+            prop_assert_eq!(calls.load(Ordering::SeqCst), 1);
+            let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        }
     }
 }

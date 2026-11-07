@@ -13,7 +13,7 @@ description = "The fleet queue domain: the repo-queue client surface plus the qu
 # standalone artifact.
 [features]
 client = []
-queue-broker = ["dep:tiny_http", "dep:ureq", "dep:fleet-config"]
+queue-broker = ["client", "dep:tiny_http", "dep:ureq", "dep:fleet-config"]
 secrets-broker = ["dep:tiny_http", "dep:fleet-config"]
 
 [dependencies]
@@ -45,6 +45,11 @@ required-features = ["queue-broker"]
 name = "secrets-broker"
 path = "src/bin/secrets-broker.rs"
 required-features = ["secrets-broker"]
+
+[[test]]
+name = "broker_bin_args"
+path = "tests/broker_bin_args.rs"
+required-features = ["queue-broker", "secrets-broker"]
 
 
 [dev-dependencies]
