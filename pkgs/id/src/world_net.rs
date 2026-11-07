@@ -1270,6 +1270,17 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_create_world_reply(&reply)
+    }
+
+    /// Parse a `world_created` reply frame into the `created` flag.
+    ///
+    /// Factored out of [`WorldClient::create_world`] so the reply
+    /// validation can be unit-tested without a live host. `false` is a
+    /// real answer (the world already existed), so a missing or
+    /// mistyped `created` field must never default to it: that shape
+    /// is corruption or version skew and errors instead (issue #6632).
+    fn parse_create_world_reply(reply: &serde_json::Value) -> Result<bool> {
         if reply["type"] != "world_created" {
             bail!(
                 "{}",
@@ -1278,7 +1289,13 @@ impl WorldClient {
                     .unwrap_or("host refused to create the world")
             );
         }
-        Ok(reply["created"].as_bool().unwrap_or(false))
+        match reply.get("created") {
+            Some(serde_json::Value::Bool(created)) => Ok(*created),
+            Some(_) => {
+                bail!("host sent a malformed world_created reply: `created` is not a boolean")
+            }
+            None => bail!("host sent no created flag in world_created reply"),
+        }
     }
 
     /// Receive one JSON frame; `None` when the host ended the session.
@@ -3567,5 +3584,63 @@ mod tests {
                 "unexpected error: {err}"
             );
         }
+    }
+
+    #[test]
+    fn create_world_reply_requires_created_flag() {
+        // Issue #6632: `false` is a real answer ("the world already
+        // existed"), so a `world_created` reply whose `created` field
+        // is missing or mistyped must error, never read as Ok(false).
+        // Oracle: the sibling strictness of parse_module_info_reply —
+        // a present-but-wrong-shape field is corruption, not a default.
+        let parse = |reply: serde_json::Value| WorldClient::parse_create_world_reply(&reply);
+
+        // Well-formed controls keep their meaning.
+        assert!(
+            parse(serde_json::json!({"type": "world_created", "world": "arena", "created": true}))
+                .unwrap()
+        );
+        assert!(
+            !parse(
+                serde_json::json!({"type": "world_created", "world": "arena", "created": false})
+            )
+            .unwrap()
+        );
+
+        // Missing `created` -> an error naming the flag.
+        let result = parse(serde_json::json!({"type": "world_created", "world": "arena"}));
+        assert!(
+            result.is_err(),
+            "missing created must error, got {result:?}"
+        );
+        assert!(
+            result.err().unwrap().to_string().contains("created"),
+            "error must name the created flag"
+        );
+
+        // Mistyped `created` shapes -> an error, never Ok(false).
+        for bad in [
+            serde_json::json!("true"),
+            serde_json::json!(1),
+            serde_json::Value::Null,
+            serde_json::json!(["true"]),
+        ] {
+            let result = parse(
+                serde_json::json!({"type": "world_created", "world": "arena", "created": bad}),
+            );
+            assert!(
+                result.is_err(),
+                "mistyped created must error, got {result:?}"
+            );
+        }
+
+        // The refusal path still surfaces the host's message.
+        let result = parse(serde_json::json!({"type": "error", "message": "bad admin token"}));
+        assert_eq!(result.err().unwrap().to_string(), "bad admin token");
+        let result = parse(serde_json::json!({"type": "error"}));
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            "host refused to create the world"
+        );
     }
 }
