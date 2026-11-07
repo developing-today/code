@@ -12,7 +12,7 @@ import json, os, shutil, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ghb_common import load_config, backup_root, mirror_path, valid_mirror, disk_kb
+from ghb_common import load_config, backup_root, mirror_path, valid_mirror, disk_kb, load_plan, report_problems
 
 PAR = 4
 TIMEOUT = 5400
@@ -80,7 +80,8 @@ def dest_is_confirmed_partial(dest):
 def main():
     cfg = load_config()
     root = backup_root(cfg)
-    plan = json.load(open(os.path.join(root, "plan.json")))
+    plan, problems = load_plan(root)
+    report_problems(problems)
     status_path = os.path.join(root, "clone-status.jsonl")
 
     def log_status(rec):

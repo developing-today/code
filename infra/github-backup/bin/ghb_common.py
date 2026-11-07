@@ -141,6 +141,96 @@ def inventory(owners):
     return out, errors
 
 
+# ------------------------------------------------------- plan/state files
+def _shape(value):
+    return type(value).__name__
+
+
+def validate_plan(plan, source="plan.json"):
+    """Split a loaded plan.json into (valid entries, named problems).
+
+    A plan entry is valid only as an object with a string "repo" —
+    every consumer subscripts entry["repo"], so any other shape is a
+    poison entry (#6637): it is reported by index and skipped, never
+    allowed to crash the run for every other repo. A non-list top
+    level invalidates the whole file as a single named problem.
+    """
+    if not isinstance(plan, list):
+        return [], [
+            f"{source}: top level is {_shape(plan)}, expected a list of "
+            f"objects — whole file treated as empty"
+        ]
+    entries, problems = [], []
+    for i, item in enumerate(plan):
+        if isinstance(item, dict) and isinstance(item.get("repo"), str):
+            entries.append(item)
+        else:
+            problems.append(
+                f"{source}: entry {i} is not an object with a string "
+                f"'repo' (got {_shape(item)}) — skipped"
+            )
+    return entries, problems
+
+
+def validate_state(state, source="state.json"):
+    """Split a loaded state.json into (clean state, named problems).
+
+    Per-repo entries must be objects; a wrong-shape entry is dropped
+    by name (#6637) so one poison entry cannot wedge every repo, and
+    a non-list "fail_days" inside an entry is reset to [] under the
+    same rule. A non-object top level invalidates the whole file as
+    a single named problem.
+    """
+    if not isinstance(state, dict):
+        return {}, [
+            f"{source}: top level is {_shape(state)}, expected an "
+            f"object — whole file treated as empty"
+        ]
+    clean, problems = {}, []
+    for repo, entry in state.items():
+        if not isinstance(entry, dict):
+            problems.append(
+                f"{source}: entry for {repo!r} is {_shape(entry)}, "
+                f"expected an object — dropped"
+            )
+            continue
+        entry = dict(entry)
+        days = entry.get("fail_days")
+        if days is not None and not isinstance(days, list):
+            problems.append(
+                f"{source}: 'fail_days' for {repo!r} is {_shape(days)}, "
+                f"expected a list — reset to []"
+            )
+            entry["fail_days"] = []
+        clean[repo] = entry
+    return clean, problems
+
+
+def load_plan(root):
+    """Load + validate plan.json under `root` (missing file = empty)."""
+    path = os.path.join(root, "plan.json")
+    if not os.path.exists(path):
+        return [], []
+    with open(path) as f:
+        return validate_plan(json.load(f))
+
+
+def load_state(root):
+    """Load + validate state.json under `root` (missing file = empty)."""
+    path = os.path.join(root, "state.json")
+    if not os.path.exists(path):
+        return {}, []
+    with open(path) as f:
+        return validate_state(json.load(f))
+
+
+def report_problems(problems):
+    """Name every shape problem on stderr; returns the count."""
+    for problem in problems:
+        print(f"github-backup: {problem}", file=sys.stderr)
+    return len(problems)
+
+
 # ---------------------------------------------------------------- plan
 def build_plan(repos, cfg):
     """Apply config tier rules. Returns (plan, excluded, gaps, pending_review).
