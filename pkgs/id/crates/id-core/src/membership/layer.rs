@@ -242,6 +242,7 @@ impl Membership {
                     group,
                     after,
                     Refusal::Gate(rejection),
+                    false,
                 )?));
             }
             Admission::Displace(_) => {
@@ -253,6 +254,7 @@ impl Membership {
                         group,
                         after,
                         Refusal::Gate(Rejection::GroupExists),
+                        false,
                     )?));
                 }
                 return Ok(Decided::Displace);
@@ -268,6 +270,7 @@ impl Membership {
                 group,
                 after,
                 Refusal::Invalid(message),
+                true,
             )?)),
         }
     }
@@ -281,12 +284,21 @@ impl Membership {
         let history = std::mem::take(&mut self.history);
         let mut fresh = Membership::new();
         fresh.rebuilding = true;
+        // The replayed feeds return an event more than once (a decision releases the held events
+        // waiting on it), so the latest outcome per event is kept. Positions are indexed by
+        // event ID: scanning the accumulated list for each returned entry made this replay
+        // O(N^2) over a history of N events (#4128). The `Vec` keeps first-decision (canonical)
+        // order for the returned set; the map only locates the slot to overwrite.
         let mut latest: Vec<(Hash, Outcome)> = Vec::new();
+        let mut positions: HashMap<Hash, usize> = HashMap::new();
         for event in canonical_feed_order(&history) {
             for (id, outcome) in fresh.receive(event)? {
-                match latest.iter_mut().find(|(seen, _)| *seen == id) {
-                    Some(slot) => slot.1 = outcome,
-                    None => latest.push((id, outcome)),
+                match positions.get(&id).copied() {
+                    Some(slot) => latest[slot].1 = outcome,
+                    None => {
+                        positions.insert(id, latest.len());
+                        latest.push((id, outcome));
+                    }
                 }
             }
         }
@@ -295,18 +307,26 @@ impl Membership {
         Ok(latest)
     }
 
-    /// Records a refusal. A placeholder stands in the graph when a manager is in the group at the
-    /// operation's dependencies. Otherwise the event is walked through.
+    /// Records a refusal. When `stand_in` is set, a placeholder stands in the graph when a
+    /// manager is in the group at the operation's dependencies. Otherwise the event is walked
+    /// through. Gate refusals pass `stand_in: false`: the gate turned the operation away
+    /// before it held a position in the graph (its rejections are exactly the cases the crate
+    /// cannot be asked to decide), so there is nothing for a placeholder to stand in for.
     fn refuse(
         &mut self,
         op: AuthOperation,
         group: Hash,
         after: Vec<Hash>,
         reason: Refusal,
+        stand_in: bool,
     ) -> Result<Outcome, MembershipError> {
         let id = op.id;
         self.refused.insert(id);
-        let placeholder = match self.manager_at(group, &op.dependencies) {
+        let placeholder = match if stand_in {
+            self.manager_at(group, &op.dependencies)
+        } else {
+            None
+        } {
             Some(target) => {
                 // Promoting a member who already manages changes nothing, and the crate does not
                 // check the promoter for that case. So this operation is valid whoever wrote it.
@@ -540,8 +560,7 @@ fn canonical_feed_order(events: &[CausalEvent]) -> Vec<CausalEvent> {
         }
         waiting.insert(event.id, dependencies.len());
     }
-    let by_id: HashMap<Hash, &CausalEvent> =
-        events.iter().map(|event| (event.id, event)).collect();
+    let by_id: HashMap<Hash, &CausalEvent> = events.iter().map(|event| (event.id, event)).collect();
     let mut placed: HashSet<Hash> = HashSet::new();
     let mut order = Vec::with_capacity(events.len());
     while let Some(Reverse(id)) = ready.pop() {
@@ -1077,5 +1096,77 @@ mod tests {
             );
         }
     }
-}
 
+    #[test]
+    fn test_a_long_conflicted_history_replays_in_canonical_order() {
+        // Regression for the Codex finding on PR #4099 (issue #4128): the canonical replay found
+        // each event's latest outcome by scanning the accumulated outcome list, O(N^2/2) over a
+        // history of N events, and a displacement replays the entire history on a production
+        // path (`event_store::resolve`, hit by both `EventStore::roster` and `ingest::refresh`).
+        // Outcomes are now indexed by event ID, so the replay is O(N). This history is long (two
+        // concurrent creates plus a chain of ~230 events) and pins the verdicts the index must
+        // not change, in both arrival orders.
+        let (winner, loser) = if id(211) < id(212) {
+            (211, 212)
+        } else {
+            (212, 211)
+        };
+        let winner_event = create_named(winner, 7, 210, &[7]);
+        let loser_event = create_named(loser, 8, 210, &[8]);
+        // A causally ordered chain hanging off the winner. Its events are non-auth, so they are
+        // decided `Applied` whichever create stands, and they pad the history the replay walks.
+        let mut chain_ids: Vec<u8> = (20..=250).collect();
+        chain_ids.retain(|n| *n != 210 && *n != 211 && *n != 212);
+        let chain: Vec<CausalEvent> = chain_ids
+            .iter()
+            .enumerate()
+            .map(
+                |(index, n)| match index.checked_sub(1).map(|i| chain_ids[i]) {
+                    Some(previous) => other(*n, &[previous]),
+                    None => other(*n, &[winner]),
+                },
+            )
+            .collect();
+
+        // Order A: the canonical winner stands first, so the loser displaces it immediately and
+        // the chain then decides straight through.
+        let mut winner_first = Membership::new();
+        winner_first.receive(winner_event.clone()).unwrap();
+        winner_first.receive(loser_event.clone()).unwrap();
+        for event in chain.iter().cloned() {
+            winner_first.receive(event).unwrap();
+        }
+
+        // Order B: the chain (and then the loser) arrive first and are held or applied; the
+        // winner's arrival displaces the loser and replays the whole history.
+        let mut loser_first = Membership::new();
+        for event in chain.iter().cloned() {
+            loser_first.receive(event).unwrap();
+        }
+        loser_first.receive(loser_event.clone()).unwrap();
+        let refreshed = loser_first.receive(winner_event.clone()).unwrap();
+
+        let expected_members = vec![(AuthId::Key(key(7)), Access::manage())];
+        for layer in [&winner_first, &loser_first] {
+            assert_eq!(layer.members(id(210)), expected_members);
+            assert!(layer.is_effective(&id(winner)));
+            assert!(!layer.is_effective(&id(loser)));
+            assert_eq!(layer.held_len(), 0);
+        }
+
+        // The winner's event is decided first, then the refused loser, then the chain: every
+        // history event is represented once, with the latest verdict.
+        assert_eq!(refreshed.len(), 2 + chain.len());
+        assert_eq!(outcome_of(&refreshed, winner), Outcome::Applied);
+        assert_eq!(
+            outcome_of(&refreshed, loser),
+            Outcome::Refused {
+                reason: Refusal::Gate(Rejection::GroupExists),
+                placeholder: false,
+            }
+        );
+        for n in &chain_ids {
+            assert_eq!(outcome_of(&refreshed, *n), Outcome::Applied, "chain {n}");
+        }
+    }
+}

@@ -499,7 +499,10 @@ fn refusal_response(error: &anyhow::Error) -> Response {
     // and as a `Retry-After` header. The directory limiters behind
     // this surface compute no bucket value of their own, so the abuse
     // contract's floor (`RETRY_FLOOR_MS`) is what is emitted.
-    if matches!(error.downcast_ref::<Refusal>(), Some(Refusal::RateLimited(_))) {
+    if matches!(
+        error.downcast_ref::<Refusal>(),
+        Some(Refusal::RateLimited(_))
+    ) {
         let retry_ms = crate::abuse::RETRY_FLOOR_MS;
         return (
             StatusCode::TOO_MANY_REQUESTS,
@@ -1655,12 +1658,12 @@ mod tests {
         // App A keeps the historical binding; app B binds its own
         // socket from its [interfaces.web] section (#2325).
         let addr_a = serve(world_routes().with_state(WorldWebState {
-            hub: None,
+            hub: Some(WorldHub::single(WorldService::new(lobby(), None))),
             cookie_secure: false,
         }))
         .await;
         let addr_b = serve(world_routes_at("/ws/arena").with_state(WorldWebState {
-            hub: None,
+            hub: Some(WorldHub::single(WorldService::new(lobby(), None))),
             cookie_secure: false,
         }))
         .await;

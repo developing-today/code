@@ -1,11 +1,13 @@
 // Tests for the codedb MCP bridge (#4120).
 // Run: node --test bin/codedb-bridge.test.mjs
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { CODEDB_TOOLS, createHandler, parseDaemonUrl, routeForTool } from './codedb-bridge.mjs';
 
 const binDir = path.dirname(fileURLToPath(import.meta.url));
@@ -197,6 +199,47 @@ test('closing stdin mid-request still delivers the complete final response (PR #
     child.kill();
     daemon.close();
   }
+});
+
+test('CLI: runs main via file and directory symlinks (#4325)', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'codedb-bridge-entrypoint-'));
+  const bridge = path.join(binDir, 'codedb-bridge.mjs');
+  const fileLink = path.join(temp, 'codedb-bridge-link.mjs');
+  const dirLink = path.join(temp, 'bin-link');
+  fs.symlinkSync(bridge, fileLink);
+  fs.symlinkSync(binDir, dirLink, 'dir');
+
+  try {
+    const input = `${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' })}\n`;
+    for (const [label, entry] of [
+      ['direct', bridge],
+      ['file symlink', fileLink],
+      ['directory symlink', path.join(dirLink, 'codedb-bridge.mjs')],
+    ]) {
+      const result = spawnSync(process.execPath, [entry], {
+        input,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      assert.equal(result.status, 0, `${label}: ${result.stderr}`);
+      assert.notEqual(result.stdout, '', `${label}: main did not write a response`);
+      assert.deepEqual(JSON.parse(result.stdout), {
+        jsonrpc: '2.0', id: 1, result: {},
+      }, `${label} must start the stdio bridge`);
+    }
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test('importing codedb-bridge.mjs as a library does not start main (#4325)', () => {
+  const bridge = path.join(binDir, 'codedb-bridge.mjs');
+  const result = spawnSync(process.execPath, [
+    '--input-type=module', '-e', `await import(${JSON.stringify(pathToFileURL(bridge).href)});`,
+  ], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, '');
 });
 
 test('daemon errors and an unreachable daemon surface as MCP errors naming the cause', async () => {

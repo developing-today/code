@@ -425,6 +425,69 @@ class TestPack(ColdStoreTestBase):
         self.assertEqual(again["bundle_id"], result["bundle_id"])
         self.assertEqual(again["members"], 1)
 
+    def test_pack_refuses_when_source_changes_between_hash_and_compress(self):
+        # #2269 (Codex P1 on PR #923, discussion_r4372814010): pack()
+        # hashed the source and compressed it in two separate reads, so a
+        # file mutated between the passes was sealed with the old hash in
+        # the manifest and the new bytes in the bundle — upload
+        # verification (bundle md5/size) passed, and every future fetch
+        # rejected the restored bytes with a SHA-256 mismatch. pack()
+        # must now refuse instead of sealing a mismatched object.
+        old = b"original version of the file\n" * 20
+        new = b"MUTATED version -- different bytes, different length\n" * 20
+        src = self.write_src("racy.txt", old)
+        expected_hash = hashlib.sha256(old).hexdigest()
+        mutated_hash = hashlib.sha256(new).hexdigest()
+        self.assertNotEqual(expected_hash, mutated_hash)
+
+        real_compress = ColdStore._compress_to_frame
+
+        def mutate_then_compress(store_self, src_arg, frame_path):
+            Path(src_arg).write_bytes(new)
+            return real_compress(store_self, src_arg, frame_path)
+
+        with mock.patch.object(
+            ColdStore,
+            "_compress_to_frame",
+            autospec=True,
+            side_effect=mutate_then_compress,
+        ):
+            with self.assertRaisesRegex(
+                cold_store.ColdStoreError, "changed during pack.*NOT sealed"
+            ):
+                self.store.pack([str(src)])
+
+        # Nothing was sealed: no bundle/object/member rows carry the
+        # stale recorded hash, no bundle file or temp artifact remains,
+        # and the store still works for the (now stable) current bytes.
+        conn = self.store.db()
+        self.assertEqual(
+            conn.execute("SELECT count(*) AS n FROM bundles").fetchone()["n"], 0
+        )
+        self.assertEqual(
+            conn.execute(
+                "SELECT count(*) AS n FROM objects WHERE hash=?", (expected_hash,)
+            ).fetchone()["n"],
+            0,
+        )
+        self.assertEqual(
+            conn.execute("SELECT count(*) AS n FROM members").fetchone()["n"], 0
+        )
+        conn.close()
+        self.assertEqual(list(self.store.bundles_dir.glob("*.csb")), [])
+        self.assertFalse((self.store.bundles_dir / "bundle.tmp").exists())
+        self.assertFalse((self.store.bundles_dir / "frame.tmp").exists())
+
+        result = self.store.pack([str(src)])
+        self.assertEqual(result["members"], 1)
+        conn = self.store.db()
+        member = conn.execute("SELECT * FROM members").fetchone()
+        conn.close()
+        self.assertEqual(member["object_hash"], mutated_hash)
+        raw = Path(result["path"]).read_bytes()
+        frame = raw[member["offset"] : member["offset"] + member["length"]]
+        self.assertEqual(self.store.decompress_frame(frame), new)
+
 
 class TestUploadFetch(ColdStoreTestBase):
     def test_ensure_folders_idempotent(self):
@@ -2186,6 +2249,23 @@ class TestEvictScan(EvictTestBase):
         self.assertIn(self.keys["evict1"], self.s3.objects)
 
 
+class TestEvictScanGuards(EvictTestBase):
+    def test_negative_min_age_days_rejected(self):
+        # A negative age floor makes `now - last_modified < min_age`
+        # false for every object, silently disabling the age gate that
+        # keeps evict --apply from deleting brand-new objects (#5642).
+        with self.assertRaises(cold_store.ColdStoreError):
+            self.store.evict_scan(min_age_days=-1, keep_newest=2)
+
+    def test_negative_keep_newest_rejected(self):
+        with self.assertRaises(cold_store.ColdStoreError):
+            self.store.evict_scan(min_age_days=14, keep_newest=-1)
+
+    def test_zero_min_age_days_is_an_explicit_no_floor(self):
+        scan = self.scan_by_key(min_age_days=0, keep_newest=0)
+        self.assertEqual(scan[self.keys["young"]]["verdict"], "evictable")
+
+
 class TestOffsetLessLastModified(EvictTestBase):
     """#2110: an offset-less LastModified has no zone, so it is
     unparseable -> None (the aware-or-None contract of
@@ -3140,9 +3220,6 @@ class TestD1ResponseShapes(ColdStoreTestBase):
                     self.store.sync_manifest()
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 
 class TestResumableUploadStalls(ColdStoreTestBase):
     """#2797: a 308 whose Range stops advancing must not loop forever,
@@ -3207,3 +3284,59 @@ class TestResumableUploadStalls(ColdStoreTestBase):
         self.assertEqual(result, "file-x")
         starts = [int(p.split(" ")[1].split("-")[0]) for p in puts]
         self.assertEqual(starts, [0, 100, 200, 300, 400, 500, 600, 700, 800, 900])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
+import json
+from unittest import mock
+
+
+class TestListingBounds6602Drive(ColdStoreTestBase):
+    """#6602: a fresh-token page stream must hit the listing bound."""
+
+    def _fresh_token_fake(self, calls):
+        def fake(method, url, headers=None, **kw):
+            calls["n"] += 1
+            body = {"files": [{"id": "f1", "name": "b", "size": 1,
+                               "createdTime": "2026-01-01T00:00:00Z"}],
+                    "nextPageToken": "tok-%d" % calls["n"]}
+            return 200, {}, json.dumps(body).encode()
+        return fake
+
+    def test_drive_fresh_token_stream_hits_page_bound(self):
+        calls = {"n": 0}
+        with mock.patch.object(cold_store, "http_request", self._fresh_token_fake(calls)), mock.patch.object(cold_store, "LIST_MAX_PAGES", 5):
+            with mock.patch.object(self.store, "_folder_id", lambda name: "folder1"), mock.patch.object(self.store, "_auth_headers", lambda: {}):
+                with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                    self.store.list_backups("supabase")
+        self.assertIn("supabase", str(ctx.exception))
+        self.assertEqual(calls["n"], 5)
+
+    def test_drive_result_bound_trips(self):
+        calls = {"n": 0}
+        with mock.patch.object(cold_store, "http_request", self._fresh_token_fake(calls)), mock.patch.object(cold_store, "LIST_MAX_RESULTS", 0):
+            with mock.patch.object(self.store, "_folder_id", lambda name: "folder1"), mock.patch.object(self.store, "_auth_headers", lambda: {}):
+                with self.assertRaises(cold_store.ColdStoreError):
+                    self.store.list_backups("supabase")
+
+
+class TestListingBounds6602S3(S3TestBase):
+    def test_s3_fresh_token_stream_hits_page_bound(self):
+        calls = {"n": 0}
+
+        def fake(method, bucket, query=None, **kw):
+            calls["n"] += 1
+            body = ("<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                    "<IsTruncated>true</IsTruncated>"
+                    f"<NextContinuationToken>tok-{calls[chr(110)]}</NextContinuationToken>"
+                    "<Contents><Key>k1</Key><Size>1</Size>"
+                    "<LastModified>2026-10-01T00:00:00.000Z</LastModified></Contents>"
+                    "</ListBucketResult>")
+            return 200, {}, body.encode()
+
+        with mock.patch.object(self.store, "_s3_request", fake), mock.patch.object(cold_store, "LIST_MAX_PAGES", 5):
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.s3_list_objects("supabase-backups")
+        self.assertIn("supabase-backups", str(ctx.exception))
+        self.assertEqual(calls["n"], 5)

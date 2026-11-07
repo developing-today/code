@@ -20,6 +20,13 @@
 # ~/backups/dashboard/.last-run.json (#1026), read by the
 # laptop-backups watchdog (modules/laptop-backups-watchdog.sh).
 #
+# The archive also carries a pmp_links-only export of the projector DB
+# (code#1744 P0): pmp_links is the only non-rebuildable table in that DB,
+# so the export is staged as a conditionally-required manifest member —
+# required whenever a projector DB is present at the configured path —
+# while the rest of projector.db (a rebuildable projection) is never
+# archived.
+#
 # Credentials come from Bitwarden Secrets Manager at runtime, referenced
 # by key name only and never logged (the repo-archive-backup pattern):
 # cloudflare.r2-backups-access-key-id, cloudflare.r2-backups-secret-
@@ -274,13 +281,18 @@ ledger_set credentials ok
 
 # --- optional pm-stack DB dumps (code#1514) --------------------------------
 # The #1514 dump job (Kaneo Postgres + Grist + Pad) publishes its script at
-# ~/tools/pm-stack-db-backup.sh and writes dumps to ~/Backups/db-dumps/<date>/
-# (here: ~/backups/db-dumps/<date>/). When present it runs first and its
-# output rides this archive to all three destinations; until it lands, the
-# archive carries the dashboard state set only and says so in the log.
+# ~/tools/pm-stack-db-backup.sh (a bridge to pm-stack-backup.sh) and writes
+# dumps to ~/backups/pm-stack/<date>/ (here: $DUMP_DIR). When present it runs
+# first and its output rides this archive to all three destinations; until
+# it lands, the archive carries the dashboard state set only and says so in
+# the log. (nix#1365: DUMP_DIR previously pointed at ~/backups/db-dumps,
+# which the dump script never writes — every run with DUMP_RAN=1 then failed
+# verify as required-member-missing. The staged tree keeps its historic
+# db-dumps name; only the source dir changed.)
 DUMP_SCRIPT="${PM_DB_DUMP_SCRIPT:-$HOME/tools/pm-stack-db-backup.sh}"
-DUMP_DIR="$HOME/backups/db-dumps/$DATE"
+DUMP_DIR="$HOME/backups/pm-stack/$DATE"
 DUMP_RAN=0
+PMP_RAN=0
 if [ -x "$DUMP_SCRIPT" ]; then
   ledger_begin db-dump
   log "running DB dump step: $DUMP_SCRIPT"
@@ -321,9 +333,15 @@ required file aggregator/quota-current.json
 required file aggregator/registry.json
 required file aggregator/quota-gatherer-state.json
 required file aggregator/quota-gatherer-heartbeat.json
+required file aggregator/events.json
+required file aggregator/coverage-snapshot.json
+required file aggregator/aa-last-good.json
+optional file aggregator/views.json
+optional tree aggregator/charge-inputs
 required file meta-quota-export/latest.json
 required file meta-quota-export/history.jsonl
 conditional tree db-dumps
+conditional file projector/pmp_links.sql
 optional tree aggregator/snapshots
 optional file journals/pm-aggregator.log
 optional file journals/quota-gatherer.log
@@ -340,7 +358,8 @@ optional file journals/meta-quota-export.log"
 # before the cursor can advance. A missing file stays a WARN, as
 # before: absent and present-but-unreadable are different events.
 for f in actions.json comments.json fleet-feed.json quota-current.json \
-  registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json; do
+  registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json \
+  events.json views.json coverage-snapshot.json aa-last-good.json; do
   if [ -f "$AGG/$f" ]; then
     cp -a "$AGG/$f" "$STAGE/aggregator/$f" ||
       fail "dataset copy failed: $AGG/$f"
@@ -348,6 +367,8 @@ for f in actions.json comments.json fleet-feed.json quota-current.json \
 done
 if [ -d "$AGG/snapshots" ]; then cp -a "$AGG/snapshots" "$STAGE/aggregator/snapshots" ||
   fail "dataset copy failed: $AGG/snapshots"; fi
+if [ -d "$AGG/charge-inputs" ]; then cp -a "$AGG/charge-inputs" "$STAGE/aggregator/charge-inputs" ||
+  fail "dataset copy failed: $AGG/charge-inputs"; fi
 for f in latest.json history.jsonl; do
   if [ -f "$META/$f" ]; then
     cp -a "$META/$f" "$STAGE/meta-quota-export/$f" ||
@@ -357,6 +378,53 @@ done
 
 if [ -d "$DUMP_DIR" ]; then cp -a "$DUMP_DIR" "$STAGE/db-dumps" ||
   fail "dataset copy failed: $DUMP_DIR"; fi
+
+# --- pmp_links export (code#1744 P0) ----------------------------------
+# Source: the ACTUAL configured projector database — DATABASE_URL in the
+# pm-projector env file when it names a file: URL, else the deployed
+# default ~/.local/state/pm-projector/projector.db (a relative file:
+# value resolves against the projector unit's working directory).
+# PM_PROJECTOR_DB / PM_PROJECTOR_ENV override both (tests, relocation).
+# Only the pmp_links table is exported (schema + rows as SQL): the rest
+# of projector.db is a rebuildable projection and credentials never
+# enter the archive — the .env file itself is NOT read beyond the
+# DATABASE_URL line and is never staged.
+PMP_DB="${PM_PROJECTOR_DB:-}"
+if [ -z "$PMP_DB" ]; then
+  PMP_ENV="${PM_PROJECTOR_ENV:-$HOME/.local/state/pm-projector/.env}"
+  if [ -f "$PMP_ENV" ]; then
+    _url="$(grep -m1 '^DATABASE_URL=' "$PMP_ENV" 2>/dev/null | cut -d= -f2- | tr -d '"'"'"' \r')" 
+    case "$_url" in
+      file:*) PMP_DB="${_url#file:}"; PMP_DB="${PMP_DB%%\?*}" ;;
+    esac
+  fi
+  [ -n "$PMP_DB" ] || PMP_DB="$HOME/.local/state/pm-projector/projector.db"
+  case "$PMP_DB" in
+    /*) ;;
+    *) PMP_DB="${PM_PROJECTOR_DIR:-$HOME/git/code/pm-stack/projector}/$PMP_DB" ;;
+  esac
+fi
+if [ -f "$PMP_DB" ]; then
+  command -v sqlite3 >/dev/null 2>&1 ||
+    fail "sqlite3 not found — cannot export pmp_links from $PMP_DB"
+  PMP_ROWS="$(sqlite3 "file:$PMP_DB?mode=ro" 'SELECT COUNT(*) FROM pmp_links;' 2>/dev/null)" ||
+    fail "pmp_links export failed: cannot read pmp_links in $PMP_DB"
+  mkdir -p "$STAGE/projector"
+  sqlite3 "file:$PMP_DB?mode=ro" '.dump pmp_links' >"$STAGE/projector/pmp_links.sql" ||
+    fail "pmp_links export failed: .dump of $PMP_DB"
+  # .dump omits the table's indexes on this sqlite build — append them
+  # from sqlite_master so a restore reproduces the full table shape.
+  sqlite3 "file:$PMP_DB?mode=ro" \
+    "SELECT sql || ';' FROM sqlite_master WHERE type = 'index' AND tbl_name = 'pmp_links' AND sql IS NOT NULL;" \
+    >>"$STAGE/projector/pmp_links.sql" ||
+    fail "pmp_links export failed: index definitions of $PMP_DB"
+  grep -q 'CREATE TABLE pmp_links' "$STAGE/projector/pmp_links.sql" ||
+    fail "pmp_links export failed: no pmp_links schema in dump of $PMP_DB"
+  PMP_RAN=1
+  log "pmp_links export staged from $PMP_DB ($PMP_ROWS rows)"
+else
+  log "no projector DB at $PMP_DB — pmp_links export not applicable"
+fi
 
 # --- journals: window start = min(last successful run, 24h ago) ---
 NOW_EPOCH="$(date +%s)"
@@ -373,7 +441,7 @@ for svc in pm-aggregator quota-gatherer meta-quota-export; do
 done
 
 # --- manifest (files as staged + the expected set's per-member status) ---
-EXPECTED_SET="$EXPECTED_SET" DUMP_RAN="$DUMP_RAN" \
+EXPECTED_SET="$EXPECTED_SET" DUMP_RAN="$DUMP_RAN" PMP_RAN="$PMP_RAN" \
   python3 - "$STAGE" "$DATE" "$CREATED_AT" <<'PYEOF'
 import hashlib, json, os, sys
 stage, date, created = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -400,7 +468,9 @@ for line in os.environ.get("EXPECTED_SET", "").splitlines():
         continue
     cls, kind, rel = parts
     if cls == "conditional":
-        cls = "required" if os.environ.get("DUMP_RAN") == "1" else "optional"
+        ran = os.environ.get("PMP_RAN") if rel.startswith("projector/") \
+            else os.environ.get("DUMP_RAN")
+        cls = "required" if ran == "1" else "optional"
     member = {"path": rel, "class": cls, "kind": kind}
     if kind == "tree":
         full = os.path.join(stage, rel)

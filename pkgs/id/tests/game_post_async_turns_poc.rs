@@ -3,7 +3,7 @@
 //! The #2053 investigation modelled a playable post as a board post that binds a
 //! **game package**, a **play mode**, and a **state lineage**. This proves the
 //! `async-turns` half of that on the checked-in tic-tac-toe program
-//! (`examples/tic-tac-toe/tic-tac-toe.wasm`), with four scope points:
+//! (`apps/tic-tac-toe/program/tic-tac-toe.wasm`), with four scope points:
 //!
 //! 1. a **game-post object** naming the package (hash + version), the mode, the
 //!    two players, and `attestation: concession`;
@@ -29,7 +29,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 /// The tic-tac-toe program, exactly as an app package would ship it.
-const PACKAGE_WASM: &[u8] = include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm");
+const PACKAGE_WASM: &[u8] = include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
 /// The package version the posts in this file name. A bump is a new hash, and
 /// old posts keep running the version they named.
 const PACKAGE_VERSION: &str = "0.1.0";

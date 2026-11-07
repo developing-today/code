@@ -61,7 +61,15 @@ export class PlazaGuest {
   ): Promise<PlazaGuest> {
     const instance = await WebAssembly.instantiate(module, {});
     const ex = instance.exports as unknown as PlazaExports;
-    for (const name of ["memory", "plaza_alloc", "plaza_free", "plaza_init", "plaza_update", "plaza_view", "plaza_out_len"] as const) {
+    for (const name of [
+      "memory",
+      "plaza_alloc",
+      "plaza_free",
+      "plaza_init",
+      "plaza_update",
+      "plaza_view",
+      "plaza_out_len",
+    ] as const) {
       if (ex[name] === undefined) throw new Error(`guest must export \`${name}\``);
     }
     if ((ex.plaza_snapshot === undefined) !== (ex.plaza_restore === undefined)) {
@@ -99,6 +107,30 @@ export class PlazaGuest {
   update(participant: number, event: Uint8Array): void {
     const { ptr, len, allocationLen } = this.copyInput(event);
     try {
+      // Reject value classes the native u64 host can never produce
+      // (sandbox.rs: participant: u64, clamped via
+      // i32::try_from(participant).unwrap_or(i32::MAX)). Before the #2271
+      // clamp fix, `participant | 0` alone wrapped IDs above the i32 range;
+      // the same silent collapse into participant 0 (the host-event routing
+      // class) is still reachable via NaN and -Infinity, and
+      // negative/fractional values diverge from native state evolution.
+      // +Infinity keeps the top-end clamp (it is a huge positive, like any
+      // ID above i32::MAX); -Infinity is a negative non-finite and is
+      // rejected.
+      if (typeof participant !== "number" || Number.isNaN(participant)) {
+        throw new Error(
+          `guest participant must be a non-negative integer, got ${String(participant)} (NaN or non-number)`,
+        );
+      }
+      if (participant === -Infinity) {
+        throw new Error("guest participant must be a non-negative integer, got -Infinity");
+      }
+      if (participant < 0) {
+        throw new Error(`guest participant must be a non-negative integer, got negative ${participant}`);
+      }
+      if (participant !== Infinity && !Number.isInteger(participant)) {
+        throw new Error(`guest participant must be a non-negative integer, got fractional ${participant}`);
+      }
       // Clamp to i32::MAX as the native host does (sandbox.rs:
       // i32::try_from(participant).unwrap_or(i32::MAX)): `participant | 0`
       // alone wraps IDs above the i32 range (4294967296 becomes 0, which

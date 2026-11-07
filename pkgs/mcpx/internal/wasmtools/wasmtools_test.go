@@ -206,14 +206,14 @@ func TestAppendLogEvictsOldestUntilByteLimitFits(t *testing.T) {
 	src.appendLog([]byte(newest))
 
 	got := src.Logs()
-	const evicted = maxLogLineSize / (1 << 10)
+	evicted := maxLogLineSize / (1 << 10)
 	if len(got) != maxLogLines-evicted+1 {
 		t.Fatalf("logs = %d lines, want %d", len(got), maxLogLines-evicted+1)
 	}
 	if got[0] != line || got[len(got)-1] != newest {
 		t.Fatalf("oldest/newest retained lines = %d/%d bytes, want %d/%d", len(got[0]), len(got[len(got)-1]), len(line), len(newest))
 	}
-	if dropped := src.DroppedLogLines(); dropped != evicted {
+	if dropped := src.DroppedLogLines(); dropped != uint64(evicted) {
 		t.Fatalf("dropped lines = %d, want %d", dropped, evicted)
 	}
 	if src.logBytes != maxLogBytes {

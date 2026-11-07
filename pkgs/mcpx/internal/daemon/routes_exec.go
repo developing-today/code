@@ -159,6 +159,22 @@ func (r registrySource) Globals(_ context.Context, ns []string) (string, error) 
 	return codegen.GlobalDeclarations(nss), nil
 }
 
+// ClientModuleFor renders the generated client for one named script
+// language (#1917 Phase 2): the module installed beside a script of that
+// language and its ambient declarations. Today "python" is the only name a
+// caller asks for; any unknown name is an error, never the default target.
+func (r registrySource) ClientModuleFor(_ context.Context, language string, ns []string) (module, globals string, err error) {
+	lang, ok := codegen.Lookup(language)
+	if !ok {
+		return "", "", fmt.Errorf("unknown script language %q", language)
+	}
+	nss, err := r.reg.CodegenNamespaces(ns, config.Profile{})
+	if err != nil {
+		return "", "", err
+	}
+	return lang.EmitModule(nss, r.endpoint, ""), lang.EmitGlobals(nss), nil
+}
+
 func (r registrySource) Namespaces(_ context.Context, ns []string) ([]string, error) {
 	nss, err := r.reg.CodegenNamespaces(ns, config.Profile{})
 	if err != nil {
@@ -186,9 +202,12 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim.Setup, lim.SetupErr = runner.ParseSetup(set.String("script.runtimes"),
 		set.List("script.runtimeOrder"), set.String("script.profiles"))
 	lim.CaptureConsole = set.Bool("script.captureConsole")
-	lim.Typecheck = set.String("script.typecheck")
+	lim.Typecheck = set.String("script.check")
 	lim.Imports = set.String("script.imports")
 	lim.ImportsOnDynamic = set.String("script.importsOnDynamic")
+	lim.ImportsOnMissing = set.String("script.importsOnMissing")
+	lim.ImportsCrossProject = set.String("script.importsCrossProject")
+	lim.ImportsNetwork = set.String("script.importsNetwork")
 	lim.Delivery = set.String("artifacts.delivery")
 	lim.InlineMaxBytes = set.Bytes("artifacts.inlineMaxBytes")
 	lim.ChunkBytes = set.Bytes("artifacts.chunkBytes")

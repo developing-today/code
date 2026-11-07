@@ -51,7 +51,7 @@ func (c *Client) Complete(ctx context.Context, params json.RawMessage) (json.Raw
 	// 2024-11-05 defined completion/complete with no capability to gate
 	// it, so a server of that era is asked, and its method-not-found read
 	// as the same absence a later server signals by not declaring.
-	legacy := c.Negotiated == "2024-11-05"
+	legacy := c.negotiatedVersion() == "2024-11-05"
 	if !legacy && !c.Supports("completions") {
 		return nil, false, nil
 	}
