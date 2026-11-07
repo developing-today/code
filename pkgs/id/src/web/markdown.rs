@@ -3012,7 +3012,7 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
 
         NodeValue::Image(image) => {
             let mut attrs = json!({
-                "src": image.url
+                "src": sanitize_image_url(&image.url)
             });
 
             // #1417: store the alt in markdown form, not flattened plain
@@ -3900,7 +3900,7 @@ fn parse_img_tag(html: &str) -> Option<Value> {
     let parsed = parse_tag_attrs(trimmed, 4);
     let attr = |name: &str| parsed.get(name).map(String::as_str);
 
-    let src = attr("src")?; // src is required
+    let src = sanitize_image_url(attr("src")?); // src is required
     let mut attrs = json!({"src": src});
 
     if let Some(alt) = attr("alt") {
@@ -3983,6 +3983,97 @@ fn link_url_is_safe(url: &str) -> bool {
 /// fragment, so sanitized documents are a stable round-trip fixpoint.
 fn sanitize_link_url(url: &str) -> String {
     if link_url_is_safe(url) {
+        url.to_owned()
+    } else {
+        "#".to_owned()
+    }
+}
+
+/// #6364: the image-specific allowed-scheme oracle.
+///
+/// Image URLs allow relative/internal references and `http`/`https`, plus
+/// data URLs whose media type is one of the supported raster formats. SVG is
+/// deliberately excluded because it can contain active content. As with
+/// links, inspect the scheme after stripping TAB/LF/CR and leading C0
+/// controls/spaces so browser URL parsing cannot expose an obfuscated scheme.
+fn image_url_is_safe(url: &str) -> bool {
+    let probe: String = url
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    let probe = probe.trim_start_matches(|c: char| c.is_ascii_control() || c == ' ');
+
+    // A scheme exists only when a `:` precedes any `/`, `?`, or `#`.
+    let mut scheme_end = None;
+    for (i, c) in probe.char_indices() {
+        match c {
+            ':' => {
+                scheme_end = Some(i);
+                break;
+            }
+            '/' | '?' | '#' => break,
+            _ => {}
+        }
+    }
+    let Some(colon) = scheme_end else {
+        return true;
+    };
+
+    let scheme = &probe[..colon];
+    let mut chars = scheme.chars();
+    let valid_scheme = !scheme.is_empty()
+        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    if !valid_scheme {
+        // Match the link oracle: a colon in a segment that is not a valid
+        // scheme (for example a relative path) does not introduce a scheme.
+        return true;
+    }
+
+    let Some((raw_scheme, _)) = url.split_once(':') else {
+        return true;
+    };
+    if raw_scheme.chars().any(|c| matches!(c, '\t' | '\n' | '\r')) {
+        return false;
+    }
+
+    let scheme = scheme.to_ascii_lowercase();
+    match scheme.as_str() {
+        "http" | "https" => true,
+        "data" => {
+            // Reject control-character spellings in the scheme or data URL
+            // header, even if removing them would produce an allowed MIME
+            // type. Controls in the encoded payload do not affect the scheme
+            // or media type and are left untouched.
+            let Some((header, _)) = url.split_once(',') else {
+                return false;
+            };
+            if header.chars().any(|c| matches!(c, '\t' | '\n' | '\r')) {
+                return false;
+            }
+            let Some((metadata, _)) = probe[colon + 1..].split_once(',') else {
+                return false;
+            };
+            let media_type = metadata.split(';').next().unwrap_or_default();
+            matches!(
+                media_type.to_ascii_lowercase().as_str(),
+                "image/png"
+                    | "image/gif"
+                    | "image/jpeg"
+                    | "image/webp"
+                    | "image/avif"
+                    | "image/bmp"
+            )
+        }
+        _ => false,
+    }
+}
+
+/// #6364: return `url` unchanged for an allowed image URL, otherwise the
+/// inert fragment `#`. Keeping only the target neutralized preserves the
+/// image node and makes the sanitized document a stable round-trip fixpoint.
+fn sanitize_image_url(url: &str) -> String {
+    if image_url_is_safe(url) {
         url.to_owned()
     } else {
         "#".to_owned()
@@ -5010,7 +5101,7 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         "table_header" | "table_cell" => NodeValue::TableCell,
 
         "image" => {
-            let src = json["attrs"]["src"].as_str().unwrap_or("");
+            let src = sanitize_image_url(json["attrs"]["src"].as_str().unwrap_or(""));
             let title = json["attrs"]["title"].as_str().unwrap_or("");
             let alt = json["attrs"]["alt"].as_str().unwrap_or("");
             let width = json["attrs"]["width"].as_u64();
@@ -5020,7 +5111,7 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             if width.is_some() || height.is_some() {
                 // #873: escape values — a raw `"` truncated the attribute on
                 // reparse and could inject new attributes.
-                let mut tag = format!("<img src=\"{}\"", escape_attr_value(src));
+                let mut tag = format!("<img src=\"{}\"", escape_attr_value(&src));
                 if !alt.is_empty() {
                     tag.push_str(&format!(" alt=\"{}\"", escape_attr_value(alt)));
                 }
@@ -5057,7 +5148,7 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             } else {
                 // Standard markdown image syntax
                 NodeValue::Image(Box::new(comrak::nodes::NodeLink {
-                    url: src.to_owned(),
+                    url: src,
                     title: title.to_owned(),
                 }))
             }
@@ -5904,6 +5995,116 @@ mod tests {
             .find(|m| m["type"] == "link")
             .unwrap();
         assert_eq!(link_mark["attrs"]["href"], "https://example.com");
+    }
+
+    #[test]
+    fn test_image_executable_schemes_neutralized() {
+        // #6364: the image URL oracle allows only http/https, scheme-less
+        // references, and the explicitly allowed raster data-image types.
+        for src in [
+            "javascript:alert",
+            "JaVaScRiPt:alert",
+            "vbscript:msgbox",
+            "data:text/html,hello",
+            "data:image/svg+xml;base64,PHN2Zz4=",
+            "file:///etc/passwd",
+            "unknown-scheme:payload",
+        ] {
+            let md = format!("![open]({src})\n");
+            let doc = markdown_to_prosemirror(&md);
+            let image = doc["content"][0]["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|node| node["type"] == "image")
+                .unwrap_or_else(|| panic!("no image node for {md:?}"));
+            assert_eq!(image["attrs"]["src"], "#", "unsafe src survived for {md:?}");
+
+            let (first, second) = two_saves(&md);
+            assert_eq!(first, "![open](#)\n", "save not neutralized for {md:?}");
+            assert_eq!(first, second, "no sanitized fixpoint for {md:?}");
+        }
+    }
+
+    #[test]
+    fn test_image_url_oracle_and_safe_forms() {
+        // #6364 policy oracle: accepted references remain byte-identical;
+        // unsafe, obfuscated, unsupported, and malformed data schemes fail
+        // closed to the inert fragment.
+        for (url, expected) in [
+            ("relative.png", true),
+            ("/blob/abc", true),
+            ("//images.example/x.png", true),
+            ("#fragment", true),
+            ("images/name:part.png", true),
+            ("http://images.example/x.png", true),
+            ("HTTPS://images.example/x.png", true),
+            ("data:image/png;base64,AA==", true),
+            ("DaTa:IMAGE/JPEG,AA==", true),
+            ("data:image/webp;charset=utf-8,AA==", true),
+            ("javascript:alert(1)", false),
+            ("JaVaScRiPt:alert(1)", false),
+            ("java\tscript:alert(1)", false),
+            ("h\nttps://images.example/x.png", false),
+            ("data:text/html,hello", false),
+            ("data:image/svg+xml,<svg>", false),
+            ("data:image/png", false),
+            ("file:///etc/passwd", false),
+            ("mailto:image@example.test", false),
+        ] {
+            assert_eq!(
+                image_url_is_safe(url),
+                expected,
+                "image URL oracle mismatch for {url:?}"
+            );
+            assert_eq!(
+                sanitize_image_url(url),
+                if expected { url } else { "#" },
+                "image URL sanitizer mismatch for {url:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_raw_html_image_sources_are_sanitized() {
+        // Raw HTML imports bypass the Markdown destination parser, so they
+        // must use the same image-specific oracle directly.
+        for src in [
+            "javascript:alert(1)",
+            "JaVaScRiPt:alert(1)",
+            "java\tscript:alert(1)",
+            "data:image/svg+xml,<svg>",
+        ] {
+            let html = format!("<img src=\"{src}\" alt=\"open\" />\n");
+            let doc = markdown_to_prosemirror(&html);
+            let image = &doc["content"][0]["content"][0];
+            assert_eq!(image["type"], "image", "raw image not imported: {html:?}");
+            assert_eq!(image["attrs"]["src"], "#", "unsafe src survived: {html:?}");
+        }
+    }
+
+    #[test]
+    fn test_prosemirror_image_sources_are_sanitized_on_save() {
+        // Collab PM JSON can bypass import sanitization. Cover both Markdown
+        // and sized-HTML emission paths so each save direction is protected.
+        for attrs in [
+            json!({"src": "javascript:alert(1)", "alt": "open"}),
+            json!({"src": "data:text/html,hello", "alt": "open", "width": 240}),
+        ] {
+            let doc = json!({
+                "type": "doc",
+                "content": [{"type": "paragraph", "content": [{"type": "image", "attrs": attrs}]}]
+            });
+            let first = prosemirror_to_markdown(&doc).expect("save converts");
+            assert!(
+                first.contains("src=\"#\"") || first.contains("](#)"),
+                "unsafe src in {first:?}"
+            );
+            let reparsed = markdown_to_prosemirror(&first);
+            assert_eq!(reparsed["content"][0]["content"][0]["attrs"]["src"], "#");
+            let second = prosemirror_to_markdown(&reparsed).expect("second save converts");
+            assert_eq!(first, second, "sanitized image did not reach a fixpoint");
+        }
     }
 
     #[test]
