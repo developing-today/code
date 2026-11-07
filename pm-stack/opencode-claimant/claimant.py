@@ -414,13 +414,14 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
                     })
                     continue
                 
-                # Step 4c: Bind the session
+                # Step 4c: Bind the session (atomic operation)
                 bind_result = subprocess.run(
                     [
                         str(REPO_QUEUE_CMD),
                         "bind", task_id,
                         "--worker", "opencode-claimant",
-                        "--session-id", session_id
+                        "--session-id", session_id,
+                        "--launched-by", "opencode-claimant"
                     ],
                     capture_output=True,
                     text=True,
