@@ -19,9 +19,12 @@ import json
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+
+# Import poll functions for reuse
+import poll
 
 # Constants
 MODE_FILE = Path.home() / ".local" / "state" / "opencode-claimant" / "mode"
@@ -70,7 +73,7 @@ def log_fire(mode: str, candidates: List[Dict], launched: List[Dict], cap_room: 
     ensure_state_dir()
     
     fire_entry = {
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
         "candidates_seen": candidates,
         "sessions_launched": launched,
@@ -110,23 +113,27 @@ def run_poll() -> Dict[str, Any]:
 
 def get_active_root_session_count() -> int:
     """Get the count of active root sessions from the OpenCode server."""
-    import requests
+    import urllib.request
+    import urllib.error
     
     try:
-        response = requests.get("http://127.0.0.1:13420/api/session", timeout=5)
-        response.raise_for_status()
-        sessions = response.json()
+        req = urllib.request.Request("http://127.0.0.1:13420/api/session", timeout=5)
+        with urllib.request.urlopen(req) as response:
+            sessions = json.loads(response.read().decode('utf-8'))
         
         active_count = 0
         for session in sessions:
             # Count root sessions that are active (no terminal marker, activity in last 30 min)
             if session.get("is_root", False):
                 # Check for terminal markers
-                has_terminal = any(
-                    marker in session.get("outcome", "") or 
-                    marker in session.get("time", {}).get("idle", "")
-                    for marker in ["idle", "outcome"]
-                )
+                outcome = session.get("outcome", "")
+                idle = session.get("time", {}).get("idle", "")
+                
+                has_terminal = False
+                if isinstance(outcome, str):
+                    has_terminal = any(marker in outcome for marker in ["idle", "outcome"])
+                if isinstance(idle, str):
+                    has_terminal = has_terminal or any(marker in idle for marker in ["idle", "outcome"])
                 
                 if not has_terminal:
                     active_count += 1
@@ -148,107 +155,65 @@ def supervision_step(mode: str) -> List[Dict]:
     
     recovery_candidates = []
     
-    # Get all claimed opencode-lane tasks with bound session IDs
-    for queue in QUEUES:
-        try:
-            # Use repo-queue to list tasks
-            result = subprocess.run(
-                [str(REPO_QUEUE_CMD), "list", "--worker", "opencode-claimant", "--queue", queue],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            if result.returncode == 0:
-                tasks = json.loads(result.stdout)
-                for task in tasks:
-                    if task.get("lane") == "opencode" and task.get("session_id"):
-                        session_id = task["session_id"]
-                        
-                        # Check if session exists and is progressing
-                        try:
-                            session_response = requests.get(
-                                f"http://127.0.0.1:13420/api/session/{session_id}",
-                                timeout=5
-                            )
-                            
-                            if session_response.status_code == 200:
-                                session = session_response.json()
-                                # Check for terminal state
-                                has_terminal = any(
-                                    marker in session.get("outcome", "") or 
-                                    marker in session.get("time", {}).get("idle", "")
-                                    for marker in ["idle", "outcome", "completed", "failed"]
-                                )
-                                
-                                if not has_terminal:
-                                    # Session exists and is active - nothing to do
-                                    continue
-                            else:
-                                # Session gone from server
-                                pass
-                        except Exception:
-                            # Could not verify session - leave bound
-                            continue
-                        
-                        # Session is gone or stuck - check if recovery is possible
-                        # Check task attempts and lease
-                        if task.get("attempts", 0) < task.get("max_attempts", 5):
-                            # Verify zero messages first
-                            try:
-                                messages = requests.get(
-                                    f"http://127.0.0.1:13420/api/session/{session_id}/messages",
-                                    timeout=5
-                                )
-                                
-                                if messages.status_code == 200:
-                                    message_count = len(messages.json())
-                                    if message_count == 0:
-                                        recovery_candidates.append({
-                                            "task_id": task["id"],
-                                            "session_id": session_id,
-                                            "reason": "zero_message"
-                                        })
-                            except Exception:
-                                # Could not read messages - treat as unknown state
-                                pass
-        except Exception as e:
-            print(f"Warning: Supervision check failed for queue {queue}: {e}")
+    # Get stuck bound tasks using poll's get_stuck_bound
+    stuck_bound = poll.get_stuck_bound()
     
-    # Process recovery candidates
-    for candidate in recovery_candidates:
+    for candidate in stuck_bound:
         task_id = candidate["task_id"]
         session_id = candidate["session_id"]
+        attempts = candidate.get("attempts", 0)
+        max_attempts = candidate.get("max_attempts", 5)
         
         try:
-            # Delete the zero-message session
-            delete_response = requests.delete(
+            # Step a: VERIFY zero messages first
+            session_messages = []
+            try:
+                msg_req = urllib.request.Request(
+                    f"http://127.0.0.1:13420/api/session/{session_id}/messages",
+                    timeout=5
+                )
+                with urllib.request.urlopen(msg_req) as msg_response:
+                    if msg_response.status_code == 200:
+                        session_messages = json.loads(msg_response.read().decode('utf-8'))
+            except Exception:
+                # Session might be gone or unavailable
+                pass
+            
+            # If session has ANY messages or activity, it's NOT this case
+            if len(session_messages) > 0:
+                print(f"Session {session_id} for task {task_id} has messages - not a zero-message case")
+                continue
+            
+            # Session has zero messages - proceed with recovery
+            # Step b: DELETE the verified zero-message session
+            req = urllib.request.Request(
                 f"http://127.0.0.1:13420/api/session/{session_id}",
+                method="DELETE",
                 timeout=5
             )
-            
-            if delete_response.status_code == 200:
-                # Attempt recovery via atomic bind operation
-                bind_result = subprocess.run(
-                    [
-                        str(REPO_QUEUE_CMD),
-                        "bind", task_id,
-                        "--worker", "opencode-claimant",
-                        "--session-id", session_id,
-                        "--launched-by", LAUNCHED_BY_RECOVERY_ZERO_MESSAGE
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-                
-                if bind_result.returncode == 0:
-                    print(f"Recovered task {task_id}: deleted zero-message session {session_id}")
-                    # Task is now unbound and eligible for next fire
+            with urllib.request.urlopen(req) as delete_response:
+                if delete_response.status:
+                    # Step c: Attempt recovery via atomic bind operation
+                    bind_result = subprocess.run(
+                        [
+                            str(REPO_QUEUE_CMD),
+                            "bind", task_id,
+                            "--worker", "opencode-claimant",
+                            "--session-id", session_id,
+                            "--launched-by", LAUNCHED_BY_RECOVERY_ZERO_MESSAGE
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                    
+                    if bind_result.returncode == 0:
+                        print(f"Recovered task {task_id}: deleted zero-message session {session_id}")
+                        # Task is now unbound and eligible for next fire
+                    else:
+                        print(f"Failed to recover task {task_id}: {bind_result.stderr}")
                 else:
-                    print(f"Failed to recover task {task_id}: {bind_result.stderr}")
-            else:
-                print(f"Failed to delete session {session_id} for task {task_id}")
+                    print(f"Failed to delete session {session_id} for task {task_id}")
         except Exception as e:
             print(f"Error during recovery of task {task_id}: {e}")
     
@@ -262,16 +227,8 @@ def gate_step() -> bool:
     Returns True if there are candidates to process, False otherwise.
     """
     try:
-        poll_data = run_poll()
-        candidates = poll_data.get("candidates", [])
-        
-        # Filter for unbound opencode-lane tasks
-        unbound_opencode = [
-            c for c in candidates
-            if c.get("lane") == "opencode" and not c.get("session_id")
-        ]
-        
-        return len(unbound_opencode) > 0
+        candidates = poll.get_candidates()
+        return len(candidates) > 0
     except Exception as e:
         print(f"Gate check failed: {e}")
         return False
@@ -283,12 +240,12 @@ def cap_step() -> int:
     
     Returns cap_room (available slots) or -1 if unknown.
     """
-    active_count = get_active_root_session_count()
+    active_count = poll.get_active_root_session_count()
     
     if active_count == -1:
         return -1
     
-    cap_room = max(0, CONCURRENCY_CAP - active_count)
+    cap_room = max(0, poll.CONCURRENCY_CAP - active_count)
     return cap_room
 
 
@@ -305,19 +262,9 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
     skips = []
     
     try:
-        poll_data = run_poll()
-        candidates = poll_data.get("candidates", [])
+        candidates = poll.get_candidates()
         
-        # Sort by queue priority (order in QUEUES list)
-        # Filter for unbound opencode-lane tasks with correct stage
-        unbound_opencode = [
-            c for c in candidates
-            if c.get("lane") == "opencode" 
-            and not c.get("session_id")
-            and c.get("stage") in ("handed_off", "launch_failed")
-        ]
-        
-        for candidate in unbound_opencode:
+        for candidate in candidates:
             if cap_room <= 0:
                 skips.append({
                     "task_id": candidate["id"],
@@ -362,25 +309,31 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
             }
             
             try:
-                create_response = requests.post(
+                data = json.dumps(session_create_body).encode('utf-8')
+                req = urllib.request.Request(
                     "http://127.0.0.1:13420/api/session",
-                    json=session_create_body,
+                    data=data,
+                    headers={'Content-Type': 'application/json'},
                     timeout=10
                 )
                 
-                if create_response.status_code != 200:
-                    raise RuntimeError(f"Session creation failed: {create_response.text}")
-                
-                session = create_response.json()
-                session_id = session.get("id")
+                with urllib.request.urlopen(req) as create_response:
+                    if create_response.status != 200:
+                        raise RuntimeError(f"Session creation failed: {create_response.read().decode('utf-8')}")
+                    
+                    session = json.loads(create_response.read().decode('utf-8'))
+                    session_id = session.get("id")
                 
                 # Verify location before proceeding
                 if session.get("location", {}).get("directory") != str(PRIMARY_CLONE):
                     # Wrong location - delete and skip
-                    requests.delete(
+                    req = urllib.request.Request(
                         f"http://127.0.0.1:13420/api/session/{session_id}",
+                        method="DELETE",
                         timeout=5
                     )
+                    with urllib.request.urlopen(req):
+                        pass
                     skips.append({
                         "task_id": task_id,
                         "reason": "session_wrong_location"
@@ -402,10 +355,13 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
                 
                 if bind_result.returncode != 0:
                     # Bind failed - delete session and skip
-                    requests.delete(
+                    req = urllib.request.Request(
                         f"http://127.0.0.1:13420/api/session/{session_id}",
+                        method="DELETE",
                         timeout=5
                     )
+                    with urllib.request.urlopen(req):
+                        pass
                     skips.append({
                         "task_id": task_id,
                         "reason": "bind_failed"
@@ -432,7 +388,8 @@ Finish with: complete, park, block, or fail --execution '{{...}}'
                     "task_id": task_id,
                     "session_id": session_id,
                     "worker_id": worker_id,
-                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                    "queue": queue,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
                 })
                 
                 cap_room -= 1
@@ -479,7 +436,7 @@ def main():
         return 1
     
     if cap_room <= 0:
-        print(f"Cap saturated ({CONCURRENCY_CAP} active sessions). Exiting.")
+        print(f"Cap saturated ({poll.CONCURRENCY_CAP} active sessions). Exiting.")
         log_fire(mode, [], [], cap_room, [{"reason": "cap_saturated"}])
         return 0
     

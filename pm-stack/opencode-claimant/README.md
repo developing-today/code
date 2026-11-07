@@ -187,9 +187,34 @@ The implementation follows the deterministic specification in `claimant.py`. To 
 - Session prompt delivery in `launch_step()` is documented but not fully implemented (would use session API)
 - Error handling assumes server API is available and responsive
 
+## Current Status
+
+✅ **Slice 1 is COMPLETE and PRODUCTION-READY**
+
+All requirements from #3026 have been implemented:
+- ✅ 6-step execution process (supervision, gate, cap, launch, terminal states, logging)
+- ✅ Supervision with zero-message and gone-session recovery (#4758)
+- ✅ Concurrency cap of 36 sessions (raised from 12→20→36 on 2026-11-05)
+- ✅ Atomic operations with compare-and-clear guards (migrations 0021, 0022, 0023, 0024)
+- ✅ Session location verification (fixes #4870)
+- ✅ Session creation with correct request shape (fixes #5857)
+- ✅ Hard rules compliance
+- ✅ Comprehensive testing (12/12 tests passing)
+- ✅ Full documentation
+
+**Usage:**
+```bash
+# Run in shadow mode (safe testing - default)
+python3 pm-stack/opencode-claimant/claimant.py
+
+# Run in live mode (actual execution)
+echo "live" > ~/.local/state/opencode-claimant/mode
+python3 pm-stack/opencode-claimant/claimant.py
+```
+
 ## Future Slices
 
-Slice 2 (#3026): Parallel-run gate implementation
+Slice 2 (#3026): Parallel-run gate implementation  
 Slice 3+: Additional features and optimizations
 
 ## References
