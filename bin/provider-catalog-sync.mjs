@@ -484,13 +484,20 @@ export function makeEntry(providerId, modelId, siblings, modelsDevEntry) {
   const entries = Object.values(siblings);
   const suffix = commonSuffix(entries.map((e) => e?.name).filter(Boolean));
   const name = prettifyModelName(modelId) + (suffix ? ` ${suffix}` : '');
-  const withVariants = entries.filter((e) => e && typeof e === 'object' && 'variants' in e);
+  // A cloneable sibling carries a variants OBJECT. A present-but-null (or
+  // otherwise non-object) variants value is not cloneable: the branch gate
+  // and the clone-source filter below must agree on this, or a block whose
+  // only variant-carrying entries are nulled takes the clone branch with
+  // zero candidates and dies in the JSON round-trip on siblings[null] (#6907).
+  const hasCloneableVariants = (e) =>
+    e && typeof e === 'object' && e.variants !== null && typeof e.variants === 'object';
+  const withVariants = entries.filter(hasCloneableVariants);
   const withId = entries.filter((e) => e && typeof e === 'object' && 'id' in e);
   const entry = {};
   if (withId.length > entries.length / 2) entry.id = `${providerId}/${modelId}`;
   entry.name = name;
   if (withVariants.length > 0) {
-    const sibId = longestCommonPrefixSibling(modelId, ids.filter((id) => siblings[id]?.variants));
+    const sibId = longestCommonPrefixSibling(modelId, ids.filter((id) => hasCloneableVariants(siblings[id])));
     const clone = JSON.parse(JSON.stringify(siblings[sibId]));
     if (modelsDevEntry?.limit?.context) {
       entry.limit = {
