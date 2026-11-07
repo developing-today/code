@@ -18,7 +18,7 @@
 //!
 //! Backend (#6741): QUEUE_BROKER_BACKEND=postgres (default; the
 //! Supabase PostgREST path above) or =turso — the queue core on the
-//! dedicated Turso DB `muse-queue` (crate::turso_queue), selected by
+//! dedicated Turso DB `fleet-queue` (crate::turso_queue), selected by
 //! QUEUE_BROKER_TURSO_URL / QUEUE_BROKER_TURSO_TOKEN_FILE. The
 //! production default does not flip with the code; cutover is
 //! doc/fleet/queue-turso-cutover.md.

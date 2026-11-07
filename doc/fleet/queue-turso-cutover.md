@@ -15,11 +15,11 @@ ordered the dedicated Turso replacement the same evening.
 
 ## What exists
 
-- **Database:** Turso `muse-queue` (org dezren39, group
+- **Database:** Turso `fleet-queue` (org dezren39, group
   great-star-lord, aws-us-east-1, id
   `01a1b414-2d01-7c27-8a43-783bb5b09296`,
-  `libsql://muse-queue-dezren39.aws-us-east-1.turso.io`). RW token
-  vaulted in BWS as `turso.muse-queue-rw-token` (the
+  `libsql://fleet-queue-dezren39.aws-us-east-1.turso.io`). RW token
+  vaulted in BWS as `turso.fleet-queue-rw-token` (the
   muse-mirror/muse-platform pattern; BWS only — those tokens have
   no 1Password copies either), verified by live readback.
 - **Backend:** `pkgs/fleet/crates/fleet-queue/src/turso_queue.rs`,
@@ -27,7 +27,7 @@ ordered the dedicated Turso replacement the same evening.
   Selection is the broker's config: `QUEUE_BROKER_BACKEND=turso`
   (default `postgres`), `QUEUE_BROKER_TURSO_URL`,
   `QUEUE_BROKER_TURSO_TOKEN_FILE` (else the secrets broker resolves
-  `turso.muse-queue-rw-token`). Schema is ensured idempotently at
+  `turso.fleet-queue-rw-token`). Schema is ensured idempotently at
   broker startup.
 - **Schema** (canonical copy = the `SCHEMA` const in
   turso_queue.rs): `tasks` (all PG columns the verbs touch, JSON
@@ -47,9 +47,9 @@ ordered the dedicated Turso replacement the same evening.
 
 ## Proof (2026-11-07T03:46–03:47Z, broker on 127.0.0.1:14801)
 
-Against the real `muse-queue` DB, through the real client verbs:
+Against the real `fleet-queue` DB, through the real client verbs:
 
-1. Health (empty): `project: muse-queue-dezren39.aws-us-east-1.turso.io (resolved via turso)`.
+1. Health (empty): `project: fleet-queue-dezren39.aws-us-east-1.turso.io (resolved via turso)`.
 2. Enqueue of the labeled migration-proof packet → task 1, queued.
 3. Claim by `turso-proof-a` → claimed, lease +45 min, attempts 1.
 4. Claim by `turso-proof-b` → refused: `{"task": null}`, exit 5.
@@ -74,7 +74,7 @@ Against the real `muse-queue` DB, through the real client verbs:
    Verify the installed binary answers `fleet queue health`
    against a Turso-backed test broker on a side port (as in the
    proof) before touching the production broker.
-2. **Backup load:** populate `muse-queue` from the fleet's last
+2. **Backup load:** populate `fleet-queue` from the fleet's last
    DIY R2 backup of muse-dev2 (prefix `pg/muse-dev2`, agent
    schema; the restored export's location, row counts, and
    coverage timestamp are recorded on #6619). Copy the queue-core
@@ -96,7 +96,7 @@ Against the real `muse-queue` DB, through the real client verbs:
    restart the unit. Nothing else changes: clients, claimant, and
    worker runbooks already speak only to the broker. The broker
    resolves the Turso token from the secrets broker by name
-   (`turso.muse-queue-rw-token`) — no token file in the unit.
+   (`turso.fleet-queue-rw-token`) — no token file in the unit.
 4. **Verify:** `fleet queue health` names the Turso host and shows
    the restored queues; run one labeled proof cycle (the #6741
    packet shape) through the production broker; watch the first

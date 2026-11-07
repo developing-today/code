@@ -8,15 +8,15 @@
 //! platform fault) the queue core had no live home; the GitHub
 //! fallback mode (doc/fleet/queue-fallback-mode.md) carried the work.
 //! This module is the dedicated-Turso replacement Drew ordered the
-//! same evening: a dedicated database (`muse-queue`, org dezren39,
+//! same evening: a dedicated database (`fleet-queue`, org dezren39,
 //! group great-star-lord; rw token in BWS as
-//! `turso.muse-queue-rw-token`) behind the SAME broker protocol, so
+//! `turso.fleet-queue-rw-token`) behind the SAME broker protocol, so
 //! no client changes: backend selection is the broker's config.
 //!
 //! Selection: `QUEUE_BROKER_BACKEND=turso` (default `postgres` — the
 //! production default does NOT flip with this code; cutover is the
 //! runbook in doc/fleet/queue-turso-cutover.md). URL:
-//! `QUEUE_BROKER_TURSO_URL` (default the muse-queue HTTPS URL).
+//! `QUEUE_BROKER_TURSO_URL` (default the fleet-queue HTTPS URL).
 //! Token: `QUEUE_BROKER_TURSO_TOKEN_FILE`, else the secrets broker
 //! by the name above.
 //!
@@ -43,8 +43,8 @@ use serde_json::{Map, Value, json};
 
 use crate::validate::{task_from_packet, validate_packet};
 
-pub const DEFAULT_TURSO_URL: &str = "https://muse-queue-dezren39.aws-us-east-1.turso.io";
-pub const TURSO_TOKEN_SECRET_NAME: &str = "turso.muse-queue-rw-token";
+pub const DEFAULT_TURSO_URL: &str = "https://fleet-queue-dezren39.aws-us-east-1.turso.io";
+pub const TURSO_TOKEN_SECRET_NAME: &str = "turso.fleet-queue-rw-token";
 
 const TASK_COLS: &str = "id, queue, title, body, payload, dedupe_key, priority, status, \
     not_before, worker_id, claimed_at, lease_until, lane_id, attempts, max_attempts, \
