@@ -174,13 +174,6 @@ buildGo127Module {
         # reasoning as internal/conformance above: interim exclusion,
         # tracked in CI on main.
         "internal/defaults"
-        # examples fails on main itself right now: TestExamples
-        # destructive calls end "not confirmed: the answer was cancel"
-        # under the #1678 confirmation flow, reproduced with a plain
-        # go test outside the sandbox as well (#2896). Interim
-        # exclusion so the package builds again; remove it when the
-        # #2896 fix lands.
-        "examples"
       ];
       # The Linux-only takeover/handoff tests (#418): they exercise
       # /proc and systemd-mainpid mechanics that do not exist on
