@@ -160,7 +160,13 @@ export function sanitizeCollectionError(value: unknown): string {
     .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]+|xox[baprs]-[A-Za-z0-9-]+)/gi, "[redacted]")
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted]")
     .replace(
-      /\b((?:access[_-]?token|refresh[_-]?token|token|api[_-]?key|password|secret|authorization)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi,
+      // Quoted keys (#3966): JSON bodies embed credentials as
+      // {"api_key": "v"}, {'password': 'v'}, or nested {"secret":
+      // "v"} — the keyword is wrapped in quotes, so allow an
+      // optional quote on each side of the name. `key` covers bare
+      // URL credential params (?key=..., &api_key=...); the value
+      // stops at & so sibling params survive.
+      /(["']?\b(?:access[_-]?token|refresh[_-]?token|token|api[_-]?key|password|secret|key|authorization)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;&]+)/gi,
       "$1[redacted]",
     )
     .replace(/(https?:\/\/)[^/@\s:]+(?::[^/@\s]*)?@/gi, "$1[redacted]@")

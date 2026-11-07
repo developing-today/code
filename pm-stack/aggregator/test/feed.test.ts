@@ -1202,3 +1202,47 @@ describe("collector section metadata (#1178)", () => {
     expect((await loadFeed(legacyFile))?.meta).toBeUndefined();
   });
 });
+
+describe("sanitizeCollectionError quoted-key + URL redaction (#3966)", () => {
+  test("JSON double-quoted keys redact the value, keep the key and text", () => {
+    expect(sanitizeCollectionError('{"api_key": "abc123short"}')).toBe('{"api_key": [redacted]}');
+    expect(sanitizeCollectionError('{"password": "hunter2pw"}')).toBe('{"password": [redacted]}');
+    expect(sanitizeCollectionError('upstream 500 {"token":"tok-abc12345"} retrying')).toBe(
+      'upstream 500 {"token":[redacted]} retrying',
+    );
+  });
+
+  test("single-quoted and nested keys redact the value", () => {
+    expect(sanitizeCollectionError("{'token': 'tok-abc12345'}")).toBe("{'token': [redacted]}");
+    expect(sanitizeCollectionError('{"data": {"secret": "s3cr3t-value-9"}}')).toBe(
+      '{"data": {"secret": [redacted]}}',
+    );
+    expect(sanitizeCollectionError('{"secret": "contains \\" quote and remains private"}')).toBe(
+      '{"secret": [redacted]}',
+    );
+  });
+
+  test("bare URL credential params redact the value, sibling params survive", () => {
+    expect(sanitizeCollectionError("fetch failed: https://api.example.com/data?key=supersecretvalue")).toBe(
+      "fetch failed: https://api.example.com/data?key=[redacted]",
+    );
+    expect(sanitizeCollectionError("get https://h.example/?api_key=abc123&foo=bar failed")).toBe(
+      "get https://h.example/?api_key=[redacted]&foo=bar failed",
+    );
+  });
+
+  test("words merely containing key do not redact, unquoted forms still redact", () => {
+    expect(sanitizeCollectionError("monkey=x")).toBe("monkey=x");
+    expect(sanitizeCollectionError("keyboard=y")).toBe("keyboard=y");
+    expect(sanitizeCollectionError("turnkey=abc")).toBe("turnkey=abc");
+    expect(sanitizeCollectionError("request failed token=secret-value")).toBe("request failed token=[redacted]");
+    expect(sanitizeCollectionError("plain error with no secrets at all")).toBe("plain error with no secrets at all");
+  });
+
+  test("quoted forms are redacted through sanitizeFeedMetadata", () => {
+    const meta = sanitizeFeedMetadata({
+      sections: { dns: { status: "error", at: "2026-10-01T00:00:00Z", error: '{"api_key": "abc123short"}' } },
+    });
+    expect(meta?.sections.dns?.error).toBe('{"api_key": [redacted]}');
+  });
+});
