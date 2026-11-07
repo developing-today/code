@@ -2142,7 +2142,8 @@ async fn install_module_session<I: SessionIo>(
                 return Err("invalid module chunk frame");
             };
             let Ok(ClientFrame::InstallChunk { offset, data_hex }) =
-                serde_json::from_str::<ClientFrame>(&text)
+                parse_json_without_duplicate_keys(&text)
+                    .and_then(serde_json::from_value::<ClientFrame>)
             else {
                 return Err("expected module chunk frame");
             };
@@ -2161,10 +2162,14 @@ async fn install_module_session<I: SessionIo>(
         let incoming = tokio::time::timeout(Duration::from_secs(30), io.recv())
             .await
             .map_err(|_| "timed out waiting for install completion")?;
-        if !matches!(incoming, Inbound::Text(ref text) if matches!(serde_json::from_str::<ClientFrame>(text), Ok(ClientFrame::InstallEnd)))
-        {
+        let Inbound::Text(text) = incoming else {
             return Err("expected install_end frame");
-        }
+        };
+        let Ok(ClientFrame::InstallEnd) = parse_json_without_duplicate_keys(&text)
+            .and_then(serde_json::from_value::<ClientFrame>)
+        else {
+            return Err("expected install_end frame");
+        };
         let actual_hash = module_hash(&bytes);
         if claimed_hash.is_some_and(|claimed| actual_hash != claimed.to_ascii_lowercase()) {
             return Err("module content hash mismatch");
