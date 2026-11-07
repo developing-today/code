@@ -36,7 +36,6 @@ let
       ../atlas-search/crates
     ];
   };
-  fleetSourceRoot = "source/pkgs/fleet";
 
   # D7 hard gate for the runs-anywhere connect binary.
   connectMaxBytes = 2 * 1024 * 1024; # 2097152
@@ -54,7 +53,7 @@ let
       inherit pname;
       version = "0.1.0";
       src = fleetSrc;
-      sourceRoot = fleetSourceRoot;
+      sourceRoot = "${fleetSrc.name}/fleet";
       cargoLock.lockFile = ./Cargo.lock;
 
       cargoBuildFlags = [
@@ -147,7 +146,7 @@ in
     pname = "fleet-brokers";
     version = "0.1.0";
     src = fleetSrc;
-    sourceRoot = fleetSourceRoot;
+    sourceRoot = "${fleetSrc.name}/fleet";
     cargoLock.lockFile = ./Cargo.lock;
 
     cargoBuildFlags = [
