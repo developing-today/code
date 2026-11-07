@@ -266,8 +266,13 @@ pub async fn read_records(doc: &Doc, blobs: &Store) -> Result<Records> {
             .get_bytes(entry.content_hash())
             .await
             .with_context(|| format!("content of record {key:?} is not available yet"))?;
-        let value: serde_json::Value =
-            serde_json::from_slice(&bytes).with_context(|| format!("record {key:?}"))?;
+        // A duplicate key is a parse error (#6520, #6634): the cap below
+        // must see the value as written, never a last-wins collapse of it —
+        // a duplicate could hide an over-cap value behind a small second
+        // entry. The publish path (parse_records) refuses the same shape.
+        let text = std::str::from_utf8(&bytes).with_context(|| format!("record {key:?}"))?;
+        let value = id_core::json_unique::parse_json_without_duplicate_keys(text)
+            .with_context(|| format!("record {key:?}"))?;
         let size = serde_json::to_vec(&value).map_or(usize::MAX, |v| v.len());
         ensure!(
             size <= MAX_RECORD_VALUE_BYTES,
@@ -654,6 +659,35 @@ mod tests {
         write_raw(&store, "big", serde_json::to_vec(&big).unwrap()).await;
         let err = read_err(&store, &host.blobs).await;
         assert!(err.contains("big") && err.contains("8192"), "{err}");
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn read_records_refuses_a_duplicate_key_hiding_an_oversized_value() {
+        let host = Node::spawn().await;
+        let store = RecordsStore::open(&host.docs, None).await.unwrap();
+        // As written this value is over the cap; collapsed last-wins it is
+        // {"k":"small"} and would pass — the #6634 receipt bypass.
+        let raw = format!(
+            "{{\"k\":\"{}\",\"k\":\"small\"}}",
+            "x".repeat(MAX_RECORD_VALUE_BYTES + 100)
+        );
+        assert!(raw.len() > MAX_RECORD_VALUE_BYTES);
+        write_raw(&store, "dup", raw.into_bytes()).await;
+        let err = read_err(&store, &host.blobs).await;
+        assert!(err.contains("dup"), "{err}");
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn read_records_refuses_a_small_nested_duplicate_key() {
+        let host = Node::spawn().await;
+        let store = RecordsStore::open(&host.docs, None).await.unwrap();
+        // Well under every cap, raw and collapsed: only the duplicate-key
+        // refusal can reject this value.
+        write_raw(&store, "nested", br#"{"a":{"b":1,"b":2}}"#.to_vec()).await;
+        let err = read_err(&store, &host.blobs).await;
+        assert!(err.contains("nested"), "{err}");
         host.shutdown().await;
     }
 
