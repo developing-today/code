@@ -75,6 +75,13 @@ URL_RE = re.compile(
     r"github\.com[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?(?:[\s|)'\"]|$)"
 )
 
+# The GitHub shape of a full_name: an owner (alphanumerics and single
+# hyphens, never leading/trailing) and a name (alphanumerics, '.', '_',
+# '-') joined by exactly one slash (#6814).
+FULL_NAME_RE = re.compile(
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+"
+)
+
 
 def validate_entry(entry: object, source: str, index: int) -> dict:
     """One enumeration entry must be a repo object with a string
@@ -84,7 +91,10 @@ def validate_entry(entry: object, source: str, index: int) -> dict:
     identifying the capture source and the offending entry, never as
     a bare TypeError/KeyError that aborts the run with no indication
     of which capture or entry is at fault (#6716; the contract #6652
-    established on the checker side).
+    established on the checker side). The fields inside an object
+    entry are validated too (#6814): full_name must be a well-formed
+    owner/name, html_url (when present) a string without whitespace
+    or control characters, and fork (when present) a JSON boolean.
     """
     if not isinstance(entry, dict):
         raise ValueError(
@@ -95,6 +105,41 @@ def validate_entry(entry: object, source: str, index: int) -> dict:
         raise ValueError(
             f"{source}: enumeration entry {index} has no string "
             f"full_name: {entry!r:.80}"
+        )
+    # Field-level shape (#6814, the residual of #6716 one level down):
+    # an object entry's fields are validated too, because build()
+    # emits full_name and html_url verbatim into the maintained
+    # artifact (a newline in either forges a phantom repo entry) and
+    # classify() reads fork (a string "false" is truthy and silently
+    # un-watches a real owned repo). A wrong-shaped field fails here,
+    # at the one gate every consumer passes through, with the same
+    # named error.
+    full_name = entry["full_name"]
+    if not FULL_NAME_RE.fullmatch(full_name) or full_name.split("/")[1] in (
+        ".",
+        "..",
+    ):
+        raise ValueError(
+            f"{source}: enumeration entry {index} has a malformed "
+            f"full_name (not owner/name): {full_name!r:.80}"
+        )
+    html_url = entry.get("html_url")
+    if html_url is not None:
+        if not isinstance(html_url, str):
+            raise ValueError(
+                f"{source}: enumeration entry {index} has a non-string "
+                f"html_url: {html_url!r:.80}"
+            )
+        if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in html_url):
+            raise ValueError(
+                f"{source}: enumeration entry {index} has an html_url "
+                f"with whitespace/control characters: {html_url!r:.80}"
+            )
+    fork = entry.get("fork")
+    if fork is not None and not isinstance(fork, bool):
+        raise ValueError(
+            f"{source}: enumeration entry {index} has a non-boolean "
+            f"fork: {fork!r:.80}"
         )
     return entry
 
