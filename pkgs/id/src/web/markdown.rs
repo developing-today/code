@@ -158,7 +158,18 @@ fn markdown_to_prosemirror_inner(markdown: &str, recover_orphans: bool) -> Value
     // source and append them as the same PM nodes the referenced path
     // produces.
     if recover_orphans {
-        preserve_unreferenced_footnote_definitions(&mut doc, &protected, newline_token.as_deref());
+        let footnote_link_references = preserve_unreferenced_footnote_definitions(
+            &mut doc,
+            &protected,
+            newline_token.as_deref(),
+        );
+        preserve_unreferenced_link_reference_definitions(
+            &mut doc,
+            root,
+            &protected,
+            &footnote_link_references,
+            newline_token.as_deref(),
+        );
     }
     doc
 }
@@ -2314,7 +2325,7 @@ fn preserve_unreferenced_footnote_definitions(
     doc: &mut Value,
     markdown: &str,
     newline_token: Option<&str>,
-) {
+) -> std::collections::HashSet<String> {
     let carried: Vec<String> = doc["content"]
         .as_array()
         .map(|content| {
@@ -2341,7 +2352,8 @@ fn preserve_unreferenced_footnote_definitions(
     // degrades the reference to escaped literal text (third cut). A
     // per-orphan probe scaled quadratically with the number of
     // orphans.
-    let recovered = synthesize_footnote_definitions(&orphans, &blocks, &reference_defs);
+    let (recovered, footnote_link_references) =
+        synthesize_footnote_definitions(&orphans, &blocks, &reference_defs);
     let mut synthesized = Vec::new();
     // Duplicate labels (fourteenth cut): the scanner keeps every
     // source block, but synthesis resolves one node per label, so
@@ -2372,6 +2384,155 @@ fn preserve_unreferenced_footnote_definitions(
     {
         content.extend(synthesized);
     }
+    footnote_link_references
+}
+
+/// Preserve link-reference definitions that comrak consumed during parsing
+/// only when no parsed link or image refers to them. Recovered definitions
+/// use the existing HTML-block provenance shape: it carries their original
+/// Markdown through ProseMirror and the save path emits it verbatim, while
+/// avoiding a second schema node for a source-only construct.
+fn preserve_unreferenced_link_reference_definitions<'a>(
+    doc: &mut Value,
+    root: &'a AstNode<'a>,
+    markdown: &str,
+    footnote_link_references: &std::collections::HashSet<String>,
+    newline_token: Option<&str>,
+) {
+    let mut used = footnote_link_references.clone();
+    let lines: Vec<&str> = markdown.lines().collect();
+    collect_used_link_reference_labels(root, &lines, &mut used);
+
+    let definitions = collect_link_reference_definitions(markdown);
+    let Some(content) = doc["content"].as_array_mut() else {
+        return;
+    };
+    for (_, source) in definitions {
+        let Some(label) = link_reference_definition_label(&source) else {
+            continue;
+        };
+        if used.contains(&label) {
+            continue;
+        }
+        let source = strip_reference_definition_containers(&source);
+        let source = newline_token.map_or(source.clone(), |token| source.replace(token, "\n"));
+        content.push(json!({
+            "type": "code_block",
+            "attrs": {"params": "html", "htmlBlock": true},
+            "content": [{"type": "text", "text": source}]
+        }));
+    }
+}
+
+fn strip_reference_definition_containers(source: &str) -> String {
+    source
+        .lines()
+        .map(|line| strip_container_prefixes(line).trim_start_matches([' ', '\t']))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn collect_used_link_reference_labels<'a>(
+    node: &'a AstNode<'a>,
+    lines: &[&str],
+    used: &mut std::collections::HashSet<String>,
+) {
+    let (is_link, start_line, end_line) = {
+        let data = node.data.borrow();
+        (
+            matches!(&data.value, NodeValue::Link(_) | NodeValue::Image(_)),
+            data.sourcepos.start.line,
+            data.sourcepos.end.line,
+        )
+    };
+    if is_link && start_line > 0 && end_line >= start_line && end_line <= lines.len() {
+        let source = lines[start_line - 1..end_line].join("\n");
+        if let Some(label) = link_reference_use_label(&source) {
+            used.insert(label);
+        }
+    }
+    for child in node.children() {
+        collect_used_link_reference_labels(child, lines, used);
+    }
+}
+
+fn link_reference_definition_label(source: &str) -> Option<String> {
+    let stripped = strip_container_prefixes(source.trim_start());
+    let start = stripped.find('[')?;
+    let candidate = &stripped[start..];
+    let close = find_label_close(candidate)?;
+    Some(normalize_link_reference_label(&candidate[1..close]))
+}
+
+/// The AST source span is a parsed link/image, so a bracketed label with no
+/// following inline destination is either a shortcut reference or the first
+/// half of an explicit reference. Its explicit second label takes precedence;
+/// an empty second label is CommonMark's collapsed-reference form.
+fn link_reference_use_label(source: &str) -> Option<String> {
+    let source = source.trim_start();
+    let source = source.strip_prefix('!').unwrap_or(source);
+    let start = source.find('[')?;
+    let candidate = &source[start..];
+    let close = find_balanced_label_close(candidate)?;
+    let first = &candidate[1..close];
+    let after = candidate[close + 1..].trim_start();
+    if after.starts_with('(') {
+        return None;
+    }
+    if let Some(explicit) = after.strip_prefix('[') {
+        let end = find_label_close(explicit)?;
+        let second = &explicit[..end];
+        return Some(normalize_link_reference_label(
+            if second.trim().is_empty() {
+                first
+            } else {
+                second
+            },
+        ));
+    }
+    Some(normalize_link_reference_label(first))
+}
+
+fn find_balanced_label_close(source: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut escaped = false;
+    for (index, ch) in source.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '[' => depth += 1,
+            ']' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn normalize_link_reference_label(label: &str) -> String {
+    let mut unescaped = String::with_capacity(label.len());
+    let mut chars = label.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(escaped) = chars.next() {
+                unescaped.push(escaped);
+            }
+        } else {
+            unescaped.push(ch);
+        }
+    }
+    unescaped
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// Build the PM nodes for every unreferenced definition in ONE
@@ -2387,10 +2548,13 @@ fn synthesize_footnote_definitions(
     orphans: &[&FootnoteDefinitionBlock],
     all_blocks: &[FootnoteDefinitionBlock],
     reference_defs: &[(usize, String)],
-) -> std::collections::HashMap<String, Value> {
+) -> (
+    std::collections::HashMap<String, Value>,
+    std::collections::HashSet<String>,
+) {
     let mut nodes = std::collections::HashMap::new();
     if orphans.is_empty() {
-        return nodes;
+        return (nodes, std::collections::HashSet::new());
     }
     let mut probe = String::new();
     for block in orphans {
@@ -2417,6 +2581,11 @@ fn synthesize_footnote_definitions(
         probe.push_str(text);
         probe.push_str("\n\n");
     }
+    let arena = Arena::new();
+    let root = parse_document(&arena, &probe, &commonmark_options());
+    let lines: Vec<&str> = probe.lines().collect();
+    let mut used_link_references = std::collections::HashSet::new();
+    collect_used_link_reference_labels(root, &lines, &mut used_link_references);
     let doc = markdown_to_prosemirror_inner(&probe, false);
     if let Some(content) = doc["content"].as_array() {
         for n in content {
@@ -2427,7 +2596,7 @@ fn synthesize_footnote_definitions(
             }
         }
     }
-    nodes
+    (nodes, used_link_references)
 }
 
 /// Replace each newline inside an angle-form link/image destination
@@ -7053,6 +7222,119 @@ mod tests {
             doc["content"][0]["content"][0]["marks"][0]["attrs"]["href"], "a\tb.md",
             "PM href unmutated (reference definition)"
         );
+    }
+
+    #[test]
+    fn test_unused_link_reference_definitions_survive_roundtrip() {
+        let original =
+            "Body text with no reference.\n\n[a]: https://a.example\n[b]: https://b.example\n";
+        let doc = markdown_to_prosemirror(original);
+        let recovered: Vec<&Value> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|node| node["type"] == "code_block" && node["attrs"]["htmlBlock"] == true)
+            .collect();
+        assert_eq!(
+            recovered.len(),
+            2,
+            "both unused definitions are retained: {doc}"
+        );
+
+        let (first, second) = two_saves(original);
+        for definition in ["[a]: https://a.example", "[b]: https://b.example"] {
+            assert!(
+                first.contains(definition),
+                "{definition} survives: {first:?}"
+            );
+        }
+        assert_eq!(first, second, "unused definitions round-trip to a fixpoint");
+    }
+
+    #[test]
+    fn test_used_link_reference_definitions_keep_inline_link_behavior() {
+        for (original, expected_link) in [
+            (
+                "[one][r]\n\n[r]: https://r.example\n",
+                "[one](https://r.example)",
+            ),
+            (
+                "[text][]\n\n[text]: https://r.example\n",
+                "[text](https://r.example)",
+            ),
+            ("[r]\n\n[r]: https://r.example\n", "[r](https://r.example)"),
+            (
+                "![alt][image]\n\n[image]: https://r.example/image.png\n",
+                "![alt](https://r.example/image.png)",
+            ),
+        ] {
+            let (first, second) = two_saves(original);
+            assert!(
+                first.contains(expected_link),
+                "resolved link preserved: {first:?}"
+            );
+            assert!(
+                !first.contains("]: https://r.example"),
+                "used definition consumed: {first:?}"
+            );
+            assert_eq!(first, second, "used-reference round-trip is a fixpoint");
+        }
+    }
+
+    #[test]
+    fn test_link_reference_definitions_only_document_survives_roundtrip() {
+        let original = "[a]: https://a.example\n[b]: https://b.example\n";
+        let (first, second) = two_saves(original);
+        for definition in ["[a]: https://a.example", "[b]: https://b.example"] {
+            assert!(
+                first.contains(definition),
+                "definitions-only document preserves {definition}: {first:?}"
+            );
+        }
+        assert!(
+            !first.trim().is_empty(),
+            "definitions-only document does not save empty: {first:?}"
+        );
+        assert_eq!(first, second, "definitions-only round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_link_reference_definition_recovery_respects_literal_contexts() {
+        let original = "```\n[fenced]: https://fenced.example\n```\n\n    [indented]: https://indented.example\n\n<!--\n[html]: https://html.example\n-->\n\n> [quoted]: https://quoted.example\n";
+        let doc = markdown_to_prosemirror(original);
+        let recovered: Vec<&Value> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|node| {
+                node["type"] == "code_block"
+                    && node["attrs"]["htmlBlock"] == true
+                    && node["content"][0]["text"] == "[quoted]: https://quoted.example"
+            })
+            .collect();
+        assert_eq!(
+            recovered.len(),
+            1,
+            "only the real blockquote definition is recovered: {doc}"
+        );
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[quoted]: https://quoted.example"),
+            "real quoted definition survives after hoisting to document scope: {first:?}"
+        );
+        assert!(
+            first.contains("```\n[fenced]: https://fenced.example"),
+            "fenced sample remains code only: {first:?}"
+        );
+        assert!(
+            first.contains("```\n[indented]: https://indented.example"),
+            "indented sample remains code only: {first:?}"
+        );
+        assert!(
+            first.contains("<!--\n[html]: https://html.example"),
+            "HTML sample remains literal HTML: {first:?}"
+        );
+        assert_eq!(first, second, "literal-context round-trip is a fixpoint");
     }
 
     fn test_footnote_roundtrip_fixpoint() {
