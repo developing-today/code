@@ -502,7 +502,10 @@ mod tests {
             .issue_code(purpose.clone(), "c@d.co", now() + CODE_RESEND_MS)
             .unwrap();
         assert!(auth.codes.contains_key("a@b.co"));
-        assert!(auth.check_code("a@b.co", &code, now() + CODE_RESEND_MS).is_err());
+        assert!(
+            auth.check_code("a@b.co", &code, now() + CODE_RESEND_MS)
+                .is_err()
+        );
         assert_eq!(
             auth.check_code("c@d.co", &other, now() + CODE_RESEND_MS)
                 .unwrap(),

@@ -148,11 +148,7 @@ fn markdown_to_prosemirror_inner(markdown: &str, recover_orphans: bool) -> Value
     // source and append them as the same PM nodes the referenced path
     // produces.
     if recover_orphans {
-        preserve_unreferenced_footnote_definitions(
-            &mut doc,
-            &protected,
-            newline_token.as_deref(),
-        );
+        preserve_unreferenced_footnote_definitions(&mut doc, &protected, newline_token.as_deref());
     }
     doc
 }
@@ -254,12 +250,68 @@ enum HtmlBlockEnd {
 
 /// The CommonMark type-6 block-level tag names.
 const HTML_BLOCK_TAGS: &[&str] = &[
-    "address", "article", "aside", "base", "basefont", "blockquote", "body", "caption", "center",
-    "col", "colgroup", "dd", "details", "dialog", "dir", "div", "dl", "dt", "fieldset",
-    "figcaption", "figure", "footer", "form", "frame", "frameset", "h1", "h2", "h3", "h4", "h5",
-    "h6", "head", "header", "hr", "html", "iframe", "legend", "li", "link", "main", "menu",
-    "menuitem", "nav", "noframes", "ol", "optgroup", "option", "p", "param", "search", "section",
-    "summary", "table", "tbody", "td", "tfoot", "th", "thead", "title", "tr", "track", "ul",
+    "address",
+    "article",
+    "aside",
+    "base",
+    "basefont",
+    "blockquote",
+    "body",
+    "caption",
+    "center",
+    "col",
+    "colgroup",
+    "dd",
+    "details",
+    "dialog",
+    "dir",
+    "div",
+    "dl",
+    "dt",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "frame",
+    "frameset",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "header",
+    "hr",
+    "html",
+    "iframe",
+    "legend",
+    "li",
+    "link",
+    "main",
+    "menu",
+    "menuitem",
+    "nav",
+    "noframes",
+    "ol",
+    "optgroup",
+    "option",
+    "p",
+    "param",
+    "search",
+    "section",
+    "summary",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "title",
+    "tr",
+    "track",
+    "ul",
 ];
 
 /// Whether `trimmed` (a whole line, both ends trimmed) is exactly
@@ -294,7 +346,10 @@ fn is_complete_html_tag(trimmed: &str) -> bool {
     }
     let name_start = pos;
     pos += 1;
-    while b.get(pos).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'-') {
+    while b
+        .get(pos)
+        .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'-')
+    {
         pos += 1;
     }
     // Type 1 names never open a type 7 block with an OPENING tag
@@ -468,7 +523,10 @@ impl HtmlBlockTracker {
             }
         }
         if rest.starts_with('!')
-            && rest[1..].chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            && rest[1..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_uppercase())
         {
             // Declaration (type 5 covers <![CDATA[ above; a <!X
             // declaration ends at '>').
@@ -720,8 +778,7 @@ fn is_thematic_break(stripped: &str) -> bool {
 /// A setext heading underline: only `=`s (level 1) or `-`s (level 2).
 fn is_setext_underline(stripped: &str) -> bool {
     let t = stripped.trim();
-    (!t.is_empty() && t.chars().all(|c| c == '='))
-        || (!t.is_empty() && t.chars().all(|c| c == '-'))
+    (!t.is_empty() && t.chars().all(|c| c == '=')) || (!t.is_empty() && t.chars().all(|c| c == '-'))
 }
 
 /// Whether a line starts a new block and so cannot be a lazy
@@ -734,9 +791,11 @@ fn is_setext_underline(stripped: &str) -> bool {
 fn is_atx_heading(stripped: &str) -> bool {
     let hashes = stripped.bytes().take_while(|&b| b == b'#').count();
     (1..=6).contains(&hashes)
-        && matches!(stripped.as_bytes().get(hashes), None | Some(b' ') | Some(b'\t'))
+        && matches!(
+            stripped.as_bytes().get(hashes),
+            None | Some(b' ') | Some(b'\t')
+        )
 }
-
 
 /// Whether the character after a block-level tag name is a valid
 /// name boundary: whitespace, `/`, `>`, or end-of-line (CommonMark
@@ -808,7 +867,10 @@ fn is_non_interrupting_ordered_marker(stripped: &str) -> bool {
     if !matches!(stripped.as_bytes().get(digits), Some(b'.') | Some(b')')) {
         return false;
     }
-    if !matches!(stripped.as_bytes().get(digits + 1), Some(b' ') | Some(b'\t')) {
+    if !matches!(
+        stripped.as_bytes().get(digits + 1),
+        Some(b' ') | Some(b'\t')
+    ) {
         return false;
     }
     stripped[..digits].parse::<u64>().ok() != Some(1)
@@ -1010,8 +1072,7 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
             && !html_prefix.is_empty()
             && !stripped.starts_with(&html_prefix)
             && strip_container_prefixes(stripped) == stripped
-            && (html_prefix.contains('>')
-                || (indent == 0 && !stripped.is_empty()))
+            && (html_prefix.contains('>') || (indent == 0 && !stripped.is_empty()))
         {
             html.reset();
             html_prefix.clear();
@@ -1024,14 +1085,14 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
         let was_in_html = html.in_html();
         if !fence.in_fence()
             && (indent <= 3 || html.in_html())
-            && (html.feed(html_line, at_block_start) || html.feed(container_stripped, at_block_start))
+            && (html.feed(html_line, at_block_start)
+                || html.feed(container_stripped, at_block_start))
         {
             if !was_in_html && html.in_html() {
                 // Opened on this line (via the container-stripped
                 // form when a container prefix is present): remember
                 // the prefix for the block's interior lines.
-                html_prefix =
-                    stripped[..stripped.len() - container_stripped.len()].to_string();
+                html_prefix = stripped[..stripped.len() - container_stripped.len()].to_string();
             }
             if !html.in_html() {
                 html_prefix.clear();
@@ -1083,8 +1144,7 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
             && !fence_prefix.is_empty()
             && !carries_container_prefix(stripped, &fence_prefix)
             && strip_container_prefixes(stripped) == stripped
-            && (fence_prefix.contains('>')
-                || (indent == 0 && !stripped.is_empty()))
+            && (fence_prefix.contains('>') || (indent == 0 && !stripped.is_empty()))
         {
             fence.reset();
             fence_prefix.clear();
@@ -1167,21 +1227,19 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
             // twenty-third cut). Only item/quote content that
             // itself ends or starts a block (blank, heading, break,
             // setext, a new block) leaves the next line eligible.
-            let container_eligible =
-                if strip_container_prefixes(stripped) != stripped {
-                    let c = container_stripped;
-                    Some(
-                        c.trim().is_empty()
-                            || is_atx_heading(c)
-                            || is_thematic_break(c)
-                            || (is_setext_underline(c) && !at_block_start)
-                            || starts_new_block(c),
-                    )
-                } else {
-                    None
-                };
-            at_block_start = container_eligible
-                .unwrap_or_else(|| starts_new_block(stripped))
+            let container_eligible = if strip_container_prefixes(stripped) != stripped {
+                let c = container_stripped;
+                Some(
+                    c.trim().is_empty()
+                        || is_atx_heading(c)
+                        || is_thematic_break(c)
+                        || (is_setext_underline(c) && !at_block_start)
+                        || starts_new_block(c),
+                )
+            } else {
+                None
+            };
+            at_block_start = container_eligible.unwrap_or_else(|| starts_new_block(stripped))
                 || setext_ends_paragraph;
             i += 1;
             continue;
@@ -1739,8 +1797,7 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
             && !html_prefix.is_empty()
             && !stripped.starts_with(&html_prefix)
             && strip_container_prefixes(stripped) == stripped
-            && (html_prefix.contains('>')
-                || (indent == 0 && !stripped.is_empty()))
+            && (html_prefix.contains('>') || (indent == 0 && !stripped.is_empty()))
         {
             html.reset();
             html_prefix.clear();
@@ -1753,14 +1810,14 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
         let was_in_html = html.in_html();
         if !fence.in_fence()
             && (indent <= 3 || html.in_html())
-            && (html.feed(html_line, at_block_start) || html.feed(container_stripped, at_block_start))
+            && (html.feed(html_line, at_block_start)
+                || html.feed(container_stripped, at_block_start))
         {
             if !was_in_html && html.in_html() {
                 // Opened on this line (via the container-stripped
                 // form when a container prefix is present): remember
                 // the prefix for the block's interior lines.
-                html_prefix =
-                    stripped[..stripped.len() - container_stripped.len()].to_string();
+                html_prefix = stripped[..stripped.len() - container_stripped.len()].to_string();
             }
             if !html.in_html() {
                 html_prefix.clear();
@@ -1805,8 +1862,7 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
             && !fence_prefix.is_empty()
             && !carries_container_prefix(stripped, &fence_prefix)
             && strip_container_prefixes(stripped) == stripped
-            && (fence_prefix.contains('>')
-                || (indent == 0 && !stripped.is_empty()))
+            && (fence_prefix.contains('>') || (indent == 0 && !stripped.is_empty()))
         {
             fence.reset();
             fence_prefix.clear();
@@ -1847,8 +1903,7 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
             // (Codex P2 on #1565's twenty-ninth cut). Mirrors
             // scan_footnote_definition_blocks' opening-body rule.
             let opening_body = stripped[label.len() + 4..].trim_start_matches(' ');
-            in_footnote_block =
-                !opening_body.trim().is_empty() && !starts_new_block(opening_body);
+            in_footnote_block = !opening_body.trim().is_empty() && !starts_new_block(opening_body);
             at_block_start = true;
             i += 1;
             continue;
@@ -1958,8 +2013,8 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
         // block in progress (Codex P2 on #1565's fifteenth cut). A
         // non-1 ordered marker is excepted: it cannot interrupt a
         // paragraph (thirteenth cut), so it starts no item here.
-        let new_list_item = starts_with_list_marker(stripped)
-            && !is_non_interrupting_ordered_marker(stripped);
+        let new_list_item =
+            starts_with_list_marker(stripped) && !is_non_interrupting_ordered_marker(stripped);
         if (at_block_start || new_list_item)
             && (!in_footnote_block || new_list_item)
             && (single_start.is_some() || multiline_start.is_some())
@@ -2027,8 +2082,7 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
                         t.starts_with('<') && !contains_unescaped(&t[1..], '>')
                     };
                     if (after.trim().is_empty()
-                        || (pending_angle_destination
-                            && !contains_unescaped(next_stripped, '>')))
+                        || (pending_angle_destination && !contains_unescaped(next_stripped, '>')))
                         && (footnote_definition_label(next_stripped).is_some()
                             || is_link_reference_definition_start(next_stripped)
                             || is_atx_heading(next_stripped)
@@ -2136,20 +2190,19 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
         // context. Only item content that itself ends or starts a
         // block leaves the next line eligible, mirroring the
         // blockquote rule above.
-        let list_eligible = if quote_eligible.is_none()
-            && strip_container_prefixes(stripped) != stripped
-        {
-            let c = container_stripped;
-            Some(
-                c.trim().is_empty()
-                    || is_atx_heading(c)
-                    || is_thematic_break(c)
-                    || (is_setext_underline(c) && !at_block_start)
-                    || starts_new_block(c),
-            )
-        } else {
-            None
-        };
+        let list_eligible =
+            if quote_eligible.is_none() && strip_container_prefixes(stripped) != stripped {
+                let c = container_stripped;
+                Some(
+                    c.trim().is_empty()
+                        || is_atx_heading(c)
+                        || is_thematic_break(c)
+                        || (is_setext_underline(c) && !at_block_start)
+                        || starts_new_block(c),
+                )
+            } else {
+                None
+            };
         at_block_start = is_atx_heading(stripped)
             || quote_eligible
                 .or(list_eligible)
@@ -4077,8 +4130,8 @@ fn force_fenced_code_blocks_in_blockquotes<'a>(root: &'a AstNode<'a>) -> Vec<Str
     let mut tokens: Vec<String> = Vec::new();
     let mut stack: Vec<(&AstNode<'a>, bool)> = vec![(root, false)];
     while let Some((node, ancestor_is_blockquote)) = stack.pop() {
-        let in_blockquote = ancestor_is_blockquote
-            || matches!(node.data.borrow().value, NodeValue::BlockQuote);
+        let in_blockquote =
+            ancestor_is_blockquote || matches!(node.data.borrow().value, NodeValue::BlockQuote);
         for child in node.children() {
             stack.push((child, in_blockquote));
         }
@@ -6108,8 +6161,7 @@ mod tests {
         // #1565: the referenced definition keeps today's exact path;
         // the unreferenced one is appended by the pre-scan, not
         // duplicated or dropped.
-        let original =
-            "Text.[^used]\n\n[^used]: Used note.\n\n[^unused]: Unused note.\n";
+        let original = "Text.[^used]\n\n[^used]: Used note.\n\n[^unused]: Unused note.\n";
         let doc = markdown_to_prosemirror(original);
         let labels: Vec<&str> = doc["content"]
             .as_array()
@@ -6201,8 +6253,7 @@ mod tests {
         // the collector's single-line eligibility check rejected
         // it, so the recovered footnote's [target][long label]
         // saved as literal brackets instead of a hyperlink.
-        let original =
-            "[^orphan]: [target][long label]\n\n[long\nlabel]: https://example.com\n";
+        let original = "[^orphan]: [target][long label]\n\n[long\nlabel]: https://example.com\n";
         let (first, second) = two_saves(original);
         assert!(
             first.contains("[target](https://example.com)"),
@@ -6248,12 +6299,10 @@ mod tests {
         // not a link reference definition, so the orphan
         // footnote's literal [target][url] must NOT resolve into
         // a hyperlink.
-        let original =
-            "- Body\n  [url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let original = "- Body\n  [url]: https://example.com\n\n[^orphan]: [target][url]\n";
         let (first, second) = two_saves(original);
         assert!(
-            !first.contains("](https://example.com)")
-                && first.contains("\\[target\\]"),
+            !first.contains("](https://example.com)") && first.contains("\\[target\\]"),
             "list-continued reference stays literal (no link formed): {first:?}"
         );
         assert_eq!(first, second, "list-paragraph round-trip is a fixpoint");
@@ -6301,15 +6350,16 @@ mod tests {
         // a blockquote paragraph is paragraph text, not a link
         // reference definition, so the orphan footnote's literal
         // [target][url] must NOT resolve into a hyperlink.
-        let original =
-            "> Body\n> [url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let original = "> Body\n> [url]: https://example.com\n\n[^orphan]: [target][url]\n";
         let (first, second) = two_saves(original);
         assert!(
-            !first.contains("](https://example.com)")
-                && first.contains("\\[target\\]"),
+            !first.contains("](https://example.com)") && first.contains("\\[target\\]"),
             "unresolved reference stays literal (no link formed): {first:?}"
         );
-        assert_eq!(first, second, "container paragraph round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "container paragraph round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -6394,7 +6444,6 @@ mod tests {
         assert_eq!(first, second, "ordered continuation is a fixpoint");
     }
 
-
     #[test]
     fn test_empty_bullet_ends_footnote_like_comrak() {
         // #1565 nineteenth cut (Codex P2, DECLINED with evidence):
@@ -6413,9 +6462,7 @@ mod tests {
         let original = "[^a]: First.\n* \nsecond line.\n";
         let (first, second) = two_saves(original);
         assert!(
-            first.contains("First.")
-                && first.contains("second line.")
-                && first.contains("- "),
+            first.contains("First.") && first.contains("second line.") && first.contains("- "),
             "all lines survive the round trip: {first:?}"
         );
         assert_eq!(first, second, "empty-bullet round-trip is a fixpoint");
@@ -6430,7 +6477,8 @@ mod tests {
         // colon, so the unterminated angle destination consumed
         // both lines and the whole candidate was discarded,
         // leaving the orphan's link literal.
-        let original = "[bad]: <unclosed\n# Heading\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let original =
+            "[bad]: <unclosed\n# Heading\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
         let (first, second) = two_saves(original);
         assert!(
             first.contains("](https://example.com)"),
@@ -6483,7 +6531,10 @@ mod tests {
             "definition-shaped HTML interior after a setext heading is not synthesized: {doc}"
         );
         let (first, second) = two_saves(original);
-        assert_eq!(first, second, "type-7-after-setext round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "type-7-after-setext round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -6509,7 +6560,10 @@ mod tests {
                 "definition-shaped HTML interior after indented code is not synthesized: {doc}"
             );
             let (first, second) = two_saves(original);
-            assert_eq!(first, second, "type-7-after-indented-code round-trip is a fixpoint");
+            assert_eq!(
+                first, second,
+                "type-7-after-indented-code round-trip is a fixpoint"
+            );
         }
     }
 
@@ -6532,7 +6586,10 @@ mod tests {
             !first.contains("[target]("),
             "invalid-destination reference is not promoted to a link: {first:?}"
         );
-        assert_eq!(first, second, "invalid-destination round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "invalid-destination round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -6554,7 +6611,10 @@ mod tests {
             .unwrap()
             .iter()
             .any(|n| n["type"] == "footnote_definition");
-        assert!(found, "real footnote definition after the blockquote fence is recovered");
+        assert!(
+            found,
+            "real footnote definition after the blockquote fence is recovered"
+        );
         let (first, second) = two_saves(original);
         assert!(
             first.contains("\\[x\\]\\[url\\]"),
@@ -6564,7 +6624,10 @@ mod tests {
             !first.contains("[x]("),
             "fenced reference definition is not promoted to a link: {first:?}"
         );
-        assert_eq!(first, second, "indented blockquote fence round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "indented blockquote fence round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -6590,7 +6653,10 @@ mod tests {
             "indented code must not synthesize fake: {doc}"
         );
         let (first, second) = two_saves(original);
-        assert!(first.contains("First."), "footnote body survives: {first:?}");
+        assert!(
+            first.contains("First."),
+            "footnote body survives: {first:?}"
+        );
         assert!(first.contains("code"), "indented code survives: {first:?}");
         assert_eq!(first, second, "indented-code continuation is a fixpoint");
     }
@@ -6689,8 +6755,14 @@ mod tests {
             "overindented continuation keeps the lazy line: {orphan}"
         );
         let (first, second) = two_saves(original);
-        assert!(first.contains("second."), "lazy line survives save: {first:?}");
-        assert_eq!(first, second, "overindented-continuation round-trip is a fixpoint");
+        assert!(
+            first.contains("second."),
+            "lazy line survives save: {first:?}"
+        );
+        assert_eq!(
+            first, second,
+            "overindented-continuation round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -6719,7 +6791,10 @@ mod tests {
             "HTML block in footnote must not synthesize fake: {doc}"
         );
         let (first, second) = two_saves(original);
-        assert!(first.contains("code"), "comment content survives: {first:?}");
+        assert!(
+            first.contains("code"),
+            "comment content survives: {first:?}"
+        );
         assert_eq!(first, second, "HTML-in-footnote round-trip is a fixpoint");
         let saved_doc = markdown_to_prosemirror(&first);
         let saved_labels: Vec<_> = saved_doc["content"]
@@ -6759,7 +6834,10 @@ mod tests {
             "blockquote multiline destination resolves the orphan link: {orphan}"
         );
         let (first, second) = two_saves(original);
-        assert_eq!(first, second, "blockquote-definition round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "blockquote-definition round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -6805,7 +6883,10 @@ mod tests {
             !first.contains("[target]("),
             "malformed-candidate reference is not promoted to a link: {first:?}"
         );
-        assert_eq!(first, second, "malformed-candidate round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "malformed-candidate round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -6835,7 +6916,10 @@ mod tests {
             first.contains("paragraph"),
             "footnote paragraph survives: {first:?}"
         );
-        assert_eq!(first, second, "overindented-html footnote round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "overindented-html footnote round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -6860,7 +6944,10 @@ mod tests {
             "only the real orphan definition is synthesized: {doc}"
         );
         let (first, second) = two_saves(original);
-        assert_eq!(first, second, "overindented-closer round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "overindented-closer round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -6877,7 +6964,10 @@ mod tests {
             first.contains("[x](/target)"),
             "reference after a heading-body footnote resolves: {first:?}"
         );
-        assert_eq!(first, second, "heading-body reference round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "heading-body reference round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -7044,7 +7134,10 @@ mod tests {
             "only the real orphan definition is synthesized: {doc}"
         );
         let (first, second) = two_saves(original);
-        assert_eq!(first, second, "heading-body footnote round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "heading-body footnote round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -7110,7 +7203,10 @@ mod tests {
             first.contains("[^real]:"),
             "recovered definition survives the save: {first:?}"
         );
-        assert_eq!(first, second, "indented-continuation round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "indented-continuation round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -7133,7 +7229,10 @@ mod tests {
             !first.contains("[target]("),
             "trailing-text reference is not promoted to a link: {first:?}"
         );
-        assert_eq!(first, second, "trailing-text-after-title round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "trailing-text-after-title round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -7143,7 +7242,8 @@ mod tests {
         // marker is optional, so byte-exact prefix matching left
         // the fence open and suppressed the reference definition
         // after it, degrading the orphan's link to literal text.
-        let original = "> ```\n> code\n>```\n> [url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let original =
+            "> ```\n> code\n>```\n> [url]: https://example.com\n\n[^orphan]: [target][url]\n";
         let (first, second) = two_saves(original);
         assert!(
             first.contains("](https://example.com)"),
@@ -7181,14 +7281,16 @@ mod tests {
         // item is document-global even though the first item's
         // content is paragraph text; the orphan footnote's
         // reference-style link must resolve on save.
-        let original =
-            "- Body\n- [url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let original = "- Body\n- [url]: https://example.com\n\n[^orphan]: [target][url]\n";
         let (first, second) = two_saves(original);
         assert!(
             first.contains("](https://example.com)"),
             "reference in a new list item resolves to a link: {first:?}"
         );
-        assert_eq!(first, second, "list item reference round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "list item reference round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -7347,7 +7449,10 @@ mod tests {
             .unwrap()
             .iter()
             .any(|n| n["type"] == "footnote_definition");
-        assert!(!found, "fence interior stays literal past a container-shaped line");
+        assert!(
+            !found,
+            "fence interior stays literal past a container-shaped line"
+        );
     }
 
     #[test]
@@ -7357,8 +7462,7 @@ mod tests {
         // reference definition; the synthesis context must not
         // promote it, or the recovered footnote's bracketed text
         // becomes a hyperlink the document never had.
-        let original =
-            "Body line\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let original = "Body line\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
         let doc = markdown_to_prosemirror(original);
         let orphan = doc["content"]
             .as_array()
@@ -7388,7 +7492,6 @@ mod tests {
             .any(|n| n["type"] == "footnote_definition");
         assert!(found, "definition after a blockquote fence is recovered");
     }
-
 
     #[test]
     fn test_lowercase_cdata_does_not_suppress_footnote() {
@@ -7427,8 +7530,7 @@ mod tests {
         // an indented code block (tab = columns to the next
         // multiple of 4), so a reference definition on the next
         // line starts a new block and is collected.
-        let original =
-            "\tcode\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let original = "\tcode\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
         let doc = markdown_to_prosemirror(original);
         let orphan = doc["content"]
             .as_array()
@@ -7448,8 +7550,7 @@ mod tests {
         // HTML block must reach the HTML tracker, or the collector
         // treats every later line as HTML and returns no reference
         // definitions, degrading the orphan's reference-style link.
-        let original =
-            "<div>\n</div>\n\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let original = "<div>\n</div>\n\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
         let doc = markdown_to_prosemirror(original);
         let orphan = doc["content"]
             .as_array()
@@ -7482,7 +7583,10 @@ mod tests {
             "multiline destination resolves the orphan link: {orphan}"
         );
         let (first, second) = two_saves(original);
-        assert_eq!(first, second, "multiline-definition round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "multiline-definition round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -7504,7 +7608,6 @@ mod tests {
             "continuation-line title is kept on the orphan link: {orphan}"
         );
     }
-
 
     #[test]
     fn test_autolink_line_does_not_suppress_footnote() {
@@ -7578,8 +7681,7 @@ mod tests {
         // marker ends the real HTML comment, but the collector's
         // indent gate never fed it to the tracker, so the tracker
         // stayed open and suppressed the valid definition after it.
-        let original =
-            "[^orphan]: [target][url]\n\n<!--\n    -->\n\n[url]: https://example.com\n";
+        let original = "[^orphan]: [target][url]\n\n<!--\n    -->\n\n[url]: https://example.com\n";
         let doc = markdown_to_prosemirror(original);
         let orphan = doc["content"]
             .as_array()
@@ -7605,7 +7707,10 @@ mod tests {
             .unwrap()
             .iter()
             .any(|n| n["type"] == "footnote_definition");
-        assert!(found, "definition after an indented comment close is recovered");
+        assert!(
+            found,
+            "definition after an indented comment close is recovered"
+        );
     }
 
     #[test]
@@ -7730,13 +7835,17 @@ mod tests {
             .filter(|n| n["type"] == "footnote_definition")
             .map(|n| n["attrs"]["label"].as_str().unwrap())
             .collect();
-        assert_eq!(labels, ["real"], "definition after blockquote HTML is recovered");
+        assert_eq!(
+            labels,
+            ["real"],
+            "definition after blockquote HTML is recovered"
+        );
         let (first, second) = two_saves(original);
         assert!(first.contains("The note."), "note survives save: {first:?}");
         assert_eq!(first, second, "blockquote-html round-trip is a fixpoint");
     }
 
-        #[test]
+    #[test]
     fn test_footnote_after_blockquote_fence_container_end_recovered() {
         // Codex P2 on #1565's tenth cut: a fence opened inside a
         // blockquote ends implicitly when the quote ends (blank
@@ -7751,7 +7860,11 @@ mod tests {
             .filter(|n| n["type"] == "footnote_definition")
             .map(|n| n["attrs"]["label"].as_str().unwrap())
             .collect();
-        assert_eq!(labels, ["real"], "definition after blockquote fence is recovered");
+        assert_eq!(
+            labels,
+            ["real"],
+            "definition after blockquote fence is recovered"
+        );
         let (first, second) = two_saves(original);
         assert!(first.contains("The note."), "note survives save: {first:?}");
         assert_eq!(first, second, "blockquote-fence round-trip is a fixpoint");
@@ -7769,7 +7882,10 @@ mod tests {
             first.contains("https://example.com"),
             "blockquote reference definition resolves in recovered footnote: {first:?}"
         );
-        assert_eq!(first, second, "blockquote-definition round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "blockquote-definition round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -7780,9 +7896,18 @@ mod tests {
         // of ending it.
         let original = "[^a]: First line.\n#hashtag\n";
         let (first, second) = two_saves(original);
-        assert!(first.contains("First line."), "first line survives: {first:?}");
-        assert!(first.contains("#hashtag"), "hashtag continuation survives: {first:?}");
-        assert_eq!(first, second, "hashtag-continuation round-trip is a fixpoint");
+        assert!(
+            first.contains("First line."),
+            "first line survives: {first:?}"
+        );
+        assert!(
+            first.contains("#hashtag"),
+            "hashtag continuation survives: {first:?}"
+        );
+        assert_eq!(
+            first, second,
+            "hashtag-continuation round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -7807,7 +7932,7 @@ mod tests {
         assert_eq!(first, second, "self-closing-pre round-trip is a fixpoint");
     }
 
-#[test]
+    #[test]
     fn test_reference_after_lone_setext_marker_not_a_definition() {
         // Codex P2 on #1565's ninth cut: a lone `=` with no
         // preceding paragraph is paragraph text, so the
@@ -7862,7 +7987,11 @@ mod tests {
             .filter(|n| n["type"] == "footnote_definition")
             .map(|n| n["attrs"]["label"].as_str().unwrap())
             .collect();
-        assert_eq!(labels, ["real"], "definition after invalid fence is recovered");
+        assert_eq!(
+            labels,
+            ["real"],
+            "definition after invalid fence is recovered"
+        );
         let (first, second) = two_saves(original);
         assert!(first.contains("The note."), "note survives save: {first:?}");
         assert_eq!(first, second, "invalid-fence round-trip is a fixpoint");
@@ -7905,7 +8034,10 @@ mod tests {
             .expect("unreferenced definition carried into the PM doc");
         assert_eq!(definition["attrs"]["label"], "a");
         let (first, second) = two_saves(original);
-        assert!(first.contains("First line."), "first line survives: {first:?}");
+        assert!(
+            first.contains("First line."),
+            "first line survives: {first:?}"
+        );
         assert!(
             first.contains("second line."),
             "lazy continuation survives save: {first:?}"
@@ -7923,7 +8055,10 @@ mod tests {
             !first.contains("idweb-newline"),
             "no placeholder token in saved output: {first:?}"
         );
-        assert_eq!(first, second, "newline-destination round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "newline-destination round-trip is a fixpoint"
+        );
     }
 
     fn test_footnote_multi_paragraph_definition_fixpoint() {
@@ -8968,7 +9103,19 @@ Some text
         // #2180: values with no lossless numeric-pixel form are
         // refused (attr absent; the import path warns) -- never
         // silently truncated or reinterpreted.
-        for raw in ["50%", "200.5", "200.5px", "10em", "2rem", "abc", "", "-5", "200pxpx", "２００", "２００px"] {
+        for raw in [
+            "50%",
+            "200.5",
+            "200.5px",
+            "10em",
+            "2rem",
+            "abc",
+            "",
+            "-5",
+            "200pxpx",
+            "２００",
+            "２００px",
+        ] {
             let node = parse_img_tag(&format!("<img src=\"x.png\" width=\"{raw}\" />"))
                 .expect("img parses");
             assert!(
@@ -9011,7 +9158,10 @@ Some text
         assert_eq!(img["type"], "image");
         assert_eq!(img["attrs"]["width"], 200);
         let out = prosemirror_to_markdown(&doc).unwrap();
-        assert!(out.contains("width=\"200\""), "px form re-emits bare: {out}");
+        assert!(
+            out.contains("width=\"200\""),
+            "px form re-emits bare: {out}"
+        );
     }
 
     #[test]

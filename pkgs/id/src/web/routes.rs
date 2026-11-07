@@ -2616,23 +2616,51 @@ mod upload_router_tests {
         assert_ne!(images[0]["name"], images[1]["name"]);
         assert_ne!(images[0]["hash"], images[1]["hash"]);
         let listed = list_images(router.clone()).await;
-        for (image, bytes) in images.iter().zip([b"first-bytes".as_slice(), b"second-bytes".as_slice()]) {
+        for (image, bytes) in images
+            .iter()
+            .zip([b"first-bytes".as_slice(), b"second-bytes".as_slice()])
+        {
             let name = image["name"].as_str().unwrap();
             let hash = image["hash"].as_str().unwrap();
-            assert_eq!(upload_name_owner(&state.store, name).await.unwrap().unwrap().to_string(), hash);
-            assert!(listed.iter().any(|entry| entry["name"] == name && entry["hash"] == hash));
+            assert_eq!(
+                upload_name_owner(&state.store, name)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .to_string(),
+                hash
+            );
+            assert!(
+                listed
+                    .iter()
+                    .any(|entry| entry["name"] == name && entry["hash"] == hash)
+            );
             let url = image["url"].as_str().unwrap();
             assert!(url.contains(&format!("filename={name}")));
             let (status, _, actual) = get_blob(router.clone(), url).await;
             assert_eq!(status, StatusCode::OK);
             assert_eq!(actual, bytes);
-            for (key, expected) in [(b"content-type".as_slice(), Some("image/png")), (b"created".as_slice(), None)] {
-                let tags = state.tag_store.get_by_key(&state.tag_store.global, name.as_bytes(), key).await.unwrap();
-                let value = tags.first().and_then(|tag| tag.value.as_ref()).and_then(|value| value.as_str()).unwrap();
+            for (key, expected) in [
+                (b"content-type".as_slice(), Some("image/png")),
+                (b"created".as_slice(), None),
+            ] {
+                let tags = state
+                    .tag_store
+                    .get_by_key(&state.tag_store.global, name.as_bytes(), key)
+                    .await
+                    .unwrap();
+                let value = tags
+                    .first()
+                    .and_then(|tag| tag.value.as_ref())
+                    .and_then(|value| value.as_str())
+                    .unwrap();
                 if let Some(expected) = expected {
                     assert_eq!(value, expected);
                 } else {
-                    assert!(value.parse::<u64>().is_ok(), "invalid creation timestamp: {value}");
+                    assert!(
+                        value.parse::<u64>().is_ok(),
+                        "invalid creation timestamp: {value}"
+                    );
                 }
             }
         }

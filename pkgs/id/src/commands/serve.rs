@@ -1689,10 +1689,7 @@ mod tests {
         // used, unchanged.
         let custom = PathBuf::from("shared").join("relocated.jsonl");
         assert_eq!(serve_groups_log_path(Some(custom.clone())), custom);
-        assert_eq!(
-            serve_groups_log_path(None),
-            PathBuf::from(GROUPS_FILE_NAME)
-        );
+        assert_eq!(serve_groups_log_path(None), PathBuf::from(GROUPS_FILE_NAME));
     }
 
     #[test]
@@ -1939,7 +1936,10 @@ mod tests {
         // outright. Either way the assertion holds.
         #[cfg(unix)]
         {
-            assert!(is_process_alive(1), "pid 1 exists and must read as alive (EPERM is not death)");
+            assert!(
+                is_process_alive(1),
+                "pid 1 exists and must read as alive (EPERM is not death)"
+            );
         }
     }
 
