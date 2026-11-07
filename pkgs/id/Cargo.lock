@@ -3948,7 +3948,6 @@ dependencies = [
  "unicode-normalization",
  "unicode-segmentation",
  "unicode-width",
- "url",
  "urlencoding",
  "vt100",
  "wasmtime",

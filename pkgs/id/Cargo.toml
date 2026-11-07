@@ -50,7 +50,6 @@ web = [
   "dep:futures",
   "dep:rmp-serde",
   "dep:comrak",
-  "dep:url",
   "dep:urlencoding",
   "dep:aes-gcm",
   "dep:hkdf",
@@ -138,7 +137,6 @@ mime_guess = { version = "2", optional = true }
 futures = { version = "0.3.32", optional = true }
 rmp-serde = { version = "1", optional = true }
 comrak = { version = "0.56", default-features = false, optional = true }
-url = { version = "2", optional = true }
 urlencoding = { version = "2", optional = true }
 aes-gcm = { version = "0.11", default-features = false, features = [
   "aes",
