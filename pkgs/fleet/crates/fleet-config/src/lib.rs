@@ -102,6 +102,29 @@ pub const PORT_DISPATCH: u16 = 4879;
 /// only.
 pub const DEFAULT_DISPATCH_TOKEN_NAME: &str = "pm-dispatch.api-token";
 
+/// The fleet-secrets name the dispatch-test domain resolves its
+/// GitHub token by (design developing-today/code#6580).
+pub const DEFAULT_DISPATCH_TEST_TOKEN_NAME: &str = "github.ghcr-classic-pat";
+
+/// The fleet-secrets name the dispatch-test domain resolves its
+/// Turso jobs-store token by.
+pub const DEFAULT_DISPATCH_TEST_TURSO_TOKEN_NAME: &str = "turso.fleet-dispatch-jobs-token";
+
+/// The Turso jobs store the dispatch-test domain records jobs in.
+pub const DEFAULT_DISPATCH_TEST_TURSO_URL: &str =
+    "https://fleet-dispatch-jobs-dezren39.aws-us-east-1.turso.io";
+
+/// The default Actions-capacity threshold for dispatch-test scope
+/// selection: a scope is eligible below this many active jobs.
+pub const DEFAULT_DISPATCH_TEST_THRESHOLD: u64 = 40;
+
+/// The fleet repo: the dezren39 repo that holds the other fleet
+/// repos as git submodules (developing-today/code#6580 phase 2).
+/// Its copies — the source plus its fork network — are the
+/// dispatch-test execution homes, discovered dynamically unless
+/// `[dispatch-test] scopes` pins an explicit list.
+pub const DEFAULT_DISPATCH_TEST_FLEET_REPO: &str = "dezren39/fleet";
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -110,6 +133,8 @@ pub struct Config {
     pub proxy: ProxyConfig,
     pub secrets: SecretsConfig,
     pub dispatch: DispatchConfig,
+    #[serde(rename = "dispatch-test")]
+    pub dispatch_test: DispatchTestConfig,
     pub search: SearchConfig,
 }
 
@@ -191,6 +216,36 @@ pub struct DispatchConfig {
     pub port: Option<u16>,
 }
 
+/// `[dispatch-test]` — the dispatch-test domain's view
+/// (developing-today/code#6580). All optional: the defaults name
+/// the live GitHub token, the Turso jobs store, and the scope
+/// repos used for capacity-based selection.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DispatchTestConfig {
+    /// The fleet-secrets name the GitHub token resolves by
+    /// (default [`DEFAULT_DISPATCH_TEST_TOKEN_NAME`]).
+    pub token_name: Option<String>,
+    /// The fleet-secrets name the Turso token resolves by
+    /// (default [`DEFAULT_DISPATCH_TEST_TURSO_TOKEN_NAME`]).
+    pub turso_token_name: Option<String>,
+    /// The Turso database URL (default
+    /// [`DEFAULT_DISPATCH_TEST_TURSO_URL`]).
+    pub turso_url: Option<String>,
+    /// Actions-capacity threshold (default
+    /// [`DEFAULT_DISPATCH_TEST_THRESHOLD`]).
+    pub threshold: Option<u64>,
+    /// The fleet repo whose copies are the execution homes
+    /// (default [`DEFAULT_DISPATCH_TEST_FLEET_REPO`]).
+    pub fleet_repo: Option<String>,
+    /// Scope repos, in selection order — a PIN/OVERRIDE: when
+    /// non-empty, exactly these execution-home copies are scanned.
+    /// Empty (the default) means DISCOVER: the fleet repo plus its
+    /// fork network.
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
 #[derive(Debug)]
 pub enum ConfigError {
     /// The config file exists but does not parse. Carries the path and
@@ -234,6 +289,25 @@ fn env_path(var: &str) -> Option<PathBuf> {
     non_empty_path(std::env::var_os(var).map(PathBuf::from))
 }
 
+/// An XDG base directory: only an absolute, non-empty value counts.
+/// The XDG base-directory spec says a relative value in these
+/// variables should be considered invalid and ignored; taking one
+/// literally would resolve the config file and the state dir from
+/// the process's working directory, so a `fleet.toml` planted at
+/// `./<relative-base>/fleet/fleet.toml` would load despite an
+/// absolute `HOME` (issue #6396 — the relative spelling of the
+/// #5473 planted-config hazard, and the XDG sibling of the
+/// relative-HOME rule in `home_anchor`). Scoped to the XDG bases
+/// only: explicit overrides (`FLEET_CONFIG`, the broker socket
+/// paths) keep their documented relative meanings.
+fn absolute_path(value: Option<PathBuf>) -> Option<PathBuf> {
+    non_empty_path(value).filter(|p| p.is_absolute())
+}
+
+fn env_xdg_base(var: &str) -> Option<PathBuf> {
+    absolute_path(std::env::var_os(var).map(PathBuf::from))
+}
+
 /// The home anchor: only an absolute, non-empty `HOME` may anchor
 /// home-relative resolution. A relative `HOME` is treated as unset
 /// for anchoring (issue #6404): used verbatim it would resolve the
@@ -275,7 +349,7 @@ impl Config {
     pub fn file_path() -> PathBuf {
         Self::file_path_from(
             env_path("FLEET_CONFIG"),
-            env_path("XDG_CONFIG_HOME"),
+            env_xdg_base("XDG_CONFIG_HOME"),
             &home_dir(),
         )
     }
@@ -492,6 +566,54 @@ impl Config {
         self.dispatch.port.unwrap_or(PORT_DISPATCH)
     }
 
+    /// The fleet-secrets name the dispatch-test GitHub token
+    /// resolves by.
+    pub fn dispatch_test_token_name(&self) -> &str {
+        self.dispatch_test
+            .token_name
+            .as_deref()
+            .unwrap_or(DEFAULT_DISPATCH_TEST_TOKEN_NAME)
+    }
+
+    /// The fleet-secrets name the dispatch-test Turso token
+    /// resolves by.
+    pub fn dispatch_test_turso_token_name(&self) -> &str {
+        self.dispatch_test
+            .turso_token_name
+            .as_deref()
+            .unwrap_or(DEFAULT_DISPATCH_TEST_TURSO_TOKEN_NAME)
+    }
+
+    /// The dispatch-test Turso jobs-store URL.
+    pub fn dispatch_test_turso_url(&self) -> &str {
+        self.dispatch_test
+            .turso_url
+            .as_deref()
+            .unwrap_or(DEFAULT_DISPATCH_TEST_TURSO_URL)
+    }
+
+    /// The dispatch-test Actions-capacity threshold.
+    pub fn dispatch_test_threshold(&self) -> u64 {
+        self.dispatch_test
+            .threshold
+            .unwrap_or(DEFAULT_DISPATCH_TEST_THRESHOLD)
+    }
+
+    /// The dispatch-test fleet repo (execution-home source).
+    pub fn dispatch_test_fleet_repo(&self) -> &str {
+        self.dispatch_test
+            .fleet_repo
+            .as_deref()
+            .unwrap_or(DEFAULT_DISPATCH_TEST_FLEET_REPO)
+    }
+
+    /// The pinned dispatch-test scope repos, in selection order.
+    /// Empty means no pin: the caller discovers the fleet repo's
+    /// copies (source + fork network) instead.
+    pub fn dispatch_test_scopes(&self) -> Vec<String> {
+        self.dispatch_test.scopes.clone()
+    }
+
     /// The search domain's routing preference from `[search] via`
     /// ("service" | "standalone"), when configured.
     pub fn search_via(&self) -> Option<String> {
@@ -521,7 +643,7 @@ impl Config {
 
     /// `~/.local/state/fleet` (or `$XDG_STATE_HOME/fleet`).
     pub fn state_dir() -> PathBuf {
-        Self::state_dir_from(env_path("XDG_STATE_HOME"), &home_dir())
+        Self::state_dir_from(env_xdg_base("XDG_STATE_HOME"), &home_dir())
     }
 
     fn state_dir_from(xdg_state_home: Option<PathBuf>, home: &std::path::Path) -> PathBuf {
@@ -716,6 +838,54 @@ mod tests {
             home.join(".config")
                 .join("secrets-broker")
                 .join("broker.sock")
+        );
+    }
+
+    #[test]
+    fn relative_xdg_bases_are_ignored() {
+        // #6396: a non-empty relative XDG base is invalid per the
+        // XDG spec and is treated as unset, exactly like an empty
+        // one (#5473) — resolution falls back to the HOME-anchored
+        // defaults, so a fleet.toml planted under the working
+        // directory at ./<relative-base>/fleet/fleet.toml is never
+        // loaded when HOME is set.
+        let home = PathBuf::from("/home/tester");
+        assert_eq!(absolute_path(Some(PathBuf::from("relcfg"))), None);
+        assert_eq!(absolute_path(Some(PathBuf::new())), None);
+        assert_eq!(absolute_path(None), None);
+        assert_eq!(
+            absolute_path(Some(PathBuf::from("/cfg"))),
+            Some(PathBuf::from("/cfg"))
+        );
+        assert_eq!(
+            Config::file_path_from(
+                None,
+                absolute_path(Some(PathBuf::from("relcfg"))),
+                &home
+            ),
+            home.join(".config").join("fleet").join("fleet.toml")
+        );
+        assert_eq!(
+            Config::file_path_from(
+                None,
+                absolute_path(Some(PathBuf::from("/cfg"))),
+                &home
+            ),
+            PathBuf::from("/cfg").join("fleet").join("fleet.toml")
+        );
+        assert_eq!(
+            Config::state_dir_from(absolute_path(Some(PathBuf::from("relstate"))), &home),
+            home.join(".local").join("state").join("fleet")
+        );
+        assert_eq!(
+            Config::state_dir_from(absolute_path(Some(PathBuf::from("/state"))), &home),
+            PathBuf::from("/state").join("fleet")
+        );
+        // The explicit per-file override is out of scope: a relative
+        // FLEET_CONFIG keeps its verbatim meaning.
+        assert_eq!(
+            Config::file_path_from(Some(PathBuf::from("rel.toml")), None, &home),
+            PathBuf::from("rel.toml")
         );
     }
 

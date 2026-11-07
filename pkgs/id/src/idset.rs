@@ -67,6 +67,9 @@ use unicode_normalization::is_nfc;
 use crate::groups::Role;
 use crate::waiting::AuthorKey;
 
+/// View projection and discovery over an explicitly pinned snapshot.
+pub mod view;
+
 /// The kind of a writer-set event, as the header's `kind` names it.
 pub const WRITER_KIND: &str = "idset.writer";
 

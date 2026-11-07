@@ -10,7 +10,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# Copy the four writer files into a scratch tree shaped like the repo.
+# Copy the six guarded files into a scratch tree shaped like the repo.
 make_tree() {
   local dest="$1"
   mkdir -p "$dest/pkgs/atlas-search/crates/atlas-search/src" \
@@ -19,8 +19,10 @@ make_tree() {
   for pair in \
     "pkgs/atlas-search/crates/atlas-search/src/pyjson.rs" \
     "pkgs/atlas-search/crates/atlas-search/src/render.rs" \
+    "pkgs/atlas-search/crates/atlas-search/src/server.rs" \
     "pkgs/fleet/crates/fleet-search/src/pyjson.rs" \
-    "pkgs/fleet/crates/fleet-search/src/render.rs"; do
+    "pkgs/fleet/crates/fleet-search/src/render.rs" \
+    "pkgs/fleet/crates/fleet-search/src/server.rs"; do
     cp "$REPO_ROOT/$pair" "$dest/$pair"
   done
 }
@@ -89,5 +91,30 @@ echo "// mirrored" >>"$ATLAS_PY"
 echo "// mirrored" >>"$FLEET_PY"
 run_guard "$TMP/tree"
 expect_pass "mirrored change in both copies"
+
+# 7. The rehomed service (#5604): body drift in either server.rs copy,
+# and a changed server.rs header, fail; a mirrored change passes.
+ATLAS_SRV="$TMP/tree/pkgs/atlas-search/crates/atlas-search/src/server.rs"
+FLEET_SRV="$TMP/tree/pkgs/fleet/crates/fleet-search/src/server.rs"
+make_tree "$TMP/tree"
+echo "// drift" >>"$FLEET_SRV"
+run_guard "$TMP/tree"
+expect_fail "body drift in fleet server.rs"
+
+make_tree "$TMP/tree"
+echo "// drift" >>"$ATLAS_SRV"
+run_guard "$TMP/tree"
+expect_fail "body drift in atlas server.rs"
+
+make_tree "$TMP/tree"
+sed -i '2s/Rehomed verbatim/Copied/' "$FLEET_SRV"
+run_guard "$TMP/tree"
+expect_fail "changed fleet server.rs parity header"
+
+make_tree "$TMP/tree"
+echo "// mirrored" >>"$ATLAS_SRV"
+echo "// mirrored" >>"$FLEET_SRV"
+run_guard "$TMP/tree"
+expect_pass "mirrored server.rs change in both copies"
 
 echo "check-fleet-search-parity: all contract tests pass (#5920)"

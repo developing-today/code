@@ -4,9 +4,9 @@ name: bin tests
 #
 # Test verification for the bin/ provider proxies (#6081).
 #
-# 13 of the 14 bin/*.test.mjs suites — the regression tests for the
-# live provider proxies in bin/ (muse-proxy, codex-proxy,
-# proxy-supervise, ...) — were run by
+# 12 of the 13 bin/*.test.mjs suites — the regression tests for the
+# live provider proxies in bin/ (proxy-supervise,
+# proxy-relay, ...) — were run by
 # no workflow; only bin/check-opencode-metered-providers.test.mjs
 # had wiring (opencode-config-guard). The rest executed only when a
 # human remembered to run node --test by hand, so pins regressed

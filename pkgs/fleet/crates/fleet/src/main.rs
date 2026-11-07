@@ -8,7 +8,9 @@
 //! repo-queue client and the queue-broker / secrets-broker serve
 //! roles run for real below; step 3 (#5431) the proxy domain; step 4
 //! (#5432) the dispatch thin client; step 6 (#5554) the secrets verb;
-//! step 5 (#5433) the search client domain. A compiled-in domain that has
+//! step 5 (#5433) the search client domain, with its serve role
+//! (`fleet serve search`, the Atlas service) following in #5604. A
+//! compiled-in domain that has
 //! not landed yet answers with the "not implemented yet" form of
 //! the stub — but the *surface* is complete and honest: every
 //! variant renders the full registry, and every missing capability
@@ -76,6 +78,9 @@ fn compiled_capabilities() -> CapabilitySet {
     }
     if cfg!(feature = "dispatch") {
         caps.insert(Capability::Dispatch);
+    }
+    if cfg!(feature = "dispatch-test") {
+        caps.insert(Capability::DispatchTest);
     }
     if cfg!(feature = "laptop-agent") {
         caps.insert(Capability::LaptopAgent);
@@ -361,13 +366,11 @@ fn print_domain_help(surface: &Surface, d: &Domain) {
         CapState::Available => match d.name {
             "queue" => "included in this build",
             "dispatch" => "included in this build",
+            "dispatch-test" => "included in this build",
             "secrets" => "included in this build",
             "search" => "included in this build",
             "proxy" => "included in this build",
-            "serve" => {
-                "included in this build (queue-broker and secrets-broker roles; \
-                 the search role lands in a later step)"
-            }
+            "serve" => "included in this build (queue-broker, secrets-broker and search roles)",
             _ => "included in this build (implementation lands in a later step of epic #5412)",
         },
         CapState::NotInBuild => {
@@ -404,6 +407,12 @@ fn required_capability(d: &Domain, args: &[String]) -> Result<Capability, i32> {
                 )),
             }
         }
+        // `search serve` (and so the standalone `atlas-search serve`
+        // argv0 spelling) is the same service role as `serve search`
+        // (#5604); every other search argument is the client surface.
+        "search" if args.first().map(|s| s.as_str()) == Some("serve") => {
+            Ok(Capability::SearchServe)
+        }
         "proxy" => {
             let sub = args.first().map(|s| s.as_str());
             match sub {
@@ -436,8 +445,31 @@ fn wants_domain_help(d: &Domain, args: &[String]) -> bool {
     d.name == "serve" && args.get(1).is_some_and(|a| is_help_flag(a))
 }
 
+/// The arguments after the role name when this invocation is the
+/// search service role, in either spelling: `serve search ...` or
+/// `search serve ...` (the `atlas-search serve` argv0 route).
+#[cfg(feature = "search-serve")]
+fn search_serve_tail<'a>(d: &Domain, args: &'a [String]) -> Option<&'a [String]> {
+    let first = args.first().map(|s| s.as_str());
+    match (d.name, first) {
+        ("serve", Some("search")) | ("search", Some("serve")) => Some(&args[1..]),
+        _ => None,
+    }
+}
+
 /// Run one domain invocation (also the argv0-alias landing pad).
 fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) -> i32 {
+    // The search role takes real flags, so its own usage answers
+    // `--help` wherever the role is actually usable; elsewhere the
+    // flag falls through to the registry's domain help below.
+    #[cfg(feature = "search-serve")]
+    if let Some(tail) = search_serve_tail(d, args)
+        && tail.first().is_some_and(|a| is_help_flag(a))
+        && surface.cap_state(Capability::SearchServe, d.name) == CapState::Available
+    {
+        println!("{}", fleet_search::serve::SERVE_USAGE);
+        return EXIT_OK;
+    }
     // Domain help is registry data: always available, even where the
     // domain itself is not (§3).
     if wants_domain_help(d, args) {
@@ -490,11 +522,25 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
             if d.name == "serve" && args.first().map(|s| s.as_str()) == Some("secrets-broker") {
                 return fleet_queue::secrets_broker::run();
             }
+            // #5604: the Atlas service role, rehomed from the
+            // atlas-search bin crate. Runs in the foreground; the
+            // atlas user unit's ExecStart is `fleet serve search`.
+            #[cfg(feature = "search-serve")]
+            if let Some(tail) = search_serve_tail(d, args) {
+                return fleet_search::serve::run(tail);
+            }
             // Step 4 (#5432): the dispatch domain runs for real — a
             // thin client over pm-stack's pm-dispatch service.
             #[cfg(feature = "dispatch")]
             if d.name == "dispatch" {
                 return fleet_dispatch::run(&surface.config, args);
+            }
+            // The dispatch-test domain (developing-today/code#6580):
+            // explicit-dispatch CI test over GitHub Actions + the
+            // Turso jobs store (full build only).
+            #[cfg(feature = "dispatch-test")]
+            if d.name == "dispatch-test" {
+                return fleet_dispatch_test::run(&surface.config, args);
             }
             // Step 6 (#5554): the secrets domain runs for real —
             // the fleet-secrets resolver chain as a verb.
@@ -825,6 +871,44 @@ mod tests {
             serve,
             &args(&["queue-broker", "--bind", "--help"])
         ));
+    }
+
+    #[cfg(feature = "search-serve")]
+    #[test]
+    fn search_serve_is_one_role_in_both_spellings() {
+        // `fleet serve search ...` and `atlas-search serve ...` (the
+        // argv0 route into the search domain) are the same role, and
+        // both need the search-serve capability, not the client's.
+        let serve = domain("serve").unwrap();
+        let search = domain("search").unwrap();
+        let a = args(&["search", "--config", "x"]);
+        let b = args(&["serve", "--config", "x"]);
+        assert_eq!(search_serve_tail(serve, &a), Some(&a[1..]));
+        assert_eq!(search_serve_tail(search, &b), Some(&b[1..]));
+        assert_eq!(
+            required_capability(serve, &a).ok(),
+            Some(Capability::SearchServe)
+        );
+        assert_eq!(
+            required_capability(search, &b).ok(),
+            Some(Capability::SearchServe)
+        );
+        // Everything else under `search` stays the client surface; the
+        // other serve roles are not the search role.
+        for client in [
+            &["q"][..],
+            &["get-chunk", "1"][..],
+            &["search", "q"][..],
+            &[][..],
+        ] {
+            assert_eq!(search_serve_tail(search, &args(client)), None);
+            assert_eq!(
+                required_capability(search, &args(client)).ok(),
+                Some(Capability::Search)
+            );
+        }
+        assert_eq!(search_serve_tail(serve, &args(&["queue-broker"])), None);
+        assert_eq!(search_serve_tail(search, &args(&["search"])), None);
     }
 
     #[test]
