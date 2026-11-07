@@ -2433,7 +2433,7 @@ async fn run_gossip_loop(
                     send.write_all(&req).await?;
                     send.finish()?;
                     let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
-                    let _resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+                    let _resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
                     conn.close(0u32.into(), b"probe");
                     anyhow::Ok(())
                 })

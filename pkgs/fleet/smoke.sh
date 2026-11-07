@@ -126,6 +126,19 @@ run "connect as atlas-search stubs 69" 69 "this build does not include 'search'"
 run "serve as queue-broker reaches the real broker role (missing token file: exit 3)" 3 "cannot read token file" \
   env QUEUE_BROKER_TOKEN_FILE="$TMP/no-such-token" "$TMP/queue-broker"
 
+echo "== search serve role (#5604): reaches the real service role, no stub =="
+# Hermetic: the service config path does not exist, so the role stops
+# at config load (exit 2) before any Turso token, embedder or socket.
+run "connect: fleet serve search stubs" 69 "this build does not include 'serve'" \
+  "$CONNECT_OUT/bin/fleet" serve search
+run "serve: fleet serve search reaches the real role (missing config: exit 2)" 2 "cannot read service config" \
+  env ATLAS_SEARCH_SERVICE_CONFIG="$TMP/no-such-service.json" "$SERVE_OUT/bin/fleet" serve search
+run "full: fleet serve search --help prints the role usage" 0 "usage: fleet serve search" \
+  "$FULL_OUT/bin/fleet" serve search --help
+mkdir -p "$TMP/asp" && ln -sf "$SERVE_OUT/bin/fleet" "$TMP/asp/atlas-search"
+run "serve as atlas-search: 'serve' is the same role (the rollback spelling)" 2 "cannot read service config" \
+  env ATLAS_SEARCH_SERVICE_CONFIG="$TMP/no-such-service.json" "$TMP/asp/atlas-search" serve
+
 echo "== proxy domain: serve + connect + init + shims (step 3, #5431) =="
 # Hermetic proxy world: a scratch HOME (token file), scratch socket,
 # scratch state dirs, and a stub HTTP upstream on loopback ports. The
@@ -258,7 +271,12 @@ run "proxy: legacy proto-0 client round-trips (no hello)" 0 "legacy-ok" \
 # with no LAPTOP_AGENT_POOL anywhere in its environment, so
 # its startup line must render the compiled default of 50.
 run "proxy: broker startup renders the effective pool size (default 50)" 0 \
-  "pool: 50 per port" grep "pool: 50 per port" "$PX/broker.log"
+  "pool_size=50" grep "pool_size=50" "$PX/broker.log"
+# Identity stamp (#5758): the same first startup line names the
+# implementation and carries a UTC timestamp + pid, so broker
+# ownership of an incident window is reconstructable from the log.
+run "proxy: broker startup line is timestamped with implementation + pid" 0 \
+  "implementation=fleet-proxy" grep -E "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z fleet proxy serve start implementation=fleet-proxy version=[^ ]+ pool_size=50 pid=[0-9]+" "$PX/broker.log"
 
 # 32-concurrent burst against that default-config broker,
 # mirroring the #5412 benchmark method (hello-negotiated

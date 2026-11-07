@@ -617,6 +617,12 @@ func TestReadOnlyGuardRejectsAnythingThatWrites(t *testing.T) {
 		`PRAGMA journal_mode`,
 		`PRAGMA user_version`,
 		`PRAGMA user_version;`,
+		`PRAGMA schema_version`,
+		`PRAGMA database_list`,
+		`PRAGMA compile_options`,
+		`PRAGMA main.journal_mode`,
+		`PRAGMA integrity_check`,
+		`PRAGMA read_uncommitted`,
 		`EXPLAIN SELECT 1`,
 	}
 	for _, q := range ok {
@@ -640,6 +646,13 @@ func TestReadOnlyGuardRejectsAnythingThatWrites(t *testing.T) {
 		`PRAGMA user_version(42)`,
 		`PRAGMA journal_mode(DELETE)`,
 		`PRAGMA schema.user_version=42`,
+		`PRAGMA optimize`,
+		`PRAGMA wal_checkpoint`,
+		`PRAGMA incremental_vacuum`,
+		`PRAGMA shrink_memory`,
+		`PRAGMA main.optimize`,
+		`PRAGMA main.wal_checkpoint;`,
+		`PRAGMA not_a_real_pragma`,
 		``,
 	}
 	for _, q := range bad {
@@ -673,6 +686,38 @@ func TestRunSQLRefusesPragmaAssignments(t *testing.T) {
 	}
 	if _, err := st.RunSQL(`PRAGMA table_info(records)`); err != nil {
 		t.Errorf("RunSQL rejected a function-form read PRAGMA: %v", err)
+	}
+}
+
+func TestRunSQLRefusesBareActionPragmas(t *testing.T) {
+	dir := t.TempDir()
+	chainFixture(t, dir)
+	st := open(t, dir)
+	ingest(t, st)
+	// Bare PRAGMAs with no value can still act on the database:
+	// optimize rewrites sqlite_stat1, wal_checkpoint forces WAL
+	// frames into the main file, incremental_vacuum performs vacuum
+	// work, shrink_memory returns memory to the OS. None of them may
+	// run through the read-only surface, with or without a schema
+	// qualifier.
+	for _, q := range []string{
+		`PRAGMA optimize`,
+		`PRAGMA wal_checkpoint`,
+		`PRAGMA incremental_vacuum`,
+		`PRAGMA shrink_memory`,
+		`PRAGMA main.wal_checkpoint`,
+	} {
+		if _, err := st.RunSQL(q); err == nil {
+			t.Errorf("RunSQL executed a bare action PRAGMA: %q", q)
+		}
+	}
+	// The established bare reads still run.
+	table, err := st.RunSQL(`PRAGMA journal_mode`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(table.Rows) != 1 || table.Rows[0][0] != "wal" {
+		t.Errorf("journal_mode is %v, want wal (the store DSN sets WAL mode)", table.Rows)
 	}
 }
 
