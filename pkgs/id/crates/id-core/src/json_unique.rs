@@ -10,7 +10,9 @@
 /// `serde_json::Value` normally keeps only the last value for a repeated key,
 /// which can make routing and later checks observe different bytes than the
 /// client sent.
-pub fn parse_json_without_duplicate_keys(text: &str) -> Result<serde_json::Value, serde_json::Error> {
+pub fn parse_json_without_duplicate_keys(
+    text: &str,
+) -> Result<serde_json::Value, serde_json::Error> {
     use serde::Deserialize;
     use serde::de::{self, MapAccess, SeqAccess, Visitor};
     use std::collections::HashSet;
@@ -149,7 +151,10 @@ mod tests {
             r#"{"a":[{"b":1,"b":2}]}"#,
         ] {
             let err = parse_json_without_duplicate_keys(text).unwrap_err();
-            assert!(err.to_string().contains("duplicate JSON object key"), "{err}");
+            assert!(
+                err.to_string().contains("duplicate JSON object key"),
+                "{err}"
+            );
         }
     }
 }

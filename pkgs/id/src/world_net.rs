@@ -801,7 +801,9 @@ impl WorldClient {
             Some(value) => match value.as_u64() {
                 Some(sequence) => sequence,
                 None => {
-                    bail!("host sent a malformed compiled reply: `sequence` is not an unsigned integer")
+                    bail!(
+                        "host sent a malformed compiled reply: `sequence` is not an unsigned integer"
+                    )
                 }
             },
             None => bail!("host sent no sequence in compiled reply"),
@@ -847,16 +849,12 @@ impl WorldClient {
     /// [`WorldClient::parse_caps_ceiling_reply`]) so the validation can
     /// be unit-tested without a live host sending frames no real host
     /// sends.
-    fn parse_caps_reply(
-        reply: &serde_json::Value,
-        refusal: &str,
-    ) -> Result<serde_json::Value> {
+    fn parse_caps_reply(reply: &serde_json::Value, refusal: &str) -> Result<serde_json::Value> {
         if reply["type"] != "caps" {
             bail!("{}", reply["message"].as_str().unwrap_or(refusal));
         }
-        let _: crate::world_caps::CapsReport =
-            serde_json::from_value(reply["report"].clone())
-                .context("host sent a malformed capability report")?;
+        let _: crate::world_caps::CapsReport = serde_json::from_value(reply["report"].clone())
+            .context("host sent a malformed capability report")?;
         Ok(reply["report"].clone())
     }
 
@@ -930,9 +928,8 @@ impl WorldClient {
                     .unwrap_or("host refused the capability ceiling change")
             );
         }
-        let report: crate::world_caps::CapsReport =
-            serde_json::from_value(reply["report"].clone())
-                .context("host sent a malformed capability report")?;
+        let report: crate::world_caps::CapsReport = serde_json::from_value(reply["report"].clone())
+            .context("host sent a malformed capability report")?;
         let mut validated = reply.clone();
         validated["report"] =
             serde_json::to_value(report).context("re-encode the capability report")?;
@@ -1811,7 +1808,13 @@ impl WorldClient {
             .and_then(|count| usize::try_from(count).ok())
             .filter(|count| *count <= crate::world::MAX_ADMIN_HISTORY_EVENTS)
             .context("history reply has an invalid event count")?;
-        Ok((world_id, module_hash, current_sequence, complete, event_count))
+        Ok((
+            world_id,
+            module_hash,
+            current_sequence,
+            complete,
+            event_count,
+        ))
     }
 
     /// Export the retained journal-order event window and its records as an
@@ -2758,7 +2761,13 @@ mod tests {
             "type": "error",
             "message": "admin token refused",
         }));
-        assert!(refused.err().unwrap().to_string().contains("admin token refused"));
+        assert!(
+            refused
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("admin token refused")
+        );
     }
 
     #[test]
@@ -3895,20 +3904,14 @@ mod tests {
             serde_json::json!({"type": "compiled", "module_hash": null, "sequence": 7, "diagnostics": ""}),
         ] {
             let result = parse(bad_reply);
-            assert!(
-                result.is_err(),
-                "mistyped field must error, got {result:?}"
-            );
+            assert!(result.is_err(), "mistyped field must error, got {result:?}");
         }
 
         // The refusal path still surfaces the host's message.
         let result = parse(serde_json::json!({"type": "error", "message": "bad admin token"}));
         assert_eq!(result.err().unwrap().to_string(), "bad admin token");
         let result = parse(serde_json::json!({"type": "error"}));
-        assert_eq!(
-            result.err().unwrap().to_string(),
-            "host refused to compile"
-        );
+        assert_eq!(result.err().unwrap().to_string(), "host refused to compile");
     }
 
     #[test]

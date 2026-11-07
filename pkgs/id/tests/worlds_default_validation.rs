@@ -5,11 +5,11 @@
 //! sends a string (ServerFrame::Worlds), so only a scripted peer can
 //! produce the malformed shapes.
 use id::frames::{read_frame, write_frame};
-use id::world_net::{WorldClient, WORLD_ALPN};
+use id::world_net::{WORLD_ALPN, WorldClient};
 use iroh::{
-    endpoint::{presets, RelayMode},
-    protocol::{AcceptError, ProtocolHandler, Router},
     Endpoint, EndpointAddr,
+    endpoint::{RelayMode, presets},
+    protocol::{AcceptError, ProtocolHandler, Router},
 };
 
 #[derive(Debug, Clone)]
@@ -43,7 +43,9 @@ async fn endpoint() -> Endpoint {
         .unwrap()
 }
 
-async fn run_case(reply: serde_json::Value) -> anyhow::Result<(String, Vec<(String, bool, usize)>)> {
+async fn run_case(
+    reply: serde_json::Value,
+) -> anyhow::Result<(String, Vec<(String, bool, usize)>)> {
     let server_ep = endpoint().await;
     let router = Router::builder(server_ep.clone())
         .accept(WORLD_ALPN, ScriptedHost { reply })
@@ -91,7 +93,9 @@ async fn worlds_reply_default_must_be_a_string() {
     // Shape is what the parser judges, not the name's content.
     let mut reply = worlds_reply();
     reply["default"] = serde_json::json!("");
-    let (default, _) = run_case(reply).await.expect("empty-string default must succeed");
+    let (default, _) = run_case(reply)
+        .await
+        .expect("empty-string default must succeed");
     assert_eq!(default, "");
 
     // Missing or mistyped defaults are malformed replies: refused with
