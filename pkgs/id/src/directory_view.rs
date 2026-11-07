@@ -14,7 +14,7 @@ use crate::directory::{
     Actor, Directory, DirectoryEntry, Envelope, EnvelopeKind, Level, Member, Received, Refusal,
     normalize_email, normalize_key,
 };
-use crate::directory_auth::{Caller, DirectoryAuth, Principal, Purpose};
+use crate::directory_auth::{Caller, DirectoryAuth, Principal, Purpose, PurposeKind};
 use crate::directory_mail::Mail;
 use crate::envelope_outbox::{Entry, Finish, Outbox, Payload, check_target};
 use crate::petname::{Contact, Label, Petnames, labels};
@@ -1259,7 +1259,7 @@ pub fn run(
         DirectoryAction::ConfirmEmail { address, code } => {
             let me = signed_in(&viewer)?;
             let address = normalize_email(&address)?;
-            match auth.check_code(&address, &code, now)? {
+            match auth.check_code(&address, PurposeKind::Confirm, &code, now)? {
                 Purpose::Confirm { account } if account == me => {}
                 _ => return Err(unauthenticated("no matching code")),
             }
@@ -1279,7 +1279,7 @@ pub fn run(
         }
         DirectoryAction::ConfirmSignIn { address, code } => {
             let address = normalize_email(&address)?;
-            match auth.check_code(&address, &code, now)? {
+            match auth.check_code(&address, PurposeKind::SignIn, &code, now)? {
                 Purpose::SignIn { account } => {
                     session = Some(auth.open_session(Principal::Account(account.clone()), now));
                     viewer = Viewer::Account(account);
