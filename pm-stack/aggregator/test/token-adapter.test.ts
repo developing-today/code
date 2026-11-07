@@ -297,6 +297,59 @@ describe("file-export adapter (the framework's first adapter)", () => {
     expect(out.value?.windows).toHaveLength(2);
   });
 
+  test("property: any out-of-range window rejects the whole document; all-in-range preserves every window (#4269)", () => {
+    // Deterministic seeded sweep (fixed seed: failures reproduce exactly).
+    // Generates percentages from the in-range, out-of-range, and non-finite
+    // pools and window collections of varying length, and asserts the
+    // adapter invariant over all of them: one bad window => the whole
+    // document is unparseable and the previous entry is retained; all
+    // windows finite within the inclusive 0-100 bounds => fresh ok with
+    // every window preserved.
+    let state = 0x4269;
+    const rand = () => {
+      state |= 0;
+      state = (state + 0x6d2b79f5) | 0;
+      let x = Math.imul(state ^ (state >>> 15), 1 | state);
+      x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
+      return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+    };
+    const genPct = (): number => {
+      const pool = rand();
+      if (pool < 0.45) return rand() * 100; // in range
+      if (pool < 0.65) return -(rand() * 1000 + 0.001); // below range
+      if (pool < 0.85) return 100.001 + rand() * 1000; // above range
+      return [NaN, Infinity, -Infinity][Math.floor(rand() * 3)]; // non-finite
+    };
+    const inRange = (pct: number) => Number.isFinite(pct) && pct >= 0 && pct <= 100;
+    for (let iter = 0; iter < 200; iter++) {
+      const count = 1 + Math.floor(rand() * 4);
+      const windows = Array.from({ length: count }, (_, i) => ({ name: `w${i}`, usedPct: genPct() }));
+      const out = collectFileExportAdapter({
+        now: NOW,
+        previous: PREV_ENTRY,
+        fileMtimeIso: "2026-10-29T04:59:00Z",
+        stale: false,
+        doc: {
+          service: "meta",
+          source: "file-export/meta-laptop",
+          status: "ok",
+          measuredAt: "2026-10-29T04:59:00Z",
+          windows,
+        },
+      });
+      if (windows.every((w) => inRange(w.usedPct))) {
+        expect(out.status).toBe("ok");
+        expect(out.value?.windows).toHaveLength(count);
+        for (const w of windows) {
+          expect(out.value?.windows.some((v) => v.name === w.name && v.pctOfLimit === w.usedPct)).toBe(true);
+        }
+      } else {
+        expect(out.status).toBe("unparseable");
+        expect(out.value?.measuredAt).toBe("2026-10-29T04:30:00Z");
+      }
+    }
+  });
+
   test("a non-string window name is unparseable drift, not a healthy reading", () => {
     const out = collectFileExportAdapter({
       now: NOW,
