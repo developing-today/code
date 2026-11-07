@@ -439,4 +439,95 @@ check(
 summary = json.loads(buf.getvalue().strip().splitlines()[-1])
 check("after-malformed: drop counted in summary", summary.get("dropped_foreign") == 1)
 
+
+# 17. a page stream that never completes — every page incomplete with a
+#     fresh, never-repeated cursor (#6572) — must raise at the named
+#     pagination bound instead of looping forever, and a Harness-level
+#     run over the bound acks nothing. Oracle: design #6622's contract —
+#     complete, bounded, or say so; the error names the bound it hit.
+_calls = {"n": 0}
+
+
+def _novel_cursor_req(path, payload=None):
+    _calls["n"] += 1
+    return {
+        "events": [ev(f"novel-{_calls['n']}", "owner/repo")],
+        "cursor": f"cursor-{_calls['n']}",
+        "list_complete": False,
+    }
+
+
+_saved_req = drain_queue.worker_req
+drain_queue.worker_req = _novel_cursor_req
+try:
+    try:
+        drain_queue.queue_events("/queue")
+        raised = None
+    except RuntimeError as e:
+        raised = str(e)
+finally:
+    drain_queue.worker_req = _saved_req
+check("page bound: novel-cursor stream raises", raised is not None)
+check(
+    "page bound: error names MAX_QUEUE_PAGES",
+    raised is not None and "MAX_QUEUE_PAGES" in raised,
+)
+check(
+    "page bound: stopped exactly at the bound",
+    _calls["n"] == drain_queue.MAX_QUEUE_PAGES,
+)
+
+# the accumulated-events bound trips on few-but-huge incomplete pages
+_huge_calls = {"n": 0}
+
+
+def _huge_page_req(path, payload=None):
+    _huge_calls["n"] += 1
+    return {
+        "events": [ev(f"huge-{_huge_calls['n']}-{i}", "owner/repo") for i in range(30_000)],
+        "cursor": f"huge-cursor-{_huge_calls['n']}",
+        "list_complete": False,
+    }
+
+
+drain_queue.worker_req = _huge_page_req
+try:
+    try:
+        drain_queue.queue_events("/queue")
+        raised = None
+    except RuntimeError as e:
+        raised = str(e)
+finally:
+    drain_queue.worker_req = _saved_req
+check("event bound: huge-page stream raises", raised is not None)
+check(
+    "event bound: error names MAX_QUEUE_EVENTS",
+    raised is not None and "MAX_QUEUE_EVENTS" in raised,
+)
+check("event bound: tripped on the second page", _huge_calls["n"] == 2)
+
+# a stream that completes exactly at the page bound still returns
+_edge_calls = {"n": 0}
+
+
+def _edge_req(path, payload=None):
+    _edge_calls["n"] += 1
+    last = _edge_calls["n"] >= drain_queue.MAX_QUEUE_PAGES
+    return {
+        "events": [ev(f"edge-{_edge_calls['n']}", "owner/repo")],
+        "cursor": None if last else f"edge-cursor-{_edge_calls['n']}",
+        "list_complete": last,
+    }
+
+
+drain_queue.worker_req = _edge_req
+try:
+    got = drain_queue.queue_events("/queue")
+finally:
+    drain_queue.worker_req = _saved_req
+check(
+    "page bound: completion at the bound returns every event",
+    len(got) == drain_queue.MAX_QUEUE_PAGES,
+)
+
 print(f"\n{sum(1 for _, ok in PASS if ok)}/{len(PASS)} checks passed")
