@@ -183,6 +183,7 @@ jobs:
         run: |
           rc=0
           python3 scripts/test_gotest_report.py || rc=1
+          python3 scripts/test_conformance_record.py || rc=1
           go test ./... -count=1 -json >"$RUNNER_TEMP/gotest.json" || rc=$?
           # Readable output for the log, from the same run. Package-level
           # output first, then the full output of every failing test, so a

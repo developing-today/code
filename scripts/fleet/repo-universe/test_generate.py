@@ -211,26 +211,110 @@ class GenerateTest(unittest.TestCase):
         self.assertIn("developing-today-forks/some-tool", out)
         self.assertIn("developing-today-forks/opencode", out)
 
+    def run_gen_omitting(self, *omit: str) -> subprocess.CompletedProcess:
+        captures = {
+            "--org-json": "org.json",
+            "--forks-org-json": "forks-org.json",
+            "--user-json": "user.json",
+        }
+        argv = [sys.executable, str(GENERATE)]
+        for flag, filename in captures.items():
+            if flag not in omit:
+                argv += [flag, str(self.dir / filename)]
+        argv += [
+            "--census",
+            str(self.dir / "census.md"),
+            "--output",
+            str(self.out),
+        ]
+        return subprocess.run(argv, capture_output=True, text=True)
+
     def test_offline_mode_requires_both_captures(self) -> None:
         # Omitting a capture without --live must fail, not silently
         # regenerate with that source emptied (deleting every
         # GitHub-only repo from the omitted source).
-        proc = subprocess.run(
+        proc = self.run_gen_omitting("--forks-org-json", "--user-json")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertFalse(self.out.exists())
+
+    def test_offline_mode_requires_each_capture_singly(self) -> None:
+        # Each capture omitted on its own must fail, name the missing
+        # flag, and write no output (#6612: omitting only
+        # --forks-org-json used to exit 0 with the whole forks org
+        # silently dropped from the artifact).
+        for flag in ("--org-json", "--forks-org-json", "--user-json"):
+            with self.subTest(flag=flag):
+                proc = self.run_gen_omitting(flag)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn(flag, proc.stderr)
+                self.assertFalse(self.out.exists())
+
+    def run_gen_raw(self) -> subprocess.CompletedProcess:
+        return subprocess.run(
             [
                 sys.executable,
                 str(GENERATE),
                 "--org-json",
                 str(self.dir / "org.json"),
+                "--forks-org-json",
+                str(self.dir / "forks-org.json"),
+                "--user-json",
+                str(self.dir / "user.json"),
                 "--census",
                 str(self.dir / "census.md"),
+                "--census-label",
+                "fixture census",
                 "--output",
                 str(self.out),
             ],
             capture_output=True,
             text=True,
         )
+
+    def assert_wrong_shape_fails_named(self, proc: subprocess.CompletedProcess) -> None:
+        # #6716: a wrong-shape entry must fail with a clear error
+        # naming the capture source and the entry — no bare
+        # TypeError/KeyError traceback, and no artifact written.
         self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("org.json", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertNotIn("TypeError", proc.stderr)
+        self.assertNotIn("KeyError", proc.stderr)
         self.assertFalse(self.out.exists())
+
+    def test_non_dict_entry_in_page_array_fails_named(self) -> None:
+        (self.dir / "org.json").write_text(json.dumps(ORG + ["oops"]))
+        self.assert_wrong_shape_fails_named(self.run_gen_raw())
+
+    def test_dict_page_without_full_name_fails_named(self) -> None:
+        # A saved API error page concatenated after a valid page: the
+        # object document is an entry with no full_name.
+        (self.dir / "org.json").write_text(
+            json.dumps(ORG) + "\n" + json.dumps({"message": "API rate limit exceeded"})
+        )
+        proc = self.run_gen_raw()
+        self.assert_wrong_shape_fails_named(proc)
+        self.assertIn("full_name", proc.stderr)
+
+    def test_null_entry_fails_named(self) -> None:
+        (self.dir / "org.json").write_text(json.dumps(ORG + [None]))
+        self.assert_wrong_shape_fails_named(self.run_gen_raw())
+
+    def test_consumers_validate_entries_directly(self) -> None:
+        # build/merge_repos validate entries that never passed
+        # through decode_pages, so a direct caller gets the named
+        # error instead of a bare KeyError/TypeError (#6716).
+        spec = importlib.util.spec_from_file_location("generate", GENERATE)
+        gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gen)
+        with self.assertRaises(ValueError):
+            gen.merge_repos([{"name": "no-full-name"}])
+        with self.assertRaises(ValueError):
+            gen.build([{"name": "no-full-name"}], [], CENSUS, "label", {})
+        with self.assertRaises(ValueError):
+            gen.build([], ["oops"], CENSUS, "label", {})
+        with self.assertRaises(ValueError):
+            gen.decode_pages(json.dumps([{"full_name": "a/b"}, None]), source="cap X")
 
     def test_idempotent_zero_diff_on_unchanged_inputs(self) -> None:
         first = self.run_gen()

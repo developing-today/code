@@ -54,6 +54,16 @@ CHRONIC_DRAIN_FAILURES = 5
 # invocation at 1,000 KV operations — acks are sent in batches well
 # under that ceiling so a multi-page backlog can always drain.
 ACK_BATCH_SIZE = 500
+# Pagination bounds for queue_events (#6572, design #6622 Phase 2): a
+# Worker page stream that always answers list_complete=false with a
+# fresh, never-repeated cursor otherwise loops forever, accumulating
+# events and never acking. Pages carry 500 events and the largest
+# observed backlog is ~5.9k events (~12 pages), so these bounds sit
+# roughly 8x above any legitimate drain; a stream that crosses either
+# one is a stuck external system, and the poll fails closed (nothing
+# from it is acked) with an error naming the bound it hit.
+MAX_QUEUE_PAGES = 100
+MAX_QUEUE_EVENTS = 50_000
 
 
 def worker_req(path, payload=None):
@@ -91,23 +101,36 @@ def queue_events(queue_poll_path):
 
     Older Worker responses without pagination metadata remain a one-page
     response. An incomplete/malformed cursor fails closed before any event
-    from this poll can be acknowledged.
+    from this poll can be acknowledged, as does a page stream that crosses
+    MAX_QUEUE_PAGES / MAX_QUEUE_EVENTS without completing (#6572).
     """
     events = []
     cursor = None
     seen_cursors = set()
+    pages = 0
     while True:
         path = queue_poll_path
         if cursor is not None:
             sep = "&" if "?" in path else "?"
             path += sep + urllib.parse.urlencode({"cursor": cursor})
         page = worker_req(path)
+        pages += 1
         page_events = page.get("events", [])
         if not isinstance(page_events, list):
             raise RuntimeError("Worker queue response events must be a list")
         events.extend(page_events)
         if page.get("list_complete", True):
             return events
+        if pages >= MAX_QUEUE_PAGES:
+            raise RuntimeError(
+                f"Worker queue pagination exceeded MAX_QUEUE_PAGES "
+                f"({MAX_QUEUE_PAGES}) without list_complete"
+            )
+        if len(events) > MAX_QUEUE_EVENTS:
+            raise RuntimeError(
+                f"Worker queue pagination exceeded MAX_QUEUE_EVENTS "
+                f"({MAX_QUEUE_EVENTS}) accumulated events without list_complete"
+            )
         next_cursor = page.get("cursor")
         if not isinstance(next_cursor, str) or not next_cursor:
             raise RuntimeError("Worker queue response is incomplete but has no cursor")

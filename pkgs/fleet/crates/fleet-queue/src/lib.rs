@@ -21,14 +21,20 @@
 //! migration's standing rollback inventory (design note §7).
 
 mod home;
+pub mod backoff;
+pub mod bin_args;
 pub mod log;
 pub mod token_file;
 
 #[cfg(feature = "client")]
 pub mod client;
+#[cfg(feature = "client")]
+pub mod fallback;
 #[cfg(feature = "queue-broker")]
 pub mod queue_broker;
 #[cfg(feature = "secrets-broker")]
 pub mod secrets_broker;
+#[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]
+pub mod uds_http;
 #[cfg(feature = "queue-broker")]
 pub mod validate;

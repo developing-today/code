@@ -34,6 +34,7 @@ pub mod filters;
 pub mod fusion;
 pub mod local;
 pub mod search;
+pub mod shards;
 pub mod turso;
 pub mod types;
 

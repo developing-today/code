@@ -23,6 +23,12 @@ use serde::Deserialize;
 
 /// The session broker's socket, as the Python broker runs it today.
 pub const DEFAULT_BROKER_SOCKET: &str = ".cache/laptop-agent/broker.sock";
+/// The queue broker's Unix socket (#6216): dual-bound alongside its
+/// TCP listener, in the broker's own config dir (token file sibling).
+pub const DEFAULT_QUEUE_BROKER_SOCKET: &str = ".config/queue-broker/broker.sock";
+/// The secrets broker's Unix socket (#6216): dual-bound alongside its
+/// TCP listener, in the broker's own config dir (token file sibling).
+pub const DEFAULT_SECRETS_BROKER_SOCKET: &str = ".config/secrets-broker/broker.sock";
 /// The proxy's per-port routing table (§4): port → service name.
 pub const PORT_LAPTOP_AGENT: u16 = 4799;
 pub const PORT_SECRETS_BROKER: u16 = 4800;
@@ -96,6 +102,29 @@ pub const PORT_DISPATCH: u16 = 4879;
 /// only.
 pub const DEFAULT_DISPATCH_TOKEN_NAME: &str = "pm-dispatch.api-token";
 
+/// The fleet-secrets name the dispatch-test domain resolves its
+/// GitHub token by (design developing-today/code#6580).
+pub const DEFAULT_DISPATCH_TEST_TOKEN_NAME: &str = "github.ghcr-classic-pat";
+
+/// The fleet-secrets name the dispatch-test domain resolves its
+/// Turso jobs-store token by.
+pub const DEFAULT_DISPATCH_TEST_TURSO_TOKEN_NAME: &str = "turso.fleet-dispatch-jobs-token";
+
+/// The Turso jobs store the dispatch-test domain records jobs in.
+pub const DEFAULT_DISPATCH_TEST_TURSO_URL: &str =
+    "https://fleet-dispatch-jobs-dezren39.aws-us-east-1.turso.io";
+
+/// The default Actions-capacity threshold for dispatch-test scope
+/// selection: a scope is eligible below this many active jobs.
+pub const DEFAULT_DISPATCH_TEST_THRESHOLD: u64 = 40;
+
+/// The fleet repo: the dezren39 repo that holds the other fleet
+/// repos as git submodules (developing-today/code#6580 phase 2).
+/// Its copies — the source plus its fork network — are the
+/// dispatch-test execution homes, discovered dynamically unless
+/// `[dispatch-test] scopes` pins an explicit list.
+pub const DEFAULT_DISPATCH_TEST_FLEET_REPO: &str = "dezren39/fleet";
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -104,6 +133,8 @@ pub struct Config {
     pub proxy: ProxyConfig,
     pub secrets: SecretsConfig,
     pub dispatch: DispatchConfig,
+    #[serde(rename = "dispatch-test")]
+    pub dispatch_test: DispatchTestConfig,
     pub search: SearchConfig,
 }
 
@@ -185,6 +216,36 @@ pub struct DispatchConfig {
     pub port: Option<u16>,
 }
 
+/// `[dispatch-test]` — the dispatch-test domain's view
+/// (developing-today/code#6580). All optional: the defaults name
+/// the live GitHub token, the Turso jobs store, and the scope
+/// repos used for capacity-based selection.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DispatchTestConfig {
+    /// The fleet-secrets name the GitHub token resolves by
+    /// (default [`DEFAULT_DISPATCH_TEST_TOKEN_NAME`]).
+    pub token_name: Option<String>,
+    /// The fleet-secrets name the Turso token resolves by
+    /// (default [`DEFAULT_DISPATCH_TEST_TURSO_TOKEN_NAME`]).
+    pub turso_token_name: Option<String>,
+    /// The Turso database URL (default
+    /// [`DEFAULT_DISPATCH_TEST_TURSO_URL`]).
+    pub turso_url: Option<String>,
+    /// Actions-capacity threshold (default
+    /// [`DEFAULT_DISPATCH_TEST_THRESHOLD`]).
+    pub threshold: Option<u64>,
+    /// The fleet repo whose copies are the execution homes
+    /// (default [`DEFAULT_DISPATCH_TEST_FLEET_REPO`]).
+    pub fleet_repo: Option<String>,
+    /// Scope repos, in selection order — a PIN/OVERRIDE: when
+    /// non-empty, exactly these execution-home copies are scanned.
+    /// Empty (the default) means DISCOVER: the fleet repo plus its
+    /// fork network.
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
 #[derive(Debug)]
 pub enum ConfigError {
     /// The config file exists but does not parse. Carries the path and
@@ -228,6 +289,25 @@ fn env_path(var: &str) -> Option<PathBuf> {
     non_empty_path(std::env::var_os(var).map(PathBuf::from))
 }
 
+/// An XDG base directory: only an absolute, non-empty value counts.
+/// The XDG base-directory spec says a relative value in these
+/// variables should be considered invalid and ignored; taking one
+/// literally would resolve the config file and the state dir from
+/// the process's working directory, so a `fleet.toml` planted at
+/// `./<relative-base>/fleet/fleet.toml` would load despite an
+/// absolute `HOME` (issue #6396 — the relative spelling of the
+/// #5473 planted-config hazard, and the XDG sibling of the
+/// relative-HOME rule in `home_anchor`). Scoped to the XDG bases
+/// only: explicit overrides (`FLEET_CONFIG`, the broker socket
+/// paths) keep their documented relative meanings.
+fn absolute_path(value: Option<PathBuf>) -> Option<PathBuf> {
+    non_empty_path(value).filter(|p| p.is_absolute())
+}
+
+fn env_xdg_base(var: &str) -> Option<PathBuf> {
+    absolute_path(std::env::var_os(var).map(PathBuf::from))
+}
+
 /// The home anchor: only an absolute, non-empty `HOME` may anchor
 /// home-relative resolution. A relative `HOME` is treated as unset
 /// for anchoring (issue #6404): used verbatim it would resolve the
@@ -269,7 +349,7 @@ impl Config {
     pub fn file_path() -> PathBuf {
         Self::file_path_from(
             env_path("FLEET_CONFIG"),
-            env_path("XDG_CONFIG_HOME"),
+            env_xdg_base("XDG_CONFIG_HOME"),
             &home_dir(),
         )
     }
@@ -304,7 +384,7 @@ impl Config {
                 return Err(ConfigError::Read {
                     path: path.to_path_buf(),
                     message: e.to_string(),
-                })
+                });
             }
         };
         cfg.validate(path)?;
@@ -317,14 +397,15 @@ impl Config {
     /// value. Port 0 cannot be dialled, and `idle_exit_secs = 0` would
     /// make the broker exit at its first idle tick — the opposite of
     /// the "never idle-exit" an operator would mean by it. Reject all
-    /// three at load, naming the field; omitting the field keeps the
+    /// these at load, naming the field; omitting the field keeps the
     /// documented default. There is no zero spelling for "disabled".
+    /// The `[dispatch-test] threshold` (#6603) joined the rule when it
+    /// landed: `active < 0` can never hold, so 0 is never a capacity
+    /// bound either.
     fn validate(&self, path: &std::path::Path) -> Result<(), ConfigError> {
         let reject = |field: &str, default: u64| ConfigError::Parse {
             path: path.to_path_buf(),
-            message: format!(
-                "{field} must not be 0; omit the field for the default ({default})"
-            ),
+            message: format!("{field} must not be 0; omit the field for the default ({default})"),
         };
         if self.proxy.egress_proxy_port == Some(0) {
             return Err(reject(
@@ -336,9 +417,16 @@ impl Config {
             return Err(reject("[dispatch] port", u64::from(PORT_DISPATCH)));
         }
         if self.proxy.idle_exit_secs == Some(0) {
+            return Err(reject("[proxy] idle_exit_secs", DEFAULT_IDLE_EXIT_SECS));
+        }
+        // #6603: the [dispatch-test] threshold landed later (#6580)
+        // and is the same misspelling class — `active < 0` is false
+        // for every count, so 0 makes every execution home
+        // permanently ineligible instead of meaning "no limit".
+        if self.dispatch_test.threshold == Some(0) {
             return Err(reject(
-                "[proxy] idle_exit_secs",
-                DEFAULT_IDLE_EXIT_SECS,
+                "[dispatch-test] threshold",
+                DEFAULT_DISPATCH_TEST_THRESHOLD,
             ));
         }
         Ok(())
@@ -376,6 +464,28 @@ impl Config {
             Some(p) => resolve_under(home, &PathBuf::from(p)),
             None => resolve_under(home, &PathBuf::from(DEFAULT_BROKER_SOCKET)),
         }
+    }
+
+    /// The queue broker's Unix socket path (#6216). `QUEUE_BROKER_SOCKET`
+    /// beats the default; no config-file field exists for it, so the
+    /// resolution is env -> default under $HOME, like the session
+    /// broker's socket with the config source absent.
+    pub fn queue_broker_socket(&self) -> PathBuf {
+        Self::broker_socket_from(
+            env_path("QUEUE_BROKER_SOCKET"),
+            Some(DEFAULT_QUEUE_BROKER_SOCKET),
+            &home_dir(),
+        )
+    }
+
+    /// The secrets broker's Unix socket path (#6216).
+    /// `SECRETS_BROKER_SOCKET` beats the default.
+    pub fn secrets_broker_socket(&self) -> PathBuf {
+        Self::broker_socket_from(
+            env_path("SECRETS_BROKER_SOCKET"),
+            Some(DEFAULT_SECRETS_BROKER_SOCKET),
+            &home_dir(),
+        )
     }
 
     pub fn idle_exit_secs(&self) -> u64 {
@@ -469,6 +579,54 @@ impl Config {
         self.dispatch.port.unwrap_or(PORT_DISPATCH)
     }
 
+    /// The fleet-secrets name the dispatch-test GitHub token
+    /// resolves by.
+    pub fn dispatch_test_token_name(&self) -> &str {
+        self.dispatch_test
+            .token_name
+            .as_deref()
+            .unwrap_or(DEFAULT_DISPATCH_TEST_TOKEN_NAME)
+    }
+
+    /// The fleet-secrets name the dispatch-test Turso token
+    /// resolves by.
+    pub fn dispatch_test_turso_token_name(&self) -> &str {
+        self.dispatch_test
+            .turso_token_name
+            .as_deref()
+            .unwrap_or(DEFAULT_DISPATCH_TEST_TURSO_TOKEN_NAME)
+    }
+
+    /// The dispatch-test Turso jobs-store URL.
+    pub fn dispatch_test_turso_url(&self) -> &str {
+        self.dispatch_test
+            .turso_url
+            .as_deref()
+            .unwrap_or(DEFAULT_DISPATCH_TEST_TURSO_URL)
+    }
+
+    /// The dispatch-test Actions-capacity threshold.
+    pub fn dispatch_test_threshold(&self) -> u64 {
+        self.dispatch_test
+            .threshold
+            .unwrap_or(DEFAULT_DISPATCH_TEST_THRESHOLD)
+    }
+
+    /// The dispatch-test fleet repo (execution-home source).
+    pub fn dispatch_test_fleet_repo(&self) -> &str {
+        self.dispatch_test
+            .fleet_repo
+            .as_deref()
+            .unwrap_or(DEFAULT_DISPATCH_TEST_FLEET_REPO)
+    }
+
+    /// The pinned dispatch-test scope repos, in selection order.
+    /// Empty means no pin: the caller discovers the fleet repo's
+    /// copies (source + fork network) instead.
+    pub fn dispatch_test_scopes(&self) -> Vec<String> {
+        self.dispatch_test.scopes.clone()
+    }
+
     /// The search domain's routing preference from `[search] via`
     /// ("service" | "standalone"), when configured.
     pub fn search_via(&self) -> Option<String> {
@@ -498,7 +656,7 @@ impl Config {
 
     /// `~/.local/state/fleet` (or `$XDG_STATE_HOME/fleet`).
     pub fn state_dir() -> PathBuf {
-        Self::state_dir_from(env_path("XDG_STATE_HOME"), &home_dir())
+        Self::state_dir_from(env_xdg_base("XDG_STATE_HOME"), &home_dir())
     }
 
     fn state_dir_from(xdg_state_home: Option<PathBuf>, home: &std::path::Path) -> PathBuf {
@@ -680,6 +838,68 @@ mod tests {
             Config::broker_socket_from(None, Some("rel/c.sock"), &home),
             home.join("rel").join("c.sock")
         );
+        // #6216: the queue/secrets broker socket defaults resolve under
+        // $HOME in each broker's own config dir.
+        assert_eq!(
+            Config::broker_socket_from(None, Some(DEFAULT_QUEUE_BROKER_SOCKET), &home),
+            home.join(".config")
+                .join("queue-broker")
+                .join("broker.sock")
+        );
+        assert_eq!(
+            Config::broker_socket_from(None, Some(DEFAULT_SECRETS_BROKER_SOCKET), &home),
+            home.join(".config")
+                .join("secrets-broker")
+                .join("broker.sock")
+        );
+    }
+
+    #[test]
+    fn relative_xdg_bases_are_ignored() {
+        // #6396: a non-empty relative XDG base is invalid per the
+        // XDG spec and is treated as unset, exactly like an empty
+        // one (#5473) — resolution falls back to the HOME-anchored
+        // defaults, so a fleet.toml planted under the working
+        // directory at ./<relative-base>/fleet/fleet.toml is never
+        // loaded when HOME is set.
+        let home = PathBuf::from("/home/tester");
+        assert_eq!(absolute_path(Some(PathBuf::from("relcfg"))), None);
+        assert_eq!(absolute_path(Some(PathBuf::new())), None);
+        assert_eq!(absolute_path(None), None);
+        assert_eq!(
+            absolute_path(Some(PathBuf::from("/cfg"))),
+            Some(PathBuf::from("/cfg"))
+        );
+        assert_eq!(
+            Config::file_path_from(
+                None,
+                absolute_path(Some(PathBuf::from("relcfg"))),
+                &home
+            ),
+            home.join(".config").join("fleet").join("fleet.toml")
+        );
+        assert_eq!(
+            Config::file_path_from(
+                None,
+                absolute_path(Some(PathBuf::from("/cfg"))),
+                &home
+            ),
+            PathBuf::from("/cfg").join("fleet").join("fleet.toml")
+        );
+        assert_eq!(
+            Config::state_dir_from(absolute_path(Some(PathBuf::from("relstate"))), &home),
+            home.join(".local").join("state").join("fleet")
+        );
+        assert_eq!(
+            Config::state_dir_from(absolute_path(Some(PathBuf::from("/state"))), &home),
+            PathBuf::from("/state").join("fleet")
+        );
+        // The explicit per-file override is out of scope: a relative
+        // FLEET_CONFIG keeps its verbatim meaning.
+        assert_eq!(
+            Config::file_path_from(Some(PathBuf::from("rel.toml")), None, &home),
+            PathBuf::from("rel.toml")
+        );
     }
 
     #[test]
@@ -760,6 +980,10 @@ mod tests {
             ("[proxy]\negress_proxy_port = 0\n", "egress_proxy_port"),
             ("[dispatch]\nport = 0\n", "[dispatch] port"),
             ("[proxy]\nidle_exit_secs = 0\n", "idle_exit_secs"),
+            (
+                "[dispatch-test]\nthreshold = 0\n",
+                "[dispatch-test] threshold",
+            ),
         ] {
             let (_dir, path) = write_temp(contents);
             match Config::load_from(&path) {
@@ -779,6 +1003,16 @@ mod tests {
         assert_eq!(cfg.egress_proxy_port(), 3131);
         assert_eq!(cfg.idle_exit_secs(), 60);
         assert_eq!(cfg.dispatch_port(), 4880);
+        // #6603: an omitted dispatch-test threshold keeps the
+        // documented default (40) and a positive value passes
+        // unchanged.
+        assert_eq!(
+            cfg.dispatch_test_threshold(),
+            DEFAULT_DISPATCH_TEST_THRESHOLD
+        );
+        let (_dir3, path3) = write_temp("[dispatch-test]\nthreshold = 7\n");
+        let cfg = Config::load_from(&path3).unwrap();
+        assert_eq!(cfg.dispatch_test_threshold(), 7);
     }
 }
 

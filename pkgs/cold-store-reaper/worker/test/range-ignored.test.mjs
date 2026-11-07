@@ -85,6 +85,7 @@ const job = (offset, shaOverride = sha) => ({
   frame_length: frame.length,
   sha256: shaOverride,
   bundle_id: "bundle-1",
+  size: plaintext.length,
 });
 
 // 1. Range ignored (200, large streaming bundle): correct plaintext,
