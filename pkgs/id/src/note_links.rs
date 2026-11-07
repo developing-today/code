@@ -663,4 +663,28 @@ mod tests {
             Err(LinkProjectionError::DuplicateEvent(_))
         ));
     }
+
+    #[test]
+    fn probe_superseded_link_with_bad_pin_or_unknown_target() {
+        // Source note 10 revised to 11: head is 11, revision 10 is superseded.
+        let folded = notes(&[
+            create(10, b"v1"),
+            revise(11, 10, b"v2", &[10]),
+            create(20, b"target"),
+            create(30, b"other"),
+        ]);
+        // A link asserted by the SUPERSEDED revision 10, pinning revision 30
+        // (a revision of note 30, not of target note 20).
+        let bad_pin = project_links(&folded, &[link(40, 10, 10, 20, "stale", Some(30))]);
+        println!("PROBE superseded+bad-pin => {:?}", bad_pin.as_ref().map(|p| p.edges().len()).map_err(|e| e.to_string()));
+        // A link asserted by the SUPERSEDED revision 10 naming an unknown target.
+        let bad_target = project_links(&folded, &[link(41, 10, 10, 99, "stale", None)]);
+        println!("PROBE superseded+unknown-target => {:?}", bad_target.as_ref().map(|p| p.edges().len()).map_err(|e| e.to_string()));
+        // Control: the same bad pin asserted by the HEAD revision 11 must error.
+        let head_bad_pin = project_links(&folded, &[link(42, 10, 11, 20, "live", Some(30))]);
+        println!("PROBE head+bad-pin => {:?}", head_bad_pin.as_ref().map(|p| p.edges().len()).map_err(|e| e.to_string()));
+        // Control: a well-formed superseded link is dropped silently (Ok, 0 edges).
+        let stale_ok = project_links(&folded, &[link(43, 10, 10, 20, "stale-ok", None)]);
+        println!("PROBE superseded+well-formed => {:?}", stale_ok.as_ref().map(|p| p.edges().len()).map_err(|e| e.to_string()));
+    }
 }
