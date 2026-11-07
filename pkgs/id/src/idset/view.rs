@@ -84,7 +84,9 @@ pub enum ProjectionError {
     #[error("the pinned snapshot is missing event {0}")]
     MissingEvent(Hash),
     /// No resolved one-level membership was supplied for this tuple.
-    #[error("the pinned snapshot is missing group {group} at its frontier under resolution {resolution}")]
+    #[error(
+        "the pinned snapshot is missing group {group} at its frontier under resolution {resolution}"
+    )]
     MissingGroupMembers {
         /// The group whose expansion is missing.
         group: Hash,
@@ -148,7 +150,7 @@ pub fn expand_set(
     )?;
     add_entries(
         &mut expanded,
-        &set.excludes,
+        &set.excludes.0,
         frontier,
         resolution,
         groups,
@@ -179,9 +181,7 @@ fn add_entries(
                     expanded.authors.insert(*author);
                 }
             }
-            Entry::Group {
-                id, role_min, ..
-            } => {
+            Entry::Group { id, role_min, .. } => {
                 let members = groups
                     .iter()
                     .find(|snapshot| {

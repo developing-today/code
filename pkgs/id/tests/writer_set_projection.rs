@@ -1,8 +1,8 @@
 //! Writer-set view projection and discovery over an explicitly pinned snapshot.
 //! Tests the acceptance points of the writer-set design (§§4–5).
 
-use id::idset::view::{expand_set, GroupMembers};
 use id::groups::Role;
+use id::idset::view::{GroupMembers, expand_set};
 use id::idset::{Entry, Excludes, WriterSet};
 use p2panda_core::Hash;
 
@@ -54,7 +54,7 @@ fn test_expansion_key_exclusion_wins() {
 
     let expanded = expand_set(&set, &[], &hash(12), &[], false).unwrap();
 
-    assert!(expanded.contains(&author(2)));
+    assert!(!expanded.contains(&author(2)));
     assert!(!expanded.contains(&author(3)));
 }
 
@@ -67,10 +67,7 @@ fn test_expansion_group_one_level_frontier_pinned() {
         group,
         frontier.clone(),
         resolution,
-        std::collections::BTreeMap::from([
-            (author(2), Role::Read),
-            (author(3), Role::Write),
-        ]),
+        std::collections::BTreeMap::from([(author(2), Role::Read), (author(3), Role::Write)]),
     );
 
     let set = WriterSet {
@@ -101,10 +98,7 @@ fn test_expansion_retro_only_history_marked_entries() {
         group,
         frontier.clone(),
         resolution,
-        std::collections::BTreeMap::from([
-            (author(2), Role::Read),
-            (author(3), Role::Write),
-        ]),
+        std::collections::BTreeMap::from([(author(2), Role::Read), (author(3), Role::Write)]),
     );
 
     let set = WriterSet {
