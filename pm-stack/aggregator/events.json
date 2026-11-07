@@ -1,0 +1,366 @@
+{
+  "version": 2,
+  "events": [
+    {
+      "at": "2026-11-04T03:10:23.160Z",
+      "actor": "orch-fixture-1",
+      "kind": "action-applied",
+      "ref": "orch:http-item",
+      "summary": "triage/acknowledge applied by orch-fixture-1 — ack carried in the next published tier entry",
+      "version": 2,
+      "id": "28b651e0-b5e2-4a3a-9a4a-7418181fb58a",
+      "ingestedAt": "2026-11-04T03:10:23.161Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "b4212c6cbc1c3096533cd5bbaee7b4c818fa90bf49ec09d839963830cf4c6263"
+    },
+    {
+      "at": "2026-11-04T03:10:23.178Z",
+      "actor": "jules-fixture",
+      "kind": "action-applied",
+      "ref": "session:duplicate-answer",
+      "summary": "session/answer applied by jules-fixture",
+      "version": 2,
+      "id": "50b35abf-d08b-4a28-b61c-164f4a608c08",
+      "ingestedAt": "2026-11-04T03:10:23.179Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "b4212c6cbc1c3096533cd5bbaee7b4c818fa90bf49ec09d839963830cf4c6263",
+      "hash": "3cd22098cc45e784cd2a606f6eeee3b052ddfce4dfb5e92e2046a4c654027c14"
+    },
+    {
+      "at": "2026-11-04T03:10:23.198Z",
+      "actor": "jules-fixture",
+      "kind": "action-applied",
+      "ref": "session:duplicate-answer",
+      "summary": "session/answer applied by jules-fixture",
+      "version": 2,
+      "id": "779a7478-685e-42a5-bcbe-5517c501323f",
+      "ingestedAt": "2026-11-04T03:10:23.198Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "3cd22098cc45e784cd2a606f6eeee3b052ddfce4dfb5e92e2046a4c654027c14",
+      "hash": "535cd9dbc3515f45c05be7edd5e7cae3a46c8d19748e8effc9e5f817c90f1a83"
+    },
+    {
+      "at": "2026-11-04T03:10:27.155Z",
+      "actor": "orchestrator",
+      "kind": "orchestration-published",
+      "ref": "orchestration:orch-health-test",
+      "summary": "orchestration run orch-health-test published: 0 needs-user, 0 needs-orchestrator",
+      "version": 2,
+      "id": "0d481922-1697-456a-a5c6-7c1c697c5377",
+      "ingestedAt": "2026-11-04T03:10:27.156Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "535cd9dbc3515f45c05be7edd5e7cae3a46c8d19748e8effc9e5f817c90f1a83",
+      "hash": "92ec04c44acd5946efa0c1c09f2c4919650a7593f30fc199b4b8a6dc751002a3"
+    },
+    {
+      "at": "2026-11-04T03:10:27.172Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-sandbox:ses-health-1",
+      "summary": "session Health probe session (OpenCode · main (sandbox)) merged into the registry",
+      "version": 2,
+      "id": "2f722edd-4824-4214-9d58-b10e1a53d7f0",
+      "ingestedAt": "2026-11-04T03:10:27.173Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "92ec04c44acd5946efa0c1c09f2c4919650a7593f30fc199b4b8a6dc751002a3",
+      "hash": "ba0001412be57e26edebfa666948f549fafaa22fedfeaa5cc245cfecb408e152"
+    },
+    {
+      "at": "2026-11-04T03:10:43.046Z",
+      "actor": "orchestrator",
+      "kind": "orchestration-published",
+      "ref": "orchestration:orch-api-health-comments-test",
+      "summary": "orchestration run orch-api-health-comments-test published: 0 needs-user, 0 needs-orchestrator",
+      "version": 2,
+      "id": "abc6400c-70cc-4bb4-b8cd-f6c56b2f0329",
+      "ingestedAt": "2026-11-04T03:10:43.046Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "ba0001412be57e26edebfa666948f549fafaa22fedfeaa5cc245cfecb408e152",
+      "hash": "3b7cf67a364975f3dcddc876456fcec2369d6565ec1c04f2b1a424e2188815ea"
+    },
+    {
+      "at": "2026-11-04T03:10:44.512Z",
+      "actor": "orchestrator",
+      "kind": "orchestration-published",
+      "ref": "orchestration:orch-watchdog-test",
+      "summary": "orchestration run orch-watchdog-test published: 0 needs-user, 0 needs-orchestrator",
+      "version": 2,
+      "id": "72d3c1a5-78a6-441b-b2a7-9b908be1d8af",
+      "ingestedAt": "2026-11-04T03:10:44.513Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "3b7cf67a364975f3dcddc876456fcec2369d6565ec1c04f2b1a424e2188815ea",
+      "hash": "19ea4a5c99e39dbbceebc707e5ef0e26a978a0fd6225f6c40c40edc2bd326968"
+    },
+    {
+      "at": "2026-11-04T03:12:27.016Z",
+      "actor": "orch-fixture-1",
+      "kind": "action-applied",
+      "ref": "orch:http-item",
+      "summary": "triage/acknowledge applied by orch-fixture-1 — ack carried in the next published tier entry",
+      "version": 2,
+      "id": "a33e16e9-6f97-46bf-84b6-ca3e044ab130",
+      "ingestedAt": "2026-11-04T03:12:27.016Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "19ea4a5c99e39dbbceebc707e5ef0e26a978a0fd6225f6c40c40edc2bd326968",
+      "hash": "d009cb44e9e629bf5f9f9e9e5389b4aedfce1963e2b25470e6ff5737725ffac8"
+    },
+    {
+      "at": "2026-11-04T03:12:27.031Z",
+      "actor": "jules-fixture",
+      "kind": "action-applied",
+      "ref": "session:duplicate-answer",
+      "summary": "session/answer applied by jules-fixture",
+      "version": 2,
+      "id": "f0a944c1-4bc1-4d4e-ac67-e9e3584cfca9",
+      "ingestedAt": "2026-11-04T03:12:27.031Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "d009cb44e9e629bf5f9f9e9e5389b4aedfce1963e2b25470e6ff5737725ffac8",
+      "hash": "7a1b20b2aadcbb817bc9a321df9a1967f805d65e1073ce94dac3e4feb3a69dab"
+    },
+    {
+      "at": "2026-11-04T03:12:27.034Z",
+      "actor": "jules-fixture",
+      "kind": "action-applied",
+      "ref": "session:duplicate-answer",
+      "summary": "session/answer applied by jules-fixture",
+      "version": 2,
+      "id": "e2f1fc50-cc55-449c-839d-08bd40029b2e",
+      "ingestedAt": "2026-11-04T03:12:27.035Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "7a1b20b2aadcbb817bc9a321df9a1967f805d65e1073ce94dac3e4feb3a69dab",
+      "hash": "1113c4e512f46c74725dfad0e2eed5e57609912847a56943babe8743c39db8a9"
+    },
+    {
+      "at": "2026-11-04T03:12:29.021Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-sandbox:ses-health-1",
+      "summary": "session Health probe session (OpenCode · main (sandbox)) merged into the registry",
+      "version": 2,
+      "id": "9e198ad5-bbbe-4f4a-b8ff-7096a46bc726",
+      "ingestedAt": "2026-11-04T03:12:29.022Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "1113c4e512f46c74725dfad0e2eed5e57609912847a56943babe8743c39db8a9",
+      "hash": "47fa21c9ae9246c37bea5afadc86b49b6e4e96b6b2b97524be509bf274d56a1b"
+    },
+    {
+      "at": "2026-11-04T18:54:24.101Z",
+      "actor": "orch-fixture-1",
+      "kind": "action-applied",
+      "ref": "orch:http-item",
+      "summary": "triage/acknowledge applied by orch-fixture-1 — ack carried in the next published tier entry",
+      "version": 2,
+      "id": "2c2acabf-6f11-4c8f-bf2f-6d3af046ead6",
+      "ingestedAt": "2026-11-04T18:54:24.101Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "47fa21c9ae9246c37bea5afadc86b49b6e4e96b6b2b97524be509bf274d56a1b",
+      "hash": "aa5e23e7f29d18e7e56b3be1c2a246f024d5fce0562f7b4c3439990f2c9fd53c"
+    },
+    {
+      "at": "2026-11-04T18:54:24.103Z",
+      "actor": "jules-fixture",
+      "kind": "action-applied",
+      "ref": "session:duplicate-answer",
+      "summary": "session/answer applied by jules-fixture",
+      "version": 2,
+      "id": "faad0248-7e46-4fda-b250-4d9b83d16a45",
+      "ingestedAt": "2026-11-04T18:54:24.103Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "aa5e23e7f29d18e7e56b3be1c2a246f024d5fce0562f7b4c3439990f2c9fd53c",
+      "hash": "ecd7bbe6e859c533d039f5819e7d60c2dd1ecf70871459d8d2b9cca1a371ef65"
+    },
+    {
+      "at": "2026-11-04T18:54:24.104Z",
+      "actor": "jules-fixture",
+      "kind": "action-applied",
+      "ref": "session:duplicate-answer",
+      "summary": "session/answer applied by jules-fixture",
+      "version": 2,
+      "id": "adf4b9a1-8109-4499-bbf8-1d0fd778a800",
+      "ingestedAt": "2026-11-04T18:54:24.104Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "ecd7bbe6e859c533d039f5819e7d60c2dd1ecf70871459d8d2b9cca1a371ef65",
+      "hash": "216db66dfed4f1d07860f12255eb8c7f6d065505f1b2f4db99face943518526e"
+    },
+    {
+      "at": "2026-11-04T18:54:24.873Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-sandbox:ses-health-1",
+      "summary": "session Health probe session (OpenCode · main (sandbox)) merged into the registry",
+      "version": 2,
+      "id": "03a40c4e-aedc-4b19-9975-84f237965c1a",
+      "ingestedAt": "2026-11-04T18:54:24.873Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "216db66dfed4f1d07860f12255eb8c7f6d065505f1b2f4db99face943518526e",
+      "hash": "06004667a96375f743566947c884d68ddd4b43588a8f4edb61f125b265567128"
+    },
+    {
+      "at": "2026-11-04T19:02:13.305Z",
+      "actor": "orch-fixture-1",
+      "kind": "action-applied",
+      "ref": "orch:http-item",
+      "summary": "triage/acknowledge applied by orch-fixture-1 — ack carried in the next published tier entry",
+      "version": 2,
+      "id": "d8a9b260-798d-4194-b72b-cbe8594ec256",
+      "ingestedAt": "2026-11-04T19:02:13.306Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "06004667a96375f743566947c884d68ddd4b43588a8f4edb61f125b265567128",
+      "hash": "44873bfec3e1ffb8461c22f30beb70a6fdff3a7b4b390de1f319744b5cfe31b9"
+    },
+    {
+      "at": "2026-11-04T19:02:13.308Z",
+      "actor": "jules-fixture",
+      "kind": "action-applied",
+      "ref": "session:duplicate-answer",
+      "summary": "session/answer applied by jules-fixture",
+      "version": 2,
+      "id": "c7bbea20-ba76-4ddb-8858-5a0714cd1328",
+      "ingestedAt": "2026-11-04T19:02:13.308Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "44873bfec3e1ffb8461c22f30beb70a6fdff3a7b4b390de1f319744b5cfe31b9",
+      "hash": "e6ac4f4eda96782ded81a70b919160905ea3849afd0f9ba20e64a9176ffd7975"
+    },
+    {
+      "at": "2026-11-04T19:02:13.309Z",
+      "actor": "jules-fixture",
+      "kind": "action-applied",
+      "ref": "session:duplicate-answer",
+      "summary": "session/answer applied by jules-fixture",
+      "version": 2,
+      "id": "a15f8fc6-8e6a-4817-9720-420f2c6b9f76",
+      "ingestedAt": "2026-11-04T19:02:13.309Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "e6ac4f4eda96782ded81a70b919160905ea3849afd0f9ba20e64a9176ffd7975",
+      "hash": "2e0592d60e5984a69b5c9d3ad2697f23555c8b65d6dcc4791a79b0cd93225069"
+    },
+    {
+      "at": "2026-11-04T19:02:14.161Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-sandbox:ses-health-1",
+      "summary": "session Health probe session (OpenCode · main (sandbox)) merged into the registry",
+      "version": 2,
+      "id": "4edcfe4a-f831-43a1-9cb4-87d745098603",
+      "ingestedAt": "2026-11-04T19:02:14.161Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "2e0592d60e5984a69b5c9d3ad2697f23555c8b65d6dcc4791a79b0cd93225069",
+      "hash": "4a5a28d564ec6620a0e1b8fa0eac3c246fe64593dd085297a8047a6f9b2f096b"
+    }
+  ]
+}
