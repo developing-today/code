@@ -165,6 +165,47 @@ fn posted_conversion_legs_findable_by_user_data_128() {
 }
 
 #[test]
+fn reserved_transfer_ids_are_rejected_before_persisting_an_intent() {
+    for reserved_id in [0, u128::MAX] {
+        for leg_index in 0..3 {
+            let mut executor = executor();
+            let mut request = request();
+            request.transfer_ids[leg_index] = reserved_id;
+
+            let error = executor
+                .prepare(&request)
+                .expect_err("reserved transfer IDs must fail preflight");
+            assert!(
+                error.to_string().contains(&reserved_id.to_string()),
+                "error should identify reserved transfer ID {reserved_id}: {error}"
+            );
+            assert!(
+                executor.store.get(request.conversion_id).unwrap().is_none(),
+                "preflight failure must not persist an intent for leg {leg_index} ID {reserved_id}"
+            );
+            assert!(
+                executor
+                    .backend
+                    .transfers_with_user_data_128(request.conversion_id)
+                    .is_empty(),
+                "preflight failure must not submit transfers for leg {leg_index} ID {reserved_id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn ordinary_transfer_ids_still_execute() {
+    let mut executor = executor();
+    let record = executor
+        .execute(&request())
+        .expect("ordinary transfer IDs must still execute");
+
+    assert_eq!(record.transfer_ids(), vec![601, 602, 603]);
+    assert_eq!(record.state, IntentState::Posted);
+}
+
+#[test]
 fn atomic_failure_moves_nothing() {
     // #2063 §4: one leg of a linked batch is forced to fail (the LP
     // leg exceeds the LP's guarded balance) — no balance moves and no

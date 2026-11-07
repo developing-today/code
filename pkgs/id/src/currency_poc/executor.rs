@@ -171,6 +171,9 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
 
         let mut transfer_ids = HashSet::with_capacity(request.transfer_ids.len());
         for id in &request.transfer_ids {
+            if *id == 0 || *id == u128::MAX {
+                bail!("preflight: reserved transfer ID {id}");
+            }
             if !transfer_ids.insert(*id) {
                 bail!("preflight: duplicate transfer ID {id}");
             }
