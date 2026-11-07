@@ -1,0 +1,385 @@
+{
+  "version": 2,
+  "events": [
+    {
+      "at": "2026-11-04T06:10:30.013Z",
+      "actor": "watchdog",
+      "kind": "watchdog-event",
+      "ref": "watchdog:fleet-feed",
+      "summary": "Watchdog: fleet feed is stale — last collected 2.0h old ago",
+      "version": 2,
+      "id": "activity:watchdog:watchdog:fleet-feed@2026-11-04T06:10:30.013Z",
+      "ingestedAt": "2026-11-04T08:05:30.321Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "33c679a8f6e946508ccb27199fa86e4eb6b7f0d329412dbf02f05a4f49c2293d"
+    },
+    {
+      "at": "2026-11-04T08:05:13.686Z",
+      "actor": "orch-fixture-1",
+      "kind": "action-applied",
+      "ref": "orch:http-item",
+      "summary": "triage/acknowledge applied by orch-fixture-1 — ack carried in the next published tier entry",
+      "version": 2,
+      "id": "57c01c3e-1258-47aa-a632-69a116ce3c15",
+      "ingestedAt": "2026-11-04T08:05:13.686Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "33c679a8f6e946508ccb27199fa86e4eb6b7f0d329412dbf02f05a4f49c2293d",
+      "hash": "885f1de92a57efd10393bf3fc1d575c2a5266c288555ffecfa1e9460bb6c07e7"
+    },
+    {
+      "at": "2026-11-04T08:05:13.701Z",
+      "actor": "jules-fixture",
+      "kind": "action-applied",
+      "ref": "session:duplicate-answer",
+      "summary": "session/answer applied by jules-fixture",
+      "version": 2,
+      "id": "ba682c86-4260-48aa-9ce6-683f7cbebee5",
+      "ingestedAt": "2026-11-04T08:05:13.701Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "885f1de92a57efd10393bf3fc1d575c2a5266c288555ffecfa1e9460bb6c07e7",
+      "hash": "c21f5ba4db61be2e44aecf9e84a58e54d01ec83e7abcc798a6ffd69642b0dd52"
+    },
+    {
+      "at": "2026-11-04T08:05:13.710Z",
+      "actor": "jules-fixture",
+      "kind": "action-applied",
+      "ref": "session:duplicate-answer",
+      "summary": "session/answer applied by jules-fixture",
+      "version": 2,
+      "id": "82f2f66d-620f-4e1d-84c5-6e8446ff3999",
+      "ingestedAt": "2026-11-04T08:05:13.710Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "c21f5ba4db61be2e44aecf9e84a58e54d01ec83e7abcc798a6ffd69642b0dd52",
+      "hash": "5f95ebf32462f507a02c06e4eb59f4c73eafa82bedf8fad53e6e5fcc17c322a1"
+    },
+    {
+      "at": "2026-11-04T08:05:15.845Z",
+      "actor": "orchestrator",
+      "kind": "orchestration-published",
+      "ref": "orchestration:orch-health-test",
+      "summary": "orchestration run orch-health-test published: 0 needs-user, 0 needs-orchestrator",
+      "version": 2,
+      "id": "fb5fccf4-6640-4a5f-8bc9-d24ed09f0ee8",
+      "ingestedAt": "2026-11-04T08:05:15.845Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "5f95ebf32462f507a02c06e4eb59f4c73eafa82bedf8fad53e6e5fcc17c322a1",
+      "hash": "96d8fae0a9305edb79e1997d16efa2c657ff217fe3caa65ebbe3c4d496c04d71"
+    },
+    {
+      "at": "2026-11-04T08:05:15.848Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-sandbox:ses-health-1",
+      "summary": "session Health probe session (OpenCode · main (sandbox)) merged into the registry",
+      "version": 2,
+      "id": "7ed6c09f-7566-4c71-b191-282adcab9160",
+      "ingestedAt": "2026-11-04T08:05:15.848Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "96d8fae0a9305edb79e1997d16efa2c657ff217fe3caa65ebbe3c4d496c04d71",
+      "hash": "9c30045cd52b42d2e5f36724ce045afde091bd18afede8064c7e016f9c6acc86"
+    },
+    {
+      "at": "2026-11-04T08:05:29.299Z",
+      "actor": "orchestrator",
+      "kind": "orchestration-published",
+      "ref": "orchestration:orch-api-health-comments-test",
+      "summary": "orchestration run orch-api-health-comments-test published: 0 needs-user, 0 needs-orchestrator",
+      "version": 2,
+      "id": "ffb9a403-2dba-4583-bca3-e7af72044b72",
+      "ingestedAt": "2026-11-04T08:05:29.300Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "9c30045cd52b42d2e5f36724ce045afde091bd18afede8064c7e016f9c6acc86",
+      "hash": "18cbe0b0467fd7809601b71095beb019e89aac6d63d062028dfff193f797bd7b"
+    },
+    {
+      "at": "2026-11-04T08:05:30.263Z",
+      "actor": "orchestrator",
+      "kind": "orchestration-published",
+      "ref": "orchestration:orch-watchdog-test",
+      "summary": "orchestration run orch-watchdog-test published: 0 needs-user, 0 needs-orchestrator",
+      "version": 2,
+      "id": "1640d9d3-86f2-44cc-bec7-76c29a9502eb",
+      "ingestedAt": "2026-11-04T08:05:30.263Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "18cbe0b0467fd7809601b71095beb019e89aac6d63d062028dfff193f797bd7b",
+      "hash": "c7f8a0e2df1dafb57197dbe013df0677e0f3f3770ad3b4712c80c7934ccc9426"
+    },
+    {
+      "at": "2026-11-04T08:05:50.107Z",
+      "actor": "orch-fixture-1",
+      "kind": "action-applied",
+      "ref": "orch:http-item",
+      "summary": "triage/acknowledge applied by orch-fixture-1 — ack carried in the next published tier entry",
+      "version": 2,
+      "id": "fce4a23e-ee40-4005-96be-8de0b986558c",
+      "ingestedAt": "2026-11-04T08:05:50.107Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "c7f8a0e2df1dafb57197dbe013df0677e0f3f3770ad3b4712c80c7934ccc9426",
+      "hash": "4a49f0af6f63ef9e7d56d25c86ed16b9ae3c98db95628de6d14427c816c892c7"
+    },
+    {
+      "at": "2026-11-04T08:05:50.115Z",
+      "actor": "jules-fixture",
+      "kind": "action-applied",
+      "ref": "session:duplicate-answer",
+      "summary": "session/answer applied by jules-fixture",
+      "version": 2,
+      "id": "acc972e5-a23b-437e-b62b-c38bc0ce3125",
+      "ingestedAt": "2026-11-04T08:05:50.115Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "4a49f0af6f63ef9e7d56d25c86ed16b9ae3c98db95628de6d14427c816c892c7",
+      "hash": "a1a9a5466650e7544ccb8658ac70e8a37aa4c6fe86db1f93e7fd62d1505409d6"
+    },
+    {
+      "at": "2026-11-04T08:05:50.122Z",
+      "actor": "jules-fixture",
+      "kind": "action-applied",
+      "ref": "session:duplicate-answer",
+      "summary": "session/answer applied by jules-fixture",
+      "version": 2,
+      "id": "3bf0cc00-091c-4874-be55-3c7e77403051",
+      "ingestedAt": "2026-11-04T08:05:50.123Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "a1a9a5466650e7544ccb8658ac70e8a37aa4c6fe86db1f93e7fd62d1505409d6",
+      "hash": "e36f13b862402c54fb4fc52dd717d7684fe5af7d450c9e1a47004f09c1f84ab9"
+    },
+    {
+      "at": "2026-11-04T08:05:52.337Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-sandbox:ses-health-1",
+      "summary": "session Health probe session (OpenCode · main (sandbox)) merged into the registry",
+      "version": 2,
+      "id": "a973de52-7714-497e-9e53-7e9a78e39a78",
+      "ingestedAt": "2026-11-04T08:05:52.338Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "e36f13b862402c54fb4fc52dd717d7684fe5af7d450c9e1a47004f09c1f84ab9",
+      "hash": "cd4b8c0748697da507a6ecafd81d32c946887cc6fc16f3009b772671c16efee0"
+    },
+    {
+      "at": "2026-11-04T08:11:09.757Z",
+      "actor": "orch-fixture-1",
+      "kind": "action-applied",
+      "ref": "orch:http-item",
+      "summary": "triage/acknowledge applied by orch-fixture-1 — ack carried in the next published tier entry",
+      "version": 2,
+      "id": "de8ae7e0-7b11-44fd-a85f-e3d2dd6e3c24",
+      "ingestedAt": "2026-11-04T08:11:09.757Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "cd4b8c0748697da507a6ecafd81d32c946887cc6fc16f3009b772671c16efee0",
+      "hash": "ea40a575aba2c3e0287169c9d115297ec0f2762083db1e63bcbb25e09b183e87"
+    },
+    {
+      "at": "2026-11-04T08:11:09.768Z",
+      "actor": "jules-fixture",
+      "kind": "action-applied",
+      "ref": "session:duplicate-answer",
+      "summary": "session/answer applied by jules-fixture",
+      "version": 2,
+      "id": "9bdd6420-e546-42d6-a091-d51e6e96fdb4",
+      "ingestedAt": "2026-11-04T08:11:09.768Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "ea40a575aba2c3e0287169c9d115297ec0f2762083db1e63bcbb25e09b183e87",
+      "hash": "b5ea36321d1cbf6ce471feb1cd430e6ad5a34a95b6d50f94f8cc92e627dfccd7"
+    },
+    {
+      "at": "2026-11-04T08:11:09.776Z",
+      "actor": "jules-fixture",
+      "kind": "action-applied",
+      "ref": "session:duplicate-answer",
+      "summary": "session/answer applied by jules-fixture",
+      "version": 2,
+      "id": "4e684f7b-06b6-4939-922c-6bc5572b265b",
+      "ingestedAt": "2026-11-04T08:11:09.776Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "b5ea36321d1cbf6ce471feb1cd430e6ad5a34a95b6d50f94f8cc92e627dfccd7",
+      "hash": "9d3c2b82799e36f40b09556521348fb4969083dc9888f4656c604851a46e1816"
+    },
+    {
+      "at": "2026-11-04T08:11:12.374Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-sandbox:ses-health-1",
+      "summary": "session Health probe session (OpenCode · main (sandbox)) merged into the registry",
+      "version": 2,
+      "id": "3ab45440-120c-4e78-af6b-cb2778754d75",
+      "ingestedAt": "2026-11-04T08:11:12.375Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "9d3c2b82799e36f40b09556521348fb4969083dc9888f4656c604851a46e1816",
+      "hash": "f9845e7444eadfca7074bbe19ab5547b9494fdd40c2ab6e28588f99b53a32501"
+    },
+    {
+      "at": "2026-11-04T08:12:10.601Z",
+      "actor": "orch-fixture-1",
+      "kind": "action-applied",
+      "ref": "orch:http-item",
+      "summary": "triage/acknowledge applied by orch-fixture-1 — ack carried in the next published tier entry",
+      "version": 2,
+      "id": "1d614db3-c946-4c72-a91f-d587fcefe767",
+      "ingestedAt": "2026-11-04T08:12:10.601Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "f9845e7444eadfca7074bbe19ab5547b9494fdd40c2ab6e28588f99b53a32501",
+      "hash": "980a37d79161f6e27bd4061c7e2b3331761952208fe6affdc0a4df9bcd37b5d6"
+    },
+    {
+      "at": "2026-11-04T08:12:10.609Z",
+      "actor": "jules-fixture",
+      "kind": "action-applied",
+      "ref": "session:duplicate-answer",
+      "summary": "session/answer applied by jules-fixture",
+      "version": 2,
+      "id": "3752882e-f007-4733-a6f7-b4240924eb07",
+      "ingestedAt": "2026-11-04T08:12:10.609Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "980a37d79161f6e27bd4061c7e2b3331761952208fe6affdc0a4df9bcd37b5d6",
+      "hash": "f8b530b985f7870565936371d8dfc34d1d547554e60046dc3cb8ec83fbf285d8"
+    },
+    {
+      "at": "2026-11-04T08:12:10.617Z",
+      "actor": "jules-fixture",
+      "kind": "action-applied",
+      "ref": "session:duplicate-answer",
+      "summary": "session/answer applied by jules-fixture",
+      "version": 2,
+      "id": "55ea7680-8a70-4e69-8e8c-d128b9392dd0",
+      "ingestedAt": "2026-11-04T08:12:10.617Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "f8b530b985f7870565936371d8dfc34d1d547554e60046dc3cb8ec83fbf285d8",
+      "hash": "7df8772f7459bc0a95951368716591d97e845ec5ed615846069a781290127ab9"
+    },
+    {
+      "at": "2026-11-04T08:12:12.984Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-sandbox:ses-health-1",
+      "summary": "session Health probe session (OpenCode · main (sandbox)) merged into the registry",
+      "version": 2,
+      "id": "2321534f-c79b-4b7d-b58a-0b18178c813b",
+      "ingestedAt": "2026-11-04T08:12:12.985Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "7df8772f7459bc0a95951368716591d97e845ec5ed615846069a781290127ab9",
+      "hash": "285d6aea9dd5ae206a59428ba5ee0ac6ae78e8d7d66eca1634e6b89fd940dd41"
+    }
+  ]
+}

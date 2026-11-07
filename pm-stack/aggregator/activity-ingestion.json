@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "checkpoints": {
+    "watchdog": {
+      "source": "watchdog",
+      "lastSourceId": null,
+      "lastEventAt": null,
+      "deliveries": 0,
+      "duplicates": 0,
+      "updatedAt": "2026-11-04T08:05:30.320Z"
+    }
+  },
+  "seen": {
+    "watchdog": []
+  },
+  "gaps": [
+    {
+      "id": "gap:kaneo:2026-11-04T08:05:15.822Z",
+      "source": "kaneo",
+      "from": "2026-11-04T08:05:15.822Z",
+      "to": "2026-11-04T08:12:26.024Z",
+      "status": "open",
+      "detectedAt": "2026-11-04T08:05:15.824Z"
+    },
+    {
+      "id": "gap:watchdog:fleet-feed:2026-11-04T06:10:30.013Z",
+      "source": "watchdog:fleet-feed",
+      "from": "2026-11-04T06:10:30.013Z",
+      "to": "2026-11-04T08:05:30.316Z",
+      "status": "open",
+      "detectedAt": "2026-11-04T08:05:30.320Z"
+    }
+  ]
+}
