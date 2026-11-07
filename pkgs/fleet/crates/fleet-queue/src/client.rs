@@ -1431,7 +1431,7 @@ fn atomic_write_json(path: &str, obj: &Value) {
 pub fn run(args: &[String]) -> i32 {
     if args.is_empty() {
         eprint(
-            "usage: repo-queue <validate|list|enqueue|claim|lane|bind|heartbeat|checkpoint|park|block|cancel|fail|complete|health|signal> ...",
+            "usage: repo-queue <validate|list|enqueue|claim|lane|bind|heartbeat|checkpoint|park|block|cancel|fail|complete|health|signal|fallback> ...",
         );
         return 2;
     }
@@ -1453,6 +1453,7 @@ pub fn run(args: &[String]) -> i32 {
         "complete" => cmd_complete(rest),
         "health" => cmd_health(rest),
         "signal" => cmd_signal(rest),
+        "fallback" => crate::fallback::run(rest),
         _ => {
             eprint(&format!("repo-queue: unknown command {sub:?}"));
             2
