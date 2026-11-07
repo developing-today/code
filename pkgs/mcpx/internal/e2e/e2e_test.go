@@ -96,6 +96,7 @@ func newEnv(t *testing.T, cfgBody string) *env {
 			"MCPX_POLICY_WRITE=allow",
 		),
 	}
+	recordSettingProbes(t)
 	t.Cleanup(func() {
 		// `stop --all` rather than `stop`: plain `stop` dials the socket
 		// path recomputed from the environment, and a long state path moves
@@ -104,7 +105,7 @@ func newEnv(t *testing.T, cfgBody string) *env {
 		// survives. `--all` reads the daemon-<key>.json info files instead,
 		// which record the path the daemon actually bound. Each env has its
 		// own MCPX_STATE_DIR, so `--all` is scoped to this test.
-		if out, err := e.try("stop", "--all"); err != nil {
+		if out, err := e.tryUnrecorded("stop", "--all"); err != nil {
 			// Logged, not fatal: a test that has already passed should not
 			// be failed by its own teardown, but a teardown that silently
 			// fails is how the leak went unnoticed for so long.
@@ -157,13 +158,25 @@ func (e *env) try(args ...string) (string, error) {
 }
 
 func (e *env) tryWith(bin string, args ...string) (string, error) {
+	return e.tryWithCoverage(bin, bin == e.mcpx, args...)
+}
+
+func (e *env) tryUnrecorded(args ...string) (string, error) {
+	return e.tryWithCoverage(e.mcpx, false, args...)
+}
+
+func (e *env) tryWithCoverage(bin string, record bool, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = e.dir
 	cmd.Env = e.envVars
 	out, err := cmd.CombinedOutput()
-	return string(out), harnessTimeout(ctx, err)
+	err = harnessTimeout(ctx, err)
+	if err == nil && record {
+		e.recordCLI(args)
+	}
+	return string(out), err
 }
 
 // harnessTimeout names the harness's own deadline as the killer. Without it
@@ -188,6 +201,7 @@ func (e *env) runStdin(stdin string, args ...string) string {
 	if err != nil {
 		e.t.Fatalf("mcpx %s failed: %v\n%s", strings.Join(args, " "), err, out)
 	}
+	e.recordCLI(args)
 	return string(out)
 }
 
@@ -2623,9 +2637,12 @@ func (e *env) socketClient(t *testing.T) *http.Client {
 	}
 	return &http.Client{
 		Timeout: 3 * time.Second,
-		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", st.Socket)
-		}},
+		Transport: coverageRoundTripper{
+			test: t.Name(),
+			base: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", st.Socket)
+			}},
+		},
 	}
 }
 
