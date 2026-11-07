@@ -302,6 +302,13 @@ moved or dropped by #6741.
   `AGENT_EVENTS_TURSO_*` secrets still point at that name.
   Moving takes: re-point the secrets at `fleet-queue` and
   re-verify the sink live against the new instance.
+  **Design resolved by the companion doc**
+  [agent-events-turso.md](agent-events-turso.md) (#5690): full
+  writer/reader inventory, the coupling verdict, the sink verbs
+  (`/events-append`, `/events-seen`, `/events-count`,
+  `/events-prune`), health terminal counters restored, the
+  external-writer flips (github-ci Edge Function, fleet-fetch),
+  and the C1–C7 procedure superseding deviations 1/4/5.
 - **pg_cron jobs** (`agent-expire-leases` every minute,
   `agent-prune-events` daily, `park-revalidation-daily`) — they
   live inside the project and become irrelevant at decommission
