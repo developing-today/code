@@ -3361,11 +3361,16 @@ export function renderTodayBody(
   const actions = today.actions?.length
     ? `<h2>Pushed back into motion</h2>${today.actions.map((a) => `<div class="card"><span class="badge">${esc(a.kind)}</span> <strong>${esc(a.target)}</strong><br>${esc(a.summary)}<br><span class="muted">${esc(fmtDate(a.at))}</span></div>`).join("")}`
     : "";
+  // #6174: an objective ref comes from publisher lined-up data and is
+  // only sometimes a GitHub ref — tracked-goal items carry their goal id,
+  // and refUrl throws on those, which 500ed the whole /today render (the
+  // Today-page sibling of the #6149 Needs-you fix). Mirror tierItemCard:
+  // GitHub refs link, everything else renders as plain code.
   const objectives = today.objectives.length
     ? today.objectives
         .map(
           (o, i) =>
-            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.ref ? `<br><a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : ""}</div></div>`,
+            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.ref ? `<br>${isValidRef(o.ref) ? `<a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : `<code>${esc(o.ref)}</code>`}` : ""}</div></div>`,
         )
         .join("")
     : `<p class="muted">No objectives lined up for today.</p>`;
@@ -3461,7 +3466,9 @@ function queueRows(rows: QueueRow[], empty: string): string {
         : "";
       const worker = item.worker ? `<br><strong>Worker:</strong> ${esc(item.worker)}` : "";
       const epic = item.epic
-        ? `<br><span class="muted">Epic: <a href="${esc(item.epic.url)}">${esc(item.epic.title)}</a></span>`
+        ? item.epic.url
+          ? `<br><span class="muted">Epic: <a href="${esc(item.epic.url)}">${esc(item.epic.title)}</a></span>`
+          : `<br><span class="muted">Epic: ${esc(item.epic.title)}</span>`
         : "";
       const why = item.why ? `<br><span class="muted">${esc(item.why)}</span>` : "";
       const horizon = item.horizon ? ` · ${esc(item.horizon)}` : "";
@@ -6460,6 +6467,12 @@ ${trackedTable(live.tracked)}${poolSectionHtml}`;
 
 const POOL_ITEM_CAP = 24;
 
+/** Render a graph ref as a link only when it satisfies the shared ref rule. */
+function poolRefLink(ref: RefKey): string {
+  const label = esc(ref);
+  return isValidRef(ref) ? `<a href="${esc(refUrl(ref))}">${label}</a>` : label;
+}
+
 /** The #2400 graph section of a project page: blocked weight + longest
  * blocked chain and the depth-graph SVG, from the part-1 edge contract
  * (#2399). Graceful absence is explicit: a pool with no effort labels
@@ -6476,7 +6489,7 @@ function poolGraphHtml(items: ProjectPoolItem[], allW: ReturnType<typeof summari
   const blocked = blockedSummary(items);
   const chainHtml =
     blocked.longestChain.length >= 2
-      ? ` · longest blocked chain: ${blocked.longestChain.map((r) => `<a href="${esc(refUrl(r))}">${esc(r)}</a>`).join(" → ")} (${blocked.longestChain.length - 1} link${blocked.longestChain.length === 2 ? "" : "s"})`
+      ? ` · longest blocked chain: ${blocked.longestChain.map(poolRefLink).join(" → ")} (${blocked.longestChain.length - 1} link${blocked.longestChain.length === 2 ? "" : "s"})`
       : "";
   const blockedHtml = blocked.blockedCount
     ? `<p class="muted"><strong>Blocked weight: ${blocked.blockedWeight}</strong> across ${blocked.blockedCount} open item${blocked.blockedCount === 1 ? "" : "s"} waiting on an unresolved blocker${blocked.blockedUnsizedCount ? ` (${blocked.blockedUnsizedCount} of them unsized — counted, never zero-weighted)` : ""}${chainHtml}.</p>`
@@ -6577,17 +6590,21 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
     ? `<p class="muted">Truncated: this graph shows ${g.nodes.length} of ${g.totalNodes} nodes (cap ${EPIC_GRAPH_DEFAULT_CAP}). The counts above cover the full set; a capped graph is not complete.</p>`
     : "";
 
-  // Ranked summary: open member items by how many unresolved blockers
-  // they wait on, from the graph's pre-cap ranking (the full transitive
-  // unblock ranking is #3974; this is the per-epic blocked summary
-  // beside the graph). Never derived from the capped node list: a
-  // member the cap hid is still waiting.
+  // Ranked summary: open member items by how many distinct open epic items
+  // are in the transitive blockedBy ancestry of their blockers (the full
+  // transitive downstream ranking is #3974). Never derived from the
+  // capped node list: a member the cap hid is still waiting.
   const ranked = g.rankedBlocked;
   const rankedHtml = ranked.length
     ? `<ul class="epic-graph-list">${ranked
         .map(
-          (r) =>
-            `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${r.blockers.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>`).join(", ")}</li>`,
+          (r) => {
+            const blockerItems = r.blockers.map((b) => poolRefLink(b));
+            const contributingItems = r.contributingItems.length > 0
+              ? `<br><span class="muted">Contributing downstream epics: ${r.contributingItems.map((ci) => poolRefLink(ci)).join(", ")}</span>`
+              : "";
+            return `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.downstreamCount} distinct downstream open epic item${r.downstreamCount === 1 ? "" : "s"} via ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${blockerItems.join(", ")}${contributingItems}</li>`;
+          },
         )
         .join("")}</ul>`
     : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
@@ -6629,7 +6646,8 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
         : n.epic
           ? `<rect x="${x - 6}" y="${y - 6}" width="12" height="12" fill="${n.state === "open" ? "#8957e5" : "#6e7781"}" stroke="#0d1117" stroke-width="1.5"/>`
           : `<circle cx="${x}" cy="${y}" r="6" fill="${n.state === "open" ? "#bf8700" : "#6e7781"}" stroke="#0d1117" stroke-width="1.5"/>`;
-      return `${shape}<a href="${esc(n.issueUrl)}"><text x="${x + 11}" y="${y + 4}" font-size="11" fill="currentColor">${esc(label)}</text></a>`;
+      const nodeLabel = `<text x="${x + 11}" y="${y + 4}" font-size="11" fill="currentColor">${esc(label)}</text>`;
+      return `${shape}${isValidRef(n.ref) ? `<a href="${esc(n.issueUrl)}">${nodeLabel}</a>` : nodeLabel}`;
     })
     .join("");
   const svg = g.edges.length
@@ -6642,13 +6660,14 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
         ? "not in this pool / status unknown — unresolved"
         : `issue ${esc(n.state ?? "unknown")}`;
       const blockedBy = n.blockers.length
-        ? `blocked by: ${n.blockers.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>${unresolvedOf(b) ? " (unresolved)" : " (resolved)"}`).join(", ")}`
+        ? `blocked by: ${n.blockers.map((b) => `${poolRefLink(b)}${unresolvedOf(b) ? " (unresolved)" : " (resolved)"}`).join(", ")}`
         : "blocked by: none observed";
       const blocks = n.dependents.length
-        ? `blocks: ${n.dependents.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>`).join(", ")}`
+        ? `blocks: ${n.dependents.map(poolRefLink).join(", ")}`
         : "blocks: none observed";
       const name = n.title ? `${esc(n.title)}` : "(outside this pool — no title in this feed)";
-      return `<li><a href="${esc(n.issueUrl)}">${esc(n.ref)}</a> ${name} — ${stateText}; ${blockedBy}; ${blocks}</li>`;
+      const nodeRef = isValidRef(n.ref) ? `<a href="${esc(n.issueUrl)}">${esc(n.ref)}</a>` : esc(n.ref);
+      return `<li>${nodeRef} ${name} — ${stateText}; ${blockedBy}; ${blocks}</li>`;
     })
     .join("")}</ul>`;
 

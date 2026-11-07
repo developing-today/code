@@ -175,7 +175,7 @@ jobs:
       - name: Dispatch bolt
         id: bolt
         if: steps.resolve.outputs.has_bolt == 'true'
-        uses: ./.pm-central/.github/actions/pm-dispatch-task
+        uses: developing-today/code/.github/actions/pm-dispatch-task@main
         with:
           task: bolt
           repo: ${{ steps.resolve.outputs.repo }}
@@ -183,7 +183,7 @@ jobs:
       - name: Dispatch palette
         id: palette
         if: steps.resolve.outputs.has_palette == 'true'
-        uses: ./.pm-central/.github/actions/pm-dispatch-task
+        uses: developing-today/code/.github/actions/pm-dispatch-task@main
         with:
           task: palette
           repo: ${{ steps.resolve.outputs.repo }}
@@ -191,7 +191,7 @@ jobs:
       - name: Dispatch suggestions
         id: suggestions
         if: steps.resolve.outputs.has_suggestions == 'true'
-        uses: ./.pm-central/.github/actions/pm-dispatch-task
+        uses: developing-today/code/.github/actions/pm-dispatch-task@main
         with:
           task: suggestions
           repo: ${{ steps.resolve.outputs.repo }}

@@ -17,6 +17,8 @@
 //! immediately instead of at the next TTL refresh (#6275).
 //!
 //! Env: SECRETS_BROKER_BIND (default 100.99.113.103:4800),
+//!      SECRETS_BROKER_SOCKET (Unix socket dual-bind, #6216; default
+//!      ~/.config/secrets-broker/broker.sock via fleet-config),
 //!      SECRETS_BROKER_TOKEN_FILE (default ~/.config/secrets-broker/token),
 //!      SECRETS_BROKER_TTL_S (default 900).
 
@@ -26,7 +28,7 @@ use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use tiny_http::{Header, Method, Response, Server, StatusCode};
+use tiny_http::{Header, Response, Server, StatusCode};
 
 struct State {
     secrets: RwLock<HashMap<String, String>>,
@@ -296,12 +298,78 @@ fn json_response(status: u16, body: Value) -> Response<std::io::Cursor<Vec<u8>>>
         .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
 }
 
-fn token_ok(req: &tiny_http::Request, expected: &str) -> bool {
-    req.headers()
-        .iter()
-        .find(|h| h.field.as_str().to_ascii_lowercase() == "x-agent-token")
-        .map(|h| h.value.as_str() == expected)
-        .unwrap_or(false)
+fn token_matches(provided: Option<&str>, expected: &str) -> bool {
+    // #6320 defence in depth: an empty expected token never authenticates,
+    // not even against an empty X-Agent-Token header.
+    if expected.is_empty() {
+        return false;
+    }
+    provided.map(|v| v == expected).unwrap_or(false)
+}
+
+/// Transport-agnostic request handling (#6216): the TCP loop adapts
+/// tiny_http requests to this function and the UDS loop adapts
+/// Unix-socket requests; routes and auth are identical on both
+/// transports by construction. Returns (status, JSON body). The
+/// request body is part of the shared shape but unused here: the one
+/// body-carrying route, POST /refresh, ignores its body.
+fn handle_request(
+    state: &Arc<State>,
+    token: &str,
+    method: &str,
+    url: &str,
+    provided_token: Option<&str>,
+) -> (u16, Value) {
+    let path = url.split('?').next().unwrap_or("").to_string();
+    if method == "GET" && path == "/health" {
+        (
+            200,
+            json!({
+                "ok": true,
+                "secrets": state.secrets.read().unwrap().len(),
+                "last_refresh_unix": state.last_refresh.read().unwrap().clone(),
+                "refreshing": *state.refreshing.read().unwrap(),
+            }),
+        )
+    } else if !token_matches(provided_token, token) {
+        (401, json!({"error": "unauthorized"}))
+    } else if method == "GET" && path == "/secrets" {
+        let mut names: Vec<String> = state.secrets.read().unwrap().keys().cloned().collect();
+        names.sort();
+        (200, json!({"names": names}))
+    } else if method == "POST" && path == "/refresh" {
+        let st = Arc::clone(state);
+        std::thread::spawn(move || {
+            let _ = refresh(&st);
+        });
+        (202, json!({"ok": true, "refresh": "started"}))
+    } else if method == "GET" && path.starts_with("/secret/") {
+        let name = path.trim_start_matches("/secret/").to_string();
+        let name = url_decode(&name);
+        let cached = state.secrets.read().unwrap().get(&name).cloned();
+        match cached {
+            Some(v) => (200, json!({"key": name, "value": v})),
+            None => {
+                if state.last_refresh.read().unwrap().is_none() {
+                    (503, json!({"error": "secrets not loaded yet"}))
+                } else {
+                    // A miss on a loaded cache reads through to
+                    // Bitwarden for this one name (#6275) before the
+                    // name is declared absent: a secret minted since
+                    // the last refresh resolves now, not at the next
+                    // TTL tick. A source failure is a loud 502, never
+                    // a silent 404-as-if-absent.
+                    match fetch_through(state, &name) {
+                        Ok(Some(v)) => (200, json!({"key": name, "value": v})),
+                        Ok(None) => (404, json!({"error": "no such secret"})),
+                        Err(_) => (502, json!({"error": "bitwarden read-through failed"})),
+                    }
+                }
+            }
+        }
+    } else {
+        (404, json!({"error": "not found"}))
+    }
 }
 
 pub fn run() -> i32 {
@@ -310,15 +378,10 @@ pub fn run() -> i32 {
     let home = std::env::var("HOME").expect("HOME unset");
     let token_file = std::env::var("SECRETS_BROKER_TOKEN_FILE")
         .unwrap_or_else(|_| format!("{home}/.config/secrets-broker/token"));
-    let token = std::fs::read_to_string(&token_file)
-        .map(|t| t.trim().to_string())
-        .unwrap_or_else(|_| {
-            crate::log::info(
-                "secrets-broker",
-                &format!("cannot read token file {token_file}"),
-            );
-            std::process::exit(3);
-        });
+    let token = crate::token_file::load_token_file(&token_file).unwrap_or_else(|e| {
+        crate::log::info("secrets-broker", &e);
+        std::process::exit(3);
+    });
     let ttl_s: u64 = std::env::var("SECRETS_BROKER_TTL_S")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -352,69 +415,74 @@ pub fn run() -> i32 {
         std::process::exit(3);
     });
     crate::log::info("secrets-broker", &format!("listening on {bind}"));
+
+    // Dual-bind (#6216): the same handler over a Unix socket. A bind
+    // failure or a live owner degrades to TCP only, never to exit:
+    // the TCP listener is the established surface.
+    let socket_path = fleet_config::Config::load()
+        .unwrap_or_default()
+        .secrets_broker_socket();
+    match crate::uds_http::bind_socket(&socket_path) {
+        Ok(Some(listener)) => {
+            let st = Arc::clone(&state);
+            let tok = token.clone();
+            crate::log::info(
+                "secrets-broker",
+                &format!("listening on uds {}", socket_path.display()),
+            );
+            std::thread::spawn(move || {
+                crate::uds_http::serve(listener, move |req| {
+                    let (status, value) = handle_request(
+                        &st,
+                        &tok,
+                        &req.method,
+                        &req.target,
+                        req.header("X-Agent-Token"),
+                    );
+                    (
+                        status,
+                        serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+                    )
+                });
+            });
+        }
+        Ok(None) => crate::log::info(
+            "secrets-broker",
+            &format!(
+                "uds {} already owned by a live broker; TCP only",
+                socket_path.display()
+            ),
+        ),
+        Err(e) => crate::log::info(
+            "secrets-broker",
+            &format!("cannot bind uds {}: {e}; TCP only", socket_path.display()),
+        ),
+    }
+
     for mut req in server.incoming_requests() {
         let state = Arc::clone(&state);
         let token = token.clone();
         std::thread::spawn(move || {
             let url = req.url().to_string();
-            let path = url.split('?').next().unwrap_or("").to_string();
-            let resp = if req.method() == &Method::Get && path == "/health" {
-                json_response(
-                    200,
-                    json!({
-                        "ok": true,
-                        "secrets": state.secrets.read().unwrap().len(),
-                        "last_refresh_unix": state.last_refresh.read().unwrap().clone(),
-                        "refreshing": *state.refreshing.read().unwrap(),
-                    }),
-                )
-            } else if !token_ok(&req, &token) {
-                json_response(401, json!({"error": "unauthorized"}))
-            } else if req.method() == &Method::Get && path == "/secrets" {
-                let mut names: Vec<String> =
-                    state.secrets.read().unwrap().keys().cloned().collect();
-                names.sort();
-                json_response(200, json!({"names": names}))
-            } else if req.method() == &Method::Post && path == "/refresh" {
+            let provided = req
+                .headers()
+                .iter()
+                .find(|h| h.field.as_str().to_ascii_lowercase() == "x-agent-token")
+                .map(|h| h.value.as_str().to_string());
+            if req.method().as_str() == "POST" {
+                // POST /refresh's body is ignored by the handler;
+                // drain it as the pre-#6216 loop did.
                 let mut buf = String::new();
                 let _ = req.as_reader().read_to_string(&mut buf);
-                let st = Arc::clone(&state);
-                std::thread::spawn(move || {
-                    let _ = refresh(&st);
-                });
-                json_response(202, json!({"ok": true, "refresh": "started"}))
-            } else if req.method() == &Method::Get && path.starts_with("/secret/") {
-                let name = path.trim_start_matches("/secret/").to_string();
-                let name = url_decode(&name);
-                let cached = state.secrets.read().unwrap().get(&name).cloned();
-                match cached {
-                    Some(v) => json_response(200, json!({"key": name, "value": v})),
-                    None => {
-                        if state.last_refresh.read().unwrap().is_none() {
-                            json_response(503, json!({"error": "secrets not loaded yet"}))
-                        } else {
-                            // A miss on a loaded cache reads through
-                            // to Bitwarden for this one name (#6275)
-                            // before the name is declared absent: a
-                            // secret minted since the last refresh
-                            // resolves now, not at the next TTL tick.
-                            // A source failure is a loud 502, never a
-                            // silent 404-as-if-absent.
-                            match fetch_through(&state, &name) {
-                                Ok(Some(v)) => json_response(200, json!({"key": name, "value": v})),
-                                Ok(None) => json_response(404, json!({"error": "no such secret"})),
-                                Err(_) => json_response(
-                                    502,
-                                    json!({"error": "bitwarden read-through failed"}),
-                                ),
-                            }
-                        }
-                    }
-                }
-            } else {
-                json_response(404, json!({"error": "not found"}))
-            };
-            let _ = req.respond(resp);
+            }
+            let (status, value) = handle_request(
+                &state,
+                &token,
+                req.method().as_str(),
+                &url,
+                provided.as_deref(),
+            );
+            let _ = req.respond(json_response(status, value));
         });
     }
     // incoming_requests() ends only when the server stops.

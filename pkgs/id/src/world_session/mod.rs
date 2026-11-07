@@ -28,6 +28,7 @@ use serde::Serialize;
 use subtle::ConstantTimeEq as _;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, broadcast};
 
+pub(crate) use id_core::json_unique::parse_json_without_duplicate_keys;
 use crate::directory_auth::Signed;
 use crate::time::unix_ms;
 use crate::world::{
@@ -873,6 +874,7 @@ pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
     }
 }
 
+
 /// Run one session to completion.
 ///
 /// The first frame names the world (`"world": "<name>"`, default world if
@@ -898,7 +900,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
             return;
         }
     };
-    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&first) else {
+    let Ok(mut value) = parse_json_without_duplicate_keys(&first) else {
         let _ = send_error(
             &unattributed,
             io,
@@ -1593,7 +1595,9 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
             Some(frame) => frame,
             None => match io.recv().await {
                 Inbound::Text(text) => {
-                    if let Ok(frame) = serde_json::from_str::<ClientFrame>(&text) {
+                    if let Ok(frame) = parse_json_without_duplicate_keys(&text)
+                        .and_then(|value| serde_json::from_value::<ClientFrame>(value))
+                    {
                         frame
                     } else {
                         let _ = send_error(service.frame_meter(), io, "invalid world frame").await;
@@ -2533,7 +2537,7 @@ async fn handle_client_frame<I: SessionIo>(
     pending_view_deadline: &mut Option<tokio::time::Instant>,
 ) -> bool {
     let world = service.world();
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+    let Ok(value) = parse_json_without_duplicate_keys(text) else {
         return send_error(service.frame_meter(), io, "invalid world frame").await;
     };
     if delegation_names_uses(&value) {

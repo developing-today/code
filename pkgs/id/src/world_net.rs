@@ -607,6 +607,64 @@ impl AdminHistoryBudget {
     }
 }
 
+/// Budget for validating records returned by a plain records query.
+/// Enforces the same caps as `parse_records` and `read_records`.
+#[derive(Default)]
+struct RecordsBudget {
+    record_count: usize,
+    last_key: Option<String>,
+}
+
+impl RecordsBudget {
+    fn validate_record(&mut self, key: &str, value: &serde_json::Value) -> Result<()> {
+        // Check key length and non-empty
+        anyhow::ensure!(
+            !key.is_empty() && key.len() <= crate::world::MAX_RECORD_KEY_BYTES,
+            "record key must be 1..={} bytes",
+            crate::world::MAX_RECORD_KEY_BYTES
+        );
+
+        // Check for control characters
+        anyhow::ensure!(
+            !key.chars().any(char::is_control),
+            "record key {key:?} contains a control character"
+        );
+
+        // Check value size
+        let value_bytes = serde_json::to_vec(value)
+            .context("measure record value")?
+            .len();
+        anyhow::ensure!(
+            value_bytes <= crate::world::MAX_RECORD_VALUE_BYTES,
+            "record {key:?} is {value_bytes} bytes; the limit is {} bytes",
+            crate::world::MAX_RECORD_VALUE_BYTES
+        );
+
+        // Check total count
+        self.record_count = self
+            .record_count
+            .checked_add(1)
+            .context("record count overflow")?;
+        anyhow::ensure!(
+            self.record_count <= crate::world::MAX_RECORDS,
+            "records query contains more than {} records; the limit is {}",
+            self.record_count,
+            crate::world::MAX_RECORDS
+        );
+
+        // Check ordering: keys must be strictly ascending
+        if let Some(last) = &self.last_key {
+            anyhow::ensure!(
+                key > last.as_str(),
+                "records are out of order: key {key:?} <= last key {last:?}"
+            );
+        }
+
+        self.last_key = Some(key.to_owned());
+        Ok(())
+    }
+}
+
 /// A client-side world connection (one session).
 #[derive(Debug)]
 pub struct WorldClient {
@@ -789,7 +847,9 @@ impl WorldClient {
     ///
     /// # Errors
     ///
-    /// Fails with the host's message if the admin token or names are refused.
+    /// Fails with the host's message if the admin token or names are refused,
+    /// or with "host sent a malformed capability report" if the reply's
+    /// `report` is missing or does not parse as a `CapsReport`.
     pub async fn set_caps_ceiling(
         &mut self,
         admin_token: &str,
@@ -805,6 +865,18 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_caps_ceiling_reply(&reply)
+    }
+
+    /// Validate a `caps_ceiling` reply frame: the host's typed contract
+    /// (`ServerFrame::CapsCeiling`) always carries a [`crate::world_caps::CapsReport`],
+    /// so a reply whose `report` is missing or malformed is not a success —
+    /// it is a host that did not confirm the ceiling change (#6636).
+    /// Returns the frame with its `report` replaced by the validated
+    /// report, re-serialized. Factored out of
+    /// [`WorldClient::set_caps_ceiling`] so the validation can be
+    /// unit-tested without a live host sending frames no real host sends.
+    fn parse_caps_ceiling_reply(reply: &serde_json::Value) -> Result<serde_json::Value> {
         if reply["type"] != "caps_ceiling" {
             bail!(
                 "{}",
@@ -813,7 +885,13 @@ impl WorldClient {
                     .unwrap_or("host refused the capability ceiling change")
             );
         }
-        Ok(reply)
+        let report: crate::world_caps::CapsReport =
+            serde_json::from_value(reply["report"].clone())
+                .context("host sent a malformed capability report")?;
+        let mut validated = reply.clone();
+        validated["report"] =
+            serde_json::to_value(report).context("re-encode the capability report")?;
+        Ok(validated)
     }
 
     /// Persist the world's requested resource profile. The response includes
@@ -967,7 +1045,8 @@ impl WorldClient {
     /// # Errors
     ///
     /// Fails with the host's message if neither a valid admin token nor a valid
-    /// guest capability is supplied.
+    /// guest capability is supplied, or if the reply is missing the expected
+    /// `update.requested` field.
     pub async fn execution_profile(
         &mut self,
         admin_token: Option<&str>,
@@ -991,7 +1070,14 @@ impl WorldClient {
                     .unwrap_or("host refused the execution profile query")
             );
         }
-        Ok(reply)
+        // Extract the requested profile from update.requested
+        // The reply has structure: { "type": "execution_profile", "update": { "requested": {...}, "applies_on_next_program_install_or_process_restart": bool }, "message": "..." }
+        let requested_profile = reply
+            .get("update")
+            .and_then(|update| update.get("requested"))
+            .context("host returned a malformed execution profile")?
+            .clone();
+        Ok(requested_profile)
     }
 
     /// Let other unisolated worlds write into this world, with the admin token.
@@ -1144,7 +1230,15 @@ impl WorldClient {
         if reply["type"] != "worlds" {
             bail!("{}", reply["message"].as_str().unwrap_or(refuse_message));
         }
-        let default = reply["default"].as_str().unwrap_or_default().to_owned();
+        // The host's wire type always sends `default` as a string
+        // (ServerFrame::Worlds); a missing or mistyped field is a
+        // malformed reply, refused like the missing list below (#6647).
+        // An explicitly empty string is a well-formed shape and passes:
+        // shape is what this parser judges, not the name's content.
+        let default = reply["default"]
+            .as_str()
+            .context("worlds reply had no default world")?
+            .to_owned();
         let worlds = reply["worlds"]
             .as_array()
             .context("worlds reply had no list")?
@@ -1406,13 +1500,43 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_module_info_reply(&reply)
+    }
+
+    /// Parse a `module_info` reply frame into [`WorldModuleInfo`].
+    ///
+    /// Factored out of [`WorldClient::info_details`] so the reply validation
+    /// can be unit-tested without a live host: the malformed-reply cases of
+    /// issue #6633 need frames no real host will send. Validation is strict
+    /// in the same way for every field — a present field with the wrong
+    /// shape is corruption or version skew and errors, never a default.
+    fn parse_module_info_reply(reply: &serde_json::Value) -> Result<WorldModuleInfo> {
         match reply["type"].as_str() {
             Some("module_info") => {
                 let world_id = reply["world_id"]
                     .as_str()
                     .context("host omitted world id")?
                     .to_owned();
-                let active_module_hash = reply["active_module_hash"].as_str().map(str::to_owned);
+                let active_module_hash = match reply.get("active_module_hash") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => {
+                        if let Some(hash) = value.as_str() {
+                            Some(hash.to_owned())
+                        } else {
+                            bail!(
+                                "host sent malformed active_module_hash: expected string or null, got {}",
+                                match value {
+                                    serde_json::Value::Null => "null",
+                                    serde_json::Value::Bool(_) => "boolean",
+                                    serde_json::Value::Number(_) => "number",
+                                    serde_json::Value::String(_) => "string",
+                                    serde_json::Value::Array(_) => "array",
+                                    serde_json::Value::Object(_) => "object",
+                                }
+                            );
+                        }
+                    }
+                };
                 let current_sequence = reply["current_sequence"]
                     .as_u64()
                     .context("host omitted sequence")?;
@@ -1449,7 +1573,14 @@ impl WorldClient {
         prefix: Option<&str>,
     ) -> Result<crate::world::Records> {
         let mut all = crate::world::Records::new();
+        let mut budget = RecordsBudget::default();
         for (_, page) in self.record_pages(capability, prefix).await? {
+            // Validate each page's records against caps, ordering, and total count
+            for (key, value) in &page {
+                budget
+                    .validate_record(key, value)
+                    .with_context(|| format!("invalid record in page"))?;
+            }
             all.extend(page);
         }
         Ok(all)
@@ -1469,11 +1600,27 @@ impl WorldClient {
     ) -> Result<(u64, crate::world::Records)> {
         let mut pages = self.record_pages(capability, prefix).await?.into_iter();
         let (sequence, mut all) = pages.next().context("host sent no records page")?;
+        let mut budget = RecordsBudget::default();
+
+        // Validate the first page
+        for (key, value) in &all {
+            budget
+                .validate_record(key, value)
+                .with_context(|| format!("invalid record in first page (sequence {sequence})"))?;
+        }
+
         for (page_sequence, page) in pages {
             anyhow::ensure!(
                 page_sequence == sequence,
                 "the world changed while its records were read"
             );
+
+            // Validate subsequent pages
+            for (key, value) in &page {
+                budget.validate_record(key, value).with_context(|| {
+                    format!("invalid record in page (sequence {page_sequence})")
+                })?;
+            }
             all.extend(page);
         }
         Ok((sequence, all))
@@ -1487,12 +1634,13 @@ impl WorldClient {
     ) -> Result<Vec<(u64, crate::world::Records)>> {
         let mut pages = Vec::new();
         let mut after: Option<String> = None;
+        let mut budget = RecordsBudget::default();
         loop {
             self.send_json(&serde_json::json!({
                 "type": "records",
                 "capability": capability,
                 "prefix": prefix,
-                "after": after,
+                "after": after.as_deref(),
             }))
             .await?;
             let reply = self
@@ -1512,8 +1660,42 @@ impl WorldClient {
                 .context("records reply has no sequence")?;
             let page: crate::world::Records =
                 serde_json::from_value(reply["records"].clone()).context("decode records page")?;
+
+            // Validate the page's records against caps, ordering, and total count
+            for (key, value) in &page {
+                budget
+                    .validate_record(key, value)
+                    .with_context(|| format!("invalid record in page for sequence {sequence}"))?;
+            }
+
+            // Check cursor validation: next_after must equal the last key of this page
+            let next_after = reply["next_after"].as_str();
+            if let Some(next) = next_after {
+                // Validate that next_after matches the last key in this page
+                if let Some((last_key, _)) = page.iter().next_back() {
+                    anyhow::ensure!(
+                        next == last_key,
+                        "invalid records cursor: next_after={next:?} does not match last key {last_key:?}"
+                    );
+                } else {
+                    // Empty page should only happen when after is not null
+                    anyhow::ensure!(
+                        after.is_some(),
+                        "empty records page returned on first request"
+                    );
+                }
+
+                // Validate that the cursor advanced from what we sent
+                if let Some(cursor) = &after {
+                    anyhow::ensure!(
+                        next > cursor.as_str(),
+                        "records cursor did not advance: next_after={next:?}, previous cursor={cursor:?}"
+                    );
+                }
+            }
+
             pages.push((sequence, page));
-            match reply["next_after"].as_str() {
+            match next_after {
                 Some(next) => after = Some(next.to_owned()),
                 None => return Ok(pages),
             }
@@ -2428,6 +2610,57 @@ mod tests {
         host.router.shutdown().await.unwrap();
     }
 
+    #[test]
+    fn set_caps_ceiling_reply_requires_a_valid_report() {
+        // Issue #6636: a `caps_ceiling` frame carrying no valid CapsReport
+        // must not read as a successful ceiling change. Driven through the
+        // factored reply parser. Oracle: the host's typed
+        // `ServerFrame::CapsCeiling` always carries a real report, and the
+        // sibling `set_schedule` validates its reply payload the same way.
+        let valid_report = serde_json::json!({
+            "granted": ["time.now"],
+            "requested": ["time.now"],
+            "missing": [],
+            "usage": {},
+            "policy": "deny",
+            "catalog": ["time.now"],
+            "ceiling": ["time.now"],
+        });
+        let ok = WorldClient::parse_caps_ceiling_reply(&serde_json::json!({
+            "type": "caps_ceiling",
+            "report": valid_report,
+            "message": "the ceiling applies immediately",
+        }))
+        .unwrap();
+        assert_eq!(ok["type"], "caps_ceiling");
+        assert_eq!(ok["report"]["ceiling"], serde_json::json!(["time.now"]));
+        assert_eq!(ok["report"]["granted"], serde_json::json!(["time.now"]));
+
+        // Missing, null, non-object, and wrong-shaped reports all refuse
+        // with the malformed-report context.
+        for bad_reply in [
+            serde_json::json!({"type": "caps_ceiling", "message": "the ceiling applies immediately"}),
+            serde_json::json!({"type": "caps_ceiling", "report": null, "message": "ok"}),
+            serde_json::json!({"type": "caps_ceiling", "report": 123, "message": "ok"}),
+            serde_json::json!({"type": "caps_ceiling", "report": {"granted": "time.now"}, "message": "ok"}),
+        ] {
+            let result = WorldClient::parse_caps_ceiling_reply(&bad_reply);
+            assert!(result.is_err(), "reply {bad_reply} must be refused");
+            let err = result.err().unwrap();
+            assert!(
+                err.to_string().contains("malformed capability report"),
+                "unexpected error: {err}"
+            );
+        }
+
+        // A non-caps_ceiling frame still bails with the host's message.
+        let refused = WorldClient::parse_caps_ceiling_reply(&serde_json::json!({
+            "type": "error",
+            "message": "admin token refused",
+        }));
+        assert!(refused.err().unwrap().to_string().contains("admin token refused"));
+    }
+
     #[tokio::test]
     async fn execution_profile_can_be_queried_and_updated_over_iroh() {
         let host = host(Some("admin")).await;
@@ -2457,7 +2690,8 @@ mod tests {
             .execution_profile(None, Some(&capability))
             .await
             .unwrap();
-        assert_eq!(res["type"], "execution_profile");
+        // execution_profile now returns just the requested profile, not the whole frame
+        assert!(res.get("wasm_fuel").is_some() || res.get("total_memory_bytes").is_some());
         guest.close();
 
         // 3. Admin can update profile
@@ -2473,6 +2707,7 @@ mod tests {
             .set_execution_profile("admin", custom_profile)
             .await
             .unwrap();
+        // set_execution_profile still returns the whole frame
         assert_eq!(set_res["type"], "execution_profile");
         assert_eq!(set_res["update"]["requested"]["wasm_fuel"], 750_000);
         admin.close();
@@ -2485,7 +2720,8 @@ mod tests {
             .execution_profile(Some("admin"), None)
             .await
             .unwrap();
-        assert_eq!(query_res["update"]["requested"]["wasm_fuel"], 750_000);
+        // execution_profile now returns just the requested profile
+        assert_eq!(query_res["wasm_fuel"], 750_000);
         admin_query.close();
 
         client_ep.close().await;
@@ -3274,5 +3510,62 @@ mod tests {
         sessions.close_all();
         client_ep.close().await;
         host.router.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn info_details_rejects_malformed_active_module_hash() {
+        // Issue #6633: a present-but-mistyped `active_module_hash` is
+        // corruption or version skew, never "this world has no module".
+        // Driven through the factored reply parser — the previous version
+        // of this test called a nonexistent `inject_json` helper on the
+        // client and broke the whole lib-test build (issues #6640, #6643).
+        // Oracle: the parser's strictness for the sibling fields of the
+        // same reply (`world_id`, `current_sequence`, provenance).
+        let parse = |reply: serde_json::Value| WorldClient::parse_module_info_reply(&reply);
+        let reply_with = |hash: serde_json::Value| {
+            serde_json::json!({
+                "type": "module_info",
+                "world_id": "test:world",
+                "active_module_hash": hash,
+                "current_sequence": 42,
+                "active_module_provenance": null,
+            })
+        };
+
+        // Valid string hash -> Some(hash).
+        let info = parse(reply_with(serde_json::json!("abc123"))).unwrap();
+        assert_eq!(info.active_module_hash, Some("abc123".to_string()));
+        assert_eq!(info.world_id, "test:world");
+        assert_eq!(info.current_sequence, 42);
+
+        // Null hash -> None (the legitimate no-module case).
+        let info = parse(reply_with(serde_json::Value::Null)).unwrap();
+        assert_eq!(info.active_module_hash, None);
+
+        // Missing hash field (older hosts) -> None.
+        let info = parse(serde_json::json!({
+            "type": "module_info",
+            "world_id": "test:world",
+            "current_sequence": 42,
+            "active_module_provenance": null,
+        }))
+        .unwrap();
+        assert_eq!(info.active_module_hash, None);
+
+        // Mistyped hash shapes -> an error naming the malformed field.
+        for bad in [
+            serde_json::json!(123),
+            serde_json::json!(true),
+            serde_json::json!(["abc"]),
+            serde_json::json!({"hash": "abc"}),
+        ] {
+            let result = parse(reply_with(bad));
+            assert!(result.is_err(), "mistyped hash must error, got {result:?}");
+            let err = result.err().unwrap();
+            assert!(
+                err.to_string().contains("malformed active_module_hash"),
+                "unexpected error: {err}"
+            );
+        }
     }
 }
