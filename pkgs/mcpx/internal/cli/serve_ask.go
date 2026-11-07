@@ -207,7 +207,16 @@ func (d daemonAsker) Begin(ctx context.Context, kind string, params json.RawMess
 	if r := mcpserver.RelayFrom(ctx); r != nil && kind == "tools/call" {
 		body["relay"] = daemon.CallRelay{ProgressToken: r.ProgressToken, LogLevel: r.LogLevel, Meta: r.Meta}
 	}
-	raw, err := c.do(ctx, http.MethodPost, "/v1/ask", body)
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	// Once the daemon may have accepted the task, keep the short create
+	// request alive long enough to receive its id. viaAsk can then abandon
+	// that task if the client cancelled while this POST was in flight;
+	// using ctx here could lose the id and strand the task until its TTL.
+	beginCtx, cancelBegin := context.WithTimeout(context.WithoutCancel(ctx), defaults.ProtoAbandonGrace)
+	defer cancelBegin()
+	raw, err := c.do(beginCtx, http.MethodPost, "/v1/ask", body)
 	if err != nil {
 		return "", err
 	}

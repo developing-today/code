@@ -387,6 +387,164 @@ func (a *scriptedAsker) Reply(_ context.Context, _ string, answers map[string]js
 
 func (a *scriptedAsker) Abandon(string) { a.abandoned++ }
 
+type cancelWaitingAsker struct {
+	started   chan struct{}
+	abandoned chan string
+}
+
+func (a *cancelWaitingAsker) Begin(context.Context, string, json.RawMessage) (string, error) {
+	return "call-cancelled", nil
+}
+
+func (a *cancelWaitingAsker) Poll(ctx context.Context, _ string, _ time.Duration) (mcpserver.Outcome, error) {
+	close(a.started)
+	<-ctx.Done()
+	return mcpserver.Outcome{}, ctx.Err()
+}
+
+func (a *cancelWaitingAsker) Reply(context.Context, string, map[string]json.RawMessage) error {
+	return nil
+}
+
+func (a *cancelWaitingAsker) Abandon(id string) { a.abandoned <- id }
+
+func TestCancellingAnAskPathRequestAbandonsItsDaemonTask(t *testing.T) {
+	asker := &cancelWaitingAsker{started: make(chan struct{}), abandoned: make(chan string, 1)}
+	srv := mcpserver.New(newBackend(), "mcpx", "test")
+	srv.Ask = asker
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type responseState struct {
+		code    int
+		message string
+	}
+	result := make(chan responseState, 1)
+	go func() {
+		resp := srv.Handle(ctx, mcpserver.Request(1, "tools/call", modernCall(1, nil)))
+		if resp == nil || resp.Error == nil {
+			result <- responseState{}
+			return
+		}
+		result <- responseState{code: resp.Error.Code, message: resp.Error.Message}
+	}()
+
+	select {
+	case <-asker.started:
+	case <-time.After(time.Second):
+		t.Fatal("the ask-path call never reached its daemon-task poll")
+	}
+	cancel()
+
+	select {
+	case id := <-asker.abandoned:
+		if id != "call-cancelled" {
+			t.Errorf("abandoned call id = %q, want the daemon task id", id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelling the request did not abandon its daemon task")
+	}
+
+	select {
+	case got := <-result:
+		if got.code != -32603 || got.message != "tools/call: context canceled" {
+			t.Fatalf("cancelled ask request error = %+v, want the direct-path cancellation error", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the cancelled ask-path request was not released")
+	}
+}
+
+type resumeCancelAsker struct {
+	polls      int
+	resumePoll chan struct{}
+	abandoned  chan string
+}
+
+func (a *resumeCancelAsker) Begin(context.Context, string, json.RawMessage) (string, error) {
+	return "call-resumed", nil
+}
+
+func (a *resumeCancelAsker) Poll(ctx context.Context, _ string, _ time.Duration) (mcpserver.Outcome, error) {
+	a.polls++
+	if a.polls == 1 {
+		q := oneQuestion()[0]
+		q.Round = 1
+		return mcpserver.Outcome{Questions: []mcpserver.Question{q}}, nil
+	}
+	close(a.resumePoll)
+	<-ctx.Done()
+	return mcpserver.Outcome{}, ctx.Err()
+}
+
+func (a *resumeCancelAsker) Reply(context.Context, string, map[string]json.RawMessage) error {
+	return nil
+}
+
+func (a *resumeCancelAsker) Abandon(id string) { a.abandoned <- id }
+
+func TestCancellingAResumedAskRequestAbandonsItsDaemonTask(t *testing.T) {
+	asker := &resumeCancelAsker{resumePoll: make(chan struct{}), abandoned: make(chan string, 1)}
+	srv := mcpserver.New(newBackend(), "mcpx", "test")
+	srv.Ask = asker
+	first := srv.Handle(context.Background(), mcpserver.Request(1, "tools/call", modernCall(1, nil)))
+	var input struct {
+		RequestState string `json:"requestState"`
+	}
+	if err := json.Unmarshal([]byte(protoJSON(t, first.Result)), &input); err != nil || input.RequestState == "" {
+		t.Fatalf("first ask response has no resumable state: %v (%q)", err, protoJSON(t, first.Result))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan struct {
+		code    int
+		message string
+	}, 1)
+	params := modernCall(2, map[string]any{
+		"requestState": input.RequestState,
+		"inputResponses": map[string]any{
+			"elc-1": map[string]any{"action": "accept", "content": map[string]any{"answer": true}},
+		},
+	})
+	go func() {
+		resp := srv.Handle(ctx, mcpserver.Request(2, "tools/call", params))
+		if resp != nil && resp.Error != nil {
+			result <- struct {
+				code    int
+				message string
+			}{resp.Error.Code, resp.Error.Message}
+			return
+		}
+		result <- struct {
+			code    int
+			message string
+		}{}
+	}()
+
+	select {
+	case <-asker.resumePoll:
+	case <-time.After(time.Second):
+		t.Fatal("resumed ask did not poll the daemon task")
+	}
+	cancel()
+	select {
+	case id := <-asker.abandoned:
+		if id != "call-resumed" {
+			t.Errorf("abandoned call id = %q, want call-resumed", id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelling the resumed request did not abandon its daemon task")
+	}
+	select {
+	case got := <-result:
+		if got.code != -32603 || got.message != "tools/call: context canceled" {
+			t.Errorf("resumed cancellation response = %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled resumed ask request was not released")
+	}
+}
+
 func oneQuestion() []mcpserver.Question {
 	return []mcpserver.Question{{
 		ID: "elc-1", Method: "elicitation/create", Mode: "form", Server: "github",

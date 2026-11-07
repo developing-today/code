@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
@@ -216,5 +217,75 @@ func TestDaemonAskerBeginsRawToolCallsWithGatewayShapedArguments(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "asked db.query") {
 		t.Fatalf("response should carry the asked call's result: %s", w.Body.String())
+	}
+}
+
+func TestDaemonAskerKeepsBeginAliveToAbandonCancelledCall(t *testing.T) {
+	askStarted := make(chan struct{})
+	releaseAsk := make(chan struct{})
+	abandoned := make(chan struct{}, 1)
+	daemonSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/namespaces":
+			_, _ = w.Write([]byte(`[{"namespace":"db","server":"db"}]`))
+		case r.URL.Path == "/v1/ask" && r.Method == http.MethodPost:
+			close(askStarted)
+			<-releaseAsk
+			_, _ = w.Write([]byte(`{"callId":"call-1"}`))
+		case r.URL.Path == "/v1/ask/call-1/abandon" && r.Method == http.MethodPost:
+			abandoned <- struct{}{}
+			_, _ = w.Write([]byte(`{"callId":"call-1","status":"working"}`))
+		default:
+			http.Error(w, `{"error":"unexpected `+r.Method+` `+r.URL.Path+`"}`, http.StatusNotFound)
+		}
+	}))
+	defer daemonSrv.Close()
+
+	app := &App{client: NewClientAt(daemon.Paths{}, "", daemonSrv.URL), connected: true}
+	srv := mcpserver.New(&rawAskBackend{}, "mcpx", "test")
+	srv.Ask = daemonAsker{app: app}
+	params := map[string]any{
+		"name": "db_query", "arguments": map[string]any{"q": "select 1"},
+		"_meta": map[string]any{
+			mcpserver.MetaProtocolVersion:    "2026-07-28",
+			mcpserver.MetaClientCapabilities: json.RawMessage(`{"elicitation":{"form":{}}}`),
+		},
+	}
+	body, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params})
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/mcp?codemode=false", strings.NewReader(string(body))).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("MCP-Protocol-Version", "2026-07-28")
+	req.Header.Set("Mcp-Method", "tools/call")
+	req.Header.Set("Mcp-Name", "db_query")
+	w := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		srv.ServeHTTP(w, req)
+		close(done)
+	}()
+
+	select {
+	case <-askStarted:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("the daemon did not receive the ask-task creation request")
+	}
+	cancel()
+	close(releaseAsk)
+
+	select {
+	case <-abandoned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancellation during Begin lost the task id instead of abandoning the daemon task")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("the cancelled HTTP request did not return")
+	}
+	if w.Body.Len() != 0 {
+		t.Errorf("cancelled modern request must withhold its response, got %s", w.Body.String())
 	}
 }

@@ -157,7 +157,7 @@ func forAsk(params json.RawMessage) json.RawMessage {
 // own call is still open, a modern one is handed the question inside an
 // input_required result and sends the whole request again. The call itself
 // does not know which happened.
-func (s *Server) viaAsk(ctx context.Context, c *Conn, req request, peer Peer) *response {
+func (s *Server) viaAsk(ctx context.Context, c *Conn, req request, peer Peer) (result *response) {
 	reply := func(result any) *response {
 		return &response{JSONRPC: "2.0", ID: req.ID, Result: result}
 	}
@@ -169,15 +169,20 @@ func (s *Server) viaAsk(ctx context.Context, c *Conn, req request, peer Peer) *r
 	if failed != nil || callID == "" {
 		return failed
 	}
+	defer func() {
+		if err := ctx.Err(); err != nil {
+			// Every exit after Begin has a task id. If the request is
+			// cancelled anywhere in the ask loop, nobody can collect it;
+			// stop the daemon task and return the same cancellation error.
+			s.Ask.Abandon(callID)
+			result = fail(codeInternal, req.Method+": "+err.Error())
+		}
+	}()
 
 	tm := s.Timing.resolved()
 	deadline := time.Now().Add(tm.AskTimeout)
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
-			// The client gave up, or the transport did. The call itself
-			// keeps running as a task, and its questions keep their
-			// deadlines; abandoning it here would throw away work somebody
-			// may still collect from /v1/tasks.
 			return fail(codeInternal, req.Method+": "+err.Error())
 		}
 		wait := tm.AskPoll
@@ -187,6 +192,9 @@ func (s *Server) viaAsk(ctx context.Context, c *Conn, req request, peer Peer) *r
 		started := time.Now()
 		out, err := s.Ask.Poll(ctx, callID, wait)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return fail(codeInternal, req.Method+": "+ctxErr.Error())
+			}
 			return fail(codeInternal, err.Error())
 		}
 		relayNotes(ctx, out)
@@ -358,11 +366,20 @@ func (s *Server) beginAsk(ctx context.Context, req request, peer Peer) (id strin
 		}
 		if len(answers) > 0 {
 			// The questions still open, to undo wireKey's renaming.
-			if open, perr := s.Ask.Poll(ctx, id, time.Millisecond); perr == nil {
+			open, perr := s.Ask.Poll(ctx, id, time.Millisecond)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				s.Ask.Abandon(id)
+				return "", nil, 0, fail(codeInternal, req.Method+": "+ctxErr.Error())
+			}
+			if perr == nil {
 				relayNotes(ctx, open)
 				answers = answersByID(answers, sendableTo(open.Questions, peer))
 			}
 			if err := s.Ask.Reply(ctx, id, answers); err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					s.Ask.Abandon(id)
+					return "", nil, 0, fail(codeInternal, req.Method+": "+ctxErr.Error())
+				}
 				return "", nil, 0, fail(codeInvalidParams, err.Error())
 			}
 		}
