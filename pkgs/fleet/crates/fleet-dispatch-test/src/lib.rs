@@ -859,9 +859,9 @@ Usage: fleet dispatch-test submit --submodule NAME [--threshold N]
 Store a job in the Turso jobs store (status queued), pick an
 execution-home copy (--repo forces one; otherwise the scan rule:
 first discovered copy with active < threshold and the generic
-workflow present), mark the row dispatched, and dispatch
-fleet-dispatch-test.yml in that copy with the job id as its only
-input. The generic workflow checks out the fleet repo, checks
+workflow present), dispatch fleet-dispatch-test.yml in that copy
+with the job id as its only input, and only then mark the row
+dispatched — a failed dispatch leaves the row queued (#6598). The generic workflow checks out the fleet repo, checks
 out the named submodule at the named ref, and runs the commands
 inside it (fleet-build container: the fleet repo's preloaded
 nix cache).
@@ -881,6 +881,23 @@ nix cache).
 
 Prints JSON: {job_id, repo, submodule, ref, active_at_scan,
 threshold, status}.";
+
+/// The submit tail's step order (#6598): record the chosen home,
+/// dispatch the workflow, and only after the dispatch succeeds mark
+/// the row 'dispatched'. A failure in any step stops the sequence, so
+/// a failed dispatch leaves the row 'queued' (with its target repo
+/// recorded) — the same truthful, retryable state as the
+/// no-eligible-scope outcome — instead of a 'dispatched' row for a
+/// workflow that will never run.
+fn run_dispatch_sequence(
+    set_target: impl FnOnce() -> Result<()>,
+    dispatch: impl FnOnce() -> Result<()>,
+    mark_dispatched: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    set_target()?;
+    dispatch()?;
+    mark_dispatched()
+}
 
 fn verb_submit(config: &Config, args: &[String]) -> Result<Value> {
     if args.iter().any(|a| a == "--help" || a == "-h") {
@@ -977,28 +994,48 @@ fn verb_submit(config: &Config, args: &[String]) -> Result<Value> {
         }
     };
 
-    // (d) UPDATE the row: target repo + dispatched.
-    turso.execute(
-        "UPDATE jobs SET target_repo = ?, status = 'dispatched', updated_at = ? WHERE id = ?",
-        &[
-            TursoArg::Text(repo.clone()),
-            TursoArg::Text(now_rfc3339()),
-            TursoArg::Text(id.clone()),
-        ],
-    )?;
-
-    // (e) dispatch the generic workflow at the copy's default branch.
-    let repo_body = github.get(&format!("/repos/{repo}"))?;
-    let default_branch = repo_body
-        .get("default_branch")
-        .and_then(|b| b.as_str())
-        .ok_or_else(|| transport_err(format!("GitHub repo {repo} has no default_branch")))?;
-    github.post(
-        &format!("/repos/{repo}/actions/workflows/{WORKFLOW_FILE}/dispatches"),
-        &json!({
-            "ref": default_branch,
-            "inputs": {"job_id": id},
-        }),
+    // (d)+(e) record the chosen home, dispatch the generic workflow
+    // at the copy's default branch, and only then mark the row
+    // dispatched (#6598 — see run_dispatch_sequence).
+    run_dispatch_sequence(
+        || {
+            turso.execute(
+                "UPDATE jobs SET target_repo = ?, updated_at = ? WHERE id = ?",
+                &[
+                    TursoArg::Text(repo.clone()),
+                    TursoArg::Text(now_rfc3339()),
+                    TursoArg::Text(id.clone()),
+                ],
+            )?;
+            Ok(())
+        },
+        || {
+            let repo_body = github.get(&format!("/repos/{repo}"))?;
+            let default_branch = repo_body
+                .get("default_branch")
+                .and_then(|b| b.as_str())
+                .ok_or_else(|| {
+                    transport_err(format!("GitHub repo {repo} has no default_branch"))
+                })?;
+            github.post(
+                &format!("/repos/{repo}/actions/workflows/{WORKFLOW_FILE}/dispatches"),
+                &json!({
+                    "ref": default_branch,
+                    "inputs": {"job_id": id},
+                }),
+            )?;
+            Ok(())
+        },
+        || {
+            turso.execute(
+                "UPDATE jobs SET status = 'dispatched', updated_at = ? WHERE id = ?",
+                &[
+                    TursoArg::Text(now_rfc3339()),
+                    TursoArg::Text(id.clone()),
+                ],
+            )?;
+            Ok(())
+        },
     )?;
 
     // (f) report.
@@ -1289,6 +1326,72 @@ mod tests {
         for bad in ["", ".", "..", "../code", "code/sub", "a b", "a/b", "x;rm"] {
             assert!(!valid_submodule(bad), "{bad:?} should be invalid");
         }
+    }
+
+    #[test]
+    fn dispatch_sequence_runs_target_dispatch_mark_in_order() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let result = run_dispatch_sequence(
+            || {
+                calls.borrow_mut().push("target");
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("dispatch");
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("mark");
+                Ok(())
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(*calls.borrow(), vec!["target", "dispatch", "mark"]);
+    }
+
+    #[test]
+    fn dispatch_sequence_failure_never_marks_dispatched() {
+        // The #6598 regression: the dispatch call fails (HTTP 422, a
+        // missing workflow_dispatch trigger) and the row must not end
+        // up marked dispatched.
+        let calls = std::cell::RefCell::new(Vec::new());
+        let result = run_dispatch_sequence(
+            || {
+                calls.borrow_mut().push("target");
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("dispatch");
+                Err(transport_err("GitHub API: workflow does not have a workflow_dispatch trigger"))
+            },
+            || {
+                calls.borrow_mut().push("mark");
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(*calls.borrow(), vec!["target", "dispatch"]);
+    }
+
+    #[test]
+    fn dispatch_sequence_target_failure_stops_before_dispatch() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let result = run_dispatch_sequence(
+            || {
+                calls.borrow_mut().push("target");
+                Err(transport_err("store unreachable"))
+            },
+            || {
+                calls.borrow_mut().push("dispatch");
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("mark");
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(*calls.borrow(), vec!["target"]);
     }
 
     #[test]
