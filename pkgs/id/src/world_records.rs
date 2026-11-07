@@ -537,4 +537,31 @@ mod tests {
 
         host.shutdown().await;
     }
+    #[tokio::test]
+    async fn probe_read_records_accepts_over_cap_doc() {
+        // Write entries directly with the doc author, bypassing
+        // RecordsStore::reconcile / parse_records (a host using its own
+        // writer, which is exactly what a replica cannot trust).
+        let host = Node::spawn().await;
+        let store = RecordsStore::open(&host.docs, None).await.unwrap();
+        let author = host.docs.author_default().await.unwrap();
+        // One oversized value: MAX_RECORD_VALUE_BYTES is 8192.
+        let big = serde_json::Value::String("v".repeat(9000));
+        store.doc.set_bytes(author, doc_key("big"), serde_json::to_vec(&big).unwrap()).await.unwrap();
+        // A key over MAX_RECORD_KEY_BYTES (256) and one with a control char.
+        let long_key = "k".repeat(300);
+        store.doc.set_bytes(author, doc_key(&long_key), b"1".to_vec()).await.unwrap();
+        store.doc.set_bytes(author, doc_key("bad\u{7}key"), b"2".to_vec()).await.unwrap();
+        // Count over MAX_RECORDS (4096): add 4097 tiny records.
+        for i in 0..4097 {
+            store.doc.set_bytes(author, doc_key(&format!("n{i}")), b"0".to_vec()).await.unwrap();
+        }
+        let read = read_records(&store.doc, &host.blobs).await.unwrap();
+        println!("PROBE count={} big_len={} long_key_present={} control_key_present={}",
+            read.len(),
+            read.get("big").and_then(|v| v.as_str()).map_or(0, str::len),
+            read.contains_key(&long_key),
+            read.contains_key("bad\u{7}key"));
+        host.shutdown().await;
+    }
 }
