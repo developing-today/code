@@ -933,7 +933,7 @@ export interface AaCoverage {
   /** Measured models no provider catalog carries under a matched name. */
   measuredNotInCatalog: string[];
   /** Catalog model ids (provider/model) with no AA measurement and no
-   * pool seat — e.g. commandcode/reflection/beam:free. Display names
+   * pool seat — e.g. _commandcode/reflection/beam:free. Display names
    * are catalog ids, not AA names, so they can be found in the config. */
   catalogNotPooledUnmeasured: string[];
 }

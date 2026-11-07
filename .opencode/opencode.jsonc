@@ -1,4 +1,15 @@
 {
+  // PROVIDER RENAME (2026-11-07, Drew; opencode#1823): providers the
+  // fleet custom-built in the fork now carry a leading underscore —
+  // claude-code -> _claude, antigravity-direct -> _antigravity,
+  // vibe-direct -> _vibe, commandcode -> _commandcode,
+  // muse-direct -> _muse (config and fork source ids converged).
+  // Upstream providers keep their ids (meta included: the fork's
+  // meta provider is upstream code). Config-only doors over upstream
+  // SDK packages (opendesign, cline-pass) are unchanged. The
+  // underscore is a config/source marker only; display surfaces
+  // strip it. Older comments below narrate the pre-rename ids as
+  // history. Quota keeps the old spellings as aliases.
   // PROVIDER ALIGNMENT (2026-10-24, Drew): both machines carry the same
   // providers; unneeded ones are disabled here, identically on both.
   // - Token-based Google/Gemini paths are OFF. EARMARK: when a token-based
@@ -260,7 +271,7 @@
   // (~/.local/state/opencode/opencode-runtime.jsonc), layered over this file via
   // OPENCODE_CONFIG — see code#4544. Everything else here is deliberate config.
   "provider": {
-    "claude-code": {
+    "_claude": {
       // 2026-11-05 (code#6117, opencode#1749): repointed from the CLI proxy
       // (:18749, @ai-sdk/openai-compatible) to the in-fork native claude-code
       // provider - same provider id, native wire emulation of the Claude Code
@@ -419,7 +430,7 @@
         }
       }
     },
-    "antigravity-direct": {
+    "_antigravity": {
       "npm": "@opencode/ai/providers/antigravity",
       "name": "Antigravity Direct (CLI wire clone)"
       // 2026-11-04 (opencode#1414): repointed from the :18751 door to
@@ -440,7 +451,7 @@
       // spend this API-budget key (see home/common, opencode#1653).
       // "models": maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
     },
-    "vibe-direct": {
+    "_vibe": {
       "npm": "@opencode/ai/providers/vibe",
       "name": "Mistral Vibe Direct (native wire clone)",
       // 2026-11-04 (opencode#1653, PR #1661): native in-fork emulation of
@@ -845,7 +856,7 @@
 // do not merge them. The models are the contributor variants the
 // routes seat; the provider normalizes the v1 reasoning_effort
 // variant dialect onto the wire.
-     "muse-direct": {
+     "_muse": {
        "npm": "@opencode/ai/providers/muse-direct",
        "name": "Meta Muse Direct",
        "models": {
@@ -975,7 +986,7 @@
       "instanceOf": "opencode-go",
       "name": "OpenCode Go (popesdrew)"
     },
-    "commandcode": {
+    "_commandcode": {
           // 2026-11-05 (code#6117, opencode#1749): repointed from the CLI proxy
           // (:18748, @ai-sdk/openai-compatible) to the in-fork native commandcode
           // provider - same provider id, native wire emulation of the Command
@@ -1830,7 +1841,7 @@
       // Change the leg order HERE, in this providers list, and
       // nowhere else.
       "mistral-plan": {
-        "providers": ["vibe-direct", "mistral"],
+        "providers": ["_vibe", "mistral"],
         "selection": "ordered"
       },
       // opencode-go-plans (2026-11-03, Drew): the OpenCode Go plans as
@@ -1958,7 +1969,7 @@
             "model": "opendesign/deepseek-v4.1-flash",
             "variants": { "xhigh": "high", "max": "high" }
           },
-          "commandcode/deepseek/deepseek-v4.1-flash",
+          "_commandcode/deepseek/deepseek-v4.1-flash",
           {
             "model": "mistral-plan/mistral-small-latest",
             // Variant remap: the pool's effort rungs map onto the two
@@ -1981,7 +1992,7 @@
           "opencode-go-plans/deepseek-v4.1-flash": 6,
           "cline-pass/deepseek-v4.1-flash": 1,
           "opendesign/deepseek-v4.1-flash": 1,
-          "commandcode/deepseek/deepseek-v4.1-flash": 0.5,
+          "_commandcode/deepseek/deepseek-v4.1-flash": 0.5,
           "mistral-plan/mistral-small-latest": 0.25
         }
       },
@@ -2023,13 +2034,13 @@
             "model": "opendesign/deepseek-v4-pro",
             "variants": { "xhigh": "high", "max": "high" }
           },
-          "commandcode/deepseek/deepseek-v4-pro"
+          "_commandcode/deepseek/deepseek-v4-pro"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
           "opencode-go-plans/deepseek-v4-pro": 3,
-          "commandcode/deepseek/deepseek-v4-pro": 0.5
+          "_commandcode/deepseek/deepseek-v4-pro": 0.5
         }
       },
       "haiku-plan": {
@@ -2044,7 +2055,7 @@
         // rejoins automatically on re-enable, issue #1132); OpenDesign
         // is the pool's live flat door today.
         "targets": [
-          "claude-code/claude-haiku-5-5",
+          "_claude/claude-haiku-5-5",
           {
             "model": "opendesign/claude-haiku-5.5",
             "variants": { "xhigh": "high", "max": "high" }
@@ -2143,7 +2154,7 @@
         // rides on the direct door the same way.
         "targets": [
           {
-            "model": "antigravity-direct/gemini-3.8-flash",
+            "model": "_antigravity/gemini-3.8-flash",
             "variants": { "xhigh": "high", "max": "high" }
           }
         ],
@@ -2169,9 +2180,9 @@
         // is single-live-door on the direct door, plus claude-code's
         // return.
         "targets": [
-          "claude-code/claude-sonnet-5-5",
+          "_claude/claude-sonnet-5-5",
           {
-            "model": "antigravity-direct/claude-sonnet-5-5",
+            "model": "_antigravity/claude-sonnet-5-5",
             "variants": { "xhigh": "high", "max": "high" }
           }
         ],
@@ -2193,9 +2204,9 @@
         // "only the direct, replace all others". The direct door
         // serves claude-opus-5-5 and bridges tool calls.
         "targets": [
-          "claude-code/claude-opus-5-5",
+          "_claude/claude-opus-5-5",
           {
-            "model": "antigravity-direct/claude-opus-5-5",
+            "model": "_antigravity/claude-opus-5-5",
             "variants": { "xhigh": "high", "max": "high" }
           }
         ],
@@ -2235,9 +2246,9 @@
         // leaf in this pool.
         "targets": [
           "opencode-go-plans/muse-spark-1.3-contributor",
-          "commandcode/meta/muse-spark-1.3-contributor",
+          "_commandcode/meta/muse-spark-1.3-contributor",
           "cline-pass/muse-spark-1.3-contributor",
-          "muse-direct/muse-spark-1.3-contributor"
+          "_muse/muse-spark-1.3-contributor"
         ],
         "selection": "ordered",
         "autonomy": "rules"
@@ -2272,7 +2283,7 @@
             "model": "opendesign/gpt-6.1-sol",
             "variants": { "xhigh": "high", "max": "high" }
           },
-          "commandcode/gpt-6.1-sol"
+          "_commandcode/gpt-6.1-sol"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -2349,7 +2360,7 @@
         // service is retired). Same model, same pool position.
         "targets": [
           "opencode-go-plans/gemini-4-argon",
-          "antigravity-direct/gemini-4-argon"
+          "_antigravity/gemini-4-argon"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -2366,7 +2377,7 @@
         // on all three workspaces. Leaves are seated unconditionally: the
         // router skips disabled or quota-empty leaves at runtime.
         "targets": [
-          "commandcode/reflection/beam:free",
+          "_commandcode/reflection/beam:free",
           "opencode-go-plans/beam-free"
         ],
         "selection": "round-robin",
@@ -2389,13 +2400,13 @@
           "opencode-go-plans/mimo-v2.6-flash",
           "cline-pass/mimo-v2.6-flash",
           "opendesign/mimo-v2.6-flash",
-          "commandcode/xiaomi/mimo-v2.6-flash"
+          "_commandcode/xiaomi/mimo-v2.6-flash"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
           "opencode-go-plans/mimo-v2.6-flash": 3,
-          "commandcode/xiaomi/mimo-v2.6-flash": 0.5
+          "_commandcode/xiaomi/mimo-v2.6-flash": 0.5
         }
       },
       "scout": {
@@ -2625,7 +2636,7 @@
         // sonnet-plan#high stays specialist's head seat.
         "targets": [
           "openai-plan/gpt-6-luna#xhigh",
-          "muse-direct/muse-spark-1.3-contributor#xhigh",
+          "_muse/muse-spark-1.3-contributor#xhigh",
           "opencode-route/deepseek-flash-plan#high",
           "opencode-route/sonnet-plan#medium"
         ],
@@ -2633,7 +2644,7 @@
         "autonomy": "rules",
         "weights": {
           "openai-plan/gpt-6-luna": 2,
-          "muse-direct/muse-spark-1.3-contributor": 2,
+          "_muse/muse-spark-1.3-contributor": 2,
           "opencode-route/deepseek-flash-plan": 2,
           "opencode-route/sonnet-plan": 2
         }
@@ -2772,7 +2783,7 @@
         "targets": [
           "opencode-route/opus-plan#high",
           "opencode-route/argon-plan#high",
-          "muse-direct/muse-wonder-1.0-contributor#xhigh",
+          "_muse/muse-wonder-1.0-contributor#xhigh",
           "opencode-route/sol-plan#xhigh"
         ],
         "selection": "ordered",
