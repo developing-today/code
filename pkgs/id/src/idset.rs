@@ -56,9 +56,10 @@
 //! from, so its `set_id` is an owner-chosen opaque value, unverifiable by
 //! design.
 //!
-//! This module is types and encoding only. Expansion, projection, and
-//! counting are later slices of the spec's routing (§9 items 2–4) and are
-//! deliberately absent here.
+//! This module is the types and encoding. Expansion now lives beside the
+//! types: [`expand`] wires [`view`]'s pure projection to the membership
+//! layer (spec §9 item 2). Counting is a later slice of the spec's routing
+//! (§9 item 4) and is deliberately absent here.
 
 use cbor_core::{DecodeOptions, Strictness, Value};
 use p2panda_core::Hash;
@@ -66,6 +67,9 @@ use unicode_normalization::is_nfc;
 
 use crate::groups::Role;
 use crate::waiting::AuthorKey;
+
+/// Store-wired expansion over the membership layer (spec §9 item 2).
+pub mod expand;
 
 /// View projection and discovery over an explicitly pinned snapshot.
 pub mod view;
