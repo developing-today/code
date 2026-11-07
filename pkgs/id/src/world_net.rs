@@ -787,7 +787,9 @@ impl WorldClient {
     ///
     /// # Errors
     ///
-    /// Fails with the host's message if the capability is refused.
+    /// Fails with the host's message if the capability is refused, or with
+    /// "host sent a malformed capability report" if the reply's `report`
+    /// is missing or does not parse as a `CapsReport`.
     pub async fn caps(&mut self, capability: &str) -> Result<serde_json::Value> {
         self.send_json(&serde_json::json!({
             "type": "caps",
@@ -798,14 +800,30 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_caps_reply(&reply, "host refused the capability report")
+    }
+
+    /// Validate a `caps` reply frame and extract its report: the host's
+    /// typed contract (`ServerFrame::Caps`) always carries a
+    /// [`crate::world_caps::CapsReport`], so a reply whose `report` is
+    /// missing or malformed is not a success — for `update_caps` it would
+    /// report a grant/revoke that no report confirms (#6624). The report
+    /// is returned as the original JSON value, unchanged for existing
+    /// `Value` consumers. Factored out of [`WorldClient::caps`] and
+    /// [`WorldClient::update_caps`] (mirroring
+    /// [`WorldClient::parse_caps_ceiling_reply`]) so the validation can
+    /// be unit-tested without a live host sending frames no real host
+    /// sends.
+    fn parse_caps_reply(
+        reply: &serde_json::Value,
+        refusal: &str,
+    ) -> Result<serde_json::Value> {
         if reply["type"] != "caps" {
-            bail!(
-                "{}",
-                reply["message"]
-                    .as_str()
-                    .unwrap_or("host refused the capability report")
-            );
+            bail!("{}", reply["message"].as_str().unwrap_or(refusal));
         }
+        let _: crate::world_caps::CapsReport =
+            serde_json::from_value(reply["report"].clone())
+                .context("host sent a malformed capability report")?;
         Ok(reply["report"].clone())
     }
 
@@ -813,7 +831,9 @@ impl WorldClient {
     ///
     /// # Errors
     ///
-    /// Fails with the host's message if the admin token or names are refused.
+    /// Fails with the host's message if the admin token or names are
+    /// refused, or with "host sent a malformed capability report" if the
+    /// reply's `report` is missing or does not parse as a `CapsReport`.
     pub async fn update_caps(
         &mut self,
         admin_token: &str,
@@ -831,15 +851,7 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
-        if reply["type"] != "caps" {
-            bail!(
-                "{}",
-                reply["message"]
-                    .as_str()
-                    .unwrap_or("host refused the capability change")
-            );
-        }
-        Ok(reply["report"].clone())
+        Self::parse_caps_reply(&reply, "host refused the capability change")
     }
 
     /// Replace the world's capability ceiling. The reply carries the report and
@@ -2676,6 +2688,109 @@ mod tests {
             "message": "admin token refused",
         }));
         assert!(refused.err().unwrap().to_string().contains("admin token refused"));
+    }
+
+    #[test]
+    fn caps_reply_requires_a_valid_report() {
+        // Issue #6624: a `caps` frame carrying no valid CapsReport must
+        // not read as a successful capability report — for update_caps
+        // it would confirm a grant/revoke that never happened. Driven
+        // through the factored reply parser shared by caps() and
+        // update_caps(). Oracle: the host's typed `ServerFrame::Caps`
+        // always carries a real report, and the sibling
+        // parse_caps_ceiling_reply (#6636) validates the same way.
+        let valid_report = serde_json::json!({
+            "granted": ["time.now"],
+            "requested": ["time.now"],
+            "missing": [],
+            "usage": {},
+            "policy": "deny",
+            "catalog": ["time.now"],
+            "ceiling": ["time.now"],
+        });
+        for refusal in [
+            "host refused the capability report",
+            "host refused the capability change",
+        ] {
+            let ok = WorldClient::parse_caps_reply(
+                &serde_json::json!({"type": "caps", "report": valid_report}),
+                refusal,
+            )
+            .unwrap();
+            // The report comes back as the original value, unchanged.
+            assert_eq!(ok, valid_report);
+
+            // A pre-ceiling report (no ceiling/effective/view_failures)
+            // still parses via the serde defaults and returns unchanged.
+            let old_report = serde_json::json!({
+                "granted": ["time.now"],
+                "requested": [],
+                "missing": [],
+                "usage": {},
+                "policy": "grant-on-use",
+                "catalog": ["time.now"],
+            });
+            let ok = WorldClient::parse_caps_reply(
+                &serde_json::json!({"type": "caps", "report": old_report}),
+                refusal,
+            )
+            .unwrap();
+            assert_eq!(ok, old_report);
+        }
+
+        // The issue's malformed shapes: missing report, null, string,
+        // number, array, a mistyped field, and a report missing the
+        // required fields — all refuse with the malformed-report
+        // context, through both methods' refusal wording.
+        for bad_report in [
+            None,
+            Some(serde_json::json!(null)),
+            Some(serde_json::json!("yes")),
+            Some(serde_json::json!(123)),
+            Some(serde_json::json!([])),
+            Some(serde_json::json!({
+                "granted": "time.now",
+                "requested": [],
+                "missing": [],
+                "usage": {},
+                "policy": "deny",
+                "catalog": [],
+            })),
+            Some(serde_json::json!({
+                "granted": [],
+                "requested": [],
+                "missing": [],
+                "usage": {},
+                "policy": 42,
+                "catalog": [],
+            })),
+            Some(serde_json::json!({"granted": []})),
+        ] {
+            let mut reply = serde_json::json!({"type": "caps"});
+            if let Some(report) = bad_report {
+                reply["report"] = report;
+            }
+            let result = WorldClient::parse_caps_reply(&reply, "host refused");
+            assert!(result.is_err(), "reply {reply} must be refused");
+            let err = result.err().unwrap();
+            assert!(
+                err.to_string().contains("malformed capability report"),
+                "unexpected error: {err}"
+            );
+        }
+
+        // A refusal frame still bails with the host's own message.
+        let refused = WorldClient::parse_caps_reply(
+            &serde_json::json!({"type": "error", "message": "capability refused"}),
+            "host refused the capability report",
+        );
+        assert!(
+            refused
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("capability refused")
+        );
     }
 
     #[tokio::test]
