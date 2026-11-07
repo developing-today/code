@@ -20,9 +20,9 @@
 //! binaries under their historical names (src/bin/) — the
 //! migration's standing rollback inventory (design note §7).
 
-mod home;
 pub mod backoff;
 pub mod bin_args;
+mod home;
 pub mod log;
 pub mod token_file;
 
