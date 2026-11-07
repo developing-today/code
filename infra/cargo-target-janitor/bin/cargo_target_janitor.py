@@ -183,14 +183,41 @@ def load_queue_client(helper: Path):
     return module, key
 
 
+CLAIMS_PAGE = 1000
+# Fail-closed bound on pagination (#6618): a liveness read that cannot
+# be completed inside the bound raises SafetyError and cleanup stops,
+# rather than proceeding on a set that might be silently truncated.
+MAX_CLAIM_PAGES = 100
+STATES_CHUNK = 500
+
+
 def queue_claims(client) -> set[int]:
-    """Read only the pilot's claimed IDs through the existing helper."""
+    """Read ALL the pilot's claimed IDs through the existing helper.
+
+    Paginated (#6618): a single page capped at 1000 rows silently
+    dropped every claimed task past row 1000 from the never-delete
+    set. Pages are followed with offset until a short page arrives;
+    needing more than MAX_CLAIM_PAGES pages fails closed.
+    """
     module, key = client
-    query = (
-        "tasks?select=id,queue,status,payload&"
-        f"queue=eq.{QUEUE}&status=eq.claimed&limit=1000"
-    )
-    rows = module.http("GET", query, key) or []
+    rows = []
+    offset = 0
+    for _ in range(MAX_CLAIM_PAGES):
+        query = (
+            "tasks?select=id,queue,status,payload&"
+            f"queue=eq.{QUEUE}&status=eq.claimed"
+            f"&limit={CLAIMS_PAGE}&offset={offset}"
+        )
+        page = module.http("GET", query, key) or []
+        rows.extend(page)
+        if len(page) < CLAIMS_PAGE:
+            break
+        offset += CLAIMS_PAGE
+    else:
+        raise SafetyError(
+            f"claimed-task read exceeded {MAX_CLAIM_PAGES} pages "
+            f"of {CLAIMS_PAGE}; refusing to trust a possibly-truncated set"
+        )
     return {
         int(row["id"])
         for row in rows
@@ -201,45 +228,75 @@ def queue_claims(client) -> set[int]:
 
 
 def queue_task_states(client, task_ids: set[int]) -> dict[int, str]:
+    """States for a locally-built ID set, read in chunks (#6618).
+
+    Disposition of the old single `limit=1000` read: the ID set comes
+    from local fleet directories and can in principle exceed 1000, so
+    it is chunked — each query names at most STATES_CHUNK specific
+    IDs with limit=1000 > STATES_CHUNK, so no chunk's page can ever
+    truncate its answer.
+    """
     if not task_ids:
         return {}
     module, key = client
-    ids = ",".join(str(task_id) for task_id in sorted(task_ids))
-    rows = (
-        module.http(
-            "GET",
-            f"tasks?select=id,status&queue=eq.{QUEUE}&id=in.%28{ids}%29&limit=1000",
-            key,
+    states = {}
+    ordered = sorted(task_ids)
+    for start in range(0, len(ordered), STATES_CHUNK):
+        chunk = ordered[start : start + STATES_CHUNK]
+        ids = ",".join(str(task_id) for task_id in chunk)
+        rows = (
+            module.http(
+                "GET",
+                f"tasks?select=id,status&queue=eq.{QUEUE}&id=in.%28{ids}%29&limit=1000",
+                key,
+            )
+            or []
         )
-        or []
-    )
-    return {int(row["id"]): str(row["status"]) for row in rows}
+        states.update({int(row["id"]): str(row["status"]) for row in rows})
+    return states
+
+
+PR_PAGE = 100
+MAX_PR_PAGES = 200
 
 
 def open_pr_branches(repo: str = REPO) -> set[str]:
-    proc = subprocess.run(
-        [
-            "gh",
-            "pr",
-            "list",
-            "--repo",
-            repo,
-            "--state",
-            "open",
-            "--limit",
-            "500",
-            "--json",
-            "headRefName",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
+    """Read ALL open PR branch names, paginated (#6618).
+
+    The old single `gh pr list --limit 500` silently dropped every
+    open PR past the first 500 from the never-delete set. This pages
+    the REST pulls endpoint (per_page/page) until a short page; a
+    read that still has not terminated after MAX_PR_PAGES pages
+    fails closed instead of trusting a possibly-truncated set.
+    Both call sites (plan-time and the apply-loop re-check) use this
+    one function, so there is no second, weaker copy.
+    """
+    branches = set()
+    for page_no in range(1, MAX_PR_PAGES + 1):
+        proc = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{repo}/pulls?state=open&per_page={PR_PAGE}&page={page_no}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        try:
+            rows = json.loads(proc.stdout)
+            if not isinstance(rows, list):
+                raise TypeError("pulls response is not a list")
+            for row in rows:
+                branches.add(str(row["head"]["ref"]))
+        except (ValueError, KeyError, TypeError) as exc:
+            raise SafetyError(f"invalid gh PR response: {exc}") from exc
+        if len(rows) < PR_PAGE:
+            return branches
+    raise SafetyError(
+        f"open-PR read exceeded {MAX_PR_PAGES} pages of {PR_PAGE}; "
+        "refusing to trust a possibly-truncated set"
     )
-    try:
-        rows = json.loads(proc.stdout)
-        return {str(row["headRefName"]) for row in rows}
-    except (ValueError, KeyError, TypeError) as exc:
-        raise SafetyError(f"invalid gh PR response: {exc}") from exc
 
 
 def discover_targets(

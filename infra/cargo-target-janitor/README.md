@@ -19,6 +19,10 @@ ad-hoc targets are considered.
 - Queue data is read through `~/hatch/tools/repo-queue.py`'s transient
   Bitwarden credential path; credentials are never printed or persisted.
   Open PRs are read with `gh`. If either source is unavailable, cleanup stops.
+  Both liveness reads are paginated to completion (#6618) — claimed
+  tasks by offset, open PRs by page — and a read that cannot complete
+  within its page bound also stops cleanup: a truncated protection
+  set is treated as an unavailable source, never as ground truth.
 - Default mode is **dry-run**. It prints each proposed path, size and reason,
   plus every protected target. `--apply` is required to remove anything.
 - Ad-hoc targets are exactly `target-<task-id>`; a registered worktree
