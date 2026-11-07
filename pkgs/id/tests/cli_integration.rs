@@ -21,7 +21,15 @@ fn pinned_roc() -> Option<String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".to_owned());
     let path =
         format!("{home}/.local/share/plaza-tools/roc/{tag}/roc_nightly-linux_x86_64-{version}/roc");
-    std::path::Path::new(&path).is_file().then_some(path)
+    std::path::Path::new(&path)
+        .is_file()
+        .then_some(path)
+        .or_else(|| {
+            // Nix CI provides the pinned compiler on PATH rather than at the
+            // developer-local installation path above.
+            let output = Command::new("roc").arg("version").output().ok()?;
+            output.status.success().then(|| "roc".to_owned())
+        })
 }
 
 fn get_binary_path() -> PathBuf {
@@ -41,6 +49,20 @@ fn examples_dir() -> PathBuf {
     std::env::var_os("ID_TEST_EXAMPLES_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples"))
+}
+
+fn copy_dir_tree(source: &std::path::Path, destination: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(destination)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let target = destination.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_tree(&entry.path(), &target)?;
+        } else if entry.file_type()?.is_file() {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
 }
 
 fn apps_dir() -> PathBuf {
@@ -597,6 +619,89 @@ mod cli_tests {
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("differ from the fixture"), "{stderr}");
+    }
+
+    #[test]
+    fn world_new_scaffold_compiles_with_pinned_roc() {
+        let Some(roc) = pinned_roc() else {
+            eprintln!("skipping: no Roc compiler available");
+            return;
+        };
+        let version = Command::new(&roc)
+            .arg("version")
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        assert!(
+            version.status.success(),
+            "roc version failed: {}",
+            String::from_utf8_lossy(&version.stderr)
+        );
+        let actual_version = format!(
+            "{}{}",
+            String::from_utf8_lossy(&version.stdout),
+            String::from_utf8_lossy(&version.stderr)
+        );
+        assert_eq!(
+            actual_version.trim(),
+            format!(
+                "Roc compiler version {}",
+                include_str!("../nix/roc-version").trim()
+            ),
+            "scaffold compilation must use the pinned Roc compiler"
+        );
+
+        let platform = examples_dir().join("roc-world");
+        if !platform.join("targets/wasm32/host.wasm").is_file() {
+            eprintln!("skipping: examples/roc-world has no built wasm host");
+            return;
+        }
+
+        let temp = TempDir::new().unwrap();
+        let app = temp.path().join("scaffold-check");
+        let created = Command::new(get_binary_path())
+            .args([
+                "world",
+                "new",
+                app.to_str().unwrap(),
+                "--name",
+                "scaffold_check",
+            ])
+            .current_dir(temp.path())
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        assert!(
+            created.status.success(),
+            "world new failed: {}",
+            String::from_utf8_lossy(&created.stderr)
+        );
+        assert!(app.join("main.roc").is_file());
+        assert!(app.join("build.sh").is_file());
+
+        // The scaffold resolves ../roc-world relative to its own directory.
+        // Copy the built platform so the generated app compiles without
+        // writing build artifacts into the checked-in examples tree.
+        let platform_copy = temp.path().join("roc-world");
+        copy_dir_tree(&platform, &platform_copy).unwrap();
+        let wasm = app.join("scaffold_check.wasm");
+        let compiled = Command::new(&roc)
+            .current_dir(&app)
+            .args([
+                "build",
+                "main.roc",
+                "--target=wasm32",
+                "--debug",
+                "--wasm-memory=8454144",
+            ])
+            .arg(format!("--output={}", wasm.display()))
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        assert!(
+            compiled.status.success(),
+            "generated scaffold did not compile:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&compiled.stdout),
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        assert!(wasm.metadata().unwrap().len() > 0, "compiled Wasm is empty");
     }
 }
 
@@ -1894,6 +1999,218 @@ mod serve_tests {
             .find(|a| a.parse::<std::net::SocketAddr>().is_ok_and(|a| a.is_ipv4()))
             .expect("serve lock lists an IPv4 address")
             .to_owned()
+    }
+
+    fn world_command(client_dir: &std::path::Path, addr: &str, args: &[&str]) -> StdCommand {
+        let mut command = StdCommand::new(get_binary_path());
+        command
+            .args(["world"])
+            .args(args)
+            .args(["--addr", addr, "--no-relay"])
+            .current_dir(client_dir)
+            .env_remove("ID_WORLD_ADMIN_TOKEN")
+            .env_remove("ID_WORLD_CAPABILITY")
+            .env_remove("ID_WORLD");
+        command
+    }
+
+    struct CliWorld {
+        _server: ServerHandle,
+        _server_dir: TempDir,
+        client_dir: TempDir,
+        node: String,
+        addr: String,
+        capability: String,
+    }
+
+    impl CliWorld {
+        fn new() -> Self {
+            let server_dir = TempDir::new().unwrap();
+            let client_dir = TempDir::new().unwrap();
+            let mut server = ServerHandle::spawn_with_args(
+                server_dir.path(),
+                &["--world", "--world-admin-token", "adm"],
+            );
+            let node = server.wait_ready();
+            let addr = lock_ipv4_addr(&server.lock_file_path());
+            let invited = world_command(
+                client_dir.path(),
+                &addr,
+                &["invite", &node, "--admin-token", "adm", "--name", "guest"],
+            )
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+            assert!(
+                invited.status.success(),
+                "invite failed: {}",
+                String::from_utf8_lossy(&invited.stderr)
+            );
+            let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+            assert!(!capability.is_empty() && !capability.contains(char::is_whitespace));
+
+            Self {
+                _server: server,
+                _server_dir: server_dir,
+                client_dir,
+                node,
+                addr,
+                capability,
+            }
+        }
+
+        fn command(&self, args: &[&str]) -> StdCommand {
+            world_command(self.client_dir.path(), &self.addr, args)
+        }
+
+        fn output(&self, args: &[&str]) -> std::process::Output {
+            self.command(args).output_within(PROCESS_TIMEOUT).unwrap()
+        }
+    }
+
+    /// The networking-dependent CLI execution tests below run in the NixOS
+    /// integration leg of `id-e2e-nightly.yml`; PR sandbox shards skip this
+    /// module because they cannot bind/listen.
+    #[test]
+    fn test_world_stats_executes_and_reports_world_state() {
+        let world = CliWorld::new();
+        let output = world.output(&["stats", &world.node, "--capability", &world.capability]);
+        assert!(
+            output.status.success(),
+            "stats failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(
+            report["world_id"].as_str().is_some_and(|id| !id.is_empty()),
+            "{report}"
+        );
+        assert!(report["current_sequence"].is_number(), "{report}");
+        assert!(report["caps"].is_object(), "{report}");
+        assert!(report["profile"].is_object(), "{report}");
+    }
+
+    #[test]
+    fn test_world_caps_ceiling_executes_and_persists() {
+        let world = CliWorld::new();
+        let changed = world.output(&[
+            "caps",
+            &world.node,
+            "--admin-token",
+            "adm",
+            "--ceiling",
+            "time.now",
+        ]);
+        assert!(
+            changed.status.success(),
+            "caps --ceiling failed: {}",
+            String::from_utf8_lossy(&changed.stderr)
+        );
+        let changed_report: serde_json::Value = serde_json::from_slice(&changed.stdout).unwrap();
+        assert_eq!(changed_report["ceiling"], serde_json::json!(["time.now"]));
+
+        let read = world.output(&["caps", &world.node, "--capability", &world.capability]);
+        assert!(
+            read.status.success(),
+            "caps read failed: {}",
+            String::from_utf8_lossy(&read.stderr)
+        );
+        let read_report: serde_json::Value = serde_json::from_slice(&read.stdout).unwrap();
+        assert_eq!(read_report["ceiling"], serde_json::json!(["time.now"]));
+    }
+
+    #[test]
+    fn test_world_profile_executes_and_persists() {
+        let world = CliWorld::new();
+        let changed = world.output(&[
+            "profile",
+            &world.node,
+            "--admin-token",
+            "adm",
+            "--wasm-fuel",
+            "500000",
+        ]);
+        assert!(
+            changed.status.success(),
+            "profile update failed: {}",
+            String::from_utf8_lossy(&changed.stderr)
+        );
+        let changed_profile: serde_json::Value = serde_json::from_slice(&changed.stdout).unwrap();
+        assert_eq!(changed_profile["wasm_fuel"], 500000);
+
+        let read = world.output(&["profile", &world.node, "--capability", &world.capability]);
+        assert!(
+            read.status.success(),
+            "profile read failed: {}",
+            String::from_utf8_lossy(&read.stderr)
+        );
+        let read_profile: serde_json::Value = serde_json::from_slice(&read.stdout).unwrap();
+        assert_eq!(read_profile["wasm_fuel"], 500000);
+    }
+
+    #[test]
+    fn test_world_logs_executes_and_returns_retained_events() {
+        let world = CliWorld::new();
+        let module = examples_dir().join("roc-counter/counter.wasm");
+        let module = module.to_str().unwrap();
+        let installed = world.output(&[
+            "install",
+            &world.node,
+            module,
+            "--admin-token",
+            "adm",
+            "--seed",
+            "7",
+        ]);
+        assert!(
+            installed.status.success(),
+            "module install failed: {}",
+            String::from_utf8_lossy(&installed.stderr)
+        );
+
+        let mut joined = world
+            .command(&["join", &world.node, "--capability", &world.capability])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map(KillOnDrop)
+            .unwrap();
+        let mut stdin = joined.stdin.take().unwrap();
+        let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+        let snapshot = lines.next().expect("snapshot line").unwrap();
+        assert!(snapshot.contains("\"type\":\"snapshot\""), "{snapshot}");
+        let view = lines.next().expect("initial view line").unwrap();
+        assert!(view.contains("count=0"), "{view}");
+        stdin.write_all(b"/input 696e63\n").unwrap();
+        let event = lines.next().expect("input event line").unwrap();
+        assert!(event.contains("\"type\":\"event\""), "{event}");
+        let updated_view = lines.next().expect("updated view line").unwrap();
+        assert!(updated_view.contains("count=1"), "{updated_view}");
+        stdin.write_all(b"/quit\n").unwrap();
+        drop(stdin);
+        assert!(joined.wait().unwrap().success());
+
+        let logs = world.output(&[
+            "logs",
+            &world.node,
+            "--capability",
+            &world.capability,
+            "--seconds",
+            "1",
+        ]);
+        assert!(
+            logs.status.success(),
+            "logs failed: {}",
+            String::from_utf8_lossy(&logs.stderr)
+        );
+        let frames: Vec<serde_json::Value> = String::from_utf8_lossy(&logs.stdout)
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert!(
+            frames.iter().any(|frame| frame["type"] == "event"),
+            "logs did not return the retained input event: {frames:?}"
+        );
     }
 
     #[test]
