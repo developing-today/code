@@ -552,6 +552,7 @@ const TITLE_REPO_ALIASES: Record<string, string> = {
 export function titleRefs(title: string): RefKey[] {
   const out: RefKey[] = [];
   const add = (ref: RefKey) => {
+    if (!isValidRef(ref)) return;
     if (!out.includes(ref)) out.push(ref);
   };
   for (const ref of refsInText(title)) add(ref);
