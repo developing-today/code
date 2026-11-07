@@ -1719,6 +1719,56 @@ impl WorldClient {
         }
     }
 
+    /// Parse the head fields of an `event_history_begin` frame.
+    ///
+    /// Factored out of [`WorldClient::admin_event_history`] so the frame
+    /// validation can be unit-tested without a rogue host. Every field is
+    /// strict: the host's typed frame (`ServerFrame::EventHistoryBegin`)
+    /// serializes `module_hash` as a string or `null`, so a present
+    /// non-string, non-null `module_hash` is a malformed reply (#6641),
+    /// never "this world has no module" — the same match-and-bail pattern
+    /// `parse_module_info_reply` applies to the `module_info` reply (#6633).
+    /// Returns `(world_id, module_hash, current_sequence, complete, event_count)`.
+    fn parse_event_history_begin(
+        begin: &serde_json::Value,
+    ) -> Result<(String, Option<String>, u64, bool, usize)> {
+        let world_id = begin["world_id"]
+            .as_str()
+            .context("history reply has no world ID")?
+            .to_owned();
+        let module_hash = match begin.get("module_hash") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => {
+                if let Some(hash) = value.as_str() {
+                    Some(hash.to_owned())
+                } else {
+                    bail!(
+                        "history reply has a malformed module_hash: expected string or null, got {}",
+                        match value {
+                            serde_json::Value::Bool(_) => "boolean",
+                            serde_json::Value::Number(_) => "number",
+                            serde_json::Value::Array(_) => "array",
+                            serde_json::Value::Object(_) => "object",
+                            _ => "unknown",
+                        }
+                    );
+                }
+            }
+        };
+        let current_sequence = begin["current_sequence"]
+            .as_u64()
+            .context("history reply has no sequence")?;
+        let complete = begin["complete"]
+            .as_bool()
+            .context("history reply has no completeness flag")?;
+        let event_count = begin["event_count"]
+            .as_u64()
+            .and_then(|count| usize::try_from(count).ok())
+            .filter(|count| *count <= crate::world::MAX_ADMIN_HISTORY_EVENTS)
+            .context("history reply has an invalid event count")?;
+        Ok((world_id, module_hash, current_sequence, complete, event_count))
+    }
+
     /// Export the retained journal-order event window and its records as an
     /// administrator. Join capabilities cannot request this frame.
     ///
@@ -1748,22 +1798,8 @@ impl WorldClient {
                     .unwrap_or("host refused admin history export")
             );
         }
-        let world_id = begin["world_id"]
-            .as_str()
-            .context("history reply has no world ID")?
-            .to_owned();
-        let module_hash = begin["module_hash"].as_str().map(str::to_owned);
-        let current_sequence = begin["current_sequence"]
-            .as_u64()
-            .context("history reply has no sequence")?;
-        let complete = begin["complete"]
-            .as_bool()
-            .context("history reply has no completeness flag")?;
-        let event_count = begin["event_count"]
-            .as_u64()
-            .and_then(|count| usize::try_from(count).ok())
-            .filter(|count| *count <= crate::world::MAX_ADMIN_HISTORY_EVENTS)
-            .context("history reply has an invalid event count")?;
+        let (world_id, module_hash, current_sequence, complete, event_count) =
+            Self::parse_event_history_begin(&begin)?;
         let mut events = Vec::with_capacity(event_count);
         for _ in 0..event_count {
             let (frame, frame_bytes) = self
@@ -3642,5 +3678,57 @@ mod tests {
             result.err().unwrap().to_string(),
             "host refused to create the world"
         );
+    }
+
+    #[test]
+    fn admin_event_history_begin_requires_a_string_or_null_module_hash() {
+        // Issue #6641 (duplicate: #6642): a present, mistyped `module_hash`
+        // in the begin frame is a malformed reply, not "no module".
+        // Oracle: every sibling field of the same frame is strict, and the
+        // host's ServerFrame::EventHistoryBegin serializes the hash as a
+        // string or null only.
+        let begin_with = |hash: serde_json::Value| {
+            serde_json::json!({
+                "type": "event_history_begin",
+                "world_id": "test:world",
+                "module_hash": hash,
+                "current_sequence": 7,
+                "complete": true,
+                "event_count": 0,
+            })
+        };
+        let parse = |begin: serde_json::Value| WorldClient::parse_event_history_begin(&begin);
+
+        let (world_id, module_hash, seq, complete, count) =
+            parse(begin_with(serde_json::json!("abc123"))).unwrap();
+        assert_eq!(world_id, "test:world");
+        assert_eq!(module_hash, Some("abc123".to_string()));
+        assert_eq!(seq, 7);
+        assert!(complete);
+        assert_eq!(count, 0);
+
+        // Null and missing both read as None (legitimate no-module / older hosts).
+        let (_, module_hash, ..) = parse(begin_with(serde_json::Value::Null)).unwrap();
+        assert_eq!(module_hash, None);
+        let mut missing = begin_with(serde_json::Value::Null);
+        missing.as_object_mut().unwrap().remove("module_hash");
+        let (_, module_hash, ..) = parse(missing).unwrap();
+        assert_eq!(module_hash, None);
+
+        // Mistyped shapes are refused, naming the field.
+        for bad in [
+            serde_json::json!(123),
+            serde_json::json!(true),
+            serde_json::json!(["abc"]),
+            serde_json::json!({"hash": "abc"}),
+        ] {
+            let result = parse(begin_with(bad));
+            assert!(result.is_err(), "mistyped module_hash must be refused");
+            let err = result.err().unwrap();
+            assert!(
+                err.to_string().contains("malformed module_hash"),
+                "unexpected error: {err}"
+            );
+        }
     }
 }
