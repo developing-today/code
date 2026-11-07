@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Stubbed-GraphQL test for apply-config.sh (#1203): an in-memory fake
-# harness records every mutation; the first apply must register +
-# configure the repo, the second apply must send NO mutations
-# (idempotence), and DRY_RUN must send nothing at all.
+# harness records every mutation; DRY_RUN=1 must send nothing, DRY_RUN=0
+# must still apply, the second apply must send NO mutations (idempotence).
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -100,6 +99,8 @@ sleep 1
 export RFA_CONFIG="$WORK/config.json"
 export RFA_REPOS_DIR="$WORK/repos"
 export RFA_GRAPHQL_URL="http://127.0.0.1:16056/graphql"
+# Do not let the test runner's environment affect the normal-apply cases.
+unset DRY_RUN
 
 : >"$WORK/mutations.log"
 DRY_RUN=1 ./apply-config.sh >"$WORK/dry-run.out"
@@ -110,14 +111,14 @@ grep -q "would register" "$WORK/dry-run.out"
 }
 echo "ok: dry run plans registration and mutates nothing"
 
-./apply-config.sh >"$WORK/first.out"
+DRY_RUN=0 ./apply-config.sh >"$WORK/first.out"
 grep -q "addLocalRepository" "$WORK/mutations.log"
 grep -q "updateRepositorySettings" "$WORK/mutations.log"
 grep -q "unpauseRepository" "$WORK/mutations.log"
-echo "ok: first apply registers, configures, unpauses"
+echo "ok: DRY_RUN=0 first apply registers, configures, unpauses"
 
 : >"$WORK/mutations.log"
-./apply-config.sh >"$WORK/second.out"
+env -u DRY_RUN ./apply-config.sh >"$WORK/second.out"
 grep -q "already match config" "$WORK/second.out"
 [[ ! -s "$WORK/mutations.log" ]] || {
   echo "FAIL: second apply was not a no-op:"
