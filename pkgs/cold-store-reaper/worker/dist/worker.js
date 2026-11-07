@@ -1,4 +1,4 @@
-// ../../../../../code/pkgs/cold-store-reaper/worker/node_modules/fzstd/esm/index.mjs
+// node_modules/fzstd/esm/index.mjs
 var ab = ArrayBuffer;
 var u8 = Uint8Array;
 var u16 = Uint16Array;
@@ -582,46 +582,139 @@ var cct = function(bufs, ol) {
   }
   return buf;
 };
-function decompress(dat, buf) {
-  var bufs = [], nb = +!buf;
-  var bt = 0, ol = 0;
-  for (; dat.length; ) {
-    var st = rzfh(dat, nb || buf);
-    if (typeof st == "object") {
-      if (nb) {
-        buf = null;
-        if (st.w.length == st.u) {
-          bufs.push(buf = st.w);
-          ol += st.u;
-        }
-      } else {
-        bufs.push(buf);
-        st.e = 0;
-      }
-      for (; !st.l; ) {
-        var blk = rzb(dat, st, buf);
-        if (!blk)
-          err(5);
-        if (buf)
-          st.e = st.y;
-        else {
-          bufs.push(blk);
-          ol += blk.length;
-          cpw(st.w, 0, blk.length);
-          st.w.set(blk, st.w.length - blk.length);
-        }
-      }
-      bt = st.b + st.c * 4;
-    } else
-      bt = st;
-    dat = dat.subarray(bt);
+var Decompress = /* @__PURE__ */ (function() {
+  function Decompress2(ondata) {
+    this.ondata = ondata;
+    this.c = [];
+    this.l = 0;
+    this.z = 0;
   }
-  return cct(bufs, ol);
-}
+  Decompress2.prototype.push = function(chunk, final) {
+    if (typeof this.s == "number") {
+      var sub = Math.min(chunk.length, this.s);
+      chunk = chunk.subarray(sub);
+      this.s -= sub;
+    }
+    var sl = chunk.length;
+    var ncs = sl + this.l;
+    if (!this.s) {
+      if (final) {
+        if (!ncs) {
+          this.ondata(new u8(0), true);
+          return;
+        }
+        if (ncs < 5)
+          err(5);
+      } else if (ncs < 18) {
+        this.c.push(chunk);
+        this.l = ncs;
+        return;
+      }
+      if (this.l) {
+        this.c.push(chunk);
+        chunk = cct(this.c, ncs);
+        this.c = [];
+        this.l = 0;
+      }
+      if (typeof (this.s = rzfh(chunk)) == "number")
+        return this.push(chunk, final);
+    }
+    if (typeof this.s != "number") {
+      if (ncs < (this.z || 3)) {
+        if (final)
+          err(5);
+        this.c.push(chunk);
+        this.l = ncs;
+        return;
+      }
+      if (this.l) {
+        this.c.push(chunk);
+        chunk = cct(this.c, ncs);
+        this.c = [];
+        this.l = 0;
+      }
+      if (!this.z && ncs < (this.z = chunk[this.s.b] & 2 ? 4 : 3 + (chunk[this.s.b] >> 3 | chunk[this.s.b + 1] << 5 | chunk[this.s.b + 2] << 13))) {
+        if (final)
+          err(5);
+        this.c.push(chunk);
+        this.l = ncs;
+        return;
+      } else
+        this.z = 0;
+      for (; ; ) {
+        var blk = rzb(chunk, this.s);
+        if (!blk) {
+          if (final)
+            err(5);
+          var adc = chunk.subarray(this.s.b);
+          this.s.b = 0;
+          this.c.push(adc), this.l += adc.length;
+          return;
+        } else {
+          this.ondata(blk, false);
+          cpw(this.s.w, 0, blk.length);
+          this.s.w.set(blk, this.s.w.length - blk.length);
+        }
+        if (this.s.l) {
+          var rest = chunk.subarray(this.s.b);
+          this.s = this.s.c * 4;
+          this.push(rest, final);
+          return;
+        }
+      }
+    } else if (final)
+      err(5);
+  };
+  return Decompress2;
+})();
 
 // src/decoder.js
-function decompressFrame(frameBytes) {
-  return decompress(frameBytes);
+var ExpansionLimitError = class extends Error {
+  constructor(limit, produced) {
+    super(
+      `zstd frame expands past the expected size: limit ${limit} bytes, already produced ${produced} bytes`
+    );
+    this.name = "ExpansionLimitError";
+    this.limit = limit;
+  }
+};
+var INPUT_SLICE_BYTES = 16 * 1024;
+function decompressFrame(frameBytes, maxPlainBytes) {
+  if (!Number.isSafeInteger(maxPlainBytes) || maxPlainBytes < 0) {
+    throw new TypeError(
+      `decompressFrame requires a non-negative integer byte limit, got ${maxPlainBytes}`
+    );
+  }
+  const chunks = [];
+  let total = 0;
+  let exceeded = false;
+  const stream = new Decompress((data) => {
+    if (exceeded) return;
+    total += data.length;
+    if (total > maxPlainBytes) {
+      exceeded = true;
+      chunks.length = 0;
+      return;
+    }
+    chunks.push(data);
+  });
+  if (frameBytes.length === 0) {
+    stream.push(new Uint8Array(0), true);
+  }
+  for (let off = 0; off < frameBytes.length && !exceeded; off += INPUT_SLICE_BYTES) {
+    const end = Math.min(frameBytes.length, off + INPUT_SLICE_BYTES);
+    stream.push(frameBytes.subarray(off, end), end === frameBytes.length);
+  }
+  if (exceeded) {
+    throw new ExpansionLimitError(maxPlainBytes, total);
+  }
+  const out = new Uint8Array(total);
+  let pos = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, pos);
+    pos += chunk.length;
+  }
+  return out;
 }
 
 // src/index.js
@@ -749,6 +842,13 @@ var BundleFlight = class {
   }
   async rehydrate(job) {
     const { drive_file_id, offset, frame_length, sha256, bundle_id } = job;
+    const expectedSize = typeof job.size === "string" && job.size.trim() !== "" ? Number(job.size) : job.size;
+    if (!Number.isSafeInteger(expectedSize) || expectedSize < 0) {
+      throw new HttpError(
+        502,
+        "manifest entry has no usable expected size \u2014 refusing unbounded decompression"
+      );
+    }
     const token = await this.accessToken();
     const range = `bytes=${offset}-${offset + frame_length - 1}`;
     const resp = await fetch(`${DRIVE_FILES_URL}/${drive_file_id}?alt=media`, {
@@ -771,8 +871,14 @@ var BundleFlight = class {
     }
     let plain;
     try {
-      plain = decompressFrame(frame);
-    } catch {
+      plain = decompressFrame(frame, expectedSize);
+    } catch (err2) {
+      if (err2 instanceof ExpansionLimitError) {
+        throw new HttpError(
+          502,
+          `zstd frame expands past the expected ${expectedSize} bytes \u2014 refusing to return unverified bytes`
+        );
+      }
       throw new HttpError(502, "zstd frame decompression failed");
     }
     const digest = await sha256Hex(plain);
