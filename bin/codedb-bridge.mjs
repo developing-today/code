@@ -233,6 +233,16 @@ export const createHandler = ({ fetchFn, daemonUrl }) => {
     if (!res.ok || data?.error) {
       return textResult(`codedb daemon error for ${name}: ${data?.error ?? `HTTP ${res.status}`}`, true);
     }
+    // A 200 body that is null or not a JSON object is a daemon malfunction,
+    // not a result (#6917): the tree path dereferences data.tree (a raw
+    // TypeError escapes handle() and the caller never gets a response),
+    // and the JSON paths would report the literal text "null" as success.
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      return textResult(
+        `codedb daemon at ${daemonUrl} returned a ${data === null ? 'null' : Array.isArray(data) ? 'array' : typeof data} JSON body for ${mapped.route}; expected a JSON object`,
+        true
+      );
+    }
     try {
       data = sliceData(data, mapped.slice);
     } catch (err) {
