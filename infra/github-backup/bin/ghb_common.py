@@ -239,6 +239,30 @@ def load_state(root):
         return validate_state(json.load(f))
 
 
+def clone_status_record(line):
+    """The clone-status.jsonl line contract — the ONE place it is stated
+    (#6606). Both readers of clone-status.jsonl (clone_all.py and
+    reconcile.py) go through this helper, so they cannot disagree:
+
+    each line is a JSON *object* (a status record like
+    {"repo": ..., "status": ...}). A line that does not parse as JSON,
+    and a line that parses as valid JSON of any other shape (number,
+    string, list, null, bool — a torn/interleaved append, a hand edit,
+    a future writer change), is NOT a record: this returns None and
+    the reader ignores the line exactly as it ignores unparseable
+    lines. Records are returned as-is; missing keys are the caller's
+    existing concern, and a caller that puts a field value into a set
+    must require the field's expected type (a record can still carry
+    a malformed field value, e.g. a list "repo" — both current
+    consumers require a string repo).
+    """
+    try:
+        value = json.loads(line)
+    except Exception:
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def report_problems(problems):
     """Name every shape problem on stderr; returns the count."""
     for problem in problems:
