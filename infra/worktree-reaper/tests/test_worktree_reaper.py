@@ -14,6 +14,8 @@ temp dir and drives the real reaper module end-to-end:
   detached HEAD                         -> kept (detached, v1 rule)
   denylisted tree                       -> kept (denied)
   process cwd inside tree               -> kept (occupied)
+  /proc scan failure at evaluation      -> kept (occupied-unknown)
+  /proc scan failure at removal re-scan -> kept (occupied-unknown-at-removal)
   fresh tree with huge quiet_hours      -> kept (active)
   --dry-run                             -> would-reap listed, tree intact
   DISABLED kill switch                  -> exit 0, nothing touched
@@ -37,6 +39,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.join(HERE, "..", "bin", "worktree_reaper.py")
@@ -255,6 +258,77 @@ class GateTests(unittest.TestCase):
         self.assertFalse(os.path.isdir(tree))
 
 
+
+class ProcScanFailureTests(unittest.TestCase):
+    """#5740: a /proc scan failure must fail closed at BOTH occupancy
+    consumers — evaluation and the pre-removal re-scan. Oracle: the
+    candidate tree and its branch survive on disk (so `git worktree
+    remove` and `git branch -d` demonstrably never ran); the decision
+    records are checked only for the named reason."""
+
+    def _repo_and_tree(self, tmp):
+        repo = SyntheticRepo(tmp)
+        runner = ReaperRun(repo, os.path.join(tmp, "state"))
+        tree = repo.branch_tree("t/victim", push=True)
+        return repo, runner, tree
+
+    @staticmethod
+    def _fail_proc(fail_first):
+        """os.listdir wrapper: listing /proc raises OSError — from the
+        first call, or from the second (the run-wide evaluation scan
+        consumes the first; the pre-removal re-scan is the second).
+        Every other path delegates to the real listdir."""
+        real_listdir = os.listdir
+        calls = {"n": 0}
+
+        def fake(path="."):
+            if path == "/proc":
+                calls["n"] += 1
+                if fail_first or calls["n"] > 1:
+                    raise OSError("injected /proc failure")
+            return real_listdir(path)
+
+        return fake
+
+    def test_scan_failure_at_evaluation_retains_candidate(self):
+        tmp = tempfile.mkdtemp(prefix="wtreaper-procfail-eval-")
+        try:
+            repo, runner, tree = self._repo_and_tree(tmp)
+            with mock.patch("os.listdir",
+                            side_effect=self._fail_proc(fail_first=True)):
+                decisions = runner.run()
+            self.assertTrue(os.path.isdir(tree), "candidate must be retained")
+            self.assertTrue(repo.branch_exists("t/victim"),
+                            "branch must survive")
+            self.assertEqual(decisions[tree]["action"], "keep")
+            self.assertEqual(decisions[tree]["reason"], "occupied-unknown")
+            self.assertEqual(
+                decisions[tree]["gates"]["occupied"]["error"],
+                "proc-scan-failed")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_scan_failure_at_removal_rescan_retains_candidate(self):
+        tmp = tempfile.mkdtemp(prefix="wtreaper-procfail-reap-")
+        try:
+            repo, runner, tree = self._repo_and_tree(tmp)
+            with mock.patch("os.listdir",
+                            side_effect=self._fail_proc(fail_first=False)):
+                decisions = runner.run()
+            self.assertTrue(
+                os.path.isdir(tree),
+                "tree must survive a failed removal re-scan "
+                "(git worktree remove must not run)")
+            self.assertTrue(
+                repo.branch_exists("t/victim"),
+                "branch must survive (git branch -d must not run)")
+            self.assertEqual(decisions[tree]["action"], "keep")
+            self.assertEqual(decisions[tree]["reason"],
+                             "occupied-unknown-at-removal")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class RunLogCollisionTests(unittest.TestCase):
     """#5716: two runs in the same second must not share a run log."""
 
@@ -297,6 +371,24 @@ class UnitTests(unittest.TestCase):
              "pm-stack/aggregator/fleet-feed.json", "src/real.py"], cfg)
         self.assertEqual(len(allow), 3)
         self.assertEqual(other, ["src/real.py"])
+
+    def test_proc_cwds_scan_failure_is_unknown_not_empty(self):
+        # Oracle: the /proc listing is the failure point — a failed scan
+        # must be distinguishable from a successful scan with no matches.
+        with mock.patch("os.listdir", side_effect=OSError("no /proc")):
+            self.assertIsNone(wr.proc_cwds())
+
+    def test_tree_occupied_unknown_scan_fails_closed(self):
+        root = tempfile.mkdtemp(prefix="wtreaper-occ-")
+        try:
+            self.assertTrue(wr.tree_occupied(root, None),
+                            "unknown occupancy must count as occupied")
+            self.assertFalse(wr.tree_occupied(root, []),
+                             "successful empty scan still means unoccupied")
+            self.assertTrue(wr.tree_occupied(root, [root]),
+                            "confirmed matching cwd still means occupied")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
     def test_walk_activity(self):
         root = tempfile.mkdtemp(prefix="wtreaper-walk-")

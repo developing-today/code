@@ -17,7 +17,9 @@ reaped only when ALL of these gates hold at decision time:
                = newest working-tree file mtime excluding the tree's root
                .git entry, max()ed with the HEAD reflog timestamp.
   4. UNOCCUPIED a fresh /proc cwd scan shows no process inside the tree
-               (re-scanned immediately before each removal).
+               (re-scanned immediately before each removal). A scan that
+               fails (e.g. /proc cannot be listed) proves nothing: the
+               tree is treated as occupied and retained (#5740).
   5. NOT DENIED the tree is not on the config denylist, is not a primary,
                is not under ~/backups or ~/atlas, and does not contain
                this running script.
@@ -375,12 +377,20 @@ def walk_activity(tree, cutoff):
 
 
 def proc_cwds():
+    """Cwds of every other live process, from /proc.
+
+    Returns None when /proc cannot be listed at all: a failed scan is
+    NOT a successful scan with zero matches, and callers must fail
+    closed (treat occupancy as unknown) rather than as unoccupied
+    (#5740). Per-process readlink failures still skip just that
+    process — the scan itself succeeded.
+    """
     cwds = []
     me = str(os.getpid())
     try:
         pids = os.listdir("/proc")
     except OSError:
-        return cwds
+        return None
     for pid in pids:
         if not pid.isdigit() or pid == me:
             continue
@@ -394,9 +404,22 @@ def proc_cwds():
     return cwds
 
 
-def tree_occupied(tree, cwds=None):
+_FRESH_SCAN = object()
+
+
+def tree_occupied(tree, cwds=_FRESH_SCAN):
+    """True when a process cwd is inside `tree`.
+
+    `cwds` is a proc_cwds() result; omit it to scan fresh. A None
+    result (the /proc scan failed) means occupancy is UNKNOWN, which
+    fails closed: the tree counts as occupied (#5740).
+    """
+    if cwds is _FRESH_SCAN:
+        cwds = proc_cwds()
+    if cwds is None:
+        return True
     rp = os.path.realpath(tree)
-    for cwd in (proc_cwds() if cwds is None else cwds):
+    for cwd in cwds:
         c = os.path.realpath(cwd)
         if c == rp or c.startswith(rp + os.sep):
             return True
@@ -467,6 +490,10 @@ def evaluate_tree(primary, wt, cfg, now, cwds):
     if not gates["quiet"]["ok"]:
         rec["reason"] = "active"
         return rec
+    if cwds is None:
+        gates["occupied"] = {"ok": False, "error": "proc-scan-failed"}
+        rec["reason"] = "occupied-unknown"
+        return rec
     occupied = tree_occupied(tree, cwds)
     gates["occupied"] = {"ok": not occupied}
     if occupied:
@@ -482,7 +509,12 @@ def reap_tree(primary, rec, cfg):
     # Re-verify in the same run, immediately before the irreversible step:
     # fresh /proc scan and a fresh dirt check (spec: --force only when the
     # sole blocker is allowlisted dirt, re-verified in the same run).
-    if tree_occupied(tree):
+    fresh_cwds = proc_cwds()
+    if fresh_cwds is None:
+        rec["action"] = "keep"
+        rec["reason"] = "occupied-unknown-at-removal"
+        return False
+    if tree_occupied(tree, fresh_cwds):
         rec["action"] = "keep"
         rec["reason"] = "occupied-at-removal"
         return False
@@ -549,6 +581,11 @@ def main(argv=None):
 
     primaries = [expand(p) for p in args.primary] or discover_primaries(cfg)
     cwds = proc_cwds()
+    if cwds is None:
+        msg = ("proc scan failed: occupancy unknown for every tree; "
+               "all trees retained (fail closed, #5740)")
+        print(f"worktree-reaper: {msg}", file=sys.stderr)
+        summary["errors"].append(msg)
     reaped_count = 0
     cap = int(cfg["max_removals"])
 
