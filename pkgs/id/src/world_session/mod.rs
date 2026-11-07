@@ -38,6 +38,7 @@ use crate::world_compile::Compiler;
 #[cfg(feature = "sandbox")]
 use crate::world_compile::{COMPILE_TIMEOUT, CompileSpec};
 use crate::world_hub::{WorldHub, WorldLease};
+pub(crate) use id_core::json_unique::parse_json_without_duplicate_keys;
 
 /// Bound the extra presentation latency while coalescing view-only redraws.
 const VIEW_COALESCE_WINDOW: Duration = Duration::from_millis(5);
@@ -898,7 +899,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
             return;
         }
     };
-    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&first) else {
+    let Ok(mut value) = parse_json_without_duplicate_keys(&first) else {
         let _ = send_error(
             &unattributed,
             io,
@@ -1593,7 +1594,9 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
             Some(frame) => frame,
             None => match io.recv().await {
                 Inbound::Text(text) => {
-                    if let Ok(frame) = serde_json::from_str::<ClientFrame>(&text) {
+                    if let Ok(frame) = parse_json_without_duplicate_keys(&text)
+                        .and_then(|value| serde_json::from_value::<ClientFrame>(value))
+                    {
                         frame
                     } else {
                         let _ = send_error(service.frame_meter(), io, "invalid world frame").await;
@@ -2533,7 +2536,7 @@ async fn handle_client_frame<I: SessionIo>(
     pending_view_deadline: &mut Option<tokio::time::Instant>,
 ) -> bool {
     let world = service.world();
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+    let Ok(value) = parse_json_without_duplicate_keys(text) else {
         return send_error(service.frame_meter(), io, "invalid world frame").await;
     };
     if delegation_names_uses(&value) {

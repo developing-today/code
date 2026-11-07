@@ -2,6 +2,14 @@ name: pm-stack tests
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - "pm-stack/external-comms/**"
+      - ".github/workflows/pm-stack-tests.yml"
+  pull_request:
+    paths:
+      - "pm-stack/external-comms/**"
+      - ".github/workflows/pm-stack-tests.yml"
 
 permissions:
   contents: read
@@ -85,3 +93,18 @@ jobs:
             exit 1
           fi
           echo "pm-stack Python suites: test_poll.py + grist discovery passed."
+
+      # Python suite for #6217: pm-stack/external-comms/
+      # test_push_quarantine.py (6 tests, the pinning suite for the
+      # #6154 external-comms pusher fix) was run by no workflow, so a
+      # regression of the silent-drop bug would have passed CI
+      # unnoticed. The file is asserted to exist first, so a green run
+      # cannot be a silently skipped suite; any failure fails the job.
+      - name: Test external-comms push-quarantine Python suite
+        working-directory: pm-stack/external-comms
+        run: |
+          if [ ! -f test_push_quarantine.py ]; then
+            echo "::error::Missing suite file pm-stack/external-comms/test_push_quarantine.py — the push-quarantine suite was not run."
+            exit 1
+          fi
+          python3 -m unittest test_push_quarantine

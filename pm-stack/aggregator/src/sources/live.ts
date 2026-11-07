@@ -20,6 +20,7 @@ import {
   coverageFromFeed,
   poolAvailableFromFeed,
   poolFromFeed,
+  projectAuditFromFeed,
   type FleetFeed,
   type SectionDiagnosis,
 } from "../feed.ts";
@@ -613,6 +614,8 @@ const normTitle = (s: string): string =>
  * - repeats inside the section itself (the same task lined up under
  *   two goals, or twice under one) emit once, keyed by first ref,
  *   else by normalized title.
+ * Only parseRef-accepted refs participate; invalid candidates are logged
+ * and otherwise behave as absent.
  * Tasks with no ref anywhere still emit (title only, no GitHub link).
  */
 export function inFlightBoardItems(section: OrchestrationSection, existing: BoardItem[]): BoardItem[] {
@@ -628,10 +631,16 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
     if (item.linedUpStatus !== "in-progress" && item.linedUpStatus !== "queued" && item.linedUpStatus !== "blocked")
       continue;
     const refs: RefKey[] = [];
-    const add = (ref: RefKey) => {
+    const add = (ref: unknown) => {
+      if (!isValidRef(ref)) {
+        console.error(
+          `[board] WARNING: dropping invalid in-flight ref ${JSON.stringify(ref)} for task ${item.id}`,
+        );
+        return;
+      }
       if (!refs.includes(ref)) refs.push(ref);
     };
-    if (item.ref) add(item.ref);
+    if (item.ref !== undefined && item.ref !== null && item.ref !== "") add(item.ref);
     for (const ref of titleRefs(item.title)) add(ref);
     const remainingRefs = refs.filter((ref) => !existingRefs.has(ref));
     if (refs.length > 0 && remainingRefs.length === 0) continue;
@@ -1281,6 +1290,10 @@ export function liveSource(
     async projectsAvailable(): Promise<boolean> {
       const feed = await getFeed();
       return poolAvailableFromFeed(feed);
+    },
+    async projectAudit() {
+      const feed = await getFeed();
+      return projectAuditFromFeed(feed);
     },
     async needsDrew(): Promise<NeedsDrewCensus | null> {
       return needsDrewSweep();

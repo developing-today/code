@@ -5120,6 +5120,42 @@ mod tests {
     }
 
     #[test]
+    fn records_refuse_duplicate_keys() {
+        // Oracle: the written document. Any repeated object key, at any
+        // depth, is a parse error naming the repeated key (#6473, #6520).
+        for text in [
+            r#"{"a":1,"a":2}"#,
+            r#"{"a":{"b":1,"b":2}}"#,
+            r#"{"a":[{"b":1,"b":2}]}"#,
+        ] {
+            let err = parse_records(text).unwrap_err();
+            assert!(
+                format!("{err:#}").contains("duplicate JSON object key"),
+                "{err:#}"
+            );
+        }
+        // An oversized value hidden behind a small duplicate never reaches
+        // the size check as a collapsed survivor: the duplicate refuses it.
+        let hidden = format!(r#"{{"k":"{}","k":1}}"#, "v".repeat(MAX_RECORD_VALUE_BYTES));
+        assert!(parse_records(&hidden).is_err());
+        // 4097 raw entries collapsing to 4096 distinct keys are refused as
+        // duplicates, so the count cap can no longer be evaded by collapse.
+        let mut raw = String::from("{");
+        for i in 0..=MAX_RECORDS {
+            if i > 0 {
+                raw.push(',');
+            }
+            raw.push_str(&format!("\"{i}\":0"));
+        }
+        raw.push_str(",\"0\":0}");
+        assert!(parse_records(&raw).is_err());
+        // Distinct-key inputs parse identically to before.
+        let ok = parse_records(r#"{"a":1,"b":{"c":[true]}}"#).unwrap();
+        assert_eq!(ok.len(), 2);
+        assert_eq!(ok["b"]["c"][0], serde_json::Value::Bool(true));
+    }
+
+    #[test]
     fn snapshots_carry_the_newest_events_that_fit_their_budget() {
         let mut core = WorldCore::new(
             "budget",
