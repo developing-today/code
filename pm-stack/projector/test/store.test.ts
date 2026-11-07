@@ -9,6 +9,7 @@ import {
   upsertComment,
   markCommentDeleted,
   deleteItem,
+  getItemDeletion,
   upsertLink,
   getItems,
   getComments,
@@ -138,6 +139,52 @@ describe("store: deleteItem (#4210)", () => {
     expect(await getLinks(db, { subject: `gh:${ref}` })).toHaveLength(0);
     // The linked-to item itself is untouched: only the subject side goes.
     expect(await getItems(db, ["developing-today/code#1"])).toHaveLength(1);
+  });
+});
+
+describe("store: item deletion marker (#6782)", () => {
+  const T0 = "2026-10-25T00:00:00Z";
+  const T1 = "2026-10-25T01:00:00Z";
+  const T2 = "2026-10-25T02:00:00Z";
+  const T3 = "2026-10-25T03:00:00Z";
+
+  test("deleteItem persists a marker even when the item was never upserted", async () => {
+    const ref = "developing-today/code#67821";
+    await deleteItem(db, ref, T2);
+    const marker = await getItemDeletion(db, ref);
+    expect(marker?.source_updated_at).toBe(T2);
+    // A stale create arriving after the delete is absorbed.
+    await upsertItem(db, item({ ref, number: 67821, source_updated_at: T1, updated_at: T1 }));
+    expect(await getItems(db, [ref])).toHaveLength(0);
+  });
+
+  test("opened then deleted: stale replays stay absorbed, at and before the marker", async () => {
+    const ref = "developing-today/code#67822";
+    await upsertItem(db, item({ ref, number: 67822, source_updated_at: T0, updated_at: T0 }));
+    await deleteItem(db, ref, T2);
+    expect(await getItems(db, [ref])).toHaveLength(0);
+    await upsertItem(db, item({ ref, number: 67822, source_updated_at: T1, updated_at: T1 }));
+    await upsertItem(db, item({ ref, number: 67822, source_updated_at: T2, updated_at: T2 }));
+    expect(await getItems(db, [ref])).toHaveLength(0);
+    expect((await getItemDeletion(db, ref))?.source_updated_at).toBe(T2);
+  });
+
+  test("a genuinely newer upsert recreates the item and clears the marker", async () => {
+    const ref = "developing-today/code#67823";
+    await deleteItem(db, ref, T2);
+    await upsertItem(db, item({ ref, number: 67823, source_updated_at: T3, updated_at: T3 }));
+    const rows = await getItems(db, [ref]);
+    expect(rows).toHaveLength(1);
+    expect(await getItemDeletion(db, ref)).toBeNull();
+  });
+
+  test("a later delete refreshes the marker; an older delete does not move it back", async () => {
+    const ref = "developing-today/code#67824";
+    await deleteItem(db, ref, T2);
+    await deleteItem(db, ref, T1);
+    expect((await getItemDeletion(db, ref))?.source_updated_at).toBe(T2);
+    await deleteItem(db, ref, T3);
+    expect((await getItemDeletion(db, ref))?.source_updated_at).toBe(T3);
   });
 });
 

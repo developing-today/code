@@ -70,6 +70,12 @@ export interface ItemRow {
   fetched_at: string;
 }
 
+export interface ItemDeletionRow {
+  ref: string;
+  source_updated_at: string;
+  fetched_at: string;
+}
+
 export interface CommentRow {
   id: string;
   ref: string;
@@ -105,8 +111,28 @@ const now = () => new Date().toISOString();
 // Items
 // ---------------------------------------------------------------------------
 
+/** Read the deletion marker for a ref (#6782), or null when none exists. */
+export async function getItemDeletion(db: Client, ref: string): Promise<ItemDeletionRow | null> {
+  const r = await db.execute({
+    sql: `SELECT * FROM pmp_item_deletions WHERE ref = ?`,
+    args: [ref],
+  });
+  return (r.rows[0] as unknown as ItemDeletionRow) ?? null;
+}
+
 /** Upsert an item. Monotonic: a stale source (older updated_at) never overwrites. */
 export async function upsertItem(db: Client, i: Omit<ItemRow, "fetched_at">): Promise<void> {
+  // Deletion is absorbing (#6782): an item whose ref carries a deletion
+  // marker is not recreated by an event at or before the deletion's source
+  // timestamp (stale webhook replays, in-flight reconcile responses). An
+  // event strictly newer than the marker wins and clears it — GitHub is
+  // the source of truth, and such an event means the item demonstrably
+  // exists at a later source time than its deletion.
+  const marker = await getItemDeletion(db, i.ref);
+  if (marker) {
+    if (marker.source_updated_at >= i.source_updated_at) return;
+    await db.execute({ sql: `DELETE FROM pmp_item_deletions WHERE ref = ?`, args: [i.ref] });
+  }
   // Two steps, so "the payload shape does not carry merge fields" (null
   // draft/merged, #4158) stays distinguishable from an explicit 0 on the
   // update path: the INSERT materializes defaults for a brand-new row, the
@@ -371,16 +397,33 @@ export async function deleteLink(db: Client, subject: string, ref: string, relat
  * - A GitHub item's outbound links are keyed by the namespaced subject
  *   `gh:<ref>` (schema.sql), not the bare ref; both spellings are
  *   removed so no writer's rows survive.
+ * - A deletion marker is persisted in pmp_item_deletions (#6782), so a
+ *   stale replay arriving after this delete cannot resurrect the item
+ *   through upsertItem; see the guard there.
  * - Comment tombstones (deleted = 1) are RETAINED: they are the
  *   absorbing guard that rejects stale comment replays (see
  *   upsertComment), and erasing one would let a delayed create/edit
  *   resurrect a deleted comment. Live comments are removed; the
  *   tombstone rows are already excluded from default reads.
  */
-export async function deleteItem(db: Client, ref: string): Promise<void> {
+export async function deleteItem(db: Client, ref: string, sourceUpdatedAt?: string): Promise<void> {
   await db.execute({ sql: `DELETE FROM pmp_items WHERE ref = ?`, args: [ref] });
   await db.execute({ sql: `DELETE FROM pmp_comments WHERE ref = ? AND deleted = 0`, args: [ref] });
   await db.execute({ sql: `DELETE FROM pmp_links WHERE subject IN (?, ?)`, args: [`gh:${ref}`, ref] });
+  // Persist the deletion marker (#6782) so stale replays cannot resurrect
+  // the item. Monotonic: a later delete event refreshes the marker, an
+  // older one never moves it backwards. Without a payload timestamp
+  // (direct callers), the write time is the marker — every replayed event
+  // carries a past source timestamp, so absorption still holds.
+  const ts = sourceUpdatedAt ?? now();
+  await db.execute({
+    sql: `INSERT INTO pmp_item_deletions (ref, source_updated_at, fetched_at) VALUES (?,?,?)
+          ON CONFLICT(ref) DO UPDATE SET
+            source_updated_at = excluded.source_updated_at,
+            fetched_at = excluded.fetched_at
+          WHERE excluded.source_updated_at >= pmp_item_deletions.source_updated_at`,
+    args: [ref, ts, now()],
+  });
 }
 
 export async function getLinks(db: Client, opts: { subject?: string; ref?: string } = {}): Promise<LinkRow[]> {
