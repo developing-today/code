@@ -821,6 +821,8 @@ pub struct HostedBindingService {
     challenge_issued_at: HashMap<String, Vec<u64>>,
     pairing_issued_at: HashMap<String, Vec<u64>>,
     now_override: Option<u64>,
+    #[cfg(test)]
+    fail_attestation_for_test: bool,
 }
 
 impl HostedBindingService {
@@ -851,6 +853,8 @@ impl HostedBindingService {
             challenge_issued_at: HashMap::new(),
             pairing_issued_at: HashMap::new(),
             now_override: None,
+            #[cfg(test)]
+            fail_attestation_for_test: false,
         }
     }
 
@@ -1446,7 +1450,10 @@ impl HostedBindingService {
     ///
     /// [`RebindError::UnknownRebind`] / [`RebindError::RebindNotPending`]
     /// for a dead request; [`RebindError::BadOldKeySignature`] when the
-    /// signature does not verify against the currently bound key.
+    /// signature does not verify against the currently bound key;
+    /// [`RebindError::NoBinding`] when the request's binding is absent; and
+    /// [`RebindError::RecordEncoding`] when the restored binding cannot be
+    /// attested. All errors leave the request and binding maps unchanged.
     pub fn cancel_rebind(
         &mut self,
         rebind_id: &str,
@@ -1466,9 +1473,6 @@ impl HostedBindingService {
             old_key_signature,
             RebindError::BadOldKeySignature,
         )?;
-        if let Some(stored) = self.rebind_requests.get_mut(rebind_id) {
-            stored.status = RebindRequestStatus::Cancelled;
-        }
         let mut binding = self
             .bindings
             .get(&request.binding_id)
@@ -1480,6 +1484,14 @@ impl HostedBindingService {
                 .attest_bytes(&binding)
                 .ok_or(RebindError::RecordEncoding)?,
         );
+
+        // All fallible work is complete. Only now commit the restored
+        // binding and the request's terminal status.
+        let stored = self
+            .rebind_requests
+            .get_mut(rebind_id)
+            .ok_or(RebindError::UnknownRebind)?;
+        stored.status = RebindRequestStatus::Cancelled;
         self.bindings
             .insert(binding.binding_id.clone(), binding.clone());
         Ok(binding)
@@ -1872,6 +1884,10 @@ impl HostedBindingService {
     }
 
     fn attest_bytes(&self, record: &BindingRecord) -> Option<[u8; 64]> {
+        #[cfg(test)]
+        if self.fail_attestation_for_test {
+            return None;
+        }
         let digest = record_digest(record)?;
         Some(self.service_key.sign(&digest).to_bytes())
     }
@@ -2769,6 +2785,81 @@ mod tests {
         assert_eq!(
             parse_rfc3339(&second.effective_at),
             Some(T0 + 2 * REBIND_WAITING_PERIOD_SECS)
+        );
+    }
+
+    #[test]
+    fn delayed_rebind_cancel_no_binding_leaves_request_and_indexes_unchanged() {
+        let mut service = service();
+        let binding = bind(&mut service, SUB, 21);
+        let new_key = root_key(22);
+        let (challenge_id, proof) = signed_challenge(&mut service, SUB, &new_key);
+        let (request, _) = service
+            .request_delayed_rebind(SUB, &challenge_id, &proof)
+            .unwrap();
+
+        // Preserve the request while creating the post-verification lookup
+        // failure that the original implementation handled non-atomically.
+        service.bindings.remove(&binding.binding_id).unwrap();
+        let requests_before = service.rebind_requests.clone();
+        let bindings_before = service.bindings.clone();
+        let by_sub_before = service.binding_by_sub.clone();
+        let by_iroh_before = service.binding_by_iroh.clone();
+        let old_key = root_key(21);
+        let cancel = old_key.sign(&rebind_cancel_bytes(&request.rebind_id));
+
+        assert_eq!(
+            service.cancel_rebind(&request.rebind_id, &cancel.to_bytes()),
+            Err(RebindError::NoBinding)
+        );
+        assert_eq!(service.rebind_requests, requests_before);
+        assert_eq!(service.bindings, bindings_before);
+        assert_eq!(service.binding_by_sub, by_sub_before);
+        assert_eq!(service.binding_by_iroh, by_iroh_before);
+        assert!(!service.bindings.contains_key(&binding.binding_id));
+        assert_eq!(
+            service.rebind_request(&request.rebind_id).unwrap().status,
+            RebindRequestStatus::Pending
+        );
+    }
+
+    #[test]
+    fn delayed_rebind_cancel_record_encoding_leaves_request_and_binding_unchanged() {
+        let mut service = service();
+        let binding = bind(&mut service, SUB, 21);
+        let new_key = root_key(22);
+        let (challenge_id, proof) = signed_challenge(&mut service, SUB, &new_key);
+        let (request, _) = service
+            .request_delayed_rebind(SUB, &challenge_id, &proof)
+            .unwrap();
+
+        let requests_before = service.rebind_requests.clone();
+        let bindings_before = service.bindings.clone();
+        let by_sub_before = service.binding_by_sub.clone();
+        let by_iroh_before = service.binding_by_iroh.clone();
+        let old_key = root_key(21);
+        let cancel = old_key.sign(&rebind_cancel_bytes(&request.rebind_id));
+        service.fail_attestation_for_test = true;
+
+        assert_eq!(
+            service.cancel_rebind(&request.rebind_id, &cancel.to_bytes()),
+            Err(RebindError::RecordEncoding)
+        );
+        assert_eq!(service.rebind_requests, requests_before);
+        assert_eq!(service.bindings, bindings_before);
+        assert_eq!(service.binding_by_sub, by_sub_before);
+        assert_eq!(service.binding_by_iroh, by_iroh_before);
+        assert_eq!(
+            service.binding_for_sub(SUB).unwrap().binding_id,
+            binding.binding_id
+        );
+        assert_eq!(
+            service.rebind_request(&request.rebind_id).unwrap().status,
+            RebindRequestStatus::Pending
+        );
+        assert_eq!(
+            service.binding_for_sub(SUB).unwrap().status,
+            BindingStatus::RebindPending
         );
     }
 
