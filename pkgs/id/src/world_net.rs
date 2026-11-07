@@ -1210,7 +1210,15 @@ impl WorldClient {
         if reply["type"] != "worlds" {
             bail!("{}", reply["message"].as_str().unwrap_or(refuse_message));
         }
-        let default = reply["default"].as_str().unwrap_or_default().to_owned();
+        // The host's wire type always sends `default` as a string
+        // (ServerFrame::Worlds); a missing or mistyped field is a
+        // malformed reply, refused like the missing list below (#6647).
+        // An explicitly empty string is a well-formed shape and passes:
+        // shape is what this parser judges, not the name's content.
+        let default = reply["default"]
+            .as_str()
+            .context("worlds reply had no default world")?
+            .to_owned();
         let worlds = reply["worlds"]
             .as_array()
             .context("worlds reply had no list")?
