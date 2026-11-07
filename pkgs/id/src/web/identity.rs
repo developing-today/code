@@ -909,13 +909,16 @@ mod tests {
         // sets them decodes to the same bytes, so a token had up to
         // 16 alias strings that all verified. Decode refuses the
         // non-canonical spellings outright.
-        const ALPHABET: &[u8] =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
         let alias = |encoded: &str, mask: u32| -> String {
             let mut bytes = encoded.as_bytes().to_vec();
             let last = bytes.len() - 1;
             let value = ALPHABET.iter().position(|&c| c == bytes[last]).unwrap() as u32;
-            assert_eq!(value & mask, 0, "canonical encoding zeroes the trailing bits");
+            assert_eq!(
+                value & mask,
+                0,
+                "canonical encoding zeroes the trailing bits"
+            );
             bytes[last] = ALPHABET[(value | mask) as usize];
             String::from_utf8(bytes).unwrap()
         };
@@ -973,8 +976,7 @@ mod tests {
         // verify, while the canonical spelling still does. The token
         // byte length fixes the final group: %4==3 chars -> low 2 bits
         // unused, %4==2 chars -> low 4 bits unused.
-        const ALPHABET: &[u8] =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
         let store = IdentityStore::new_ephemeral();
         let (token, _) = store.register(Some("Alice".to_owned())).await.unwrap();
         assert!(store.verify_token(&token).await.is_some());
@@ -986,7 +988,11 @@ mod tests {
         let mut bytes = token.as_bytes().to_vec();
         let last = bytes.len() - 1;
         let value = ALPHABET.iter().position(|&c| c == bytes[last]).unwrap() as u32;
-        assert_eq!(value & mask, 0, "canonical spelling zeroes the trailing bits");
+        assert_eq!(
+            value & mask,
+            0,
+            "canonical spelling zeroes the trailing bits"
+        );
         bytes[last] = ALPHABET[(value | mask) as usize];
         let alias = String::from_utf8(bytes).unwrap();
         assert_ne!(alias, token);

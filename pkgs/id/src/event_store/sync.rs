@@ -669,8 +669,7 @@ async fn run_session<S: RangeStore>(
     };
 
     let receiving = async {
-        let received =
-            receive_data(recv, &store, &mut need, now_ms, &commits, batch_bytes).await;
+        let received = receive_data(recv, &store, &mut need, now_ms, &commits, batch_bytes).await;
         // Signal on every exit, error included: the sending half waits for this
         // signal before it can finish, and a failed receive must not hold the
         // session open until its deadline.

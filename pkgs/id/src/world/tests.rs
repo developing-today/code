@@ -752,15 +752,15 @@ mod tests {
     #[tokio::test]
     async fn subscribed_ticks_arrive_only_while_someone_is_present() {
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
-        let mut core =
-            WorldCore::new_with_clock(
-                "ticks",
-                WorldLimits {
-                    min_tick_ms: 20,
-                    ..WorldLimits::default()
-                },
-                clock.clone(),
-            ).unwrap();
+        let mut core = WorldCore::new_with_clock(
+            "ticks",
+            WorldLimits {
+                min_tick_ms: 20,
+                ..WorldLimits::default()
+            },
+            clock.clone(),
+        )
+        .unwrap();
         core.ledger
             .set_granted(BTreeSet::from(["time.tick".to_owned()]));
         let (_, _token) = core
@@ -805,15 +805,15 @@ mod tests {
     #[tokio::test]
     async fn ticks_follow_the_world_grant_not_a_participant_capability() {
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
-        let mut core =
-            WorldCore::new_with_clock(
-                "ticks",
-                WorldLimits {
-                    min_tick_ms: 20,
-                    ..WorldLimits::default()
-                },
-                clock.clone(),
-            ).unwrap();
+        let mut core = WorldCore::new_with_clock(
+            "ticks",
+            WorldLimits {
+                min_tick_ms: 20,
+                ..WorldLimits::default()
+            },
+            clock.clone(),
+        )
+        .unwrap();
         core.ledger
             .set_granted(BTreeSet::from(["time.tick".to_owned()]));
         let owner_scopes = WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits());
@@ -883,16 +883,15 @@ mod tests {
     #[tokio::test]
     async fn ticks_speak_for_the_world_not_for_a_present_participant() {
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
-        let mut core =
-            WorldCore::new_with_clock(
-                "tick-attribution",
-                WorldLimits {
-                    min_tick_ms: 20,
-                    ..WorldLimits::default()
-                },
-                clock.clone(),
-            )
-                .unwrap();
+        let mut core = WorldCore::new_with_clock(
+            "tick-attribution",
+            WorldLimits {
+                min_tick_ms: 20,
+                ..WorldLimits::default()
+            },
+            clock.clone(),
+        )
+        .unwrap();
         core.ledger.set_granted(BTreeSet::from([
             "time.tick".to_owned(),
             "chat.say".to_owned(),
@@ -1127,16 +1126,15 @@ mod tests {
     #[tokio::test]
     async fn lowering_the_ceiling_stops_an_active_subscription_and_reports_it_refused() {
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
-        let mut core =
-            WorldCore::new_with_clock(
-                "ceiling-ticks",
-                WorldLimits {
-                    min_tick_ms: 20,
-                    ..WorldLimits::default()
-                },
-                clock.clone(),
-            )
-                .unwrap();
+        let mut core = WorldCore::new_with_clock(
+            "ceiling-ticks",
+            WorldLimits {
+                min_tick_ms: 20,
+                ..WorldLimits::default()
+            },
+            clock.clone(),
+        )
+        .unwrap();
         core.ledger
             .set_granted(BTreeSet::from(["time.tick".to_owned()]));
         let (_, _token) = core

@@ -2963,14 +2963,18 @@ mod tests {
         );
         // ...and the whole drain has a larger, but still finite, total cap, so
         // a many-page world stops instead of streaming without bound.
-        const { assert!(
-            MAX_RECORDS_TOTAL_BYTES > MAX_RECORDS_TERMINAL_BYTES,
-            "the total cap must exceed the per-page cap"
-        ) };
-        const { assert!(
-            MAX_RECORDS_TOTAL_BYTES < usize::MAX / 4,
-            "the total cap must be finite"
-        ) };
+        const {
+            assert!(
+                MAX_RECORDS_TOTAL_BYTES > MAX_RECORDS_TERMINAL_BYTES,
+                "the total cap must exceed the per-page cap"
+            )
+        };
+        const {
+            assert!(
+                MAX_RECORDS_TOTAL_BYTES < usize::MAX / 4,
+                "the total cap must be finite"
+            )
+        };
     }
 
     #[cfg(test)]

@@ -1792,7 +1792,12 @@ fn test_an_admin_scoped_device_grant_is_applied_under_weak_remove_without_a_read
 fn test_a_device_authored_grant_stands_under_weak_remove_with_a_wide_removal_past() {
     let g = id("g");
     let events = vec![
-        custom("g", 1, &[], with_removal(Removal::Weak, Some(Delegation::KeepPrior))),
+        custom(
+            "g",
+            1,
+            &[],
+            with_removal(Removal::Weak, Some(Delegation::KeepPrior)),
+        ),
         add("a0", 1, g, 2, Role::Write, &["g"]),
         add("a1", 1, g, 3, Role::Write, &["a0"]),
         delegate("d0", 1, g, 2, Role::Write, true, &["a1"]),
