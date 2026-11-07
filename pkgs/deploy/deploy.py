@@ -183,16 +183,27 @@ def cmd_list(registry):
 
 
 def main(argv):
-    args = list(argv)
     registry_path = os.environ.get("DEPLOY_REGISTRY")
-    # --registry may appear before or after the subcommand.
-    while "--registry" in args:
-        idx = args.index("--registry")
-        if idx + 1 >= len(args):
-            print("deploy: --registry needs a path", file=sys.stderr)
-            return 2
-        registry_path = args[idx + 1]
-        del args[idx : idx + 2]
+    registry_seen = False
+    args = []
+    # --registry may appear before or after the subcommand, once.
+    it = iter(argv)
+    for arg in it:
+        if arg == "--registry" or arg.startswith("--registry="):
+            if registry_seen:
+                print("deploy: --registry given more than once", file=sys.stderr)
+                return 2
+            registry_seen = True
+            if arg == "--registry":
+                value = next(it, None)
+            else:
+                value = arg[len("--registry=") :]
+            if not value:
+                print("deploy: --registry needs a path", file=sys.stderr)
+                return 2
+            registry_path = value
+        else:
+            args.append(arg)
     if not args:
         print(__doc__.splitlines()[0], file=sys.stderr)
         print(
@@ -204,6 +215,12 @@ def main(argv):
         print(
             f"deploy: {args[0]!r} is not implemented in slice 1 of issue #5766 "
             "(registry + list only; activation/status/rollback are later slices)",
+            file=sys.stderr,
+        )
+        return 2
+    if len(args) > 1:
+        print(
+            f"deploy: unexpected argument {args[1]!r} after 'list'",
             file=sys.stderr,
         )
         return 2
