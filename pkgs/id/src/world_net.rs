@@ -3391,4 +3391,153 @@ mod tests {
         client_ep.close().await;
         host.router.shutdown().await.unwrap();
     }
+
+    // PROBE (worktree-only, never committed): admin_event_history records
+    // paging treats a malformed next_after as the end-of-pages terminator.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum ProbeMode {
+        Conforming,
+        NonStringFirst,
+        BoolSecond,
+        MissingSecond,
+    }
+
+    #[derive(Clone, Debug)]
+    struct ProbeRogue {
+        mode: ProbeMode,
+    }
+
+    impl iroh::protocol::ProtocolHandler for ProbeRogue {
+        async fn accept(
+            &self,
+            conn: iroh::endpoint::Connection,
+        ) -> Result<(), iroh::protocol::AcceptError> {
+            while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+                let mode = self.mode;
+                tokio::spawn(async move {
+                    // One request frame, then push begin + record pages.
+                    let _ = crate::frames::read_frame(&mut recv).await;
+                    let begin = serde_json::json!({
+                        "type": "event_history_begin",
+                        "world_id": "w",
+                        "module_hash": null,
+                        "current_sequence": 7,
+                        "complete": true,
+                        "event_count": 0
+                    });
+                    if crate::frames::write_frame(&mut send, begin.to_string().as_bytes())
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    let page1 = match mode {
+                        ProbeMode::NonStringFirst => serde_json::json!({
+                            "type": "records", "sequence": 7,
+                            "records": {"a": 1}, "next_after": 123
+                        }),
+                        _ => serde_json::json!({
+                            "type": "records", "sequence": 7,
+                            "records": {"a": 1}, "next_after": "a"
+                        }),
+                    };
+                    if crate::frames::write_frame(&mut send, page1.to_string().as_bytes())
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    if mode == ProbeMode::NonStringFirst {
+                        return;
+                    }
+                    let page2 = match mode {
+                        ProbeMode::Conforming => serde_json::json!({
+                            "type": "records", "sequence": 7,
+                            "records": {"b": 2}, "next_after": null
+                        }),
+                        ProbeMode::BoolSecond => serde_json::json!({
+                            "type": "records", "sequence": 7,
+                            "records": {"b": 2}, "next_after": true
+                        }),
+                        ProbeMode::MissingSecond => serde_json::json!({
+                            "type": "records", "sequence": 7,
+                            "records": {"b": 2}
+                        }),
+                        ProbeMode::NonStringFirst => unreachable!(),
+                    };
+                    let _ =
+                        crate::frames::write_frame(&mut send, page2.to_string().as_bytes()).await;
+                });
+            }
+            Ok(())
+        }
+    }
+
+    async fn probe_history(
+        mode: ProbeMode,
+    ) -> (Result<crate::world::AdminEventHistory>, Router, Endpoint) {
+        let host_ep = endpoint().await;
+        let router = Router::builder(host_ep.clone())
+            .accept(WORLD_ALPN, ProbeRogue { mode })
+            .spawn();
+        let addr = EndpointAddr::from_parts(
+            host_ep.id(),
+            host_ep.bound_sockets().iter().map(|a| {
+                let ip = if a.ip().is_unspecified() {
+                    std::net::Ipv4Addr::LOCALHOST.into()
+                } else {
+                    a.ip()
+                };
+                iroh::TransportAddr::Ip(std::net::SocketAddr::new(ip, a.port()))
+            }),
+        );
+        let client_ep = endpoint().await;
+        let mut client = WorldClient::connect(&client_ep, addr).await.unwrap();
+        let result = client.admin_event_history("admin").await;
+        client.close();
+        (result, router, client_ep)
+    }
+
+    #[tokio::test]
+    async fn probe_admin_history_malformed_cursor_silently_truncates() {
+        // Control: conforming two-page export returns both records.
+        let (result, router, ep) = probe_history(ProbeMode::Conforming).await;
+        let history = result.expect("conforming export must succeed");
+        assert_eq!(history.records.len(), 2, "control: both pages read");
+        assert!(history.complete);
+        ep.close().await;
+        router.shutdown().await.unwrap();
+
+        // Bug case 1: a numeric next_after on page 1 is silently treated
+        // as end-of-pages: the export returns Ok with only page 1.
+        let (result, router, ep) = probe_history(ProbeMode::NonStringFirst).await;
+        let history = result.expect("BUG REPRO: malformed cursor must not error");
+        assert_eq!(
+            history.records.len(),
+            1,
+            "BUG REPRO: export silently truncated to the first page"
+        );
+        assert!(
+            history.complete,
+            "BUG REPRO: truncated export still reports complete"
+        );
+        ep.close().await;
+        router.shutdown().await.unwrap();
+
+        // Bug case 2: a boolean next_after on page 2 is accepted as the
+        // terminator instead of a malformed-cursor error.
+        let (result, router, ep) = probe_history(ProbeMode::BoolSecond).await;
+        let history = result.expect("BUG REPRO: boolean cursor must not error");
+        assert_eq!(history.records.len(), 2);
+        ep.close().await;
+        router.shutdown().await.unwrap();
+
+        // Bug case 3: a missing next_after key is likewise accepted.
+        let (result, router, ep) = probe_history(ProbeMode::MissingSecond).await;
+        let history = result.expect("BUG REPRO: missing cursor must not error");
+        assert_eq!(history.records.len(), 2);
+        ep.close().await;
+        router.shutdown().await.unwrap();
+    }
 }
+
