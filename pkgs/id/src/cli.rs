@@ -3606,7 +3606,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn test_cli_rejects_zero_result_limits() {
         std::thread::Builder::new()
             .stack_size(8 * 1024 * 1024)
