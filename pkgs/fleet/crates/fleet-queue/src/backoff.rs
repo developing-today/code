@@ -110,6 +110,7 @@ pub fn sleep_after_failure(failed_attempt: u32) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn retryable_class_matches_only_the_timeout_codes() {
@@ -153,6 +154,53 @@ mod tests {
         assert!(is_retryable(
             "HTTP 503 from PostgREST: {\"code\": \"PGRST002\"}"
         ));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// PBT (#6616, testing doctrine): retryability depends ONLY on
+        /// exact equality of the generated top-level `code` value with
+        /// `57014`/`PGRST002` — the generated code is the oracle.
+        /// Message/detail/hint prose (which may embed the timeout
+        /// digits, e.g. an interpolated task ID), field ordering, and
+        /// whitespace around the colon must never change the outcome.
+        #[test]
+        fn retryable_depends_only_on_exact_code_field(
+            code in prop_oneof![
+                Just("57014".to_string()), Just("PGRST002".to_string()),
+                Just("P0001".to_string()), Just("PGRST102".to_string()),
+                Just("5701".to_string()), Just("570140".to_string()),
+                Just("057014".to_string()), Just("pgrst002".to_string()),
+                "[A-Z0-9]{1,8}",
+            ],
+            prose in prop::collection::vec(prop_oneof![
+                Just("task".to_string()), Just("57014".to_string()),
+                Just("PGRST002".to_string()), Just("157014".to_string()),
+                Just("570149".to_string()), Just("failed".to_string()),
+                "[a-z]{1,6}",
+            ], 0..6),
+            sp_before in "[ ]{0,2}",
+            sp_after in "[ ]{0,2}",
+            code_pos in 0usize..4,
+        ) {
+            let prose = prose.join(" ");
+            let mut fields = vec![
+                format!("\"message\":\"{prose}\""),
+                format!("\"detail\":\"{prose}\""),
+                format!("\"hint\":\"{prose}\""),
+            ];
+            fields.insert(
+                code_pos.min(fields.len()),
+                format!("\"code\"{sp_before}:{sp_after}\"{code}\""),
+            );
+            let err = format!(
+                "HTTP 400 from PostgREST: {{{}}}",
+                fields.join(",")
+            );
+            let oracle = code == "57014" || code == "PGRST002";
+            prop_assert_eq!(is_retryable(&err), oracle, "err={}", err);
+        }
     }
 
     #[test]
