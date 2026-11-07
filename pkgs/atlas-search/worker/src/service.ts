@@ -92,16 +92,26 @@ export async function searchService(
   k: number,
 ): Promise<{ result: Record<string, unknown>; ms: number }> {
   const t0 = Date.now();
-  const raw = (await postJson(env, "/v1/search", {
+  const raw: unknown = await postJson(env, "/v1/search", {
     query,
     ceiling: CEILING,
     k,
-  })) as Record<string, unknown>;
-  if (raw.effective_ceiling !== CEILING) {
+  });
+  // The response is untrusted until validated, exactly like the embed
+  // door (validateEmbed in space.ts): a JSON null 200 cannot even be
+  // dereferenced for the ceiling check, and any other non-object shape
+  // has no ceiling to verify - both are a bad upstream (502), never a
+  // raw TypeError out of this client (#6982).
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    const shape = raw === null ? "null" : Array.isArray(raw) ? "array" : typeof raw;
+    throw new ServiceError(502, `search service returned a non-object response (${shape})`);
+  }
+  const result = raw as Record<string, unknown>;
+  if (result.effective_ceiling !== CEILING) {
     throw new ServiceError(
       502,
-      `search service reported effective_ceiling ${JSON.stringify(raw.effective_ceiling)}, expected ${CEILING}`,
+      `search service reported effective_ceiling ${JSON.stringify(result.effective_ceiling)}, expected ${CEILING}`,
     );
   }
-  return { result: raw, ms: Date.now() - t0 };
+  return { result, ms: Date.now() - t0 };
 }
