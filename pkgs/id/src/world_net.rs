@@ -2182,6 +2182,8 @@ mod tests {
         protocol::Router,
     };
 
+    use proptest::prelude::*;
+
     use super::*;
     use crate::world::{WorldCore, WorldHandle, WorldLimits, WorldScopes};
     use crate::world_session::{INVITE_MAX_SECS, WorldService};
@@ -3728,6 +3730,65 @@ mod tests {
             assert!(
                 err.to_string().contains("malformed module_hash"),
                 "unexpected error: {err}"
+            );
+        }
+    }
+
+    // Property coverage for the same parser (repo testing doctrine: a
+    // parser's invariants are stated once and hammered with generated
+    // inputs, not just the examples above). Oracle: the typed frame
+    // contract — `module_hash` is a string or null on the wire, and the
+    // sibling fields pass through untouched.
+    proptest! {
+        #[test]
+        fn admin_event_history_begin_module_hash_invariants(
+            hash in any::<String>(),
+            world_id in "[a-z][a-z0-9:_-]{0,20}",
+            seq in any::<u64>(),
+            complete in any::<bool>(),
+            count in 0u64..=1000,
+            mistyped in prop_oneof![
+                any::<i64>().prop_map(serde_json::Value::from),
+                any::<bool>().prop_map(serde_json::Value::from),
+                proptest::collection::vec(any::<String>(), 0..4)
+                    .prop_map(serde_json::Value::from),
+                proptest::collection::hash_map(any::<String>(), any::<String>(), 0..4)
+                    .prop_map(|m| serde_json::to_value(m).unwrap()),
+            ],
+        ) {
+            let begin = |module_hash: serde_json::Value| {
+                serde_json::json!({
+                    "type": "event_history_begin",
+                    "world_id": world_id,
+                    "module_hash": module_hash,
+                    "current_sequence": seq,
+                    "complete": complete,
+                    "event_count": count,
+                })
+            };
+            // Any string hash is preserved verbatim; siblings pass through.
+            let (w, h, s, c, n) = WorldClient::parse_event_history_begin(
+                &begin(serde_json::Value::String(hash.clone())),
+            )
+            .unwrap();
+            prop_assert_eq!(w.as_str(), world_id.as_str());
+            prop_assert_eq!(h.as_deref(), Some(hash.as_str()));
+            prop_assert_eq!(s, seq);
+            prop_assert_eq!(c, complete);
+            prop_assert_eq!(n, count as usize);
+            // Null reads as no module.
+            let (_, h, ..) =
+                WorldClient::parse_event_history_begin(&begin(serde_json::Value::Null)).unwrap();
+            prop_assert_eq!(h, None);
+            // Any other JSON type is refused as malformed.
+            let result = WorldClient::parse_event_history_begin(&begin(mistyped));
+            prop_assert!(result.is_err());
+            prop_assert!(
+                result
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("malformed module_hash")
             );
         }
     }
