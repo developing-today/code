@@ -258,7 +258,12 @@ run "proxy: legacy proto-0 client round-trips (no hello)" 0 "legacy-ok" \
 # with no LAPTOP_AGENT_POOL anywhere in its environment, so
 # its startup line must render the compiled default of 50.
 run "proxy: broker startup renders the effective pool size (default 50)" 0 \
-  "pool: 50 per port" grep "pool: 50 per port" "$PX/broker.log"
+  "pool_size=50" grep "pool_size=50" "$PX/broker.log"
+# Identity stamp (#5758): the same first startup line names the
+# implementation and carries a UTC timestamp + pid, so broker
+# ownership of an incident window is reconstructable from the log.
+run "proxy: broker startup line is timestamped with implementation + pid" 0 \
+  "implementation=fleet-proxy" grep -E "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z fleet proxy serve start implementation=fleet-proxy version=[^ ]+ pool_size=50 pid=[0-9]+" "$PX/broker.log"
 
 # 32-concurrent burst against that default-config broker,
 # mirroring the #5412 benchmark method (hello-negotiated

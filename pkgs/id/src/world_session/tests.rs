@@ -1,5 +1,6 @@
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use proptest::prelude::*;
     use tokio::sync::mpsc;
 
     use ed25519_dalek::{Signer, SigningKey};
@@ -1145,6 +1146,169 @@ mod tests {
         let mut bin = Peer::connect(service(None), SessionConfig::default());
         bin.to_server.send(Inbound::Unsupported).await.unwrap();
         assert_eq!(bin.next().await.unwrap()["type"], "error");
+    }
+
+    #[tokio::test]
+    async fn first_frame_rejects_duplicate_json_keys_at_every_depth() {
+        const FRAMES: [(&str, &str); 7] = [
+            (
+                "identical type",
+                r#"{"type":"join","type":"join","capability":"x"}"#,
+            ),
+            (
+                "conflicting type",
+                r#"{"type":"join","type":"chat","capability":"x"}"#,
+            ),
+            (
+                "world duplicate with last value",
+                r#"{"type":"join","capability":"x","world":"lobby","world":"other"}"#,
+            ),
+            (
+                "world duplicate with first value",
+                r#"{"world":"other","world":"lobby","type":"join","capability":"x"}"#,
+            ),
+            (
+                "capability",
+                r#"{"type":"join","capability":"x","capability":"y"}"#,
+            ),
+            (
+                "admin token",
+                r#"{"type":"invite","admin_token":"x","admin_token":"y","display_name":"ann"}"#,
+            ),
+            (
+                "nested signed nonce",
+                r#"{"type":"join","capability":"x","signed":{"key":"k","at":1,"nonce":"one","nonce":"two","signature":"s"}}"#,
+            ),
+        ];
+
+        for (case, text) in FRAMES {
+            let mut peer = Peer::connect(service(None), SessionConfig::default());
+            peer.say_text(text).await;
+            let reply = peer.next().await.unwrap();
+            assert_eq!(reply["type"], "error", "{case}: {reply}");
+            assert_eq!(
+                reply["message"], "first frame must be a valid join or invite request",
+                "{case}: {reply}"
+            );
+            assert!(peer.next().await.is_none(), "{case}");
+            peer.task.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn joined_frame_rejects_duplicate_json_keys_at_every_depth() {
+        const FRAMES: [(&str, &str); 7] = [
+            (
+                "identical type",
+                r#"{"type":"chat","type":"chat","text":"hi"}"#,
+            ),
+            (
+                "conflicting type",
+                r#"{"type":"chat","type":"input","text":"hi","data_hex":""}"#,
+            ),
+            (
+                "world duplicate with last value",
+                r#"{"type":"chat","text":"hi","world":"lobby","world":"other"}"#,
+            ),
+            (
+                "world duplicate with first value",
+                r#"{"world":"other","world":"lobby","type":"chat","text":"hi"}"#,
+            ),
+            (
+                "capability",
+                r#"{"type":"chat","text":"hi","capability":"x","capability":"y"}"#,
+            ),
+            (
+                "admin token",
+                r#"{"type":"set_isolation","isolation":"isolated","admin_token":"x","admin_token":"y"}"#,
+            ),
+            (
+                "nested signed nonce",
+                r#"{"type":"set_isolation","isolation":"isolated","signed":{"key":"k","at":1,"nonce":"one","nonce":"two","signature":"s"}}"#,
+            ),
+        ];
+
+        let svc = service(None);
+        let (_, capability) = svc
+            .world()
+            .issue("ann".to_owned(), WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let mut peer = Peer::connect(svc, SessionConfig::default());
+        peer.say(serde_json::json!({"type": "join", "capability": capability.expose()}))
+            .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+
+        for (case, text) in FRAMES {
+            peer.say_text(text).await;
+            let reply = peer.next().await.unwrap();
+            assert_eq!(reply["type"], "error", "{case}: {reply}");
+            assert_eq!(reply["message"], "invalid world frame", "{case}: {reply}");
+        }
+
+        peer.to_server.send(Inbound::Closed).await.unwrap();
+        peer.task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn query_frame_rejects_duplicate_json_keys_before_join() {
+        // Regression test for the PR #6508 review finding: frames received
+        // after a valid query/info first frame were parsed straight into
+        // ClientFrame, so duplicate keys in fields the frame type ignores
+        // collapsed silently and a join carrying them still entered the
+        // joined phase. Oracle: the strict duplicate-key parser — any
+        // repeated key at any depth refuses the frame before conversion.
+        let svc = service(None);
+        let (_, capability) = svc
+            .world()
+            .issue("ann".to_owned(), WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let cap = capability.expose().to_owned();
+
+        let frames: [(&str, String); 3] = [
+            (
+                "duplicate ignored world field",
+                format!(
+                    r#"{{"type":"join","capability":"{cap}","world":"lobby","world":"other"}}"#
+                ),
+            ),
+            (
+                "duplicate unknown field",
+                format!(r#"{{"type":"join","capability":"{cap}","bogus":1,"bogus":2}}"#),
+            ),
+            (
+                "duplicate inside ignored nested object",
+                format!(r#"{{"type":"join","capability":"{cap}","extra":{{"a":1,"a":2}}}}"#),
+            ),
+        ];
+
+        for (case, text) in frames {
+            let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+            peer.say(serde_json::json!({"type": "info", "capability": cap}))
+                .await;
+            assert_eq!(peer.next().await.unwrap()["type"], "module_info", "{case}");
+            peer.say_text(&text).await;
+            let reply = peer.next().await.unwrap();
+            assert_eq!(reply["type"], "error", "{case}: {reply}");
+            assert_eq!(reply["message"], "invalid world frame", "{case}: {reply}");
+            assert!(peer.next().await.is_none(), "{case}");
+            peer.task.await.unwrap();
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn duplicate_json_keys_are_rejected_at_any_nesting_depth(
+            key in "[a-zA-Z_][a-zA-Z0-9_]{0,15}",
+            depth in 0usize..8,
+        ) {
+            let duplicate = format!(r#"{{"{key}":0,"{key}":1}}"#);
+            let nested = (0..depth).fold(duplicate, |value, _| {
+                format!(r#"{{"nested":{value}}}"#)
+            });
+            prop_assert!(parse_json_without_duplicate_keys(&nested).is_err());
+        }
     }
 
     #[test]

@@ -595,7 +595,16 @@ func (s *Server) taskStore() *tasks.Store {
 	s.taskOnce.Do(func() {
 		if s.paths.State != "" {
 			dbPath := filepath.Join(s.paths.State, "tasks.db")
-			if store, err := tasks.Open(dbPath); err == nil {
+			// Retention must reach the store before Open migrates
+			// legacy rows, or startup deletes results the configured
+			// retention promises to keep (issue #6248). The hot
+			// Configure refresh below still applies later updates.
+			var cfgTTL, cfgMaxAge time.Duration
+			if s.set != nil {
+				cfgTTL = s.set.Duration("tasks.ttl")
+				cfgMaxAge = s.set.Duration("tasks.maxAge")
+			}
+			if store, err := tasks.OpenWithRetention(dbPath, cfgTTL, cfgMaxAge); err == nil {
 				s.tasks = store
 			} else if s.logger != nil {
 				s.logger.Printf("task store: could not open %s: %v; using in-memory fallback", dbPath, err)

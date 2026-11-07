@@ -13,11 +13,12 @@ description = "The fleet queue domain: the repo-queue client surface plus the qu
 # standalone artifact.
 [features]
 client = []
-queue-broker = ["dep:tiny_http", "dep:ureq"]
-secrets-broker = ["dep:tiny_http"]
+queue-broker = ["dep:tiny_http", "dep:ureq", "dep:fleet-config"]
+secrets-broker = ["dep:tiny_http", "dep:fleet-config"]
 
 [dependencies]
 fleet-secrets = { workspace = true }
+fleet-config = { workspace = true, optional = true }
 serde = { workspace = true }
 # preserve_order: the brokers' JSON key order is part of the wire and
 # stdout shape the fleet already consumes (the standalone workspace

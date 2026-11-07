@@ -122,7 +122,9 @@ def validate(registry):
                 errors.append(f"{where}: ports must be a list of integers in 1..65535")
             elif len(set(ports)) != len(ports):
                 errors.append(f"{where}: ports must not repeat a port")
-        if "restart" in defn and defn["restart"] not in RESTART_POLICIES:
+        if "restart" in defn and not (
+            isinstance(defn["restart"], str) and defn["restart"] in RESTART_POLICIES
+        ):
             errors.append(
                 f"{where}: restart must be one of {', '.join(sorted(RESTART_POLICIES))}"
             )
@@ -141,14 +143,29 @@ def validate(registry):
             errors.append(
                 f"{where}: targets must be a non-empty list of host/class names"
             )
-        if "class" in defn and defn["class"] not in CLASSES:
+        if "class" in defn and not (
+            isinstance(defn["class"], str) and defn["class"] in CLASSES
+        ):
             errors.append(f"{where}: class must be one of {', '.join(sorted(CLASSES))}")
     return errors
 
 
+def _no_duplicate_keys(pairs):
+    # json silently keeps only the last value of a repeated key; a
+    # registry is the validation oracle, so discarded text must fail
+    # the load instead of vanishing (issue #6384). This hook runs for
+    # every object at every nesting level.
+    obj = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError(f"duplicate key {key!r} in registry")
+        obj[key] = value
+    return obj
+
+
 def load_registry(path):
     with open(path, "r", encoding="utf-8") as fh:
-        return json.load(fh)
+        return json.load(fh, object_pairs_hook=_no_duplicate_keys)
 
 
 def cmd_list(registry):
@@ -198,7 +215,7 @@ def main(argv):
         return 2
     try:
         registry = load_registry(registry_path)
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         print(f"deploy: cannot load registry {registry_path}: {exc}", file=sys.stderr)
         return 1
     return cmd_list(registry)

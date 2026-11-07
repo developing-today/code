@@ -36,7 +36,7 @@
 // through a reviewable PR.
 //
 // #4544 split: the tracked configured default no longer carries the model
-// catalogs sync-models owns (antigravity-direct, openai-codex, google,
+// catalogs sync-models owns (antigravity-direct, google,
 // openai, cloudflare-gateway) — those live in the runtime overlay
 // (~/.local/state/opencode/opencode-runtime.jsonc). This tool diffs the
 // merged effective config (default + overlay; --runtime-config) and skips
@@ -75,12 +75,27 @@ const defineValue = (obj, key, value) => {
 // api.json used as cross-check (null = no meaningful cross-check).
 // ---------------------------------------------------------------------------
 const PROVIDER_SOURCES = {
-  'claude-code': { kind: 'proxy', port: 18749, modelsDev: null },
-  commandcode: { kind: 'proxy', port: 18748, modelsDev: 'commandcode' },
-  'openai-codex': { kind: 'proxy', port: 18744, modelsDev: 'openai' },
-  chatgpt: { kind: 'proxy', port: 18744, modelsDev: 'openai' },
-  'antigravity-agy': { kind: 'proxy', port: 18743, modelsDev: null },
-  'antigravity-ls': { kind: 'proxy', port: 18745, modelsDev: null },
+  // No claude-code / commandcode / antigravity-agy / antigravity-ls
+  // / openai-codex entries: their CLI proxies were removed in the
+  // 2026-11-06 proxy-infra decommission (claude-code and
+  // commandcode were repointed to native fork providers on
+  // 2026-11-05; the antigravity doors retired 2026-10-30; the
+  // openai-codex provider was deleted 2026-11-03 and its door
+  // retired with the rest). Their catalogs are native-owned now,
+  // so they report 'no-source-configured'.
+  // One deliberately synthetic proxy-kind source: 'fixture-proxy'
+  // is the enumeration machinery's worked example, kept after the
+  // last real proxy source (the codex-proxy 'chatgpt' entry) was
+  // removed 2026-11-06 on Drew's ruling (kill record:
+  // developing-today-forks/opencode#1825). The CLI control fixtures
+  // (#3449/#4588) exercise the validated-addition path through this
+  // entry's source-dir snapshot, and no live proxy-kind source
+  // remains. No live config names a fixture-proxy provider, so the
+  // entry is dormant; a run that ever names one reports the
+  // tolerated enumeration failure against the fixture port :18799
+  // (nothing listens there by design) and falls back to
+  // cross-check only.
+  'fixture-proxy': { kind: 'proxy', port: 18799, modelsDev: 'openai' },
   deepseek: { kind: 'crosscheck', modelsDev: 'deepseek' },
   groq: { kind: 'crosscheck', modelsDev: 'groq' },
   meta: { kind: 'crosscheck', modelsDev: 'meta' },
@@ -548,7 +563,6 @@ async function loadModelsDev(spec) {
 // but never writes them into the tracked configured default on --apply.
 export const SYNC_OWNED_PROVIDERS = new Set([
   'antigravity-direct',
-  'openai-codex',
   'google',
   'openai',
   'cloudflare-gateway',
@@ -613,7 +627,7 @@ export async function runSync({ configPath, modelsDevSpec, sourceDir, runtimeCon
     providers: {},
     totals: { additions_validated: 0, additions_unverified: 0, vanishings: 0, unverifiable: 0 },
   };
-  // Cache proxy enumerations: openai-codex and chatgpt share one door.
+  // Cache proxy enumerations by port: providers sharing one door share one fetch.
   const proxyCache = new Map();
   for (const [providerId, block] of Object.entries(providers)) {
     const configIds = Object.keys(block?.models ?? {});

@@ -44,12 +44,17 @@ export default {
 
     const windowMs = config.limits.windowSeconds * 1000;
     const callerAllowed = await take(env, `caller:${caller.name}`, config.limits.callerPerWindow, windowMs);
+    if (!callerAllowed) {
+      // Caller denial is final (#5739): never resolve or mutate recipient
+      // Durable Objects for a request that will not be delivered.
+      return json({ error: "rate limited" }, 429);
+    }
     const recipientChecks = await Promise.all(
       transport
         .rateKeys(body)
         .map((key) => take(env, `target:${name}:${key}`, config.limits.recipientPerWindow, windowMs)),
     );
-    if (!callerAllowed || !recipientChecks.every(Boolean)) {
+    if (!recipientChecks.every(Boolean)) {
       return json({ error: "rate limited" }, 429);
     }
 

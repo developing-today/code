@@ -1206,6 +1206,23 @@ let
           };
         }
       );
+      # Duplicate keys cannot be expressed as a Nix attrset, so these
+      # registries are raw JSON text (issue #6384): load_registry must
+      # reject them naming the duplicated key.
+      dupServiceRegistry = pkgs.writeText "deploy-targets-dup-service.json" ''
+        {"svc": {"class": "bogus-class"}, "svc": {"class": "systemd"}}
+      '';
+      dupFieldRegistry = pkgs.writeText "deploy-targets-dup-field.json" ''
+        {"svc": {"ports": "notalist", "ports": []}}
+      '';
+      # Unhashable restart/class values (issue #6388): arrays/objects
+      # where validate() expects a string. validate() must report
+      # them by field, not crash with a TypeError, and one
+      # crashing-shape service must not suppress another service's
+      # ordinary field reports.
+      unhashableRegistry = pkgs.writeText "deploy-targets-unhashable.json" ''
+        {"bad": {"class": ["systemd"], "restart": ["always"]}, "other": {"class": {"x": 1}, "restart": "sometimes"}}
+      '';
     in
     {
       packages.deploy = deployPkgs.deploy;
@@ -1227,6 +1244,14 @@ let
               mkdir -p $out
               cp list.txt $out/list.txt
             '';
+        deploy-dupkeys-property = pkgs.runCommandLocal "check-deploy-dupkeys-property"
+          {
+            nativeBuildInputs = [ pkgs.python3 ];
+          }
+          ''
+            python3 ${../pkgs/deploy/test_dupkeys_property.py} ${../pkgs/deploy/deploy.py}
+            mkdir -p $out
+          '';
         deploy-list-malformed = pkgs.runCommandLocal "check-deploy-list-malformed" { } ''
           if ${deployPkgs.deploy}/bin/deploy list --registry ${badRegistry} > out.txt 2> err.txt; then
             echo "deploy list accepted a malformed registry" >&2
@@ -1234,6 +1259,31 @@ let
           fi
           grep -q "entryPoint" err.txt
           grep -q "ports" err.txt
+          if ${deployPkgs.deploy}/bin/deploy list --registry ${dupServiceRegistry} > dup-svc-out.txt 2> dup-svc-err.txt; then
+            echo "deploy list accepted a registry with a duplicate service key" >&2
+            exit 1
+          fi
+          grep -q "duplicate key 'svc'" dup-svc-err.txt
+          test ! -s dup-svc-out.txt
+          if ${deployPkgs.deploy}/bin/deploy list --registry ${dupFieldRegistry} > dup-field-out.txt 2> dup-field-err.txt; then
+            echo "deploy list accepted a registry with a duplicate field" >&2
+            exit 1
+          fi
+          grep -q "duplicate key 'ports'" dup-field-err.txt
+          test ! -s dup-field-out.txt
+          if ${deployPkgs.deploy}/bin/deploy list --registry ${unhashableRegistry} > unhash-out.txt 2> unhash-err.txt; then
+            echo "deploy list accepted a registry with unhashable restart/class values" >&2
+            exit 1
+          fi
+          grep -q "service 'bad': restart must be one of" unhash-err.txt
+          grep -q "service 'bad': class must be one of" unhash-err.txt
+          grep -q "service 'other': class must be one of" unhash-err.txt
+          grep -q "service 'other': restart must be one of" unhash-err.txt
+          if grep -q "Traceback" unhash-err.txt; then
+            echo "deploy list crashed with a traceback on unhashable values" >&2
+            exit 1
+          fi
+          test ! -s unhash-out.txt
           mkdir -p $out
           cp err.txt $out/errors.txt
         '';
