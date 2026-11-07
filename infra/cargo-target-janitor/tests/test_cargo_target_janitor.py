@@ -238,6 +238,14 @@ class StubQueueModule:
                 for x in re.search(r"id=in\.\%28([0-9,]+)\%29", query).group(1).split(",")
             }
             return [r for r in self.rows if r["id"] in ids][:limit]
+        if "id=gt." in query:
+            if self.always_full:
+                return self.rows[:limit]
+            after = int(re.search(r"id=gt\.(\d+)", query).group(1))
+            keyset = sorted(
+                (r for r in self.rows if r["id"] > after), key=lambda r: r["id"]
+            )
+            return keyset[:limit]
         offset = int(re.search(r"offset=(\d+)", query).group(1))
         if self.always_full:
             return self.rows[:limit]
@@ -257,6 +265,27 @@ class JanitorPaginationTests(unittest.TestCase):
     def test_queue_claims_at_cap_boundary(self):
         stub = StubQueueModule([claimed_row(i) for i in range(1, 1001)])
         self.assertEqual(janitor.queue_claims((stub, "key")), set(range(1, 1001)))
+
+    def test_queue_claims_survives_churn_behind_the_cursor(self):
+        """#6790: a task leaving the claimed set mid-read must not
+        shift a still-claimed task out of the never-delete set."""
+        rows = [claimed_row(i) for i in range(1, 1501)]
+
+        class ChurnStub(StubQueueModule):
+            def http(self, method, query, key):
+                page = super().http(method, query, key)
+                if len(self.queries) == 1:
+                    # Task 1 completes after page 1 is served — the
+                    # ordinary churn of a live claimed set.
+                    self.rows = [r for r in self.rows if r["id"] != 1]
+                return page
+
+        stub = ChurnStub(rows)
+        got = janitor.queue_claims((stub, "key"))
+        # Task 1001 is the row offset paging skipped in the filing's
+        # probe; the keyset read returns every claimed id.
+        self.assertEqual(got, set(range(1, 1501)))
+        self.assertTrue(all("offset=" not in q for q in stub.queries))
 
     def test_queue_claims_fails_closed_when_pages_never_end(self):
         stub = StubQueueModule(
