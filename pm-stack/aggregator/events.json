@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "events": [
+    {
+      "at": "2026-11-03T10:05:36.912Z",
+      "actor": "orch-fixture-1",
+      "kind": "action-applied",
+      "ref": "orch:http-item",
+      "summary": "triage/acknowledge applied by orch-fixture-1 — ack carried in the next published tier entry"
+    },
+    {
+      "at": "2026-11-03T10:05:38.661Z",
+      "actor": "orchestrator",
+      "kind": "orchestration-published",
+      "ref": "orchestration:orch-health-test",
+      "summary": "orchestration run orch-health-test published: 0 needs-user, 0 needs-orchestrator"
+    },
+    {
+      "at": "2026-11-03T10:05:38.662Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-sandbox:ses-health-1",
+      "summary": "session Health probe session (undefined) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T10:05:51.859Z",
+      "actor": "orchestrator",
+      "kind": "orchestration-published",
+      "ref": "orchestration:orch-api-health-comments-test",
+      "summary": "orchestration run orch-api-health-comments-test published: 0 needs-user, 0 needs-orchestrator"
+    },
+    {
+      "at": "2026-11-03T10:05:52.655Z",
+      "actor": "orchestrator",
+      "kind": "orchestration-published",
+      "ref": "orchestration:orch-watchdog-test",
+      "summary": "orchestration run orch-watchdog-test published: 0 needs-user, 0 needs-orchestrator"
+    },
+    {
+      "at": "2026-11-03T10:06:10.164Z",
+      "actor": "orch-fixture-1",
+      "kind": "action-applied",
+      "ref": "orch:http-item",
+      "summary": "triage/acknowledge applied by orch-fixture-1 — ack carried in the next published tier entry"
+    },
+    {
+      "at": "2026-11-03T10:06:13.891Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-sandbox:ses-health-1",
+      "summary": "session Health probe session (undefined) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T10:06:50.288Z",
+      "actor": "orch-fixture-1",
+      "kind": "action-applied",
+      "ref": "orch:http-item",
+      "summary": "triage/acknowledge applied by orch-fixture-1 — ack carried in the next published tier entry"
+    },
+    {
+      "at": "2026-11-03T10:06:53.274Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-sandbox:ses-health-1",
+      "summary": "session Health probe session (undefined) merged into the registry"
+    }
+  ]
+}
