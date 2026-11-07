@@ -118,14 +118,12 @@ pub const DEFAULT_DISPATCH_TEST_TURSO_URL: &str =
 /// selection: a scope is eligible below this many active jobs.
 pub const DEFAULT_DISPATCH_TEST_THRESHOLD: u64 = 40;
 
-/// The default dispatch-test scope repos, in selection order.
-pub const DEFAULT_DISPATCH_TEST_SCOPES: &[&str] = &[
-    "developing-today/code",
-    "developing-today-forks/opencode",
-    "developing-today-forks/openchamber",
-    "dezren39/darwin-nix",
-    "dezren39/hatch",
-];
+/// The fleet repo: the dezren39 repo that holds the other fleet
+/// repos as git submodules (developing-today/code#6580 phase 2).
+/// Its copies — the source plus its fork network — are the
+/// dispatch-test execution homes, discovered dynamically unless
+/// `[dispatch-test] scopes` pins an explicit list.
+pub const DEFAULT_DISPATCH_TEST_FLEET_REPO: &str = "dezren39/fleet";
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -237,8 +235,13 @@ pub struct DispatchTestConfig {
     /// Actions-capacity threshold (default
     /// [`DEFAULT_DISPATCH_TEST_THRESHOLD`]).
     pub threshold: Option<u64>,
-    /// Scope repos, in selection order. Empty means the built-in
-    /// list ([`DEFAULT_DISPATCH_TEST_SCOPES`]).
+    /// The fleet repo whose copies are the execution homes
+    /// (default [`DEFAULT_DISPATCH_TEST_FLEET_REPO`]).
+    pub fleet_repo: Option<String>,
+    /// Scope repos, in selection order — a PIN/OVERRIDE: when
+    /// non-empty, exactly these execution-home copies are scanned.
+    /// Empty (the default) means DISCOVER: the fleet repo plus its
+    /// fork network.
     #[serde(default)]
     pub scopes: Vec<String>,
 }
@@ -394,8 +397,11 @@ impl Config {
     /// value. Port 0 cannot be dialled, and `idle_exit_secs = 0` would
     /// make the broker exit at its first idle tick — the opposite of
     /// the "never idle-exit" an operator would mean by it. Reject all
-    /// three at load, naming the field; omitting the field keeps the
+    /// these at load, naming the field; omitting the field keeps the
     /// documented default. There is no zero spelling for "disabled".
+    /// The `[dispatch-test] threshold` (#6603) joined the rule when it
+    /// landed: `active < 0` can never hold, so 0 is never a capacity
+    /// bound either.
     fn validate(&self, path: &std::path::Path) -> Result<(), ConfigError> {
         let reject = |field: &str, default: u64| ConfigError::Parse {
             path: path.to_path_buf(),
@@ -412,6 +418,16 @@ impl Config {
         }
         if self.proxy.idle_exit_secs == Some(0) {
             return Err(reject("[proxy] idle_exit_secs", DEFAULT_IDLE_EXIT_SECS));
+        }
+        // #6603: the [dispatch-test] threshold landed later (#6580)
+        // and is the same misspelling class — `active < 0` is false
+        // for every count, so 0 makes every execution home
+        // permanently ineligible instead of meaning "no limit".
+        if self.dispatch_test.threshold == Some(0) {
+            return Err(reject(
+                "[dispatch-test] threshold",
+                DEFAULT_DISPATCH_TEST_THRESHOLD,
+            ));
         }
         Ok(())
     }
@@ -596,17 +612,19 @@ impl Config {
             .unwrap_or(DEFAULT_DISPATCH_TEST_THRESHOLD)
     }
 
-    /// The dispatch-test scope repos, in selection order: the
-    /// configured list, or the built-in defaults when unset/empty.
+    /// The dispatch-test fleet repo (execution-home source).
+    pub fn dispatch_test_fleet_repo(&self) -> &str {
+        self.dispatch_test
+            .fleet_repo
+            .as_deref()
+            .unwrap_or(DEFAULT_DISPATCH_TEST_FLEET_REPO)
+    }
+
+    /// The pinned dispatch-test scope repos, in selection order.
+    /// Empty means no pin: the caller discovers the fleet repo's
+    /// copies (source + fork network) instead.
     pub fn dispatch_test_scopes(&self) -> Vec<String> {
-        if self.dispatch_test.scopes.is_empty() {
-            DEFAULT_DISPATCH_TEST_SCOPES
-                .iter()
-                .map(|s| s.to_string())
-                .collect()
-        } else {
-            self.dispatch_test.scopes.clone()
-        }
+        self.dispatch_test.scopes.clone()
     }
 
     /// The search domain's routing preference from `[search] via`
@@ -962,6 +980,10 @@ mod tests {
             ("[proxy]\negress_proxy_port = 0\n", "egress_proxy_port"),
             ("[dispatch]\nport = 0\n", "[dispatch] port"),
             ("[proxy]\nidle_exit_secs = 0\n", "idle_exit_secs"),
+            (
+                "[dispatch-test]\nthreshold = 0\n",
+                "[dispatch-test] threshold",
+            ),
         ] {
             let (_dir, path) = write_temp(contents);
             match Config::load_from(&path) {
@@ -981,6 +1003,16 @@ mod tests {
         assert_eq!(cfg.egress_proxy_port(), 3131);
         assert_eq!(cfg.idle_exit_secs(), 60);
         assert_eq!(cfg.dispatch_port(), 4880);
+        // #6603: an omitted dispatch-test threshold keeps the
+        // documented default (40) and a positive value passes
+        // unchanged.
+        assert_eq!(
+            cfg.dispatch_test_threshold(),
+            DEFAULT_DISPATCH_TEST_THRESHOLD
+        );
+        let (_dir3, path3) = write_temp("[dispatch-test]\nthreshold = 7\n");
+        let cfg = Config::load_from(&path3).unwrap();
+        assert_eq!(cfg.dispatch_test_threshold(), 7);
     }
 }
 

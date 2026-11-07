@@ -139,6 +139,30 @@ export const routeForTool = (name, args = {}) => {
       throw new Error(`argument "${key}": true is not supported by the codedb daemon route for ${name}; omit it or call codedb directly`);
     }
   };
+  // regex/scope/compact have no daemon route on any tool — reject
+  // uniformly so no caller ever believes a mode was applied (#4197).
+  const rejectUnhonourable = () => {
+    rejectTrue('regex');
+    rejectTrue('scope');
+    rejectTrue('compact');
+  };
+  // limit/max_results are honoured by exactly one tool each
+  // (codedb_hot honours limit, codedb_search honours max_results).
+  const rejectLimitArg = (key, hint) => {
+    if (args[key] !== undefined) {
+      throw new Error(`argument "${key}" is not supported by the codedb daemon route for ${name}; ${hint}`);
+    }
+  };
+  if (CODEDB_TOOLS.some((candidate) => candidate.name === name)) {
+    rejectProject();
+    rejectUnhonourable();
+    if (name !== 'codedb_search') {
+      rejectLimitArg('max_results', 'only codedb_search honours max_results');
+    }
+    if (name !== 'codedb_hot') {
+      rejectLimitArg('limit', 'only codedb_hot honours limit');
+    }
+  }
   const need = (key) => {
     if (typeof args[key] !== 'string' || args[key] === '') {
       throw new Error(`argument "${key}" is required for ${name} and must be a non-empty string`);
@@ -147,29 +171,18 @@ export const routeForTool = (name, args = {}) => {
   };
   switch (name) {
     case 'codedb_tree':
-      rejectProject();
       return { route: '/explore/tree', kind: 'tree' };
     case 'codedb_outline':
-      rejectProject();
-      rejectTrue('compact');
       return { route: `/explore/outline?path=${encodeURIComponent(need('path'))}`, kind: 'json' };
     case 'codedb_symbol':
-      rejectProject();
       return { route: `/explore/symbol?name=${encodeURIComponent(need('name'))}`, kind: 'json' };
     case 'codedb_search':
-      rejectProject();
-      rejectTrue('regex');
-      rejectTrue('scope');
-      rejectTrue('compact');
       return { route: `/explore/search?q=${encodeURIComponent(need('query'))}`, kind: 'json', slice: ['results', args.max_results] };
     case 'codedb_word':
-      rejectProject();
       return { route: `/explore/word?q=${encodeURIComponent(need('word'))}`, kind: 'json' };
     case 'codedb_hot':
-      rejectProject();
       return { route: '/explore/hot', kind: 'json', slice: ['files', args.limit] };
     case 'codedb_deps':
-      rejectProject();
       return { route: `/explore/deps?path=${encodeURIComponent(need('path'))}`, kind: 'json' };
     default:
       throw new Error(

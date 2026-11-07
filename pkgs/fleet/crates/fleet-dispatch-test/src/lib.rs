@@ -4,18 +4,32 @@
 //! An explicit-dispatch CI test surface over GitHub Actions:
 //!
 //!   fleet dispatch-test scan    count active Actions jobs in each
-//!                               scope repo and name the first one
-//!                               with free capacity + the pilot
-//!                               workflow present
+//!                               execution-home copy and name the
+//!                               first one with free capacity + the
+//!                               generic workflow present
 //!   fleet dispatch-test submit  store a job row in the Turso jobs
-//!                               store, then dispatch the pilot
+//!                               store, then dispatch the generic
 //!                               workflow (fleet-dispatch-test.yml)
-//!                               in the chosen repo with the job id
+//!                               in the chosen copy with the job id
 //!   fleet dispatch-test status  print one stored job row as JSON
 //!
 //! Nothing here is trigger-driven: every verb runs only when a
 //! caller invokes it, and `submit` dispatches a workflow_dispatch
 //! run explicitly. No Actions triggers are enabled by this crate.
+//!
+//! Execution homes (phase 2, Drew's corrected design): ONE repo —
+//! the fleet repo (default `dezren39/fleet`, config
+//! `[dispatch-test] fleet_repo`) — holds the other fleet repos as
+//! git submodules and carries the generic workflow. Eligible
+//! homes are its COPIES: the source repo plus every repo found by
+//! following its fork network (forks, and forks of forks). The
+//! scan discovers them per invocation unless `[dispatch-test]
+//! scopes` pins an explicit list (the pin is an override, not the
+//! default). A job names a SUBMODULE + REF + COMMANDS; the
+//! generic workflow checks out the fleet repo, checks out the
+//! named submodule at the named ref, and runs the commands inside
+//! it, in the fleet-build container image whose baked Nix store
+//! is the fleet repo's partial preloaded cache.
 //!
 //! Capacity counting (scan): for each scope repo, ACTIVE JOBS =
 //! (jobs with status in_progress or queued across all in_progress
@@ -50,8 +64,8 @@ const EXIT_HTTP: i32 = 4;
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
 const WORKFLOW_FILE: &str = "fleet-dispatch-test.yml";
-const DEFAULT_SCRIPT: &str =
-    "set -eux; echo dispatch-test smoke; uname -a; git rev-parse HEAD || true";
+const DEFAULT_COMMANDS: &str =
+    "set -eux; echo dispatch-test smoke; git rev-parse HEAD; uname -a";
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -240,11 +254,22 @@ impl Args {
 fn parse_threshold(raw: Option<&str>, config: &Config) -> Result<u64> {
     match raw {
         None => Ok(config.dispatch_test_threshold()),
-        Some(v) => v.parse::<u64>().map_err(|_| {
-            usage(format!(
-                "--threshold must be a non-negative integer, got {v:?}"
-            ))
-        }),
+        Some(v) => {
+            let parsed = v.parse::<u64>().map_err(|_| {
+                usage(format!(
+                    "--threshold must be a positive integer, got {v:?}"
+                ))
+            })?;
+            // #6603: 0 is the #6412 misspelling class on the CLI path
+            // too — `active < 0` is false for every count, so no
+            // execution home could ever be eligible.
+            if parsed == 0 {
+                return Err(usage(
+                    "--threshold must not be 0; omit --threshold for the configured threshold",
+                ));
+            }
+            Ok(parsed)
+        }
     }
 }
 
@@ -350,6 +375,14 @@ impl Github {
         self.exchange("GET", path, None)
     }
 
+    /// GET a list endpoint completely: page through it with
+    /// `fetch_all_pages` and return one merged body shaped like a
+    /// single-page response (#6605).
+    fn get_paginated(&self, path: &str) -> Result<Value> {
+        let sep = if path.contains('?') { '&' } else { '?' };
+        fetch_all_pages(|page| self.get(&format!("{path}{sep}per_page={PAGE_SIZE}&page={page}")))
+    }
+
     fn post(&self, path: &str, body: &Value) -> Result<Value> {
         self.exchange("POST", path, Some(body))
     }
@@ -358,6 +391,84 @@ impl Github {
 // ---------------------------------------------------------------------------
 // Scan (pure counting over GitHub response shapes, then the live walk)
 // ---------------------------------------------------------------------------
+
+/// Page size for every list the scan reads, and the loud cap on
+/// pages per list: 100 pages x 100 items = 10,000 entries is far
+/// past any real home's lists, and past the cap the read errors
+/// instead of presenting a page-bound count as exact (#6605).
+const PAGE_SIZE: u64 = 100;
+const MAX_PAGES: u64 = 100;
+
+/// The items of one list page: the array of a bare-array body
+/// (forks), or the single array field of an object body
+/// (`workflow_runs` / `jobs` / `workflows`).
+fn page_items(body: &Value) -> Vec<Value> {
+    if let Some(items) = body.as_array() {
+        return items.clone();
+    }
+    if let Some(obj) = body.as_object() {
+        for value in obj.values() {
+            if let Some(items) = value.as_array() {
+                return items.clone();
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// Append `next` page's items onto `merged` (the first page's body,
+/// kept as the shape template); an object body's `total_count` is
+/// rewritten to the merged length so it can never again describe
+/// only the first page.
+fn append_page(merged: &mut Value, next: &Value) {
+    let items = page_items(next);
+    if let Some(arr) = merged.as_array_mut() {
+        arr.extend(items);
+        return;
+    }
+    if let Some(obj) = merged.as_object_mut() {
+        let key = obj
+            .iter()
+            .find(|(_, v)| v.is_array())
+            .map(|(k, _)| k.clone());
+        if let Some(key) = key {
+            if let Some(arr) = obj.get_mut(&key).and_then(|v| v.as_array_mut()) {
+                arr.extend(items);
+                let total = arr.len() as u64;
+                if obj.contains_key("total_count") {
+                    obj.insert("total_count".to_string(), json!(total));
+                }
+            }
+        }
+    }
+}
+
+/// Read a GitHub list to completion (#6605): request pages through
+/// `fetch` (1-based page numbers) until a short page arrives, and
+/// merge them into one body shaped like a single-page response, so
+/// the counting helpers see every item. Counting only the first
+/// page presented a lower bound as the exact `active` number and
+/// could report a saturated home as free. Where a term needs only
+/// a count, the response's `total_count` is the complete answer and
+/// no pagination is needed — that is what the queued-runs term in
+/// `scan_repo` does, deliberately unchanged.
+fn fetch_all_pages<F: FnMut(u64) -> Result<Value>>(mut fetch: F) -> Result<Value> {
+    let mut merged = fetch(1)?;
+    let mut last_len = page_items(&merged).len() as u64;
+    let mut page = 1;
+    while last_len >= PAGE_SIZE {
+        page += 1;
+        if page > MAX_PAGES {
+            return Err(transport_err(format!(
+                "GitHub list exceeds {MAX_PAGES} pages of {PAGE_SIZE};                  refusing to present a truncated count as exact"
+            )));
+        }
+        let next = fetch(page)?;
+        last_len = page_items(&next).len() as u64;
+        append_page(&mut merged, &next);
+    }
+    Ok(merged)
+}
 
 /// Run ids from a `GET .../actions/runs` body.
 fn run_ids(runs_body: &Value) -> Vec<u64> {
@@ -451,20 +562,17 @@ impl RepoScan {
 /// counting rule and the queued-run approximation).
 fn scan_repo(github: &Github, repo: &str) -> Result<RepoScan> {
     let mut active: u64 = 0;
-    let in_progress = github.get(&format!(
-        "/repos/{repo}/actions/runs?status=in_progress&per_page=100"
-    ))?;
+    let in_progress =
+        github.get_paginated(&format!("/repos/{repo}/actions/runs?status=in_progress"))?;
     for run_id in run_ids(&in_progress) {
-        let jobs = github.get(&format!(
-            "/repos/{repo}/actions/runs/{run_id}/jobs?per_page=100"
-        ))?;
+        let jobs = github.get_paginated(&format!("/repos/{repo}/actions/runs/{run_id}/jobs"))?;
         active += count_active_jobs(&jobs);
     }
     let queued = github.get(&format!(
         "/repos/{repo}/actions/runs?status=queued&per_page=100"
     ))?;
     active += total_count(&queued);
-    let workflows = github.get(&format!("/repos/{repo}/actions/workflows?per_page=100"))?;
+    let workflows = github.get_paginated(&format!("/repos/{repo}/actions/workflows"))?;
     Ok(RepoScan {
         repo: repo.to_string(),
         active,
@@ -478,6 +586,85 @@ fn scan_scopes(github: &Github, scopes: &[String]) -> Result<Vec<RepoScan>> {
 
 fn choose(scans: &[RepoScan], threshold: u64) -> Option<&RepoScan> {
     scans.iter().find(|s| s.eligible(threshold))
+}
+
+// ---------------------------------------------------------------------------
+// Discovery: the fleet repo's copies (source + fork network)
+// ---------------------------------------------------------------------------
+
+/// `full_name`s from a `GET /repos/{r}/forks` body.
+fn fork_full_names(forks_body: &Value) -> Vec<String> {
+    forks_body
+        .as_array()
+        .map(|forks| {
+            forks
+                .iter()
+                .filter_map(|f| f.get("full_name").and_then(|n| n.as_str()))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Append `name` to `scopes` when new; returns whether it was new.
+/// (Pure dedup step, unit-tested.)
+fn push_scope(scopes: &mut Vec<String>, name: &str) -> bool {
+    if scopes.iter().any(|s| s == name) {
+        false
+    } else {
+        scopes.push(name.to_string());
+        true
+    }
+}
+
+/// Discover the execution homes: the fleet repo itself, then its
+/// fork network breadth-first (forks, then forks of forks, ...
+/// depth-capped at 8 levels — the real network is 1 level today).
+/// Order is selection order: source first, then copies in the
+/// order the API names them.
+fn discover_scopes(github: &Github, fleet_repo: &str) -> Result<Vec<String>> {
+    let mut scopes = vec![fleet_repo.to_string()];
+    let mut level = vec![fleet_repo.to_string()];
+    for _ in 0..8 {
+        let mut next: Vec<String> = Vec::new();
+        for repo in &level {
+            let body = github.get_paginated(&format!("/repos/{repo}/forks"))?;
+            for name in fork_full_names(&body) {
+                if push_scope(&mut scopes, &name) {
+                    next.push(name);
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        level = next;
+    }
+    Ok(scopes)
+}
+
+/// The scope list + where it came from: the config pin when
+/// `[dispatch-test] scopes` is non-empty, otherwise fork-network
+/// discovery rooted at the fleet repo.
+fn resolve_scopes(github: &Github, config: &Config) -> Result<(Vec<String>, &'static str)> {
+    let pinned = config.dispatch_test_scopes();
+    if !pinned.is_empty() {
+        return Ok((pinned, "config"));
+    }
+    let scopes = discover_scopes(github, config.dispatch_test_fleet_repo())?;
+    Ok((scopes, "fork-network"))
+}
+
+/// A submodule name is a single path segment of the fleet repo:
+/// alphanumerics, `-`, `_`, `.` — never empty, never `.`/`..`,
+/// never containing a slash (it is joined onto the checkout).
+fn valid_submodule(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 // ---------------------------------------------------------------------------
@@ -669,6 +856,28 @@ impl Turso {
     }
 }
 
+/// Phase-2 store migration, applied idempotently by the verbs
+/// that touch the new columns: jobs gain `submodule` (the fleet
+/// repo submodule the job runs in) and `commands` (the shell
+/// commands run inside it). The MVP columns stay: `target_ref`
+/// now carries the SUBMODULE ref (empty = the umbrella's recorded
+/// SHA) and `script` mirrors `commands` so MVP-era readers still
+/// see the payload. A duplicate-column error means the migration
+/// already ran and is not a failure.
+fn ensure_schema(turso: &Turso) -> Result<()> {
+    for sql in [
+        "ALTER TABLE jobs ADD COLUMN submodule TEXT",
+        "ALTER TABLE jobs ADD COLUMN commands TEXT",
+    ] {
+        match turso.execute(sql, &[]) {
+            Ok(_) => {}
+            Err(e) if e.message().contains("duplicate column") => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Verbs
 // ---------------------------------------------------------------------------
@@ -676,13 +885,15 @@ impl Turso {
 const SCAN_USAGE: &str = "\
 Usage: fleet dispatch-test scan [--threshold N] [--json]
 
-For each scope repo (config [dispatch-test] scopes, in order):
-count ACTIVE JOBS via the GitHub API — jobs with status
-in_progress or queued across in_progress runs, plus queued runs
-counted as 1 active unit each (approximation: a queued run has
-not started and exposes no jobs, so it counts once regardless of
-its eventual fan-out). Also probe whether the pilot workflow
-(fleet-dispatch-test.yml) is present and active.
+For each execution-home copy (in order): count ACTIVE JOBS via
+the GitHub API — jobs with status in_progress or queued across
+in_progress runs, plus queued runs counted as 1 active unit each
+(approximation: a queued run has not started and exposes no jobs,
+so it counts once regardless of its eventual fan-out). Also probe
+whether the generic workflow (fleet-dispatch-test.yml) is
+present and active. Copies are DISCOVERED — the fleet repo
+([dispatch-test] fleet_repo, default dezren39/fleet) plus its
+fork network — unless [dispatch-test] scopes pins a list.
 
 Prints one line per scope:
   <repo> active=<n> workflow=<yes|no> eligible=<yes|no>
@@ -698,12 +909,14 @@ fn verb_scan(config: &Config, args: &[String]) -> Result<()> {
     let parsed = parse_args(args, &["threshold"], &["json"])?;
     let threshold = parse_threshold(parsed.get("threshold"), config)?;
     let github = Github::new(config)?;
-    let scopes = config.dispatch_test_scopes();
+    let (scopes, scopes_source) = resolve_scopes(&github, config)?;
     let scans = scan_scopes(&github, &scopes)?;
     let chosen = choose(&scans, threshold).map(|s| s.repo.clone());
     if parsed.flag("json") {
         let doc = json!({
             "threshold": threshold,
+            "fleet_repo": config.dispatch_test_fleet_repo(),
+            "scopes_source": scopes_source,
             "scopes": scans.iter().map(|s| s.to_json(threshold)).collect::<Vec<_>>(),
             "chosen": chosen,
         });
@@ -712,6 +925,11 @@ fn verb_scan(config: &Config, args: &[String]) -> Result<()> {
             serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "null".to_string())
         );
     } else {
+        println!(
+            "scopes source: {} (fleet repo {})",
+            scopes_source,
+            config.dispatch_test_fleet_repo()
+        );
         for s in &scans {
             println!(
                 "{} active={} workflow={} eligible={}",
@@ -727,26 +945,53 @@ fn verb_scan(config: &Config, args: &[String]) -> Result<()> {
 }
 
 const SUBMIT_USAGE: &str = "\
-Usage: fleet dispatch-test submit [--threshold N] [--repo owner/name]
-                                  [--ref REF] [--name TEXT]
-                                  [--script TEXT | --script-file PATH]
+Usage: fleet dispatch-test submit --submodule NAME [--threshold N]
+                                  [--repo owner/name] [--ref REF]
+                                  [--name TEXT]
+                                  [--commands TEXT | --commands-file PATH]
 
-Store a job in the Turso jobs store (status queued), pick a scope
-(--repo forces one; otherwise the scan rule: first scope with
-active < threshold and the pilot workflow present), mark the row
-dispatched, and dispatch fleet-dispatch-test.yml in that repo
-with the job id as its only input.
+Store a job in the Turso jobs store (status queued), pick an
+execution-home copy (--repo forces one; otherwise the scan rule:
+first discovered copy with active < threshold and the generic
+workflow present), dispatch fleet-dispatch-test.yml in that copy
+with the job id as its only input, and only then mark the row
+dispatched — a failed dispatch leaves the row queued (#6598). The generic workflow checks out the fleet repo, checks
+out the named submodule at the named ref, and runs the commands
+inside it (fleet-build container: the fleet repo's preloaded
+nix cache).
 
   --threshold N      capacity threshold (default: config, else 40)
-  --repo owner/name  force this repo instead of scanning scopes
-  --ref REF          checkout ref recorded on the job (default:
-                     the string HEAD — the pilot's default checkout)
+  --repo owner/name  force this execution-home copy
+  --submodule NAME   fleet-repo submodule to run in (required) —
+                     e.g. code, opencode, openchamber, nix, hatch
+  --ref REF          ref inside the SUBMODULE repo: branch, tag
+                     or SHA (default: empty = the submodule stays
+                     at the umbrella's recorded SHA)
   --name TEXT        job name recorded on the row
-  --script TEXT      the script the pilot runs for this job
-  --script-file PATH read the script from a file
-                     (default script: a trivial smoke script)
+  --commands TEXT    shell commands run inside the submodule
+  --commands-file PATH
+                     read the commands from a file
+                     (default: a trivial smoke command set)
 
-Prints JSON: {job_id, repo, active_at_scan, threshold, status}.";
+Prints JSON: {job_id, repo, submodule, ref, active_at_scan,
+threshold, status}.";
+
+/// The submit tail's step order (#6598): record the chosen home,
+/// dispatch the workflow, and only after the dispatch succeeds mark
+/// the row 'dispatched'. A failure in any step stops the sequence, so
+/// a failed dispatch leaves the row 'queued' (with its target repo
+/// recorded) — the same truthful, retryable state as the
+/// no-eligible-scope outcome — instead of a 'dispatched' row for a
+/// workflow that will never run.
+fn run_dispatch_sequence(
+    set_target: impl FnOnce() -> Result<()>,
+    dispatch: impl FnOnce() -> Result<()>,
+    mark_dispatched: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    set_target()?;
+    dispatch()?;
+    mark_dispatched()
+}
 
 fn verb_submit(config: &Config, args: &[String]) -> Result<Value> {
     if args.iter().any(|a| a == "--help" || a == "-h") {
@@ -755,22 +1000,43 @@ fn verb_submit(config: &Config, args: &[String]) -> Result<Value> {
     }
     let parsed = parse_args(
         args,
-        &["threshold", "repo", "ref", "name", "script", "script-file"],
+        &[
+            "threshold",
+            "repo",
+            "submodule",
+            "ref",
+            "name",
+            "commands",
+            "commands-file",
+        ],
         &[],
     )?;
-    if parsed.get("script").is_some() && parsed.get("script-file").is_some() {
-        return Err(usage("--script and --script-file are mutually exclusive"));
+    if parsed.get("commands").is_some() && parsed.get("commands-file").is_some() {
+        return Err(usage("--commands and --commands-file are mutually exclusive"));
     }
     let threshold = parse_threshold(parsed.get("threshold"), config)?;
-    let script = match parsed.get("script-file") {
-        Some(path) => std::fs::read_to_string(path)
-            .map_err(|e| usage(format!("cannot read script file {path}: {e}")))?,
-        None => parsed
-            .get("script")
-            .map(str::to_string)
-            .unwrap_or_else(|| DEFAULT_SCRIPT.to_string()),
+    let submodule = match parsed.get("submodule") {
+        Some(s) if valid_submodule(s) => s.to_string(),
+        Some(s) => {
+            return Err(usage(format!(
+                "--submodule must be a single fleet-repo submodule name                  (letters, digits, '-', '_', '.'), got {s:?}"
+            )));
+        }
+        None => {
+            return Err(usage(
+                "--submodule is required: the fleet-repo submodule to run in",
+            ));
+        }
     };
-    let target_ref = parsed.get("ref").unwrap_or("HEAD").to_string();
+    let commands = match parsed.get("commands-file") {
+        Some(path) => std::fs::read_to_string(path)
+            .map_err(|e| usage(format!("cannot read commands file {path}: {e}")))?,
+        None => parsed
+            .get("commands")
+            .map(str::to_string)
+            .unwrap_or_else(|| DEFAULT_COMMANDS.to_string()),
+    };
+    let target_ref = parsed.get("ref").unwrap_or("").to_string();
     let name = parsed.get("name").map(str::to_string);
     if let Some(repo) = parsed.get("repo") {
         let parts: Vec<&str> = repo.split('/').collect();
@@ -781,70 +1047,97 @@ fn verb_submit(config: &Config, args: &[String]) -> Result<Value> {
 
     let github = Github::new(config)?;
     let turso = Turso::new(config)?;
+    ensure_schema(&turso)?;
 
-    // (a) job id, (b) INSERT as queued.
+    // (a) job id, (b) INSERT as queued. `script` mirrors
+    // `commands` (MVP-era readers); `target_ref` is the
+    // submodule ref ('' = recorded SHA).
     let id = generate_job_id()?;
     let created = now_rfc3339();
     turso.execute(
         "INSERT INTO jobs (id, created_at, name, target_repo, target_ref, script, status, \
-         run_id, run_url, exit_code, output_tail, updated_at) \
-         VALUES (?, ?, ?, NULL, ?, ?, 'queued', NULL, NULL, NULL, NULL, ?)",
+         run_id, run_url, exit_code, output_tail, updated_at, submodule, commands) \
+         VALUES (?, ?, ?, NULL, ?, ?, 'queued', NULL, NULL, NULL, NULL, ?, ?, ?)",
         &[
             TursoArg::Text(id.clone()),
             TursoArg::Text(created.clone()),
             name.map(TursoArg::Text).unwrap_or(TursoArg::Null),
-            TursoArg::Text(target_ref),
-            TursoArg::Text(script),
+            TursoArg::Text(target_ref.clone()),
+            TursoArg::Text(commands.clone()),
             TursoArg::Text(created.clone()),
+            TursoArg::Text(submodule.clone()),
+            TursoArg::Text(commands),
         ],
     )?;
 
-    // (c) pick the scope.
+    // (c) pick the execution-home copy.
     let (repo, active_at_scan) = if let Some(forced) = parsed.get("repo") {
         let scan = scan_repo(&github, forced)?;
         (forced.to_string(), scan.active)
     } else {
-        let scopes = config.dispatch_test_scopes();
+        let (scopes, _source) = resolve_scopes(&github, config)?;
         let scans = scan_scopes(&github, &scopes)?;
         match choose(&scans, threshold) {
             Some(s) => (s.repo.clone(), s.active),
             None => {
                 return Err(transport_err(format!(
-                    "no eligible scope: no scope repo has active < {threshold} with the \
-                     pilot workflow present (job {id} remains queued in the store)"
+                    "no eligible scope: no execution-home copy has active < {threshold} \
+                     with the generic workflow present (job {id} remains queued in the store)"
                 )));
             }
         }
     };
 
-    // (d) UPDATE the row: target repo + dispatched.
-    turso.execute(
-        "UPDATE jobs SET target_repo = ?, status = 'dispatched', updated_at = ? WHERE id = ?",
-        &[
-            TursoArg::Text(repo.clone()),
-            TursoArg::Text(now_rfc3339()),
-            TursoArg::Text(id.clone()),
-        ],
-    )?;
-
-    // (e) dispatch the pilot workflow at the repo's default branch.
-    let repo_body = github.get(&format!("/repos/{repo}"))?;
-    let default_branch = repo_body
-        .get("default_branch")
-        .and_then(|b| b.as_str())
-        .ok_or_else(|| transport_err(format!("GitHub repo {repo} has no default_branch")))?;
-    github.post(
-        &format!("/repos/{repo}/actions/workflows/{WORKFLOW_FILE}/dispatches"),
-        &json!({
-            "ref": default_branch,
-            "inputs": {"job_id": id},
-        }),
+    // (d)+(e) record the chosen home, dispatch the generic workflow
+    // at the copy's default branch, and only then mark the row
+    // dispatched (#6598 — see run_dispatch_sequence).
+    run_dispatch_sequence(
+        || {
+            turso.execute(
+                "UPDATE jobs SET target_repo = ?, updated_at = ? WHERE id = ?",
+                &[
+                    TursoArg::Text(repo.clone()),
+                    TursoArg::Text(now_rfc3339()),
+                    TursoArg::Text(id.clone()),
+                ],
+            )?;
+            Ok(())
+        },
+        || {
+            let repo_body = github.get(&format!("/repos/{repo}"))?;
+            let default_branch = repo_body
+                .get("default_branch")
+                .and_then(|b| b.as_str())
+                .ok_or_else(|| {
+                    transport_err(format!("GitHub repo {repo} has no default_branch"))
+                })?;
+            github.post(
+                &format!("/repos/{repo}/actions/workflows/{WORKFLOW_FILE}/dispatches"),
+                &json!({
+                    "ref": default_branch,
+                    "inputs": {"job_id": id},
+                }),
+            )?;
+            Ok(())
+        },
+        || {
+            turso.execute(
+                "UPDATE jobs SET status = 'dispatched', updated_at = ? WHERE id = ?",
+                &[
+                    TursoArg::Text(now_rfc3339()),
+                    TursoArg::Text(id.clone()),
+                ],
+            )?;
+            Ok(())
+        },
     )?;
 
     // (f) report.
     Ok(json!({
         "job_id": id,
         "repo": repo,
+        "submodule": submodule,
+        "ref": if target_ref.is_empty() { Value::Null } else { Value::String(target_ref) },
         "active_at_scan": active_at_scan,
         "threshold": threshold,
         "status": "dispatched",
@@ -869,9 +1162,11 @@ fn verb_status(config: &Config, args: &[String]) -> Result<Value> {
     }
     let id = &args[0];
     let turso = Turso::new(config)?;
+    ensure_schema(&turso)?;
     let result = turso.execute(
-        "SELECT id, created_at, name, target_repo, target_ref, script, status, \
-         run_id, run_url, exit_code, output_tail, updated_at FROM jobs WHERE id = ?",
+        "SELECT id, created_at, name, target_repo, target_ref, submodule, commands, \
+         script, status, run_id, run_url, exit_code, output_tail, updated_at \
+         FROM jobs WHERE id = ?",
         &[TursoArg::Text(id.clone())],
     )?;
     let row = result
@@ -897,8 +1192,8 @@ fleet repos for free GitHub Actions capacity, submit a job to
 the Turso-backed jobs store and dispatch the pilot workflow,
 then track the job's stored status.
 
-  scan [--threshold N] [--json]   capacity + workflow scan of the scope repos
-  submit [options]                store a job and dispatch the pilot workflow
+  scan [--threshold N] [--json]   capacity + workflow scan of the fleet-repo copies
+  submit [options]                store a job and dispatch the generic workflow
   status <job-id>                 print one stored job row as JSON
 
 Run 'fleet dispatch-test <command> --help' for a verb's options.
@@ -975,6 +1270,188 @@ mod tests {
     }
 
     #[test]
+    fn paginated_runs_merge_all_pages() {
+        // #6605: 150 in-progress runs over two pages must all be
+        // visited — page 1 alone would visit only 100.
+        let page = |items: Vec<Value>| json!({"total_count": 150, "workflow_runs": items});
+        let mut calls = 0;
+        let merged = fetch_all_pages(|n| {
+            calls += 1;
+            Ok(match n {
+                1 => page((1..=100).map(|i| json!({"id": i})).collect()),
+                _ => page((101..=150).map(|i| json!({"id": i})).collect()),
+            })
+        })
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(run_ids(&merged).len(), 150);
+        assert_eq!(total_count(&merged), 150);
+    }
+
+    #[test]
+    fn paginated_jobs_count_beyond_first_page() {
+        // #6605: one run fanning out to 250 jobs — the active jobs
+        // on pages 2 and 3 count exactly like page 1's.
+        let jobs_page = |statuses: &[&str]| json!({"total_count": 250, "jobs": statuses.iter().map(|s| json!({"status": s})).collect::<Vec<_>>()});
+        let merged = fetch_all_pages(|n| {
+            Ok(match n {
+                1 => jobs_page(
+                    &vec!["in_progress"; 30]
+                        .into_iter()
+                        .chain(vec!["completed"; 70])
+                        .collect::<Vec<_>>(),
+                ),
+                2 => jobs_page(&vec!["queued"; 100]),
+                _ => jobs_page(&vec!["in_progress"; 50]),
+            })
+        })
+        .unwrap();
+        assert_eq!(count_active_jobs(&merged), 180);
+    }
+
+    #[test]
+    fn paginated_workflows_and_forks_beyond_first_page() {
+        // #6605: the pilot workflow hiding on page 2 is present,
+        // and forks past 100 are discovered as scopes.
+        let workflows = fetch_all_pages(|n| {
+            Ok(match n {
+                1 => json!({"total_count": 101, "workflows": (0..100).map(|i| json!({"path": format!(".github/workflows/w{i}.yml"), "state": "active"})).collect::<Vec<_>>() }),
+                _ => json!({"total_count": 101, "workflows": [json!({"path": ".github/workflows/fleet-dispatch-test.yml", "state": "active"})]}),
+            })
+        })
+        .unwrap();
+        assert!(workflow_present(&workflows));
+
+        let forks = fetch_all_pages(|n| {
+            Ok(match n {
+                1 => json!(
+                    (0..100)
+                        .map(|i| json!({"full_name": format!("o/r{i}")}))
+                        .collect::<Vec<_>>()
+                ),
+                _ => json!([json!({"full_name": "o/last"})]),
+            })
+        })
+        .unwrap();
+        let names = fork_full_names(&forks);
+        assert_eq!(names.len(), 101);
+        assert_eq!(names[100], "o/last");
+    }
+
+    #[test]
+    fn pagination_property_generated_page_sequences() {
+        // Property coverage for the pagination state machine
+        // (testing doctrine: state the invariants, generate the
+        // inputs, name the oracles). Invariants over generated page
+        // sequences: (1) the merged items are exactly the served
+        // pages concatenated, order and contents preserved —
+        // oracle: the model item list; (2) the walk requests pages
+        // 1..=k and stops at the first short page, fetching exactly
+        // one extra empty page when the last page is exactly full —
+        // oracle: the request sequence computed from the model;
+        // (3) object bodies keep their shape with total_count
+        // corrected to the merged length. A hand-rolled xorshift
+        // generator keeps the test dependency-free and reproducible
+        // (the seed is the failing input).
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            (state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) as u32
+        };
+        for seed in 0..200u32 {
+            let n = (next() % 451) as usize; // 0..=450 items: 0, short, exact-full, multi-page
+            let model: Vec<Value> = (0..n).map(|i| json!({"id": i})).collect();
+            let pages: Vec<Vec<Value>> = model
+                .chunks(PAGE_SIZE as usize)
+                .map(|c| c.to_vec())
+                .collect();
+            let full_pages = n / PAGE_SIZE as usize;
+            let expected_requests = if n % PAGE_SIZE as usize == 0 {
+                full_pages + 1 // exactly-full last page (or empty list) costs one empty fetch
+            } else {
+                pages.len()
+            };
+            let object_body = seed % 2 == 0;
+            let mut requests: Vec<u64> = Vec::new();
+            let merged = fetch_all_pages(|page_no| {
+                requests.push(page_no);
+                let items = pages
+                    .get((page_no - 1) as usize)
+                    .cloned()
+                    .unwrap_or_default();
+                Ok(if object_body {
+                    json!({"total_count": n, "workflow_runs": items})
+                } else {
+                    json!(items)
+                })
+            })
+            .unwrap();
+            assert_eq!(
+                requests,
+                (1..=expected_requests as u64).collect::<Vec<_>>(),
+                "seed {seed}: request sequence"
+            );
+            if object_body {
+                assert_eq!(
+                    run_ids(&merged),
+                    (0..n as u64).collect::<Vec<_>>(),
+                    "seed {seed}"
+                );
+                assert_eq!(total_count(&merged), n as u64, "seed {seed}");
+            } else {
+                assert_eq!(page_items(&merged), model, "seed {seed}: concatenation");
+            }
+        }
+        // Cap invariant: an endless full-page list is rejected
+        // loudly after exactly MAX_PAGES requests, never truncated
+        // into a plausible count.
+        let mut calls = 0u64;
+        let endless = fetch_all_pages(|_| {
+            calls += 1;
+            Ok(json!(
+                (0..PAGE_SIZE).map(|i| json!({"id": i})).collect::<Vec<_>>()
+            ))
+        });
+        assert!(endless.is_err());
+        assert_eq!(calls, MAX_PAGES);
+    }
+
+    #[test]
+    fn pagination_exact_page_then_empty_and_error_propagates() {
+        // A full page followed by an empty page ends the walk; a
+        // transport error mid-walk fails the scan, never a
+        // truncated count.
+        let mut calls = 0;
+        let merged = fetch_all_pages(|n| {
+            calls += 1;
+            Ok(match n {
+                1 => json!(
+                    (0..100)
+                        .map(|i| json!({"full_name": format!("o/r{i}")}))
+                        .collect::<Vec<_>>()
+                ),
+                _ => json!([]),
+            })
+        })
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(fork_full_names(&merged).len(), 100);
+
+        let failed = fetch_all_pages(|n| {
+            if n == 1 {
+                Ok(json!(
+                    (0..100).map(|i| json!({"id": i})).collect::<Vec<_>>()
+                ))
+            } else {
+                Err(transport_err("boom"))
+            }
+        });
+        assert!(failed.is_err());
+    }
+
+    #[test]
     fn workflow_presence_needs_active_and_path_suffix() {
         let yes = json!({"workflows": [
             {"path": ".github/workflows/other.yml", "state": "active"},
@@ -986,6 +1463,20 @@ mod tests {
         ]});
         assert!(!workflow_present(&disabled));
         assert!(!workflow_present(&json!({"workflows": []})));
+    }
+
+    #[test]
+    fn threshold_zero_is_a_usage_error() {
+        // #6603: --threshold 0 can never be satisfied (active < 0 is
+        // always false), so it is a usage error (exit 2), not a scan
+        // against a dead threshold. Positive values and the omitted
+        // flag (config default 40) pass unchanged.
+        let config = Config::default();
+        let err = parse_threshold(Some("0"), &config).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.message().contains("must not be 0"), "{}", err.message());
+        assert_eq!(parse_threshold(Some("7"), &config).unwrap(), 7);
+        assert_eq!(parse_threshold(None, &config).unwrap(), 40);
     }
 
     #[test]
@@ -1086,6 +1577,111 @@ mod tests {
         let err = parse_pipeline_rows(&per).unwrap_err();
         assert_eq!(err.exit_code(), EXIT_TRANSPORT);
         assert!(err.message().contains("no such table"));
+    }
+
+    #[test]
+    fn fork_names_parse_and_scopes_dedup_in_order() {
+        let body = json!([
+            {"full_name": "developing-today/fleet"},
+            {"full_name": "developing-today-forks/fleet"},
+            {"name": "no-full-name"}
+        ]);
+        assert_eq!(
+            fork_full_names(&body),
+            vec![
+                "developing-today/fleet".to_string(),
+                "developing-today-forks/fleet".to_string()
+            ]
+        );
+        assert!(fork_full_names(&json!({"forks": []})).is_empty());
+        let mut scopes = vec!["dezren39/fleet".to_string()];
+        assert!(push_scope(&mut scopes, "developing-today/fleet"));
+        assert!(!push_scope(&mut scopes, "dezren39/fleet"));
+        assert!(push_scope(&mut scopes, "developing-today-forks/fleet"));
+        assert_eq!(
+            scopes,
+            vec![
+                "dezren39/fleet",
+                "developing-today/fleet",
+                "developing-today-forks/fleet"
+            ]
+        );
+    }
+
+    #[test]
+    fn submodule_names_are_single_path_segments() {
+        for ok in ["code", "opencode", "openchamber", "nix", "hatch-personal", "dezren39-zettel"] {
+            assert!(valid_submodule(ok), "{ok} should be valid");
+        }
+        for bad in ["", ".", "..", "../code", "code/sub", "a b", "a/b", "x;rm"] {
+            assert!(!valid_submodule(bad), "{bad:?} should be invalid");
+        }
+    }
+
+    #[test]
+    fn dispatch_sequence_runs_target_dispatch_mark_in_order() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let result = run_dispatch_sequence(
+            || {
+                calls.borrow_mut().push("target");
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("dispatch");
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("mark");
+                Ok(())
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(*calls.borrow(), vec!["target", "dispatch", "mark"]);
+    }
+
+    #[test]
+    fn dispatch_sequence_failure_never_marks_dispatched() {
+        // The #6598 regression: the dispatch call fails (HTTP 422, a
+        // missing workflow_dispatch trigger) and the row must not end
+        // up marked dispatched.
+        let calls = std::cell::RefCell::new(Vec::new());
+        let result = run_dispatch_sequence(
+            || {
+                calls.borrow_mut().push("target");
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("dispatch");
+                Err(transport_err("GitHub API: workflow does not have a workflow_dispatch trigger"))
+            },
+            || {
+                calls.borrow_mut().push("mark");
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(*calls.borrow(), vec!["target", "dispatch"]);
+    }
+
+    #[test]
+    fn dispatch_sequence_target_failure_stops_before_dispatch() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let result = run_dispatch_sequence(
+            || {
+                calls.borrow_mut().push("target");
+                Err(transport_err("store unreachable"))
+            },
+            || {
+                calls.borrow_mut().push("dispatch");
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("mark");
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(*calls.borrow(), vec!["target"]);
     }
 
     #[test]

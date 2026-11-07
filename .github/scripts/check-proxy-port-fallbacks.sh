@@ -49,11 +49,15 @@
 # opencode.jsonc door shell), so its row is gone from the table below,
 # same pattern as the 2026-10-30 retirements; bin/design-code-proxy.mjs
 # remained as history until the 2026-11-06 proxy-infra decommission
-# removed it. The codex door program (:18744) is NOT retired —
-# only its opencode.jsonc provider was (1dad07b4a re-seated the
-# openai-codex routes onto openai-plan) — so the CODEX row keeps its
-# let and bin/ fallback checks with has_config "no": there is no
-# baseURL left in opencode.jsonc for it to match.
+# removed it. The codex door
+# (:18744) was retired 2026-11-06 (Drew, proxy-infra
+# decommission) the same way -- let, units, session var, bin
+# program, launcher and its row below removed in one change.
+# The fork's native openai provider replaced the bridge: its
+# opencode.jsonc providers were deleted 2026-11-03 (1dad07b4a
+# re-seated the openai-codex routes onto openai-plan) and the
+# door's credential sync was re-homed into the fork
+# (opencode#1468), leaving the door with no consumers.
 #
 # Retired 2026-11-06 (Drew, proxy-infra decommission): the
 # commandcode door (:18748) and the claude-code door (:18749) are
@@ -62,6 +66,13 @@
 # to the fork's native wire-emulation providers on 2026-11-05
 # (code#6117, opencode#1749); this guard had been failing on their
 # stale rows since that repoint removed the jsonc baseURLs.
+#
+# Retired 2026-11-06 (Drew, muse-direct order): the muse door
+# (:18747), this guard's last row, is gone the same way — the
+# provider went native in the fork (@opencode/ai/providers/
+# muse-direct, opencode#1825). The row list is empty and the guard
+# passes vacuously; it stays wired so a future proxy door re-adds
+# its row here on purpose.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -70,8 +81,6 @@ config_file="$repo_root/.opencode/opencode.jsonc"
 
 # var | let binding | proxy script | has an opencode.jsonc baseURL
 proxies=(
-  "CODEX_PROXY_PORT|codexProxyPort|bin/codex-proxy.mjs|no"
-  "MUSE_PROXY_PORT|museProxyPort|bin/muse-proxy.mjs|yes"
 )
 
 failed=0

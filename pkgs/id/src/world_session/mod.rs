@@ -28,7 +28,6 @@ use serde::Serialize;
 use subtle::ConstantTimeEq as _;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, broadcast};
 
-pub(crate) use id_core::json_unique::parse_json_without_duplicate_keys;
 use crate::directory_auth::Signed;
 use crate::time::unix_ms;
 use crate::world::{
@@ -39,6 +38,7 @@ use crate::world_compile::Compiler;
 #[cfg(feature = "sandbox")]
 use crate::world_compile::{COMPILE_TIMEOUT, CompileSpec};
 use crate::world_hub::{WorldHub, WorldLease};
+pub(crate) use id_core::json_unique::parse_json_without_duplicate_keys;
 
 /// Bound the extra presentation latency while coalescing view-only redraws.
 const VIEW_COALESCE_WINDOW: Duration = Duration::from_millis(5);
@@ -873,7 +873,6 @@ pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
         _ => None,
     }
 }
-
 
 /// Run one session to completion.
 ///

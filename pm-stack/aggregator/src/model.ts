@@ -331,6 +331,10 @@ export interface QuotaView {
   /** Gatherer overlay provenance (#1151); absent when no
    * quota-current.json was read. Additive for existing consumers. */
   gatherer?: GathererSummary;
+  /** Provider-auth keeper alerts (#6671), carried from
+   * quota-current.json by overlayQuotaCurrent; the board renders
+   * every non-ok keeper. Absent when no gatherer file was read. */
+  providerAuth?: import("./provider-auth-alerts.ts").ProviderAuthAlert[];
   /** Feed-load sanitization counts (#2429/#3921): present only when the
    * loader dropped malformed pools, credentials, windows, active sessions,
    * or burn segments, so an
@@ -1375,6 +1379,10 @@ export interface QuotaCurrentFile {
   source: string;
   heartbeat: QuotaGatherHeartbeat;
   providers: QuotaCurrentEntry[];
+  /** Provider-auth keeper projection (#6671): both keepers' alert
+   * state, embedded by the gatherer from the renewal state files
+   * beside quota-current.json. Additive; absent on older files. */
+  providerAuth?: import("./provider-auth-alerts.ts").ProviderAuthAlert[];
   /** Parser diagnostics for malformed entries removed at the ingest boundary. */
   sanitized?: { droppedProviders: number; droppedWindows: number };
 }

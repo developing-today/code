@@ -76,13 +76,38 @@ URL_RE = re.compile(
 )
 
 
-def decode_pages(text: str) -> list[dict]:
+def validate_entry(entry: object, source: str, index: int) -> dict:
+    """One enumeration entry must be a repo object with a string
+    full_name. Valid JSON with the wrong shape — a string/null entry
+    in a page array, an API error object saved into a capture, a repo
+    object missing full_name — must surface as a named error
+    identifying the capture source and the offending entry, never as
+    a bare TypeError/KeyError that aborts the run with no indication
+    of which capture or entry is at fault (#6716; the contract #6652
+    established on the checker side).
+    """
+    if not isinstance(entry, dict):
+        raise ValueError(
+            f"{source}: enumeration entry {index} is not a JSON object: "
+            f"{entry!r:.80}"
+        )
+    if not isinstance(entry.get("full_name"), str):
+        raise ValueError(
+            f"{source}: enumeration entry {index} has no string "
+            f"full_name: {entry!r:.80}"
+        )
+    return entry
+
+
+def decode_pages(text: str, source: str = "enumeration capture") -> list[dict]:
     """Decode one or more concatenated JSON documents.
 
     `gh api --paginate` emits one JSON array (or object) per page, so a
     captured enumeration file — like live --paginate output — is a
     stream of documents, not a single JSON value. Decode them all and
-    flatten the entries.
+    flatten the entries. Every entry is shape-validated as it lands
+    (validate_entry), so a wrong-shape capture fails at decode time
+    naming the source and entry instead of crashing a consumer.
     """
     entries: list[dict] = []
     decoder = json.JSONDecoder()
@@ -94,16 +119,19 @@ def decode_pages(text: str) -> list[dict]:
             break
         doc, idx = decoder.raw_decode(text, idx)
         if isinstance(doc, list):
-            entries.extend(doc)
+            for entry in doc:
+                entries.append(validate_entry(entry, source, len(entries)))
         else:
-            entries.append(doc)
+            entries.append(validate_entry(doc, source, len(entries)))
     return entries
 
 
 def load_enumeration(path: str | None) -> list[dict]:
     if path is None:
         return []
-    return decode_pages(Path(path).read_text())
+    return decode_pages(
+        Path(path).read_text(), source=f"enumeration capture {path}"
+    )
 
 
 def merge_repos(*groups: list[dict]) -> list[dict]:
@@ -112,8 +140,9 @@ def merge_repos(*groups: list[dict]) -> list[dict]:
     but the org and user captures can overlap, and the two org
     captures are merged before classification (#5615)."""
     merged: dict[str, dict] = {}
-    for group in groups:
-        for repo in group:
+    for group_no, group in enumerate(groups):
+        for i, repo in enumerate(group):
+            repo = validate_entry(repo, f"merge_repos group {group_no}", i)
             merged.setdefault(repo["full_name"], repo)
     return list(merged.values())
 
@@ -153,7 +182,7 @@ def fetch_live(endpoint: str) -> list[dict]:
         check=True,
     ).stdout
     # --paginate concatenates one JSON array per page.
-    return decode_pages(out)
+    return decode_pages(out, source=f"live enumeration {endpoint}")
 
 
 def parse_census(text: str) -> dict[str, dict]:
@@ -232,7 +261,14 @@ def build(
 ) -> str:
     census = parse_census(census_text)
     gh: dict[str, dict] = {}
-    for repo in org_repos + user_repos:
+    # build re-indexes by full_name, so it validates entries itself:
+    # a caller that bypassed decode_pages/merge_repos gets the same
+    # named error, not a bare KeyError (#6716).
+    for i, repo in enumerate(org_repos):
+        repo = validate_entry(repo, "build org_repos", i)
+        gh[repo["full_name"]] = repo
+    for i, repo in enumerate(user_repos):
+        repo = validate_entry(repo, "build user_repos", i)
         gh[repo["full_name"]] = repo
 
     names = sorted(set(gh) | set(census), key=str.lower)
@@ -341,13 +377,14 @@ def main(argv: list[str] | None = None) -> int:
         # build time — the census row was the only sign).
         user_repos = fetch_live("user/repos?per_page=100&affiliation=owner")
     else:
-        # Both captures are required offline: a missing one would
-        # silently regenerate with that source emptied, deleting its
-        # GitHub-only repos from the artifact.
+        # All three captures are required offline: a missing one
+        # would silently regenerate with that source emptied,
+        # deleting its GitHub-only repos from the artifact.
         missing = [
             flag
             for flag, value in (
                 ("--org-json", args.org_json),
+                ("--forks-org-json", args.forks_org_json),
                 ("--user-json", args.user_json),
             )
             if not value
@@ -377,4 +414,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except ValueError as exc:
+        # A wrong-shape enumeration capture (#6716) is a named,
+        # actionable failure, not a traceback.
+        raise SystemExit(f"error: {exc}")

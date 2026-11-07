@@ -740,7 +740,8 @@ mod tests {
         // and no deps at all. In each, applying the event through another path
         // must not hand the same event out again (#4730).
         let mut pool = pool();
-        pool.insert(author(1), 1, [10], "ready-after-dep", 0).unwrap();
+        pool.insert(author(1), 1, [10], "ready-after-dep", 0)
+            .unwrap();
         assert!(pool.arrived(1, 0).is_empty());
         assert!(
             pool.take_ready().is_empty(),
