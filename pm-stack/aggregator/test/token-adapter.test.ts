@@ -243,6 +243,60 @@ describe("file-export adapter (the framework's first adapter)", () => {
     }
   });
 
+  test("an out-of-range window usedPct is unparseable drift, previous retained (#4269)", () => {
+    // The mapping treats pct < 0 or pct > 100 as malformed and silently
+    // skips the window; the adapter must fail closed instead of publishing
+    // the partial (or empty) entry as a fresh ok.
+    for (const windows of [
+      [
+        { name: "5h", usedPct: -5 },
+        { name: "weekly", usedPct: 10 },
+      ],
+      [
+        { name: "5h", usedPct: 250 },
+        { name: "weekly", usedPct: 10 },
+      ],
+      [{ name: "5h", usedPct: -5 }],
+    ]) {
+      const out = collectFileExportAdapter({
+        now: NOW,
+        previous: PREV_ENTRY,
+        fileMtimeIso: "2026-10-29T04:59:00Z",
+        stale: false,
+        doc: {
+          service: "meta",
+          source: "file-export/meta-laptop",
+          status: "ok",
+          measuredAt: "2026-10-29T04:59:00Z",
+          windows,
+        },
+      });
+      expect(out.status).toBe("unparseable");
+      expect(out.value?.measuredAt).toBe("2026-10-29T04:30:00Z");
+    }
+  });
+
+  test("window usedPct at the 0 and 100 boundaries is a healthy reading (#4269)", () => {
+    const out = collectFileExportAdapter({
+      now: NOW,
+      previous: null,
+      fileMtimeIso: "2026-10-29T04:59:00Z",
+      stale: false,
+      doc: {
+        service: "meta",
+        source: "file-export/meta-laptop",
+        status: "ok",
+        measuredAt: "2026-10-29T04:59:00Z",
+        windows: [
+          { name: "5h", usedPct: 0 },
+          { name: "weekly", usedPct: 100 },
+        ],
+      },
+    });
+    expect(out.status).toBe("ok");
+    expect(out.value?.windows).toHaveLength(2);
+  });
+
   test("a non-string window name is unparseable drift, not a healthy reading", () => {
     const out = collectFileExportAdapter({
       now: NOW,
