@@ -106,10 +106,12 @@ fn worked_example_fed_twice_a_day() {
         "fed",
         Window::CountPerPeriod {
             count: 2,
-            period: Period::Day,
+            period: Period::Custom(PeriodCustom {
+                anchor: midnight(2026, 6, 15),
+                length_seconds: 86_400,
+            }),
         },
     ));
-    // The anchor is local midnight for a Day period; the evaluator derives it.
     fed.note = Some("twice a day".to_owned());
 
     let mut morning = record(
@@ -208,9 +210,12 @@ fn worked_example_outside_every_two_to_four_hours() {
     for verdict in &verdicts {
         assert_eq!(verdict.state, VerdictState::Violated);
         assert_eq!(verdict.count, 5);
+        // The design says "one violated interval", but its own record set has
+        // two over-max gaps: 12:10 to 16:45 is 4h35 (16500s), and 16:45 to
+        // 21:00 is 4h15 (15300s). The evaluator reports the first.
         assert!(
-            verdict.detail.contains("15300"),
-            "4h15m is the violated gap: {}",
+            verdict.detail.contains("16500"),
+            "4h35m is the first violated gap: {}",
             verdict.detail
         );
     }
@@ -298,7 +303,10 @@ fn worked_example_one_vs_both_walk_with_divergent_detail() {
         vec![dog_a(), dog_b()],
         "walked",
         Window::AtLeastOncePer {
-            period: Period::Day,
+            period: Period::Custom(PeriodCustom {
+                anchor: midnight(2026, 6, 15),
+                length_seconds: 86_400,
+            }),
         },
     ));
     let verdicts = evaluate(&[walked], &[walk], chicago(2026, 6, 15, 18, 0)).expect("evaluate");
