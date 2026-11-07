@@ -1972,7 +1972,7 @@ mod serve_tests {
 
     /// #5238 (9-8): `id world logs`, `caps --ceiling`, and `profile`
     /// execute against a live world host — not just parse. (`stats`
-    /// has its own test below; it is ignored until #6802 is fixed.)
+    /// has its own test below.)
     /// Each verb's output is asserted on the state the host reports,
     /// and a change made through one verb is read back through the
     /// same verb's read path, so a verb that silently no-ops cannot
@@ -2128,13 +2128,12 @@ mod serve_tests {
 
     /// #5238 (9-8): `id world stats` executes against a live world host.
     ///
-    /// Ignored until #6802 is fixed: stats issues its `info`, `caps`,
-    /// and `profile` queries over one connection, but the host only
-    /// serves `caps` / `profile` as first frames — the second query
-    /// is refused with "expected a query frame", so the verb cannot
-    /// succeed against a live host today. Un-ignore in that fix.
+    /// Was ignored until #6802: stats issues its `info`, `caps`, and
+    /// `profile` queries over one connection, but the host only served
+    /// `caps` / `profile` as first frames — the second query was
+    /// refused with "expected a query frame". #6802 taught the query
+    /// session both read-only frames, so this runs in the suite now.
     #[test]
-    #[ignore]
     fn test_world_stats_executes_against_a_live_world() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
