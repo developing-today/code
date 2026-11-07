@@ -7,6 +7,7 @@ import {
   upsertComment as storeUpsertComment,
   markCommentDeleted as storeMarkCommentDeleted,
   recordPush as storeRecordPush,
+  deleteItem as storeDeleteItem,
   getItems,
 } from "../src/store";
 import { createClient, type Client } from "@libsql/client";
@@ -20,6 +21,7 @@ function fakeStore() {
   const pushes: any[] = [];
   const deleted: string[] = [];
   const deletedItems: string[] = [];
+  const hotEvents: any[] = [];
   const store: ProjectorStore = {
     async upsertItem(i) {
       const prev = items.get(i.ref);
@@ -45,8 +47,12 @@ function fakeStore() {
     async recordPush(p) {
       pushes.push(p);
     },
+    async appendHotEvents(events) {
+      hotEvents.push(...events);
+      return events.length;
+    },
   };
-  return { store, items, comments, pushes, deleted, deletedItems };
+  return { store, items, comments, pushes, deleted, deletedItems, hotEvents };
 }
 
 describe("projector: repo allow-list", () => {
@@ -84,7 +90,7 @@ describe("projector: issues", () => {
   });
 
   test("opened then deleted issue removes the item and reports its ref", async () => {
-    const { store, items, deletedItems } = fakeStore();
+    const { store, items, deletedItems, hotEvents } = fakeStore();
     const issue = {
       number: 102,
       title: "Deleted issue",
@@ -104,11 +110,17 @@ describe("projector: issues", () => {
       action: "deleted",
       repository: { full_name: "developing-today/code" },
       issue,
-    });
+    }, [], "delete-delivery");
 
     expect(items.has("developing-today/code#102")).toBe(false);
     expect(deletedItems).toEqual(["developing-today/code#102"]);
     expect(result).toEqual({ refs: ["developing-today/code#102"], wrote: true });
+    expect(hotEvents[1]).toMatchObject({
+      eventId: "delete-delivery:issue:102",
+      event: "issues",
+      action: "deleted",
+      ref: "developing-today/code#102",
+    });
   });
 
   test("issue with pull_request field is classified as a PR", async () => {
@@ -425,6 +437,7 @@ describe("projector: issue-shaped payloads never reset merge fields (#4158)", ()
       await migrate(db);
       const store: ProjectorStore = {
         upsertItem: (i) => storeUpsertItem(db, i),
+        deleteItem: (ref) => storeDeleteItem(db, ref),
         upsertComment: (c) => storeUpsertComment(db, c),
         markCommentDeleted: (c) => storeMarkCommentDeleted(db, c),
         recordPush: (p) => storeRecordPush(db, p),

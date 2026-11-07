@@ -15,6 +15,7 @@ import {
   getConsumerCheckpoint,
   ackConsumerCheckpoint,
   upsertItem as storeUpsertItem,
+  deleteItem as storeDeleteItem,
   upsertComment as storeUpsertComment,
   markCommentDeleted as storeMarkCommentDeleted,
   recordPush as storeRecordPush,
@@ -42,6 +43,7 @@ const ev = (over: Partial<HotEventInput>): HotEventInput => ({
 function libsqlStore(dbx: Client): ProjectorStore {
   return {
     upsertItem: (i) => storeUpsertItem(dbx, i),
+    deleteItem: (ref) => storeDeleteItem(dbx, ref),
     upsertComment: (c) => storeUpsertComment(dbx, c),
     markCommentDeleted: (c) => storeMarkCommentDeleted(dbx, c),
     recordPush: (p) => storeRecordPush(dbx, p),
@@ -167,6 +169,42 @@ describe("projector: hot mapping", () => {
       "push-delivery-1",
     );
     expect((await listHotEvents(db, { after: before })).length).toBe(2);
+  });
+
+  test("deleted issue events append a normalized hot row", async () => {
+    const before = await hotHighWater(db);
+    await applyEvent(
+      libsqlStore(db),
+      "issues",
+      {
+        action: "deleted",
+        repository: { full_name: "developing-today/code" },
+        sender: { login: "dezren39" },
+        issue: {
+          id: 4243,
+          number: 78,
+          title: "Deleted issue",
+          state: "open",
+          html_url: "https://github.com/developing-today/code/issues/78",
+          url: "https://api.github.com/repos/developing-today/code/issues/78",
+          user: { login: "dezren39" },
+          created_at: "2026-10-25T02:00:00Z",
+          updated_at: "2026-10-25T02:05:00Z",
+        },
+      },
+      [],
+      "issue-delete-delivery",
+    );
+
+    const rows = await listHotEvents(db, { after: before });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      event_id: "issue-delete-delivery:issue:4243",
+      event: "issues",
+      action: "deleted",
+      ref: "developing-today/code#78",
+      actor: "dezren39",
+    });
   });
 
   test("issue and comment events append normalized rows without raw bodies", async () => {

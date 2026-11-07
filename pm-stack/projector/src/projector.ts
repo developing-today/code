@@ -230,9 +230,16 @@ export async function applyEvent(
       const issue = payload.issue;
       if (issue) {
         if (payload.action === "deleted") {
+          const kind = issueIsPr(issue) ? "pr" : "issue";
           const ref = itemRef(repo, issue.number);
           await store.deleteItem(ref);
           addRef(ref);
+          hot(`${kind}:${issue.id ?? issue.number}`, {
+            ref,
+            actor: iso(issue.user?.login) ?? senderLogin,
+            sourceUrl: iso(issue.html_url),
+            sourceTimestamp: iso(issue.updated_at) ?? iso(issue.created_at),
+          });
           wrote = true;
         } else {
           await applyIssue(issue);
