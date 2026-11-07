@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "checkpoints": {
+    "watchdog": {
+      "source": "watchdog",
+      "lastSourceId": "watchdog:registry@2026-11-03T22:39:55.130Z",
+      "lastEventAt": "2026-11-03T23:09:55.130Z",
+      "deliveries": 3,
+      "duplicates": 0,
+      "updatedAt": "2026-11-03T23:39:55.491Z"
+    }
+  },
+  "seen": {
+    "watchdog": [
+      "watchdog:fleet-feed@2026-11-03T21:44:55.130Z",
+      "watchdog:orchestration@2026-11-03T23:09:55.130Z",
+      "watchdog:registry@2026-11-03T22:39:55.130Z"
+    ]
+  },
+  "gaps": [
+    {
+      "id": "gap:kaneo:2026-11-03T23:10:31.271Z",
+      "source": "kaneo",
+      "from": "2026-11-03T23:10:31.271Z",
+      "to": "2026-11-04T01:13:15.281Z",
+      "status": "open",
+      "detectedAt": "2026-11-03T23:10:31.282Z"
+    },
+    {
+      "id": "gap:watchdog:fleet-feed:2026-11-03T21:44:55.130Z",
+      "source": "watchdog:fleet-feed",
+      "from": "2026-11-03T21:44:55.130Z",
+      "to": "2026-11-03T23:39:55.472Z",
+      "status": "open",
+      "detectedAt": "2026-11-03T23:39:55.484Z"
+    },
+    {
+      "id": "gap:watchdog:orchestration:2026-11-03T23:09:55.130Z",
+      "source": "watchdog:orchestration",
+      "from": "2026-11-03T23:09:55.130Z",
+      "to": "2026-11-03T23:39:55.472Z",
+      "status": "open",
+      "detectedAt": "2026-11-03T23:39:55.485Z"
+    },
+    {
+      "id": "gap:watchdog:registry:2026-11-03T22:39:55.130Z",
+      "source": "watchdog:registry",
+      "from": "2026-11-03T22:39:55.130Z",
+      "to": "2026-11-03T23:39:55.472Z",
+      "status": "open",
+      "detectedAt": "2026-11-03T23:39:55.486Z"
+    }
+  ]
+}
