@@ -201,6 +201,82 @@ fn atomic_failure_moves_nothing() {
 }
 
 #[test]
+fn in_memory_failed_conversion_recovery_reports_resubmission_rejected() {
+    // #6629: the in-memory counterpart of
+    // live_failed_conversion_recovery_reports_resubmission_rejected
+    // (whose oracle is the live binding's id_already_failed mapping).
+    // The in-memory failed-ID lookup in validate_and_stage must refuse
+    // the resubmission even after the original blocker has cleared --
+    // the existing in-memory reconcile tests reject via fresh balance
+    // validation during reconcile itself, not via a recorded failed ID.
+    let mut executor = executor();
+    let mut record = executor.prepare(&request()).expect("intent prepared");
+
+    // Fail the conversion for insufficient liquidity, exactly as in
+    // atomic_failure_moves_nothing: draining the LP destination makes
+    // the destination leg fail, its ID lands in failed_transfers, no
+    // leg posts, and the intent stays Submitted.
+    let drain = funding_transfer(900, LP_DST, USER_DST, 49_000, DST);
+    assert!(executor.backend.create_transfers(&[drain])[0].is_ok());
+    assert!(executor.submit(&mut record).is_err());
+    assert_eq!(record.state, IntentState::Submitted);
+    assert!(
+        executor
+            .backend
+            .transfers_with_user_data_128(777)
+            .is_empty()
+    );
+
+    // Restore liquidity: the blocker that caused the failure is gone,
+    // so a resubmission rejected now can only be refused by the
+    // recorded failed ID, never by balance validation.
+    let refill = funding_transfer(901, ISSUER_DST, LP_DST, 50_000, DST);
+    assert!(executor.backend.create_transfers(&[refill])[0].is_ok());
+    assert!(
+        executor
+            .backend
+            .account_balance(LP_DST)
+            .unwrap()
+            .spendable()
+            >= 2_000,
+        "liquidity restored: the destination leg would validate now"
+    );
+
+    let outcomes = reconcile(
+        &mut executor.backend,
+        &mut executor.store,
+        RecoveryPolicy::Resubmit,
+    )
+    .expect("reconcile");
+    assert_eq!(
+        outcomes,
+        vec![(777, ReconcileOutcome::ResubmissionRejected)]
+    );
+    let stored = executor
+        .store
+        .get(777)
+        .expect("read intent")
+        .expect("intent still stored");
+    assert_eq!(stored.state, IntentState::Submitted);
+    assert!(
+        executor
+            .backend
+            .transfers_with_user_data_128(777)
+            .is_empty(),
+        "no leg of the rejected resubmission may post"
+    );
+    assert_eq!(
+        executor
+            .backend
+            .account_balance(USER_DST)
+            .unwrap()
+            .credits_posted,
+        49_000,
+        "only the drain posted; the rejected resubmission moved nothing"
+    );
+}
+
+#[test]
 fn linked_chain_failure_marks_other_legs_linked_event_failed() {
     let mut ledger = funded_ledger();
     let chain = vec![
