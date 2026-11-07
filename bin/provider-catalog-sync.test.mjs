@@ -198,6 +198,14 @@ test('makeEntry: variant block clones the nearest sibling and prefers models.dev
   assert.deepEqual(e.variants, { low: { options: { reasoning_effort: 'low' } } });
 });
 
+test('makeEntry: a sibling with variants:null is not a clone source - name-only entry, no throw (#6907)', () => {
+  const siblings = { 'gpt-1-luna': { name: 'GPT-1 Luna (codex)', variants: null } };
+  const e = makeEntry('proxy-a', 'gpt-1-terra', siblings, null);
+  assert.deepEqual(e, { name: 'GPT 1 Terra (codex)' });
+  const withLimit = makeEntry('proxy-a', 'gpt-1-terra', siblings, { limit: { context: 2000, output: 200 } });
+  assert.deepEqual(withLimit, { name: 'GPT 1 Terra (codex)', limit: { context: 2000, output: 200 } });
+});
+
 test('insertModelEntry matches the file indentation style', () => {
   const out = insertModelEntry(FIXTURE, 'proxy-a', 'gpt-1-terra', {
     name: 'GPT 1 Terra',
