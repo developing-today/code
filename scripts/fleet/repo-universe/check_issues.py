@@ -107,7 +107,15 @@ def parse_inventory(text: str) -> list[str]:
 
 
 def normalize_issue(raw: dict) -> dict | None:
-    """Project an API issue onto the persisted fields; None for PRs."""
+    """Project an API issue onto the persisted fields; None for PRs.
+
+    A non-object item is a failed fetch (#6652): valid JSON with the
+    wrong shape must surface as FetchError — the per-repo ERROR the
+    header contract promises — never as a TypeError / AttributeError
+    that aborts the whole run.
+    """
+    if not isinstance(raw, dict):
+        raise FetchError(f"issue entry is not a JSON object: {raw!r:.80}")
     if "pull_request" in raw:
         return None
     return {field: raw.get(field) for field in ISSUE_FIELDS}
@@ -135,6 +143,9 @@ def fetch_issues_gh(repo: str) -> list[dict]:
     # stream; gh emits a single merged array for JSON endpoints.
     if isinstance(pages, dict):
         pages = [pages]
+    if not isinstance(pages, list):
+        raise FetchError(f"unexpected gh api output for {repo}: "
+                         "not a JSON array of issues")
     issues = []
     for item in pages:
         normalized = normalize_issue(item)
@@ -148,11 +159,16 @@ def load_fixture(path: Path) -> dict:
 
 
 def fetch_issues_fixture(repo: str, fixture: dict) -> list[dict]:
+    if not isinstance(fixture, dict):
+        raise FetchError("fixture is not a JSON object mapping "
+                         "repos to issue lists")
     entry = fixture.get(repo)
     if entry is None:
         raise FetchError(f"repo {repo} absent from fixture")
     if isinstance(entry, dict) and "error" in entry:
         raise FetchError(str(entry["error"]))
+    if not isinstance(entry, list):
+        raise FetchError(f"fixture entry for {repo} is not a list of issues")
     issues = []
     for item in entry:
         normalized = normalize_issue(item)
@@ -192,6 +208,19 @@ def diff_repo(prior: dict | None, current: list[dict]) -> dict:
             "reopened": reopened, "changed": changed}
 
 
+def _valid_prior_entry(entry) -> bool:
+    """Shape-check one persisted per-repo state entry (#6652).
+
+    A wrong-shape persisted entry (an int, a list, an issues mapping
+    whose values are not objects) is reported per-repo by run_check
+    instead of crashing diff_repo's subscripts for every repo.
+    """
+    if not isinstance(entry, dict):
+        return False
+    issues = entry.get("issues")
+    return isinstance(issues, dict) and all(
+        isinstance(v, dict) for v in issues.values())
+
 def run_check(inventory_text: str, state: dict, fetch, now: str) -> tuple[dict, list[str], bool]:
     """Run one check over all watched repos.
 
@@ -199,12 +228,24 @@ def run_check(inventory_text: str, state: dict, fetch, now: str) -> tuple[dict, 
     injected `fetch` callable, so tests drive it with fixtures.
     """
     repos = parse_inventory(inventory_text)
+    if not isinstance(state, dict):
+        raise FetchError("persisted state is not a JSON object")
     prior_repos = state.get("repos", {})
+    if not isinstance(prior_repos, dict):
+        raise FetchError("persisted state 'repos' is not a JSON object")
     new_repos = dict(prior_repos)
     lines = [f"# Repo-universe issue check — {now}", ""]
     had_error = False
     total_delta = 0
     for repo in repos:
+        prior_entry = prior_repos.get(repo)
+        if prior_entry is not None and not _valid_prior_entry(prior_entry):
+            had_error = True
+            lines.append(f"## {repo}")
+            lines.append("- ERROR: persisted state entry is malformed; "
+                         "repo skipped, state left untouched")
+            lines.append("")
+            continue
         try:
             issues = fetch(repo)
         except FetchError as exc:
@@ -213,7 +254,6 @@ def run_check(inventory_text: str, state: dict, fetch, now: str) -> tuple[dict, 
             lines.append(f"- ERROR: fetch failed: {exc}")
             lines.append("")
             continue
-        prior_entry = prior_repos.get(repo)
         result = diff_repo(prior_entry["issues"] if prior_entry else None, issues)
         entry = {"watermark": max((i["updated_at"] or "" for i in issues), default=None),
                  "issues": result["state"]}
@@ -268,7 +308,13 @@ def main(argv: list[str] | None = None) -> int:
     else:
         fetch = fetch_issues_gh
 
-    new_state, lines, had_error = run_check(inventory_text, state, fetch, now)
+    try:
+        new_state, lines, had_error = run_check(inventory_text, state, fetch, now)
+    except FetchError as exc:
+        # A single named load error for state-level shape failures
+        # (#6652): no traceback, no report, no state write.
+        print(f"error: {exc}; no report or state written", file=sys.stderr)
+        return 2
 
     date = now[:10]
     report_path = state_dir / f"report-{date}.md"
