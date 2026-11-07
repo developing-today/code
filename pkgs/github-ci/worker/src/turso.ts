@@ -53,17 +53,34 @@ export class Turso {
       }),
     });
     if (!res.ok) throw new Error(`turso pipeline failed: HTTP ${res.status}`);
-    const out = (await res.json()) as { results?: PipelineResult[] };
-    const failed = (out.results ?? []).find((r) => r.type === "error");
+    // The envelope is validated before anything reads it (#6949): a 200
+    // whose body is not the pipeline shape (null, a scalar, an object
+    // without a results array, non-JSON) must fail in this client's own
+    // contract form, never resolve as a successful write or escape as a
+    // raw TypeError/SyntaxError from a downstream dereference.
+    let out: { results?: PipelineResult[] };
+    try {
+      out = (await res.json()) as { results?: PipelineResult[] };
+    } catch {
+      throw new Error("turso pipeline failed: malformed response (not JSON)");
+    }
+    if (!out || typeof out !== "object" || !Array.isArray(out.results)) {
+      throw new Error("turso pipeline failed: malformed response (missing results)");
+    }
+    const failed = out.results.find((r) => r?.type === "error");
     if (failed) {
       throw new Error(`turso pipeline failed: ${failed.error?.message ?? "pipeline error"}`);
     }
-    return out.results ?? [];
+    return out.results;
   }
 
   async execute(sql: string, args?: TursoArg[]): Promise<PipelineResult> {
     const results = await this.batch([{ sql, args }]);
-    return results[0];
+    const first: PipelineResult | undefined = results[0];
+    if (!first || typeof first !== "object") {
+      throw new Error("turso pipeline failed: malformed response (missing statement result)");
+    }
+    return first;
   }
 
   /** First column of first row as text, or null when no row. */
