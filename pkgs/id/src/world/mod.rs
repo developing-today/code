@@ -506,7 +506,7 @@ pub enum FileMode {
 }
 
 /// A world's sharing and file settings, read in one step.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldPolicy {
     /// Whether other worlds may read this one.
     pub isolation: Isolation,
