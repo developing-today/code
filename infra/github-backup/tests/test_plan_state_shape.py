@@ -199,6 +199,66 @@ class FetchMirrorsShapeTests(unittest.TestCase):
 
 
 class ManifestShapeTests(unittest.TestCase):
+    """Issue #6653: every wrong shape the manifest probe reproduced,
+    driven against the real manifest.build() — pre-fix each raised a
+    raw TypeError/KeyError/AttributeError and no MANIFEST.json or
+    FAMILIES.md was written at all."""
+
+    def run_build(self, root, plan, state):
+        write_json(root, "plan.json", plan)
+        write_json(root, "state.json", state)
+        with (
+            patch.object(manifest_mod, "load_config", return_value={}),
+            contextlib.redirect_stderr(io.StringIO()) as err,
+        ):
+            manifest_mod.build(root)
+        with open(os.path.join(root, "MANIFEST.json")) as f:
+            manifest = json.load(f)
+        self.assertTrue(os.path.exists(os.path.join(root, "FAMILIES.md")))
+        return manifest, err.getvalue()
+
+    def test_build_with_each_poison_plan_entry_shape(self):
+        # plan entries: 123, "o/r", [], and a dict with no "repo" —
+        # the valid entry must still regenerate the manifest.
+        with tempfile.TemporaryDirectory() as root:
+            manifest, err = self.run_build(
+                root,
+                [{"repo": "a/b", "size_kb": 1}, 123, "o/r", [], {"size_kb": 1}],
+                {},
+            )
+            self.assertEqual(list(manifest["mirrors"]), ["a/b"])
+            self.assertEqual(manifest["totals"]["missing"], 1)
+            for idx in ("entry 1", "entry 2", "entry 3", "entry 4"):
+                self.assertIn(idx, err)
+
+    def test_build_with_plan_top_level_dict(self):
+        with tempfile.TemporaryDirectory() as root:
+            manifest, err = self.run_build(root, {"repo": "o/r"}, {})
+            self.assertEqual(manifest["mirrors"], {})
+            self.assertIn("plan.json", err)
+            self.assertIn("top level", err)
+
+    def test_build_with_poison_state_entries(self):
+        # state values 123 and "t" crashed `(state.get(repo) or
+        # {}).get("last_fetch")` pre-fix; both are dropped by name
+        # and the manifest still regenerates for the valid plan.
+        with tempfile.TemporaryDirectory() as root:
+            manifest, err = self.run_build(
+                root,
+                [{"repo": "a/b"}, {"repo": "c/d"}],
+                {"a/b": 123, "c/d": "t"},
+            )
+            self.assertEqual(sorted(manifest["mirrors"]), ["a/b", "c/d"])
+            self.assertIsNone(manifest["mirrors"]["a/b"]["last_fetch"])
+            self.assertIn("a/b", err)
+            self.assertIn("c/d", err)
+
+    def test_build_with_state_top_level_list(self):
+        with tempfile.TemporaryDirectory() as root:
+            manifest, err = self.run_build(root, [{"repo": "a/b"}], [])
+            self.assertEqual(list(manifest["mirrors"]), ["a/b"])
+            self.assertIn("state.json", err)
+
     def test_build_regenerates_with_poison_entries_skipped(self):
         with tempfile.TemporaryDirectory() as root:
             write_json(
