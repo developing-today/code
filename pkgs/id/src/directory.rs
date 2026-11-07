@@ -534,8 +534,8 @@ impl Directory {
     /// Fails if a line is malformed or an entry breaks a directory rule.
     pub fn replay(path: &Path) -> Result<Self> {
         let mut directory = Self::new();
-        let text = match std::fs::read_to_string(path) {
-            Ok(text) => text,
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(directory),
             Err(error) => return Err(error.into()),
         };
@@ -546,12 +546,15 @@ impl Directory {
         // drop the fragment (parseable or not), warn, and truncate the
         // file to the last complete line. A newline-terminated line
         // that does not parse is corruption and still fails below.
-        let kept_len = if text.is_empty() || text.ends_with('\n') {
-            text.len()
+        let kept_len = if bytes.is_empty() || bytes.ends_with(b"\n") {
+            bytes.len()
         } else {
-            text.rfind('\n').map_or(0, |index| index + 1)
+            bytes
+                .iter()
+                .rposition(|&byte| byte == b'\n')
+                .map_or(0, |index| index + 1)
         };
-        if kept_len < text.len() {
+        if kept_len < bytes.len() {
             tracing::warn!(
                 "directory journal {}: dropping torn final entry at byte {kept_len}",
                 path.display()
@@ -561,7 +564,9 @@ impl Directory {
                 .open(path)?
                 .set_len(u64::try_from(kept_len)?)?;
         }
-        for (number, line) in text[..kept_len].lines().enumerate() {
+        let text =
+            std::str::from_utf8(&bytes[..kept_len]).context("directory journal is not UTF-8")?;
+        for (number, line) in text.lines().enumerate() {
             if line.trim().is_empty() {
                 continue;
             }
@@ -4551,19 +4556,24 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("directory.jsonl");
         let mut directory = Directory::new();
-        let (ann, ann_credential) = account_into(&mut directory, &path, "Ann");
+        let (ann, ann_credential) = account_into(&mut directory, &path, "José");
         let (_bo, _) = account_into(&mut directory, &path, "Bo");
-        let complete = std::fs::read_to_string(&path).unwrap();
+        let complete = std::fs::read(&path).unwrap();
 
-        // A crash mid-append leaves half a JSON entry with no newline.
-        let mut text = complete.clone();
-        text.push_str("{\"account_created\":{\"id\":\"torn");
-        std::fs::write(&path, text).unwrap();
+        // A crash after the first byte of a multibyte name leaves invalid
+        // UTF-8 in the unterminated final entry.
+        let mut torn = complete.clone();
+        torn.extend_from_slice(b"{\"name\":\"Jos");
+        torn.push(0xc3); // First byte of "é".
+        std::fs::write(&path, torn).unwrap();
 
-        let replayed = Directory::replay(&path).unwrap();
+        let mut replayed = Directory::replay(&path).unwrap();
         assert_eq!(replayed.account_for(&ann_credential), Some(ann));
         // The fragment is gone: the file is back to the complete lines.
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), complete);
+        assert_eq!(std::fs::read(&path).unwrap(), complete);
+        let (carol, carol_credential) = account_into(&mut replayed, &path, "Carol");
+        let roundtrip = Directory::replay(&path).unwrap();
+        assert_eq!(roundtrip.account_for(&carol_credential), Some(carol));
     }
 
     #[test]

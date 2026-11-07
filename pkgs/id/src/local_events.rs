@@ -276,8 +276,12 @@ impl LocalEvents {
         tags: &[(String, Option<String>)],
     ) -> Result<Published> {
         let document = DocumentRef::for_bytes(media_type, content)?;
+        let mut seen = HashSet::with_capacity(tags.len());
         for (name, value) in tags {
             check_tag(name, value.as_deref())?;
+            if !seen.insert((name, value)) {
+                bail!("a publish names the same tag twice");
+            }
         }
         let id = self.record(DOCUMENT_KIND, None, Some(document.clone()), None, None, &[])?;
         let mut claims = Vec::with_capacity(tags.len());
@@ -1166,6 +1170,44 @@ mod tests {
         assert!(check_tag("topic", Some("plans")).is_ok());
         assert!(check_tag("", None).is_err());
         assert!(check_tag("e\u{301}", None).is_err());
+    }
+
+    #[test]
+    fn test_publish_refuses_a_repeated_tag_pair_before_recording() {
+        // Regression for #4772: a repeated exact (name, value) pair in one
+        // publish call recorded two identical live claims. The batch must be
+        // refused before anything is recorded, like the sibling validators
+        // (tag.clear claim lists, ChainExt.after, note.revise parents).
+        let (_dir, mut events) = open_events();
+        assert!(events.frontier().unwrap().is_empty());
+        for tags in [
+            vec![
+                ("city".to_owned(), Some("Seattle".to_owned())),
+                ("city".to_owned(), Some("Seattle".to_owned())),
+            ],
+            vec![("city".to_owned(), None), ("city".to_owned(), None)],
+        ] {
+            assert!(events.publish("text/plain", b"hello", &tags).is_err());
+            assert!(
+                events.frontier().unwrap().is_empty(),
+                "a refused publish records nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn test_publish_accepts_distinct_pairs_sharing_a_name() {
+        // Same name with different values, and bare plus valued, are distinct
+        // claims and must stay legal — only the exact pair repeats refuse.
+        let (_dir, mut events) = open_events();
+        let tags = vec![
+            ("city".to_owned(), Some("Seattle".to_owned())),
+            ("city".to_owned(), Some("Portland".to_owned())),
+            ("city".to_owned(), None),
+        ];
+        let published = events.publish("text/plain", b"hello", &tags).unwrap();
+        assert_eq!(published.claims.len(), 3);
+        assert_eq!(events.tags_on(published.id).unwrap().len(), 3);
     }
 
     fn open_events() -> (tempfile::TempDir, LocalEvents) {

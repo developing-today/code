@@ -170,17 +170,27 @@ def supervision_step(mode: str) -> List[Dict]:
         try:
             # Use repo-queue to list tasks
             result = subprocess.run(
-                [str(REPO_QUEUE_CMD), "list", "--worker", "opencode-claimant", "--queue", queue],
+                [str(REPO_QUEUE_CMD), "list", "--queue", queue, "--status", "claimed"],
                 capture_output=True,
                 text=True,
                 timeout=10
             )
-            
+
             if result.returncode == 0:
-                tasks = json.loads(result.stdout)
-                for task in tasks:
-                    if task.get("lane") == "opencode" and task.get("session_id"):
-                        session_id = task["session_id"]
+                data = json.loads(result.stdout)
+                if isinstance(data, dict):
+                    data = data.get("rows") or []
+                for task in data:
+                    if not isinstance(task, dict):
+                        continue
+                    # Rich rows carry lane/session in progress; a
+                    # flattened row carries them at top level (#4757:
+                    # the list verb rejects --worker, so this call
+                    # silently fetched nothing before).
+                    prog = task.get("progress") or {}
+                    lane = prog.get("lane") or task.get("lane")
+                    session_id = prog.get("session_id") or task.get("session_id")
+                    if lane == "opencode" and session_id:
                         
                         # Check if session exists and is progressing
                         try:

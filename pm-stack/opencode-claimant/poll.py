@@ -247,13 +247,30 @@ def _server_get(path):
     return data
 
 
+SESSION_FETCH_LIMITS = (1000, 10000, 100000)
+
+
 def fetch_sessions():
-    """The server's session list (GET /api/session), or None when
-    unreadable."""
-    data = _server_get("/api/session")
-    if not isinstance(data, list):
-        return None
-    return data
+    """The server's COMPLETE session list (GET /api/session), or None
+    when completeness cannot be proven.
+
+    The endpoint truncates at 50 entries by default (#4757, verified
+    live 2026-11-07). It honours `limit` — ?limit=1000 returns 1000
+    rows — but NOT `offset`: an offset page repeats the first page,
+    so offset pagination cannot prove completeness here. Read with
+    an escalating limit instead: the first read whose count is
+    BELOW the requested limit is the whole list by construction.
+    If every read comes back exactly at its limit, the list may
+    still be truncated, so the fetch fails closed (None) rather
+    than let a partial list undercount the cap or make a bound
+    session read as gone."""
+    for limit in SESSION_FETCH_LIMITS:
+        data = _server_get(f"/api/session?limit={limit}")
+        if not isinstance(data, list):
+            return None
+        if len(data) < limit:
+            return data
+    return None
 
 
 def fetch_active_ids():
