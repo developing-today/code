@@ -36,6 +36,8 @@ on:
     paths:
       - "lib/bws-to-sops.sh"
       - "lib/bws-to-sops-check.test.sh"
+      - "lib/bws-freshness-drift-issue.sh"
+      - "lib/bws-freshness-drift-issue.test.sh"
       - ".github/workflows/bws-freshness.yml"
 
 permissions:
