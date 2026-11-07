@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildRunRow, dedupeKey, skipReason } from "../src/policy";
+import { FLEET_REPOS, buildRunRow, dedupeKey, skipReason } from "../src/policy";
 
 const failurePayload = {
   action: "completed",
@@ -19,6 +19,13 @@ const failurePayload = {
   },
   repository: { full_name: "developing-today/code" },
 };
+
+describe("fleet repos", () => {
+  it("covers the EF set and the fleet-fetch snapshot slugs", () => {
+    for (const r of ["developing-today/code", "developing-today/opencode", "developing-today/openchamber", "dezren39/nix", "developing-today-forks/opencode", "developing-today-forks/openchamber", "dezren39/darwin-nix"]) expect(FLEET_REPOS.has(r)).toBe(true);
+    expect(FLEET_REPOS.has("developing-today/other")).toBe(false);
+  });
+});
 
 describe("v4 ingest policy", () => {
   it("stores completed non-skipped runs only", () => {

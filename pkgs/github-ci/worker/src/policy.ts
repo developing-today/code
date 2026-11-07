@@ -4,10 +4,17 @@
  * #5693 dual-run diff period.
  */
 export const FLEET_REPOS = new Set([
+  // The Edge Function's set (v8), kept verbatim for parity:
   "developing-today/code",
   "developing-today/opencode",
   "developing-today/openchamber",
   "dezren39/nix",
+  // The slugs fleet-fetch actually snapshots (the EF set names the
+  // pre-fork / pre-rename slugs, so its push handling never fired
+  // for these; the union makes the snapshot advance real, #5693):
+  "developing-today-forks/opencode",
+  "developing-today-forks/openchamber",
+  "dezren39/darwin-nix",
 ]);
 
 export interface RunRow {
