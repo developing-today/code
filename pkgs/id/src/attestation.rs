@@ -22,6 +22,20 @@
 //! genesis and concurred, `Agreed` when both claims concur on outcome
 //! and final-state hash, `Disputed` when both claims exist and differ
 //! (the wrong-winner negative case can never compute `Agreed`).
+//!
+//! A malformed agreement is no agreement: the two seats must be two
+//! distinct players (#2863, design #2898). [`compute_state`] returns
+//! `Proposed` for a duplicate-seat agreement regardless of the genesis
+//! and claim set, and [`sign_genesis`] refuses to sign one. Likewise a
+//! claim whose outcome is outside the countable shape (`"draw"` or a
+//! lowercase 64-character hex id) is dead on arrival, and
+//! [`sign_claim`] refuses to sign one (#6441).
+//!
+//! Reconstruction is admission, not deserialization: derive conclusions from
+//! signature-verified authors and compare claims with the selected agreement.
+//! Reject, ignore, or dispute inconsistent input according to the API's rules;
+//! never silently repair it or let an input's own claims establish authority.
+//! New fields and restore paths must be checked against verifier-owned state.
 
 use p2panda_core::{Hash, SeqNum, SigningKey};
 use serde::{Deserialize, Serialize};
@@ -147,9 +161,15 @@ pub enum MatchState {
 
 /// Signs a genesis agreement as an `attestation.genesis` event.
 ///
+/// Refuses a duplicate-seat agreement (both seats the same player): a
+/// mutual concession needs two distinct players, so no honest signer
+/// should produce one. The viewer ([`compute_state`]) enforces the same
+/// invariant on already-signed objects from peers.
+///
 /// # Errors
 ///
-/// Returns a chain error if the extension or backlink is invalid, or a
+/// Returns [`SignError::DuplicateSeat`] if both seats name the same
+/// player, a chain error if the extension or backlink is invalid, or a
 /// JSON error if the agreement cannot be serialized.
 pub fn sign_genesis(
     key: &SigningKey,
@@ -158,6 +178,10 @@ pub fn sign_genesis(
     agreement: &GenesisAgreement,
     after: Vec<Hash>,
 ) -> Result<Event, SignError> {
+    let [first, second] = agreement.players;
+    if first == second {
+        return Err(SignError::DuplicateSeat);
+    }
     let body = agreement.body()?;
     Ok(chain::sign(
         key,
@@ -172,15 +196,25 @@ pub fn sign_genesis(
             document: None,
             removes: None,
             note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
         },
     )?)
 }
 
 /// Signs a result claim as an `attestation.claim` event.
 ///
+/// Returns [`SignError::InvalidOutcome`] if the claim's outcome is
+/// outside the shape [`compute_state`] can ever count: it must be
+/// exactly `"draw"` or a 64-character lowercase hex player id (#6441).
+/// Whether a well-formed hex outcome names a *seated* player is
+/// knowable only against the agreement and stays `compute_state`'s
+/// call, so any well-formed hex signs here.
+///
 /// # Errors
 ///
-/// As [`sign_genesis`].
+/// As [`sign_genesis`], plus [`SignError::InvalidOutcome`] above.
 pub fn sign_claim(
     key: &SigningKey,
     seq_num: SeqNum,
@@ -188,6 +222,15 @@ pub fn sign_claim(
     claim: &ResultClaim,
     after: Vec<Hash>,
 ) -> Result<Event, SignError> {
+    let outcome = claim.outcome.as_str();
+    let well_formed = outcome == "draw"
+        || (outcome.len() == 64
+            && outcome
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+    if !well_formed {
+        return Err(SignError::InvalidOutcome);
+    }
     let body = claim.body()?;
     Ok(chain::sign(
         key,
@@ -202,6 +245,9 @@ pub fn sign_claim(
             document: None,
             removes: None,
             note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
         },
     )?)
 }
@@ -215,18 +261,28 @@ pub fn sign_claim(
 /// verified every signature before this function sees an object.
 ///
 /// Rules: without both players signing the *identical* agreement the
-/// match is `Proposed`. With a complete genesis, one claim is still
-/// `Proposed`; two claims (one per player) that concur on outcome and
-/// final-state hash are `Agreed`; two claims that differ in either are
-/// `Disputed`. A player claiming twice with different claims is a
-/// fork of position and computes `Disputed`, never `Agreed`. Claims
-/// answering a different agreement, or from non-players, are ignored.
+/// match is `Proposed`. An agreement whose two seats name the same player
+/// is malformed and is also `Proposed`, whatever the genesis and claim
+/// set: a self-match is not a mutual concession (#2863). With a complete
+/// genesis, one claim is still `Proposed`; two claims (one per player)
+/// that concur on outcome and final-state hash are `Agreed`; two claims
+/// that differ in either are `Disputed`. A claim's position is defined by
+/// its `agreement`, `outcome`, and `final_state_hash`; `frontiers` are
+/// observation evidence and do not distinguish positions. A player
+/// claiming twice at different positions is a fork and computes
+/// `Disputed`, never `Agreed`. Claims answering a different agreement,
+/// from non-players, or with an outcome other than `"draw"` or a seated
+/// player's lowercase 64-character hex id are ignored.
 #[must_use]
 pub fn compute_state(
     agreement: &GenesisAgreement,
     genesis: &[(PlayerId, GenesisAgreement)],
     claims: &[(PlayerId, ResultClaim)],
 ) -> MatchState {
+    let [first, second] = agreement.players;
+    if first == second {
+        return MatchState::Proposed;
+    }
     let genesis_ok = agreement.players.iter().all(|player| {
         genesis
             .iter()
@@ -238,13 +294,29 @@ pub fn compute_state(
     let Ok(agreement_hash) = agreement.agreement_hash() else {
         return MatchState::Proposed;
     };
+    let player_outcomes = agreement.players.map(|player| {
+        player
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    });
     let mut per_player: [Option<&ResultClaim>; 2] = [None, None];
     for (index, player) in agreement.players.iter().enumerate() {
         for (author, claim) in claims {
-            if author == player && claim.agreement == agreement_hash {
+            let valid_outcome = claim.outcome == "draw"
+                || player_outcomes
+                    .iter()
+                    .any(|player_outcome| player_outcome == &claim.outcome);
+            if author == player && claim.agreement == agreement_hash && valid_outcome {
                 match per_player[index] {
                     None => per_player[index] = Some(claim),
-                    Some(first) if first != claim => return MatchState::Disputed,
+                    Some(first)
+                        if first.agreement != claim.agreement
+                            || first.outcome != claim.outcome
+                            || first.final_state_hash != claim.final_state_hash =>
+                    {
+                        return MatchState::Disputed;
+                    }
                     Some(_) => {}
                 }
             }
@@ -262,14 +334,19 @@ pub fn compute_state(
     }
 }
 
-/// A signing failure: the object would not serialize, or the chain
-/// refused the event.
+/// A signing failure: the object would not serialize, the chain
+/// refused the event, or the object names the same player in both seats.
 #[derive(Debug)]
 pub enum SignError {
     /// The object would not serialize to its canonical body.
     Json(serde_json::Error),
     /// The chain refused the event (extension or backlink rules).
     Chain(chain::ChainError),
+    /// Both seats of the agreement name the same player (#2863).
+    DuplicateSeat,
+    /// The claim's outcome is neither `"draw"` nor a 64-character
+    /// lowercase hex player id, so no view could ever count it (#6441).
+    InvalidOutcome,
 }
 
 impl From<serde_json::Error> for SignError {
@@ -289,6 +366,15 @@ impl std::fmt::Display for SignError {
         match self {
             Self::Json(err) => write!(f, "attestation object would not serialize: {err}"),
             Self::Chain(err) => write!(f, "chain refused the attestation event: {err:?}"),
+            Self::DuplicateSeat => {
+                write!(f, "both seats of the agreement name the same player")
+            }
+            Self::InvalidOutcome => {
+                write!(
+                    f,
+                    "claim outcome is neither \"draw\" nor a 64-character lowercase hex player id"
+                )
+            }
         }
     }
 }

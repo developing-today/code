@@ -110,6 +110,8 @@ fn entry_fields(entry: &Entry) -> Vec<(&'static str, Value)> {
         } => {
             fields.push(("note", json!(note.to_hex())));
             fields.push(("content", json!(content.content.to_hex())));
+            fields.push(("size", json!(content.size)));
+            fields.push(("media_type", json!(content.media_type)));
             let named: Vec<String> = parents.iter().map(Hash::to_hex).collect();
             fields.push(("parents", json!(named.join(","))));
         }
@@ -178,4 +180,46 @@ pub async fn cmd_doc(path: Option<PathBuf>, json: bool, command: DocCommand) -> 
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::documents::DocumentRef;
+    use crate::waiting::AuthorKey;
+
+    fn hash(byte: u8) -> Hash {
+        Hash::from_bytes([byte; 32])
+    }
+
+    fn author(byte: u8) -> AuthorKey {
+        [byte; 32]
+    }
+
+    #[test]
+    fn test_note_revise_listing_row_includes_size_and_media_type() {
+        let content = DocumentRef::for_bytes("text/markdown", b"revised").unwrap();
+        let entry = Entry::NoteRevise {
+            id: hash(11),
+            author: author(1),
+            note: hash(10),
+            content,
+            parents: vec![hash(10)],
+        };
+        let fields = entry_fields(&entry);
+        let get = |name: &str| -> Option<&Value> {
+            fields
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value)
+        };
+        // The regression: revise rows omitted the revision's size and media type
+        // while Document and NoteCreate rows rendered both (issue #4041).
+        assert_eq!(get("size"), Some(&json!(7)));
+        assert_eq!(get("media_type"), Some(&json!("text/markdown")));
+        // The pre-existing arms are unchanged.
+        assert_eq!(get("note"), Some(&json!(hash(10).to_hex())));
+        assert_eq!(get("parents"), Some(&json!(hash(10).to_hex())));
+    }
 }

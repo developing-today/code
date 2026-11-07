@@ -28,6 +28,37 @@ func TestWellFormedSamplingRequestPassesInBothEras(t *testing.T) {
 	}
 }
 
+func TestSamplingRequestRequiresAtLeastOneMessage(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "missing", body: `{}`},
+		{name: "null", body: `{"messages":null}`},
+		{name: "empty", body: `{"messages":[]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, arrayOK := range []bool{false, true} {
+				if err := req(t, tc.body, arrayOK); err == nil {
+					t.Fatalf("arrayOK=%t accepted request with no messages", arrayOK)
+				}
+			}
+		})
+	}
+}
+
+func TestEmptyArrayContentIsRejected(t *testing.T) {
+	request := `{"messages":[{"role":"user","content":[]}]}`
+	if err := req(t, request, true); err == nil {
+		t.Fatal("a request message with empty array content was accepted")
+	}
+
+	result := `{"role":"assistant","model":"m","content":[]}`
+	if err := res(t, result, true, false); err == nil {
+		t.Fatal("a result with empty array content was accepted")
+	}
+}
+
 func TestArrayContentIsOnlyLegalFrom20251125(t *testing.T) {
 	// SMP-05: single block before 2025-11-25, single or array after.
 	body := `{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
@@ -68,6 +99,12 @@ func TestSamplingResultMustCarryRoleAndModel(t *testing.T) {
 	if err := res(t, `{"content":{"type":"text","text":"hi"},"model":"m"}`, true, false); err == nil {
 		t.Fatal("a result with no role was accepted")
 	}
+	for _, role := range []string{"", "user"} {
+		body := `{"role":"` + role + `","model":"m","content":{"type":"text","text":"hi"}}`
+		if err := res(t, body, true, false); err == nil {
+			t.Errorf("a result with role %q was accepted", role)
+		}
+	}
 	if err := res(t, `{"role":"assistant","content":{"type":"text","text":"hi"}}`, true, false); err == nil {
 		t.Fatal("a result with no model was accepted")
 	}
@@ -84,6 +121,10 @@ func TestToolUseResultNeedsAToolsCarryingRequest(t *testing.T) {
 	}
 	if err := res(t, toolUse, true, true); err != nil {
 		t.Fatalf("tool use was rejected against a request that carried tools: %v", err)
+	}
+	unknownStopReason := `{"role":"assistant","model":"m","content":[{"type":"tool_use","id":"t1","name":"x","input":{}}],"stopReason":"futureReason"}`
+	if err := res(t, unknownStopReason, true, true); err != nil {
+		t.Fatalf("an unrecognized stopReason was rejected for a request that carried tools: %v", err)
 	}
 	stopOnly := `{"role":"assistant","model":"m","content":{"type":"text","text":"hi"},"stopReason":"toolUse"}`
 	if err := res(t, stopOnly, true, false); err == nil {

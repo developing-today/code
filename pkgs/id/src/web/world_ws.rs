@@ -17,7 +17,7 @@ use futures::{
     SinkExt, StreamExt,
     stream::{SplitSink, SplitStream},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::directory::Refusal;
 use crate::directory_auth::{Caller, Signed};
@@ -47,15 +47,156 @@ pub struct WorldWebState {
 /// Routes for the world session bridge; merge into any `Router<S>` with
 /// [`WorldWebState`] as the provided state.
 pub fn world_routes() -> axum::Router<WorldWebState> {
+    world_routes_at("/ws/world")
+}
+
+/// Routes for the world session bridge with the live channel bound
+/// at `socket` - the [interfaces.web] parameterisation (#2325).
+/// Every other route is the shared world API surface, unchanged.
+/// Two apps bound at different sockets can be merged into one
+/// server (or served side by side) without either seeing the
+/// other's channel.
+pub fn world_routes_at(socket: &str) -> axum::Router<WorldWebState> {
+    world_http_routes().route(socket, axum::routing::get(handler))
+}
+
+/// The shared world HTTP surface - invite, metrics, directory and
+/// the script-free explore/invite pages - with no live channel.
+/// An app whose `[interfaces.web]` section declares no socket still
+/// serves these routes; only the websocket bridge is socket-bound
+/// (Codex P2 on #3894).
+pub fn world_http_routes() -> axum::Router<WorldWebState> {
     axum::Router::new()
-        .route("/ws/world", axum::routing::get(handler))
         .route("/api/world/invite", axum::routing::post(invite_handler))
+        .route(
+            "/api/world/host-view",
+            axum::routing::get(host_view_handler),
+        )
         .route("/api/world/metrics", axum::routing::get(metrics_handler))
         .merge(super::explore::explore_routes())
         .route(
             "/api/world/directory",
             axum::routing::get(directory_read_handler).post(directory_write_handler),
         )
+}
+
+#[derive(Debug, Deserialize)]
+struct HostViewQuery {
+    world: Option<String>,
+    after: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct HostViewResponse {
+    snapshot: Option<crate::world::WorldSnapshot>,
+    view: Option<String>,
+    surface: Option<crate::world_presentation::WorldSurface>,
+    records_sequence: u64,
+    records: crate::world::Records,
+    next_after: Option<String>,
+}
+
+/// A revision identifying the exact records snapshot, for the host view's
+/// cross-page consistency check. The watch channel's event sequence cannot
+/// serve: host-originated record changes republish records under an
+/// unchanged event sequence (`WorldActor::deliver`), so pages validated
+/// against it could silently mix snapshots. FNV-1a over the canonical
+/// (BTreeMap-ordered) JSON encoding, folded to 53 bits so the value
+/// survives JSON number round-trips in the browser exactly.
+fn records_revision(records: &crate::world::Records) -> u64 {
+    let bytes = serde_json::to_vec(records).unwrap_or_default();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash & ((1 << 53) - 1)
+}
+
+/// The host view uses the existing admin secret, not a guest capability. It
+/// is deliberately an HTTP read so the shared shell frame protocol is unchanged.
+async fn host_view_handler(
+    State(state): State<WorldWebState>,
+    headers: HeaderMap,
+    Query(query): Query<HostViewQuery>,
+) -> Response {
+    let Some(hub) = state.hub else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Some(token) = headers
+        .get("x-world-admin-token")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if !hub.admin_ok(token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    // Resolve without the admin creation path: viewing a typo must not create
+    // a new world as a side effect.
+    let lease = match hub.lease(query.world.as_deref(), None).await {
+        Ok(lease) => lease,
+        Err(ResolveError::Busy | ResolveError::TooManyWorlds) => {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let world = lease.service().world();
+    let (snapshot, view) = if query.after.is_none() {
+        match world.host_view().await {
+            Ok((snapshot, view)) => (Some(snapshot), view),
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
+    } else {
+        (None, None)
+    };
+    let (_, current_records) = world.records();
+    let records_sequence = records_revision(&current_records);
+    let mut records = crate::world::Records::new();
+    let mut used = 0usize;
+    let mut last_included = None;
+    let mut more = false;
+    for (key, value) in current_records.iter() {
+        if query
+            .after
+            .as_deref()
+            .is_some_and(|after| key.as_str() <= after)
+        {
+            continue;
+        }
+        let size = key.len() + serde_json::to_vec(value).map_or(0, |bytes| bytes.len()) + 8;
+        if used + size > crate::world_session::MAX_RECORDS_PAGE_BYTES {
+            if records.is_empty() {
+                return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+            }
+            more = true;
+            break;
+        }
+        used += size;
+        last_included = Some(key.clone());
+        records.insert(key.clone(), value.clone());
+    }
+    let next_after = more.then_some(last_included).flatten();
+    let surface = match view
+        .as_deref()
+        .map(crate::world_presentation::parse_surface)
+    {
+        Some(Ok(surface)) => surface,
+        Some(Err(_)) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        None => None,
+    };
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(HostViewResponse {
+            snapshot,
+            view,
+            surface,
+            records_sequence,
+            records,
+            next_after,
+        }),
+    )
+        .into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -358,7 +499,10 @@ fn refusal_response(error: &anyhow::Error) -> Response {
     // and as a `Retry-After` header. The directory limiters behind
     // this surface compute no bucket value of their own, so the abuse
     // contract's floor (`RETRY_FLOOR_MS`) is what is emitted.
-    if matches!(error.downcast_ref::<Refusal>(), Some(Refusal::RateLimited(_))) {
+    if matches!(
+        error.downcast_ref::<Refusal>(),
+        Some(Refusal::RateLimited(_))
+    ) {
         let retry_ms = crate::abuse::RETRY_FLOOR_MS;
         return (
             StatusCode::TOO_MANY_REQUESTS,
@@ -477,7 +621,9 @@ impl SessionIo for WsIo {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::world::{JoinCapability, WorldCore, WorldHandle, WorldLimits};
+    use crate::world::{
+        JoinCapability, Participant, WorldCore, WorldHandle, WorldLimits, WorldProgram,
+    };
     use crate::world_session::WorldService;
     use axum::http::StatusCode;
     use axum::{body::Body, http::Request};
@@ -548,6 +694,54 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn host_view_requires_admin_and_does_not_register_a_guest() {
+        struct HostViewerProgram;
+        impl WorldProgram for HostViewerProgram {
+            fn view(&mut self, viewer: &Participant) -> anyhow::Result<Option<String>> {
+                Ok(Some(viewer.display_name.clone()))
+            }
+        }
+        let core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        let world = WorldHandle::spawn_with_program(core, Box::new(HostViewerProgram));
+        let router = app(Some(world), Some("s3cret"));
+        for request in [
+            Request::get("/api/world/host-view")
+                .body(Body::empty())
+                .unwrap(),
+            Request::get("/api/world/host-view")
+                .header("x-world-admin-token", "wrong")
+                .body(Body::empty())
+                .unwrap(),
+        ] {
+            let response = router.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        let response = router
+            .oneshot(
+                Request::get("/api/world/host-view")
+                    .header("x-world-admin-token", "s3cret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["snapshot"]["participants"], serde_json::json!([]));
+        assert!(value["snapshot"]["active_module_hash"].is_null());
+        assert_eq!(value["view"], "Host");
+        assert_eq!(value["records"], serde_json::json!({}));
     }
 
     fn directory_request(
@@ -1457,5 +1651,76 @@ mod tests {
         // An idle peer remains connected and can publish after its neighbor is
         // revoked, which demonstrates revocation didn't poison the world.
         assert_eq!(world.chat(bob, "still here").await.unwrap().sequence, 1);
+    }
+
+    #[tokio::test]
+    async fn two_apps_bind_distinct_sockets() {
+        // App A keeps the historical binding; app B binds its own
+        // socket from its [interfaces.web] section (#2325).
+        let addr_a = serve(world_routes().with_state(WorldWebState {
+            hub: Some(WorldHub::single(WorldService::new(lobby(), None))),
+            cookie_secure: false,
+        }))
+        .await;
+        let addr_b = serve(world_routes_at("/ws/arena").with_state(WorldWebState {
+            hub: Some(WorldHub::single(WorldService::new(lobby(), None))),
+            cookie_secure: false,
+        }))
+        .await;
+
+        // Each app answers a websocket handshake on its own socket...
+        let (mut client_a, _) = tokio_tungstenite::connect_async(format!("ws://{addr_a}/ws/world"))
+            .await
+            .unwrap();
+        let (mut client_b, _) = tokio_tungstenite::connect_async(format!("ws://{addr_b}/ws/arena"))
+            .await
+            .unwrap();
+        // ...and neither answers on the other's: the bindings are
+        // distinct, not aliased.
+        assert!(
+            tokio_tungstenite::connect_async(format!("ws://{addr_a}/ws/arena"))
+                .await
+                .is_err()
+        );
+        assert!(
+            tokio_tungstenite::connect_async(format!("ws://{addr_b}/ws/world"))
+                .await
+                .is_err()
+        );
+        let _ = client_a.close(None).await;
+        let _ = client_b.close(None).await;
+    }
+
+    #[tokio::test]
+    async fn http_routes_serve_without_a_socket() {
+        // The shared HTTP surface is served even when an app binds
+        // no live channel (Codex P2 on #3894): metrics answers 401
+        // (route present, no token) rather than 404 (route absent),
+        // and the script-free explore page renders.
+        let router = world_http_routes().with_state(WorldWebState {
+            hub: Some(WorldHub::single(WorldService::new(lobby(), None))),
+            cookie_secure: false,
+        });
+        let metrics = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/world/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(metrics.status(), StatusCode::UNAUTHORIZED);
+        let explore = router
+            .oneshot(
+                Request::builder()
+                    .uri("/explore")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(explore.status(), StatusCode::OK);
     }
 }

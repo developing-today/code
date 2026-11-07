@@ -7,10 +7,9 @@
 import argparse
 import hashlib
 import json
-from pathlib import Path
 import subprocess
 import sys
-
+from pathlib import Path
 
 SKILLS = (
     "research-workflow",
@@ -40,10 +39,46 @@ def inside(root, relative):
     return candidate
 
 
+def load_json_object(path):
+    value = json.loads(path.read_text())
+    if not isinstance(value, dict):
+        raise ValueError(f"{path}: expected a JSON object")  # noqa: TRY004
+    return value
+
+
+def load_profile(path, *, lifecycle_skills=False):
+    profile = load_json_object(path)
+    if not isinstance(profile.get("workflow_docs"), str):
+        raise ValueError(f"{path}: workflow_docs must be a string")  # noqa: TRY004
+    skills = profile.get("lifecycle_skills", SKILLS)
+    if (
+        lifecycle_skills
+        and "lifecycle_skills" in profile
+        and (
+            not isinstance(skills, list)
+            or any(
+                not isinstance(skill, str) for skill in skills
+            )
+        )
+    ):
+        raise ValueError(f"{path}: lifecycle_skills must be a list of strings")
+    return profile, skills
+
+
+def load_manifest(path):
+    if not path.exists():
+        return {"files": {}}
+    manifest = load_json_object(path)
+    if not isinstance(manifest.get("files"), dict):
+        raise ValueError(f"{path}: files must be an object")  # noqa: TRY004
+    return manifest
+
+
 def source_files(source, target):
-    profile = json.loads((target / ".agents/research-workflow.json").read_text())
-    source_profile = json.loads((source / ".agents/research-workflow.json").read_text())
-    skills = source_profile.get("lifecycle_skills", SKILLS)
+    profile, _ = load_profile(target / ".agents/research-workflow.json")
+    source_profile, skills = load_profile(
+        source / ".agents/research-workflow.json", lifecycle_skills=True
+    )
     mappings = [(Path(source_profile["workflow_docs"]), Path(profile["workflow_docs"]))]
     mappings += [
         (Path(".agents/skills") / name, Path(".agents/skills") / name)
@@ -94,11 +129,7 @@ def sync(source, target, write=False, require_clean=False):
             )
     files = source_files(source, target)
     manifest_path = inside(target, MANIFEST)
-    old = (
-        json.loads(manifest_path.read_text())
-        if manifest_path.exists()
-        else {"files": {}}
-    )
+    old = load_manifest(manifest_path)
     issues, changed = [], []
     for relative, (_, content) in files.items():
         path = inside(target, relative)

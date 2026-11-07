@@ -38,8 +38,7 @@ for (const element of feed.chargesAttention ?? []) {
   if (isConfirmableCharge(element)) attention.push(element);
   else dropped += 1;
 }
-if (dropped > 0)
-  console.error(`confirm-charges-surfaced: dropped ${dropped} malformed chargesAttention element(s)`);
+if (dropped > 0) console.error(`confirm-charges-surfaced: dropped ${dropped} malformed chargesAttention element(s)`);
 if (attention.length) {
   let state: { surfaced?: unknown } = {};
   try {

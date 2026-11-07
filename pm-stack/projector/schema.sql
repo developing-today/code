@@ -38,6 +38,16 @@ CREATE INDEX IF NOT EXISTS pmp_items_repo ON pmp_items(repo);
 CREATE INDEX IF NOT EXISTS pmp_items_state ON pmp_items(state);
 CREATE INDEX IF NOT EXISTS pmp_items_kind ON pmp_items(kind);
 
+-- Item deletion markers (#6782): a deleted issue/PR must stay deleted.
+-- GitHub numbers are never reused within a repo, so a durable marker keyed
+-- by ref makes deletions absorbing for stale webhook/reconcile replays
+-- (the item-level mirror of the pmp_comments tombstone contract).
+CREATE TABLE IF NOT EXISTS pmp_item_deletions (
+  ref               TEXT PRIMARY KEY,        -- "owner/repo#123"
+  source_updated_at TEXT NOT NULL,           -- the deleted item's updated_at at the delete event
+  fetched_at        TEXT NOT NULL            -- ISO-8601 when the marker was written/refreshed
+);
+
 -- ---------------------------------------------------------------------------
 -- Comments across all four repos, including PR-interior comments that Kaneo
 -- never syncs (reviews and review/line comments). This is the unified
@@ -105,6 +115,24 @@ CREATE TABLE IF NOT EXISTS pmp_deliveries (
   detail      TEXT
 );
 
+-- Keep the first failed attempt separately so a later successful retry can
+-- update pmp_deliveries without erasing the original failure evidence.
+CREATE TABLE IF NOT EXISTS pmp_delivery_errors (
+  delivery_id TEXT PRIMARY KEY,
+  event       TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  outcome     TEXT NOT NULL CHECK (outcome = 'error'),
+  detail      TEXT
+);
+
+-- Preserve error rows created by earlier versions before retries can replace
+-- their current outcome in pmp_deliveries. INSERT OR IGNORE makes this safe on
+-- every idempotent migrate() run.
+INSERT OR IGNORE INTO pmp_delivery_errors (delivery_id, event, received_at, outcome, detail)
+SELECT delivery_id, event, received_at, outcome, detail
+FROM pmp_deliveries
+WHERE outcome = 'error';
+
 -- ---------------------------------------------------------------------------
 -- Reconciliation cursors, one per (repo, stream). Idempotent upserts keyed by
 -- repo-qualified IDs are the safety net; these cursors make the poll cheap.
@@ -129,6 +157,41 @@ CREATE TABLE IF NOT EXISTS pmp_push_events (
   before_sha  TEXT,
   pusher      TEXT,
   created_at  TEXT NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- Hot list (#5204): an append-only, normalized change ledger over the same
+-- webhook stream the projector already consumes, plus per-consumer
+-- checkpoints. Rows are normalized projections only -- never full raw
+-- webhook bodies -- and rebuildable by replaying deliveries. `seq` is the
+-- monotonic cursor consumers paginate on; `event_id` is stable per
+-- (delivery, sub-event) so a redelivery of the same x-github-delivery
+-- appends nothing twice, while distinct deliveries stay distinct rows.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pmp_hot_events (
+  seq              INTEGER PRIMARY KEY AUTOINCREMENT, -- monotonic cursor
+  event_id         TEXT NOT NULL UNIQUE,   -- stable id: "<delivery>:<sub-event>"
+  delivery_id      TEXT,                   -- x-github-delivery, when known
+  repo             TEXT NOT NULL,          -- "owner/repo"
+  event            TEXT NOT NULL,          -- webhook event name
+  action           TEXT,                   -- webhook action, when the event has one
+  ref              TEXT,                   -- item ref "owner/repo#N", or git ref for push
+  actor            TEXT,                   -- sender / author login, when available
+  source_url       TEXT,                   -- html_url of the source object, when available
+  source_timestamp TEXT,                   -- source created/updated time, when available
+  received_at      TEXT NOT NULL           -- ISO-8601 when the projector received it
+);
+
+CREATE INDEX IF NOT EXISTS pmp_hot_events_repo ON pmp_hot_events(repo);
+CREATE INDEX IF NOT EXISTS pmp_hot_events_ref ON pmp_hot_events(ref);
+
+-- Per-consumer sweep checkpoints. A checkpoint only ever moves forward and
+-- never past the high-water cursor the server issued for that sweep, so a
+-- failed sweep resumes from its old checkpoint and replays safely.
+CREATE TABLE IF NOT EXISTS pmp_consumer_checkpoints (
+  consumer   TEXT PRIMARY KEY,
+  cursor     INTEGER NOT NULL DEFAULT 0,   -- last acked pmp_hot_events.seq
+  updated_at TEXT NOT NULL
 );
 
 -- ---------------------------------------------------------------------------

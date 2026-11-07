@@ -12,8 +12,7 @@ name: map build
 # go-modules-build.yml since that fix landed, so it is not added here.)
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read

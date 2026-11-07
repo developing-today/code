@@ -18,10 +18,7 @@ async function setupStubGh(dir: string): Promise<string> {
   const { mkdir } = await import("node:fs/promises");
   await mkdir(binDir, { recursive: true });
   const stub = join(binDir, "gh");
-  await writeFile(
-    stub,
-    '#!/bin/sh\necho "$@" >> "$GH_STUB_LOG"\nprintf \'{"usageItems":[]}\'\n',
-  );
+  await writeFile(stub, '#!/bin/sh\necho "$@" >> "$GH_STUB_LOG"\nprintf \'{"usageItems":[]}\'\n');
   await chmod(stub, 0o755);
   return logPath;
 }
@@ -42,10 +39,7 @@ async function runScript(
     stdout: "pipe",
     stderr: "pipe",
   });
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
+  const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
   return { code: await proc.exited, stdout, stderr };
 }
 
@@ -93,12 +87,16 @@ describe("collect-github-billing argument validation (#3419)", () => {
     try {
       const logPath = await setupStubGh(dir);
       const { code, stdout } = await runScript(dir, logPath, [
-        "--year", "2026", "--month", "10", "--user", "octocat", "--print",
+        "--year",
+        "2026",
+        "--month",
+        "10",
+        "--user",
+        "octocat",
+        "--print",
       ]);
       expect(code).toBe(0);
-      expect(await ghCalls(logPath)).toContain(
-        "api users/octocat/settings/billing/usage?year=2026&month=10",
-      );
+      expect(await ghCalls(logPath)).toContain("api users/octocat/settings/billing/usage?year=2026&month=10");
       expect(stdout).toContain("0 record(s) (dry run, outbox untouched)");
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -113,8 +111,7 @@ describe("collect-github-billing argument validation (#3419)", () => {
       expect(code).toBe(0);
       const now = new Date();
       const expected =
-        `api users/dezren39/settings/billing/usage?year=${now.getUTCFullYear()}` +
-        `&month=${now.getUTCMonth() + 1}`;
+        `api users/dezren39/settings/billing/usage?year=${now.getUTCFullYear()}` + `&month=${now.getUTCMonth() + 1}`;
       expect(await ghCalls(logPath)).toContain(expected);
     } finally {
       await rm(dir, { recursive: true, force: true });

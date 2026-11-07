@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -79,9 +80,13 @@ func (r *Registry) InstallHooks(bus *events.Bus, broker *elicit.Broker, roots []
 				Data: mustJSON(map[string]string{"elicitationId": id}),
 			})
 		},
-		Elicit: r.answerServer,
 	}
 	if broker != nil {
+		// The client declares sampling and elicitation.url only when this
+		// handler is installed. Form elicitation is answered with cancel by
+		// mcpclient itself, so a missing broker must not advertise the two
+		// capabilities that depend on it.
+		hooks.Elicit = r.answerServer
 		hooks.URLElicitation = r.urlElicitationsViaBroker
 	}
 	r.upstreamHooks(hooks)
@@ -97,6 +102,28 @@ func (r *Registry) InstallHooks(bus *events.Bus, broker *elicit.Broker, roots []
 		seen[p] = true
 		p.Hooks = hooks
 	}
+}
+
+// rootsFromPaths converts the daemon's explicitly configured filesystem roots
+// into MCP file URIs. Relative paths are resolved from the daemon's working
+// directory when it starts.
+func rootsFromPaths(paths []string) ([]mcpclient.Root, error) {
+	roots := make([]mcpclient.Root, 0, len(paths))
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return nil, fmt.Errorf("resolve daemon root %q: %w", path, err)
+		}
+		abs = filepath.Clean(abs)
+		roots = append(roots, mcpclient.Root{
+			URI:  (&url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}).String(),
+			Name: filepath.Base(abs),
+		})
+	}
+	return roots, nil
 }
 
 func (r *Registry) publish(e events.Event) {
@@ -153,6 +180,15 @@ func mustJSON(v any) json.RawMessage {
 // become a stored question that whatever drives mcpx can answer -- which is
 // exactly what "passthrough" means.
 func (r *Registry) answerServer(ctx context.Context, server, key, method string, params json.RawMessage) (any, error) {
+	if method == "sampling/createMessage" && r.consumer.SamplingAnswerLocally {
+		// sampling.answerLocally (#1925 slice 3): mcpx answers from its
+		// own configured provider layer instead of relaying the request
+		// to a caller. This precedes the broker check on purpose: a
+		// local answer needs no broker, and a daemon with the setting
+		// on but nothing configured hears the clean failure from
+		// sampleLocally rather than a missing-broker error.
+		return r.sampleLocally(ctx, server, key, params)
+	}
 	if r.broker == nil {
 		// Nothing can answer, so say so rather than hang. Cancel is honest:
 		// nobody was asked, so nobody chose.

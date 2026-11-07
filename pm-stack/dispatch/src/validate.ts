@@ -78,7 +78,16 @@ export function parseModel(input: unknown): ModelRef | null {
     if (slash <= 0 || slash === t.length - 1) {
       throw new ValidationError(`model: string form must be "provider/model", got ${JSON.stringify(input)}`);
     }
-    return { providerID: t.slice(0, slash), id: t.slice(slash + 1) };
+    // Hold the string form to the same standard as the object form below:
+    // each segment is trimmed, and an empty segment after trimming is
+    // rejected. A hint like "anthropic / claude-sonnet" must not launch a
+    // session against a provider named "anthropic ".
+    const providerID = t.slice(0, slash).trim();
+    const id = t.slice(slash + 1).trim();
+    if (!providerID || !id) {
+      throw new ValidationError(`model: string form must be "provider/model", got ${JSON.stringify(input)}`);
+    }
+    return { providerID, id };
   }
   if (typeof input === "object") {
     const o = input as Record<string, unknown>;
@@ -223,11 +232,7 @@ function resolveComponent(path: string, budget: SymlinkBudget, depth: number): s
     if (lstatSync(path).isSymbolicLink()) {
       const target = readlinkSync(path);
       const parent = path.slice(0, path.lastIndexOf("/")) || "/";
-      const absolute = target.startsWith("/")
-        ? target
-        : parent === "/"
-          ? `/${target}`
-          : `${parent}/${target}`;
+      const absolute = target.startsWith("/") ? target : parent === "/" ? `/${target}` : `${parent}/${target}`;
       // The budget is shared across the WHOLE resolution, not per
       // recursion: a chain of dangling links shaped
       // lN -> l(N-1)/../l(N-1) doubles the expansions per level while
@@ -237,9 +242,7 @@ function resolveComponent(path: string, budget: SymlinkBudget, depth: number): s
       // bound inside realpathSync has the same shape.
       budget.expansions += 1;
       if (budget.expansions > 40) {
-        throw new ValidationError(
-          `directory: too many symlink expansions resolving "${path}"`,
-        );
+        throw new ValidationError(`directory: too many symlink expansions resolving "${path}"`);
       }
       return canonicalizeDirectory(absolute, budget, depth + 1);
     }
@@ -311,5 +314,16 @@ export function titleFromPrompt(prompt: string, max = 120): string {
       .split("\n")
       .map((l) => l.trim())
       .find((l) => l.length > 0) ?? "dispatch request";
-  return first.length > max ? first.slice(0, max - 1) + "…" : first;
+  if (first.length <= max) return first;
+
+  // Keep the UTF-16 cap and suffix, but don't leave half of a surrogate pair.
+  let end = max - 1;
+  if (end > 0 && end < first.length) {
+    const before = first.charCodeAt(end - 1);
+    const after = first.charCodeAt(end);
+    if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) {
+      end--;
+    }
+  }
+  return first.slice(0, end) + "…";
 }

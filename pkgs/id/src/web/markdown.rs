@@ -14,6 +14,7 @@
 //! - `blockquote`: Block quote containing blocks
 //! - `code_block`: Code block with optional `params` attribute
 //! - `horizontal_rule`: Thematic break
+//! - `front_matter`: YAML front matter block with `text` attribute (legal only as first child of `doc`)
 //! - `bullet_list`: Unordered list with `tight` attribute
 //! - `ordered_list`: Ordered list with `order` and `tight` attributes
 //! - `list_item`: List item containing blocks
@@ -30,7 +31,7 @@
 //! - `link`: Hyperlink with `href` and `title` attributes
 //! - `strikethrough`: Strikethrough text (GFM `~~text~~`)
 
-use comrak::nodes::{AstNode, ListType, NodeValue};
+use comrak::nodes::{AstNode, ListDelimType, ListType, NodeValue};
 use comrak::{Arena, Options, format_commonmark, parse_document};
 use serde_json::{Value, json};
 
@@ -84,9 +85,17 @@ fn commonmark_options() -> Options<'static> {
     options.extension.strikethrough = true;
     options.extension.tasklist = true;
     options.extension.table = true;
+    options.extension.autolink = true; // #998: bare URLs/emails become links
     options.extension.footnotes = true;
+    options.extension.front_matter_delimiter = Some("---".to_owned());
     options.parse.smart = false; // Don't convert quotes/dashes
     options.render.r#unsafe = true; // Allow HTML output (needed for sized images)
+    // #954: the CommonMark renderer saves an info-less code block as an
+    // indented block whenever it can (its fenced branch otherwise needs a
+    // non-empty info string or a literal edge case). Force the fenced
+    // spelling for every code block so info-less fences round-trip as
+    // fences. Render-only: parsing is unaffected.
+    options.render.prefer_fenced = true;
     options
 }
 
@@ -137,6 +146,7 @@ fn markdown_to_prosemirror_inner(markdown: &str, recover_orphans: bool) -> Value
     // symmetric with no save-side mirror needed.
     let protected = escape_table_code_span_pipes(&protected);
     let root = parse_document(&arena, &protected, &options);
+    preserve_github_alert_marker_breaks(root);
     let mut doc = convert_node(root, &[]);
     if let Some(token) = &newline_token {
         restore_attr_newlines(&mut doc, &token);
@@ -148,13 +158,93 @@ fn markdown_to_prosemirror_inner(markdown: &str, recover_orphans: bool) -> Value
     // source and append them as the same PM nodes the referenced path
     // produces.
     if recover_orphans {
-        preserve_unreferenced_footnote_definitions(
-            &mut doc,
-            &protected,
-            newline_token.as_deref(),
-        );
+        preserve_unreferenced_footnote_definitions(&mut doc, &protected, newline_token.as_deref());
     }
     doc
+}
+
+/// Keep the line break after an exact GitHub alert marker in a blockquote.
+/// The editor normally turns CommonMark soft breaks into spaces, which would
+/// make an alert marker followed by its body indistinguishable from ordinary
+/// text such as `[!NOTE] extra words` when the document is saved again.
+///
+/// Only a blockquote whose FIRST child is a paragraph can open with an
+/// alert marker: when the first child is another block (a nested quote, a
+/// list, a fence), GitHub does not treat a later `[!NOTE]` line as an
+/// alert, so promoting its break would change authored plain text
+/// (Codex P2 on the first cut).
+fn preserve_github_alert_marker_breaks<'a>(node: &'a AstNode<'a>) {
+    if matches!(&node.data.borrow().value, NodeValue::BlockQuote) {
+        if let Some(first_block) = node.children().next()
+            && matches!(&first_block.data.borrow().value, NodeValue::Paragraph)
+        {
+            let mut first_line = String::new();
+            for child in first_block.children() {
+                let (text, is_break, is_other) = {
+                    let data = child.data.borrow();
+                    match &data.value {
+                        NodeValue::Text(text) => (Some(text.to_string()), false, false),
+                        NodeValue::SoftBreak | NodeValue::LineBreak => (None, true, false),
+                        _ => (None, false, true),
+                    }
+                };
+
+                if let Some(text) = text {
+                    first_line.push_str(&text);
+                } else if is_break {
+                    if is_github_alert_marker(&first_line) {
+                        child.data.borrow_mut().value = NodeValue::LineBreak;
+                    }
+                    break;
+                } else if is_other {
+                    break;
+                }
+            }
+        }
+    }
+
+    for child in node.children() {
+        preserve_github_alert_marker_breaks(child);
+    }
+}
+
+fn is_github_alert_marker(text: &str) -> bool {
+    matches!(
+        text.trim(),
+        "[!NOTE]" | "[!TIP]" | "[!IMPORTANT]" | "[!WARNING]" | "[!CAUTION]"
+    )
+}
+
+/// Split a line's leading blockquote markers from its content: returns the
+/// marker depth and the remainder. Each level is one `>` plus at most one
+/// following space or tab, matching how comrak renders nested quotes.
+fn split_quote_prefix(line: &str) -> (usize, &str) {
+    let mut rest = line;
+    let mut depth = 0;
+    while let Some(after) = rest.strip_prefix('>') {
+        depth += 1;
+        rest = after
+            .strip_prefix(' ')
+            .or_else(|| after.strip_prefix('\t'))
+            .unwrap_or(after);
+    }
+    (depth, rest)
+}
+
+/// The content of `line` as seen by the container that opened at
+/// `depth` quote levels: exactly that many markers are stripped and any
+/// deeper ones stay in place. Returns None when the line is outside that
+/// container, which ends a fence or HTML block opened inside it.
+fn strip_quote_depth(line: &str, depth: usize) -> Option<&str> {
+    let mut rest = line;
+    for _ in 0..depth {
+        let after = rest.strip_prefix('>')?;
+        rest = after
+            .strip_prefix(' ')
+            .or_else(|| after.strip_prefix('\t'))
+            .unwrap_or(after);
+    }
+    Some(rest)
 }
 
 /// Fence tracking for the source scans below: a fence opens with a
@@ -254,12 +344,68 @@ enum HtmlBlockEnd {
 
 /// The CommonMark type-6 block-level tag names.
 const HTML_BLOCK_TAGS: &[&str] = &[
-    "address", "article", "aside", "base", "basefont", "blockquote", "body", "caption", "center",
-    "col", "colgroup", "dd", "details", "dialog", "dir", "div", "dl", "dt", "fieldset",
-    "figcaption", "figure", "footer", "form", "frame", "frameset", "h1", "h2", "h3", "h4", "h5",
-    "h6", "head", "header", "hr", "html", "iframe", "legend", "li", "link", "main", "menu",
-    "menuitem", "nav", "noframes", "ol", "optgroup", "option", "p", "param", "search", "section",
-    "summary", "table", "tbody", "td", "tfoot", "th", "thead", "title", "tr", "track", "ul",
+    "address",
+    "article",
+    "aside",
+    "base",
+    "basefont",
+    "blockquote",
+    "body",
+    "caption",
+    "center",
+    "col",
+    "colgroup",
+    "dd",
+    "details",
+    "dialog",
+    "dir",
+    "div",
+    "dl",
+    "dt",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "frame",
+    "frameset",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "header",
+    "hr",
+    "html",
+    "iframe",
+    "legend",
+    "li",
+    "link",
+    "main",
+    "menu",
+    "menuitem",
+    "nav",
+    "noframes",
+    "ol",
+    "optgroup",
+    "option",
+    "p",
+    "param",
+    "search",
+    "section",
+    "summary",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "title",
+    "tr",
+    "track",
+    "ul",
 ];
 
 /// Whether `trimmed` (a whole line, both ends trimmed) is exactly
@@ -294,7 +440,10 @@ fn is_complete_html_tag(trimmed: &str) -> bool {
     }
     let name_start = pos;
     pos += 1;
-    while b.get(pos).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'-') {
+    while b
+        .get(pos)
+        .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'-')
+    {
         pos += 1;
     }
     // Type 1 names never open a type 7 block with an OPENING tag
@@ -468,7 +617,10 @@ impl HtmlBlockTracker {
             }
         }
         if rest.starts_with('!')
-            && rest[1..].chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            && rest[1..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_uppercase())
         {
             // Declaration (type 5 covers <![CDATA[ above; a <!X
             // declaration ends at '>').
@@ -720,8 +872,7 @@ fn is_thematic_break(stripped: &str) -> bool {
 /// A setext heading underline: only `=`s (level 1) or `-`s (level 2).
 fn is_setext_underline(stripped: &str) -> bool {
     let t = stripped.trim();
-    (!t.is_empty() && t.chars().all(|c| c == '='))
-        || (!t.is_empty() && t.chars().all(|c| c == '-'))
+    (!t.is_empty() && t.chars().all(|c| c == '=')) || (!t.is_empty() && t.chars().all(|c| c == '-'))
 }
 
 /// Whether a line starts a new block and so cannot be a lazy
@@ -734,9 +885,11 @@ fn is_setext_underline(stripped: &str) -> bool {
 fn is_atx_heading(stripped: &str) -> bool {
     let hashes = stripped.bytes().take_while(|&b| b == b'#').count();
     (1..=6).contains(&hashes)
-        && matches!(stripped.as_bytes().get(hashes), None | Some(b' ') | Some(b'\t'))
+        && matches!(
+            stripped.as_bytes().get(hashes),
+            None | Some(b' ') | Some(b'\t')
+        )
 }
-
 
 /// Whether the character after a block-level tag name is a valid
 /// name boundary: whitespace, `/`, `>`, or end-of-line (CommonMark
@@ -808,7 +961,10 @@ fn is_non_interrupting_ordered_marker(stripped: &str) -> bool {
     if !matches!(stripped.as_bytes().get(digits), Some(b'.') | Some(b')')) {
         return false;
     }
-    if !matches!(stripped.as_bytes().get(digits + 1), Some(b' ') | Some(b'\t')) {
+    if !matches!(
+        stripped.as_bytes().get(digits + 1),
+        Some(b' ') | Some(b'\t')
+    ) {
         return false;
     }
     stripped[..digits].parse::<u64>().ok() != Some(1)
@@ -1010,8 +1166,7 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
             && !html_prefix.is_empty()
             && !stripped.starts_with(&html_prefix)
             && strip_container_prefixes(stripped) == stripped
-            && (html_prefix.contains('>')
-                || (indent == 0 && !stripped.is_empty()))
+            && (html_prefix.contains('>') || (indent == 0 && !stripped.is_empty()))
         {
             html.reset();
             html_prefix.clear();
@@ -1024,14 +1179,14 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
         let was_in_html = html.in_html();
         if !fence.in_fence()
             && (indent <= 3 || html.in_html())
-            && (html.feed(html_line, at_block_start) || html.feed(container_stripped, at_block_start))
+            && (html.feed(html_line, at_block_start)
+                || html.feed(container_stripped, at_block_start))
         {
             if !was_in_html && html.in_html() {
                 // Opened on this line (via the container-stripped
                 // form when a container prefix is present): remember
                 // the prefix for the block's interior lines.
-                html_prefix =
-                    stripped[..stripped.len() - container_stripped.len()].to_string();
+                html_prefix = stripped[..stripped.len() - container_stripped.len()].to_string();
             }
             if !html.in_html() {
                 html_prefix.clear();
@@ -1083,8 +1238,7 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
             && !fence_prefix.is_empty()
             && !carries_container_prefix(stripped, &fence_prefix)
             && strip_container_prefixes(stripped) == stripped
-            && (fence_prefix.contains('>')
-                || (indent == 0 && !stripped.is_empty()))
+            && (fence_prefix.contains('>') || (indent == 0 && !stripped.is_empty()))
         {
             fence.reset();
             fence_prefix.clear();
@@ -1167,21 +1321,19 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
             // twenty-third cut). Only item/quote content that
             // itself ends or starts a block (blank, heading, break,
             // setext, a new block) leaves the next line eligible.
-            let container_eligible =
-                if strip_container_prefixes(stripped) != stripped {
-                    let c = container_stripped;
-                    Some(
-                        c.trim().is_empty()
-                            || is_atx_heading(c)
-                            || is_thematic_break(c)
-                            || (is_setext_underline(c) && !at_block_start)
-                            || starts_new_block(c),
-                    )
-                } else {
-                    None
-                };
-            at_block_start = container_eligible
-                .unwrap_or_else(|| starts_new_block(stripped))
+            let container_eligible = if strip_container_prefixes(stripped) != stripped {
+                let c = container_stripped;
+                Some(
+                    c.trim().is_empty()
+                        || is_atx_heading(c)
+                        || is_thematic_break(c)
+                        || (is_setext_underline(c) && !at_block_start)
+                        || starts_new_block(c),
+                )
+            } else {
+                None
+            };
+            at_block_start = container_eligible.unwrap_or_else(|| starts_new_block(stripped))
                 || setext_ends_paragraph;
             i += 1;
             continue;
@@ -1739,8 +1891,7 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
             && !html_prefix.is_empty()
             && !stripped.starts_with(&html_prefix)
             && strip_container_prefixes(stripped) == stripped
-            && (html_prefix.contains('>')
-                || (indent == 0 && !stripped.is_empty()))
+            && (html_prefix.contains('>') || (indent == 0 && !stripped.is_empty()))
         {
             html.reset();
             html_prefix.clear();
@@ -1753,14 +1904,14 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
         let was_in_html = html.in_html();
         if !fence.in_fence()
             && (indent <= 3 || html.in_html())
-            && (html.feed(html_line, at_block_start) || html.feed(container_stripped, at_block_start))
+            && (html.feed(html_line, at_block_start)
+                || html.feed(container_stripped, at_block_start))
         {
             if !was_in_html && html.in_html() {
                 // Opened on this line (via the container-stripped
                 // form when a container prefix is present): remember
                 // the prefix for the block's interior lines.
-                html_prefix =
-                    stripped[..stripped.len() - container_stripped.len()].to_string();
+                html_prefix = stripped[..stripped.len() - container_stripped.len()].to_string();
             }
             if !html.in_html() {
                 html_prefix.clear();
@@ -1805,8 +1956,7 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
             && !fence_prefix.is_empty()
             && !carries_container_prefix(stripped, &fence_prefix)
             && strip_container_prefixes(stripped) == stripped
-            && (fence_prefix.contains('>')
-                || (indent == 0 && !stripped.is_empty()))
+            && (fence_prefix.contains('>') || (indent == 0 && !stripped.is_empty()))
         {
             fence.reset();
             fence_prefix.clear();
@@ -1847,8 +1997,7 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
             // (Codex P2 on #1565's twenty-ninth cut). Mirrors
             // scan_footnote_definition_blocks' opening-body rule.
             let opening_body = stripped[label.len() + 4..].trim_start_matches(' ');
-            in_footnote_block =
-                !opening_body.trim().is_empty() && !starts_new_block(opening_body);
+            in_footnote_block = !opening_body.trim().is_empty() && !starts_new_block(opening_body);
             at_block_start = true;
             i += 1;
             continue;
@@ -1946,11 +2095,12 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
                     found
                 }
             };
-        let single_start = is_link_reference_definition_start(def_stripped).then(|| {
-            let close =
-                link_reference_definition_label_close(def_stripped).expect("start shape checked");
-            (vec![line], def_stripped[close + 2..].to_string(), i + 1)
-        });
+        let single_start = if is_link_reference_definition_start(def_stripped) {
+            link_reference_definition_label_close(def_stripped)
+                .map(|close| (vec![line], def_stripped[close + 2..].to_string(), i + 1))
+        } else {
+            None
+        };
         // A line carrying a list marker starts a NEW list item
         // and so a fresh block: `- [url]: ...` after `- Body` is a
         // definition in its own item, not a continuation of the
@@ -1958,14 +2108,15 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
         // block in progress (Codex P2 on #1565's fifteenth cut). A
         // non-1 ordered marker is excepted: it cannot interrupt a
         // paragraph (thirteenth cut), so it starts no item here.
-        let new_list_item = starts_with_list_marker(stripped)
-            && !is_non_interrupting_ordered_marker(stripped);
+        let new_list_item =
+            starts_with_list_marker(stripped) && !is_non_interrupting_ordered_marker(stripped);
         if (at_block_start || new_list_item)
             && (!in_footnote_block || new_list_item)
             && (single_start.is_some() || multiline_start.is_some())
         {
-            let (mut block, mut after, mut j) =
-                single_start.or(multiline_start).expect("start checked");
+            let Some((mut block, mut after, mut j)) = single_start.or(multiline_start) else {
+                continue;
+            };
             // Rollback point for a title attempted on a FOLLOWING
             // line (twenty-first cut): (block length, `after`, j)
             // before the first such line is appended. A title that
@@ -2027,8 +2178,7 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
                         t.starts_with('<') && !contains_unescaped(&t[1..], '>')
                     };
                     if (after.trim().is_empty()
-                        || (pending_angle_destination
-                            && !contains_unescaped(next_stripped, '>')))
+                        || (pending_angle_destination && !contains_unescaped(next_stripped, '>')))
                         && (footnote_definition_label(next_stripped).is_some()
                             || is_link_reference_definition_start(next_stripped)
                             || is_atx_heading(next_stripped)
@@ -2136,20 +2286,19 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
         // context. Only item content that itself ends or starts a
         // block leaves the next line eligible, mirroring the
         // blockquote rule above.
-        let list_eligible = if quote_eligible.is_none()
-            && strip_container_prefixes(stripped) != stripped
-        {
-            let c = container_stripped;
-            Some(
-                c.trim().is_empty()
-                    || is_atx_heading(c)
-                    || is_thematic_break(c)
-                    || (is_setext_underline(c) && !at_block_start)
-                    || starts_new_block(c),
-            )
-        } else {
-            None
-        };
+        let list_eligible =
+            if quote_eligible.is_none() && strip_container_prefixes(stripped) != stripped {
+                let c = container_stripped;
+                Some(
+                    c.trim().is_empty()
+                        || is_atx_heading(c)
+                        || is_thematic_break(c)
+                        || (is_setext_underline(c) && !at_block_start)
+                        || starts_new_block(c),
+                )
+            } else {
+                None
+            };
         at_block_start = is_atx_heading(stripped)
             || quote_eligible
                 .or(list_eligible)
@@ -2285,10 +2434,13 @@ fn synthesize_footnote_definitions(
 /// (`](<...>)` inline, `]: <...>` reference definition) with a token
 /// comrak keeps verbatim in the parsed URL, returning the protected
 /// source and the token used (`None` when no destination needed
-/// protection). Fenced code blocks are skipped — a destination-shaped
-/// string inside a fence is literal text, not a link. A candidate
-/// destination that hits a blank line or another `<` before its
-/// closing `>` is not a destination and is left alone.
+/// protection). Literal contexts are skipped — a destination-shaped
+/// string inside a fenced code block, an inline code span, or an
+/// indented code block is literal text, not a link (#1707). Fence
+/// tracking respects the opening fence's character and length. A
+/// candidate destination that hits a blank line — including a
+/// whitespace-only one — or another `<` before its closing `>` is
+/// not a destination and is left alone.
 fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
     if !markdown.contains('\n') {
         return (markdown.to_string(), None);
@@ -2300,31 +2452,77 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
         token = format!("idweb-newline-{counter}-token");
     }
     let bytes = markdown.as_bytes();
-    let fence = "`".repeat(3);
-    let tilde_fence = "~".repeat(3);
     let mut out = String::with_capacity(markdown.len());
     let mut i = 0;
-    let mut in_fence = false;
+    // The open fence, when inside one: its character and run length.
+    // A closing fence must use the same character and be at least as
+    // long as the opener — a shorter fence line inside a longer
+    // fence is literal content, not the end of the block (#1707).
+    let mut fence: Option<(u8, usize)> = None;
+    // Whether the current line is a fence line (opens, closes, or is
+    // checked against an open fence): its backticks are fence syntax,
+    // never an inline code span opener.
+    let mut fence_line = false;
+    // The open inline code span's backtick run length, when inside
+    // one: span content is literal text, so a destination-shaped
+    // string inside it must not be protected (#1707).
+    let mut span: Option<usize> = None;
+    // Whether the current line is an indented code block line
+    // (4+ space indent at the start of a block): literal text too.
+    let mut in_indented = false;
+    let mut prev_line_blank = true;
+    let mut prev_line_indented = false;
     let mut protected_any = false;
     while i < bytes.len() {
-        // Fence tracking is line-based: a line whose first non-space
-        // characters (up to 3 spaces) are ``` or ~~~ toggles fence state.
+        // Line-start classification: fences, indented code blocks.
         if i == 0 || bytes[i - 1] == b'\n' {
             let mut j = i;
-            while j < bytes.len() && bytes[j] == b' ' && j - i < 3 {
+            while j < bytes.len() && bytes[j] == b' ' {
                 j += 1;
             }
-            if markdown[j..].starts_with(&fence) || markdown[j..].starts_with(&tilde_fence) {
-                in_fence = !in_fence;
+            let indent = j - i;
+            let line_blank = j >= bytes.len() || bytes[j] == b'\n';
+            // Fences are recognised at up to 3 spaces of indent.
+            let fence_run =
+                if indent <= 3 && j < bytes.len() && (bytes[j] == b'`' || bytes[j] == b'~') {
+                    let ch = bytes[j];
+                    let mut n = 0;
+                    while j + n < bytes.len() && bytes[j + n] == ch {
+                        n += 1;
+                    }
+                    if n >= 3 { Some((ch, n)) } else { None }
+                } else {
+                    None
+                };
+            let was_in_fence = fence.is_some();
+            match (fence, fence_run) {
+                (None, Some(open)) => fence = Some(open),
+                (Some((ch, n)), Some((cch, cn))) if cch == ch && cn >= n => fence = None,
+                _ => {}
             }
+            fence_line = fence_run.is_some() && (was_in_fence || fence.is_some());
+            // An indented code block starts on a 4+ indented line
+            // after a blank line (or at the start, or continuing an
+            // indented block); a 4+ indented line inside a paragraph
+            // is a lazy continuation, not code.
+            in_indented = indent >= 4 && fence.is_none() && (prev_line_blank || prev_line_indented);
+            prev_line_indented = in_indented || (indent >= 4 && line_blank && prev_line_indented);
+            prev_line_blank = line_blank;
         }
-        if !in_fence && (markdown[i..].starts_with("](<") || markdown[i..].starts_with("]: <")) {
+        let literal_line = fence.is_some() || in_indented || fence_line;
+        if !literal_line
+            && span.is_none()
+            && (markdown[i..].starts_with("](<") || markdown[i..].starts_with("]: <"))
+        {
             let lt = if markdown[i..].starts_with("](<") {
                 i + 2
             } else {
                 i + 3
             };
-            // Find the closing '>' before any blank line or nested '<'.
+            // Find the closing '>' before any blank line (a line of
+            // only spaces/tabs between the newlines is blank too —
+            // the paragraph break ends any destination, #1707) or a
+            // nested '<'.
             let mut end = None;
             let mut k = lt + 1;
             while k < bytes.len() {
@@ -2334,7 +2532,18 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
                         break;
                     }
                     b'<' => break,
-                    b'\n' if k + 1 < bytes.len() && bytes[k + 1] == b'\n' => break,
+                    b'\n' => {
+                        let mut m = k + 1;
+                        while m < bytes.len()
+                            && (bytes[m] == b' ' || bytes[m] == b'\t' || bytes[m] == b'\r')
+                        {
+                            m += 1;
+                        }
+                        if m >= bytes.len() || bytes[m] == b'\n' {
+                            break;
+                        }
+                        k += 1;
+                    }
                     _ => k += 1,
                 }
             }
@@ -2348,6 +2557,27 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
                     continue;
                 }
             }
+        }
+        // Inline code span tracking (#1707): a run of backticks
+        // outside fences/indented code opens a span closed by a run
+        // of the same length; everything between is literal. Fence
+        // lines were already classified at line start, so a run seen
+        // here at a line start is a span only when it did not form a
+        // fence (shorter than 3, or inside a fence — but fence lines
+        // never reach here as non-literal).
+        if !literal_line && bytes[i] == b'`' {
+            let mut n = 0;
+            while i + n < bytes.len() && bytes[i + n] == b'`' {
+                n += 1;
+            }
+            match span {
+                None => span = Some(n),
+                Some(open) if n == open => span = None,
+                _ => {}
+            }
+            out.push_str(&markdown[i..i + n]);
+            i += n;
+            continue;
         }
         let Some(ch) = markdown[i..].chars().next() else {
             break;
@@ -2676,6 +2906,15 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
             json!({"type": "horizontal_rule"})
         }
 
+        NodeValue::FrontMatter(text) => {
+            json!({
+                "type": "front_matter",
+                "attrs": {
+                    "text": text,
+                }
+            })
+        }
+
         NodeValue::List(_) => {
             // #1370: a mixed task/plain list converts to several sibling
             // lists (see convert_list_runs); block parents splice them in
@@ -2745,8 +2984,12 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
 
         NodeValue::Link(link) => {
             // Link - collect children with link mark added
+            // #5745: neutralize executable/unknown URL schemes at this
+            // single entry point — every Markdown link (typed, imported,
+            // or collaborative, which reaches this converter via
+            // collab.rs) carries the sanitized href from here on.
             let mut marks = active_marks.to_vec();
-            let mut attrs = json!({"href": link.url});
+            let mut attrs = json!({"href": sanitize_link_url(&link.url)});
             if !link.title.is_empty() {
                 attrs["title"] = json!(link.title);
             }
@@ -3109,9 +3352,29 @@ fn is_end_list_separator<'a>(node: &'a AstNode<'a>) -> bool {
 /// so numbering renders unchanged; `tight` is carried from the source
 /// list to every run. Placement validation and the editor schema are
 /// untouched: every emitted list is pure.
+/// #1380: the PM `delimiter` attr spelling for a comrak ordered-list
+/// delimiter (`.` vs `)`). The editor schema mirrors these spellings.
+fn delimiter_attr(delimiter: ListDelimType) -> &'static str {
+    match delimiter {
+        ListDelimType::Period => "period",
+        ListDelimType::Paren => "paren",
+    }
+}
+
+/// #1380: read the PM `delimiter` attr back to a comrak delimiter.
+/// Absent or unknown (legacy PM docs stored by the old codec, which
+/// dropped the delimiter) defaults to Period - exactly how the old
+/// codec saved every ordered list.
+fn delimiter_from_attrs(json: &Value) -> ListDelimType {
+    match json["attrs"]["delimiter"].as_str() {
+        Some("paren") => ListDelimType::Paren,
+        _ => ListDelimType::Period,
+    }
+}
+
 fn convert_list_runs<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
-    let (list_type, start, tight) = match &node.data.borrow().value {
-        NodeValue::List(list) => (list.list_type, list.start, list.tight),
+    let (list_type, start, tight, delimiter) = match &node.data.borrow().value {
+        NodeValue::List(list) => (list.list_type, list.start, list.tight, list.delimiter),
         _ => return Vec::new(),
     };
     // (is_task, items before this run, converted items)
@@ -3133,7 +3396,7 @@ fn convert_list_runs<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
         .map(|(is_task, offset, content)| match (is_task, list_type) {
             (true, ListType::Ordered) => json!({
                 "type": "task_list",
-                "attrs": {"order": start + offset, "tight": tight},
+                "attrs": {"order": start + offset, "tight": tight, "delimiter": delimiter_attr(delimiter)},
                 "content": content
             }),
             (true, ListType::Bullet) => json!({
@@ -3143,7 +3406,7 @@ fn convert_list_runs<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
             }),
             (false, ListType::Ordered) => json!({
                 "type": "ordered_list",
-                "attrs": {"order": start + offset, "tight": tight},
+                "attrs": {"order": start + offset, "tight": tight, "delimiter": delimiter_attr(delimiter)},
                 "content": content
             }),
             (false, ListType::Bullet) => json!({
@@ -3626,7 +3889,10 @@ fn parse_img_tag(html: &str) -> Option<Value> {
     if !bytes
         .get(..4)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"<img"))
-        || !matches!(bytes.get(4).copied(), Some(b' ' | b'>'))
+        || !matches!(
+            bytes.get(4).copied(),
+            Some(after_name) if after_name.is_ascii_whitespace() || after_name == b'>'
+        )
     {
         return None;
     }
@@ -3662,6 +3928,67 @@ fn parse_img_tag(html: &str) -> Option<Value> {
     }))
 }
 
+/// #5745: the allowed-scheme oracle for link URLs.
+///
+/// A link URL is safe iff, after removing the characters browsers strip
+/// while parsing a URL (TAB/LF/CR anywhere, leading C0 controls and
+/// spaces), it either has no scheme at all — a relative or internal
+/// reference, a fragment, a query, or a protocol-relative `//host/path`
+/// reference, none of which can name an executable scheme — or its
+/// scheme is exactly `http`, `https`, or `mailto` (case-insensitive).
+/// Everything else (`javascript:`, `data:`, `vbscript:`, any unknown
+/// scheme, and any obfuscation of those the stripping above exposes)
+/// is unsafe. This explicit allowed set is the oracle every link test
+/// for #5745 checks against; do not rely on browser sanitization.
+fn link_url_is_safe(url: &str) -> bool {
+    let probe: String = url
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    let probe = probe.trim_start_matches(|c: char| c.is_ascii_control() || c == ' ');
+    // A scheme exists only when a `:` precedes any `/`, `?`, or `#`.
+    let mut scheme_end = None;
+    for (i, c) in probe.char_indices() {
+        match c {
+            ':' => {
+                scheme_end = Some(i);
+                break;
+            }
+            '/' | '?' | '#' => break,
+            _ => {}
+        }
+    }
+    let Some(colon) = scheme_end else {
+        return true; // no scheme: relative / fragment / query / protocol-relative
+    };
+    let scheme = &probe[..colon];
+    let mut chars = scheme.chars();
+    let valid_scheme = !scheme.is_empty()
+        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    if !valid_scheme {
+        // A `:` in the first segment whose prefix is not a scheme
+        // (e.g. a relative path containing a colon) is not a scheme.
+        return true;
+    }
+    matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "http" | "https" | "mailto"
+    )
+}
+
+/// #5745: return `url` unchanged when [`link_url_is_safe`], else the
+/// inert fragment `"#"`. The link text and mark survive; only the
+/// executable target is removed, and `"#"` re-parses as a safe
+/// fragment, so sanitized documents are a stable round-trip fixpoint.
+fn sanitize_link_url(url: &str) -> String {
+    if link_url_is_safe(url) {
+        url.to_owned()
+    } else {
+        "#".to_owned()
+    }
+}
+
 /// Parse an HTML `<a ...>` opening tag, returning its `href` and optional
 /// `title`. Returns `None` for anything else, including an anchor with no
 /// (or an empty) `href`.
@@ -3682,7 +4009,11 @@ fn parse_anchor_tag(html: &str) -> Option<(String, Option<String>)> {
         return None;
     }
     let title = parsed.get("title").filter(|t| !t.is_empty()).cloned();
-    Some((href.clone(), title))
+    // #5745: a raw-HTML anchor wrapping an image gets the same
+    // allowed-scheme treatment as a Markdown link; an unsafe href is
+    // neutralized (not dropped, which would strand the raw anchor tag
+    // as a verbatim html_inline atom carrying the executable URL).
+    Some((sanitize_link_url(href), title))
 }
 
 /// Attach a wrapping anchor's link to an image node (#880/#893), in the
@@ -3715,6 +4046,8 @@ fn parse_linked_img_tag(html: &str) -> Option<Value> {
 /// Placement categories for the #1043 validation walk. A node whose type
 /// is not listed here is left to `json_to_ast`, which reports it as
 /// `ConversionError::UnknownType` — validation never masks that error.
+/// (`front_matter` is intentionally unlisted: its doc-first-child rule
+/// needs the child index, so `validate_placement` checks it directly.)
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Placement {
     /// Block-level node (`paragraph`, `table`, lists, …).
@@ -3788,13 +4121,27 @@ fn placement_allowed(parent: &str, child: Placement) -> bool {
 /// markdown in release builds. Reject those documents up front with
 /// `ConversionError::MisplacedNode` instead.
 fn validate_placement(doc: &Value) -> Result<(), ConversionError> {
-    fn walk(node: &Value, parent: Option<&str>) -> Result<(), ConversionError> {
+    fn walk(
+        node: &Value,
+        parent: Option<&str>,
+        index_in_parent: Option<usize>,
+    ) -> Result<(), ConversionError> {
         let Some(node_type) = node["type"].as_str() else {
             // Missing type: json_to_ast reports MissingType; keep that
             // error's precedence.
             return Ok(());
         };
-        if let Some(parent_type) = parent
+        // #1369: `front_matter` is legal only as the first child of `doc`
+        // (comrak only parses it there). Anything else is misplaced.
+        if node_type == "front_matter" {
+            let first_child_of_doc = parent == Some("doc") && index_in_parent == Some(0);
+            if !first_child_of_doc {
+                return Err(ConversionError::MisplacedNode {
+                    parent: parent.unwrap_or("<root>").to_owned(),
+                    child: node_type.to_owned(),
+                });
+            }
+        } else if let Some(parent_type) = parent
             && let Some(category) = placement_of(node_type)
             && !placement_allowed(parent_type, category)
         {
@@ -3817,17 +4164,37 @@ fn validate_placement(doc: &Value) -> Result<(), ConversionError> {
             }
             return Ok(());
         }
+        // front_matter carries no PM child content (its payload is the
+        // `text` attr); nothing to recurse into.
+        if node_type == "front_matter" {
+            if node["content"].as_array().is_some_and(|c| !c.is_empty()) {
+                return Err(ConversionError::MisplacedNode {
+                    parent: node_type.to_owned(),
+                    child: "<content>".to_owned(),
+                });
+            }
+            return Ok(());
+        }
         if let Some(content) = node["content"].as_array() {
-            for child in content {
-                walk(child, Some(node_type))?;
+            for (idx, child) in content.iter().enumerate() {
+                walk(child, Some(node_type), Some(idx))?;
             }
         }
         Ok(())
     }
-    walk(doc, None)
+    walk(doc, None, None)
 }
 
 /// Convert `ProseMirror` JSON document to markdown text.
+///
+/// Unknown marks are skipped by design (#1045): marks outside the
+/// codec's vocabulary (`em`, `strong`, `strikethrough`, `link`, plus
+/// the `code` mark handled specially by `create_marked_text`) are
+/// dropped while the marked text itself is kept verbatim. This
+/// differs from unknown *nodes*, which return
+/// `ConversionError::UnknownType`, because an unknown inline style
+/// can be shed without corrupting the document text. Known marks
+/// render byte-identically whether or not unknown marks are present.
 ///
 /// # Arguments
 ///
@@ -3871,7 +4238,162 @@ pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
     for token in fence_tokens {
         output = strip_fence_placeholder(&output, &token);
     }
-    Ok(output)
+    Ok(restore_github_alert_markers(&output))
+}
+
+/// Undo the CommonMark renderer's escaping of a GitHub alert marker when
+/// the marker is the first content of its blockquote. Markers elsewhere
+/// (for example, followed by words on the same line) remain ordinary
+/// escaped text. GitHub requires the marker to be the first thing in the
+/// blockquote.
+///
+/// The scan skips fenced code blocks and raw HTML blocks: those are
+/// literal content, so a line like `> \[\!NOTE\]` inside one is authored
+/// text, not a renderer-escaped marker, and rewriting it would silently
+/// change the code (Codex P2 on the first cut).
+fn restore_github_alert_markers(markdown: &str) -> String {
+    let mut output = String::with_capacity(markdown.len());
+    let mut quote_has_content = [false; 64];
+    let mut fence = FenceTracker::default();
+    let mut fence_depth: Option<usize> = None;
+    let mut html = HtmlBlockTracker::default();
+    let mut html_depth: Option<usize> = None;
+    let mut at_block_start = true;
+
+    for line in markdown.split_inclusive('\n') {
+        let content_start = line.trim_start_matches(' ');
+        let leading_spaces = line.len() - content_start.len();
+        let (depth, rest) = split_quote_prefix(content_start);
+
+        // Four columns of indentation is code, and the markers below only
+        // apply inside a blockquote. A quote nested deeper than the table
+        // is left untouched rather than risking an out-of-range walk.
+        if leading_spaces > 3 || depth >= quote_has_content.len() {
+            quote_has_content.fill(false);
+            fence.reset();
+            fence_depth = None;
+            html.reset();
+            html_depth = None;
+            output.push_str(line);
+            at_block_start = leading_spaces > 3 || rest.trim().is_empty();
+            continue;
+        }
+
+        // An open fence or HTML block owns every following line of its
+        // container, including lines that look like quote markers: that
+        // is exactly the literal-code case above.
+        if let Some(opened_at) = fence_depth {
+            match strip_quote_depth(content_start, opened_at) {
+                Some(body) => {
+                    fence.feed(fence_feed_line(body));
+                    if !fence.in_fence() {
+                        fence_depth = None;
+                    }
+                    output.push_str(line);
+                    at_block_start = false;
+                    continue;
+                }
+                None => {
+                    fence.reset();
+                    fence_depth = None;
+                }
+            }
+        }
+        if let Some(opened_at) = html_depth {
+            match strip_quote_depth(content_start, opened_at) {
+                Some(body) => {
+                    html.feed(body, at_block_start);
+                    if !html.in_html() {
+                        html_depth = None;
+                    }
+                    output.push_str(line);
+                    at_block_start = false;
+                    continue;
+                }
+                None => {
+                    html.reset();
+                    html_depth = None;
+                }
+            }
+        }
+
+        // A fence or HTML block opening on this line makes its interior
+        // literal from here on.
+        if fence.feed(fence_feed_line(rest)) {
+            fence_depth = Some(depth);
+            output.push_str(line);
+            at_block_start = false;
+            continue;
+        }
+        if html.feed(rest, at_block_start) {
+            html_depth = Some(depth);
+            output.push_str(line);
+            at_block_start = false;
+            continue;
+        }
+
+        // Nothing outside a blockquote can open an alert, and a line
+        // outside one ends every quote that was open.
+        if depth == 0 {
+            quote_has_content.fill(false);
+            output.push_str(line);
+            at_block_start = rest.trim().is_empty() || starts_new_block(rest);
+            continue;
+        }
+
+        for seen in quote_has_content.iter_mut().skip(depth + 1) {
+            *seen = false;
+        }
+
+        let trimmed = rest.trim();
+        // Comrak emits a hard break with a trailing backslash. Ignore that
+        // renderer syntax while recognizing the marker; the suffix is kept
+        // intact when replacing the escaped marker below.
+        let hardbreak = trimmed.ends_with('\\');
+        let marker_token = trimmed.strip_suffix('\\').unwrap_or(trimmed);
+        let marker = match marker_token {
+            r"\[\!NOTE\]" => Some("[!NOTE]"),
+            r"\[\!TIP\]" => Some("[!TIP]"),
+            r"\[\!IMPORTANT\]" => Some("[!IMPORTANT]"),
+            r"\[\!WARNING\]" => Some("[!WARNING]"),
+            r"\[\!CAUTION\]" => Some("[!CAUTION]"),
+            _ => None,
+        };
+        // A marker only opens an alert when nothing above it in the
+        // quote -- at any depth -- has content yet. Marking ancestors
+        // when a deeper line carries content keeps the marker of a
+        // later paragraph in an outer quote escaped (Codex P2).
+        let quote_is_empty = depth > 0 && !quote_has_content[..=depth].iter().any(|seen| *seen);
+        if quote_is_empty
+            && !rest.starts_with(' ')
+            && !rest.starts_with('\t')
+            && let Some(marker) = marker
+        {
+            let marker_start = line.find(marker_token).unwrap_or(0);
+            let marker_end = marker_start + marker_token.len();
+            output.push_str(&line[..marker_start]);
+            output.push_str(marker);
+            let suffix = &line[marker_end..];
+            output.push_str(if hardbreak {
+                suffix.strip_prefix('\\').unwrap_or(suffix)
+            } else {
+                suffix
+            });
+            for seen in quote_has_content.iter_mut().take(depth + 1).skip(1) {
+                *seen = true;
+            }
+        } else {
+            output.push_str(line);
+            if !trimmed.is_empty() {
+                for seen in quote_has_content.iter_mut().take(depth + 1).skip(1) {
+                    *seen = true;
+                }
+            }
+        }
+        at_block_start = trimmed.is_empty() || starts_new_block(rest);
+    }
+
+    output
 }
 
 /// Whether a node value is a delimiter-mark wrapper (#1418): the
@@ -4090,14 +4612,14 @@ fn hoist_delimiter_edge_spaces<'a>(arena: &'a Arena<'a>, root: &'a AstNode<'a>) 
 /// fenced branch, and return the placeholders for stripping from the
 /// rendered output — the same placeholder-and-restore pattern as
 /// `substitute_spaced_destinations`. Code blocks outside blockquotes
-/// keep the renderer's own spelling (the lone-block fence/indent
-/// choice is #954's territory, deliberately untouched here).
+/// are fenced by the global `prefer_fenced` render option (#954); this
+/// placeholder is kept as belt-and-braces for the quoted shape.
 fn force_fenced_code_blocks_in_blockquotes<'a>(root: &'a AstNode<'a>) -> Vec<String> {
     let mut tokens: Vec<String> = Vec::new();
     let mut stack: Vec<(&AstNode<'a>, bool)> = vec![(root, false)];
     while let Some((node, ancestor_is_blockquote)) = stack.pop() {
-        let in_blockquote = ancestor_is_blockquote
-            || matches!(node.data.borrow().value, NodeValue::BlockQuote);
+        let in_blockquote =
+            ancestor_is_blockquote || matches!(node.data.borrow().value, NodeValue::BlockQuote);
         for child in node.children() {
             stack.push((child, in_blockquote));
         }
@@ -4200,6 +4722,7 @@ fn is_block_node(node: &AstNode<'_>) -> bool {
             | NodeValue::CodeBlock(_)
             | NodeValue::HtmlBlock(_)
             | NodeValue::ThematicBreak
+            | NodeValue::FrontMatter(_)
             | NodeValue::Table(_)
             | NodeValue::FootnoteDefinition(_)
     )
@@ -4301,10 +4824,11 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         "paragraph" => NodeValue::Paragraph,
 
         "heading" => {
-            #[allow(clippy::cast_possible_truncation)] // level is clamped to 1-6
-            let level = json["attrs"]["level"].as_u64().unwrap_or(1) as u8;
+            let level = json["attrs"]["level"].as_u64().unwrap_or(1).clamp(1, 6);
+            #[allow(clippy::cast_possible_truncation)] // level is clamped to 1-6 before narrowing
+            let level = level as u8;
             NodeValue::Heading(comrak::nodes::NodeHeading {
-                level: level.clamp(1, 6),
+                level,
                 setext: false,
                 closed: false,
             })
@@ -4344,12 +4868,25 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                 fence_length: 3,
                 fence_offset: 0,
                 info: info.to_owned(),
-                literal: format!("{content}\n"),
+                // #954: comrak's own empty-fence literal is empty; appending
+                // the usual trailing newline here renders a spurious blank
+                // line inside the fence ("```\n\n```").
+                literal: if content.is_empty() {
+                    String::new()
+                } else {
+                    format!("{content}\n")
+                },
                 closed: false,
             }))
         }
 
         "horizontal_rule" => NodeValue::ThematicBreak,
+
+        // #1369: YAML front matter (`---` delimiter only; comrak has no
+        // TOML `+++` support) carried verbatim in the `text` attr.
+        "front_matter" => {
+            NodeValue::FrontMatter(json["attrs"]["text"].as_str().unwrap_or("").to_owned())
+        }
 
         "bullet_list" => {
             let tight = json["attrs"]["tight"].as_bool().unwrap_or(false);
@@ -4365,10 +4902,13 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             #[allow(clippy::cast_possible_truncation)] // order is typically small
             let order = json["attrs"]["order"].as_u64().unwrap_or(1) as usize;
             let tight = json["attrs"]["tight"].as_bool().unwrap_or(false);
+            // #1380: carry the delimiter style; absent (legacy docs)
+            // defaults to Period in delimiter_from_attrs.
             NodeValue::List(comrak::nodes::NodeList {
                 list_type: ListType::Ordered,
                 start: order,
                 tight,
+                delimiter: delimiter_from_attrs(json),
                 ..Default::default()
             })
         }
@@ -4400,6 +4940,8 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                     list_type: ListType::Ordered,
                     start,
                     tight,
+                    // #1380: same delimiter carry as ordered_list.
+                    delimiter: delimiter_from_attrs(json),
                     ..Default::default()
                 }),
                 None => NodeValue::List(comrak::nodes::NodeList {
@@ -4499,7 +5041,11 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                 if let Some(link_href) = json["attrs"]["linkHref"].as_str()
                     && !link_href.is_empty()
                 {
-                    let mut anchor = format!("<a href=\"{}\"", escape_attr_value(link_href));
+                    // #5745: a PM doc that arrived as raw ProseMirror JSON
+                    // (collab Rich mode) never passed the parse-direction
+                    // sanitizer, so neutralize unsafe hrefs on the way out.
+                    let safe_href = sanitize_link_url(link_href);
+                    let mut anchor = format!("<a href=\"{}\"", escape_attr_value(&safe_href));
                     if let Some(link_title) = json["attrs"]["linkTitle"].as_str()
                         && !link_title.is_empty()
                     {
@@ -4567,6 +5113,11 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         if let Some(content) = json["content"].as_array() {
             for (idx, child_json) in content.iter().enumerate() {
                 if child_json["type"].as_str() == Some("paragraph") {
+                    // GFM cells cannot contain block breaks. Preserve word
+                    // boundaries when adjacent paragraphs are flattened.
+                    if idx > 0 && content[idx - 1]["type"].as_str() == Some("paragraph") {
+                        ast_node.append(arena.alloc(AstNode::from(NodeValue::Text(" ".into()))));
+                    }
                     // Unwrap: add paragraph's inline children directly to cell
                     if let Some(para_content) = child_json["content"].as_array() {
                         for (inline_idx, _inline_json) in para_content.iter().enumerate() {
@@ -4622,8 +5173,10 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         return Ok(ast_node);
     }
 
-    // Process children (except for code_block which stores content in literal, not as children)
+    // Process children (except for code_block which stores content in literal, not as children;
+    // front_matter likewise stores its payload in the `text` attr, #1369)
     if node_type != "code_block"
+        && node_type != "front_matter"
         && let Some(content) = json["content"].as_array()
     {
         // #1032: coalesce consecutive bullet_list siblings into the first
@@ -4714,7 +5267,8 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             wrappers.push((
                 mark_nesting_rank("link"),
                 NodeValue::Link(Box::new(comrak::nodes::NodeLink {
-                    url: link_href.to_owned(),
+                    // #5745: same save-direction neutralization as above.
+                    url: sanitize_link_url(link_href),
                     title: json["attrs"]["linkTitle"].as_str().unwrap_or("").to_owned(),
                 })),
             ));
@@ -5058,11 +5612,16 @@ fn create_marked_text<'a>(arena: &'a Arena<'a>, text: &str, marks: &[Value]) -> 
                 let href = mark["attrs"]["href"].as_str().unwrap_or("");
                 let title = mark["attrs"]["title"].as_str().unwrap_or("");
                 NodeValue::Link(Box::new(comrak::nodes::NodeLink {
-                    url: href.to_owned(),
+                    // #5745: same save-direction neutralization as above.
+                    url: sanitize_link_url(href),
                     title: title.to_owned(),
                 }))
             }
-            _ => continue, // Skip code (handled below) and unknown marks
+            // #1045: `code` is skipped here because it is handled
+            // below as the innermost node; any other unrecognized mark
+            // is skipped by design — the text survives, the unknown
+            // styling is shed (see `prosemirror_to_markdown`).
+            _ => continue,
         };
         wrappers.push(wrapper_value);
     }
@@ -5112,11 +5671,32 @@ fn build_mark_chain<'a>(
 
 /// Convert plain text to `ProseMirror` JSON document.
 ///
-/// Each line becomes a paragraph.
+/// Each line becomes a paragraph. The split is on the newline
+/// character (not `str::lines`), so a trailing newline yields a final
+/// empty paragraph and the save side (`extract_plain_text`, which joins
+/// paragraphs with a newline) reproduces it exactly: no-edit open/save
+/// is byte-stable for the trailing newline (#1307). A carriage return
+/// left by a CRLF ending is stripped, but only from segments the newline
+/// actually terminated: a lone trailing CR is content and survives. CRLF
+/// files are normalized to LF on save, with their trailing-newline state
+/// preserved (Raw mode stays byte-exact).
 #[must_use]
 pub fn plain_text_to_prosemirror(text: &str) -> Value {
-    let paragraphs: Vec<Value> = text
-        .lines()
+    let segments: Vec<&str> = text.split('\n').collect();
+    let last = segments.len() - 1;
+    let paragraphs: Vec<Value> = segments
+        .into_iter()
+        .enumerate()
+        .map(|(i, line)| {
+            // Only a segment actually terminated by '\n' can carry the
+            // CR of a CRLF ending; the final segment keeps a lone
+            // trailing CR verbatim (Codex finding on PR #4613).
+            if i < last {
+                line.strip_suffix('\r').unwrap_or(line)
+            } else {
+                line
+            }
+        })
         .map(|line| {
             if line.is_empty() {
                 json!({"type": "paragraph"})
@@ -5192,6 +5772,48 @@ mod tests {
 
         assert_eq!(content[1]["type"], "heading");
         assert_eq!(content[1]["attrs"]["level"], 2);
+    }
+
+    #[test]
+    fn test_heading_levels_are_clamped_before_u8_cast_on_save() {
+        let cases: &[(Option<u64>, u8)] = &[
+            (None, 1),
+            (Some(0), 1),
+            (Some(1), 1),
+            (Some(2), 2),
+            (Some(3), 3),
+            (Some(4), 4),
+            (Some(5), 5),
+            (Some(6), 6),
+            (Some(7), 6),
+            (Some(255), 6),
+            (Some(256), 6),
+            (Some(261), 6),
+            (Some(1_000), 6),
+            (Some(u64::MAX), 6),
+        ];
+
+        for (level, expected_level) in cases {
+            let heading = match level {
+                Some(level) => json!({
+                    "type": "heading",
+                    "attrs": {"level": level},
+                    "content": [{"type": "text", "text": "Heading"}]
+                }),
+                None => json!({
+                    "type": "heading",
+                    "content": [{"type": "text", "text": "Heading"}]
+                }),
+            };
+            let doc = json!({"type": "doc", "content": [heading]});
+            let expected = format!("{} Heading\n", "#".repeat(usize::from(*expected_level)));
+
+            assert_eq!(
+                prosemirror_to_markdown(&doc).unwrap(),
+                expected,
+                "heading level {level:?}"
+            );
+        }
     }
 
     #[test]
@@ -5285,6 +5907,156 @@ mod tests {
     }
 
     #[test]
+    fn test_link_executable_schemes_neutralized() {
+        // #5745 regression: a javascript: link must not produce an
+        // executable href. Oracle: the allowed set documented on
+        // link_url_is_safe (http/https/mailto or scheme-less).
+        for md in [
+            "[open](javascript:alert(document.domain))",
+            "[open](JaVaScRiPt:alert(1))",
+            "[open](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)",
+            "[open](vbscript:msgbox(1))",
+            "[open](  javascript:alert(1))",
+            "[open](unknown-scheme:payload)",
+        ] {
+            let doc = markdown_to_prosemirror(md);
+            let para_content = doc["content"][0]["content"].as_array().unwrap();
+            let link_text = para_content
+                .iter()
+                .find(|n| {
+                    n["marks"]
+                        .as_array()
+                        .is_some_and(|m| m.iter().any(|mark| mark["type"] == "link"))
+                })
+                .unwrap_or_else(|| panic!("no link mark for {md}"));
+            // The link text survives; only the target is neutralized.
+            assert_eq!(link_text["text"], "open", "link text lost for {md}");
+            let link_mark = link_text["marks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["type"] == "link")
+                .unwrap();
+            assert_eq!(
+                link_mark["attrs"]["href"], "#",
+                "executable href survived for {md}"
+            );
+            // Save direction: the emitted Markdown carries the inert
+            // href, and re-parsing it is a stable fixpoint.
+            let saved = prosemirror_to_markdown(&doc).unwrap();
+            assert_eq!(saved, "[open](#)\n", "save not neutralized for {md}");
+            let (first, second) = two_saves(&saved);
+            assert_eq!(first, second, "no fixpoint after sanitize for {md}");
+        }
+    }
+
+    #[test]
+    fn test_link_tab_obfuscated_destination_forms_no_link() {
+        // #5745: a literal TAB inside a Markdown link destination is
+        // rejected by Comrak's destination grammar, so the source
+        // stays literal text and no link node — hence no href at
+        // all — is produced; there is nothing executable to render.
+        // TAB-obfuscated hrefs that arrive through the raw-HTML or
+        // ProseMirror-JSON paths (where no Comrak destination parse
+        // happens) are covered by the sanitizer's tab-stripping probe
+        // and the save-direction test below.
+        let doc = markdown_to_prosemirror("[open](java\tscript:alert(1))");
+        let para_content = doc["content"][0]["content"].as_array().unwrap();
+        assert!(
+            para_content.iter().all(|n| {
+                n["marks"]
+                    .as_array()
+                    .is_none_or(|marks| marks.iter().all(|mark| mark["type"] != "link"))
+            }),
+            "tab-obfuscated destination produced a link mark: {para_content:?}"
+        );
+    }
+
+    #[test]
+    fn test_link_safe_schemes_preserved() {
+        // #5745: every member of the documented allowed set (plus the
+        // scheme-less forms) keeps its href byte-for-byte, in both
+        // directions.
+        for (md, expected_href) in [
+            ("[a](http://example.com)", "http://example.com"),
+            (
+                "[a](https://example.com/x?y=1)",
+                "https://example.com/x?y=1",
+            ),
+            ("[a](HTTPS://example.com)", "HTTPS://example.com"),
+            ("[a](mailto:me@example.com)", "mailto:me@example.com"),
+            ("[a](notes.md)", "notes.md"),
+            ("[a](/abs/path.md)", "/abs/path.md"),
+            ("[a](#section)", "#section"),
+            ("[a](//example.com/x)", "//example.com/x"),
+        ] {
+            let doc = markdown_to_prosemirror(md);
+            let para_content = doc["content"][0]["content"].as_array().unwrap();
+            let link_mark = para_content[0]["marks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["type"] == "link")
+                .unwrap_or_else(|| panic!("no link mark for {md}"));
+            assert_eq!(
+                link_mark["attrs"]["href"], expected_href,
+                "safe href mutated for {md}"
+            );
+            let (first, second) = two_saves(&format!("{md}\n"));
+            assert_eq!(first, format!("{md}\n"), "safe link not preserved for {md}");
+            assert_eq!(first, second, "no fixpoint for {md}");
+        }
+    }
+
+    #[test]
+    fn test_link_sanitizer_save_direction_and_linked_image() {
+        // #5745: a PM doc that never passed the parse direction (the
+        // collab Rich path stores raw ProseMirror JSON) is neutralized
+        // on save.
+        let doc = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "click",
+                    "marks": [{"type": "link", "attrs": {"href": "javascript:alert(1)"}}]
+                }]
+            }]
+        });
+        let saved = prosemirror_to_markdown(&doc).unwrap();
+        assert_eq!(saved, "[click](#)\n");
+
+        // Same path with a TAB-obfuscated scheme: the sanitizer strips
+        // TAB/LF/CR before reading the scheme, so this is neutralized
+        // too (a Markdown destination could never carry it — Comrak
+        // rejects it — but raw ProseMirror JSON can).
+        let doc = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "click",
+                    "marks": [{"type": "link", "attrs": {"href": "java\tscript:alert(1)"}}]
+                }]
+            }]
+        });
+        let saved = prosemirror_to_markdown(&doc).unwrap();
+        assert_eq!(saved, "[click](#)\n");
+
+        // A raw-HTML anchor wrapping an image (the parse_anchor_tag
+        // path) gets the same neutralization instead of an executable
+        // linkHref.
+        let doc = markdown_to_prosemirror(
+            "<a href=\"javascript:alert(1)\"><img src=\"x.png\" width=\"240\" /></a>",
+        );
+        let node = &doc["content"][0]["content"][0];
+        assert_eq!(node["type"], "image");
+        assert_eq!(node["attrs"]["linkHref"], "#");
+    }
+
+    #[test]
     fn test_empty_link_roundtrips() {
         // #996: an empty-text link has no child text node to carry the
         // link mark; the codec synthesizes an empty marked text node so
@@ -5309,6 +6081,70 @@ mod tests {
             assert_eq!(first, original, "first save for {original:?}");
             assert_eq!(first, second, "no fixpoint for {original:?}");
         }
+    }
+
+    #[test]
+    fn test_bare_url_becomes_link_mark() {
+        // #998: with the autolink extension enabled, a bare URL parses
+        // to a text node carrying a link mark, like the angle form.
+        let doc = markdown_to_prosemirror("visit https://example.com/path?a=1 now");
+        let para_content = doc["content"][0]["content"].as_array().unwrap();
+        let link_text = para_content.iter().find(|n| {
+            n["marks"]
+                .as_array()
+                .is_some_and(|m| m.iter().any(|mark| mark["type"] == "link"))
+        });
+        assert!(link_text.is_some(), "bare URL has no link mark");
+        let link_mark = link_text.unwrap()["marks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["type"] == "link")
+            .unwrap();
+        assert_eq!(link_mark["attrs"]["href"], "https://example.com/path?a=1");
+    }
+
+    #[test]
+    fn test_bare_email_becomes_link_mark() {
+        // #998: a bare email address autolinks with a mailto: href.
+        let doc = markdown_to_prosemirror("mail me@example.com today");
+        let para_content = doc["content"][0]["content"].as_array().unwrap();
+        let link_text = para_content.iter().find(|n| {
+            n["marks"]
+                .as_array()
+                .is_some_and(|m| m.iter().any(|mark| mark["type"] == "link"))
+        });
+        assert!(link_text.is_some(), "bare email has no link mark");
+        let link = link_text.unwrap();
+        assert_eq!(link["text"], "me@example.com");
+        let link_mark = link["marks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["type"] == "link")
+            .unwrap();
+        assert_eq!(link_mark["attrs"]["href"], "mailto:me@example.com");
+    }
+
+    #[test]
+    fn test_bare_url_fixpoint_and_code_span_negative() {
+        // #998: a bare URL round-trips to a stable fixpoint, and a URL
+        // inside a code span stays literal text with no link mark.
+        let (first, second) = two_saves("visit https://example.com/path?a=1 now\n");
+        assert_eq!(first, second, "no fixpoint for bare URL");
+        assert!(
+            first.contains("https://example.com/path?a=1"),
+            "URL lost in save: {first:?}"
+        );
+
+        let doc = markdown_to_prosemirror("run `https://example.com` now");
+        let para_content = doc["content"][0]["content"].as_array().unwrap();
+        let has_link = para_content.iter().any(|n| {
+            n["marks"]
+                .as_array()
+                .is_some_and(|m| m.iter().any(|mark| mark["type"] == "link"))
+        });
+        assert!(!has_link, "code-span URL must not carry a link mark");
     }
 
     #[test]
@@ -5381,6 +6217,35 @@ mod tests {
         ));
         let ok = json!({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "hello"}]}]});
         assert_eq!(prosemirror_to_markdown(&ok).unwrap(), "hello\n");
+    }
+
+    #[test]
+    fn test_unknown_marks_are_skipped_by_design() {
+        // #1045: unknown marks are shed while their text survives —
+        // unlike unknown nodes, which error. Pins the documented
+        // skip policy on `prosemirror_to_markdown`.
+        let text = |marks: Value| {
+            json!({"type": "doc", "content": [{"type": "paragraph", "content": [
+                {"type": "text", "text": "hi", "marks": marks}
+            ]}]})
+        };
+        // Bare unknown mark: text survives, mark vanishes.
+        let doc = text(json!([{"type": "underline"}]));
+        assert_eq!(prosemirror_to_markdown(&doc).unwrap(), "hi\n");
+        // Mixed known + unknown: the known mark still renders.
+        let doc = text(json!([{"type": "strong"}, {"type": "underline"}]));
+        assert_eq!(prosemirror_to_markdown(&doc).unwrap(), "**hi**\n");
+        // Unknown mark alongside code + link: code-mark special
+        // handling is unchanged.
+        let doc = text(json!([
+            {"type": "code"},
+            {"type": "link", "attrs": {"href": "http://e.com"}},
+            {"type": "underline"},
+        ]));
+        assert_eq!(
+            prosemirror_to_markdown(&doc).unwrap(),
+            "[`hi`](http://e.com)\n"
+        );
     }
 
     #[test]
@@ -5693,6 +6558,74 @@ mod tests {
         let first = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
         let second = prosemirror_to_markdown(&markdown_to_prosemirror(&first)).unwrap();
         (first, second)
+    }
+
+    #[test]
+    fn test_github_alert_markers_roundtrip_fixpoint() {
+        for marker in ["NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"] {
+            let original = format!("> [!{marker}]\n> First paragraph.\n>\n> Second paragraph.\n");
+            let (first, second) = two_saves(&original);
+
+            assert!(
+                first.starts_with(&format!("> [!{marker}]\n")),
+                "alert marker must remain unescaped: {first:?}"
+            );
+            assert!(first.contains("First paragraph."), "{first:?}");
+            assert!(first.contains("Second paragraph."), "{first:?}");
+            assert_eq!(first, second, "alert must be a save fixpoint: {marker}");
+        }
+    }
+
+    #[test]
+    fn test_non_alert_blockquote_markers_remain_plain() {
+        for (original, escaped) in [
+            (
+                "> [!NOTE] extra words\n> Body.\n",
+                r"\[\!NOTE\] extra words",
+            ),
+            ("> [see appendix]\n", r"\[see appendix\]"),
+        ] {
+            let (first, second) = two_saves(original);
+            assert!(
+                first.contains(escaped),
+                "non-alert text should keep normal escaping: {first:?}"
+            );
+            assert_eq!(first, second, "non-alert blockquote must be stable");
+        }
+    }
+
+    #[test]
+    fn test_alert_marker_text_inside_code_fence_is_untouched() {
+        // A literal `> \[\!NOTE\]` line inside a fenced block is code, not
+        // a renderer-escaped marker: rewriting it would change the code
+        // (Codex P2).
+        for original in [
+            "```\n> \\[\\!NOTE\\]\n```\n",
+            "> ```\n> > \\[\\!NOTE\\]\n> ```\n",
+            "~~~~\n> \\[\\!NOTE\\]\n~~~~\n",
+        ] {
+            let (first, second) = two_saves(original);
+            assert!(
+                first.contains(r"> \[\!NOTE\]"),
+                "code fence interior must stay verbatim: {first:?}"
+            );
+            assert_eq!(first, second, "code fence must be a save fixpoint");
+        }
+    }
+
+    #[test]
+    fn test_nested_first_block_does_not_make_alert() {
+        // The outer quote starts with a nested quote, so its later
+        // `[!NOTE]` line is ordinary escaped text even with a hard break
+        // (Codex P2): unescaping it would make the text look like an alert
+        // marker on reload and lose the author's break syntax.
+        let original = "> > Nested.\n>\n> \\[\\!NOTE\\]\\\n> Body.\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains(r"\[\!NOTE\]"),
+            "marker in a non-leading paragraph must stay escaped: {first:?}"
+        );
+        assert_eq!(first, second, "nested-quote text must be a save fixpoint");
     }
 
     #[test]
@@ -6020,6 +6953,65 @@ mod tests {
     }
 
     #[test]
+    fn test_newline_destination_protection_skips_literal_contexts() {
+        // #1707: protect_newline_destinations must leave
+        // destination-shaped strings in literal contexts untouched
+        // and must stop the destination scan at whitespace-only
+        // blank lines.
+        for literal in [
+            // Inline code span.
+            "`[x](<a\nb>)`\n",
+            // Indented code block.
+            "para\n\n    [x](<a\nb>)\n",
+            // A shorter fence line inside a longer fence does not
+            // end the literal block.
+            "````\n```\n[x](<a\nb>)\n````\n",
+            // Plain fenced block (pre-existing behaviour).
+            "```\n[x](<a\nb>)\n```\n",
+        ] {
+            let (protected, token) = protect_newline_destinations(literal);
+            assert_eq!(protected, literal, "literal context rewritten: {literal:?}");
+            assert!(token.is_none(), "no token for literal context: {literal:?}");
+            // End to end: no converted node may carry the token.
+            let doc = markdown_to_prosemirror(literal);
+            assert!(
+                !doc.to_string().contains("idweb-newline"),
+                "token leaked into converted doc for {literal:?}: {doc}"
+            );
+        }
+        // A whitespace-only blank line ends the destination: the
+        // shape is not a link, so nothing is protected and comrak
+        // keeps it literal text (no link mark is invented).
+        let broken = "[x](<a\n \nb>)\n";
+        let (protected, token) = protect_newline_destinations(broken);
+        assert_eq!(
+            protected, broken,
+            "scan crossed a whitespace-only blank line"
+        );
+        assert!(token.is_none());
+        let doc = markdown_to_prosemirror(broken);
+        assert!(
+            !doc.to_string().contains("\"link\""),
+            "paragraph-broken destination became a link: {doc}"
+        );
+        // Controls: a genuine newline destination is still
+        // protected, and a genuine one after a literal block is too.
+        let (protected, token) = protect_newline_destinations("[x](<a\nb>)\n");
+        assert!(token.is_some(), "genuine destination unprotected");
+        assert!(
+            protected.contains("idweb-newline"),
+            "genuine destination not tokenised: {protected:?}"
+        );
+        let mixed = "```\n[x](<a\nb>)\n```\n\n[y](<c\nd>)\n";
+        let (protected, token) = protect_newline_destinations(mixed);
+        assert!(token.is_some(), "destination after fence unprotected");
+        assert!(
+            protected.starts_with("```\n[x](<a\nb>)\n```\n"),
+            "fenced literal rewritten in mixed doc: {protected:?}"
+        );
+    }
+
+    #[test]
     fn test_tab_and_newline_editor_href_and_reference_definition() {
         // #1423, save direction alone: an editor-created PM link whose
         // href carries a tab or newline saves in angle form and reparses
@@ -6127,8 +7119,7 @@ mod tests {
         // #1565: the referenced definition keeps today's exact path;
         // the unreferenced one is appended by the pre-scan, not
         // duplicated or dropped.
-        let original =
-            "Text.[^used]\n\n[^used]: Used note.\n\n[^unused]: Unused note.\n";
+        let original = "Text.[^used]\n\n[^used]: Used note.\n\n[^unused]: Unused note.\n";
         let doc = markdown_to_prosemirror(original);
         let labels: Vec<&str> = doc["content"]
             .as_array()
@@ -6220,8 +7211,7 @@ mod tests {
         // the collector's single-line eligibility check rejected
         // it, so the recovered footnote's [target][long label]
         // saved as literal brackets instead of a hyperlink.
-        let original =
-            "[^orphan]: [target][long label]\n\n[long\nlabel]: https://example.com\n";
+        let original = "[^orphan]: [target][long label]\n\n[long\nlabel]: https://example.com\n";
         let (first, second) = two_saves(original);
         assert!(
             first.contains("[target](https://example.com)"),
@@ -6267,12 +7257,10 @@ mod tests {
         // not a link reference definition, so the orphan
         // footnote's literal [target][url] must NOT resolve into
         // a hyperlink.
-        let original =
-            "- Body\n  [url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let original = "- Body\n  [url]: https://example.com\n\n[^orphan]: [target][url]\n";
         let (first, second) = two_saves(original);
         assert!(
-            !first.contains("](https://example.com)")
-                && first.contains("\\[target\\]"),
+            !first.contains("](https://example.com)") && first.contains("\\[target\\]"),
             "list-continued reference stays literal (no link formed): {first:?}"
         );
         assert_eq!(first, second, "list-paragraph round-trip is a fixpoint");
@@ -6320,15 +7308,16 @@ mod tests {
         // a blockquote paragraph is paragraph text, not a link
         // reference definition, so the orphan footnote's literal
         // [target][url] must NOT resolve into a hyperlink.
-        let original =
-            "> Body\n> [url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let original = "> Body\n> [url]: https://example.com\n\n[^orphan]: [target][url]\n";
         let (first, second) = two_saves(original);
         assert!(
-            !first.contains("](https://example.com)")
-                && first.contains("\\[target\\]"),
+            !first.contains("](https://example.com)") && first.contains("\\[target\\]"),
             "unresolved reference stays literal (no link formed): {first:?}"
         );
-        assert_eq!(first, second, "container paragraph round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "container paragraph round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -6413,7 +7402,6 @@ mod tests {
         assert_eq!(first, second, "ordered continuation is a fixpoint");
     }
 
-
     #[test]
     fn test_empty_bullet_ends_footnote_like_comrak() {
         // #1565 nineteenth cut (Codex P2, DECLINED with evidence):
@@ -6432,9 +7420,7 @@ mod tests {
         let original = "[^a]: First.\n* \nsecond line.\n";
         let (first, second) = two_saves(original);
         assert!(
-            first.contains("First.")
-                && first.contains("second line.")
-                && first.contains("- "),
+            first.contains("First.") && first.contains("second line.") && first.contains("- "),
             "all lines survive the round trip: {first:?}"
         );
         assert_eq!(first, second, "empty-bullet round-trip is a fixpoint");
@@ -6449,7 +7435,8 @@ mod tests {
         // colon, so the unterminated angle destination consumed
         // both lines and the whole candidate was discarded,
         // leaving the orphan's link literal.
-        let original = "[bad]: <unclosed\n# Heading\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let original =
+            "[bad]: <unclosed\n# Heading\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
         let (first, second) = two_saves(original);
         assert!(
             first.contains("](https://example.com)"),
@@ -6502,7 +7489,10 @@ mod tests {
             "definition-shaped HTML interior after a setext heading is not synthesized: {doc}"
         );
         let (first, second) = two_saves(original);
-        assert_eq!(first, second, "type-7-after-setext round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "type-7-after-setext round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -6528,7 +7518,10 @@ mod tests {
                 "definition-shaped HTML interior after indented code is not synthesized: {doc}"
             );
             let (first, second) = two_saves(original);
-            assert_eq!(first, second, "type-7-after-indented-code round-trip is a fixpoint");
+            assert_eq!(
+                first, second,
+                "type-7-after-indented-code round-trip is a fixpoint"
+            );
         }
     }
 
@@ -6551,7 +7544,10 @@ mod tests {
             !first.contains("[target]("),
             "invalid-destination reference is not promoted to a link: {first:?}"
         );
-        assert_eq!(first, second, "invalid-destination round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "invalid-destination round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -6573,7 +7569,10 @@ mod tests {
             .unwrap()
             .iter()
             .any(|n| n["type"] == "footnote_definition");
-        assert!(found, "real footnote definition after the blockquote fence is recovered");
+        assert!(
+            found,
+            "real footnote definition after the blockquote fence is recovered"
+        );
         let (first, second) = two_saves(original);
         assert!(
             first.contains("\\[x\\]\\[url\\]"),
@@ -6583,7 +7582,10 @@ mod tests {
             !first.contains("[x]("),
             "fenced reference definition is not promoted to a link: {first:?}"
         );
-        assert_eq!(first, second, "indented blockquote fence round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "indented blockquote fence round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -6609,7 +7611,10 @@ mod tests {
             "indented code must not synthesize fake: {doc}"
         );
         let (first, second) = two_saves(original);
-        assert!(first.contains("First."), "footnote body survives: {first:?}");
+        assert!(
+            first.contains("First."),
+            "footnote body survives: {first:?}"
+        );
         assert!(first.contains("code"), "indented code survives: {first:?}");
         assert_eq!(first, second, "indented-code continuation is a fixpoint");
     }
@@ -6708,8 +7713,14 @@ mod tests {
             "overindented continuation keeps the lazy line: {orphan}"
         );
         let (first, second) = two_saves(original);
-        assert!(first.contains("second."), "lazy line survives save: {first:?}");
-        assert_eq!(first, second, "overindented-continuation round-trip is a fixpoint");
+        assert!(
+            first.contains("second."),
+            "lazy line survives save: {first:?}"
+        );
+        assert_eq!(
+            first, second,
+            "overindented-continuation round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -6738,7 +7749,10 @@ mod tests {
             "HTML block in footnote must not synthesize fake: {doc}"
         );
         let (first, second) = two_saves(original);
-        assert!(first.contains("code"), "comment content survives: {first:?}");
+        assert!(
+            first.contains("code"),
+            "comment content survives: {first:?}"
+        );
         assert_eq!(first, second, "HTML-in-footnote round-trip is a fixpoint");
         let saved_doc = markdown_to_prosemirror(&first);
         let saved_labels: Vec<_> = saved_doc["content"]
@@ -6778,7 +7792,10 @@ mod tests {
             "blockquote multiline destination resolves the orphan link: {orphan}"
         );
         let (first, second) = two_saves(original);
-        assert_eq!(first, second, "blockquote-definition round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "blockquote-definition round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -6824,7 +7841,10 @@ mod tests {
             !first.contains("[target]("),
             "malformed-candidate reference is not promoted to a link: {first:?}"
         );
-        assert_eq!(first, second, "malformed-candidate round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "malformed-candidate round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -6854,7 +7874,10 @@ mod tests {
             first.contains("paragraph"),
             "footnote paragraph survives: {first:?}"
         );
-        assert_eq!(first, second, "overindented-html footnote round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "overindented-html footnote round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -6879,7 +7902,10 @@ mod tests {
             "only the real orphan definition is synthesized: {doc}"
         );
         let (first, second) = two_saves(original);
-        assert_eq!(first, second, "overindented-closer round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "overindented-closer round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -6896,7 +7922,10 @@ mod tests {
             first.contains("[x](/target)"),
             "reference after a heading-body footnote resolves: {first:?}"
         );
-        assert_eq!(first, second, "heading-body reference round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "heading-body reference round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -7063,7 +8092,10 @@ mod tests {
             "only the real orphan definition is synthesized: {doc}"
         );
         let (first, second) = two_saves(original);
-        assert_eq!(first, second, "heading-body footnote round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "heading-body footnote round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -7129,7 +8161,10 @@ mod tests {
             first.contains("[^real]:"),
             "recovered definition survives the save: {first:?}"
         );
-        assert_eq!(first, second, "indented-continuation round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "indented-continuation round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -7152,7 +8187,10 @@ mod tests {
             !first.contains("[target]("),
             "trailing-text reference is not promoted to a link: {first:?}"
         );
-        assert_eq!(first, second, "trailing-text-after-title round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "trailing-text-after-title round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -7162,7 +8200,8 @@ mod tests {
         // marker is optional, so byte-exact prefix matching left
         // the fence open and suppressed the reference definition
         // after it, degrading the orphan's link to literal text.
-        let original = "> ```\n> code\n>```\n> [url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let original =
+            "> ```\n> code\n>```\n> [url]: https://example.com\n\n[^orphan]: [target][url]\n";
         let (first, second) = two_saves(original);
         assert!(
             first.contains("](https://example.com)"),
@@ -7200,14 +8239,16 @@ mod tests {
         // item is document-global even though the first item's
         // content is paragraph text; the orphan footnote's
         // reference-style link must resolve on save.
-        let original =
-            "- Body\n- [url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let original = "- Body\n- [url]: https://example.com\n\n[^orphan]: [target][url]\n";
         let (first, second) = two_saves(original);
         assert!(
             first.contains("](https://example.com)"),
             "reference in a new list item resolves to a link: {first:?}"
         );
-        assert_eq!(first, second, "list item reference round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "list item reference round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -7366,7 +8407,10 @@ mod tests {
             .unwrap()
             .iter()
             .any(|n| n["type"] == "footnote_definition");
-        assert!(!found, "fence interior stays literal past a container-shaped line");
+        assert!(
+            !found,
+            "fence interior stays literal past a container-shaped line"
+        );
     }
 
     #[test]
@@ -7376,8 +8420,7 @@ mod tests {
         // reference definition; the synthesis context must not
         // promote it, or the recovered footnote's bracketed text
         // becomes a hyperlink the document never had.
-        let original =
-            "Body line\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let original = "Body line\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
         let doc = markdown_to_prosemirror(original);
         let orphan = doc["content"]
             .as_array()
@@ -7407,7 +8450,6 @@ mod tests {
             .any(|n| n["type"] == "footnote_definition");
         assert!(found, "definition after a blockquote fence is recovered");
     }
-
 
     #[test]
     fn test_lowercase_cdata_does_not_suppress_footnote() {
@@ -7446,8 +8488,7 @@ mod tests {
         // an indented code block (tab = columns to the next
         // multiple of 4), so a reference definition on the next
         // line starts a new block and is collected.
-        let original =
-            "\tcode\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let original = "\tcode\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
         let doc = markdown_to_prosemirror(original);
         let orphan = doc["content"]
             .as_array()
@@ -7467,8 +8508,7 @@ mod tests {
         // HTML block must reach the HTML tracker, or the collector
         // treats every later line as HTML and returns no reference
         // definitions, degrading the orphan's reference-style link.
-        let original =
-            "<div>\n</div>\n\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let original = "<div>\n</div>\n\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
         let doc = markdown_to_prosemirror(original);
         let orphan = doc["content"]
             .as_array()
@@ -7501,7 +8541,10 @@ mod tests {
             "multiline destination resolves the orphan link: {orphan}"
         );
         let (first, second) = two_saves(original);
-        assert_eq!(first, second, "multiline-definition round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "multiline-definition round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -7523,7 +8566,6 @@ mod tests {
             "continuation-line title is kept on the orphan link: {orphan}"
         );
     }
-
 
     #[test]
     fn test_autolink_line_does_not_suppress_footnote() {
@@ -7597,8 +8639,7 @@ mod tests {
         // marker ends the real HTML comment, but the collector's
         // indent gate never fed it to the tracker, so the tracker
         // stayed open and suppressed the valid definition after it.
-        let original =
-            "[^orphan]: [target][url]\n\n<!--\n    -->\n\n[url]: https://example.com\n";
+        let original = "[^orphan]: [target][url]\n\n<!--\n    -->\n\n[url]: https://example.com\n";
         let doc = markdown_to_prosemirror(original);
         let orphan = doc["content"]
             .as_array()
@@ -7624,7 +8665,10 @@ mod tests {
             .unwrap()
             .iter()
             .any(|n| n["type"] == "footnote_definition");
-        assert!(found, "definition after an indented comment close is recovered");
+        assert!(
+            found,
+            "definition after an indented comment close is recovered"
+        );
     }
 
     #[test]
@@ -7749,13 +8793,17 @@ mod tests {
             .filter(|n| n["type"] == "footnote_definition")
             .map(|n| n["attrs"]["label"].as_str().unwrap())
             .collect();
-        assert_eq!(labels, ["real"], "definition after blockquote HTML is recovered");
+        assert_eq!(
+            labels,
+            ["real"],
+            "definition after blockquote HTML is recovered"
+        );
         let (first, second) = two_saves(original);
         assert!(first.contains("The note."), "note survives save: {first:?}");
         assert_eq!(first, second, "blockquote-html round-trip is a fixpoint");
     }
 
-        #[test]
+    #[test]
     fn test_footnote_after_blockquote_fence_container_end_recovered() {
         // Codex P2 on #1565's tenth cut: a fence opened inside a
         // blockquote ends implicitly when the quote ends (blank
@@ -7770,7 +8818,11 @@ mod tests {
             .filter(|n| n["type"] == "footnote_definition")
             .map(|n| n["attrs"]["label"].as_str().unwrap())
             .collect();
-        assert_eq!(labels, ["real"], "definition after blockquote fence is recovered");
+        assert_eq!(
+            labels,
+            ["real"],
+            "definition after blockquote fence is recovered"
+        );
         let (first, second) = two_saves(original);
         assert!(first.contains("The note."), "note survives save: {first:?}");
         assert_eq!(first, second, "blockquote-fence round-trip is a fixpoint");
@@ -7788,7 +8840,10 @@ mod tests {
             first.contains("https://example.com"),
             "blockquote reference definition resolves in recovered footnote: {first:?}"
         );
-        assert_eq!(first, second, "blockquote-definition round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "blockquote-definition round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -7799,9 +8854,18 @@ mod tests {
         // of ending it.
         let original = "[^a]: First line.\n#hashtag\n";
         let (first, second) = two_saves(original);
-        assert!(first.contains("First line."), "first line survives: {first:?}");
-        assert!(first.contains("#hashtag"), "hashtag continuation survives: {first:?}");
-        assert_eq!(first, second, "hashtag-continuation round-trip is a fixpoint");
+        assert!(
+            first.contains("First line."),
+            "first line survives: {first:?}"
+        );
+        assert!(
+            first.contains("#hashtag"),
+            "hashtag continuation survives: {first:?}"
+        );
+        assert_eq!(
+            first, second,
+            "hashtag-continuation round-trip is a fixpoint"
+        );
     }
 
     #[test]
@@ -7826,7 +8890,7 @@ mod tests {
         assert_eq!(first, second, "self-closing-pre round-trip is a fixpoint");
     }
 
-#[test]
+    #[test]
     fn test_reference_after_lone_setext_marker_not_a_definition() {
         // Codex P2 on #1565's ninth cut: a lone `=` with no
         // preceding paragraph is paragraph text, so the
@@ -7881,7 +8945,11 @@ mod tests {
             .filter(|n| n["type"] == "footnote_definition")
             .map(|n| n["attrs"]["label"].as_str().unwrap())
             .collect();
-        assert_eq!(labels, ["real"], "definition after invalid fence is recovered");
+        assert_eq!(
+            labels,
+            ["real"],
+            "definition after invalid fence is recovered"
+        );
         let (first, second) = two_saves(original);
         assert!(first.contains("The note."), "note survives save: {first:?}");
         assert_eq!(first, second, "invalid-fence round-trip is a fixpoint");
@@ -7924,7 +8992,10 @@ mod tests {
             .expect("unreferenced definition carried into the PM doc");
         assert_eq!(definition["attrs"]["label"], "a");
         let (first, second) = two_saves(original);
-        assert!(first.contains("First line."), "first line survives: {first:?}");
+        assert!(
+            first.contains("First line."),
+            "first line survives: {first:?}"
+        );
         assert!(
             first.contains("second line."),
             "lazy continuation survives save: {first:?}"
@@ -7942,7 +9013,10 @@ mod tests {
             !first.contains("idweb-newline"),
             "no placeholder token in saved output: {first:?}"
         );
-        assert_eq!(first, second, "newline-destination round-trip is a fixpoint");
+        assert_eq!(
+            first, second,
+            "newline-destination round-trip is a fixpoint"
+        );
     }
 
     fn test_footnote_multi_paragraph_definition_fixpoint() {
@@ -8226,6 +9300,47 @@ mod tests {
     }
 
     #[test]
+    fn test_roundtrip_info_less_code_block_stays_fenced() {
+        // #954: info-less fenced blocks must save as fenced, not as
+        // 4-space indented blocks. Covers blank-line content,
+        // fence-containing content, list nesting, and blockquotes
+        // (the blockquote shape is also pinned by #1496).
+        for (original, opening_fence) in [
+            ("```\nline1\n\n\nline2\n```\n", "```"),
+            ("````\n```\ncode\n```\n````\n", "````"),
+            ("- ```\n  code\n  ```\n", "- ```"),
+            // Blockquote saves with leading empty quote lines (comrak's
+            // block separation); the shape pinned here is fenced, not
+            // indented.
+            ("> ```\n> code\n> ```\n", "> ```"),
+        ] {
+            let (first, second) = two_saves(original);
+            assert!(
+                first.lines().any(|l| l == opening_fence),
+                "info-less block lost its fence for {original:?}: {first:?}"
+            );
+            assert!(
+                !first.lines().any(|l| l.starts_with("    ")),
+                "info-less block saved indented for {original:?}: {first:?}"
+            );
+            assert_eq!(
+                markdown_to_prosemirror(&first),
+                markdown_to_prosemirror(original),
+                "round trip changed the doc for {original:?}"
+            );
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_empty_code_block_has_no_spurious_blank_line() {
+        // #954: an empty fenced block must not gain a blank line.
+        let (first, second) = two_saves("```\n```\n");
+        assert_eq!(first, "```\n```\n", "empty block grew: {first:?}");
+        assert_eq!(first, second, "no fixpoint for empty block");
+    }
+
+    #[test]
     fn test_roundtrip_list() {
         let original = "- Item 1\n- Item 2\n";
         let doc = markdown_to_prosemirror(original);
@@ -8415,6 +9530,65 @@ Some text
         assert_eq!(bullet["content"][0]["type"], "task_list");
         assert!(bullet["content"][0]["attrs"]["order"].is_null());
         assert_eq!(bullet["content"][0]["attrs"]["tight"], true);
+    }
+
+    #[test]
+    fn test_ordered_list_paren_delimiter_roundtrips() {
+        // #1380: the ordered-list delimiter style (`1)` vs `1.`) must
+        // survive the codec in both directions instead of every list
+        // being rewritten with periods.
+        let doc = markdown_to_prosemirror("1) one\n2) two\n");
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "ordered_list");
+        assert_eq!(content[0]["attrs"]["delimiter"], "paren");
+
+        let (first, second) = two_saves("1) one\n2) two\n");
+        assert_eq!(first, "1) one\n2) two\n", "paren round-trip changed bytes");
+        assert_eq!(first, second, "no fixpoint for paren list");
+
+        // Period lists are unchanged and now carry the attr explicitly.
+        let doc = markdown_to_prosemirror("1. one\n2. two\n");
+        assert_eq!(doc["content"][0]["attrs"]["delimiter"], "period");
+        let (first, second) = two_saves("1. one\n2. two\n");
+        assert_eq!(first, "1. one\n2. two\n");
+        assert_eq!(first, second, "no fixpoint for period list");
+    }
+
+    #[test]
+    fn test_ordered_task_list_paren_delimiter_roundtrips() {
+        // #1380: ordered task lists keep their delimiter too.
+        let doc = markdown_to_prosemirror("1) [ ] todo\n2) [x] done\n");
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "task_list");
+        assert_eq!(content[0]["attrs"]["order"], 1);
+        assert_eq!(content[0]["attrs"]["delimiter"], "paren");
+
+        let (first, second) = two_saves("1) [ ] todo\n2) [x] done\n");
+        assert_eq!(first, "1) [ ] todo\n2) [x] done\n");
+        assert_eq!(first, second, "no fixpoint for paren task list");
+    }
+
+    #[test]
+    fn test_legacy_ordered_list_without_delimiter_attr_saves_period() {
+        // #1380: legacy PM docs stored by the old codec carry no
+        // delimiter attr; they must save exactly as today (period).
+        let doc = json!({
+            "type": "doc",
+            "content": [{
+                "type": "ordered_list",
+                "attrs": {"order": 1, "tight": true},
+                "content": [
+                    {"type": "list_item", "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "one"}]}
+                    ]},
+                    {"type": "list_item", "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "two"}]}
+                    ]}
+                ]
+            }]
+        });
+        let md = prosemirror_to_markdown(&doc).unwrap();
+        assert_eq!(md, "1. one\n2. two\n", "legacy doc changed: {md:?}");
     }
 
     #[test]
@@ -8820,6 +9994,24 @@ Some text
     }
 
     #[test]
+    fn test_table_cell_paragraphs_keep_word_boundaries() {
+        let para =
+            |text: &str| json!({"type": "paragraph", "content": [{"type": "text", "text": text}]});
+        let pm = json!({"type": "doc", "content": [{"type": "table", "content": [
+            {"type": "table_row", "content": [{"type": "table_header", "content": [para("head"), para("tail")]}]},
+            {"type": "table_row", "content": [{"type": "table_cell", "content": [para("first"), para("second"), para("third")]}]},
+            {"type": "table_row", "content": [{"type": "table_cell", "content": [para("single")]}]}
+        ]}]});
+        let md = prosemirror_to_markdown(&pm).unwrap();
+        assert_eq!(
+            md,
+            "| head tail |\n| --- |\n| first second third |\n| single |\n"
+        );
+        let reparsed = markdown_to_prosemirror(&md);
+        assert_eq!(prosemirror_to_markdown(&reparsed).unwrap(), md);
+    }
+
+    #[test]
     fn test_pm_to_md_table_without_header_row_is_promoted() {
         // #1044: a PM table whose rows are all table_cell (schema-legal)
         // must save as a table: the first row is promoted to a header
@@ -8972,7 +10164,8 @@ Some text
 
     #[test]
     fn test_mixed_case_inline_img_tag_imports_as_image() {
-        let doc = markdown_to_prosemirror("before <Img src=\"inline.png\" alt=\"Mixed\" /> after\n");
+        let doc =
+            markdown_to_prosemirror("before <Img src=\"inline.png\" alt=\"Mixed\" /> after\n");
         let content = doc["content"][0]["content"]
             .as_array()
             .expect("paragraph content");
@@ -9012,7 +10205,19 @@ Some text
         // #2180: values with no lossless numeric-pixel form are
         // refused (attr absent; the import path warns) -- never
         // silently truncated or reinterpreted.
-        for raw in ["50%", "200.5", "200.5px", "10em", "2rem", "abc", "", "-5", "200pxpx", "２００", "２００px"] {
+        for raw in [
+            "50%",
+            "200.5",
+            "200.5px",
+            "10em",
+            "2rem",
+            "abc",
+            "",
+            "-5",
+            "200pxpx",
+            "２００",
+            "２００px",
+        ] {
             let node = parse_img_tag(&format!("<img src=\"x.png\" width=\"{raw}\" />"))
                 .expect("img parses");
             assert!(
@@ -9055,7 +10260,10 @@ Some text
         assert_eq!(img["type"], "image");
         assert_eq!(img["attrs"]["width"], 200);
         let out = prosemirror_to_markdown(&doc).unwrap();
-        assert!(out.contains("width=\"200\""), "px form re-emits bare: {out}");
+        assert!(
+            out.contains("width=\"200\""),
+            "px form re-emits bare: {out}"
+        );
     }
 
     #[test]
@@ -9092,6 +10300,39 @@ Some text
         let node = parse_img_tag("<img src = 'x.png' alt = 'A' />").expect("img parses");
         assert_eq!(node["attrs"]["src"], "x.png");
         assert_eq!(node["attrs"]["alt"], "A");
+    }
+
+    #[test]
+    fn test_img_tag_accepts_ascii_whitespace_after_name() {
+        for separator in ["\n", "\t", "\r", "\x0c"] {
+            let html = format!("<img{separator}src=\"x.png\" width=\"240\" alt=\"A\" />");
+            let node = parse_img_tag(&html).expect("img with ASCII whitespace parses");
+            assert_eq!(node["attrs"]["src"], "x.png", "separator {separator:?}");
+            assert_eq!(node["attrs"]["width"], 240, "separator {separator:?}");
+            assert_eq!(node["attrs"]["alt"], "A", "separator {separator:?}");
+        }
+    }
+
+    #[test]
+    fn test_linked_img_tag_accepts_newline_after_img_name() {
+        let node = parse_linked_img_tag(
+            "<a href=\"https://example.com\"><img\nsrc=\"x.png\" width=\"240\" /></a>",
+        )
+        .expect("linked img with newline parses");
+        assert_eq!(node["attrs"]["src"], "x.png");
+        assert_eq!(node["attrs"]["width"], 240);
+        assert_eq!(node["attrs"]["linkHref"], "https://example.com");
+    }
+
+    #[test]
+    fn test_img_tag_name_boundary_preserves_existing_forms() {
+        let spaced = parse_img_tag("<img src=\"x.png\" />").expect("space form parses");
+        assert_eq!(spaced["attrs"]["src"], "x.png");
+        assert!(
+            parse_img_tag("<img>").is_none(),
+            "bare tag still has no required src"
+        );
+        assert!(parse_img_tag("<imgx src=\"x.png\" />").is_none());
     }
 
     #[test]
@@ -9699,5 +10940,107 @@ Some text
             markdown_to_prosemirror("[<b>x</b>](/y)\n"),
             "same PM structure for single-run form"
         );
+    }
+
+    #[test]
+    fn test_front_matter_roundtrip_fixpoint() {
+        // #1369: YAML front matter (`---` delimiter only; TOML `+++`
+        // is out of scope) survives open->save verbatim with a
+        // multi-key block, and the second save is a fixpoint.
+        for original in [
+            "---\ntitle: Hello\ntags: [a, b]\n---\n\nBody text.\n",
+            "---\ntitle: Hello\n---\n\n# Heading\n",
+            "---\ntitle: Hello\n---\n\nJust a paragraph.\n",
+            // Blank line inside the block is preserved verbatim.
+            "---\ntitle: Hello\n\ndraft: true\n---\n\nBody.\n",
+        ] {
+            let doc = markdown_to_prosemirror(original);
+            let content = doc["content"].as_array().unwrap();
+            assert_eq!(
+                content[0]["type"], "front_matter",
+                "first child for {original:?}: {doc}"
+            );
+            let (first, second) = two_saves(original);
+            assert_eq!(first, original, "round-trip for {original:?}");
+            assert_eq!(first, second, "fixpoint for {original:?}");
+            assert_eq!(
+                markdown_to_prosemirror(&first),
+                doc,
+                "stable PM for {original:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_front_matter_mid_doc_dashes_stay_horizontal_rule() {
+        // #1369 control: `---` after a paragraph is a thematic break,
+        // not front matter.
+        let original = "Para one.\n\n---\n\nPara two.\n";
+        let doc = markdown_to_prosemirror(original);
+        let content = doc["content"].as_array().unwrap();
+        assert!(
+            content.iter().all(|n| n["type"] != "front_matter"),
+            "no front_matter mid-doc: {doc}"
+        );
+        assert!(
+            content.iter().any(|n| n["type"] == "horizontal_rule"),
+            "thematic break kept: {doc}"
+        );
+        let (first, second) = two_saves(original);
+        // Thematic breaks normalize to comrak's `-----` spelling; what
+        // matters is the node type survives and the save is a fixpoint.
+        assert!(first.contains("-----"), "break kept: {first:?}");
+        assert_eq!(first, second, "fixpoint: {first:?}");
+    }
+
+    #[test]
+    fn test_front_matter_unclosed_leading_dashes_stay_break() {
+        // #1369 control: an unclosed leading `---` is a thematic break.
+        let original = "---\n\nBody.\n";
+        let doc = markdown_to_prosemirror(original);
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "horizontal_rule", "no FM: {doc}");
+        let (first, second) = two_saves(original);
+        assert!(first.contains("-----"), "break kept: {first:?}");
+        assert_eq!(first, second, "fixpoint: {first:?}");
+    }
+
+    #[test]
+    fn test_front_matter_misplaced_is_rejected() {
+        // #1369: `front_matter` is legal only as the first child of
+        // `doc`; anywhere else is a MisplacedNode.
+        let fm = || json!({"type": "front_matter", "attrs": {"text": "---\na: b\n---\n"}});
+        let para = || json!({"type": "paragraph", "content": [{"type": "text", "text": "x"}]});
+        let cases: &[(&str, Value)] = &[
+            (
+                "second child of doc",
+                json!({"type": "doc", "content": [para(), fm()]}),
+            ),
+            (
+                "inside blockquote",
+                json!({"type": "doc", "content": [{"type": "blockquote", "content": [fm()]}]}),
+            ),
+            (
+                "inside paragraph",
+                json!({"type": "doc", "content": [{"type": "paragraph", "content": [fm()]}]}),
+            ),
+            (
+                "content children inside front_matter",
+                json!({"type": "doc", "content": [{"type": "front_matter", "attrs": {"text": "---\na: b\n---\n"}, "content": [para()]}]}),
+            ),
+        ];
+        for (name, doc) in cases {
+            assert!(
+                matches!(
+                    prosemirror_to_markdown(doc),
+                    Err(ConversionError::MisplacedNode { .. })
+                ),
+                "{name}: expected MisplacedNode, got {:?}",
+                prosemirror_to_markdown(doc)
+            );
+        }
+        // First child of doc saves verbatim.
+        let ok = json!({"type": "doc", "content": [fm(), para()]});
+        assert_eq!(prosemirror_to_markdown(&ok).unwrap(), "---\na: b\n---\nx\n");
     }
 }

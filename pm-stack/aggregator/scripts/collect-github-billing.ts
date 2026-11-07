@@ -34,10 +34,7 @@ import {
 const HOME = homedir();
 const outboxPath =
   process.env.USAGE_SNAPSHOT_OUTBOX_PATH ??
-  join(
-    HOME,
-    "workspace/goals/keep-the-four-repos-healthy/hidden_files/usage-snapshot-outbox.jsonl",
-  );
+  join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files/usage-snapshot-outbox.jsonl");
 
 function argValue(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -59,9 +56,7 @@ function usageError(message: string): never {
 function explicitArg(flag: string): string {
   const value: string | undefined = process.argv[process.argv.indexOf(flag) + 1];
   if (value === undefined || value.startsWith("--"))
-    usageError(
-      `${flag} requires a value (got ${value === undefined ? "no value" : JSON.stringify(value)})`,
-    );
+    usageError(`${flag} requires a value (got ${value === undefined ? "no value" : JSON.stringify(value)})`);
   return value;
 }
 
@@ -70,9 +65,7 @@ function resolveYear(now: Date): number {
   const raw = explicitArg("--year");
   const year = /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : NaN;
   if (!Number.isInteger(year) || year < 2000 || year > now.getUTCFullYear())
-    usageError(
-      `--year must be an integer from 2000 through ${now.getUTCFullYear()} (got ${JSON.stringify(raw)})`,
-    );
+    usageError(`--year must be an integer from 2000 through ${now.getUTCFullYear()} (got ${JSON.stringify(raw)})`);
   return year;
 }
 
@@ -95,11 +88,10 @@ function resolveUser(): string {
 function fetchUsageItems(user: string, year: number, month: number): BillingUsageItem[] {
   let out: string;
   try {
-    out = execFileSync(
-      "gh",
-      ["api", `users/${user}/settings/billing/usage?year=${year}&month=${month}`],
-      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
-    );
+    out = execFileSync("gh", ["api", `users/${user}/settings/billing/usage?year=${year}&month=${month}`], {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    });
   } catch (e) {
     throw new Error(
       `gh api billing usage failed — the endpoint needs a gh token with the "user" scope ` +

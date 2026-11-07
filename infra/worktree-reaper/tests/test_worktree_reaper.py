@@ -37,6 +37,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.join(HERE, "..", "bin", "worktree_reaper.py")
@@ -136,6 +137,8 @@ class ReaperRun:
             "deny_paths": list(deny_paths),
             "generated_dirt_prefixes": ["pkgs/mcpx/internal/cli/logs/"],
             "generated_dirt_files": ["fleet-feed.json"],
+            "ignored_dirt_prefixes": ["target/", "node_modules/"],
+            "ignored_dirt_files": [],
         }
         cfg_path = os.path.join(self.state_dir, "test-config.json")
         os.makedirs(self.state_dir, exist_ok=True)
@@ -246,6 +249,50 @@ class GateTests(unittest.TestCase):
         # Caught either at evaluation or at the pre-removal re-scan.
         self.assertTrue(decisions[t_occupied]["reason"].startswith("occupied"))
 
+    def _tree_with_ignored(self, branch, rule, ignored_rel):
+        """A pushed tree whose branch commits a .gitignore rule, with an
+        ignored file present in the working tree."""
+        tree = self.repo.branch_tree(branch, push=True)
+        self.repo.write(tree, ".gitignore", rule + "\n")
+        git(tree, "add", ".gitignore")
+        git(tree, "commit", "--quiet", "-m", "ignore rule")
+        git(tree, "push", "--quiet", "origin", branch)
+        self.repo.write(tree, ignored_rel, "local state\n")
+        return tree
+
+    def test_05_ignored_gate(self):
+        # Ignored-only tree: the CLEAN gate must see the ignored file
+        # and keep the tree (#6734 — before the fix, status_entries
+        # returned ([], []) for this tree and it reaped as clean).
+        t_ignored = self._tree_with_ignored("t/ignored-only", "local-state.db", "local-state.db")
+        tracked, untracked, ignored = wr.status_entries(t_ignored)
+        self.assertEqual((tracked, untracked), ([], []))
+        self.assertEqual(ignored, ["local-state.db"])
+
+        # Allowlisted untracked dirt does not launder an unlisted
+        # ignored file: the tree is still kept.
+        t_mixed = self._tree_with_ignored("t/untracked-plus-ignored", "notes.db", "notes.db")
+        self.repo.write(t_mixed, "fleet-feed.json", "{}\n")
+
+        # Ignored build output under an allowlisted prefix reaps, and
+        # the record names the ignored paths it deleted.
+        t_target = self._tree_with_ignored("t/ignored-target", "target/", "target/build.o")
+
+        decisions = self.runner.run()
+        for tree in (t_ignored, t_mixed):
+            self.assertTrue(os.path.isdir(tree), f"{tree} must survive")
+            self.assertEqual(decisions[tree]["action"], "keep")
+            self.assertEqual(decisions[tree]["reason"], "dirty")
+        self.assertIn("local-state.db", decisions[t_ignored]["gates"]["clean"]["ignored_other"])
+        self.assertIn("notes.db", decisions[t_mixed]["gates"]["clean"]["ignored_other"])
+
+        self.assertFalse(os.path.isdir(t_target), "allowlisted ignored dirt should reap")
+        self.assertEqual(decisions[t_target]["action"], "reaped")
+        self.assertTrue(
+            any("target" in p for p in decisions[t_target]["ignored_paths"]),
+            f"reaped tree's record must name its ignored paths: {decisions[t_target]}",
+        )
+
     def test_04_quiet_gate(self):
         tree = self.repo.branch_tree("t/fresh", push=True)
         decisions = self.runner.run(quiet_hours=100000)
@@ -253,6 +300,25 @@ class GateTests(unittest.TestCase):
         self.assertEqual(decisions[tree]["reason"], "active")
         decisions = self.runner.run(quiet_hours=0)
         self.assertFalse(os.path.isdir(tree))
+
+
+class RunLogCollisionTests(unittest.TestCase):
+    """#5716: two runs in the same second must not share a run log."""
+
+    def test_two_runs_same_second_both_logged(self):
+        tmp = tempfile.mkdtemp(prefix="wtreaper-collision-")
+        try:
+            repo = SyntheticRepo(tmp)
+            runner = ReaperRun(repo, os.path.join(tmp, "state"))
+            tree = repo.branch_tree("t/fresh", push=True)
+            first = runner.run(quiet_hours=100000)
+            second = runner.run(quiet_hours=100000)
+            self.assertEqual(first[tree]["reason"], "active")
+            self.assertEqual(second[tree]["reason"], "active")
+            logs = os.listdir(os.path.join(tmp, "state", "runs"))
+            self.assertEqual(len(logs), 2, logs)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 class UnitTests(unittest.TestCase):
@@ -269,6 +335,16 @@ class UnitTests(unittest.TestCase):
         self.assertIsNone(entries[1]["branch"])
         self.assertEqual(entries[2]["branch"], "queue/1-2-z")
         self.assertTrue(entries[2]["locked"])
+
+    def test_ignored_allowlisted(self):
+        cfg = {"ignored_dirt_prefixes": ["target/", "node_modules/"],
+               "ignored_dirt_files": ["scratch.db"]}
+        allow, other = wr.ignored_allowlisted(
+            ["target/", "target/build.o", "pkgs/id/target/deps/x.o",
+             "node_modules/pkg/index.js", "data/scratch.db",
+             "pkgs/id/.identity.db", "local-state.db"], cfg)
+        self.assertEqual(len(allow), 5)
+        self.assertEqual(other, ["pkgs/id/.identity.db", "local-state.db"])
 
     def test_dirt_allowlisted(self):
         cfg = {"generated_dirt_prefixes": ["pkgs/mcpx/internal/cli/logs/"],
@@ -297,6 +373,55 @@ class UnitTests(unittest.TestCase):
             mtime3, _s3, complete3 = wr.walk_activity(root, now - 1000)
             self.assertTrue(complete3)
             self.assertAlmostEqual(mtime3, old, delta=2)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+class ProcScanFailClosedTests(unittest.TestCase):
+    """#5740: a /proc scan failure is UNKNOWN occupancy — fail closed."""
+
+    def test_proc_cwds_raises_on_listdir_failure(self):
+        with mock.patch("os.listdir", side_effect=OSError("proc gone")):
+            with self.assertRaises(wr.ProcScanError):
+                wr.proc_cwds()
+
+    def test_successful_empty_scan_is_unoccupied(self):
+        root = tempfile.mkdtemp(prefix="wtreaper-empty-scan-")
+        try:
+            with mock.patch("os.listdir", return_value=[]):
+                self.assertEqual(wr.proc_cwds(), [])
+                self.assertFalse(wr.tree_occupied(root))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_confirmed_matching_process_still_occupied(self):
+        root = tempfile.mkdtemp(prefix="wtreaper-occupied-")
+        try:
+            self.assertTrue(wr.tree_occupied(root, cwds=[root]))
+            self.assertFalse(wr.tree_occupied(root, cwds=["/nonexistent-elsewhere"]))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_reap_tree_retains_candidate_and_never_calls_git(self):
+        root = tempfile.mkdtemp(prefix="wtreaper-failclosed-")
+        try:
+            rec = {"tree": root, "branch": "queue/test", "action": "candidate"}
+            git_calls = []
+
+            def fake_run_git(*args, **kwargs):
+                git_calls.append(args)
+                return 0, "", ""
+
+            with mock.patch("os.listdir", side_effect=OSError("proc gone")), \
+                mock.patch.object(wr, "run_git", fake_run_git), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+                result = wr.reap_tree("/nonexistent-primary", rec, {})
+            self.assertFalse(result)
+            self.assertEqual(rec["action"], "keep")
+            self.assertEqual(rec["reason"], "occupied-unknown-at-removal")
+            self.assertEqual(git_calls, [], "no git worktree/branch call may run")
+            self.assertTrue(os.path.isdir(root), "candidate tree must be retained")
+            self.assertIn("WARNING", out.getvalue())
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

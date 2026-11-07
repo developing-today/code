@@ -35,7 +35,7 @@
     ''
   ];
 
-  # Zerotier needs one controller to accept new nodes. Once accepted
-  # the controller can be offline and routing still works.
-  clan.core.networking.zerotier.controller.enable = true;
+  # Zerotier is configured through the clan inventory (zerotier instance
+  # in lib/default.nix): this machine is the network controller. Once a
+  # node is accepted the controller can be offline and routing still works.
 }

@@ -19,6 +19,7 @@ Secrets: client_id / client_secret / refresh_token live in credentials.json
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import hmac
 import http.client
@@ -29,6 +30,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -66,6 +68,15 @@ MANIFEST_TABLES = ("objects", "bundles", "members", "transfer_ledger", "meta")
 # Batch size is therefore computed per table from its column count against
 # a 90-parameter budget, keeping headroom under the hard limit.
 D1_MAX_PARAMS_PER_QUERY = 100
+
+# Listing bounds (#6602): the Drive and S3 listing loops already refuse
+# stuck/repeated continuation tokens, but a stream of FRESH tokens pages
+# forever. Legitimate backup folders/buckets are orders of magnitude
+# below these caps (Drive pages hold 1000 entries, S3 pages up to 1000
+# keys), so crossing one means the endpoint is not terminating the
+# listing — fail loudly instead of looping.
+LIST_MAX_PAGES = 10_000
+LIST_MAX_RESULTS = 1_000_000
 D1_SYNC_PARAM_BUDGET = 90
 
 
@@ -397,10 +408,25 @@ class ColdStore:
         return {"home": str(self.home), "created": created}
 
     def _write_private_json(self, path: Path, obj: dict) -> None:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(obj, f, indent=2)
-            f.write("\n")
+        # Atomic write (#3279): serialize to a temp file in the same
+        # directory, fsync, then os.replace onto the destination, so a
+        # crash at any point leaves either the old or the new complete
+        # document - never a torn one. Temp file is 0600 (mkstemp) and
+        # the destination keeps 0600 after the replace.
+        fd, tmp_name = tempfile.mkstemp(
+            dir=path.parent, prefix=path.name + ".", suffix=".tmp"
+        )
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(obj, f, indent=2)
+                f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
         os.chmod(path, 0o600)
 
     # ------------------------------------------------------------ credentials
@@ -410,7 +436,14 @@ class ColdStore:
                 f"no credentials at {self.credentials_path} — run `cold-store init`, "
                 "then fill it from Bitwarden (never commit this file)"
             )
-        creds = json.loads(self.credentials_path.read_text())
+        try:
+            creds = json.loads(self.credentials_path.read_text())
+        except json.JSONDecodeError as e:
+            raise ColdStoreError(
+                f"credentials.json at {self.credentials_path} is corrupt "
+                f"(invalid JSON: {e}) - repair or delete the file and "
+                "re-run `cold-store init`, then refill it from Bitwarden"
+            ) from e
         for key in ("client_id", "client_secret"):
             if not creds.get(key):
                 raise ColdStoreError(f"credentials.json is missing {key}")
@@ -418,7 +451,14 @@ class ColdStore:
 
     def load_state(self) -> dict:
         if self.state_path.exists():
-            return json.loads(self.state_path.read_text())
+            try:
+                return json.loads(self.state_path.read_text())
+            except json.JSONDecodeError as e:
+                raise ColdStoreError(
+                    f"state.json at {self.state_path} is corrupt "
+                    f"(invalid JSON: {e}) - repair the file, or delete "
+                    "it and let the next run rebuild folder state"
+                ) from e
         return {}
 
     def save_state(self, state: dict) -> None:
@@ -756,6 +796,39 @@ class ColdStore:
                 f"zstd failed for {src}: {proc.stderr.decode(errors='replace')[:200]}"
             )
 
+    def _decompress_and_hash_frame(self, frame_path: Path) -> tuple[str, int]:
+        """SHA-256 and plain size of a compressed frame, streamed.
+
+        Used by pack() to verify the frame decodes to the recorded
+        object hash before anything is sealed (#2269). Streaming keeps
+        large objects out of memory; the fetch path's in-memory
+        decompress_frame is fine for restores but pack must not hold
+        every member whole while also writing the bundle.
+        """
+        try:
+            proc = subprocess.Popen(
+                [self.zstd, "-q", "-d", "-c", str(frame_path)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            raise ColdStoreError(f"zstd binary not found (looked for {self.zstd!r})")
+        h = hashlib.sha256()
+        size = 0
+        try:
+            assert proc.stdout is not None
+            for block in iter(lambda: proc.stdout.read(1024 * 1024), b""):
+                h.update(block)
+                size += len(block)
+        finally:
+            _, stderr = proc.communicate()
+        if proc.returncode != 0:
+            raise ColdStoreError(
+                f"zstd decompression failed for {frame_path}:"
+                f" {stderr.decode(errors='replace')[:200]}"
+            )
+        return h.hexdigest(), size
+
     def decompress_frame(self, frame: bytes) -> bytes:
         proc = self._run_zstd(["-q", "-d", "-c"], input=frame, capture_output=True)
         if proc.returncode != 0:
@@ -771,38 +844,68 @@ class ColdStore:
         members = []
         offset = 0
         seen_hashes = set()
-        with open(tmp_bundle, "wb") as bundle_out:
-            for name in files:
-                src = Path(name)
-                if not src.is_file():
-                    raise ColdStoreError(f"not a file: {src}")
-                obj_hash = sha256_file(src)
-                # Members are keyed (bundle_id, object_hash): duplicate
-                # content in one pack call would write a second frame no
-                # member row can ever point at (INSERT OR IGNORE drops
-                # it) while member_count/live_bytes counted it (#963).
-                # Store each distinct object exactly once.
-                if obj_hash in seen_hashes:
-                    continue
-                seen_hashes.add(obj_hash)
-                frame_path = self.bundles_dir / "frame.tmp"
-                self._compress_to_frame(src, frame_path)
-                frame_len = frame_path.stat().st_size
-                with open(frame_path, "rb") as fin:
-                    for block in iter(lambda: fin.read(1024 * 1024), b""):
-                        bundle_hash.update(block)
-                        bundle_out.write(block)
+        frame_path = self.bundles_dir / "frame.tmp"
+        try:
+            with open(tmp_bundle, "wb") as bundle_out:
+                for name in files:
+                    src = Path(name)
+                    if not src.is_file():
+                        raise ColdStoreError(f"not a file: {src}")
+                    obj_hash = sha256_file(src)
+                    # Members are keyed (bundle_id, object_hash): duplicate
+                    # content in one pack call would write a second frame no
+                    # member row can ever point at (INSERT OR IGNORE drops
+                    # it) while member_count/live_bytes counted it (#963).
+                    # Store each distinct object exactly once.
+                    if obj_hash in seen_hashes:
+                        continue
+                    seen_hashes.add(obj_hash)
+                    self._compress_to_frame(src, frame_path)
+                    # #2269: the hash above and the compression just below
+                    # are two separate reads of a mutable source. If the
+                    # file changes between the passes, the manifest would
+                    # record the old hash while the bundle holds the new
+                    # bytes — upload verification (bundle md5/size) cannot
+                    # see it, the object is sealed as cold, and every
+                    # future fetch rejects the restored bytes with a
+                    # SHA-256 mismatch: a silently unrestorable backup.
+                    # Verify before sealing that the frame decodes to the
+                    # recorded hash, and refuse instead of sealing a
+                    # mismatch. The sealed size is the decoded size, not a
+                    # third racy stat() of the live source.
+                    frame_hash, plain_size = self._decompress_and_hash_frame(frame_path)
+                    if frame_hash != obj_hash:
+                        raise ColdStoreError(
+                            f"source {src} changed during pack: compressed"
+                            f" bytes decode to sha256 {frame_hash} but the"
+                            f" manifest records {obj_hash} — object NOT sealed"
+                        )
+                    frame_len = frame_path.stat().st_size
+                    with open(frame_path, "rb") as fin:
+                        for block in iter(lambda: fin.read(1024 * 1024), b""):
+                            bundle_hash.update(block)
+                            bundle_out.write(block)
+                    frame_path.unlink()
+                    members.append(
+                        {
+                            "hash": obj_hash,
+                            "size": plain_size,
+                            "content_type": mimetypes.guess_type(src.name)[0],
+                            "offset": offset,
+                            "length": frame_len,
+                        }
+                    )
+                    offset += frame_len
+        except BaseException:
+            # Never leave a half-written bundle or a stray frame behind:
+            # nothing is sealed until the DB commit below, so a pack that
+            # raises (including the #2269 race refusal) must not leave
+            # artifacts a later pack could mistake for a sealed bundle.
+            with contextlib.suppress(OSError):
                 frame_path.unlink()
-                members.append(
-                    {
-                        "hash": obj_hash,
-                        "size": src.stat().st_size,
-                        "content_type": mimetypes.guess_type(src.name)[0],
-                        "offset": offset,
-                        "length": frame_len,
-                    }
-                )
-                offset += frame_len
+            with contextlib.suppress(OSError):
+                tmp_bundle.unlink()
+            raise
         bundle_sha = bundle_hash.hexdigest()
         bundle_id = "b_" + bundle_sha[:16]
         final_path = self.bundles_dir / f"{bundle_id}.csb"
@@ -1057,6 +1160,52 @@ class ColdStore:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         name = f"{db_name}-{stamp}-{src.name}"
         file_id = self._resumable_upload(src, name, folder_id)
+
+        def verification_failed(message: str) -> ColdStoreError:
+            # An uploaded-but-unverified file must not be left live in
+            # Drive unaccounted: _upload_accounting() derives budgets from
+            # the ledger and prune_backups() later meets unledgered files
+            # as phantom backups. Trash the artifact (retention's own
+            # removal mechanism) before refusing the backup; if the trash
+            # itself fails, say so in the error so the orphan is findable.
+            status, _h, _resp = http_request(
+                "PATCH",
+                self.drive_base + f"/files/{file_id}",
+                headers=self._auth_headers({"Content-Type": "application/json"}),
+                data=json.dumps({"trashed": True}).encode(),
+            )
+            if status != 200:
+                message += (
+                    f"; ALSO failed to trash the unverified upload "
+                    f"(HTTP {status}) - file {file_id} remains in Drive "
+                    f"unledgered"
+                )
+            return ColdStoreError(message)
+
+        status, _h, resp = http_request(
+            "GET",
+            self.drive_base
+            + f"/files/{file_id}?"
+            + urllib.parse.urlencode({"fields": "id,md5Checksum,size"}),
+            headers=self._auth_headers(),
+        )
+        if status != 200:
+            raise verification_failed(
+                f"files.get after backup upload failed (HTTP {status})"
+            )
+        try:
+            info = json.loads(resp)
+            drive_md5 = info["md5Checksum"]
+            drive_size = int(info["size"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise verification_failed(
+                "files.get after backup upload returned invalid metadata"
+            ) from exc
+        if drive_md5 != md5_file(src) or drive_size != size:
+            raise verification_failed(
+                "verification mismatch: Drive reports size/md5 that differ from "
+                "the local backup — backup NOT ledgered"
+            )
         conn = self.db()
         with conn:
             self.ledger_add(conn, "upload", size, "backup-upload", name)
@@ -1080,7 +1229,15 @@ class ColdStore:
             q = f"'{folder_id}' in parents and trashed = false"
             page_token = None
             seen_tokens = set()
+            pages = 0
             while True:
+                pages += 1
+                if pages > LIST_MAX_PAGES or len(out) > LIST_MAX_RESULTS:
+                    raise ColdStoreError(
+                        f"files.list for backups of db {db} exceeded the listing "
+                        f"bound ({LIST_MAX_PAGES} pages / {LIST_MAX_RESULTS} results) "
+                        "without the listing terminating (#6602)"
+                    )
                 params = {
                     "q": q,
                     "fields": "nextPageToken,files(id,name,size,createdTime)",
@@ -1673,8 +1830,16 @@ class ColdStore:
         forever, appending duplicates. Raise instead, naming the
         bucket, so the caller sees a stuck endpoint, not a hang."""
         out: list[dict] = []
+        pages = 0
         token = None
         while True:
+            pages += 1
+            if pages > LIST_MAX_PAGES or len(out) > LIST_MAX_RESULTS:
+                raise ColdStoreError(
+                    f"list of {bucket} exceeded the listing bound "
+                    f"({LIST_MAX_PAGES} pages / {LIST_MAX_RESULTS} results) "
+                    "without the listing terminating (#6602)"
+                )
             query = {"list-type": "2"}
             if token:
                 query["continuation-token"] = token
@@ -1951,6 +2116,13 @@ class ColdStore:
         LastModified stamps, so position-first would mask the age
         verdict entirely.) The scan never deletes.
         """
+        if min_age_days < 0:
+            raise ColdStoreError(
+                f"min_age_days must be >= 0 (got {min_age_days}): a negative"
+                " age floor silently disables the eviction age gate"
+            )
+        if keep_newest < 0:
+            raise ColdStoreError(f"keep_newest must be >= 0 (got {keep_newest})")
         epoch = datetime.min.replace(tzinfo=timezone.utc)
         objects = [
             o
@@ -1962,7 +2134,7 @@ class ColdStore:
             key=lambda o: (o["last_modified"] or epoch, o["key"]),
             reverse=True,
         )
-        protected = {o["key"] for o in newest_first[: max(keep_newest, 0)]}
+        protected = {o["key"] for o in newest_first[:keep_newest]}
         now = datetime.now(timezone.utc)
         min_age = timedelta(days=min_age_days)
         conn = self.db()

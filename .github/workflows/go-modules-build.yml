@@ -29,8 +29,7 @@ name: go modules build
 # pgx/cockroach indirects) with nothing noticing.
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read

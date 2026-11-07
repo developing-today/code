@@ -67,17 +67,10 @@ describe("bounded JSON request body reader", () => {
   test("cancels an oversized streamed body at the first chunk crossing the limit", async () => {
     let pulls = 0;
     let cancelled = false;
-    const req = streamedRequest(
-      [
-        new Uint8Array(60_000),
-        new Uint8Array(40_001),
-        new Uint8Array(1_000_000),
-      ],
-      {
-        onPull: () => pulls++,
-        onCancel: () => (cancelled = true),
-      },
-    );
+    const req = streamedRequest([new Uint8Array(60_000), new Uint8Array(40_001), new Uint8Array(1_000_000)], {
+      onPull: () => pulls++,
+      onCancel: () => (cancelled = true),
+    });
 
     await expect(readJsonBody(req)).rejects.toThrow("body too large");
     expect(pulls).toBe(2);

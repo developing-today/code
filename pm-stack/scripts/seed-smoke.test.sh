@@ -27,7 +27,10 @@ printf '%s\n' 'fake age key location' >"$HOME_DIR/.config/sops/age/keys.txt"
 
 FAILURES=0
 pass() { printf 'ok - %s\n' "$1"; }
-fail() { printf 'FAIL - %s\n' "$1"; FAILURES=$((FAILURES + 1)); }
+fail() {
+  printf 'FAIL - %s\n' "$1"
+  FAILURES=$((FAILURES + 1))
+}
 contains() { grep -Fq -- "$2" "$1"; }
 
 cat >"$STUB_BIN/sops" <<'STUB'
@@ -199,12 +202,18 @@ run_pad() {
     "$BASH_BIN" "$PM_STACK_DIR/pad/seed.sh" >"$output" 2>&1
 }
 
-if run_grist first "$TMP/grist-first.out"; then pass 'Grist first seed run completes'; else cat "$TMP/grist-first.out"; fail 'Grist first seed run completes'; fi
-if run_grist second "$TMP/grist-second.out"; then pass 'Grist second seed run completes'; else cat "$TMP/grist-second.out"; fail 'Grist second seed run completes'; fi
+if run_grist first "$TMP/grist-first.out"; then pass 'Grist first seed run completes'; else
+  cat "$TMP/grist-first.out"
+  fail 'Grist first seed run completes'
+fi
+if run_grist second "$TMP/grist-second.out"; then pass 'Grist second seed run completes'; else
+  cat "$TMP/grist-second.out"
+  fail 'Grist second seed run completes'
+fi
 if contains "$TMP/grist-first.out" 'seeded '; then pass 'Grist first run seeds the initially empty Roadmap'; else fail 'Grist first run seeds the initially empty Roadmap'; fi
 if contains "$TMP/grist-second.out" 'skip: Roadmap already has '; then pass 'Grist second run reports existing rows'; else fail 'Grist second run reports existing rows'; fi
 if contains "$GRIST_LOG" 'phase=first method=POST path=/api/docs/42/apply action=AddTable' &&
-   contains "$GRIST_LOG" 'phase=first method=POST path=/api/docs/42/apply action=BulkAddRecord'; then
+  contains "$GRIST_LOG" 'phase=first method=POST path=/api/docs/42/apply action=BulkAddRecord'; then
   pass 'Grist first run creates the table and writes rows in fake API state'
 else
   fail 'Grist first run creates the table and writes rows in fake API state'
@@ -215,8 +224,14 @@ else
   fail 'Grist second run performs no creates or row writes'
 fi
 
-if run_pad first "$TMP/pad-first.out"; then pass 'Pad first seed run completes'; else cat "$TMP/pad-first.out"; fail 'Pad first seed run completes'; fi
-if run_pad second "$TMP/pad-second.out"; then pass 'Pad second seed run completes'; else cat "$TMP/pad-second.out"; fail 'Pad second seed run completes'; fi
+if run_pad first "$TMP/pad-first.out"; then pass 'Pad first seed run completes'; else
+  cat "$TMP/pad-first.out"
+  fail 'Pad first seed run completes'
+fi
+if run_pad second "$TMP/pad-second.out"; then pass 'Pad second seed run completes'; else
+  cat "$TMP/pad-second.out"
+  fail 'Pad second seed run completes'
+fi
 PAD_TITLES=(
   'Project-management stack — design & phase plan'
   'Phase 1 — as-built (Kaneo execution board)'
@@ -230,7 +245,7 @@ for title in "${PAD_TITLES[@]}"; do
   fi
 done
 if [[ $(grep -Fc 'phase=first method=POST' "$PAD_LOG" || true) -eq 3 ]] &&
-   ! grep -Fq 'phase=second method=POST' "$PAD_LOG"; then
+  ! grep -Fq 'phase=second method=POST' "$PAD_LOG"; then
   pass 'Pad second run performs no creates; all three first-run titles persist'
 else
   fail 'Pad second run performs no creates; all three first-run titles persist'

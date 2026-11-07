@@ -186,6 +186,20 @@ describe("saas extraction (Part b)", () => {
     expect(modal.measuredAt).toBe("2026-10-24");
   });
 
+  test("modal: grouped dollar amounts are parsed for allowance and usage", () => {
+    const view = VIEW.replace(
+      "- **Plan / price / allowance:** Starter $0/mo, Drew confirmed 2026-10-22; $30 monthly compute-credit grant, per-second billing past credits.",
+      "- **Plan / price / allowance:** Starter $0/mo, Drew confirmed 2026-10-22; $1,250 monthly compute-credit grant, per-second billing past credits.",
+    ).replace(
+      "- **Usage / dates:** Percentage/pace unknown; monthly grant, exact reset/credit expiry date unknown.",
+      "- **Usage / dates:** $1,234.56 compute credits used on 2026-10-24; monthly grant, exact reset unknown.",
+    );
+    const modal = new Map(extractSaasServices(view).map((s) => [s.id, s])).get("modal")!;
+    const credits = modal.metrics.find((m) => m.id === "compute-credits")!;
+    expect(credits.limit).toBe(1250);
+    expect(credits.used).toBe(1234.56);
+  });
+
   test("modal: percentage read is not mistaken for dollars", () => {
     const view = VIEW.replace(
       "- **Usage / dates:** Percentage/pace unknown; monthly grant, exact reset/credit expiry date unknown.",
@@ -216,8 +230,29 @@ describe("saas extraction (Part b)", () => {
     expect(bw.measuredAt).toBe("2026-10-26");
   });
 
+  test("bitwarden: grouped count-only values preserve the full counts", () => {
+    const view = `${VIEW}
+### Bitwarden
+- **Plan / price / allowance:** Secrets Manager; plan/price unknown.
+- **Usage / dates:** 1,121 secrets, 1,000 projects (bws count-only read 2026-10-26).
+- **PAYG estimate:** not applicable — flat account-tooling plan.
+- **Last checked:** bws count-only read 2026-10-26.
+`;
+    const bw = new Map(extractSaasServices(view).map((s) => [s.id, s])).get("bitwarden")!;
+    const m = new Map(bw.metrics.map((x) => [x.id, x]));
+    expect(m.get("secrets-count")?.used).toBe(1121);
+    expect(m.get("projects-count")?.used).toBe(1000);
+  });
+
   test("bitwarden: no dated count stays an empty shell, names/values never parsed", () => {
-    const bw = byId.get("bitwarden")!;
+    const view = `${VIEW}
+### Bitwarden
+- **Plan / price / allowance:** Secrets Manager; plan/price unknown.
+- **Usage / dates:** Count unavailable; names and values are never recorded.
+- **PAYG estimate:** not applicable — flat account-tooling plan.
+- **Last checked:** tracker.
+`;
+    const bw = new Map(extractSaasServices(view).map((s) => [s.id, s])).get("bitwarden")!;
     expect(bw.metrics).toEqual([]);
   });
 });
@@ -515,14 +550,14 @@ describe("hub renders", () => {
     const usage = await src.usage();
     const rec: SnapshotRecord = {
       ts: "2026-10-25T12:00:00Z",
-      serviceId: "deepseek:api",
+      serviceId: "deepseek",
       metricId: "credits_balance",
       value: 44.63,
       unit: "cny",
       source: "api",
       observedBy: "backfill:quota-view.md",
     };
-    usage.history = { ...usage.history, "deepseek:api": [rec] };
+    usage.history = { ...usage.history, deepseek: [rec] };
     const html = renderQuota(await src.quota(), src.provenance(), usage);
     expect(html).toContain("DeepSeek PAYG reserve balance");
     expect(html).toContain("¥44.63");
@@ -592,5 +627,42 @@ describe("hub renders", () => {
     const cfHtml = renderServiceDetail(cf, [], src.provenance());
     expect(cfHtml).toContain("Conflicts (shown, not resolved)");
     expect(cfHtml).toContain("counted as used");
+  });
+  test("service detail: stored snapshot freshness follows the service cadence", () => {
+    const turso = extractSaasServices(VIEW).find((s) => s.id === "turso")!;
+    const now = new Date("2026-11-01T12:00:00Z");
+    const record = (ts: string): SnapshotRecord => ({
+      ts,
+      serviceId: "turso",
+      metricId: "databases",
+      value: 1,
+      unit: "count",
+      source: "manual",
+      observedBy: "test",
+    });
+    const current = renderServiceDetail(
+      turso,
+      [record("2026-10-30T12:00:00Z")],
+      fixtureSource().provenance(),
+      undefined,
+      now,
+    );
+    expect(current).toContain("Latest stored snapshot:");
+    expect(current).toContain("2026-10-30");
+    expect(current).toContain("7-day expected cadence");
+    expect(current).toContain("within cadence");
+
+    const stale = renderServiceDetail(
+      turso,
+      [record("2026-10-01T12:00:00Z")],
+      fixtureSource().provenance(),
+      undefined,
+      now,
+    );
+    expect(stale).toContain("stale");
+
+    const empty = renderServiceDetail(turso, [], fixtureSource().provenance(), undefined, now);
+    expect(empty).toContain("No snapshot writer has landed a record for this service yet");
+    expect(empty).toContain("one-shot recovery");
   });
 });

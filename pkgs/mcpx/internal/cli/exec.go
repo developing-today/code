@@ -538,6 +538,7 @@ type execRemoteFlags struct {
 	export      string
 	session     string
 	shape       scriptShape
+	dryRun      bool
 }
 
 // execOnDaemon sends the script to the daemon and renders what comes back.
@@ -553,6 +554,7 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 	sh := rf.shape
 	source := sh.inlineSource(fs.Args())
 	var args []string
+	var scriptPath string
 	phases := &execsvc.Phases{Before: sh.before, OnSuccess: sh.onSuccess, OnError: sh.onError}
 	if !inline {
 		// The file's text travels and the daemon writes it to its own disk,
@@ -562,6 +564,7 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 		if err != nil {
 			return err
 		}
+		scriptPath = path
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -574,6 +577,10 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 	}
 
 	cwd, _ := os.Getwd()
+	depsOpts, derr := a.depsOptions(cwd, scriptPath)
+	if derr != nil {
+		return derr
+	}
 	opts := execsvc.Options{
 		Runtime:     rf.runtime,
 		Permissions: rf.permissions,
@@ -596,15 +603,20 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 		Args:      args,
 		Artifacts: eo.artifactOptions(cwd),
 
-		Export:           rf.export,
-		Env:              withInputReport(sh.env, a.stdoutOverride == nil),
-		TypeCheck:        sh.typecheck,
-		Imports:          sh.imports,
-		ImportsOnDynamic: sh.importsOnDynamic,
-		Launcher:         sh.launcher,
-		LauncherName:     sh.launcherName,
-		AllowRepeat:      sh.allowRepeat,
-		CaptureConsole:   &sh.captureConsole,
+		Export:              rf.export,
+		DryRun:              rf.dryRun,
+		Env:                 withInputReport(sh.env, a.stdoutOverride == nil),
+		TypeCheck:           sh.typecheck,
+		Imports:             sh.imports,
+		ImportsOnDynamic:    sh.importsOnDynamic,
+		ImportsOnMissing:    sh.importsOnMissing,
+		ImportsCrossProject: sh.importsCrossProject,
+		ImportsNetwork:      sh.importsNetwork,
+		Launcher:            sh.launcher,
+		LauncherName:        sh.launcherName,
+		AllowRepeat:         sh.allowRepeat,
+		CaptureConsole:      &sh.captureConsole,
+		Deps:                depsOpts,
 	}
 	if len(phases.Before)+len(phases.Prefix)+len(phases.OnSuccess)+
 		len(phases.OnError)+len(phases.Suffix) > 0 {

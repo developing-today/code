@@ -12,6 +12,8 @@ use std::str::FromStr;
 
 use id::groups::log::GroupLog;
 use id::groups::{Event, GroupView, Outcome, Refusal, Role};
+use iroh_base::{EndpointAddr, SecretKey, TransportAddr};
+use iroh_tickets::endpoint::EndpointTicket;
 use p2panda_core::Hash;
 use tempfile::TempDir;
 
@@ -300,14 +302,36 @@ fn test_json_form_prints_one_object_per_action() {
 }
 
 #[test]
-fn test_join_checks_its_paste_and_records_nothing_yet() {
+fn test_group_join_help_says_unavailable() {
     let root = TempDir::new().unwrap();
     let log = root.path().join("groups.jsonl");
     let ann = node(root.path(), "ann", &log);
 
-    let attempt = ann.run(&["group", "join", "not an invitation"]);
+    let output = ann.run(&["group", "join", "--help"]);
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("Unavailable"), "help: {help}");
+    assert!(help.contains("not implemented yet"), "help: {help}");
+}
+
+#[test]
+fn test_group_join_refuses_a_valid_invitation_and_records_nothing() {
+    let root = TempDir::new().unwrap();
+    let log = root.path().join("groups.jsonl");
+    let ann = node(root.path(), "ann", &log);
+
+    // A well-formed endpoint ticket reaches the explicit unavailable path,
+    // rather than only exercising invitation parsing failure.
+    let node_id = SecretKey::from_bytes(&[7; 32]).public();
+    let ip = "203.0.113.7:4433".parse().unwrap();
+    let invite = EndpointTicket::new(EndpointAddr::from_parts(node_id, [TransportAddr::Ip(ip)]));
+    let attempt = ann.run(&["group", "join", &invite.to_string()]);
     assert!(!attempt.status.success());
     let stderr = String::from_utf8_lossy(&attempt.stderr);
-    assert!(stderr.contains("not an invitation"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("group join is unavailable"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("not implemented yet"), "stderr: {stderr}");
     assert!(GroupLog::open(&log).unwrap().events().is_empty());
 }

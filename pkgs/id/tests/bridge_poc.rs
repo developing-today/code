@@ -29,7 +29,10 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use common::ingest::{MemStorage, canonical};
+use common::{
+    ingest::{MemStorage, canonical},
+    within_op,
+};
 use futures_util::{SinkExt, StreamExt};
 use id::chain::{ChainExt, Event, decode, sign};
 use id::event_store::range::{self, Entry, Params, Party};
@@ -164,6 +167,9 @@ impl Author {
             document: None,
             removes: None,
             note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
         };
         let event = sign(&self.key, self.seq, self.last, None, ext).unwrap();
         self.seq += 1;
@@ -195,6 +201,9 @@ impl Author {
             document: None,
             removes: None,
             note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
         };
         sign(&self.key, seq, backlink, Some(b"rival"), ext).unwrap()
     }
@@ -608,7 +617,10 @@ async fn run_session(
         let relay_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let relay_addr = relay_listener.local_addr().unwrap();
         relay_handles.push(tokio::spawn(async move {
-            let (client_side, _) = relay_listener.accept().await.unwrap();
+            let (client_side, _) =
+                within_op("accepting the relay connection", relay_listener.accept())
+                    .await
+                    .unwrap();
             let server_side = tokio::net::TcpStream::connect(server_addr).await.unwrap();
             let client_ws = tokio_tungstenite::accept_async(client_side).await.unwrap();
             let server_ws = tokio_tungstenite::client_async("ws://relay", server_side)
@@ -623,7 +635,9 @@ async fn run_session(
     };
 
     let server_task = tokio::spawn(async move {
-        let (stream, _) = server_listener.accept().await.unwrap();
+        let (stream, _) = within_op("accepting the bridge connection", server_listener.accept())
+            .await
+            .unwrap();
         tokio_tungstenite::accept_async(stream).await.unwrap()
     });
     let dial_url = format!("ws://{dial_addr}");
@@ -633,7 +647,9 @@ async fn run_session(
     )
     .await
     .unwrap();
-    let mut server_ws = server_task.await.unwrap();
+    let mut server_ws = within_op("waiting for the bridge server task", server_task)
+        .await
+        .unwrap();
 
     // Hello: each side announces its chain heads.
     let native_heads = heads_of(native, authors);
