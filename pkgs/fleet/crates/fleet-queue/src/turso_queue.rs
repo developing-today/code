@@ -49,10 +49,10 @@ pub const TURSO_TOKEN_SECRET_NAME: &str = "turso.muse-queue-rw-token";
 const TASK_COLS: &str = "id, queue, title, body, payload, dedupe_key, priority, status, \
     not_before, worker_id, claimed_at, lease_until, lane_id, attempts, max_attempts, \
     progress, result, last_error, park_kind, wait_kind, ready_condition, \
-    last_checked_at, check_outcome, created_at, updated_at";
+    last_checked_at, check_outcome, created_at, updated_at, completed_at";
 const LEDGER_COLS: &str = "id, queue, task_id, assigned_lane, executed_lane, \
-    exclusion_reason, assigned_by, session_id, launched_by, fallback_reason, \
-    created_at, updated_at";
+    exclusion_reason, assigned_by, session_id, fallback_reason, \
+    assigned_at, executed_at, updated_at";
 /// Task columns whose stored TEXT is JSON (PG jsonb) — parsed back
 /// into values so the wire shape matches the Postgres broker's.
 const TASK_JSON_COLS: [&str; 4] = ["payload", "progress", "result", "ready_condition"];
@@ -366,8 +366,12 @@ const SCHEMA: [&str; 10] = [
         progress TEXT NOT NULL DEFAULT '{}', result TEXT NOT NULL DEFAULT '{}', \
         last_error TEXT, park_kind TEXT, wait_kind TEXT, ready_condition TEXT, \
         last_checked_at TEXT, check_outcome TEXT, \
-        created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
-    "CREATE UNIQUE INDEX IF NOT EXISTS tasks_queue_dedupe \
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL, \
+        completed_at TEXT)",
+    // NOT unique: the PG data itself carries duplicate (queue, dedupe_key)
+    // pairs from before dedupe was enforced, and the backup load must
+    // accept them as-is; enqueue dedupe is a read-then-insert check.
+    "CREATE INDEX IF NOT EXISTS tasks_queue_dedupe \
         ON tasks(queue, dedupe_key) WHERE dedupe_key IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS tasks_claim_scan \
         ON tasks(queue, status, priority, created_at)",
@@ -378,18 +382,19 @@ const SCHEMA: [&str; 10] = [
         lane_id TEXT PRIMARY KEY, worker_id TEXT NOT NULL, \
         queue TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1)",
     "CREATE TABLE IF NOT EXISTS workers (\
-        worker_id TEXT PRIMARY KEY, last_seen_at TEXT NOT NULL, \
-        current_task_id INTEGER)",
+        worker_id TEXT PRIMARY KEY, role TEXT NOT NULL DEFAULT '', \
+        display_name TEXT, status TEXT NOT NULL DEFAULT 'idle', \
+        last_heartbeat_at TEXT, created_at TEXT)",
     "CREATE TABLE IF NOT EXISTS checkpoints (\
-        id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, \
-        worker_id TEXT NOT NULL, stage TEXT NOT NULL, \
-        progress TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL)",
+        worker_id TEXT NOT NULL, key TEXT NOT NULL, \
+        value TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL, \
+        PRIMARY KEY (worker_id, key))",
     "CREATE TABLE IF NOT EXISTS repo_task_lane_ledger (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, queue TEXT NOT NULL, \
         task_id INTEGER NOT NULL UNIQUE, assigned_lane TEXT, executed_lane TEXT, \
         exclusion_reason TEXT, assigned_by TEXT, session_id TEXT, \
-        launched_by TEXT, fallback_reason TEXT, \
-        created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+        fallback_reason TEXT, assigned_at TEXT, executed_at TEXT, \
+        updated_at TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS events (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, worker_id TEXT, task_id INTEGER, \
         kind TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '{}', \
@@ -479,14 +484,22 @@ fn event(
 }
 
 fn touch_worker(t: &TursoBackend, worker: &str, task_id: Option<i64>) -> Result<(), TErr> {
+    // PG workers is the roster table (id/role/display_name/status/
+    // last_heartbeat_at): a touch upserts the heartbeat and marks
+    // the worker working while it holds a task, idle when it
+    // releases one. Unknown workers enter with an empty role.
+    let status = if task_id.is_some() { "working" } else { "idle" };
     t.exec(
-        "INSERT INTO workers (worker_id, last_seen_at, current_task_id) VALUES (?, ?, ?) \
-         ON CONFLICT(worker_id) DO UPDATE SET last_seen_at = excluded.last_seen_at, \
-           current_task_id = COALESCE(excluded.current_task_id, workers.current_task_id)",
+        "INSERT INTO workers (worker_id, role, status, last_heartbeat_at, created_at) \
+         VALUES (?, '', ?, ?, ?) \
+         ON CONFLICT(worker_id) DO UPDATE SET \
+           last_heartbeat_at = excluded.last_heartbeat_at, \
+           status = excluded.status",
         &[
             Arg::Text(worker.to_string()),
+            Arg::Text(status.to_string()),
             Arg::Text(now_iso()),
-            task_id.map(Arg::Int).unwrap_or(Arg::Null),
+            Arg::Text(now_iso()),
         ],
     )?;
     Ok(())
@@ -611,12 +624,14 @@ fn record_execution(t: &TursoBackend, req: &Value, row: &Value) -> Result<Option
             "UPDATE repo_task_lane_ledger SET \
                executed_lane = COALESCE(?, executed_lane), \
                fallback_reason = COALESCE(?, fallback_reason), \
-               session_id = COALESCE(?, session_id), updated_at = ? \
+               session_id = COALESCE(?, session_id), \
+               executed_at = COALESCE(executed_at, ?), updated_at = ? \
              WHERE task_id = ?",
             &[
                 arg_str(ex.get("lane").and_then(|v| v.as_str())),
                 arg_str(ex.get("fallback_reason").and_then(|v| v.as_str())),
                 arg_str(ex.get("session_id").and_then(|v| v.as_str())),
+                Arg::Text(now.clone()),
                 Arg::Text(now),
                 Arg::Int(task_id),
             ],
@@ -625,8 +640,8 @@ fn record_execution(t: &TursoBackend, req: &Value, row: &Value) -> Result<Option
         t.exec(
             &format!(
                 "INSERT INTO repo_task_lane_ledger \
-                 (queue, task_id, assigned_lane, executed_lane, fallback_reason, session_id, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                 (queue, task_id, assigned_lane, executed_lane, fallback_reason, session_id, assigned_at, executed_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
             ),
             &[
                 Arg::Text(queue),
@@ -635,6 +650,7 @@ fn record_execution(t: &TursoBackend, req: &Value, row: &Value) -> Result<Option
                 arg_str(ex.get("lane").and_then(|v| v.as_str())),
                 arg_str(ex.get("fallback_reason").and_then(|v| v.as_str())),
                 arg_str(ex.get("session_id").and_then(|v| v.as_str())),
+                Arg::Text(now.clone()),
                 Arg::Text(now.clone()),
                 Arg::Text(now),
             ],
@@ -934,7 +950,7 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
         let now = now_iso();
         t.exec(
             "INSERT INTO repo_task_lane_ledger \
-             (queue, task_id, assigned_lane, exclusion_reason, assigned_by, created_at, updated_at) \
+             (queue, task_id, assigned_lane, exclusion_reason, assigned_by, assigned_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?)",
             &[
                 Arg::Text(queue),
@@ -1018,11 +1034,10 @@ fn verb_bind(t: &TursoBackend, req: &Value) -> Value {
             }
         }
         t.exec(
-            "UPDATE repo_task_lane_ledger SET session_id = ?, launched_by = ?, updated_at = ? \
+            "UPDATE repo_task_lane_ledger SET session_id = ?, updated_at = ? \
              WHERE task_id = ?",
             &[
                 Arg::Text(session_id.clone()),
-                Arg::Text(launched_by.clone()),
                 Arg::Text(now_iso()),
                 Arg::Int(task_id),
             ],
@@ -1139,14 +1154,21 @@ fn verb_checkpoint(t: &TursoBackend, req: &Value) -> Value {
         &merge_obj(&given, &json!({"last_checkpoint": {"stage": stage, "at": now_iso()}})),
     );
     let work = (|| -> Result<Value, TErr> {
+        // PG checkpoints is a per-worker KV (worker_id, key, value):
+        // the checkpoint lands under task:<id> with the stage +
+        // progress as the value; the task row's progress merge above
+        // is the other half of the contract.
         t.exec(
-            "INSERT INTO checkpoints (task_id, worker_id, stage, progress, created_at) \
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO checkpoints (worker_id, key, value, updated_at) \
+             VALUES (?, ?, ?, ?) \
+             ON CONFLICT(worker_id, key) DO UPDATE SET \
+               value = excluded.value, updated_at = excluded.updated_at",
             &[
-                Arg::Int(task_id),
                 Arg::Text(worker.clone()),
-                Arg::Text(stage.clone()),
-                Arg::Text(given.to_string()),
+                Arg::Text(format!("task:{task_id}")),
+                Arg::Text(
+                    json!({"stage": stage, "progress": given, "at": now_iso()}).to_string(),
+                ),
                 Arg::Text(now_iso()),
             ],
         )?;
@@ -1446,9 +1468,10 @@ fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
     let work = (|| -> Result<Value, TErr> {
         t.exec(
             "UPDATE tasks SET status = 'done', lease_until = NULL, result = ?, \
-               updated_at = ? WHERE id = ?",
+               completed_at = ?, updated_at = ? WHERE id = ?",
             &[
                 Arg::Text(result.to_string()),
+                Arg::Text(now_iso()),
                 Arg::Text(now_iso()),
                 Arg::Int(task_id),
             ],

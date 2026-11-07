@@ -1118,6 +1118,21 @@ fn cmd_release(rest: &[String]) -> i32 {
     0
 }
 
+/// Programmatic claim-state lookup (#6741): the GitHub-fallback
+/// claim state of one issue, for the queue client's
+/// no-double-serve guard. Same marker fold and lease as
+/// `fallback status` (default 30 min, FLEET_QUEUE_FALLBACK_LEASE_MIN
+/// override), minus the CLI surface.
+pub fn issue_claim_state(repo: &str, number: i64) -> Result<Value, String> {
+    let markers = fetch_markers(repo, number)?;
+    let lease_min = std::env::var("FLEET_QUEUE_FALLBACK_LEASE_MIN")
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|m| *m >= 1)
+        .unwrap_or(DEFAULT_LEASE_MIN);
+    Ok(fold_claim(&markers, now_epoch(), lease_min * 60).to_json())
+}
+
 pub fn run(args: &[String]) -> i32 {
     if args.is_empty() {
         eprintln!("usage: repo-queue fallback <scan|status|claim|heartbeat|release> ...");
