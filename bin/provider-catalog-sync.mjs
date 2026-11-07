@@ -36,7 +36,7 @@
 // through a reviewable PR.
 //
 // #4544 split: the tracked configured default no longer carries the model
-// catalogs sync-models owns (antigravity-direct, google,
+// catalogs sync-models owns (_antigravity, google,
 // openai, cloudflare-gateway) — those live in the runtime overlay
 // (~/.local/state/opencode/opencode-runtime.jsonc). This tool diffs the
 // merged effective config (default + overlay; --runtime-config) and skips
@@ -562,7 +562,7 @@ async function loadModelsDev(spec) {
 // overlay (#4544). Catalog-sync diffs them (via the merged effective config)
 // but never writes them into the tracked configured default on --apply.
 export const SYNC_OWNED_PROVIDERS = new Set([
-  'antigravity-direct',
+  '_antigravity',
   'google',
   'openai',
   'cloudflare-gateway',
