@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "events": [
+    {
+      "at": "2026-11-03T02:43:16.080Z",
+      "actor": "orch-fixture-1",
+      "kind": "action-applied",
+      "ref": "orch:http-item",
+      "summary": "triage/acknowledge applied by orch-fixture-1 — ack carried in the next published tier entry"
+    },
+    {
+      "at": "2026-11-03T02:43:17.051Z",
+      "actor": "orchestrator",
+      "kind": "orchestration-published",
+      "ref": "orchestration:orch-health-test",
+      "summary": "orchestration run orch-health-test published: 0 needs-user, 0 needs-orchestrator"
+    },
+    {
+      "at": "2026-11-03T02:43:17.052Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-sandbox:ses-health-1",
+      "summary": "session Health probe session (undefined) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T02:43:27.808Z",
+      "actor": "orchestrator",
+      "kind": "orchestration-published",
+      "ref": "orchestration:orch-api-health-comments-test",
+      "summary": "orchestration run orch-api-health-comments-test published: 0 needs-user, 0 needs-orchestrator"
+    },
+    {
+      "at": "2026-11-03T02:43:28.327Z",
+      "actor": "orchestrator",
+      "kind": "orchestration-published",
+      "ref": "orchestration:orch-watchdog-test",
+      "summary": "orchestration run orch-watchdog-test published: 0 needs-user, 0 needs-orchestrator"
+    },
+    {
+      "at": "2026-11-03T02:43:36.381Z",
+      "actor": "orch-fixture-1",
+      "kind": "action-applied",
+      "ref": "orch:http-item",
+      "summary": "triage/acknowledge applied by orch-fixture-1 — ack carried in the next published tier entry"
+    },
+    {
+      "at": "2026-11-03T02:43:37.178Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-sandbox:ses-health-1",
+      "summary": "session Health probe session (undefined) merged into the registry"
+    }
+  ]
+}
