@@ -341,15 +341,22 @@ fn exists_break_leaves_later_failing_leg_submittable() {
     // in `failed_transfers`, because it was never attempted; once
     // its blocker clears it remains submittable.
     let mut ledger = funded_ledger();
-    let posted = funding_transfer(700, USER_SRC, LP_SRC, 100, SRC);
-    assert_eq!(ledger.create_transfers(&[posted.clone()]), vec![Ok(())]);
+    // Post leg 700 as the head of a two-leg chain, so the identical
+    // resubmission below (same `linked: true`) is a byte-identical
+    // `Exists`, not an `ExistsWithDifferentFields`.
+    let posted = Transfer {
+        linked: true,
+        ..funding_transfer(700, USER_SRC, LP_SRC, 100, SRC)
+    };
+    let chain_tail = funding_transfer(702, LP_SRC, FEE, 100, SRC);
+    assert_eq!(
+        ledger.create_transfers(&[posted.clone(), chain_tail]),
+        vec![Ok(()), Ok(())]
+    );
     // Chain: the posted leg byte-identical (an `Exists` break at
     // offset 0), then a leg debiting an account that does not exist
     // yet (a hard validation failure at offset 1).
-    let exists_leg = Transfer {
-        linked: true,
-        ..posted
-    };
+    let exists_leg = posted;
     let blocked_leg = funding_transfer(701, 3001, LP_SRC, 100, SRC);
     let results = ledger.create_transfers(&[exists_leg, blocked_leg.clone()]);
     assert_eq!(
@@ -363,7 +370,7 @@ fn exists_break_leaves_later_failing_leg_submittable() {
     let results = ledger.create_accounts(&[account(3001, SRC, false)]);
     assert!(results.iter().all(|result| result.is_ok()));
     assert_eq!(
-        ledger.create_transfers(&[funding_transfer(702, ISSUER_SRC, 3001, 1_000, SRC)]),
+        ledger.create_transfers(&[funding_transfer(703, ISSUER_SRC, 3001, 1_000, SRC)]),
         vec![Ok(())]
     );
     // The blocked leg now posts on its own -- it was never cached
