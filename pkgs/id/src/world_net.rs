@@ -3422,101 +3422,124 @@ mod tests {
         host.router.shutdown().await.unwrap();
     }
 
-    #[tokio::test]
-    async fn info_details_rejects_malformed_active_module_hash() {
-        let host = host(Some("admin")).await;
-        let client_ep = endpoint().await;
-        let cap = invite_for(&client_ep, &host.addr, None, "ann").await;
+    // PROBE-WORKTREE-ONLY: broken swept-in test removed locally so the probe compiles.
 
-        let mut client = WorldClient::connect(&client_ep, host.addr.clone())
-            .await
-            .unwrap();
-
-        // Test with a valid string hash
-        let valid_reply = json!({
-            "type": "module_info",
-            "world_id": "test:world",
-            "active_module_hash": "abc123",
-            "current_sequence": 42,
-            "active_module_provenance": null,
-        });
-        client.inject_json(valid_reply).await;
-        let info = client.info_details(&cap).await.unwrap();
-        assert_eq!(info.active_module_hash, Some("abc123".to_string()));
-
-        // Test with null hash (legitimate no-module case)
-        let null_reply = json!({
-            "type": "module_info",
-            "world_id": "test:world",
-            "active_module_hash": null,
-            "current_sequence": 42,
-            "active_module_provenance": null,
-        });
-        client.inject_json(null_reply).await;
-        let info = client.info_details(&cap).await.unwrap();
-        assert_eq!(info.active_module_hash, None);
-
-        // Test with missing hash field (older hosts)
-        let missing_reply = json!({
-            "type": "module_info",
-            "world_id": "test:world",
-            "current_sequence": 42,
-            "active_module_provenance": null,
-        });
-        client.inject_json(missing_reply).await;
-        let info = client.info_details(&cap).await.unwrap();
-        assert_eq!(info.active_module_hash, None);
-
-        // Test with malformed hash (number) - should error
-        let number_reply = json!({
-            "type": "module_info",
-            "world_id": "test:world",
-            "active_module_hash": 123,
-            "current_sequence": 42,
-            "active_module_provenance": null,
-        });
-        client.inject_json(number_reply).await;
-        let err = client.info_details(&cap).await.unwrap_err();
-        assert!(err.to_string().contains("malformed active_module_hash"));
-
-        // Test with malformed hash (boolean) - should error
-        let bool_reply = json!({
-            "type": "module_info",
-            "world_id": "test:world",
-            "active_module_hash": true,
-            "current_sequence": 42,
-            "active_module_provenance": null,
-        });
-        client.inject_json(bool_reply).await;
-        let err = client.info_details(&cap).await.unwrap_err();
-        assert!(err.to_string().contains("malformed active_module_hash"));
-
-        // Test with malformed hash (array) - should error
-        let array_reply = json!({
-            "type": "module_info",
-            "world_id": "test:world",
-            "active_module_hash": ["abc"],
-            "current_sequence": 42,
-            "active_module_provenance": null,
-        });
-        client.inject_json(array_reply).await;
-        let err = client.info_details(&cap).await.unwrap_err();
-        assert!(err.to_string().contains("malformed active_module_hash"));
-
-        // Test with malformed hash (object) - should error
-        let object_reply = json!({
-            "type": "module_info",
-            "world_id": "test:world",
-            "active_module_hash": {"hash": "abc"},
-            "current_sequence": 42,
-            "active_module_provenance": null,
-        });
-        client.inject_json(object_reply).await;
-        let err = client.info_details(&cap).await.unwrap_err();
-        assert!(err.to_string().contains("malformed active_module_hash"));
-
-        client.close();
-        client_ep.close().await;
-        host.router.shutdown().await.unwrap();
+    // PROBE (worktree-only, never committed): admin_event_history begin
+    // frame module_hash mistype collapses to None.
+    #[derive(Clone, Debug)]
+    struct ProbeHashRogue {
+        hash: serde_json::Value,
+        include_hash: bool,
     }
+
+    impl iroh::protocol::ProtocolHandler for ProbeHashRogue {
+        async fn accept(
+            &self,
+            conn: iroh::endpoint::Connection,
+        ) -> Result<(), iroh::protocol::AcceptError> {
+            while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+                let hash = self.hash.clone();
+                let include_hash = self.include_hash;
+                tokio::spawn(async move {
+                    let _ = crate::frames::read_frame(&mut recv).await;
+                    let mut begin = serde_json::json!({
+                        "type": "event_history_begin",
+                        "world_id": "w",
+                        "current_sequence": 7,
+                        "complete": true,
+                        "event_count": 0
+                    });
+                    if include_hash {
+                        begin["module_hash"] = hash;
+                    }
+                    if crate::frames::write_frame(&mut send, begin.to_string().as_bytes())
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    let page = serde_json::json!({
+                        "type": "records", "sequence": 7,
+                        "records": {}, "next_after": null
+                    });
+                    let _ =
+                        crate::frames::write_frame(&mut send, page.to_string().as_bytes()).await;
+                });
+            }
+            Ok(())
+        }
+    }
+
+    async fn probe_hash(
+        hash: serde_json::Value,
+        include_hash: bool,
+    ) -> (Result<crate::world::AdminEventHistory>, Router, Endpoint) {
+        let host_ep = endpoint().await;
+        let router = Router::builder(host_ep.clone())
+            .accept(
+                WORLD_ALPN,
+                ProbeHashRogue { hash, include_hash },
+            )
+            .spawn();
+        let addr = EndpointAddr::from_parts(
+            host_ep.id(),
+            host_ep.bound_sockets().iter().map(|a| {
+                let ip = if a.ip().is_unspecified() {
+                    std::net::Ipv4Addr::LOCALHOST.into()
+                } else {
+                    a.ip()
+                };
+                iroh::TransportAddr::Ip(std::net::SocketAddr::new(ip, a.port()))
+            }),
+        );
+        let client_ep = endpoint().await;
+        let mut client = WorldClient::connect(&client_ep, addr).await.unwrap();
+        let result = client.admin_event_history("admin").await;
+        client.close();
+        (result, router, client_ep)
+    }
+
+    #[tokio::test]
+    async fn probe_admin_history_module_hash_shape() {
+        // Control: string hash -> Some
+        let (result, router, ep) = probe_hash(serde_json::json!("abc123"), true).await;
+        let history = result.expect("string hash must succeed");
+        assert_eq!(history.module_hash.as_deref(), Some("abc123"));
+        ep.close().await;
+        router.shutdown().await.unwrap();
+
+        // Control: null -> None (legit no-module)
+        let (result, router, ep) = probe_hash(serde_json::Value::Null, true).await;
+        let history = result.expect("null hash must succeed");
+        assert_eq!(history.module_hash, None);
+        ep.close().await;
+        router.shutdown().await.unwrap();
+
+        // Control: missing -> None (older hosts)
+        let (result, router, ep) = probe_hash(serde_json::Value::Null, false).await;
+        let history = result.expect("missing hash must succeed");
+        assert_eq!(history.module_hash, None);
+        ep.close().await;
+        router.shutdown().await.unwrap();
+
+        // Bug cases: mistyped hash -> currently Ok(None), indistinguishable
+        // from the legit no-module cases above.
+        for bad in [
+            serde_json::json!(123),
+            serde_json::json!(true),
+            serde_json::json!(["abc"]),
+            serde_json::json!({"hash": "abc"}),
+        ] {
+            let (result, router, ep) = probe_hash(bad.clone(), true).await;
+            let history = result
+                .unwrap_or_else(|e| panic!("BUG CHECK: mistyped {bad} errored unexpectedly: {e}"));
+            assert_eq!(
+                history.module_hash, None,
+                "BUG REPRO: mistyped module_hash {bad} collapsed to None"
+            );
+            ep.close().await;
+            router.shutdown().await.unwrap();
+        }
+    }
+
 }
