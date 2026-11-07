@@ -22,11 +22,11 @@
 //!   and restores it on lookups, so a looked-up leg still compares
 //!   equal to the persisted intent leg the recovery scanner checks
 //!   (`super::recovery`).
-//! - Status mapping covers the subset of TigerBeetle result codes the
-//!   PoC types model. An unmodelled status — or a transport-level
-//!   client error, for which the trait has no channel — panics with
-//!   the status/error named, rather than being silently folded into a
-//!   wrong variant. The scenarios exercise only the mapped subset.
+//! - Status mapping turns ordinary validation rejections, including
+//!   IDs and flags accepted by the PoC types, into typed per-leg errors.
+//!   TigerBeetle statuses that require fields this adapter does not
+//!   expose are reported as `UnsupportedStatus`; transport-level client
+//!   errors still have no channel in the trait and remain fatal.
 //!
 //! The binding is behind the `currency-poc-tb` feature so default
 //! builds of the `id` crate do not link the client's native
@@ -183,6 +183,7 @@ fn from_tb_transfer(transfer: &tb::Transfer, code: u16) -> Transfer {
     }
 }
 
+#[deny(non_exhaustive_omitted_patterns)]
 fn map_account_status(status: tb::CreateAccountStatus) -> Result<(), AccountError> {
     use tb::CreateAccountStatus as Status;
     match status {
@@ -195,10 +196,35 @@ fn map_account_status(status: tb::CreateAccountStatus) -> Result<(), AccountErro
         | Status::ExistsWithDifferentLedger
         | Status::ExistsWithDifferentCode => Err(AccountError::ExistsWithDifferentFields),
         Status::LedgerMustNotBeZero => Err(AccountError::LedgerMustNotBeZero),
-        other => panic!("tigerbeetle create_accounts returned unmodelled status {other:?}"),
+        Status::IdMustNotBeZero => Err(AccountError::IdMustNotBeZero),
+        Status::IdMustNotBeIntMax => Err(AccountError::IdMustNotBeIntMax),
+        Status::FlagsAreMutuallyExclusive => Err(AccountError::FlagsAreMutuallyExclusive),
+        // These statuses require imported-event data, caller-controlled
+        // timestamps/reserved fields, or pending balances, none of which
+        // this adapter sends. Keep them typed rather than panicking if a
+        // server or adapter change makes one observable.
+        Status::LinkedEventFailed
+        | Status::LinkedEventChainOpen
+        | Status::ImportedEventExpected
+        | Status::ImportedEventNotExpected
+        | Status::TimestampMustBeZero
+        | Status::ImportedEventTimestampOutOfRange
+        | Status::ImportedEventTimestampMustNotAdvance
+        | Status::ReservedField
+        | Status::ReservedFlag
+        | Status::DebitsPendingMustBeZero
+        | Status::DebitsPostedMustBeZero
+        | Status::CreditsPendingMustBeZero
+        | Status::CreditsPostedMustBeZero
+        | Status::CodeMustNotBeZero
+        | Status::ImportedEventTimestampMustNotRegress => Err(AccountError::UnsupportedStatus),
+        // The status enum is non-exhaustive. Unknown future statuses are
+        // still returned through the typed result channel, never panicked.
+        _ => Err(AccountError::UnsupportedStatus),
     }
 }
 
+#[deny(non_exhaustive_omitted_patterns)]
 fn map_transfer_status(status: tb::CreateTransferStatus) -> Result<(), TransferError> {
     use tb::CreateTransferStatus as Status;
     match status {
@@ -238,7 +264,53 @@ fn map_transfer_status(status: tb::CreateTransferStatus) -> Result<(), TransferE
         Status::OverflowsCreditsPending
         | Status::OverflowsCreditsPosted
         | Status::OverflowsCredits => Err(TransferError::CreditsMustNotExceedDebits),
-        other => panic!("tigerbeetle create_transfers returned unmodelled status {other:?}"),
+        Status::IdMustNotBeZero => Err(TransferError::IdMustNotBeZero),
+        Status::IdMustNotBeIntMax => Err(TransferError::IdMustNotBeIntMax),
+        Status::DebitAccountIdMustNotBeZero => Err(TransferError::DebitAccountIdMustNotBeZero),
+        Status::DebitAccountIdMustNotBeIntMax => Err(TransferError::DebitAccountIdMustNotBeIntMax),
+        Status::CreditAccountIdMustNotBeZero => Err(TransferError::CreditAccountIdMustNotBeZero),
+        Status::CreditAccountIdMustNotBeIntMax => {
+            Err(TransferError::CreditAccountIdMustNotBeIntMax)
+        }
+        Status::DebitAccountAlreadyClosed => Err(TransferError::DebitAccountAlreadyClosed),
+        Status::CreditAccountAlreadyClosed => Err(TransferError::CreditAccountAlreadyClosed),
+        // These statuses require pending transfers, imported-event data,
+        // caller-controlled timestamps/reserved fields, or flags that
+        // this adapter does not expose. Return a typed error if one is
+        // nevertheless observed rather than panicking.
+        Status::ImportedEventExpected
+        | Status::ImportedEventNotExpected
+        | Status::TimestampMustBeZero
+        | Status::ImportedEventTimestampOutOfRange
+        | Status::ImportedEventTimestampMustNotAdvance
+        | Status::ReservedFlag
+        | Status::FlagsAreMutuallyExclusive
+        | Status::PendingIdMustBeZero
+        | Status::PendingIdMustNotBeZero
+        | Status::PendingIdMustNotBeIntMax
+        | Status::PendingIdMustBeDifferent
+        | Status::TimeoutReservedForPendingTransfer
+        | Status::ClosingTransferMustBePending
+        | Status::CodeMustNotBeZero
+        | Status::PendingTransferNotFound
+        | Status::PendingTransferNotPending
+        | Status::PendingTransferHasDifferentDebitAccountId
+        | Status::PendingTransferHasDifferentCreditAccountId
+        | Status::PendingTransferHasDifferentLedger
+        | Status::PendingTransferHasDifferentCode
+        | Status::ExceedsPendingTransferAmount
+        | Status::PendingTransferHasDifferentAmount
+        | Status::PendingTransferAlreadyPosted
+        | Status::PendingTransferAlreadyVoided
+        | Status::PendingTransferExpired
+        | Status::ImportedEventTimestampMustNotRegress
+        | Status::ImportedEventTimestampMustPostdateDebitAccount
+        | Status::ImportedEventTimestampMustPostdateCreditAccount
+        | Status::ImportedEventTimeoutMustBeZero
+        | Status::OverflowsTimeout => Err(TransferError::UnsupportedStatus),
+        // The status enum is non-exhaustive. Unknown future statuses are
+        // still returned through the typed result channel, never panicked.
+        _ => Err(TransferError::UnsupportedStatus),
     }
 }
 
@@ -415,5 +487,187 @@ impl LedgerBackend for TigerBeetleLedger {
             }
         }
         matched
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::{map_account_status, map_transfer_status, tb};
+
+    #[test]
+    fn every_pinned_account_status_maps_without_panicking() {
+        use tb::CreateAccountStatus as S;
+
+        let statuses = [
+            S::Created,
+            S::LinkedEventFailed,
+            S::LinkedEventChainOpen,
+            S::ImportedEventExpected,
+            S::ImportedEventNotExpected,
+            S::TimestampMustBeZero,
+            S::ImportedEventTimestampOutOfRange,
+            S::ImportedEventTimestampMustNotAdvance,
+            S::ReservedField,
+            S::ReservedFlag,
+            S::IdMustNotBeZero,
+            S::IdMustNotBeIntMax,
+            S::ExistsWithDifferentFlags,
+            S::ExistsWithDifferentUserData128,
+            S::ExistsWithDifferentUserData64,
+            S::ExistsWithDifferentUserData32,
+            S::ExistsWithDifferentLedger,
+            S::ExistsWithDifferentCode,
+            S::Exists,
+            S::FlagsAreMutuallyExclusive,
+            S::DebitsPendingMustBeZero,
+            S::DebitsPostedMustBeZero,
+            S::CreditsPendingMustBeZero,
+            S::CreditsPostedMustBeZero,
+            S::LedgerMustNotBeZero,
+            S::CodeMustNotBeZero,
+            S::ImportedEventTimestampMustNotRegress,
+        ];
+
+        for status in statuses {
+            assert!(
+                std::panic::catch_unwind(|| map_account_status(status)).is_ok(),
+                "account status {status:?} panicked",
+            );
+        }
+    }
+
+    #[test]
+    fn every_pinned_transfer_status_maps_without_panicking() {
+        use tb::CreateTransferStatus as S;
+
+        let statuses = [
+            S::Created,
+            S::LinkedEventFailed,
+            S::LinkedEventChainOpen,
+            S::ImportedEventExpected,
+            S::ImportedEventNotExpected,
+            S::TimestampMustBeZero,
+            S::ImportedEventTimestampOutOfRange,
+            S::ImportedEventTimestampMustNotAdvance,
+            S::ReservedFlag,
+            S::IdMustNotBeZero,
+            S::IdMustNotBeIntMax,
+            S::ExistsWithDifferentFlags,
+            S::ExistsWithDifferentPendingId,
+            S::ExistsWithDifferentTimeout,
+            S::ExistsWithDifferentDebitAccountId,
+            S::ExistsWithDifferentCreditAccountId,
+            S::ExistsWithDifferentAmount,
+            S::ExistsWithDifferentUserData128,
+            S::ExistsWithDifferentUserData64,
+            S::ExistsWithDifferentUserData32,
+            S::ExistsWithDifferentLedger,
+            S::ExistsWithDifferentCode,
+            S::Exists,
+            S::IdAlreadyFailed,
+            S::FlagsAreMutuallyExclusive,
+            S::DebitAccountIdMustNotBeZero,
+            S::DebitAccountIdMustNotBeIntMax,
+            S::CreditAccountIdMustNotBeZero,
+            S::CreditAccountIdMustNotBeIntMax,
+            S::AccountsMustBeDifferent,
+            S::PendingIdMustBeZero,
+            S::PendingIdMustNotBeZero,
+            S::PendingIdMustNotBeIntMax,
+            S::PendingIdMustBeDifferent,
+            S::TimeoutReservedForPendingTransfer,
+            S::ClosingTransferMustBePending,
+            S::LedgerMustNotBeZero,
+            S::CodeMustNotBeZero,
+            S::DebitAccountNotFound,
+            S::CreditAccountNotFound,
+            S::AccountsMustHaveTheSameLedger,
+            S::TransferMustHaveTheSameLedgerAsAccounts,
+            S::PendingTransferNotFound,
+            S::PendingTransferNotPending,
+            S::PendingTransferHasDifferentDebitAccountId,
+            S::PendingTransferHasDifferentCreditAccountId,
+            S::PendingTransferHasDifferentLedger,
+            S::PendingTransferHasDifferentCode,
+            S::ExceedsPendingTransferAmount,
+            S::PendingTransferHasDifferentAmount,
+            S::PendingTransferAlreadyPosted,
+            S::PendingTransferAlreadyVoided,
+            S::PendingTransferExpired,
+            S::ImportedEventTimestampMustNotRegress,
+            S::ImportedEventTimestampMustPostdateDebitAccount,
+            S::ImportedEventTimestampMustPostdateCreditAccount,
+            S::ImportedEventTimeoutMustBeZero,
+            S::DebitAccountAlreadyClosed,
+            S::CreditAccountAlreadyClosed,
+            S::OverflowsDebitsPending,
+            S::OverflowsCreditsPending,
+            S::OverflowsDebitsPosted,
+            S::OverflowsCreditsPosted,
+            S::OverflowsDebits,
+            S::OverflowsCredits,
+            S::OverflowsTimeout,
+            S::ExceedsCredits,
+            S::ExceedsDebits,
+        ];
+
+        for status in statuses {
+            assert!(
+                std::panic::catch_unwind(|| map_transfer_status(status)).is_ok(),
+                "transfer status {status:?} panicked",
+            );
+        }
+    }
+
+    #[test]
+    fn reachable_validation_statuses_keep_their_typed_errors() {
+        use super::super::ledger::{AccountError as A, TransferError as T};
+        use tb::{CreateAccountStatus as AS, CreateTransferStatus as TS};
+
+        assert_eq!(
+            map_account_status(AS::IdMustNotBeZero),
+            Err(A::IdMustNotBeZero)
+        );
+        assert_eq!(
+            map_account_status(AS::IdMustNotBeIntMax),
+            Err(A::IdMustNotBeIntMax)
+        );
+        assert_eq!(
+            map_account_status(AS::FlagsAreMutuallyExclusive),
+            Err(A::FlagsAreMutuallyExclusive),
+        );
+        assert_eq!(
+            map_transfer_status(TS::IdMustNotBeZero),
+            Err(T::IdMustNotBeZero)
+        );
+        assert_eq!(
+            map_transfer_status(TS::IdMustNotBeIntMax),
+            Err(T::IdMustNotBeIntMax)
+        );
+        assert_eq!(
+            map_transfer_status(TS::DebitAccountIdMustNotBeZero),
+            Err(T::DebitAccountIdMustNotBeZero),
+        );
+        assert_eq!(
+            map_transfer_status(TS::DebitAccountIdMustNotBeIntMax),
+            Err(T::DebitAccountIdMustNotBeIntMax),
+        );
+        assert_eq!(
+            map_transfer_status(TS::CreditAccountIdMustNotBeZero),
+            Err(T::CreditAccountIdMustNotBeZero),
+        );
+        assert_eq!(
+            map_transfer_status(TS::CreditAccountIdMustNotBeIntMax),
+            Err(T::CreditAccountIdMustNotBeIntMax),
+        );
+        assert_eq!(
+            map_transfer_status(TS::DebitAccountAlreadyClosed),
+            Err(T::DebitAccountAlreadyClosed),
+        );
+        assert_eq!(
+            map_transfer_status(TS::CreditAccountAlreadyClosed),
+            Err(T::CreditAccountAlreadyClosed),
+        );
     }
 }
