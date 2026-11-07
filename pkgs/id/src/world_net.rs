@@ -1038,7 +1038,9 @@ impl WorldClient {
     ///
     /// # Errors
     ///
-    /// Fails with the host's message if neither credential is accepted.
+    /// Fails with the host's message if neither credential is accepted,
+    /// or with "host sent a malformed seed" if the reply's `seed` field
+    /// is present but not a `u64`.
     pub async fn manifest_state(
         &mut self,
         admin_token: Option<&str>,
@@ -1054,12 +1056,42 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_world_state_reply(&reply)
+    }
+
+    /// Validate a `world_state` reply frame and extract the manifest
+    /// state: a `seed` that is *absent* is the one legitimate `None`
+    /// (a capability-only read, where the host deliberately hides the
+    /// seed, #240), but a seed that is present with the wrong type is
+    /// corruption, not a hidden seed -- reading it with a bare
+    /// `as_u64()` silently downgraded it to the capability-only shape,
+    /// and the manifest-capture consumer then baked it in as seed 0
+    /// (#6626). `schedules` keeps its strict decode. Factored out of
+    /// [`WorldClient::manifest_state`] (mirroring
+    /// [`WorldClient::parse_caps_reply`]) so the validation can be
+    /// unit-tested without a live host sending frames no real host
+    /// sends.
+    fn parse_world_state_reply(
+        reply: &serde_json::Value,
+    ) -> Result<(Option<u64>, std::collections::BTreeMap<String, u64>)> {
         match reply["type"].as_str() {
-            Some("world_state") => Ok((
-                reply["seed"].as_u64(),
-                serde_json::from_value(reply["schedules"].clone())
-                    .context("host sent a malformed schedule map")?,
-            )),
+            Some("world_state") => {
+                let seed = match reply.get("seed") {
+                    // Absent, or null: the host serializes a hidden seed
+                    // as null (`ServerFrame::WorldState.seed` is an
+                    // `Option<u64>` with no skip-serializing, and both
+                    // host reply paths set it to
+                    // `admin_ok.then_some(seed)`), so null is the
+                    // legitimate capability-only shape (#240).
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => Some(value.as_u64().context("host sent a malformed seed")?),
+                };
+                Ok((
+                    seed,
+                    serde_json::from_value(reply["schedules"].clone())
+                        .context("host sent a malformed schedule map")?,
+                ))
+            }
             _ => bail!(
                 "{}",
                 reply["message"]
@@ -3050,6 +3082,127 @@ mod tests {
             assert!(
                 WorldClient::parse_policy_reply(&bad).is_err(),
                 "accepted a malformed policy reply: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn world_state_reply_requires_a_u64_seed_when_present() {
+        // Issue #6626: a present-but-mistyped `seed` must error, not
+        // silently read as the capability-only `None` (which the
+        // manifest-capture consumer then bakes in as seed 0). Only an
+        // absent seed is `None` outright; a null seed is also `None`,
+        // because that is how the host serializes a hidden seed
+        // (`ServerFrame::WorldState.seed`, #240 seed-hiding). Driven
+        // through the factored reply parser manifest_state() uses.
+        let parse = WorldClient::parse_world_state_reply;
+
+        // Controls: a numeric seed, and the legitimate absent seed.
+        let (seed, schedules) = parse(&serde_json::json!({
+            "type": "world_state", "seed": 42, "schedules": {"a": 1},
+        }))
+        .unwrap();
+        assert_eq!(seed, Some(42));
+        assert_eq!(schedules.get("a"), Some(&1));
+        let (seed, schedules) = parse(&serde_json::json!({
+            "type": "world_state", "schedules": {},
+        }))
+        .unwrap();
+        assert_eq!(seed, None);
+        assert!(schedules.is_empty());
+        // The host's actual capability-only shape: `"seed": null`.
+        let (seed, schedules) = parse(&serde_json::json!({
+            "type": "world_state", "seed": null, "schedules": {"b": 2},
+        }))
+        .unwrap();
+        assert_eq!(seed, None);
+        assert_eq!(schedules.get("b"), Some(&2));
+
+        // Every mistyped shape errors and names the malformed seed.
+        for bad in [
+            serde_json::json!("42"),
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!({}),
+            serde_json::json!([]),
+            serde_json::json!(true),
+        ] {
+            let err = parse(&serde_json::json!({
+                "type": "world_state", "seed": bad, "schedules": {},
+            }))
+            .err()
+            .unwrap_or_else(|| panic!("seed {bad} must be refused"));
+            assert!(
+                err.to_string().contains("malformed seed"),
+                "seed {bad}: {err}"
+            );
+        }
+
+        // The sibling field keeps its strict decode.
+        let err = parse(&serde_json::json!({
+            "type": "world_state", "seed": 42, "schedules": {"a": "x"},
+        }))
+        .err()
+        .unwrap();
+        assert!(err.to_string().contains("malformed schedule map"), "{err}");
+
+        // A refusal frame still surfaces the host's message.
+        let err = parse(&serde_json::json!({
+            "type": "error", "message": "admin token refused",
+        }))
+        .err()
+        .unwrap();
+        assert!(err.to_string().contains("admin token refused"), "{err}");
+    }
+
+    // Property coverage for the same parser (repo testing doctrine:
+    // a parser's invariants are stated once and hammered with
+    // generated inputs, not just the examples above). Oracle: the
+    // typed frame contract — `ServerFrame::WorldState.seed` is an
+    // `Option<u64>` on the wire (a u64, or null when the host hides
+    // the seed, #240), and `schedules` is a string→u64 map that
+    // passes through untouched.
+    proptest! {
+        #[test]
+        fn world_state_reply_seed_and_schedule_invariants(
+            seed in any::<u64>(),
+            schedules in proptest::collection::btree_map(any::<String>(), any::<u64>(), 0..8),
+            mistyped in prop_oneof![
+                any::<String>().prop_map(serde_json::Value::from),
+                any::<bool>().prop_map(serde_json::Value::from),
+                proptest::collection::vec(any::<u64>(), 0..4)
+                    .prop_map(serde_json::Value::from),
+                proptest::collection::hash_map(any::<String>(), any::<u64>(), 0..4)
+                    .prop_map(|m| serde_json::to_value(m).unwrap()),
+            ],
+        ) {
+            let frame = |seed_value: serde_json::Value| {
+                serde_json::json!({
+                    "type": "world_state",
+                    "seed": seed_value,
+                    "schedules": serde_json::to_value(&schedules).unwrap(),
+                })
+            };
+            // A valid u64 seed is preserved; the schedule map passes
+            // through verbatim.
+            let (parsed_seed, parsed_schedules) =
+                WorldClient::parse_world_state_reply(&frame(serde_json::Value::from(seed)))
+                    .unwrap();
+            prop_assert_eq!(parsed_seed, Some(seed));
+            prop_assert_eq!(parsed_schedules, schedules.clone());
+            // Null (the host's hidden-seed shape) reads as None.
+            let (parsed_seed, _) =
+                WorldClient::parse_world_state_reply(&frame(serde_json::Value::Null)).unwrap();
+            prop_assert_eq!(parsed_seed, None);
+            // Any other seed type is refused as malformed.
+            let result = WorldClient::parse_world_state_reply(&frame(mistyped));
+            prop_assert!(result.is_err());
+            prop_assert!(
+                result
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("malformed seed")
             );
         }
     }
