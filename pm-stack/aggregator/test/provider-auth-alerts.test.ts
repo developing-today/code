@@ -143,6 +143,39 @@ describe("gather -> overlay -> board", () => {
     expect(html).toContain("meta session expired and exporter recovery failed");
   });
 
+  test("a non-array providerAuth section is isolated at parse, never throws in the overlay", () => {
+    const bad = parseQuotaCurrent({
+      version: 1,
+      generatedAt: NOW.toISOString(),
+      source: "test",
+      heartbeat: { tickAt: NOW.toISOString(), ok: true, durationMs: 1, perProvider: {} },
+      providers: [],
+      providerAuth: { provider: "meta" },
+    })!;
+    expect(bad.providerAuth).toBeUndefined();
+    expect(() => overlayQuotaCurrent(view(), bad, NOW)).not.toThrow();
+  });
+
+  test("serve-time freshness: an ok keeper past the stale horizon reclassifies as stale", () => {
+    const staleFile = file();
+    staleFile.providerAuth = [
+      {
+        provider: "meta",
+        status: "valid",
+        alert: null,
+        alertSince: null,
+        checkedAt: iso(2 * 3_600_000),
+        sessionExpiresAt: null,
+        horizonHours: null,
+        lastGoodAt: iso(2 * 3_600_000),
+        reporting: "ok",
+      },
+    ];
+    const out = overlayQuotaCurrent(view(), staleFile, NOW);
+    expect(out.providerAuth![0].reporting).toBe("stale");
+    expect(renderQuota(out, {} as never)).toContain("keeper not reporting");
+  });
+
   test("board renders nothing when every keeper is ok", () => {
     const okFile = file();
     okFile.providerAuth = [

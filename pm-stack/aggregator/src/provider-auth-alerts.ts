@@ -142,6 +142,25 @@ export function providerAuthProblemLines(alerts: ProviderAuthAlert[]): string[] 
   });
 }
 
+/** Re-derive freshness at serve time (#6671, Codex P2 on the first
+ * cut): the gather-time `reporting` classification freezes when the
+ * gatherer stops — a keeper whose last tick said ok would render ok
+ * forever. An ok keeper whose checkedAt is older than the stale
+ * horizon at serve time is reclassified stale; attention (already
+ * visible), missing, stale, and invalid pass through unchanged. */
+export function reevaluateProviderAuth(
+  alerts: ProviderAuthAlert[],
+  now = new Date(),
+  staleMs = PROVIDER_AUTH_STALE_MS,
+): ProviderAuthAlert[] {
+  return alerts.map((a) => {
+    if (a.reporting !== "ok" || !a.checkedAt) return a;
+    return now.getTime() - Date.parse(a.checkedAt) > staleMs
+      ? { ...a, reporting: "stale" as const }
+      : a;
+  });
+}
+
 export interface ProviderAuthPaths {
   opendesign: string;
   meta: string;
