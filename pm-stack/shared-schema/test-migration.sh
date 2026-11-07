@@ -177,6 +177,19 @@ expect_rejected "applied action without a result timestamp" "INSERT INTO public.
   (id, kind, verb, object_ref, payload, author, created_at, state)
   VALUES ('da-applied-no-ts', 'triage', 'acknowledge', 'orch:item-7', '{}',
     '{\"kind\":\"drew\",\"id\":\"drew\",\"label\":\"Drew\"}', now(), 'applied')"
+expect_rejected "rejected non-duplicate action without a result timestamp" "INSERT INTO public.agg_actions
+  (id, kind, verb, object_ref, payload, author, created_at, state)
+  VALUES ('da-rejected-no-ts', 'triage', 'acknowledge', 'orch:item-8', '{}',
+    '{\"kind\":\"drew\",\"id\":\"drew\",\"label\":\"Drew\"}', now(), 'rejected')"
+# ActionsStore.add() creates duplicate attempts directly in state rejected
+# with duplicateOf and a result note but no consumer timestamp; those rows
+# are valid audit history and must import losslessly.
+psql_test -c "INSERT INTO public.agg_actions
+  (id, kind, verb, object_ref, payload, author, created_at, state, duplicate_of_action_id, result_note)
+  VALUES ('da-duplicate-rejected', 'triage', 'acknowledge', 'orch:item-1', '{}',
+    '{\"kind\":\"agent\",\"id\":\"session-2\",\"label\":\"agent\"}', now(), 'rejected',
+    'da-current', 'Duplicate answer; existing action da-current is new.');"
+echo "ok - rejected duplicate without a consumer timestamp is accepted"
 expect_rejected "empty idempotency key" "INSERT INTO public.shared_events
   (id, event_at, actor, kind, ref, summary, prev_hash, hash, idempotency_key)
   VALUES ('event-empty-key', now(), 'run-old', 'comment', 'orch:item-1', 'empty key',
@@ -196,6 +209,25 @@ if [[ "$raw_seen" != "2026-11-05T03:00:00+03:00|2026-11-05T03:00:01+03:00|2026-1
   exit 1
 fi
 echo "ok - raw timestamp strings preserved alongside normalized timestamptz"
+
+# The raw JSON serializations are hash inputs too: canonicalFields hashes
+# JSON.stringify of the original attribution/source objects, and jsonb
+# reorders object keys (shortest first), so only the verbatim text
+# reproduces the original hash input.
+psql_test -c "INSERT INTO public.shared_events
+  (id, event_at, actor, kind, ref, summary, attribution, attribution_raw, source, source_raw, prev_hash, hash)
+  VALUES ('event-raw-json', now(), 'run-old', 'comment', 'orch:item-1', 'raw json preservation',
+    '{\"confidence\":\"unknown\",\"asserted\":false}',
+    '{\"confidence\":\"unknown\",\"asserted\":false}',
+    '{\"identity\":\"pm-stack/aggregator\",\"channel\":\"test\"}',
+    '{\"identity\":\"pm-stack/aggregator\",\"channel\":\"test\"}',
+    '$zero_hash', '$one_hash');"
+raw_json_seen="$(psql_test -Atc "SELECT attribution_raw || '|' || source_raw FROM public.shared_events WHERE id = 'event-raw-json'")"
+if [[ "$raw_json_seen" != "{\"confidence\":\"unknown\",\"asserted\":false}|{\"identity\":\"pm-stack/aggregator\",\"channel\":\"test\"}" ]]; then
+  echo "raw JSON serializations did not round-trip: $raw_json_seen" >&2
+  exit 1
+fi
+echo "ok - raw JSON serializations preserved alongside jsonb"
 
 if psql_test < "$down" >/dev/null 2>&1; then
   echo "down migration should refuse populated tables" >&2

@@ -38,7 +38,9 @@ CREATE TABLE public.agg_actions (
     ))
   ),
   CONSTRAINT agg_actions_result_timestamp_check CHECK (
-    (state IN ('applied', 'rejected') AND applied_at IS NOT NULL)
+    (state = 'applied' AND applied_at IS NOT NULL)
+    OR (state = 'rejected'
+        AND (applied_at IS NOT NULL OR duplicate_of_action_id IS NOT NULL))
     OR (state = 'new' AND applied_at IS NULL)
     OR state = 'superseded'
   ),
@@ -82,6 +84,14 @@ CREATE TABLE public.shared_events (
       jsonb_typeof(source) = 'object'
       AND nullif(btrim(source->>'identity'), '') IS NOT NULL
     ),
+  attribution_raw text CHECK (
+    attribution_raw IS NULL
+    OR jsonb_typeof(attribution_raw::jsonb) = 'object'
+  ),
+  source_raw text CHECK (
+    source_raw IS NULL
+    OR jsonb_typeof(source_raw::jsonb) = 'object'
+  ),
   corrects_event_id text,
   migrated_from_version smallint CHECK (migrated_from_version IS NULL OR migrated_from_version = 1),
   prev_hash text NOT NULL CHECK (prev_hash ~ '^[0-9a-f]{64}$'),
