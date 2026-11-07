@@ -11,6 +11,9 @@ temp dir and drives the real reaper module end-to-end:
   dirty tracked file                    -> kept (dirty)
   untracked non-allowlisted file        -> kept (dirty)
   allowlisted generated dirt only       -> reaped via --force
+  ignored file only (unlisted)          -> kept (dirty, #6734)
+  allowlisted untracked + ignored       -> kept (dirty, #6734)
+  allowlisted ignored build output      -> reaped, ignored paths recorded (#6734)
   detached HEAD                         -> kept (detached, v1 rule)
   denylisted tree                       -> kept (denied)
   process cwd inside tree               -> kept (occupied)
@@ -255,6 +258,40 @@ class GateTests(unittest.TestCase):
         decisions = self.runner.run(quiet_hours=0)
         self.assertFalse(os.path.isdir(tree))
 
+    def test_05_ignored_gate(self):
+        repo, run = self.repo, self.runner.run
+        # Ignore rules live in the shared repo exclude so every
+        # worktree sees them without touching tracked content.
+        exclude = os.path.join(repo.primary, ".git", "info", "exclude")
+        with open(exclude, "a") as fh:
+            fh.write("local-state\ntarget/\n")
+        # Ignored-only tree: kept — before #6734 this reaped as clean
+        # and the ignored file was deleted unrecorded.
+        t_ignored = repo.branch_tree("t/ignored-only", push=True)
+        repo.write(t_ignored, "local-state", "precious\n")
+        # Allowlisted untracked dirt does not rescue an unlisted
+        # ignored file either.
+        t_mixed = repo.branch_tree("t/ignored-mixed", push=True)
+        repo.write(t_mixed, "fleet-feed.json", "{}\n")
+        repo.write(t_mixed, "local-state", "precious\n")
+        decisions = run()
+        for tree in (t_ignored, t_mixed):
+            self.assertTrue(os.path.isdir(tree), f"{tree} must survive")
+            self.assertEqual(decisions[tree]["action"], "keep")
+            self.assertEqual(decisions[tree]["reason"], "dirty")
+            self.assertIn("local-state",
+                          decisions[tree]["gates"]["clean"]["ignored_other"])
+        # Allowlisted ignored build output (target/, a default
+        # ignored_dirt_names component) reaps — and the run record
+        # names the ignored path that was deleted with the tree.
+        t_target = repo.branch_tree("t/ignored-target", push=True)
+        repo.write(t_target, "target/debug/app.bin", "build output\n")
+        decisions = run()
+        self.assertFalse(os.path.isdir(t_target),
+                         "allowlisted-ignored tree should be reaped")
+        self.assertEqual(decisions[t_target]["action"], "reaped")
+        self.assertIn("target/", decisions[t_target]["ignored_removed"])
+
 
 class RunLogCollisionTests(unittest.TestCase):
     """#5716: two runs in the same second must not share a run log."""
@@ -298,6 +335,47 @@ class UnitTests(unittest.TestCase):
              "pm-stack/aggregator/fleet-feed.json", "src/real.py"], cfg)
         self.assertEqual(len(allow), 3)
         self.assertEqual(other, ["src/real.py"])
+
+    def test_ignored_allowlisted(self):
+        cfg = {"ignored_dirt_names": ["target", "node_modules"],
+               "ignored_dirt_prefixes": ["build/"],
+               "ignored_dirt_files": [".DS_Store"]}
+        allow, other = wr.ignored_allowlisted(
+            ["target/", "pkgs/id/target/", "web/node_modules/", "build/x.o",
+             ".DS_Store", "local-state", "pkgs/id/.identity.db",
+             "src/target_notes.txt"], cfg)
+        self.assertEqual(len(allow), 5)
+        # A component match is exact: target_notes.txt is not target/,
+        # and unlisted ignored content (a local-state file, an ignored
+        # database) always fails closed.
+        self.assertEqual(other, ["local-state", "pkgs/id/.identity.db",
+                                 "src/target_notes.txt"])
+
+    def test_status_entries_enumerates_ignored(self):
+        root = tempfile.mkdtemp(prefix="wtreaper-status-")
+        try:
+            git(root, "init", "-q", "-b", "main")
+            with open(os.path.join(root, ".gitignore"), "w") as fh:
+                fh.write("local-state\ntarget/\n")
+            with open(os.path.join(root, "base.txt"), "w") as fh:
+                fh.write("base\n")
+            git(root, "add", ".")
+            git(root, "commit", "-q", "-m", "base")
+            with open(os.path.join(root, "local-state"), "w") as fh:
+                fh.write("x")
+            os.makedirs(os.path.join(root, "target"))
+            with open(os.path.join(root, "target", "app"), "w") as fh:
+                fh.write("x")
+            with open(os.path.join(root, "notes.txt"), "w") as fh:
+                fh.write("x")
+            tracked, untracked, ignored = wr.status_entries(root)
+            self.assertEqual(tracked, [])
+            self.assertEqual(untracked, ["notes.txt"])
+            # Ignored files list individually; the ignored directory
+            # collapses to one trailing-slash entry.
+            self.assertEqual(sorted(ignored), ["local-state", "target/"])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
     def test_walk_activity(self):
         root = tempfile.mkdtemp(prefix="wtreaper-walk-")

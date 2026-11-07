@@ -13,6 +13,14 @@ reaped only when ALL of these gates hold at decision time:
                e.g. pkgs/mcpx/internal/cli/logs/, and generated_dirt_files,
                e.g. fleet-feed.json — matched on untracked entries only,
                re-verified in the same run just before removal).
+               Ignored files are enumerated too (#6734): any ignored
+               path beyond the ignored-dirt allowlist (config:
+               ignored_dirt_names — a path component at any depth, e.g.
+               target — plus ignored_dirt_prefixes / ignored_dirt_files)
+               blocks the reap the same way, because ignored content is
+               by definition not proven on origin. Allowlisted ignored
+               paths in a reaped tree are recorded by path in the run
+               record before removal.
   3. QUIET     last activity >= quiet_hours ago (absolute epoch). Activity
                = newest working-tree file mtime excluding the tree's root
                .git entry, max()ed with the HEAD reflog timestamp.
@@ -68,6 +76,13 @@ DEFAULT_CONFIG = {
     "deny_names": [],
     "generated_dirt_prefixes": ["pkgs/mcpx/internal/cli/logs/"],
     "generated_dirt_files": ["fleet-feed.json"],
+    # Ignored dirt (#6734): build output is ignored by design, so an
+    # ignored path whose component/prefix/basename is named here does
+    # not block a reap (it is recorded in the run record instead); any
+    # OTHER ignored path fails the CLEAN gate closed.
+    "ignored_dirt_names": ["target", "node_modules", "__pycache__", ".direnv"],
+    "ignored_dirt_prefixes": [],
+    "ignored_dirt_files": [],
     "fetch": True,
 }
 
@@ -286,14 +301,20 @@ def pushed_proof(primary, tip, branch):
 
 
 def status_entries(tree):
-    """Return (tracked_dirty, untracked) repo-relative path lists."""
+    """Return (tracked_dirty, untracked, ignored) repo-relative paths.
+
+    Ignored paths come from `--ignored=matching` (#6734): ignored files
+    are listed individually and ignored directories collapse to one
+    trailing-slash entry (e.g. `target/`, `sub/target/`) even with
+    `--untracked-files=all`, so the lists stay small enough to record.
+    """
     rc, out, err = run_git(
         tree, "status", "--porcelain=v1", "-z", "--no-renames",
-        "--untracked-files=all",
+        "--untracked-files=all", "--ignored=matching",
     )
     if rc != 0:
         raise RuntimeError(f"status failed in {tree}: {err.strip()}")
-    tracked, untracked = [], []
+    tracked, untracked, ignored = [], [], []
     for token in out.split(b"\0"):
         if len(token) < 4:
             continue
@@ -301,9 +322,37 @@ def status_entries(tree):
         path = token[3:].decode("utf-8", "surrogateescape")
         if xy == "??":
             untracked.append(path)
+        elif xy == "!!":
+            ignored.append(path)
         else:
             tracked.append(path)
-    return tracked, untracked
+    return tracked, untracked, ignored
+
+
+def ignored_allowlisted(ignored, cfg):
+    """Split ignored paths into (allowlisted, other) per the config.
+
+    Mirrors dirt_allowlisted for untracked files, plus component
+    matching: build output sits at any depth (`pkgs/id/target/`,
+    `web/node_modules/`), so a name in ignored_dirt_names allowlists
+    any path that has it as a component — which also covers git's
+    collapsed directory entries (`target/`) and files under them.
+    """
+    prefixes = [p if p.endswith("/") else p + "/" for p in cfg.get("ignored_dirt_prefixes", [])]
+    names = set(cfg.get("ignored_dirt_files", []))
+    components = set(cfg.get("ignored_dirt_names", []))
+    allow, other = [], []
+    for path in ignored:
+        parts = [part for part in path.split("/") if part]
+        if (
+            any(path.startswith(p) for p in prefixes)
+            or os.path.basename(path.rstrip("/")) in names
+            or any(part in components for part in parts)
+        ):
+            allow.append(path)
+        else:
+            other.append(path)
+    return allow, other
 
 
 def dirt_allowlisted(untracked, cfg):
@@ -445,19 +494,24 @@ def evaluate_tree(primary, wt, cfg, now, cwds):
         rec["reason"] = "unpushed"
         return rec
     try:
-        tracked, untracked = status_entries(tree)
+        tracked, untracked, ignored = status_entries(tree)
     except RuntimeError as exc:
         gates["clean"] = {"ok": False, "error": str(exc)}
         rec["reason"] = "status-error"
         return rec
     allow, other = dirt_allowlisted(untracked, cfg)
-    # Clean = no tracked changes and no untracked files beyond the
-    # allowlisted generated dirt (allowlisted-only dirt reaps via --force).
+    ig_allow, ig_other = ignored_allowlisted(ignored, cfg)
+    # Clean = no tracked changes, no untracked files beyond the
+    # allowlisted generated dirt, and no ignored paths beyond the
+    # ignored-dirt allowlist (#6734 — ignored content is never proven
+    # on origin, so an unlisted ignored path fails closed like any
+    # other dirt; allowlisted dirt reaps via --force).
     gates["clean"] = {
-        "ok": not tracked and not other,
+        "ok": not tracked and not other and not ig_other,
         "tracked": tracked[:20], "untracked_other": other[:20],
         "allowlisted": allow[:20],
-        "allowlisted_only": bool(allow) and not tracked and not other,
+        "ignored_allowlisted": ig_allow[:20], "ignored_other": ig_other[:20],
+        "allowlisted_only": bool(allow or ig_allow) and not tracked and not other and not ig_other,
     }
     if not gates["clean"]["ok"]:
         rec["reason"] = "dirty"
@@ -508,17 +562,22 @@ def reap_tree(primary, rec, cfg):
         rec["reason"] = "occupied-at-removal"
         return False
     try:
-        tracked, untracked = status_entries(tree)
+        tracked, untracked, ignored = status_entries(tree)
     except RuntimeError as exc:
         rec["action"] = "keep"
         rec["reason"] = f"status-error-at-removal: {exc}"
         return False
     allow, other = dirt_allowlisted(untracked, cfg)
-    if tracked or other:
+    ig_allow, ig_other = ignored_allowlisted(ignored, cfg)
+    if tracked or other or ig_other:
         rec["action"] = "keep"
         rec["reason"] = "dirty-at-removal"
         return False
-    force = bool(allow)
+    # Record every ignored path this removal is about to delete, by
+    # path, BEFORE the removal runs (#6734): a reap must never
+    # silently delete content the record does not name.
+    rec["ignored_removed"] = ig_allow
+    force = bool(allow or ig_allow)
     args = ["worktree", "remove"] + (["--force"] if force else []) + [tree]
     rc, _, err = run_git(primary, *args)
     if rc != 0:

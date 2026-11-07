@@ -25,7 +25,7 @@ A tree is reaped only when **all** gates hold at decision time:
 | Gate | Proof |
 |---|---|
 | PUSHED | Branch tip is on origin: equal to `origin/<branch>`, an ancestor of it, contained in origin's default branch, or patch-equivalent to either (`git cherry`). Origin refs are refreshed first with a full-refspec fetch (`+refs/heads/*:refs/remotes/origin/* --prune`); if the fetch fails, that primary is skipped entirely (fail closed). Detached HEADs are **never** reaped in v1. |
-| CLEAN | `git status` shows no tracked changes and no untracked files beyond the generated-dirt allowlist (below). |
+| CLEAN | `git status` shows no tracked changes and no untracked files beyond the generated-dirt allowlist (below). Ignored files are enumerated too (`--ignored=matching`): any ignored path beyond the ignored-dirt allowlist (below) blocks the reap — ignored content is by definition not proven on origin — and allowlisted ignored paths in a reaped tree are recorded by path in the run record before removal. |
 | QUIET | Last activity ≥ `quiet_hours` (default 6) ago, absolute epoch. Activity = newest working-tree file mtime (the tree's root `.git` entry excluded) max()ed with the HEAD reflog timestamp. |
 | UNOCCUPIED | A fresh `/proc` cwd scan shows no process inside the tree; re-scanned immediately before each removal. |
 | NOT DENIED | Not on the config denylist, not locked, and not the tree the running script lives in (install-tree self-protection). |
@@ -56,6 +56,27 @@ Untracked files that do not block reaping (config keys
 Allowlisting applies to **untracked** entries only: a *modified tracked*
 `fleet-feed.json` is real dirt and keeps the tree. Everything else
 untracked — probe WIP, `.cloudflare/`, notes — keeps the tree.
+
+### Ignored-dirt allowlist (#6734)
+
+Ignored files are the blind spot the PUSHED gate cannot cover: they
+are never pushed, so a tree whose only extra content is ignored
+(local state, ignored databases, scratch) would otherwise reap as
+"clean" and the content would be deleted unrecorded. The CLEAN gate
+therefore enumerates ignored paths (`git status --ignored=matching`;
+ignored directories collapse to one `target/`-style entry) and fails
+closed on any of them beyond the ignored-dirt allowlist (config keys
+`ignored_dirt_names` — matched on any path component, so build output
+is covered at any depth — plus `ignored_dirt_prefixes` /
+`ignored_dirt_files`, mirroring the generated-dirt keys):
+
+- `target`, `node_modules`, `__pycache__`, `.direnv` — regenerable
+  build/tool output, ignored by design in fleet worktrees.
+
+An unlisted ignored path — an ignored database, a local-state file —
+always keeps the tree. When a tree *is* reaped, every allowlisted
+ignored path it contained is recorded by path in the run record
+(`ignored_removed`) before the removal runs.
 
 ## Logs and state
 
