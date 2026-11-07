@@ -70,6 +70,8 @@ pub enum Error {
     TooLong { tokens: usize },
     #[error("cannot embed an empty batch")]
     EmptyBatch,
+    #[error("token list at batch index {index} is empty")]
+    EmptyEntry { index: usize },
     #[error("unexpected model output shape: {0:?}")]
     BadShape(Vec<i64>),
 }
@@ -92,6 +94,29 @@ pub struct Embedder {
 /// Stringify any ort error into this crate's error type.
 fn ort<E: std::fmt::Display>(e: E) -> Error {
     Error::Ort(e.to_string())
+}
+
+/// Validate a batch of pre-tokenized inputs BEFORE any tensor is
+/// built or the session runs (#5373). The batch as a whole must be
+/// non-empty, and every entry must be non-empty and within the model
+/// context. An empty entry used to be padded to the batch maxlen and
+/// returned as a plausible unit-norm embedding of nothing (a lone
+/// empty entry failed only by accident, as a raw ONNX error from a
+/// zero-length tensor) — in a crate whose contract is loud errors,
+/// that silent fabrication is refused here, at the boundary.
+fn validate_id_lists(id_lists: &[Vec<u32>]) -> Result<()> {
+    if id_lists.is_empty() {
+        return Err(Error::EmptyBatch);
+    }
+    for (index, ids) in id_lists.iter().enumerate() {
+        if ids.is_empty() {
+            return Err(Error::EmptyEntry { index });
+        }
+        if ids.len() > MODEL_CONTEXT {
+            return Err(Error::TooLong { tokens: ids.len() });
+        }
+    }
+    Ok(())
 }
 
 impl Embedder {
@@ -169,14 +194,7 @@ impl Embedder {
     /// its tokenizing front door. Batch composition never changes a
     /// vector (masked right-padding; Gate A asserts it).
     pub fn embed_ids(&mut self, id_lists: &[Vec<u32>]) -> Result<Vec<[f32; EMBED_DIM]>> {
-        if id_lists.is_empty() {
-            return Err(Error::EmptyBatch);
-        }
-        for ids in id_lists {
-            if ids.len() > MODEL_CONTEXT {
-                return Err(Error::TooLong { tokens: ids.len() });
-            }
-        }
+        validate_id_lists(id_lists)?;
         let batch = id_lists.len();
         let maxlen = id_lists.iter().map(|v| v.len()).max().unwrap_or(0);
 
@@ -265,6 +283,37 @@ pub fn pairwise_sum_f32(a: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_refuses_lone_empty_entry() {
+        // #5373: previously a raw ONNX Gather error from a [1, 0] tensor.
+        let err = validate_id_lists(&[vec![]]).unwrap_err();
+        assert!(matches!(err, Error::EmptyEntry { index: 0 }), "{err}");
+    }
+
+    #[test]
+    fn validate_refuses_empty_entry_in_mixed_batch() {
+        // #5373: previously Ok — the empty entry came back as a
+        // unit-norm embedding fabricated entirely from padding.
+        let valid = vec![0u32, 42, 2];
+        let err = validate_id_lists(&[valid.clone(), vec![], valid]).unwrap_err();
+        assert!(matches!(err, Error::EmptyEntry { index: 1 }), "{err}");
+    }
+
+    #[test]
+    fn validate_keeps_existing_controls() {
+        assert!(matches!(
+            validate_id_lists(&[]).unwrap_err(),
+            Error::EmptyBatch
+        ));
+        let too_long = vec![0u32; MODEL_CONTEXT + 1];
+        assert!(matches!(
+            validate_id_lists(&[too_long]).unwrap_err(),
+            Error::TooLong { tokens } if tokens == MODEL_CONTEXT + 1
+        ));
+        // A normal batch (including a max-context entry) validates.
+        assert!(validate_id_lists(&[vec![0u32, 2], vec![7u32; MODEL_CONTEXT]]).is_ok());
+    }
 
     #[test]
     fn pairwise_sum_matches_naive_for_short_inputs() {
