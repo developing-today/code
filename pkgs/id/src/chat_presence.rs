@@ -865,3 +865,22 @@ mod tests {
     }
 
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod probe_lane_b3_tests {
+    use super::*;
+    use crate::test_forgeries::{IDENTITY_KEY, identity_forgery};
+
+    #[test]
+    fn probe_identity_forgery_against_presence_verify() {
+        // A heartbeat nobody signed: node = identity point (small order),
+        // signature = shared identity forgery (R = identity, S = 0).
+        let chan = Hash::digest(b"general");
+        let mut hb = PresenceHeartbeat::new(IDENTITY_KEY, vec![chan], Vec::new(), 9_500);
+        hb.signature = identity_forgery().to_vec();
+        println!("PROBE presence verify() on identity forgery = {}", hb.verify());
+        // Bug assertion for the probe: plain verify accepts it today.
+        assert!(hb.verify(), "probe expects the forgery to be ACCEPTED on unpatched main");
+    }
+}
