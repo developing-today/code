@@ -1472,6 +1472,17 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_module_info_reply(&reply)
+    }
+
+    /// Parse a `module_info` reply frame into [`WorldModuleInfo`].
+    ///
+    /// Factored out of [`WorldClient::info_details`] so the reply validation
+    /// can be unit-tested without a live host: the malformed-reply cases of
+    /// issue #6633 need frames no real host will send. Validation is strict
+    /// in the same way for every field — a present field with the wrong
+    /// shape is corruption or version skew and errors, never a default.
+    fn parse_module_info_reply(reply: &serde_json::Value) -> Result<WorldModuleInfo> {
         match reply["type"].as_str() {
             Some("module_info") => {
                 let world_id = reply["world_id"]
@@ -3422,101 +3433,60 @@ mod tests {
         host.router.shutdown().await.unwrap();
     }
 
-    #[tokio::test]
-    async fn info_details_rejects_malformed_active_module_hash() {
-        let host = host(Some("admin")).await;
-        let client_ep = endpoint().await;
-        let cap = invite_for(&client_ep, &host.addr, None, "ann").await;
+    #[test]
+    fn info_details_rejects_malformed_active_module_hash() {
+        // Issue #6633: a present-but-mistyped `active_module_hash` is
+        // corruption or version skew, never "this world has no module".
+        // Driven through the factored reply parser — the previous version
+        // of this test called a nonexistent `inject_json` helper on the
+        // client and broke the whole lib-test build (issues #6640, #6643).
+        // Oracle: the parser's strictness for the sibling fields of the
+        // same reply (`world_id`, `current_sequence`, provenance).
+        let parse = |reply: serde_json::Value| WorldClient::parse_module_info_reply(&reply);
+        let reply_with = |hash: serde_json::Value| {
+            serde_json::json!({
+                "type": "module_info",
+                "world_id": "test:world",
+                "active_module_hash": hash,
+                "current_sequence": 42,
+                "active_module_provenance": null,
+            })
+        };
 
-        let mut client = WorldClient::connect(&client_ep, host.addr.clone())
-            .await
-            .unwrap();
-
-        // Test with a valid string hash
-        let valid_reply = json!({
-            "type": "module_info",
-            "world_id": "test:world",
-            "active_module_hash": "abc123",
-            "current_sequence": 42,
-            "active_module_provenance": null,
-        });
-        client.inject_json(valid_reply).await;
-        let info = client.info_details(&cap).await.unwrap();
+        // Valid string hash -> Some(hash).
+        let info = parse(reply_with(serde_json::json!("abc123"))).unwrap();
         assert_eq!(info.active_module_hash, Some("abc123".to_string()));
+        assert_eq!(info.world_id, "test:world");
+        assert_eq!(info.current_sequence, 42);
 
-        // Test with null hash (legitimate no-module case)
-        let null_reply = json!({
-            "type": "module_info",
-            "world_id": "test:world",
-            "active_module_hash": null,
-            "current_sequence": 42,
-            "active_module_provenance": null,
-        });
-        client.inject_json(null_reply).await;
-        let info = client.info_details(&cap).await.unwrap();
+        // Null hash -> None (the legitimate no-module case).
+        let info = parse(reply_with(serde_json::Value::Null)).unwrap();
         assert_eq!(info.active_module_hash, None);
 
-        // Test with missing hash field (older hosts)
-        let missing_reply = json!({
+        // Missing hash field (older hosts) -> None.
+        let info = parse(serde_json::json!({
             "type": "module_info",
             "world_id": "test:world",
             "current_sequence": 42,
             "active_module_provenance": null,
-        });
-        client.inject_json(missing_reply).await;
-        let info = client.info_details(&cap).await.unwrap();
+        }))
+        .unwrap();
         assert_eq!(info.active_module_hash, None);
 
-        // Test with malformed hash (number) - should error
-        let number_reply = json!({
-            "type": "module_info",
-            "world_id": "test:world",
-            "active_module_hash": 123,
-            "current_sequence": 42,
-            "active_module_provenance": null,
-        });
-        client.inject_json(number_reply).await;
-        let err = client.info_details(&cap).await.unwrap_err();
-        assert!(err.to_string().contains("malformed active_module_hash"));
-
-        // Test with malformed hash (boolean) - should error
-        let bool_reply = json!({
-            "type": "module_info",
-            "world_id": "test:world",
-            "active_module_hash": true,
-            "current_sequence": 42,
-            "active_module_provenance": null,
-        });
-        client.inject_json(bool_reply).await;
-        let err = client.info_details(&cap).await.unwrap_err();
-        assert!(err.to_string().contains("malformed active_module_hash"));
-
-        // Test with malformed hash (array) - should error
-        let array_reply = json!({
-            "type": "module_info",
-            "world_id": "test:world",
-            "active_module_hash": ["abc"],
-            "current_sequence": 42,
-            "active_module_provenance": null,
-        });
-        client.inject_json(array_reply).await;
-        let err = client.info_details(&cap).await.unwrap_err();
-        assert!(err.to_string().contains("malformed active_module_hash"));
-
-        // Test with malformed hash (object) - should error
-        let object_reply = json!({
-            "type": "module_info",
-            "world_id": "test:world",
-            "active_module_hash": {"hash": "abc"},
-            "current_sequence": 42,
-            "active_module_provenance": null,
-        });
-        client.inject_json(object_reply).await;
-        let err = client.info_details(&cap).await.unwrap_err();
-        assert!(err.to_string().contains("malformed active_module_hash"));
-
-        client.close();
-        client_ep.close().await;
-        host.router.shutdown().await.unwrap();
+        // Mistyped hash shapes -> an error naming the malformed field.
+        for bad in [
+            serde_json::json!(123),
+            serde_json::json!(true),
+            serde_json::json!(["abc"]),
+            serde_json::json!({"hash": "abc"}),
+        ] {
+            let result = parse(reply_with(bad));
+            assert!(result.is_err(), "mistyped hash must error, got {result:?}");
+            let err = result.err().unwrap();
+            assert!(
+                err.to_string().contains("malformed active_module_hash"),
+                "unexpected error: {err}"
+            );
+        }
     }
 }
