@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   attentionSorted,
   buildAttention,
@@ -91,8 +93,8 @@ describe("execution strip", () => {
     expect(strip.merged.map((i) => i.ref)).toContain("developing-today/code#752");
     expect(strip.review.map((i) => i.ref)).toContain("developing-today/code#763");
     expect(strip.implementing.map((i) => i.ref)).toContain("developing-today/code#900");
-    // #762 is labelled ready-for-agent, so it counts as implementing.
-    expect(strip.implementing.map((i) => i.ref)).toContain("developing-today/code#762");
+    // The label alone is not evidence that the harness picked the issue up.
+    expect(strip.queued.map((i) => i.ref)).toContain("developing-today/code#762");
   });
   test("records unresolved refs", () => {
     const strip = executionStrip([{ ref: "nowhere/repo#9999", relation: "tracks" }], items);
@@ -302,6 +304,25 @@ describe("render smoke (fixtures)", () => {
     expect(html).not.toContain("Planning notes");
     expect(html).not.toContain("PM-stack design & phase plan");
   });
+  test("item page shows explicit harness dispatch state with provenance", () => {
+    const item = FIXTURE_BOARD[0];
+    const html = renderItem(item.title, item.id, item.links, items, [], fixtureSource().provenance(), {
+      dashComments: [],
+      formRef: item.id,
+      formOpts: { identities: [] },
+      sessions: [],
+      dispatchStates: [
+        {
+          ref: "developing-today/code#762",
+          state: "not picked up",
+          provenance: { source: "ready-for-agent fixture state", observedAt: "2026-11-04T00:00:00Z" },
+        },
+      ],
+    });
+    expect(html).toContain("ready-for-agent dispatch");
+    expect(html).toContain("not picked up");
+    expect(html).toContain("ready-for-agent fixture state checked 2026-11-04T00:00:00Z");
+  });
   test("item activity reuses shared events and discloses unknown freshness and partial coverage", async () => {
     const src = fixtureSource();
     const item = FIXTURE_BOARD.find((b) => b.id.includes("aggregator")) as BoardItem;
@@ -506,7 +527,10 @@ describe("freshness chips (#1138)", () => {
     expect(html).toContain("quota reads OK");
     expect(html).toContain('href="/health"');
     expect(html).toContain('href="/quota"');
-    expect(html).toContain("@media (max-width: 480px)");
+    // Phase C: page CSS is the external /assets/app.css build now; the
+    // 480px today-strip rule lives in its source (src/ui.css).
+    expect(html).toContain('href="/assets/app.css"');
+    expect(readFileSync(join(import.meta.dir, "..", "src", "ui.css"), "utf8")).toContain("@media (max-width: 480px)");
     const fragmentBody = renderTodayBody(today, attention, quota, await src.coverage(), healthy);
     expect(fragmentBody).toContain("stack 2/2 up");
 

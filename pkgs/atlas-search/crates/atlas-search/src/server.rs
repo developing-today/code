@@ -1,4 +1,8 @@
 //! Serve mode (design sections 2-3; developing-today/code#5354).
+//! Source of the verbatim copy in pkgs/fleet's fleet-search crate,
+//! rehomed in #5604 (`fleet serve search`): the Atlas service must
+//! behave identically under either name, so mirror every change
+//! there. Drift guard: .github/scripts/check-fleet-search-parity.sh.
 //!
 //! One process holds the shared query embedder, a Turso backend
 //! carrying a read-only token, a bounded job scheduler, and an
@@ -519,6 +523,15 @@ fn validate_request(req: &SearchRequest) -> Result<(), ServerError> {
             "pool must be between 1 and 400 (design section 2)",
         ));
     }
+    if req.expand > atlas_core::MAX_EXPAND_NEIGHBORS {
+        return Err(ServerError::bad_request(format!(
+            "expand must be at most {}",
+            atlas_core::MAX_EXPAND_NEIGHBORS
+        )));
+    }
+    // Deliberately leave k unbounded: it truncates the candidates produced by
+    // the bounded pool, and grouped search caps its consideration window to
+    // the available candidates in atlas-core.
     if req.k == 0 {
         return Err(ServerError::bad_request("k must be at least 1"));
     }
@@ -2473,6 +2486,24 @@ mod tests {
     }
 
     // ----- tests --------------------------------------------------------
+
+    #[test]
+    fn expand_validation_matches_the_core_neighbor_limit() {
+        let mut req = SearchRequest {
+            expand: atlas_core::MAX_EXPAND_NEIGHBORS,
+            ..SearchRequest::default()
+        };
+        assert!(validate_request(&req).is_ok());
+
+        req.expand = atlas_core::MAX_EXPAND_NEIGHBORS + 1;
+        let err = validate_request(&req).unwrap_err();
+        assert_eq!(err.status, 400);
+        assert!(
+            err.body.error.message.contains("100"),
+            "got: {:?}",
+            err.body
+        );
+    }
 
     #[test]
     fn paging_reuses_stored_ranking_and_matches_one_shot() {

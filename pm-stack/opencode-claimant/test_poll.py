@@ -293,5 +293,60 @@ class TestIsStuckBound(unittest.TestCase):
         )
 
 
+class TestFetchSessions(unittest.TestCase):
+    """Fetch-layer completeness (#4757): /api/session truncates at 50
+    by default and honours limit but not offset, so fetch_sessions
+    escalates the limit until a read comes back below it — and fails
+    closed (None) whenever completeness cannot be proven.
+    _server_get is stubbed; no server is touched."""
+
+    def stub_server(self, total, fail_on_call=None):
+        calls = []
+
+        def fake_get(path):
+            calls.append(path)
+            if fail_on_call is not None and len(calls) == fail_on_call:
+                return None
+            limit = int(path.rsplit("limit=", 1)[1])
+            return [{"id": f"ses_{i}"} for i in range(min(limit, total))]
+
+        return fake_get, calls
+
+    def run_fetch(self, total, **kw):
+        fake_get, calls = self.stub_server(total, **kw)
+        original = poll._server_get
+        poll._server_get = fake_get
+        try:
+            return poll.fetch_sessions(), calls
+        finally:
+            poll._server_get = original
+
+    def test_short_single_read_is_complete(self):
+        sessions, calls = self.run_fetch(3)
+        self.assertEqual(len(sessions), 3)
+        self.assertEqual(len(calls), 1)
+
+    def test_escalating_limit_finds_the_whole_list(self):
+        sessions, calls = self.run_fetch(2500)
+        self.assertEqual(len(sessions), 2500)
+        self.assertEqual(len(calls), 2)
+
+    def test_count_exactly_at_a_limit_escalates(self):
+        sessions, calls = self.run_fetch(1000)
+        self.assertEqual(len(sessions), 1000)
+        self.assertEqual(len(calls), 2)
+
+    def test_failed_read_fails_closed(self):
+        sessions, _ = self.run_fetch(2500, fail_on_call=1)
+        self.assertIsNone(sessions)
+        sessions, _ = self.run_fetch(2500, fail_on_call=2)
+        self.assertIsNone(sessions)
+
+    def test_count_at_every_limit_fails_closed(self):
+        sessions, calls = self.run_fetch(10**9)
+        self.assertIsNone(sessions)
+        self.assertEqual(len(calls), len(poll.SESSION_FETCH_LIMITS))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -23,6 +23,12 @@ use serde::Deserialize;
 
 /// The session broker's socket, as the Python broker runs it today.
 pub const DEFAULT_BROKER_SOCKET: &str = ".cache/laptop-agent/broker.sock";
+/// The queue broker's Unix socket (#6216): dual-bound alongside its
+/// TCP listener, in the broker's own config dir (token file sibling).
+pub const DEFAULT_QUEUE_BROKER_SOCKET: &str = ".config/queue-broker/broker.sock";
+/// The secrets broker's Unix socket (#6216): dual-bound alongside its
+/// TCP listener, in the broker's own config dir (token file sibling).
+pub const DEFAULT_SECRETS_BROKER_SOCKET: &str = ".config/secrets-broker/broker.sock";
 /// The proxy's per-port routing table (§4): port → service name.
 pub const PORT_LAPTOP_AGENT: u16 = 4799;
 pub const PORT_SECRETS_BROKER: u16 = 4800;
@@ -38,6 +44,24 @@ pub const DEFAULT_TARGET_HOST: &str = "100.99.113.103";
 /// `HTTPS_PROXY` — fixed by the tunnel setup, as in
 /// laptop-proxy-connect.py (the URL's own port is not used).
 pub const DEFAULT_EGRESS_PROXY_PORT: u16 = 3130;
+
+/// Default listen address for the CONNECT-UDP endpoint
+/// (RFC 9298 spike, #6109) when `[proxy] connect_udp` enables
+/// it: loopback only. The endpoint is a local capability,
+/// never a LAN surface, until a future cutover decides
+/// otherwise.
+///
+/// Port history (pm-stack/PORTS.md is the authoritative
+/// registry): the original default was 3131, one above the
+/// runtime egress proxy's 3130. The dark unit deployed on
+/// amd on 2026-11-05 binds 3132 from its own config
+/// (`~/.config/fleet/connect-udp.toml`) because 3131 was
+/// believed — wrongly — to be the pm Pad service's port
+/// (Pad is on 7777; the 3131 story was stale). The default
+/// moved to 3132 to match the deployed unit, so code truth
+/// and the one live deployment agree; 3131 is retired and
+/// must not be re-claimed without updating the registry.
+pub const DEFAULT_CONNECT_UDP_LISTEN: &str = "127.0.0.1:3132";
 /// `[search]` — the search domain's routing view (step 5, #5433).
 /// All optional: the Q3 host default needs no config at all (the
 /// serving host's `service.json` marks the laptop seat). `via` is
@@ -78,6 +102,29 @@ pub const PORT_DISPATCH: u16 = 4879;
 /// only.
 pub const DEFAULT_DISPATCH_TOKEN_NAME: &str = "pm-dispatch.api-token";
 
+/// The fleet-secrets name the dispatch-test domain resolves its
+/// GitHub token by (design developing-today/code#6580).
+pub const DEFAULT_DISPATCH_TEST_TOKEN_NAME: &str = "github.ghcr-classic-pat";
+
+/// The fleet-secrets name the dispatch-test domain resolves its
+/// Turso jobs-store token by.
+pub const DEFAULT_DISPATCH_TEST_TURSO_TOKEN_NAME: &str = "turso.fleet-dispatch-jobs-token";
+
+/// The Turso jobs store the dispatch-test domain records jobs in.
+pub const DEFAULT_DISPATCH_TEST_TURSO_URL: &str =
+    "https://fleet-dispatch-jobs-dezren39.aws-us-east-1.turso.io";
+
+/// The default Actions-capacity threshold for dispatch-test scope
+/// selection: a scope is eligible below this many active jobs.
+pub const DEFAULT_DISPATCH_TEST_THRESHOLD: u64 = 40;
+
+/// The fleet repo: the dezren39 repo that holds the other fleet
+/// repos as git submodules (developing-today/code#6580 phase 2).
+/// Its copies — the source plus its fork network — are the
+/// dispatch-test execution homes, discovered dynamically unless
+/// `[dispatch-test] scopes` pins an explicit list.
+pub const DEFAULT_DISPATCH_TEST_FLEET_REPO: &str = "dezren39/fleet";
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -86,6 +133,8 @@ pub struct Config {
     pub proxy: ProxyConfig,
     pub secrets: SecretsConfig,
     pub dispatch: DispatchConfig,
+    #[serde(rename = "dispatch-test")]
+    pub dispatch_test: DispatchTestConfig,
     pub search: SearchConfig,
 }
 
@@ -94,17 +143,31 @@ pub struct Config {
 pub struct ProxyConfig {
     /// Session broker socket path (relative paths resolve under $HOME).
     pub broker_socket: Option<String>,
+    /// Broker idle-exit timeout in seconds (default
+    /// [`DEFAULT_IDLE_EXIT_SECS`]). `0` is rejected at load (#6412):
+    /// it would exit the broker at its first idle tick, and there is
+    /// no "never idle-exit" spelling.
     pub idle_exit_secs: Option<u64>,
     /// The reach target for CONNECT tunnels (default
     /// [`DEFAULT_TARGET_HOST`]).
     pub target_host: Option<String>,
     /// Port of the egress proxy on the `HTTPS_PROXY` host (default
-    /// [`DEFAULT_EGRESS_PROXY_PORT`]).
+    /// [`DEFAULT_EGRESS_PROXY_PORT`]). `0` is rejected at load
+    /// (#6412): port 0 cannot be dialled.
     pub egress_proxy_port: Option<u16>,
     /// Dial the target directly instead of through a CONNECT tunnel
     /// (a broker running on the target host itself; also the
     /// hermetic-test mode). Default false — today's topology.
     pub direct: Option<bool>,
+    /// Whether the broker also serves CONNECT-UDP (RFC 9298,
+    /// #6109) on [`Config::connect_udp_listen`]. Default false:
+    /// a spike capability that merges dark — nothing listens
+    /// anywhere unless a host's config deliberately opts in,
+    /// and opting in is a separate act from landing the code.
+    pub connect_udp: Option<bool>,
+    /// Listen address for the CONNECT-UDP endpoint when
+    /// enabled (default [`DEFAULT_CONNECT_UDP_LISTEN`]).
+    pub connect_udp_listen: Option<String>,
     /// The routing table the broker advertises in its hello
     /// (§4: the services map IS the routing table). Empty means the
     /// built-in table ([`Config::services`]).
@@ -148,8 +211,39 @@ pub struct DispatchConfig {
     /// (default [`DEFAULT_DISPATCH_TOKEN_NAME`]).
     pub token_name: Option<String>,
     /// pm-dispatch's port on the target host (default
-    /// [`PORT_DISPATCH`]).
+    /// [`PORT_DISPATCH`]). `0` is rejected at load (#6412): port 0
+    /// cannot be dialled.
     pub port: Option<u16>,
+}
+
+/// `[dispatch-test]` — the dispatch-test domain's view
+/// (developing-today/code#6580). All optional: the defaults name
+/// the live GitHub token, the Turso jobs store, and the scope
+/// repos used for capacity-based selection.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DispatchTestConfig {
+    /// The fleet-secrets name the GitHub token resolves by
+    /// (default [`DEFAULT_DISPATCH_TEST_TOKEN_NAME`]).
+    pub token_name: Option<String>,
+    /// The fleet-secrets name the Turso token resolves by
+    /// (default [`DEFAULT_DISPATCH_TEST_TURSO_TOKEN_NAME`]).
+    pub turso_token_name: Option<String>,
+    /// The Turso database URL (default
+    /// [`DEFAULT_DISPATCH_TEST_TURSO_URL`]).
+    pub turso_url: Option<String>,
+    /// Actions-capacity threshold (default
+    /// [`DEFAULT_DISPATCH_TEST_THRESHOLD`]).
+    pub threshold: Option<u64>,
+    /// The fleet repo whose copies are the execution homes
+    /// (default [`DEFAULT_DISPATCH_TEST_FLEET_REPO`]).
+    pub fleet_repo: Option<String>,
+    /// Scope repos, in selection order — a PIN/OVERRIDE: when
+    /// non-empty, exactly these execution-home copies are scanned.
+    /// Empty (the default) means DISCOVER: the fleet repo plus its
+    /// fork network.
+    #[serde(default)]
+    pub scopes: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -195,8 +289,46 @@ fn env_path(var: &str) -> Option<PathBuf> {
     non_empty_path(std::env::var_os(var).map(PathBuf::from))
 }
 
+/// An XDG base directory: only an absolute, non-empty value counts.
+/// The XDG base-directory spec says a relative value in these
+/// variables should be considered invalid and ignored; taking one
+/// literally would resolve the config file and the state dir from
+/// the process's working directory, so a `fleet.toml` planted at
+/// `./<relative-base>/fleet/fleet.toml` would load despite an
+/// absolute `HOME` (issue #6396 — the relative spelling of the
+/// #5473 planted-config hazard, and the XDG sibling of the
+/// relative-HOME rule in `home_anchor`). Scoped to the XDG bases
+/// only: explicit overrides (`FLEET_CONFIG`, the broker socket
+/// paths) keep their documented relative meanings.
+fn absolute_path(value: Option<PathBuf>) -> Option<PathBuf> {
+    non_empty_path(value).filter(|p| p.is_absolute())
+}
+
+fn env_xdg_base(var: &str) -> Option<PathBuf> {
+    absolute_path(std::env::var_os(var).map(PathBuf::from))
+}
+
+/// The home anchor: only an absolute, non-empty `HOME` may anchor
+/// home-relative resolution. A relative `HOME` is treated as unset
+/// for anchoring (issue #6404): used verbatim it would resolve the
+/// config file, the state dir, and the broker socket CWD-relative,
+/// so a `fleet.toml` planted under the working directory at
+/// `./<relative-home>/.config/fleet/fleet.toml` would load — the
+/// planted-config hazard of issue #5473 in its relative-HOME
+/// spelling. Falling back to "." here means the unset/empty case
+/// and the relative case share one behaviour, governed by the
+/// fallback decision tracked in issue #5737. Scoped to the HOME
+/// anchor only: relative XDG bases are issue #6396, and relative
+/// values from explicit overrides (FLEET_CONFIG, socket paths) keep
+/// their documented resolve-under-home meaning.
+fn home_anchor(value: Option<PathBuf>) -> PathBuf {
+    non_empty_path(value)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 fn home_dir() -> PathBuf {
-    env_path("HOME").unwrap_or_else(|| PathBuf::from("."))
+    home_anchor(std::env::var_os("HOME").map(PathBuf::from))
 }
 
 fn resolve_under(home: &std::path::Path, path: &std::path::Path) -> PathBuf {
@@ -217,7 +349,7 @@ impl Config {
     pub fn file_path() -> PathBuf {
         Self::file_path_from(
             env_path("FLEET_CONFIG"),
-            env_path("XDG_CONFIG_HOME"),
+            env_xdg_base("XDG_CONFIG_HOME"),
             &home_dir(),
         )
     }
@@ -242,17 +374,62 @@ impl Config {
     }
 
     pub fn load_from(path: &std::path::Path) -> Result<Config, ConfigError> {
-        match std::fs::read_to_string(path) {
+        let cfg: Config = match std::fs::read_to_string(path) {
             Ok(text) => toml::from_str(&text).map_err(|e| ConfigError::Parse {
                 path: path.to_path_buf(),
                 message: e.to_string(),
-            }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
-            Err(e) => Err(ConfigError::Read {
-                path: path.to_path_buf(),
-                message: e.to_string(),
-            }),
+            })?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
+            Err(e) => {
+                return Err(ConfigError::Read {
+                    path: path.to_path_buf(),
+                    message: e.to_string(),
+                });
+            }
+        };
+        cfg.validate(path)?;
+        Ok(cfg)
+    }
+
+    /// The crate's single zero rule (#6412, matching the direction of
+    /// #6397 for the `[[proxy.services]]` rows): a configured `0` for a
+    /// scalar numeric setting is a misspelling-class error, never a
+    /// value. Port 0 cannot be dialled, and `idle_exit_secs = 0` would
+    /// make the broker exit at its first idle tick — the opposite of
+    /// the "never idle-exit" an operator would mean by it. Reject all
+    /// these at load, naming the field; omitting the field keeps the
+    /// documented default. There is no zero spelling for "disabled".
+    /// The `[dispatch-test] threshold` (#6603) joined the rule when it
+    /// landed: `active < 0` can never hold, so 0 is never a capacity
+    /// bound either.
+    fn validate(&self, path: &std::path::Path) -> Result<(), ConfigError> {
+        let reject = |field: &str, default: u64| ConfigError::Parse {
+            path: path.to_path_buf(),
+            message: format!("{field} must not be 0; omit the field for the default ({default})"),
+        };
+        if self.proxy.egress_proxy_port == Some(0) {
+            return Err(reject(
+                "[proxy] egress_proxy_port",
+                u64::from(DEFAULT_EGRESS_PROXY_PORT),
+            ));
         }
+        if self.dispatch.port == Some(0) {
+            return Err(reject("[dispatch] port", u64::from(PORT_DISPATCH)));
+        }
+        if self.proxy.idle_exit_secs == Some(0) {
+            return Err(reject("[proxy] idle_exit_secs", DEFAULT_IDLE_EXIT_SECS));
+        }
+        // #6603: the [dispatch-test] threshold landed later (#6580)
+        // and is the same misspelling class — `active < 0` is false
+        // for every count, so 0 makes every execution home
+        // permanently ineligible instead of meaning "no limit".
+        if self.dispatch_test.threshold == Some(0) {
+            return Err(reject(
+                "[dispatch-test] threshold",
+                DEFAULT_DISPATCH_TEST_THRESHOLD,
+            ));
+        }
+        Ok(())
     }
 
     /// Is a domain enabled on this host? Default yes; `[domains]`
@@ -289,6 +466,28 @@ impl Config {
         }
     }
 
+    /// The queue broker's Unix socket path (#6216). `QUEUE_BROKER_SOCKET`
+    /// beats the default; no config-file field exists for it, so the
+    /// resolution is env -> default under $HOME, like the session
+    /// broker's socket with the config source absent.
+    pub fn queue_broker_socket(&self) -> PathBuf {
+        Self::broker_socket_from(
+            env_path("QUEUE_BROKER_SOCKET"),
+            Some(DEFAULT_QUEUE_BROKER_SOCKET),
+            &home_dir(),
+        )
+    }
+
+    /// The secrets broker's Unix socket path (#6216).
+    /// `SECRETS_BROKER_SOCKET` beats the default.
+    pub fn secrets_broker_socket(&self) -> PathBuf {
+        Self::broker_socket_from(
+            env_path("SECRETS_BROKER_SOCKET"),
+            Some(DEFAULT_SECRETS_BROKER_SOCKET),
+            &home_dir(),
+        )
+    }
+
     pub fn idle_exit_secs(&self) -> u64 {
         self.proxy.idle_exit_secs.unwrap_or(DEFAULT_IDLE_EXIT_SECS)
     }
@@ -311,6 +510,20 @@ impl Config {
     /// Whether the broker dials the target directly (no CONNECT).
     pub fn proxy_direct(&self) -> bool {
         self.proxy.direct.unwrap_or(false)
+    }
+
+    /// Whether the CONNECT-UDP endpoint is enabled (#6109).
+    /// Absent means disabled: the capability merges dark.
+    pub fn connect_udp_enabled(&self) -> bool {
+        self.proxy.connect_udp.unwrap_or(false)
+    }
+
+    /// The CONNECT-UDP endpoint's listen address.
+    pub fn connect_udp_listen(&self) -> &str {
+        self.proxy
+            .connect_udp_listen
+            .as_deref()
+            .unwrap_or(DEFAULT_CONNECT_UDP_LISTEN)
     }
 
     /// The routing table: config's `[proxy] services`, or the
@@ -366,6 +579,54 @@ impl Config {
         self.dispatch.port.unwrap_or(PORT_DISPATCH)
     }
 
+    /// The fleet-secrets name the dispatch-test GitHub token
+    /// resolves by.
+    pub fn dispatch_test_token_name(&self) -> &str {
+        self.dispatch_test
+            .token_name
+            .as_deref()
+            .unwrap_or(DEFAULT_DISPATCH_TEST_TOKEN_NAME)
+    }
+
+    /// The fleet-secrets name the dispatch-test Turso token
+    /// resolves by.
+    pub fn dispatch_test_turso_token_name(&self) -> &str {
+        self.dispatch_test
+            .turso_token_name
+            .as_deref()
+            .unwrap_or(DEFAULT_DISPATCH_TEST_TURSO_TOKEN_NAME)
+    }
+
+    /// The dispatch-test Turso jobs-store URL.
+    pub fn dispatch_test_turso_url(&self) -> &str {
+        self.dispatch_test
+            .turso_url
+            .as_deref()
+            .unwrap_or(DEFAULT_DISPATCH_TEST_TURSO_URL)
+    }
+
+    /// The dispatch-test Actions-capacity threshold.
+    pub fn dispatch_test_threshold(&self) -> u64 {
+        self.dispatch_test
+            .threshold
+            .unwrap_or(DEFAULT_DISPATCH_TEST_THRESHOLD)
+    }
+
+    /// The dispatch-test fleet repo (execution-home source).
+    pub fn dispatch_test_fleet_repo(&self) -> &str {
+        self.dispatch_test
+            .fleet_repo
+            .as_deref()
+            .unwrap_or(DEFAULT_DISPATCH_TEST_FLEET_REPO)
+    }
+
+    /// The pinned dispatch-test scope repos, in selection order.
+    /// Empty means no pin: the caller discovers the fleet repo's
+    /// copies (source + fork network) instead.
+    pub fn dispatch_test_scopes(&self) -> Vec<String> {
+        self.dispatch_test.scopes.clone()
+    }
+
     /// The search domain's routing preference from `[search] via`
     /// ("service" | "standalone"), when configured.
     pub fn search_via(&self) -> Option<String> {
@@ -395,7 +656,7 @@ impl Config {
 
     /// `~/.local/state/fleet` (or `$XDG_STATE_HOME/fleet`).
     pub fn state_dir() -> PathBuf {
-        Self::state_dir_from(env_path("XDG_STATE_HOME"), &home_dir())
+        Self::state_dir_from(env_xdg_base("XDG_STATE_HOME"), &home_dir())
     }
 
     fn state_dir_from(xdg_state_home: Option<PathBuf>, home: &std::path::Path) -> PathBuf {
@@ -426,6 +687,27 @@ mod tests {
         let cfg = Config::load_from(PathBuf::from("/nonexistent/fleet.toml").as_path()).unwrap();
         assert!(cfg.domain_enabled("queue"));
         assert_eq!(cfg.idle_exit_secs(), DEFAULT_IDLE_EXIT_SECS);
+    }
+
+    #[test]
+    fn connect_udp_is_dark_by_default() {
+        // #6109: the spike capability must not listen anywhere
+        // a config has not deliberately enabled it.
+        let cfg = Config::load_from(PathBuf::from("/nonexistent/fleet.toml").as_path()).unwrap();
+        assert!(!cfg.connect_udp_enabled());
+        assert_eq!(cfg.connect_udp_listen(), DEFAULT_CONNECT_UDP_LISTEN);
+        let (_dir, path) = write_temp("[proxy]\nconnect_udp = false\n");
+        let cfg = Config::load_from(&path).unwrap();
+        assert!(!cfg.connect_udp_enabled());
+    }
+
+    #[test]
+    fn connect_udp_opt_in_parses() {
+        let (_dir, path) =
+            write_temp("[proxy]\nconnect_udp = true\nconnect_udp_listen = \"127.0.0.1:9999\"\n");
+        let cfg = Config::load_from(&path).unwrap();
+        assert!(cfg.connect_udp_enabled());
+        assert_eq!(cfg.connect_udp_listen(), "127.0.0.1:9999");
     }
 
     #[test]
@@ -556,6 +838,102 @@ mod tests {
             Config::broker_socket_from(None, Some("rel/c.sock"), &home),
             home.join("rel").join("c.sock")
         );
+        // #6216: the queue/secrets broker socket defaults resolve under
+        // $HOME in each broker's own config dir.
+        assert_eq!(
+            Config::broker_socket_from(None, Some(DEFAULT_QUEUE_BROKER_SOCKET), &home),
+            home.join(".config")
+                .join("queue-broker")
+                .join("broker.sock")
+        );
+        assert_eq!(
+            Config::broker_socket_from(None, Some(DEFAULT_SECRETS_BROKER_SOCKET), &home),
+            home.join(".config")
+                .join("secrets-broker")
+                .join("broker.sock")
+        );
+    }
+
+    #[test]
+    fn relative_xdg_bases_are_ignored() {
+        // #6396: a non-empty relative XDG base is invalid per the
+        // XDG spec and is treated as unset, exactly like an empty
+        // one (#5473) — resolution falls back to the HOME-anchored
+        // defaults, so a fleet.toml planted under the working
+        // directory at ./<relative-base>/fleet/fleet.toml is never
+        // loaded when HOME is set.
+        let home = PathBuf::from("/home/tester");
+        assert_eq!(absolute_path(Some(PathBuf::from("relcfg"))), None);
+        assert_eq!(absolute_path(Some(PathBuf::new())), None);
+        assert_eq!(absolute_path(None), None);
+        assert_eq!(
+            absolute_path(Some(PathBuf::from("/cfg"))),
+            Some(PathBuf::from("/cfg"))
+        );
+        assert_eq!(
+            Config::file_path_from(
+                None,
+                absolute_path(Some(PathBuf::from("relcfg"))),
+                &home
+            ),
+            home.join(".config").join("fleet").join("fleet.toml")
+        );
+        assert_eq!(
+            Config::file_path_from(
+                None,
+                absolute_path(Some(PathBuf::from("/cfg"))),
+                &home
+            ),
+            PathBuf::from("/cfg").join("fleet").join("fleet.toml")
+        );
+        assert_eq!(
+            Config::state_dir_from(absolute_path(Some(PathBuf::from("relstate"))), &home),
+            home.join(".local").join("state").join("fleet")
+        );
+        assert_eq!(
+            Config::state_dir_from(absolute_path(Some(PathBuf::from("/state"))), &home),
+            PathBuf::from("/state").join("fleet")
+        );
+        // The explicit per-file override is out of scope: a relative
+        // FLEET_CONFIG keeps its verbatim meaning.
+        assert_eq!(
+            Config::file_path_from(Some(PathBuf::from("rel.toml")), None, &home),
+            PathBuf::from("rel.toml")
+        );
+    }
+
+    #[test]
+    fn relative_home_is_not_an_anchor() {
+        // #6404: a relative HOME must never anchor resolution —
+        // file_path, state_dir, and broker_socket resolve exactly as
+        // they do for an unset/empty HOME, so a fleet.toml planted at
+        // ./<relative-home>/.config/fleet/fleet.toml is never loaded.
+        let anchor = home_anchor(Some(PathBuf::from("relhome")));
+        assert_eq!(anchor, PathBuf::from("."));
+        assert_eq!(home_anchor(None), PathBuf::from("."));
+        assert_eq!(home_anchor(Some(PathBuf::new())), PathBuf::from("."));
+        assert_eq!(
+            home_anchor(Some(PathBuf::from("/home/tester"))),
+            PathBuf::from("/home/tester")
+        );
+        assert_eq!(
+            Config::file_path_from(None, None, &anchor),
+            PathBuf::from(".")
+                .join(".config")
+                .join("fleet")
+                .join("fleet.toml")
+        );
+        assert_eq!(
+            Config::state_dir_from(None, &anchor),
+            PathBuf::from(".")
+                .join(".local")
+                .join("state")
+                .join("fleet")
+        );
+        assert_eq!(
+            Config::broker_socket_from(None, None, &anchor),
+            PathBuf::from(".").join(DEFAULT_BROKER_SOCKET)
+        );
     }
 
     #[test]
@@ -590,6 +968,51 @@ mod tests {
         let cfg = Config::load_from(&path).unwrap();
         assert_eq!(cfg.idle_exit_secs(), 60);
         assert_eq!(cfg.broker_socket(), PathBuf::from("/tmp/b.sock"));
+    }
+
+    #[test]
+    fn zero_scalar_numerics_are_a_loud_error() {
+        // #6412: a configured 0 is never a value — port 0 cannot be
+        // dialled and idle_exit_secs 0 exits the broker at its first
+        // tick. Each zero spelling fails at load naming its field;
+        // absent and valid values resolve exactly as before.
+        for (contents, field) in [
+            ("[proxy]\negress_proxy_port = 0\n", "egress_proxy_port"),
+            ("[dispatch]\nport = 0\n", "[dispatch] port"),
+            ("[proxy]\nidle_exit_secs = 0\n", "idle_exit_secs"),
+            (
+                "[dispatch-test]\nthreshold = 0\n",
+                "[dispatch-test] threshold",
+            ),
+        ] {
+            let (_dir, path) = write_temp(contents);
+            match Config::load_from(&path) {
+                Err(ConfigError::Parse { message, .. }) => {
+                    assert!(
+                        message.contains(field),
+                        "error should name {field}: {message}"
+                    );
+                }
+                other => panic!("expected Parse error for {contents:?}, got {other:?}"),
+            }
+        }
+        let (_dir, path) = write_temp(
+            "[proxy]\negress_proxy_port = 3131\nidle_exit_secs = 60\n[dispatch]\nport = 4880\n",
+        );
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.egress_proxy_port(), 3131);
+        assert_eq!(cfg.idle_exit_secs(), 60);
+        assert_eq!(cfg.dispatch_port(), 4880);
+        // #6603: an omitted dispatch-test threshold keeps the
+        // documented default (40) and a positive value passes
+        // unchanged.
+        assert_eq!(
+            cfg.dispatch_test_threshold(),
+            DEFAULT_DISPATCH_TEST_THRESHOLD
+        );
+        let (_dir3, path3) = write_temp("[dispatch-test]\nthreshold = 7\n");
+        let cfg = Config::load_from(&path3).unwrap();
+        assert_eq!(cfg.dispatch_test_threshold(), 7);
     }
 }
 

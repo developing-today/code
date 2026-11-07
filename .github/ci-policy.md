@@ -78,6 +78,22 @@ in `.github/scripts/check-mcpx-fix-test.test.sh`, which also run on
 pushes to main. PRs outside the workflow's `pkgs/mcpx/**` path filter
 never fire the check.
 
+## fleet-search / atlas-search writer parity guard (#5920, #5604)
+
+`.github/workflows/fleet-search-parity-guard.yml` is a **basic-tier**
+check (job `basic: fleet-search pyjson/render parity (#5920)`):
+`pkgs/fleet/crates/fleet-search/src/{pyjson,render}.rs` are verbatim
+copies of the atlas-search writers (fleet step 5, #5433), and the
+guard in `.github/scripts/check-fleet-search-parity.sh` fails when
+either pair diverges by anything beyond the pinned four-line parity
+header at lines 2-5 of each file -- a changed or removed header fails
+too. Shell contract tests live in
+`.github/scripts/check-fleet-search-parity.test.sh` and run in the
+same job. Since #5604 the guard also holds `server.rs` (the Atlas
+service rehomed as `fleet serve search`) to the same rule, with its
+own pinned headers. Intentional changes land in both copies in the same PR;
+intentional header changes update the guard script in the same PR.
+
 ## OpenCode metered-provider config guard
 
 `.github/workflows/opencode-config-guard.yml` runs the static guard and

@@ -275,7 +275,9 @@
           let
             hasParams = (builtins.length (recipe.parameters or [ ])) > 0;
             script = if hasParams then ''just ${name} "$@"'' else "just ${name}";
-            description = recipe.doc or name;
+            # The or-default catches a missing doc attr but not an explicit null
+            # (just-recipes.json emits "doc": null) -- coalesce both (#5651).
+            description = if (recipe.doc or null) == null then name else recipe.doc;
           in
           mkApp (mkScript name script) { inherit description; };
 
@@ -329,9 +331,13 @@
           cargo-fmt-check = mkCheck "cargo-fmt-check" "cargo-fmt-check";
           web-fmt-check = mkCheck "web-fmt-check" "web-fmt-check";
           clippy-lint = mkCheck "clippy-lint" "clippy-lint";
+          # id-native-shell gate (#5582): the crate is a non-default
+          # workspace member, invisible to the default-member checks.
+          clippy-native-shell = mkCheck "clippy-native-shell" "clippy-native-shell";
           web-lint = mkCheck "web-lint" "web-lint";
           test = mkCheck "test" "test-sandbox";
           test-unit = mkCheck "test-unit" "test-unit";
+          test-native-shell = mkCheck "test-native-shell" "test-native-shell";
           test-int = mkCheck "test-int" "test-int-sandbox";
           # PR-gate shards of the integration suite (#869): the four
           # shards together run every target test-sandbox runs, in

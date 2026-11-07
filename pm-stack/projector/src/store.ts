@@ -362,6 +362,27 @@ export async function deleteLink(db: Client, subject: string, ref: string, relat
   });
 }
 
+/**
+ * Remove an item and everything keyed off it, for a GitHub `issues`
+ * `deleted` event (#4210). Links and comments are projection data with
+ * no consumer independent of the item -- every read joins through it --
+ * so they go with the item row instead of becoming orphans (triage
+ * decision on #4210), with two refinements from review:
+ * - A GitHub item's outbound links are keyed by the namespaced subject
+ *   `gh:<ref>` (schema.sql), not the bare ref; both spellings are
+ *   removed so no writer's rows survive.
+ * - Comment tombstones (deleted = 1) are RETAINED: they are the
+ *   absorbing guard that rejects stale comment replays (see
+ *   upsertComment), and erasing one would let a delayed create/edit
+ *   resurrect a deleted comment. Live comments are removed; the
+ *   tombstone rows are already excluded from default reads.
+ */
+export async function deleteItem(db: Client, ref: string): Promise<void> {
+  await db.execute({ sql: `DELETE FROM pmp_items WHERE ref = ?`, args: [ref] });
+  await db.execute({ sql: `DELETE FROM pmp_comments WHERE ref = ? AND deleted = 0`, args: [ref] });
+  await db.execute({ sql: `DELETE FROM pmp_links WHERE subject IN (?, ?)`, args: [`gh:${ref}`, ref] });
+}
+
 export async function getLinks(db: Client, opts: { subject?: string; ref?: string } = {}): Promise<LinkRow[]> {
   const clauses: string[] = [];
   const args: string[] = [];

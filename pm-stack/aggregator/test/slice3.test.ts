@@ -277,6 +277,38 @@ describe("dns register parser", () => {
     expect(isDnsSection(section)).toBe(true);
   });
 
+  test("register.json section: negative renewal prices yield null, zero kept (#4883)", () => {
+    const mdEntries = parseDnsRegister(REGISTER_MD);
+    const row = (domain: string, renewal_price_usd: number | null) => ({
+      domain,
+      registrar: "Porkbun",
+      dns_hosted_at: "Porkbun",
+      next_renewal: "2027-01-15",
+      auto_renew: true,
+      renewal_price_usd,
+    });
+    // A finite negative price is money the shared gate refuses
+    // (#4226): one negative row poisons the whole JSON section, so
+    // the builder returns null and the caller falls back to the
+    // Markdown parse — including a mixed register whose total only
+    // goes negative in aggregate.
+    for (const domains of [
+      [row("neg.example", -25)],
+      [row("neg.example", -0.01)],
+      [row("good.example", 10), row("neg.example", -40)],
+    ]) {
+      const json = JSON.stringify({ domains });
+      expect(dnsSectionFromRegisterJson(json, "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
+    }
+    // Zero is valid money (#4226) and positive prices still build a
+    // section the gate accepts — the builder/gate invariant holds.
+    const ok = JSON.stringify({ domains: [row("free.example", 0), row("paid.example", 12.5)] });
+    const section = dnsSectionFromRegisterJson(ok, "2026-11-01T17:00:00Z", "t", mdEntries);
+    expect(section).not.toBeNull();
+    expect(section?.totalAnnualListUsd).toBe(12.5);
+    expect(isDnsSection(section)).toBe(true);
+  });
+
   test("isDnsSection rejects impossible entry renewal dates (#4858)", () => {
     const good = dnsSectionFromRegister(REGISTER_MD, "2026-10-25T00:00:00Z", "test");
     expect(good).not.toBeNull();

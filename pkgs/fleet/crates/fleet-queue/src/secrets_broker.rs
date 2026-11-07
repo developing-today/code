@@ -11,22 +11,41 @@
 //!   GET /secrets       -> {names: [...]}
 //!   GET /secret/<name> -> {key, value} | 404 | 503 (not loaded yet)
 //!
+//! A miss on a loaded cache is not final: the broker reads through
+//! to Bitwarden for that one name (single-flighted per name) and
+//! serves what it finds, so a secret minted moments ago is visible
+//! immediately instead of at the next TTL refresh (#6275).
+//!
 //! Env: SECRETS_BROKER_BIND (default 100.99.113.103:4800),
+//!      SECRETS_BROKER_SOCKET (Unix socket dual-bind, #6216; default
+//!      ~/.config/secrets-broker/broker.sock via fleet-config),
 //!      SECRETS_BROKER_TOKEN_FILE (default ~/.config/secrets-broker/token),
 //!      SECRETS_BROKER_TTL_S (default 900).
 
 use std::collections::HashMap;
 use std::process::Command;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use tiny_http::{Header, Method, Response, Server, StatusCode};
+use tiny_http::{Header, Response, Server, StatusCode};
 
 struct State {
     secrets: RwLock<HashMap<String, String>>,
     last_refresh: RwLock<Option<u64>>,
     refreshing: RwLock<bool>,
+    /// In-flight read-through fetches, one gate per name (#6275):
+    /// the first misser fetches from Bitwarden; concurrent missers
+    /// for the same name wait on the gate instead of stampeding the
+    /// vault with duplicate list+get pairs.
+    inflight: Mutex<HashMap<String, Arc<FetchGate>>>,
+}
+
+/// The outcome slot of one in-flight read-through fetch: the leader
+/// stores its result and notifies; waiters clone the result out.
+struct FetchGate {
+    result: Mutex<Option<Result<Option<String>, String>>>,
+    done: Condvar,
 }
 
 fn now_unix() -> u64 {
@@ -42,7 +61,7 @@ fn bws_token() -> Option<String> {
             return Some(t.trim().to_string());
         }
     }
-    let home = std::env::var("HOME").ok()?;
+    let home = crate::home::from_env().ok()?;
     for rel in [".config/bitwarden/access-token", ".config/bws/access-token"] {
         if let Ok(t) = std::fs::read_to_string(format!("{home}/{rel}")) {
             if !t.trim().is_empty() {
@@ -171,6 +190,107 @@ fn do_refresh(state: &Arc<State>) -> Result<usize, String> {
     Ok(n)
 }
 
+/// One name, straight from Bitwarden: resolve the key to its id via
+/// the list, then get the value — the same two calls the full
+/// refresh makes, scoped to a single secret. Ok(None) is a definite
+/// "not in the vault"; Err is a source failure (its detail carries
+/// the exit status only, per BwsRunner's discipline).
+fn fetch_one(name: &str) -> Result<Option<String>, String> {
+    let token = bws_token().ok_or("no Bitwarden access token available")?;
+    let list_raw = bws_run(&["secret", "list", "-o", "json"], &token)?;
+    let list: Value =
+        serde_json::from_str(&list_raw).map_err(|e| format!("bws list not json: {e}"))?;
+    let id = list.as_array().and_then(|items| {
+        items.iter().find_map(|s| {
+            if s.get("key").and_then(|k| k.as_str()) == Some(name) {
+                s.get("id").and_then(|i| i.as_str()).map(str::to_string)
+            } else {
+                None
+            }
+        })
+    });
+    let Some(id) = id else {
+        return Ok(None);
+    };
+    let got_raw = bws_run(&["secret", "get", &id, "-o", "json"], &token)?;
+    let got: Value =
+        serde_json::from_str(&got_raw).map_err(|e| format!("bws get not json: {e}"))?;
+    match got.get("value").and_then(|v| v.as_str()) {
+        Some(v) => Ok(Some(v.to_string())),
+        None => Err("bws get response has no string value".to_string()),
+    }
+}
+
+/// Read-through on a cache miss (#6275; Drew 2026-11-05: "broker
+/// should go get the secret pass through"): fetch the one name from
+/// Bitwarden and install it in the cache, so a just-minted secret
+/// resolves immediately. Only the fetch's success is cached — a
+/// not-found or a failure is returned but never installed, so the
+/// next miss retries against the source.
+fn fetch_through(state: &Arc<State>, name: &str) -> Result<Option<String>, String> {
+    fetch_through_with(state, name, &fetch_one)
+}
+
+fn fetch_through_with(
+    state: &Arc<State>,
+    name: &str,
+    fetch: &dyn Fn(&str) -> Result<Option<String>, String>,
+) -> Result<Option<String>, String> {
+    // A refresh (or an earlier fetch) may have landed the value
+    // since the caller missed.
+    if let Some(v) = state.secrets.read().unwrap().get(name) {
+        return Ok(Some(v.clone()));
+    }
+    // Join the in-flight fetch for this name, or become its leader.
+    let (gate, leader) = {
+        let mut inflight = state.inflight.lock().unwrap();
+        match inflight.get(name) {
+            Some(g) => (Arc::clone(g), false),
+            None => {
+                let g = Arc::new(FetchGate {
+                    result: Mutex::new(None),
+                    done: Condvar::new(),
+                });
+                inflight.insert(name.to_string(), Arc::clone(&g));
+                (g, true)
+            }
+        }
+    };
+    if !leader {
+        let mut result = gate.result.lock().unwrap();
+        while result.is_none() {
+            result = gate.done.wait(result).unwrap();
+        }
+        return result.clone().unwrap();
+    }
+    let result = fetch(name);
+    match &result {
+        Ok(Some(v)) => {
+            state
+                .secrets
+                .write()
+                .unwrap()
+                .insert(name.to_string(), v.clone());
+            crate::log::info(
+                "secrets-broker",
+                &format!("read-through: fetched {name:?} from Bitwarden on a cache miss"),
+            );
+        }
+        Ok(None) => crate::log::info(
+            "secrets-broker",
+            &format!("read-through: {name:?} is not in Bitwarden"),
+        ),
+        Err(e) => crate::log::info(
+            "secrets-broker",
+            &format!("read-through: fetch of {name:?} failed: {e}"),
+        ),
+    }
+    *gate.result.lock().unwrap() = Some(result.clone());
+    gate.done.notify_all();
+    state.inflight.lock().unwrap().remove(name);
+    result
+}
+
 fn json_response(status: u16, body: Value) -> Response<std::io::Cursor<Vec<u8>>> {
     let data = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
     Response::from_data(data)
@@ -178,29 +298,93 @@ fn json_response(status: u16, body: Value) -> Response<std::io::Cursor<Vec<u8>>>
         .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
 }
 
-fn token_ok(req: &tiny_http::Request, expected: &str) -> bool {
-    req.headers()
-        .iter()
-        .find(|h| h.field.as_str().to_ascii_lowercase() == "x-agent-token")
-        .map(|h| h.value.as_str() == expected)
-        .unwrap_or(false)
+fn token_matches(provided: Option<&str>, expected: &str) -> bool {
+    // #6320 defence in depth: an empty expected token never authenticates,
+    // not even against an empty X-Agent-Token header.
+    if expected.is_empty() {
+        return false;
+    }
+    provided.map(|v| v == expected).unwrap_or(false)
+}
+
+/// Transport-agnostic request handling (#6216): the TCP loop adapts
+/// tiny_http requests to this function and the UDS loop adapts
+/// Unix-socket requests; routes and auth are identical on both
+/// transports by construction. Returns (status, JSON body). The
+/// request body is part of the shared shape but unused here: the one
+/// body-carrying route, POST /refresh, ignores its body.
+fn handle_request(
+    state: &Arc<State>,
+    token: &str,
+    method: &str,
+    url: &str,
+    provided_token: Option<&str>,
+) -> (u16, Value) {
+    let path = url.split('?').next().unwrap_or("").to_string();
+    if method == "GET" && path == "/health" {
+        (
+            200,
+            json!({
+                "ok": true,
+                "secrets": state.secrets.read().unwrap().len(),
+                "last_refresh_unix": state.last_refresh.read().unwrap().clone(),
+                "refreshing": *state.refreshing.read().unwrap(),
+            }),
+        )
+    } else if !token_matches(provided_token, token) {
+        (401, json!({"error": "unauthorized"}))
+    } else if method == "GET" && path == "/secrets" {
+        let mut names: Vec<String> = state.secrets.read().unwrap().keys().cloned().collect();
+        names.sort();
+        (200, json!({"names": names}))
+    } else if method == "POST" && path == "/refresh" {
+        let st = Arc::clone(state);
+        std::thread::spawn(move || {
+            let _ = refresh(&st);
+        });
+        (202, json!({"ok": true, "refresh": "started"}))
+    } else if method == "GET" && path.starts_with("/secret/") {
+        let name = path.trim_start_matches("/secret/").to_string();
+        let name = url_decode(&name);
+        let cached = state.secrets.read().unwrap().get(&name).cloned();
+        match cached {
+            Some(v) => (200, json!({"key": name, "value": v})),
+            None => {
+                if state.last_refresh.read().unwrap().is_none() {
+                    (503, json!({"error": "secrets not loaded yet"}))
+                } else {
+                    // A miss on a loaded cache reads through to
+                    // Bitwarden for this one name (#6275) before the
+                    // name is declared absent: a secret minted since
+                    // the last refresh resolves now, not at the next
+                    // TTL tick. A source failure is a loud 502, never
+                    // a silent 404-as-if-absent.
+                    match fetch_through(state, &name) {
+                        Ok(Some(v)) => (200, json!({"key": name, "value": v})),
+                        Ok(None) => (404, json!({"error": "no such secret"})),
+                        Err(_) => (502, json!({"error": "bitwarden read-through failed"})),
+                    }
+                }
+            }
+        }
+    } else {
+        (404, json!({"error": "not found"}))
+    }
 }
 
 pub fn run() -> i32 {
     let bind =
         std::env::var("SECRETS_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4800".to_string());
-    let home = std::env::var("HOME").expect("HOME unset");
+    let home = crate::home::from_env().unwrap_or_else(|error| {
+        eprintln!("secrets-broker: {error}");
+        std::process::exit(2);
+    });
     let token_file = std::env::var("SECRETS_BROKER_TOKEN_FILE")
         .unwrap_or_else(|_| format!("{home}/.config/secrets-broker/token"));
-    let token = std::fs::read_to_string(&token_file)
-        .map(|t| t.trim().to_string())
-        .unwrap_or_else(|_| {
-            crate::log::info(
-                "secrets-broker",
-                &format!("cannot read token file {token_file}"),
-            );
-            std::process::exit(3);
-        });
+    let token = crate::token_file::load_token_file(&token_file).unwrap_or_else(|e| {
+        crate::log::info("secrets-broker", &e);
+        std::process::exit(3);
+    });
     let ttl_s: u64 = std::env::var("SECRETS_BROKER_TTL_S")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -210,6 +394,7 @@ pub fn run() -> i32 {
         secrets: RwLock::new(HashMap::new()),
         last_refresh: RwLock::new(None),
         refreshing: RwLock::new(false),
+        inflight: Mutex::new(HashMap::new()),
     });
 
     // Background refresh loop: initial load + TTL refresh,
@@ -233,55 +418,74 @@ pub fn run() -> i32 {
         std::process::exit(3);
     });
     crate::log::info("secrets-broker", &format!("listening on {bind}"));
+
+    // Dual-bind (#6216): the same handler over a Unix socket. A bind
+    // failure or a live owner degrades to TCP only, never to exit:
+    // the TCP listener is the established surface.
+    let socket_path = fleet_config::Config::load()
+        .unwrap_or_default()
+        .secrets_broker_socket();
+    match crate::uds_http::bind_socket(&socket_path) {
+        Ok(Some(listener)) => {
+            let st = Arc::clone(&state);
+            let tok = token.clone();
+            crate::log::info(
+                "secrets-broker",
+                &format!("listening on uds {}", socket_path.display()),
+            );
+            std::thread::spawn(move || {
+                crate::uds_http::serve(listener, move |req| {
+                    let (status, value) = handle_request(
+                        &st,
+                        &tok,
+                        &req.method,
+                        &req.target,
+                        req.header("X-Agent-Token"),
+                    );
+                    (
+                        status,
+                        serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+                    )
+                });
+            });
+        }
+        Ok(None) => crate::log::info(
+            "secrets-broker",
+            &format!(
+                "uds {} already owned by a live broker; TCP only",
+                socket_path.display()
+            ),
+        ),
+        Err(e) => crate::log::info(
+            "secrets-broker",
+            &format!("cannot bind uds {}: {e}; TCP only", socket_path.display()),
+        ),
+    }
+
     for mut req in server.incoming_requests() {
         let state = Arc::clone(&state);
         let token = token.clone();
         std::thread::spawn(move || {
             let url = req.url().to_string();
-            let path = url.split('?').next().unwrap_or("").to_string();
-            let resp = if req.method() == &Method::Get && path == "/health" {
-                json_response(
-                    200,
-                    json!({
-                        "ok": true,
-                        "secrets": state.secrets.read().unwrap().len(),
-                        "last_refresh_unix": state.last_refresh.read().unwrap().clone(),
-                        "refreshing": *state.refreshing.read().unwrap(),
-                    }),
-                )
-            } else if !token_ok(&req, &token) {
-                json_response(401, json!({"error": "unauthorized"}))
-            } else if req.method() == &Method::Get && path == "/secrets" {
-                let mut names: Vec<String> =
-                    state.secrets.read().unwrap().keys().cloned().collect();
-                names.sort();
-                json_response(200, json!({"names": names}))
-            } else if req.method() == &Method::Post && path == "/refresh" {
+            let provided = req
+                .headers()
+                .iter()
+                .find(|h| h.field.as_str().to_ascii_lowercase() == "x-agent-token")
+                .map(|h| h.value.as_str().to_string());
+            if req.method().as_str() == "POST" {
+                // POST /refresh's body is ignored by the handler;
+                // drain it as the pre-#6216 loop did.
                 let mut buf = String::new();
                 let _ = req.as_reader().read_to_string(&mut buf);
-                let st = Arc::clone(&state);
-                std::thread::spawn(move || {
-                    let _ = refresh(&st);
-                });
-                json_response(202, json!({"ok": true, "refresh": "started"}))
-            } else if req.method() == &Method::Get && path.starts_with("/secret/") {
-                let name = path.trim_start_matches("/secret/").to_string();
-                let name = url_decode(&name);
-                let cache = state.secrets.read().unwrap();
-                match cache.get(&name) {
-                    Some(v) => json_response(200, json!({"key": name, "value": v})),
-                    None => {
-                        if state.last_refresh.read().unwrap().is_none() {
-                            json_response(503, json!({"error": "secrets not loaded yet"}))
-                        } else {
-                            json_response(404, json!({"error": "no such secret"}))
-                        }
-                    }
-                }
-            } else {
-                json_response(404, json!({"error": "not found"}))
-            };
-            let _ = req.respond(resp);
+            }
+            let (status, value) = handle_request(
+                &state,
+                &token,
+                req.method().as_str(),
+                &url,
+                provided.as_deref(),
+            );
+            let _ = req.respond(json_response(status, value));
         });
     }
     // incoming_requests() ends only when the server stops.
@@ -312,7 +516,92 @@ fn url_decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::url_decode;
+    use super::{State, fetch_through_with, url_decode};
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex, RwLock};
+
+    fn empty_state() -> Arc<State> {
+        Arc::new(State {
+            secrets: RwLock::new(HashMap::new()),
+            last_refresh: RwLock::new(Some(1)),
+            refreshing: RwLock::new(false),
+            inflight: Mutex::new(HashMap::new()),
+        })
+    }
+
+    #[test]
+    fn read_through_installs_the_fetched_value_in_the_cache() {
+        let state = empty_state();
+        let calls = AtomicUsize::new(0);
+        let fetch = |_: &str| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Some("fixture-value-not-a-secret".to_string()))
+        };
+        let v = fetch_through_with(&state, "new.name", &fetch).unwrap();
+        assert_eq!(v.as_deref(), Some("fixture-value-not-a-secret"));
+        assert_eq!(
+            state
+                .secrets
+                .read()
+                .unwrap()
+                .get("new.name")
+                .map(String::as_str),
+            Some("fixture-value-not-a-secret")
+        );
+        // Second read is a cache hit: no further fetch.
+        let v = fetch_through_with(&state, "new.name", &fetch).unwrap();
+        assert_eq!(v.as_deref(), Some("fixture-value-not-a-secret"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn read_through_not_found_is_returned_but_never_cached() {
+        let state = empty_state();
+        let calls = AtomicUsize::new(0);
+        let fetch = |_: &str| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        };
+        assert_eq!(fetch_through_with(&state, "absent.name", &fetch), Ok(None));
+        assert!(!state.secrets.read().unwrap().contains_key("absent.name"));
+        // No negative caching: the next miss asks the source again.
+        assert_eq!(fetch_through_with(&state, "absent.name", &fetch), Ok(None));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn read_through_failure_is_returned_but_never_cached() {
+        let state = empty_state();
+        let fetch = |_: &str| Err("exit status 1".to_string());
+        let err = fetch_through_with(&state, "any.name", &fetch).unwrap_err();
+        assert_eq!(err, "exit status 1");
+        assert!(!state.secrets.read().unwrap().contains_key("any.name"));
+    }
+
+    #[test]
+    fn concurrent_misses_for_one_name_fetch_exactly_once() {
+        let state = empty_state();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let state = Arc::clone(&state);
+            let calls = Arc::clone(&calls);
+            handles.push(std::thread::spawn(move || {
+                let fetch = |_: &str| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    Ok(Some("fixture-value-not-a-secret".to_string()))
+                };
+                fetch_through_with(&state, "hot.name", &fetch)
+            }));
+        }
+        for h in handles {
+            let v = h.join().unwrap().unwrap();
+            assert_eq!(v.as_deref(), Some("fixture-value-not-a-secret"));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn url_decode_keeps_plus_literal_in_a_path_segment() {

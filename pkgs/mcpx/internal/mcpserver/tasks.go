@@ -53,6 +53,15 @@ func (s *Server) tasks() *taskStore {
 			}
 		}
 	}
+	// Retention settings are hot (#6247): refresh them on every access,
+	// exactly as the daemon's taskStore() accessor does for /v1, so MCP
+	// traffic alone keeps the shared store's retention current after a
+	// /v1/settings change. Configure ignores nonpositive values, so a
+	// provider returning zeros leaves the current configuration alone.
+	if s.TaskRetention != nil {
+		ttl, maxAge := s.TaskRetention()
+		s.taskStore.Configure(ttl, maxAge)
+	}
 	return s.taskStore
 }
 
