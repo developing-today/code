@@ -59,6 +59,16 @@ describe("normalizeResetAt", () => {
     expect(normalizeResetAt(null)).toBeNull();
     expect(normalizeResetAt(0)).toBeNull();
   });
+  test("impossible and non-ISO date strings are null (#4968)", () => {
+    expect(normalizeResetAt("2026-02-30")).toBeNull();
+    expect(normalizeResetAt("2026-04-31")).toBeNull();
+    expect(normalizeResetAt("2026-02-29")).toBeNull(); // 2026 is not a leap year
+    expect(normalizeResetAt("March 2, 2026")).toBeNull();
+  });
+  test("valid date-only and leap-day strings pass (#4968)", () => {
+    expect(normalizeResetAt("2026-03-02")).toBe("2026-03-02T00:00:00.000Z");
+    expect(normalizeResetAt("2024-02-29")).toBe("2024-02-29T00:00:00.000Z");
+  });
 });
 
 describe("entryFromResult", () => {
