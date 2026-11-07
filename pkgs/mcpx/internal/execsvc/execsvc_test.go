@@ -35,6 +35,26 @@ func service(t *testing.T, st *artifacts.Store) *execsvc.Service {
 	return &execsvc.Service{Store: st, Limits: lim, Local: true}
 }
 
+func TestScriptCheckPoliciesAreCarriedInExecOptions(t *testing.T) {
+	want := execsvc.Options{TypeCheckOnError: "warn", TypeCheckOnUnsupported: "switch"}
+	data, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got execsvc.Options
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.TypeCheckOnError != want.TypeCheckOnError || got.TypeCheckOnUnsupported != want.TypeCheckOnUnsupported {
+		t.Fatalf("round trip = %+v, want %+v", got, want)
+	}
+	for _, field := range []string{`"checkOnError":"warn"`, `"checkOnUnsupported":"switch"`} {
+		if !strings.Contains(string(data), field) {
+			t.Errorf("wire options %s do not include %s", data, field)
+		}
+	}
+}
+
 // The runtime is a real one. Skipping rather than failing keeps the suite
 // honest on a machine that has none: these tests are about the service, and
 // a missing deno is not a bug in it.

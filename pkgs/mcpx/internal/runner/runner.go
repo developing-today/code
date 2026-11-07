@@ -132,6 +132,10 @@ type Options struct {
 	PlaceholderFiles []string
 	// TypeCheck resolves and checks the generated program before running it.
 	TypeCheck string
+	// TypeCheckOnError selects how a failed checker affects execution.
+	TypeCheckOnError string
+	// TypeCheckOnUnsupported selects what to do when the runtime cannot check.
+	TypeCheckOnUnsupported string
 	// TypeCheckTimeout bounds that check.
 	TypeCheckTimeout time.Duration
 	// Imports selects the preflight import-graph stage: "off" or "report"
@@ -647,8 +651,9 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		if timeout == 0 {
 			timeout = defaults.TypecheckTimeout
 		}
-		rep := preflight.TypeCheckResolved(ctx, rt.Bin, scriptPath, preflight.TypeCheckMode(mode), timeout,
-			append(append([]string{}, rt.ConfigArgs...), depsFlags...), opts.Dir)
+		rep := preflight.TypeCheckWithPolicy(ctx, rt.Bin, scriptPath, preflight.TypeCheckMode(mode), timeout,
+			append(append([]string{}, rt.ConfigArgs...), depsFlags...), opts.Dir,
+			opts.TypeCheckOnError, opts.TypeCheckOnUnsupported)
 		if err := rep.Err(); err != nil {
 			return nil, err
 		}
