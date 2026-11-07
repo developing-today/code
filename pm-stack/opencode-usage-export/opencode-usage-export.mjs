@@ -308,14 +308,35 @@ async function readState(outDir) {
   }
 }
 
+/** Validate one hour-valued flag (#4739). The exporter is fail-closed:
+ * a junk window must never publish a zero-filled `status: "ok"`
+ * document, and a junk freshness must never be diagnosed as a moved
+ * store — so a missing, non-numeric, NaN, infinite, zero, or negative
+ * value is rejected here, before any store read, with the bad
+ * argument named. The error carries the partially parsed args so
+ * `run` can still route the failure document to --out-dir. */
+function parseHourFlag(flag, raw, args) {
+  const value = Number(raw);
+  if (raw === undefined || !Number.isFinite(value) || value <= 0) {
+    const err = new ExportError(
+      "invalid-argument",
+      2,
+      `${flag} must be a positive finite number of hours (got ${raw === undefined ? "no value" : JSON.stringify(raw)})`,
+    );
+    err.args = args;
+    throw err;
+  }
+  return value;
+}
+
 function parseArgs(argv) {
   const args = { db: null, outDir: null, windowHours: DEFAULT_WINDOW_HOURS, freshHours: DEFAULT_FRESH_HOURS };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === "--db") args.db = argv[++i];
     else if (a === "--out-dir") args.outDir = argv[++i];
-    else if (a === "--window-hours") args.windowHours = Number(argv[++i]);
-    else if (a === "--fresh-hours") args.freshHours = Number(argv[++i]);
+    else if (a === "--window-hours") args.windowHours = parseHourFlag("--window-hours", argv[++i], args);
+    else if (a === "--fresh-hours") args.freshHours = parseHourFlag("--fresh-hours", argv[++i], args);
     else throw new Error(`unknown argument: ${a}`);
   }
   return args;
@@ -329,9 +350,27 @@ export async function run({
   now = Date.now(),
   home = homedir(),
 } = {}) {
-  const args = parseArgs(argv);
-  const outDir = args.outDir ?? join(home, "atlas/opencode-usage-export");
   const attemptedAt = new Date(now).toISOString();
+  let args;
+  try {
+    args = parseArgs(argv);
+  } catch (err) {
+    // Argument errors are fail-closed too (#4739): a failure document
+    // naming the bad argument and a non-zero exit, never a throw that
+    // leaves the previous tick's document looking current.
+    const e =
+      err instanceof ExportError
+        ? err
+        : new ExportError("invalid-argument", 2, `opencode usage export: ${err?.message ?? err}`);
+    const doc = failureDocument(e.status, e.message, attemptedAt);
+    try {
+      await writeDocument(err?.args?.outDir ?? join(home, "atlas/opencode-usage-export"), doc);
+    } catch {
+      /* nowhere to write the failure either; exit code carries it */
+    }
+    return { exitCode: e.exitCode, doc };
+  }
+  const outDir = args.outDir ?? join(home, "atlas/opencode-usage-export");
   try {
     const explicit = args.db ?? env.OPENCODE_USAGE_DB ?? null;
     const candidates = explicit ? [explicit] : defaultCandidatePaths(home);
