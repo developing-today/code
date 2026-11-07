@@ -106,7 +106,12 @@ export const dashboardResponseWithinDeadline = createDashboardResponseDeadline()
 function timeoutResponse(path: string, timeoutMs: number): Response {
   const message = `Dashboard assembly timed out after ${formatDuration(timeoutMs)}. Please retry shortly.`;
   if (path === "/frag/overview") {
-    const fragment = `<div id="overview-main" role="alert" class="aggregator-error">${message}</div>`;
+    // Inner patch into the existing #overview-main shell: the fragment must
+    // not carry the shell's id, or the DOM ends up with two #overview-main
+    // elements and the next outer patch morphs a detached node (Codex P2 on
+    // PR #6597). The shell keeps its data-frag refresh hooks, so recovery is
+    // the next ordinary outer patch.
+    const fragment = `<div role="alert" class="aggregator-error">${message}</div>`;
     return new Response(
       `event: datastar-patch-elements\ndata: mode inner\ndata: selector #overview-main\ndata: elements ${fragment}\n\n`,
       { status: 200, headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" } },

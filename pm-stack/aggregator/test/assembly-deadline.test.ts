@@ -23,6 +23,8 @@ describe("dashboard assembly deadline (#5664)", () => {
       expect(response.headers.get("content-type")).toContain("text/event-stream");
       expect(body).toContain("role=\"alert\"");
       expect(body).toContain("timed out");
+      // The inner patch must not duplicate the #overview-main shell id.
+      expect(body).not.toContain("id=\"overview-main\"");
     } else if (path.startsWith("/api/")) {
       expect(response.status).toBe(503);
       expect(response.headers.get("content-type")).toContain("application/json");
