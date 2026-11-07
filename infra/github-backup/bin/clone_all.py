@@ -12,7 +12,7 @@ import json, os, shutil, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ghb_common import load_config, backup_root, mirror_path, valid_mirror, disk_kb, load_plan, report_problems
+from ghb_common import load_config, backup_root, mirror_path, valid_mirror, disk_kb, load_plan, report_problems, clone_status_record
 
 PAR = 4
 TIMEOUT = 5400
@@ -92,12 +92,11 @@ def main():
     ok_prev = set()
     if os.path.exists(status_path):
         for line in open(status_path):
-            try:
-                r = json.loads(line)
-                if r.get("status") == "ok":
-                    ok_prev.add(r["repo"])
-            except Exception:
-                pass
+            # Shared line contract: ghb_common.clone_status_record
+            # (#6606) — non-record lines are ignored, never crash.
+            r = clone_status_record(line)
+            if r is not None and r.get("status") == "ok" and r.get("repo"):
+                ok_prev.add(r["repo"])
 
     def clone_one(item, ref_ok):
         repo = item["repo"]
