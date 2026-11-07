@@ -4,6 +4,7 @@ Run: python3 -m unittest discover -s tests -v
 """
 
 import os
+import re
 import sys
 import tempfile
 import time
@@ -109,6 +110,80 @@ class TestExactTitleFilter(unittest.TestCase):
         ]
         hits = [i for i in items if i.get("title") == title]
         self.assertEqual([h["number"] for h in hits], [3])
+
+
+class _StubClient:
+    """Minimal AppClient stand-in: find_by_exact_title only needs a token."""
+
+    def token_for(self, owner):
+        return "stub-token"
+
+
+class TestFindByExactTitle(unittest.TestCase):
+    """The real find_by_exact_title against a stubbed http (#6697).
+
+    Oracle: Search-API payloads shaped as GitHub actually returns them —
+    PR items carry a `pull_request` key, and phrase matches include
+    non-exact titles because the search matches title+body text."""
+
+    TITLE = "id: exact title shared with a PR"
+
+    def _run(self, pages):
+        """pages: {page_number: (items, total_count)}. Returns (hit, paths)."""
+        calls = []
+
+        def fake_http(method, path, token, body=None):
+            calls.append(path)
+            m = re.search(r"[?&]page=(\d+)", path)
+            page = int(m.group(1)) if m else 1
+            items, total = pages[page]
+            return 200, {"items": items, "total_count": total}
+
+        orig = fp.http
+        fp.http = fake_http
+        try:
+            hit = fp.find_by_exact_title(_StubClient(), "developing-today/code", self.TITLE)
+        finally:
+            fp.http = orig
+        return hit, calls
+
+    def test_pr_with_exact_title_is_not_a_hit(self):
+        pr = {"title": self.TITLE, "number": 4242, "pull_request": {"url": "x"}}
+        hit, _ = self._run({1: ([pr], 1)})
+        self.assertIsNone(hit)
+
+    def test_issue_found_behind_a_same_titled_pr(self):
+        pr = {"title": self.TITLE, "number": 4242, "pull_request": {"url": "x"}}
+        issue = {"title": self.TITLE, "number": 4243}
+        hit, _ = self._run({1: ([pr, issue], 2)})
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["number"], 4243)
+
+    def test_query_asks_for_issues_only(self):
+        issue = {"title": self.TITLE, "number": 7}
+        _, calls = self._run({1: ([issue], 1)})
+        self.assertIn("type%3Aissue", calls[0])
+
+    def test_exact_issue_past_first_page_of_matches_is_found(self):
+        filler = [{"title": f"{self.TITLE} (mention {i})", "number": 100 + i} for i in range(100)]
+        issue = {"title": self.TITLE, "number": 4243}
+        hit, calls = self._run({1: (filler, 101), 2: ([issue], 101)})
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["number"], 4243)
+        self.assertEqual(len(calls), 2)
+
+    def test_no_hit_walks_all_pages_and_returns_none(self):
+        filler = [{"title": f"{self.TITLE} (mention {i})", "number": 100 + i} for i in range(100)]
+        hit, calls = self._run({1: (filler, 101), 2: ([{"title": "other", "number": 1}], 101)})
+        self.assertIsNone(hit)
+        self.assertEqual(len(calls), 2)
+
+    def test_exact_match_behavior_for_issues_preserved(self):
+        near = {"title": self.TITLE.lower(), "number": 2}
+        exact = {"title": self.TITLE, "number": 3}
+        hit, _ = self._run({1: ([near, exact], 2)})
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["number"], 3)
 
 
 class TestGenericCommandArgs(unittest.TestCase):
