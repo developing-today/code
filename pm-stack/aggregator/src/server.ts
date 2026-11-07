@@ -7,6 +7,7 @@
 // (GitHub, Kaneo, Grist) stays read-only from here — the fleet jobs
 // apply actions; the dashboard only records them.
 import { stat } from "node:fs/promises";
+import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
 import { ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
@@ -168,6 +169,10 @@ function pickSource(): Source {
 }
 
 const source = pickSource();
+
+/** Lazy quota refresh (#1171): stale page/API loads ask the deployed
+ *  gatherer unit to run again; single-flight + cooldown live in the module. */
+const quotaRefresher = createQuotaRefresher({ trigger: systemdTrigger() });
 
 // #1279: prefer the latest-comment-per-ref read so a busy batch cannot
 // truncate an item's most recent activity out of its brief.
@@ -1192,7 +1197,16 @@ async function handler(req: Request): Promise<Response> {
       source.quota().catch(() => emptyQuotaView()),
       source.usage().catch(() => emptyUsageView()),
     ]);
-    return html(renderQuota(quota, prov(), usage, provDetail()));
+    // Never block on providers (#1171): decide from the stored measurement,
+    // ask the gatherer to run in the background, render what we have.
+    const refresh = quotaRefresher.request(quota);
+    return html(renderQuota(quota, prov(), usage, provDetail(), refresh));
+  }
+
+  if (req.method === "POST" && path === "/quota/refresh") {
+    const quota = await source.quota().catch(() => emptyQuotaView());
+    quotaRefresher.manual(quota);
+    return new Response(null, { status: 303, headers: { Location: "/quota" } });
   }
 
   const serviceMatch = /^\/quota\/service\/([\w-]+)$/.exec(path);
@@ -1500,8 +1514,12 @@ async function handler(req: Request): Promise<Response> {
     // hub sections ride as additional top-level keys. Snapshot history
     // stays out of this twin — it is per-service, on the service twin.
     const [quota, usage] = await Promise.all([source.quota(), source.usage()]);
+    // #1171: a stale read returns immediately with refresh state instead of
+    // waiting on provider calls; the gatherer runs in the background.
+    const refresh = quotaRefresher.request(quota);
     return json({
       ...quota,
+      refresh,
       saas: usage.services,
       payg: usage.payg,
       charges: usage.charges,
@@ -1509,6 +1527,11 @@ async function handler(req: Request): Promise<Response> {
       domains: usage.domains,
       subscriptions: usage.subscriptions,
     });
+  }
+  if (req.method === "POST" && path === "/api/quota/refresh") {
+    const quota = await source.quota().catch(() => emptyQuotaView());
+    const refresh = quotaRefresher.manual(quota);
+    return json({ requested: refresh.triggered, refresh });
   }
   if (path === "/api/quota/service.json") {
     const id = url.searchParams.get("id") ?? "";

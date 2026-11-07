@@ -2253,11 +2253,27 @@ function chargesStripHtml(usage: UsageView): string {
   return `<h2>Charges this period</h2><p class="muted">Evidence, not accounting — charges observed on cards/receipts in the local records (full balances stay in the finance tooling). Total observed: $${total.toFixed(2)}.</p><div class="tblwrap"><table><caption>Charges this period</caption><tr><th scope="col">Date</th><th scope="col">Charge</th><th scope="col">Amount</th><th scope="col">Method</th><th scope="col">Evidence</th></tr>${rows}</table></div>`;
 }
 
+/** Lazy-refresh strip (#1171): a visible "refreshing" marker while a
+ *  gatherer run is in flight, plus the manual refresh-now control. Both
+ *  use the same trigger path; neither blocks the page on provider calls. */
+function quotaRefreshHtml(refresh?: import("./quota-refresh.ts").RefreshStatus): string {
+  if (!refresh) return "";
+  const marker = refresh.refreshing
+    ? `<span class="badge refreshing" data-quota-refreshing="true">refreshing — quotas were stale, the gatherer is running; reload for fresh data</span>`
+    : refresh.stale
+      ? `<span class="muted">quota data is older than five minutes</span>`
+      : "";
+  return `<div class="card quota-refresh"><div>${marker || "<span class=\"muted\">quota data is fresh</span>"}</div><form method="post" action="/quota/refresh"><button type="submit">Refresh now</button></form></div>`;
+}
+
 export function renderQuota(
   view: QuotaView,
   provenance: Provenance,
   usage?: UsageView,
   detail?: ProvenanceDetail,
+  /** Lazy-refresh state (#1171): renders the "refreshing" marker and the
+   *  manual refresh-now control. Absent means no request was made. */
+  refresh?: import("./quota-refresh.ts").RefreshStatus,
 ): string {
   const credentialLifecycle = view.credentialLifecycle?.length
     ? `<h2>Credential lifecycle</h2><div class="card">${view.credentialLifecycle
@@ -2362,6 +2378,7 @@ ${burnAndChoices}`,
     `<h1>Usage &amp; billing</h1><p class="muted">Token quotas, PAYG dollars, and SaaS usage vs limits — from dated local records; every card carries its measured-at stamp, and stale cards dim. Machine-first: <a href="/api/quota.json">/api/quota.json</a>.</p>
 ${attentionStripHtml(usage)}
 ${credentialLifecycle}
+${quotaRefreshHtml(refresh)}
 <h2>Token quotas</h2>${pools}
 ${paygCardHtml(usage)}
 <h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}
