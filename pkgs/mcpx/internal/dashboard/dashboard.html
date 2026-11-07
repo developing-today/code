@@ -572,16 +572,17 @@
           id="tab-browse"
           role="tab"
           aria-selected="true"
+          tabindex="0"
           aria-controls="view-body"
           data-view="browse"
           onclick="showView('browse')"
         >
           Browse
         </button>
-        <button class="view-tab" id="tab-log" role="tab" aria-selected="false" aria-controls="view-body" data-view="log" onclick="showView('log')">
+        <button class="view-tab" id="tab-log" role="tab" aria-selected="false" tabindex="-1" aria-controls="view-body" data-view="log" onclick="showView('log')">
           Log
         </button>
-        <button class="view-tab" id="tab-stats" role="tab" aria-selected="false" aria-controls="view-body" data-view="stats" onclick="showView('stats')">
+        <button class="view-tab" id="tab-stats" role="tab" aria-selected="false" tabindex="-1" aria-controls="view-body" data-view="stats" onclick="showView('stats')">
           Stats
         </button>
         <button
@@ -589,6 +590,7 @@
           id="tab-servers"
           role="tab"
           aria-selected="false"
+          tabindex="-1"
           aria-controls="view-body"
           data-view="servers"
           onclick="showView('servers')"
@@ -600,6 +602,7 @@
           id="tab-sessions"
           role="tab"
           aria-selected="false"
+          tabindex="-1"
           aria-controls="view-body"
           data-view="sessions"
           onclick="showView('sessions')"
@@ -611,6 +614,7 @@
           id="tab-storage"
           role="tab"
           aria-selected="false"
+          tabindex="-1"
           aria-controls="view-body"
           data-view="storage"
           onclick="showView('storage')"
@@ -1012,6 +1016,7 @@
           .forEach((b) => {
             b.classList.toggle("active", b.dataset.view === name);
             b.setAttribute("aria-selected", String(b.dataset.view === name));
+            b.setAttribute("tabindex", b.dataset.view === name ? "0" : "-1");
           });
         document
           .getElementById("view-body")
