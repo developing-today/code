@@ -1,7 +1,15 @@
 // The projector: turn GitHub webhook events (and reconciliation payloads) into
 // registry + read-model rows. Pure transformation + store writes. No network,
 // no writes back to GitHub. The store is the only side effect.
-import type { upsertItem, upsertComment, markCommentDeleted, recordPush, ItemRow, CommentRow } from "./store";
+import type {
+  upsertItem,
+  upsertComment,
+  markCommentDeleted,
+  recordPush,
+  ItemRow,
+  CommentRow,
+  HotEventInput,
+} from "./store";
 
 // A thin store interface keeps the projector testable against an in-memory
 // fake, independent of libSQL.
@@ -17,6 +25,12 @@ export interface ProjectorStore {
     beforeSha: string | null;
     pusher: string | null;
   }): Promise<void>;
+  /**
+   * Optional hot-list append (#5204). Optional so lightweight test stores
+   * that only exercise the item/comment projection keep working; the real
+   * libSQL store always provides it.
+   */
+  appendHotEvents?(events: HotEventInput[]): Promise<number>;
 }
 
 export interface ProjectResult {
@@ -56,15 +70,7 @@ function fromIssueOrPr(repo: string, obj: Record<string, any>, kind: "issue" | "
   // (only the single-PR get and webhook payloads carry both), so derive
   // merged from merged_at when the boolean is absent (#4528, salvaged
   // from the duplicate PR #4687; fixes the Codex P1 on PR #4597).
-  const merged = !carriesMergeFields
-    ? null
-    : obj.merged != null
-      ? obj.merged
-        ? 1
-        : 0
-      : obj.merged_at != null
-        ? 1
-        : 0;
+  const merged = !carriesMergeFields ? null : obj.merged != null ? (obj.merged ? 1 : 0) : obj.merged_at != null ? 1 : 0;
   return {
     ref: itemRef(repo, number),
     repo,
@@ -163,10 +169,38 @@ export async function applyEvent(
     if (r && !refs.includes(r)) refs.push(r);
   };
 
+  // Hot list (#5204): one normalized ledger entry per handled sub-event.
+  // The event_id is stable per (delivery, sub-event): a redelivery of the
+  // same x-github-delivery derives the same ids and appends nothing twice,
+  // while distinct deliveries stay distinct rows. With no delivery id
+  // (direct applyEvent calls), the source timestamp keeps the id stable.
+  const hotEvents: HotEventInput[] = [];
+  const senderLogin = iso(payload.sender?.login);
+  const hot = (sub: string, fields: Partial<HotEventInput>) => {
+    hotEvents.push({
+      eventId: deliveryId ? `${deliveryId}:${sub}` : `${event}:${sub}:${fields.sourceTimestamp ?? ""}`,
+      deliveryId: deliveryId || null,
+      repo,
+      event,
+      action: iso(payload.action) ?? (event === "push" ? "push" : null),
+      ref: null,
+      actor: senderLogin,
+      sourceUrl: null,
+      sourceTimestamp: null,
+      ...fields,
+    });
+  };
+
   const applyIssue = async (issue: Record<string, any>) => {
     const kind = issueIsPr(issue) ? "pr" : "issue";
     await store.upsertItem(fromIssueOrPr(repo, issue, kind));
     addRef(itemRef(repo, issue.number));
+    hot(`${kind}:${issue.id ?? issue.number}`, {
+      ref: itemRef(repo, issue.number),
+      actor: iso(issue.user?.login) ?? senderLogin,
+      sourceUrl: iso(issue.html_url),
+      sourceTimestamp: iso(issue.updated_at) ?? iso(issue.created_at),
+    });
     wrote = true;
   };
 
@@ -181,6 +215,12 @@ export async function applyEvent(
     } else {
       await store.upsertComment(row);
     }
+    hot(`issue_comment:${comment.id}`, {
+      ref: itemRef(repo, issue.number),
+      actor: iso(comment.user?.login) ?? senderLogin,
+      sourceUrl: iso(comment.html_url),
+      sourceTimestamp: iso(comment.updated_at) ?? iso(comment.created_at),
+    });
     wrote = true;
   };
 
@@ -195,6 +235,12 @@ export async function applyEvent(
       if (pr) {
         await store.upsertItem(fromIssueOrPr(repo, pr, "pr"));
         addRef(itemRef(repo, pr.number));
+        hot(`pr:${pr.id ?? pr.number}`, {
+          ref: itemRef(repo, pr.number),
+          actor: iso(pr.user?.login) ?? senderLogin,
+          sourceUrl: iso(pr.html_url),
+          sourceTimestamp: iso(pr.updated_at) ?? iso(pr.created_at),
+        });
         wrote = true;
       }
       break;
@@ -215,6 +261,12 @@ export async function applyEvent(
         base.submitted_at = iso(review.submitted_at) ?? base.created_at;
         base.commit_id = iso(review.commit_id);
         await store.upsertComment(base);
+        hot(`review:${review.id}`, {
+          ref,
+          actor: iso(review.user?.login) ?? senderLogin,
+          sourceUrl: iso(review.html_url),
+          sourceTimestamp: iso(review.submitted_at) ?? iso(review.updated_at) ?? iso(review.created_at),
+        });
         wrote = true;
       }
       break;
@@ -235,6 +287,12 @@ export async function applyEvent(
         } else {
           await store.upsertComment(base);
         }
+        hot(`review_comment:${comment.id}`, {
+          ref,
+          actor: iso(comment.user?.login) ?? senderLogin,
+          sourceUrl: iso(comment.html_url),
+          sourceTimestamp: iso(comment.updated_at) ?? iso(comment.created_at),
+        });
         wrote = true;
       }
       break;
@@ -248,11 +306,31 @@ export async function applyEvent(
         beforeSha: iso(payload.before),
         pusher: iso(payload.pusher?.name),
       });
+      const commits: Record<string, any>[] = Array.isArray(payload.commits) ? payload.commits : [];
+      if (commits.length === 0) {
+        hot(`push:${iso(payload.after) ?? "unknown"}`, {
+          ref: iso(payload.ref),
+          actor: iso(payload.pusher?.name) ?? senderLogin,
+          sourceUrl: iso(payload.head_commit?.url),
+          sourceTimestamp: iso(payload.head_commit?.timestamp),
+        });
+      }
+      for (const commit of commits) {
+        hot(`commit:${commit.id}`, {
+          ref: iso(payload.ref),
+          actor: iso(commit.author?.username) ?? iso(payload.pusher?.name) ?? senderLogin,
+          sourceUrl: iso(commit.url),
+          sourceTimestamp: iso(commit.timestamp),
+        });
+      }
       wrote = true;
       break;
     }
     default:
       break;
+  }
+  if (hotEvents.length > 0 && store.appendHotEvents) {
+    await store.appendHotEvents(hotEvents);
   }
   return { refs, wrote };
 }

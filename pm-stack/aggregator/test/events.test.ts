@@ -13,6 +13,7 @@ import {
   EventsStore,
   emitEvent,
   filterEvents,
+  pageEvents,
   pruneEvents,
   validateStreamEvent,
   type StreamEvent,
@@ -174,6 +175,76 @@ describe("events store (#1739)", () => {
     expect(filterEvents(events).map((e) => e.summary)).toEqual(["later instant", "earlier instant"]);
   });
 
+  test("project, epic, ref and summary search filters share one matcher", () => {
+    const events: StreamEvent[] = [
+      { ...base, at: "2026-11-01T10:00:00Z", ref: "gh:developing-today/code#7", summary: "Moved to review" },
+      { ...base, at: "2026-11-01T09:00:00Z", ref: "developing-today/code#8", summary: "Closed" },
+    ];
+    const itemContext = new Map([
+      [
+        "developing-today/code#7",
+        { project: "https://github.com/orgs/developing-today/projects/1", epic: "developing-today/code#1" },
+      ],
+      ["developing-today/code#8", { project: "https://github.com/orgs/developing-today/projects/2", epic: null }],
+    ]);
+    expect(
+      filterEvents(events, {
+        refs: ["developing-today/code#7"],
+        project: "https://github.com/orgs/developing-today/projects/1",
+        epic: "developing-today/code#1",
+        search: "REVIEW",
+        itemContext,
+      }).map((event) => event.ref),
+    ).toEqual(["gh:developing-today/code#7"]);
+  });
+
+  test("cursor pages use stable id ordering and exclude events ingested after the snapshot", async () => {
+    const { store } = tmpStore();
+    const now = Date.now();
+    await store.record({ ...base, id: "event-c", at: new Date(now - 3 * 60_000).toISOString(), summary: "oldest" });
+    await store.record({ ...base, id: "event-b", at: new Date(now - 2 * 60_000).toISOString(), summary: "middle" });
+    await store.record({ ...base, id: "event-a", at: new Date(now - 1 * 60_000).toISOString(), summary: "newest" });
+    const first = pageEvents(await store.list(), { limit: 2 });
+    expect(first.events.map((event) => event.id)).toEqual(["event-a", "event-b"]);
+    expect(first.nextCursor).not.toBeNull();
+
+    // A late-arriving old event sorts behind the cursor by event time,
+    // but its ingestion time is beyond the first page's fixed snapshot.
+    await store.record({
+      ...base,
+      id: "late-event",
+      at: new Date(now - 5 * 60_000).toISOString(),
+      summary: "arrived late",
+    });
+    const second = pageEvents(await store.list(), { limit: 2, cursor: first.nextCursor });
+    expect(second.events.map((event) => event.id)).toEqual(["event-c"]);
+    expect(second.events.map((event) => event.id)).not.toContain("late-event");
+  });
+
+  test("pageEvents compares ingestion timestamps as instants, not strings", () => {
+    // Migrated v1 rows keep offset timestamps as ingestedAt: the first
+    // row below is 07:00Z even though its string sorts after the native
+    // 08:00Z row. Lexicographic comparison would pick the wrong
+    // snapshot and wrongly exclude the migrated row from later pages.
+    const mk = (id: string, at: string, ingestedAt: string) => ({
+      ...base,
+      version: 2 as const,
+      id,
+      at,
+      ingestedAt,
+      attribution: { confidence: "unknown" as const, asserted: false },
+      source: { identity: "test" },
+      prevHash: "",
+      hash: "",
+    });
+    const migrated = mk("migrated", "2026-11-04T06:00:00.000Z", "2026-11-04T15:00:00+08:00");
+    const native = mk("native", "2026-11-04T07:30:00.000Z", "2026-11-04T08:00:00.000Z");
+    const first = pageEvents([native, migrated], { limit: 1 });
+    expect(first.snapshotAt).toBe("2026-11-04T08:00:00.000Z");
+    const second = pageEvents([native, migrated], { limit: 1, cursor: first.nextCursor });
+    expect(second.events.map((event) => event.id)).toEqual(["migrated"]);
+  });
+
   test("identities the action-result contract accepts are valid events", async () => {
     // byRun may carry punctuation (stored as appliedByRun); objectRef
     // may run to 300 chars (isObjectRef). Neither may be lost here.
@@ -188,19 +259,42 @@ describe("events store (#1739)", () => {
   });
 
   test("validateStreamEvent refuses impossible calendar dates (#5154)", () => {
-    // Date.parse rolls these over to a neighbouring month instead of
-    // returning NaN; the ingest boundary must refuse them outright.
-    expect(validateStreamEvent({ ...base, at: "2026-02-30" }).ok).toBe(false);
-    expect(validateStreamEvent({ ...base, at: "2026-02-30T10:00:00Z" }).ok).toBe(false);
-    expect(validateStreamEvent({ ...base, at: "2026-04-31T10:00:00Z" }).ok).toBe(false);
-    expect(validateStreamEvent({ ...base, at: "2026-13-01T00:00:00Z" }).ok).toBe(false);
-    expect(validateStreamEvent({ ...base, at: "2026-02-29T10:00:00Z" }).ok).toBe(false);
+    // Date.parse rolls impossible dates over and accepts locale-dependent
+    // non-ISO forms; the ingest boundary must refuse both with its ISO error.
+    for (const at of [
+      "2026-02-30",
+      "2026-02-30T10:00:00Z",
+      "2026-04-31T10:00:00Z",
+      "March 2, 2026",
+      "03/02/2026",
+      "2026-13-01T00:00:00Z",
+      "2026-02-29T10:00:00Z",
+    ]) {
+      expect(validateStreamEvent({ ...base, at })).toEqual({
+        ok: false,
+        error: "event.at must be an ISO timestamp string",
+      });
+    }
     // Controls: real timestamps still validate — leap date, offset,
     // fractional seconds, date-only.
     expect(validateStreamEvent({ ...base, at: "2024-02-29T10:00:00Z" }).ok).toBe(true);
     expect(validateStreamEvent({ ...base, at: "2026-11-01T10:00:00+02:00" }).ok).toBe(true);
     expect(validateStreamEvent({ ...base, at: "2026-11-01T10:00:00.500Z" }).ok).toBe(true);
     expect(validateStreamEvent({ ...base, at: "2026-02-28" }).ok).toBe(true);
+  });
+
+  test("legacy event files with impossible or non-ISO timestamps are quarantined", async () => {
+    for (const at of ["2026-02-30T10:00:00Z", "2026-04-31T10:00:00Z", "March 2, 2026", "03/02/2026"]) {
+      const dir = mkdtempSync(join(tmpdir(), "agg-events-invalid-at-"));
+      const file = join(dir, "events.json");
+      const original = JSON.stringify({ version: 1, events: [{ ...base, at }] }, null, 2);
+      writeFileSync(file, original);
+
+      expect(await new EventsStore(file).list()).toEqual([]);
+      const quarantined = readdirSync(dir).find((name) => name.startsWith("events.json.corrupt-"));
+      expect(quarantined).toBeDefined();
+      expect(readFileSync(join(dir, quarantined!), "utf8")).toBe(original);
+    }
   });
 
   test("validateStreamEvent rejects malformed records", () => {

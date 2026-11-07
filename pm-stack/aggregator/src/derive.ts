@@ -504,14 +504,20 @@ export function sessionRoots(entries: TieredEntry[]): TieredEntry[] {
 
 const YMD = /^(\d{4})-(\d{2})-(\d{2})/;
 
+// ⚡ Bolt: Intl.DateTimeFormat construction is expensive (~29µs) and this
+// formatter's options never change, so build it once at module load instead
+// of on every chicagoYmd() call (several per dashboard render / digest run).
+// Formatters are stateless for format() calls, so sharing one is safe.
+const CHICAGO_YMD_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/Chicago",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
 /** "2026-10-25" in America/Chicago for an instant. */
 export function chicagoYmd(now = new Date()): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Chicago",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(now);
+  return CHICAGO_YMD_FORMATTER.format(now);
 }
 
 export function addDaysYmd(ymd: string, n: number): string {

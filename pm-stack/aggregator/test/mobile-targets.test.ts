@@ -6,7 +6,8 @@ import { join } from "node:path";
 // floor in the stylesheet. Static assertions, same style as nav.test.ts —
 // the rendered measurements live on issue #1180.
 const SRC = join(import.meta.dir, "..", "src");
-const renderSource = readFileSync(join(SRC, "render.ts"), "utf8");
+const renderSource =
+  readFileSync(join(SRC, "ui.css"), "utf8") + "\n" + readFileSync(join(SRC, "render.ts"), "utf8");
 
 function cssRule(selector: string): string {
   const start = renderSource.indexOf(`\n${selector} {`);
@@ -44,6 +45,14 @@ describe("tap targets are at least 40px tall (#1180)", () => {
   test("wide project and alert tables live in intentional scroll wrappers", () => {
     expect(renderSource).toContain('<div class="tblwrap"><table><caption>Coverage — pool vs backlog by repository');
     expect(renderSource).toContain('<div class="tblwrap"><table><caption>Recent alert-ledger transitions');
+  });
+  test("attention headers wrap and item session rows stay within the mobile card", () => {
+    expect(renderSource).toMatch(/\.attention-card-header \{[^}]*flex-wrap: wrap;/);
+    expect(renderSource).toMatch(/\.attention-card-header > strong \{[^}]*min-width: 0;/);
+    expect(renderSource).toMatch(/\.item-session-records > \.session-record-line \{[^}]*max-width: 100%;/);
+    expect(renderSource).toMatch(/\.item-session-records \.session-record-meta \{[^}]*overflow-wrap: anywhere;/);
+    expect(renderSource).toContain('<div class="attention-card-header">');
+    expect(renderSource).toContain('<div class="item-session-records">');
   });
   test("interactive AA chart points have a large touch target", () => {
     expect(renderSource).toContain('class="xpt-hit" cx="');

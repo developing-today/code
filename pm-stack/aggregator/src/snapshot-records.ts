@@ -18,7 +18,7 @@
 // (service, metric, ts, value), so an unchanged read re-derives the
 // identical record and appends nothing.
 import { POOL_SPECS, sectionOf } from "./quota-extract.ts";
-import { parseIsoDate } from "./validate.ts";
+import { isPercentOf, isRecord, parseIsoDate } from "./validate.ts";
 import type { DnsSection, PaygLine, QuotaPool, SaasService, SnapshotRecord, UsageUnit } from "./model.ts";
 
 const DATE_RE = /\d{4}-\d{2}-\d{2}/g;
@@ -293,16 +293,12 @@ export function recordsFromProviderUsage(snap: unknown, observedBy: string): Sna
     });
   }
   const rl = s.codex_usage?.usage?.rate_limit;
+  const isQuotaPercent = isPercentOf(100);
   const windowMetric = (w: unknown): void => {
-    if (typeof w !== "object" || w === null) return;
+    if (!isRecord(w)) return;
     const win = w as { used_percent?: unknown; limit_window_seconds?: unknown };
-    if (
-      typeof win.used_percent !== "number" ||
-      !Number.isFinite(win.used_percent) ||
-      win.used_percent < 0 ||
-      win.used_percent > 100
-    )
-      return;
+    const usedPercent = win.used_percent;
+    if (!isQuotaPercent(usedPercent)) return;
     const metricId =
       win.limit_window_seconds === 604_800 ? "7-day" : win.limit_window_seconds === 18_000 ? "5-hour" : null;
     if (!metricId) return;
@@ -310,7 +306,7 @@ export function recordsFromProviderUsage(snap: unknown, observedBy: string): Sna
       ts,
       serviceId: "openai.main",
       metricId,
-      value: win.used_percent,
+      value: usedPercent,
       unit: "pct",
       limit: 100,
       source: "api",

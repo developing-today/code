@@ -28,7 +28,6 @@ import type {
   ChargeRow,
   DnsSection,
   GoalMeasurement,
-  JulesSummary,
   OrchestrationProvenance,
   OrchestrationSection,
   PaygLine,
@@ -87,15 +86,13 @@ export interface FleetFeed {
   /** PAYG lines loadFeed's sanitization dropped (#2450), set only
    * when drops occurred; absent on raw parsed feeds and clean loads. */
   paygDropped?: number;
-  /** Sandbox-server + Jules sessions, pre-classification (render classifies). */
+  /** Sandbox-server sessions, pre-classification (render classifies). */
   attention: SessionFeedEntry[];
-  /** Jules keeper totals (slice 2); absent when the keeper state is unreadable. */
-  julesSummary?: JulesSummary;
   /** The orchestration job's latest section (#899), when one exists. */
   orchestration?: OrchestrationSection;
   /** The DNS/domain register (#902), parsed by the collector (slice 3). */
   dns?: DnsSection;
-  /** Identity-registry records (#906 §3): sandbox OpenCode + Jules + Muse launches. */
+  /** Identity-registry records (#906 §3): sandbox OpenCode + Muse launches. */
   registry?: SessionRecord[];
   /** Usage & billing hub (design §2.3): family-2 services extracted from
    * quota-view.md Part (b) by the collector; absent in older feeds. */
@@ -230,7 +227,14 @@ function isLinedUpElement(v: unknown): boolean {
     typeof v.horizon === "string" &&
     LINED_UP_HORIZONS.includes(v.horizon) &&
     (v.status === undefined || (typeof v.status === "string" && LINED_UP_STATUSES.includes(v.status))) &&
-    (v.horizonWhy === undefined || typeof v.horizonWhy === "string")
+    (v.horizonWhy === undefined || typeof v.horizonWhy === "string") &&
+    // #6174: consumers dereference `ref` as a string (assembleWorkItems
+    // keys items by it; todayFromSection carries it to the render), so
+    // its type is gated here like the other dereferenced fields. A
+    // string that is not a GitHub ref stays valid at the gate — goal
+    // ids are legitimate lined-up refs in live data (#6149); consumers
+    // guard those with isValidRef at the render (#6149/#6205).
+    (v.ref === undefined || typeof v.ref === "string")
   );
 }
 
@@ -694,7 +698,7 @@ function isSaasService(v: unknown): v is SaasService {
     (v.paygEstimate === null || isPaygEstimate(v.paygEstimate)) &&
     (v.paygNote === undefined || typeof v.paygNote === "string") &&
     (v.billedUsd === undefined || v.billedUsd === null || isNonNegative(v.billedUsd)) &&
-    (typeof v.measuredAt === "string" || v.measuredAt === null) &&
+    (v.measuredAt === null || isIsoDate(v.measuredAt)) &&
     typeof v.sourceClass === "string" &&
     USAGE_SOURCE_CLASSES.includes(v.sourceClass) &&
     typeof v.sourceNote === "string" &&
@@ -937,9 +941,11 @@ export interface RegistrySanitization {
  * dropped individually. */
 export function sanitizeRegistry(v: unknown): RegistrySanitization {
   if (v === undefined) return { dropped: 0 };
-  if (!Array.isArray(v)) return { rows: [], dropped: 1 };
-  const rows = v.filter(isSessionRecord);
-  return { rows, dropped: v.length - rows.length };
+  // Shared container primitive (#2576 Phase 1): a non-array section is one
+  // shape failure; malformed array entries drop individually and count.
+  const parsed = arrayOf(isSessionRecord)(v);
+  if (parsed === null) return { rows: [], dropped: 1 };
+  return { rows: parsed.values, dropped: parsed.dropped };
 }
 
 /** A PAYG line safe for both the attention derivation and the quota renderer. */

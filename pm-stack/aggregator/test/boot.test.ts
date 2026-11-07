@@ -168,6 +168,8 @@ describe("server boots from fixtures", () => {
     const today = await (await fetch(`http://127.0.0.1:${port}/frag/today`)).text();
     expect(today.includes("Top objectives")).toBe(true);
     expect(today.includes("Project momentum")).toBe(true);
+    expect(today.includes("Next up")).toBe(true);
+    expect(today.includes("stale inputs")).toBe(false); // fixture inputs are an intentional static source
     const todayJson = (await (await fetch(`http://127.0.0.1:${port}/api/today.json`)).json()) as {
       objectives: unknown[];
       momentum: unknown[];
@@ -182,7 +184,7 @@ describe("server boots from fixtures", () => {
       coverage: { source: string; wired: boolean }[];
       expired: number;
     };
-    expect(coverage.coverage.find((c) => c.source === "jules")?.wired).toBe(true);
+    expect(coverage.coverage.find((c) => c.source === "jules")).toBeUndefined(); // source retired (code#5098)
     expect(coverage.coverage.find((c) => c.source === "claude-code")?.wired).toBe(false);
     expect(coverage.expired).toBeGreaterThan(0); // the finished fixture probe
     const week = await (await fetch(`http://127.0.0.1:${port}/roadmap?h=week`)).text();
@@ -240,6 +242,61 @@ describe("server boots from fixtures", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("Linked issues / PRs");
+    expect(html).toContain("Activity stream");
+    expect(html).toContain("View these events in the global river");
+    expect(html).toContain("Freshness: unknown");
+    expect(html).toContain("Known activity gaps");
+    expect(html).toContain("Activity source coverage");
     expect(html).not.toContain("Planning notes");
+  });
+
+  test("events filters persist in page and machine-twin URLs", async () => {
+    const filters = {
+      project: "project-a",
+      epic: "developing-today/code#3323",
+      kind: "issue-comment",
+      actor: "drew",
+      ref: "developing-today/code#3323",
+      q: "coverage gaps",
+      limit: "25",
+    };
+    const query = new URLSearchParams(filters);
+    const page = await fetch(`http://127.0.0.1:${port}/events?${query}`);
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    expect(html).toContain('name="project"');
+    expect(html).toContain("overflow-x:auto");
+    expect(html).toContain("flex-wrap:wrap");
+    expect(html).toContain('value="project-a" selected');
+    expect(html).toContain('value="developing-today/code#3323" selected');
+    expect(html).toContain('name="q" value="coverage gaps"');
+    expect(html).toContain('name="actor" value="drew"');
+
+    const apiHref = html.match(/href="([^"]+)">\/api\/events\.json/)?.[1];
+    expect(apiHref).toBeDefined();
+    const apiUrl = new URL(apiHref!.replaceAll("&amp;", "&"), `http://127.0.0.1:${port}`);
+    for (const [key, value] of Object.entries(filters)) expect(apiUrl.searchParams.get(key)).toBe(value);
+    const api = (await (await fetch(apiUrl)).json()) as {
+      pagination: { snapshotAt: string };
+      activity: { freshness: { status: string }; coverage: unknown[] };
+    };
+    expect(api.pagination.snapshotAt).toBeTruthy();
+    expect(api.activity.freshness.status).toBe("unknown");
+    expect(Array.isArray(api.activity.coverage)).toBe(true);
+  });
+
+  test("events page renders every ref filter as a visible editable input", async () => {
+    // Codex P2 on PR #5266: refs beyond the first used to ride along as
+    // hidden inputs, so they could not be edited or removed and
+    // clearing the visible Ref field still restricted the river.
+    const query = new URLSearchParams();
+    query.append("ref", "developing-today/code#3323");
+    query.append("ref", "developing-today/code#3321");
+    const page = await fetch(`http://127.0.0.1:${port}/events?${query}`);
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    expect(html).not.toContain('type="hidden" name="ref"');
+    expect(html).toContain('name="ref" value="developing-today/code#3323"');
+    expect(html).toContain('name="ref" value="developing-today/code#3321"');
   });
 });

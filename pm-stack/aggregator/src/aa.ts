@@ -1167,7 +1167,11 @@ export function isAaSection(v: unknown): v is AaFeedSection {
       (r) =>
         typeof r === "object" &&
         r !== null &&
-        (typeof (r as { snapshotDate?: unknown }).snapshotDate === "string" ||
+        // #5289: snapshotDate is a date, not just a string — summarizeAa
+        // publishes these values verbatim as the batch's snapshot vintage,
+        // so gate them with isIsoDate like generatedAt above (date-only
+        // forms pass; impossible/non-ISO strings degrade the section).
+        (isIsoDate((r as { snapshotDate?: unknown }).snapshotDate) ||
           (r as { snapshotDate?: unknown }).snapshotDate === null),
     ) &&
     // #2415: summarizeAa iterates thresholds and the /aa renderer maps

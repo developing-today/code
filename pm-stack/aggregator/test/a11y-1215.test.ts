@@ -9,7 +9,10 @@ import { PAGES } from "../src/pages.ts";
 import { navLinks, pageDropdown, renderAa } from "../src/render.ts";
 import { FIXTURE_AA } from "../src/sources/fixtures.ts";
 
-const renderSource = readFileSync(join(import.meta.dir, "..", "src", "render.ts"), "utf8");
+const renderSource =
+  readFileSync(join(import.meta.dir, "..", "src", "ui.css"), "utf8") +
+  "\n" +
+  readFileSync(join(import.meta.dir, "..", "src", "render.ts"), "utf8");
 
 describe("light theme (#1215)", () => {
   const light = renderSource.slice(

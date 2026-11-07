@@ -7,6 +7,7 @@
 // (GitHub, Kaneo, Grist) stays read-only from here — the fleet jobs
 // apply actions; the dashboard only records them.
 import { stat } from "node:fs/promises";
+import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
 import { ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
@@ -20,7 +21,9 @@ import {
 import { commentKindCounts, CommentsStore, queuedComments, validateNewComment } from "./comments.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
-import { EventsStore, emitEvent } from "./events.ts";
+import { EventsStore, emitEvent, pageEvents } from "./events.ts";
+import { FreshnessStore, type FreshnessInput } from "./freshness.ts";
+import { createFreshnessIpcHandler } from "./freshness-ipc.ts";
 import {
   IngestionStore,
   WatchdogEpisodeStabilizer,
@@ -107,8 +110,10 @@ import {
   renderTodayBody,
   renderTodayShell,
   type CommentFormOpts,
+  eventTableHtml,
 } from "./render.ts";
 import { buildBriefs } from "./brief.ts";
+import { buildDigest, listDigestArchives, readDigestArchive, type Digest, type DigestKind } from "./digest.ts";
 import { timingSafeEqual } from "node:crypto";
 import {
   getAlertsStore,
@@ -121,7 +126,7 @@ import {
 import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
 import { resolveBwsSecret } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
-import { renderAlerts, renderNotifications, esc } from "./render.ts";
+import { renderAlerts, renderNotifications, renderDigest, esc } from "./render.ts";
 import { rollupNotificationSends } from "./notifications.ts";
 import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
@@ -129,7 +134,7 @@ import { searchWork } from "./search-view.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
-import { buildQueueView } from "./queue-view.ts";
+import { buildQueueView, queueInputsStale } from "./queue-view.ts";
 import { dispatchStateFor, fetchRfaState, RFA_NOT_PICKED_UP } from "./sources/ready-for-agent.ts";
 
 const cfg = loadConfig();
@@ -202,6 +207,7 @@ async function coverageSnapshot(
 const actionsStore = new ActionsStore(cfg.actionsFile);
 const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);
+const freshnessStore = new FreshnessStore(cfg.freshnessFile);
 const activityStore = new IngestionStore(cfg.activityFile);
 
 /** #1739: the event log's fire-and-forget sink for source-side
@@ -224,6 +230,13 @@ async function recordActivity(
 ): Promise<{ failed: number; failedIds: string[] }> {
   const result = await ingestActivity(activityStore, eventsStore, deliveries);
   return { failed: result.failed, failedIds: result.failedIds };
+}
+
+/** #3977: source freshness notices are not #1739 activity records.
+ *  This store is owned by the aggregator process; the projector and
+ *  collector reach it only through the loopback publisher listener. */
+async function recordFreshness(input: FreshnessInput): Promise<void> {
+  await freshnessStore.publish(input);
 }
 
 /** #3321: the source-gap sink for the live source's polling gaps
@@ -272,6 +285,7 @@ function pickSource(): Source {
         onEvent: recordStreamEvent,
         hasEvent: hasStreamEvent,
         onActivity: recordActivity,
+        onFreshness: recordFreshness,
         onSourceGap: recordSourceGap,
         seenActivityIds: (source) => activityStore.seenIds(source),
       })
@@ -279,6 +293,10 @@ function pickSource(): Source {
 }
 
 const source = pickSource();
+
+/** Lazy quota refresh (#1171): stale page/API loads ask the deployed
+ *  gatherer unit to run again; single-flight + cooldown live in the module. */
+const quotaRefresher = createQuotaRefresher({ trigger: systemdTrigger() });
 
 // #1279: prefer the latest-comment-per-ref read so a busy batch cannot
 // truncate an item's most recent activity out of its brief.
@@ -707,15 +725,22 @@ async function todaySignals() {
 }
 
 async function todayContext() {
-  const [{ board, items }, { rows }, { view, coverage }, signals, summary] = await Promise.all([
+  const [{ board, items }, { rows, pool }, { view, coverage, orchestration }, signals] = await Promise.all([
     boardContext(),
     roadmapContext(),
     attentionContext(),
     todaySignals(),
-    source.orchestration().catch(() => null),
   ]);
   const diagnosis = source.diagnostics?.().orchestration;
-  return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis), view, coverage, ...signals };
+  const queue = buildQueueView({ board, pool, items, orchestration });
+  return {
+    today: deriveToday(board, rows, items, orchestration, new Date(), diagnosis),
+    view,
+    coverage,
+    ...signals,
+    queue,
+    queueStale: queueInputsStale(signals.health),
+  };
 }
 
 async function queueContext() {
@@ -799,6 +824,33 @@ function poolItemLike(item: ProjectPoolItem): ViewItemLike {
   };
 }
 
+function eventContextByRef(pool: readonly ProjectPoolItem[]): Map<string, { project: string; epic: string | null }> {
+  const context = new Map<string, { project: string; epic: string | null }>();
+  for (const item of pool) {
+    const ref = item.ref.replace(/^gh:/i, "").toLowerCase();
+    context.set(ref, {
+      project: item.projectUrl,
+      epic: item.epicRef ?? (item.kind?.toLowerCase() === "epic" ? item.ref : null),
+    });
+  }
+  return context;
+}
+
+function eventFilterFromUrl(
+  url: URL,
+  itemContext: ReadonlyMap<string, { project?: string | null; epic?: string | null }>,
+) {
+  return {
+    kind: url.searchParams.get("kind") ?? undefined,
+    refs: url.searchParams.getAll("ref"),
+    actor: url.searchParams.get("actor") ?? undefined,
+    project: url.searchParams.get("project") ?? undefined,
+    epic: url.searchParams.get("epic") ?? undefined,
+    search: url.searchParams.get("q") ?? undefined,
+    itemContext,
+  };
+}
+
 /** A board card / roadmap row matches when its own fields match, or
  *  when any canonical item it links to matches. */
 function linkedLike(
@@ -849,6 +901,31 @@ async function applyViewAction(action: DashAction): Promise<string> {
     default:
       throw new Error(`not a view verb: ${action.verb}`);
   }
+}
+
+/** The digest (#1278): built live from the same Source as every page;
+ * the archived form is the JSON the generator script wrote. */
+async function digestContext(kind: DigestKind): Promise<Digest> {
+  // Prime the items facet first (#1267 pattern): items() is the call
+  // that records the pool's feed freshness into provenance — without
+  // it the digest's pool sections would read an unprimed facet.
+  await source.items([]).catch(() => null);
+  const [pool, needsDrew, quota, poolAvailable] = await Promise.all([
+    source.projects(),
+    source.needsDrew ? source.needsDrew().catch(() => null) : Promise.resolve(null),
+    source.quota().catch(() => null),
+    source.projectsAvailable ? source.projectsAvailable().catch(() => undefined) : Promise.resolve(undefined),
+  ]);
+  return buildDigest({
+    pool,
+    needsDrew,
+    quota,
+    provenanceDetail: source.provenanceDetail?.() ?? null,
+    poolAvailable,
+    sourceKind: cfg.source,
+    now: new Date(),
+    kind,
+  });
 }
 
 const GRAINS = new Set<string>(["quarter", "month", "week", "3d", "today"]);
@@ -947,7 +1024,7 @@ async function handler(req: Request): Promise<Response> {
   }
   // --- Dashboard action writes (#1152/#1154/#1156) -----------------------
   // The triage write path: forms POST DashActions here; the fleet
-  // consumers (orchestration pass, Jules keeper) poll state=new and
+  // consumers (orchestration pass) poll state=new and
   // report outcomes to /api/actions/result. The dashboard itself never
   // writes GitHub, the Project, or a session server.
   if (req.method === "POST" && path === "/api/actions") {
@@ -1141,44 +1218,97 @@ async function handler(req: Request): Promise<Response> {
     }
   }
   if (path === "/api/events.json") {
-    // #1739: the cross-stack event stream, newest first, with
-    // kind/ref/actor filters — the machine twin of /events below.
-    const events = await eventsStore.list({
-      kind: url.searchParams.get("kind") ?? undefined,
-      ref: url.searchParams.get("ref") ?? undefined,
-      actor: url.searchParams.get("actor") ?? undefined,
+    // #1739/#3323: the same source-native stream and filters as /events.
+    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
+    const filtered = await eventsStore.list(eventFilterFromUrl(url, eventContextByRef(pool)));
+    const page = pageEvents(filtered, {
+      cursor: url.searchParams.get("cursor"),
+      limit: Number(url.searchParams.get("limit") ?? 50),
     });
     // #3322 slice A: the audit health surface rides along — pending
     // retry-outbox count + hash-chain integrity verdict.
-    const health = await eventsStore.health();
-    return json({ events, health });
+    const [health, checkpoints, gaps] = await Promise.all([
+      eventsStore.health(),
+      activityStore.checkpoints(),
+      activityStore.gaps(),
+    ]);
+    return json({
+      events: page.events,
+      health,
+      pagination: { total: filtered.length, snapshotAt: page.snapshotAt, nextCursor: page.nextCursor },
+      activity: {
+        checkpoints,
+        gaps,
+        coverage: ACTIVITY_SOURCE_COVERAGE,
+        freshness: {
+          status: "unknown",
+          reason: "ingestion checkpoints record deliveries, not successful source polls",
+        },
+      },
+    });
   }
   if (path === "/events") {
-    // #1739: the human page over the same stream /api/events.json
-    // serves — same records, same filters (?kind=&ref=&actor=).
-    const filter = {
-      kind: url.searchParams.get("kind") ?? undefined,
-      ref: url.searchParams.get("ref") ?? undefined,
-      actor: url.searchParams.get("actor") ?? undefined,
-    };
-    const events = await eventsStore.list(filter);
-    const rows = events
-      .map(
-        (e) =>
-          `<tr><td>${esc(e.at)}</td><td>${esc(e.actor)}</td><td>${esc(e.kind)}</td>` +
-          `<td>${esc(e.ref)}</td><td>${esc(e.summary)}</td></tr>`,
-      )
-      .join("\n");
+    // Machine and human surfaces share filters, ordering, and a stable
+    // ingestion snapshot for cursor pagination.
+    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
+    const filtered = await eventsStore.list(eventFilterFromUrl(url, eventContextByRef(pool)));
+    const page = pageEvents(filtered, {
+      cursor: url.searchParams.get("cursor"),
+      limit: Number(url.searchParams.get("limit") ?? 50),
+    });
+    const projects = [...new Set(pool.map((item) => item.projectUrl))].sort();
+    const epics = new Map<string, string>();
+    for (const item of pool) {
+      if (item.kind?.toLowerCase() === "epic") epics.set(item.ref, item.title);
+      if (item.epicRef)
+        epics.set(item.epicRef, pool.find((candidate) => candidate.ref === item.epicRef)?.title ?? item.epicRef);
+    }
+    const refs = url.searchParams.getAll("ref");
+    const option = (value: string, label: string, selected: string) =>
+      `<option value="${esc(value)}"${value === selected ? " selected" : ""}>${esc(label)}</option>`;
+    const projectOptions = [...new Set([url.searchParams.get("project") ?? "", ...projects].filter(Boolean))]
+      .map((value) => option(value, value, url.searchParams.get("project") ?? ""))
+      .join("");
+    const selectedEpic = url.searchParams.get("epic") ?? "";
+    if (selectedEpic && !epics.has(selectedEpic)) epics.set(selectedEpic, selectedEpic);
+    const epicOptions = [...epics.entries()]
+      .map(([value, label]) => option(value, label, url.searchParams.get("epic") ?? ""))
+      .join("");
+    // Every ref filter is a visible, editable input: hidden preserved
+    // refs could not be removed, so clearing the visible Ref field
+    // still restricted results to the item's linked refs (Codex P2,
+    // PR #5266). A cleared input submits ref="", which filterEvents
+    // ignores, so clearing an input is removing that ref.
+    const refInputs = (refs.length ? refs : [""])
+      .map((ref, index) => `<label>Ref${index ? ` ${index + 1}` : ""} <input name="ref" value="${esc(ref)}"></label>`)
+      .join("");
+    const nextUrl = page.nextCursor ? new URL(url) : null;
+    if (nextUrl && page.nextCursor) nextUrl.searchParams.set("cursor", page.nextCursor);
+    const apiUrl = new URL(url);
+    apiUrl.pathname = "/api/events.json";
+    apiUrl.hash = "";
     return html(
-      `<!doctype html><html><head><meta charset="utf-8"><title>Events — pm-stack</title></head><body>` +
-        `<h1>Events</h1><p>${events.length} event(s), newest first. ` +
-        `Machine twin: <a href="/api/events.json">/api/events.json</a> (filters: kind, ref, actor).</p>` +
-        `<table><thead><tr><th>at</th><th>actor</th><th>kind</th><th>ref</th><th>summary</th></tr></thead>` +
-        `<tbody>${rows}</tbody></table>` +
-        `<h2>Activity gaps</h2>` +
+      `<!doctype html><html><head><meta charset="utf-8"><title>Events — pm-stack</title>` +
+        `<style>body{margin:1rem;font:16px system-ui,sans-serif}form{display:flex;flex-wrap:wrap;align-items:end;gap:.75rem}form label{display:grid;gap:.25rem}.tblwrap{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}table{border-collapse:collapse;min-width:36rem}th,td{border:1px solid #888;padding:.4rem .55rem;text-align:left;vertical-align:top}.muted{color:#666}</style></head><body>` +
+        `<h1>Events</h1><p>Showing ${page.events.length} of ${filtered.length} matching events from a fixed snapshot, newest first. ` +
+        `Machine twin: <a href="${esc(apiUrl.pathname + apiUrl.search)}">/api/events.json</a>.</p>` +
+        `<p class="muted"><strong>Freshness: unknown.</strong> Ingestion checkpoints record deliveries, not successful source polls.</p>` +
+        `<form method="get" action="/events" aria-label="Filter activity events">` +
+        `<label>Project <select name="project"><option value="">All projects</option>${projectOptions}</select></label>` +
+        `<label>Epic <select name="epic"><option value="">All epics</option>${epicOptions}</select></label>` +
+        `<label>Kind <input name="kind" value="${esc(url.searchParams.get("kind") ?? "")}"></label>` +
+        `<label>Actor <input name="actor" value="${esc(url.searchParams.get("actor") ?? "")}"></label>` +
+        refInputs +
+        `<label>Search <input name="q" value="${esc(url.searchParams.get("q") ?? "")}"></label>` +
+        `<label>Page size <select name="limit">${[25, 50, 100].map((n) => option(String(n), String(n), url.searchParams.get("limit") ?? "50")).join("")}</select></label>` +
+        `<button type="submit">Filter</button></form>` +
+        eventTableHtml(page.events) +
+        (nextUrl ? `<p><a rel="next" href="${esc(nextUrl.pathname + nextUrl.search)}">Next page →</a></p>` : "") +
+        `<h2>Activity gaps</h2><div class="tblwrap">` +
         gapsHtml(await activityStore.gaps()) +
-        `<h2>Activity source coverage</h2>` +
+        `</div><h2>Activity source coverage</h2><div class="tblwrap">` +
         activityCoverageHtml() +
+        `</div>` +
         `</body></html>`,
     );
   }
@@ -1276,15 +1406,29 @@ async function handler(req: Request): Promise<Response> {
       const signals = await todaySignals();
       return html(renderTodayShell(prov(), provDetail(), signals.health, signals.quota, signals.quotaUnavailable));
     }
-    const { today, view, coverage, quota, health, quotaUnavailable } = await todayContext();
-    return html(renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable));
+    const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
+    return html(renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable, queue, queueStale));
   }
   if (path === "/frag/today") {
-    const { today, view, coverage, quota, health, quotaUnavailable } = await todayContext();
-    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage, health, quotaUnavailable)}</div>`;
+    const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
+    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage, health, quotaUnavailable, queue, queueStale)}</div>`;
     return sseResponse(ssePatch("#today-main", wrapped));
   }
 
+  if (path === "/digest") {
+    const kind = url.searchParams.get("kind") === "weekly" ? "weekly" : "daily";
+    const date = url.searchParams.get("date");
+    const archives = await listDigestArchives(cfg.digestsDir);
+    // The dated archive URL (#1278): renders the stored digest verbatim.
+    if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      const archived =
+        (await readDigestArchive(cfg.digestsDir, date, kind)) ??
+        (kind === "daily" ? null : await readDigestArchive(cfg.digestsDir, date, "daily"));
+      if (archived) return html(renderDigest(archived, archives, prov(), provDetail()));
+      return html(renderDigest(await digestContext("daily"), archives, prov(), provDetail()), 404);
+    }
+    return html(renderDigest(await digestContext(kind), archives, prov(), provDetail()));
+  }
   if (path === "/queue") {
     if (url.searchParams.get("full") !== "1") return html(renderQueueShell(prov(), provDetail()));
     return html(renderQueue(await queueContext(), prov(), provDetail()));
@@ -1381,7 +1525,16 @@ async function handler(req: Request): Promise<Response> {
       source.quota().catch(() => emptyQuotaView()),
       source.usage().catch(() => emptyUsageView()),
     ]);
-    return html(renderQuota(quota, prov(), usage, provDetail()));
+    // Never block on providers (#1171): decide from the stored measurement,
+    // ask the gatherer to run in the background, render what we have.
+    const refresh = quotaRefresher.request(quota);
+    return html(renderQuota(quota, prov(), usage, provDetail(), refresh));
+  }
+
+  if (req.method === "POST" && path === "/quota/refresh") {
+    const quota = await source.quota().catch(() => emptyQuotaView());
+    quotaRefresher.manual(quota);
+    return new Response(null, { status: 303, headers: { Location: "/quota" } });
   }
 
   const serviceMatch = /^\/quota\/service\/([\w-]+)$/.exec(path);
@@ -1410,6 +1563,16 @@ async function handler(req: Request): Promise<Response> {
     const { view, coverage, counts, act, briefs, census } = await attentionRender();
     const sections = attentionSections(view, coverage, counts, act, briefs, census);
     return sseResponse(ssePatch(`#attn-${section}`, attentionFragment(section, sections[section])));
+  }
+  if (path === "/assets/app.css") {
+    // The committed Tailwind + DaisyUI build (Phase C): source is
+    // src/ui.css, rebuilt with `bun run build:css`; never generated at
+    // request time, so a plain pull deploys it like the other assets.
+    const file = Bun.file(new URL("./assets/app.css", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/css; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
   }
   if (path === "/assets/datastar.js") {
     // The vendored Datastar bundle (#1444) — a static asset, never a
@@ -1715,8 +1878,12 @@ async function handler(req: Request): Promise<Response> {
     // hub sections ride as additional top-level keys. Snapshot history
     // stays out of this twin — it is per-service, on the service twin.
     const [quota, usage] = await Promise.all([source.quota(), source.usage()]);
+    // #1171: a stale read returns immediately with refresh state instead of
+    // waiting on provider calls; the gatherer runs in the background.
+    const refresh = quotaRefresher.request(quota);
     return json({
       ...quota,
+      refresh,
       saas: usage.services,
       payg: usage.payg,
       charges: usage.charges,
@@ -1724,6 +1891,13 @@ async function handler(req: Request): Promise<Response> {
       domains: usage.domains,
       subscriptions: usage.subscriptions,
     });
+  }
+  if (req.method === "POST" && path === "/api/quota/refresh") {
+    const quota = await source.quota().catch(() => emptyQuotaView());
+    const refresh = quotaRefresher.manual(quota);
+    // generatedAt is the client's poll baseline (#6125): the manual
+    // refresh is only done when quota-current.json advances past it.
+    return json({ requested: refresh.triggered, refresh, generatedAt: quota.gatherer?.generatedAt ?? null });
   }
   if (path === "/api/quota/service.json") {
     const id = url.searchParams.get("id") ?? "";
@@ -1763,6 +1937,24 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/today.json") {
     const { today } = await todayContext();
     return json(today);
+  }
+  if (path === "/api/digest.json") {
+    const kind = url.searchParams.get("kind") === "weekly" ? "weekly" : "daily";
+    const date = url.searchParams.get("date");
+    // Share the /digest handler's archive resolution (#5279 Codex): a
+    // dated request returns the stored digest verbatim, so the machine
+    // twin of a weekly or historical page is the digest it displays.
+    if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      const archived =
+        (await readDigestArchive(cfg.digestsDir, date, kind)) ??
+        (kind === "daily" ? null : await readDigestArchive(cfg.digestsDir, date, "daily"));
+      if (archived) return json(archived);
+      return json({ error: `no ${kind} digest archived for ${date}` }, 404);
+    }
+    return json(await digestContext(kind));
+  }
+  if (path === "/api/digests.json") {
+    return json({ archives: await listDigestArchives(cfg.digestsDir) });
   }
   if (path === "/api/queue.json") {
     return json(await queueContext());
@@ -1991,6 +2183,13 @@ async function handler(req: Request): Promise<Response> {
       const title = subject.title;
       const links = subject.links;
       const refs = allRefs([subject]);
+      const activityRefs = [...new Set([id, ...refs].map((ref) => ref.replace(/^gh:/i, "")))];
+      const activityQuery = new URLSearchParams();
+      for (const ref of activityRefs) activityQuery.append("ref", ref);
+      const [itemEvents, itemGaps] = await Promise.all([
+        eventsStore.list({ refs: activityRefs }),
+        activityStore.gaps(),
+      ]);
       const [items, comments, allComments, records, pool, orchestration, allActions, roadmapAnnotations] =
         await Promise.all([
           source.items(refs).catch(() => new Map()),
@@ -2046,6 +2245,12 @@ async function handler(req: Request): Promise<Response> {
         ...(epicRollup ? { epicRollup } : {}),
         briefs,
         ...(dispatchStates.length ? { dispatchStates } : {}),
+        activity: {
+          events: itemEvents,
+          globalHref: `/events?${activityQuery.toString()}`,
+          gaps: itemGaps,
+          coverage: ACTIVITY_SOURCE_COVERAGE,
+        },
       };
       return html(renderItem(title, id, links, items, comments, prov(), extras));
     }
@@ -2098,6 +2303,10 @@ const servers = cfg.hosts.map((hostname) =>
   Bun.serve({
     hostname,
     port: cfg.port,
+    // Phase B §13.1: slow fragments (overview/board/queue renders) exceed
+    // Bun's 10s default idle timeout and the patch response gets killed
+    // mid-render; 60s gives the heavy contexts room without going unbounded.
+    idleTimeout: 60,
     fetch: fetchHandler,
   }),
 );
@@ -2105,6 +2314,15 @@ const servers = cfg.hosts.map((hostname) =>
 for (const server of servers) {
   console.log(`aggregator listening on http://${server.hostname}:${server.port} (source: ${cfg.source})`);
 }
+
+// Cross-process publishers get a separate loopback-only listener; never
+// add this port to PM_AGG_HOSTS or expose it through the Cloudflare tunnel.
+const freshnessIpcServer = Bun.serve({
+  hostname: "127.0.0.1",
+  port: cfg.freshnessPort,
+  fetch: createFreshnessIpcHandler(freshnessStore),
+});
+console.log(`freshness publisher listening on http://${freshnessIpcServer.hostname}:${freshnessIpcServer.port}`);
 
 // Collector feeds are replaced on a ~5-minute cadence. Land their
 // snapshot records from a server-owned writer tick rather than from

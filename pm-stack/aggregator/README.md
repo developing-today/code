@@ -63,16 +63,13 @@ that is plumbing, not links).
   its tiers win for anything they name, reason verbatim) → a keeper
   "escalate" supervision note → a decision-shaped question → a
   destructive permission request → a credential/sign-in wall. Routine
-  questions, errors, and tool permissions are the orchestrator's —
-  and so are Jules' questions (the keeper answers those itself).
+  questions, errors, and tool permissions are the orchestrator's.
 - **Expiry**: a finished run (the runtime reported an outcome) expires
   2 h after its last activity; anything expires at 24 h. The page counts
   what expired.
 - **Sources**: every entry is stamped `opencode-sandbox` /
-  `opencode-laptop` / `jules` / `claude-code`; OpenCode sub-sessions
-  carry `parentId` and collapse under their parent. **Jules is wired**
-  via the keeper's `jules-review-state.json` (collector-side,
-  `src/sources/jules.ts`). **Muse** has no runtime registry to
+  `opencode-laptop` / `claude-code`; OpenCode sub-sessions
+  carry `parentId` and collapse under their parent. **Muse** has no runtime registry to
   read; slice 3 (#906) wires it via launch records instead — a Muse
   session that never wrote one stays invisible, and the coverage note
   on the page says which (see "Session identity registry" above).
@@ -213,9 +210,7 @@ Kinds and consumers (one consumer per kind/source slice):
   its single writer, #910 — applies it and its run log names
   "requested via dashboard, action da-…".
 - **session** — routed by the recorded `sessionSource`: `poke` /
-  `answer` / `stop` on live sessions. Jules sessions are
-  keeper-mediated (the jules-review job consumes their `answer`
-  actions; poke/stop render disabled with the reason), OpenCode
+  `answer` / `stop` on live sessions. OpenCode
   sessions are consumed by the orchestration pass, and sources with
   no live control channel (Muse, cron) render no enabled
   controls. Stop sits behind a two-step confirm.
@@ -288,7 +283,6 @@ token total so counts never go backwards):
 - **OpenCode** (laptop live + sandbox via the feed): session id,
   parent id, agent identity (`opencode:<agent>`, `opencode (sub)` for
   unnamed sub-sessions), status, per-session token totals.
-- **Jules**: keeper state, via the feed.
 - **Muse**: launch records appended at spawn to a JSONL the
   collector carries — `scripts/record-claude-launch.ts` writes them,
   `CLAUDE_LAUNCH_RECORDS_PATH` locates the file; a record is
@@ -430,29 +424,34 @@ bun test
 
 ## Configuration (env, secrets by NAME only)
 
-Everything defaults to **fixtures** and works with no configuration:
+Everything defaults to **fixtures** and works with no configuration,
+except the default Source itself: serving fixtures without an explicit
+`PM_AGG_SOURCE` requires the dev-mode switch `PM_AGG_DEV=1` (#1195), so
+a deployment that forgets `PM_AGG_SOURCE=live` fails at startup instead
+of silently showing canned data. `bun run dev` sets the switch for you.
 
-| Env var                    | Default                                             | Purpose                                                                                                                                                               |
-| -------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PM_AGG_SOURCE`            | `fixtures`                                          | `live` reads Kaneo/Grist/projector, falling back to fixtures per facet                                                                                                |
-| `PM_AGG_PORT`              | `4870`                                              | HTTP port                                                                                                                                                             |
-| `PM_AGG_HOSTS`             | `127.0.0.1`                                         | Comma-separated bind addresses (deployment: loopback + tailnet; no public route)                                                                                      |
-| `PM_AGG_FEED_FILE`         | `./fleet-feed.json`                                 | The fleet feed (quota + sandbox attention) written by the collector (below)                                                                                           |
-| `PM_AGG_SNAPSHOTS_DIR`     | `./snapshots`                                       | Usage snapshot store (hub §4): monthly `usage-YYYY-MM.jsonl` files; read by the hub, appended by the background feed-ingest tick, writer jobs + the one-shot backfill |
-| `PM_AGG_QUOTA_VIEW`        | stewardship goal's `visibility/quota-view.md`       | Hub fallback source when the feed carries no `saas`/`payg` sections yet                                                                                               |
-| `PM_AGG_QUOTA_REGISTRY`    | repo-health goal's `provider-quota-registry.md`     | The hub's second dated-read source (billing incidents) for the same fallback                                                                                          |
-| `PM_AGG_OPENCHAMBER_STATE` | `~/.config/openchamber/managed-opencode/state.json` | Laptop OpenCode server port + password source (laptop attention, live)                                                                                                |
-| `KANEO_URL`                | `http://127.0.0.1:5173`                             | Kaneo base URL (board reader)                                                                                                                                         |
-| `KANEO_ADMIN_EMAIL`        | —                                                   | Kaneo admin email (secret `kaneo.admin-password` pairs with it)                                                                                                       |
-| `KANEO_ADMIN_PASSWORD`     | —                                                   | Kaneo admin password (Bitwarden `kaneo.admin-password`)                                                                                                               |
-| `GRIST_URL`                | `http://127.0.0.1:8484`                             | Grist base URL                                                                                                                                                        |
-| `GRIST_API_KEY`            | —                                                   | Grist API key (Bitwarden `grist.api-key`)                                                                                                                             |
-| `GRIST_ROADMAP_DOC`        | `czYHYKgG9SHcm9CPwiKEq1`                            | The `Program roadmap` document id (Phase 2 seed)                                                                                                                      |
-| `PM_PROJECTOR_URL`         | `http://127.0.0.1:7801`                             | Projector + link registry base URL (`/items`, `/comments`, `/links`); `off` disables it                                                                               |
-| `PM_AGG_COMMENTS_FILE`     | `./comments.json`                                   | Dashboard comment store (#906) — aggregator-local; created on first comment                                                                                           |
-| `PM_AGG_ACTIONS_FILE`      | `./actions.json`                                    | Dashboard action store (#1152/#1154/#1156) — aggregator-local; created on first action                                                                                |
-| `PM_AGG_REGISTRY_FILE`     | `./registry.json`                                   | Durable session identity registry (#906) — merged records persist across restarts                                                                                     |
-| `PM_AGG_ACTIVITY_FILE`     | `./activity-ingestion.json`                         | Activity-ingestion store (#3321) — per-source checkpoints + dedupe seen sets + gap records for the watchdog/Kaneo stream writers                                      |
+| Env var                    | Default                                                | Purpose                                                                                                                                                                                                |
+| -------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `PM_AGG_SOURCE`            | `fixtures` (dev-gated, see below)                      | `live` reads Kaneo/Grist/projector, falling back to fixtures per facet; explicit `fixtures` stays available for deliberate fixture work; unset/invalid without `PM_AGG_DEV=1` refuses to start (#1195) |
+| `PM_AGG_DEV`               | —                                                      | Set to `1` for local development: allows the implicit (unset or invalid `PM_AGG_SOURCE`) fixture default; never set in deployment — `install.sh` renders `PM_AGG_SOURCE=live` instead                  |
+| `PM_AGG_PORT`              | `4870`                                                 | HTTP port                                                                                                                                                                                              |
+| `PM_AGG_HOSTS`             | `127.0.0.1`                                            | Comma-separated bind addresses (deployment: loopback + tailnet; no public route)                                                                                                                       |
+| `PM_AGG_FEED_FILE`         | `./fleet-feed.json`                                    | The fleet feed (quota + sandbox attention) written by the collector (below)                                                                                                                            |
+| `PM_AGG_SNAPSHOTS_DIR`     | `./snapshots`                                          | Usage snapshot store (hub §4): monthly `usage-YYYY-MM.jsonl` files; read by the hub, appended by the background feed-ingest tick, writer jobs + the one-shot backfill                                  |
+| `PM_AGG_QUOTA_VIEW`        | stewardship goal's `visibility/quota-view.md`          | Hub fallback source when the feed carries no `saas`/`payg` sections yet                                                                                                                                |
+| `PM_AGG_QUOTA_REGISTRY`    | repo-health goal's `provider-quota-registry.md`        | The hub's second dated-read source (billing incidents) for the same fallback                                                                                                                           |
+| `PM_AGG_OPENCHAMBER_STATE` | `~/.config/openchamber/managed-opencode/state.json`    | Laptop OpenCode server port + password source (laptop attention, live)                                                                                                                                 |
+| `KANEO_URL`                | `http://127.0.0.1:5173`                                | Kaneo base URL (board reader)                                                                                                                                                                          |
+| `KANEO_ADMIN_EMAIL`        | —                                                      | Kaneo admin email (secret `kaneo.admin-password` pairs with it)                                                                                                                                        |
+| `KANEO_ADMIN_PASSWORD`     | —                                                      | Kaneo admin password (Bitwarden `kaneo.admin-password`)                                                                                                                                                |
+| `GRIST_URL`                | `http://127.0.0.1:8484`                                | Grist base URL                                                                                                                                                                                         |
+| `GRIST_API_KEY`            | —                                                      | Grist API key (Bitwarden `grist.api-key`)                                                                                                                                                              |
+| `GRIST_ROADMAP_DOC`        | `czYHYKgG9SHcm9CPwiKEq1`                               | The `Program roadmap` document id (Phase 2 seed)                                                                                                                                                       |
+| `PM_PROJECTOR_URL`         | `http://127.0.0.1:7801`                                | Projector + link registry base URL (`/items`, `/comments`, `/links`); `off` disables it                                                                                                                |
+| `PM_AGG_COMMENTS_FILE`     | `./comments.json`                                      | Dashboard comment store (#906) — aggregator-local; created on first comment                                                                                                                            |
+| `PM_AGG_ACTIONS_FILE`      | `./actions.json`                                       | Dashboard action store (#1152/#1154/#1156) — aggregator-local; created on first action                                                                                                                 |
+| `PM_AGG_REGISTRY_FILE`     | `./registry.json`                                      | Durable session identity registry (#906) — merged records persist across restarts                                                                                                                      |
+| `PM_AGG_ACTIVITY_FILE`     | `~/.local/state/pm-aggregator/activity-ingestion.json` | Activity-ingestion store (#3321) — per-source checkpoints + dedupe seen sets + gap records for the watchdog/Kaneo stream writers                                                                       |
 
 Secrets are read from the environment only and are never committed or
 printed. Names here reference Bitwarden entries (`kaneo.*`, `grist.*`).
@@ -497,7 +496,7 @@ the load-bearing claims against the code and configuration (see
 | Quota (#851)                 | Fleet feed file (`fleet-feed.json`), overlaid by the quota gatherer's `quota-current.json`                                                                              | fixtures when no feed exists                               | collector (sandbox) + gatherer timer                                                                                                                                                                                          |
 | Attention (#852)             | Laptop OpenCode server live (state file, 45s cache) + sandbox via fleet feed                                                                                            | fixtures when neither is reachable                         | OpenCode servers (both hosts)                                                                                                                                                                                                 |
 | DNS (#906)                   | Fleet feed `dns` section, parsed collector-side from the #902 register                                                                                                  | fixtures when no section exists                            | collector (sandbox)                                                                                                                                                                                                           |
-| Registry (#906)              | Feed registry records (sandbox OpenCode, Jules, Muse launches) merged with live laptop OpenCode records into the durable registry file                                  | fixtures when the feed is absent                           | aggregator unit + collector                                                                                                                                                                                                   |
+| Registry (#906)              | Feed registry records (sandbox OpenCode, Muse launches) merged with live laptop OpenCode records into the durable registry file                                         | fixtures when the feed is absent                           | aggregator unit + collector                                                                                                                                                                                                   |
 | **Projector** (service)      | GitHub projection + link registry at `PM_PROJECTOR_URL` (default `http://127.0.0.1:7801`); 15-minute reconcile timer keeps it fresh (no public webhook route by design) | facets fall back per the rows above when it is unreachable | **Deployed**: `pm-projector` user unit declared in `nixos/services/pm-stack`; the aggregator unit `Wants`/`After` it and pins `PM_PROJECTOR_URL` to it                                                                        |
 | **Pad** (service)            | — (the aggregator reads no Pad data; Pad is not a facet source)                                                                                                         | —                                                          | **Deployed as the planning layer only**: NixOS OCI container `pm-pad`, declared by `services.pm-apps` (`nixos/services/pm-apps/default.nix`); named here so its absence from the facet rows is a stated fact, not an omission |
 
@@ -601,31 +600,38 @@ clone (`~/git/code`) and writes its outputs under
 
 Each tick:
 
-- imports the OpenChamber quota module in-process (from the laptop's
-  OpenChamber checkout) and fetches every configured provider
-  per-credential, with credentials read **directly from OpenCode's
-  credential store** (`opencode.db`, read-only) — no OpenCode server
-  needs to be listening. One provider failing or exceeding the 15s
-  cap degrades only its own rows.
-- ingests laptop **file exports** in the Meta Phase-1 convention
-  (#1301): a producer's `latest.json` (today: Meta,
-  `~/atlas/meta-quota-export/latest.json`) maps onto the same
-  contract; a failure-status document or a file older than 30
-  minutes is an error entry, never zeros.
-- writes **`quota-current.json`** — the latest-state contract
+- runs the OpenDesign session keeper (Drew's provider browser-auth
+  auto-renewal rule): the one browser-session credential in the
+  system is read, slid, or re-captured over CDP before it is used,
+  with its horizon recorded in `opendesign-renewal.json`. The keeper
+  maintains a credential; it is not a quota source.
+- invokes the ONE quota source - the opencode fork's quota
+  subcommand, `opencode quota --json` (#6125/#6127) - whose
+  per-provider quota functions live in the providers that own the
+  credentials. A second invocation asks explicitly for the
+  route-disabled live pools (`meta`, `command-code`), which a named
+  ask always fetches. The gatherer fetches no provider itself and
+  imports no quota module; a provider failing degrades only its own
+  rows, and #1268 retention keeps last-known rows for errored runs.
+- writes **`quota-current.json`** - the latest-state contract
   (`QuotaCurrentFile` in `src/model.ts`: per provider/credential,
   windows carrying value, % of limit, reset, measured-at, source,
-  state) — and `quota-gatherer-heartbeat.json` (tick time,
-  per-provider state/duration; the heartbeat also rides inside
+  state; the file's `source` is `opencode-quota`) - and
+  `quota-gatherer-heartbeat.json` (tick time, per-provider
+  state/duration; the heartbeat also rides inside
   quota-current.json), both in the aggregator state directory beside
   `fleet-feed.json`.
-- appends §4 snapshot records for windows whose value **moved**
+- appends S4 snapshot records for windows whose value **moved**
   since the last appended record, directly to the snapshot store
   (`SnapshotStore.append` dedupes; change-tracking state in
   `quota-gatherer-state.json`). Setting `USAGE_SNAPSHOT_OUTBOX_PATH`
   reroutes records to the writers' outbox instead.
+- appends one Supabase `agent.quota_records` row per pool entry to
+  muse-dev2 (source `opencode-quota`), so the readings land in
+  Supabase on the same tick as the dashboard file. Fail-soft: a sink
+  failure is logged and never fails the tick.
 
-Fail-soft: a module-import or credential-store failure writes a
+Fail-soft: a subcommand failure or unparseable output writes a
 heartbeat with the error, exits non-zero, and leaves the previous
 `quota-current.json` untouched. **Remaining hop:** the aggregator
 does not read `quota-current.json` yet — `Source` pickup (freshness
@@ -634,11 +640,7 @@ tick visible on /quota.
 
 - **Sandbox attention** — sessions mapped by the shared OpenCode v2
   mapper (`src/sources/opencode.ts`), stamped `opencode-sandbox` with
-  parent/agent/outcome; keeper supervision entries from
-  `jules-review-state.json` annotate matching sessions.
-- **Jules attention** (slice 2) — the keeper's tracked Jules sessions
-  from the same state file, mapped by `src/sources/jules.ts`, plus the
-  keeper's run totals as `julesSummary`.
+  parent/agent/outcome.
 - **Orchestration section** (slice 2, #899 — the unified contract) —
   the orchestration job republishes
   `~/workspace/goals/keep-the-four-repos-healthy/hidden_files/orchestration.json`
@@ -678,8 +680,8 @@ tick visible on /quota.
   says why).
 - **Registry records** (slice 3, #906) — normalized session records
   (`src/registry.ts`) for sandbox OpenCode sessions (with per-session
-  token totals read off the server at collection time), Jules
-  sessions, and Muse launch records (JSONL at
+  token totals read off the server at collection time) and
+  Muse launch records (JSONL at
   `CLAUDE_LAUNCH_RECORDS_PATH`, written by
   `scripts/record-claude-launch.ts`). The aggregator merges them with
   live laptop records into its durable registry.
@@ -819,7 +821,6 @@ src/
     fixtures.ts   fixture data (real Grist seed + design-record refs)
     live.ts       Kaneo/Grist/projector readers with per-facet fallback
     opencode.ts   OpenCode v2 server -> SessionFeedEntry mapper (shared)
-    jules.ts      keeper state -> Jules SessionFeedEntry mapper (shared)
 opencode-tools/
   session-identity.ts  OpenCode tool: a session reports its own id (#906)
 scripts/
@@ -834,7 +835,7 @@ test/
   projector.test.ts projector wire-schema mapping + stub-server reads
   opencode.test.ts  mapper against a stub OpenCode v2 server
   quota.test.ts     extractors + guidance against the dated-read format
-  slice2.test.ts    tiers, expiry, hierarchy, Jules mapping, roadmap
+  slice2.test.ts    tiers, expiry, hierarchy, roadmap
                     grains, today derivation, slice-2 render smoke
   slice3.test.ts    dns parser, registry normalization, comment store,
                     page manifest, slice-3 renders + HTTP flows

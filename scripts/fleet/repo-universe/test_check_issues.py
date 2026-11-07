@@ -239,5 +239,90 @@ class HatchPersonalLifecycleTests(unittest.TestCase):
         self.assertIn("- closed: #42", "\n".join(lines))
 
 
+class WrongShapeTests(unittest.TestCase):
+    """Valid JSON with the wrong shape becomes per-repo ERRORs (#6652).
+
+    Each case here crashed the checker with an unhandled TypeError /
+    AttributeError before the fix — one poison entry took down every
+    repo's delta for the run, and persisted poison re-crashed daily.
+    """
+
+    def fixture_fetch(self, fixture):
+        return lambda repo: check_issues.fetch_issues_fixture(repo, fixture)
+
+    def test_fixture_entry_object_without_error_is_a_fetch_error(self):
+        fixture = {"dezren39/hatch-personal": {"number": 1},
+                   "developing-today/code": [issue(9)]}
+        state, lines, had_error = check_issues.run_check(
+            INVENTORY, {"version": 1, "repos": {}}, self.fixture_fetch(fixture), NOW1)
+        self.assertTrue(had_error)
+        report = "\n".join(lines)
+        self.assertIn("- ERROR: fetch failed:", report)
+        # The healthy repo was still checked and baselined.
+        self.assertIn("baseline: 1 issues recorded", report)
+        self.assertNotIn("dezren39/hatch-personal", state["repos"])
+
+    def test_fixture_entry_list_with_scalar_item_is_a_fetch_error(self):
+        fixture = {"dezren39/hatch-personal": [123],
+                   "developing-today/code": []}
+        _, lines, had_error = check_issues.run_check(
+            INVENTORY, {"version": 1, "repos": {}}, self.fixture_fetch(fixture), NOW1)
+        self.assertTrue(had_error)
+        self.assertIn("not a JSON object", "\n".join(lines))
+
+    def test_fixture_top_level_list_is_a_fetch_error(self):
+        with self.assertRaises(check_issues.FetchError):
+            check_issues.fetch_issues_fixture("dezren39/hatch-personal", [1, 2])
+
+    def test_state_top_level_list_is_a_named_load_error(self):
+        with self.assertRaises(check_issues.FetchError):
+            check_issues.run_check(INVENTORY, [], fetch_from({}), NOW1)
+        with self.assertRaises(check_issues.FetchError):
+            check_issues.run_check(INVENTORY, {"repos": []}, fetch_from({}), NOW1)
+
+    def test_per_repo_state_entry_int_is_reported_and_preserved(self):
+        good = {"dezren39/hatch-personal": [issue(1)],
+                "developing-today/code": [issue(9)]}
+        prior = {"version": 1, "repos": {"dezren39/hatch-personal": 123}}
+        state, lines, had_error = check_issues.run_check(
+            INVENTORY, prior, fetch_from(good), NOW2)
+        self.assertTrue(had_error)
+        self.assertIn("- ERROR: persisted state entry is malformed",
+                      "\n".join(lines))
+        self.assertEqual(state["repos"]["dezren39/hatch-personal"], 123)
+        # The healthy repo still advanced.
+        self.assertIn("9", state["repos"]["developing-today/code"]["issues"])
+
+    def test_persisted_issue_entry_int_is_reported_and_preserved(self):
+        good = {"dezren39/hatch-personal": [issue(1)],
+                "developing-today/code": []}
+        prior = {"version": 1, "repos": {
+            "dezren39/hatch-personal": {
+                "watermark": None, "issues": {"1": 123}}}}
+        state, lines, had_error = check_issues.run_check(
+            INVENTORY, prior, fetch_from(good), NOW2)
+        self.assertTrue(had_error)
+        self.assertIn("- ERROR: persisted state entry is malformed",
+                      "\n".join(lines))
+        self.assertEqual(
+            state["repos"]["dezren39/hatch-personal"]["issues"]["1"], 123)
+
+    def test_main_with_wrong_shape_state_file_exits_named_error(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            inventory = td / "inv.yaml"
+            inventory.write_text(INVENTORY)
+            state_dir = td / "state"
+            state_dir.mkdir()
+            (state_dir / "state.json").write_text("[1, 2, 3]")
+            argv = ["--inventory", str(inventory), "--state-dir", str(state_dir),
+                    "--fixture", str(td / "fixture.json"), "--now", NOW1]
+            (td / "fixture.json").write_text(json.dumps({}))
+            self.assertEqual(check_issues.main(argv), 2)
+            # No report written, poison state file untouched.
+            self.assertFalse(list(state_dir.glob("report-*.md")))
+            self.assertEqual((state_dir / "state.json").read_text(), "[1, 2, 3]")
+
 if __name__ == "__main__":
     unittest.main()

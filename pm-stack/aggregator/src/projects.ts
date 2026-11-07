@@ -10,7 +10,7 @@
 // whose fetch is injectable for tests), shared by the collector and
 // the live source so the wire shape is parsed exactly once.
 import type { GhItem, OrchestrationSection, ProjectPoolItem, RefKey } from "./model.ts";
-import { refKey } from "./model.ts";
+import { isValidRef, refKey } from "./model.ts";
 import { workItemRefSet } from "./work-items.ts";
 
 export const PROJECT_ID = "PVT_kwDOAZNvF84Bouay";
@@ -35,8 +35,8 @@ export const PROJECT_QUERY = `query($id: ID!, $cursor: String) {
           databaseId
           type
           content {
-            ... on Issue { number title state url repository { nameWithOwner } updatedAt author { login } labels(first: 20) { nodes { name } } parent { number url repository { nameWithOwner } } blockedBy(first: 50) { nodes { number url repository { nameWithOwner } } } blocking(first: 50) { nodes { number url repository { nameWithOwner } } } }
-            ... on PullRequest { number title state url repository { nameWithOwner } updatedAt author { login } isDraft }
+            ... on Issue { number title state url repository { nameWithOwner } updatedAt closedAt author { login } labels(first: 20) { nodes { name } } parent { number url repository { nameWithOwner } } blockedBy(first: 50) { nodes { number url repository { nameWithOwner } } } blocking(first: 50) { nodes { number url repository { nameWithOwner } } } }
+            ... on PullRequest { number title state url repository { nameWithOwner } updatedAt mergedAt closedAt author { login } isDraft }
             ... on DraftIssue { title }
           }
           fieldValues(first: 30) {
@@ -68,6 +68,8 @@ interface GqlContent {
   url?: string;
   repository?: { nameWithOwner?: string } | null;
   updatedAt?: string;
+  closedAt?: string;
+  mergedAt?: string;
   author?: { login?: string } | null;
   isDraft?: boolean;
   labels?: { nodes?: { name?: string }[] } | null;
@@ -161,6 +163,8 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
       labels: (c.labels?.nodes ?? []).map((l) => l?.name).filter((x): x is string => typeof x === "string"),
       author: c.author?.login ?? "",
       updatedAt: c.updatedAt ?? "",
+      ...(c.closedAt ? { closedAt: c.closedAt } : {}),
+      ...(c.mergedAt ? { mergedAt: c.mergedAt } : {}),
       status: singleSelect(item, "Status"),
       area: singleSelect(item, "Area"),
       horizon: singleSelect(item, "Horizon"),
@@ -237,9 +241,9 @@ export async function fetchProjectPool(token: string, fetchFn: typeof fetch = fe
 
 /** Structural check for a pool entry in a feed (collector + live share
  * it, and the feed.ts section gate delegates to it — the two sides can
- * never drift). Edge fields (#2399) are absence-friendly but
- * shape-strict when present: a malformed edge fails the item, never
- * the section. */
+ * never drift). Edge fields (#2399) are absence-friendly, but every
+ * present ref must satisfy the shared isValidRef rule: a malformed edge
+ * fails the item, never the section. */
 export function isProjectPoolItem(v: unknown): v is ProjectPoolItem {
   if (typeof v !== "object" || v === null) return false;
   const p = v as Partial<ProjectPoolItem>;
@@ -270,11 +274,13 @@ export function isProjectPoolItem(v: unknown): v is ProjectPoolItem {
     (p.labels === undefined || (Array.isArray(p.labels) && p.labels.every((x) => typeof x === "string"))) &&
     (p.author === undefined || typeof p.author === "string") &&
     (p.updatedAt === undefined || typeof p.updatedAt === "string") &&
+    (p.closedAt === undefined || typeof p.closedAt === "string") &&
+    (p.mergedAt === undefined || typeof p.mergedAt === "string") &&
     (p.state === "open" || p.state === "closed" || p.state === "merged") &&
-    (p.parentRef === undefined || typeof p.parentRef === "string") &&
-    (p.epicRef === undefined || typeof p.epicRef === "string") &&
-    (p.blockedBy === undefined || (Array.isArray(p.blockedBy) && p.blockedBy.every((x) => typeof x === "string"))) &&
-    (p.blocks === undefined || (Array.isArray(p.blocks) && p.blocks.every((x) => typeof x === "string")))
+    (p.parentRef === undefined || isValidRef(p.parentRef)) &&
+    (p.epicRef === undefined || isValidRef(p.epicRef)) &&
+    (p.blockedBy === undefined || (Array.isArray(p.blockedBy) && p.blockedBy.every(isValidRef))) &&
+    (p.blocks === undefined || (Array.isArray(p.blocks) && p.blocks.every(isValidRef)))
   );
 }
 

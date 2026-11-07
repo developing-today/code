@@ -833,16 +833,13 @@ fn decide_in(
             match stored_by_id(txn, &prev_id)? {
                 Some(prev) => {
                     let predecessor = author_of(&prev) == author
-                        && prev
-                            .header
-                            .extensions
-                            .checkpoint
-                            .as_ref()
-                            .is_some_and(|prev_checkpoint| {
+                        && prev.header.extensions.checkpoint.as_ref().is_some_and(
+                            |prev_checkpoint| {
                                 prev_checkpoint.header == checkpoint.header
                                     && prev_checkpoint.segment.segment_seq + 1
                                         == checkpoint.segment.segment_seq
-                            });
+                            },
+                        );
                     if !predecessor {
                         return Ok(Decision::Refuse(Refusal::Malformed(
                             "a session checkpoint's prev_checkpoint is not the previous                              segment's checkpoint of the same session"
@@ -1038,7 +1035,7 @@ fn is_stored(txn: &WriteTransaction, id: &Hash) -> Result<bool, StoreError> {
 
 /// Whether `id` is a fork proof header of `author`. A header stays one after a later proof drops
 /// it, so the check reads the presence index, not the current proof.
-fn is_proof_header(
+pub(super) fn is_proof_header(
     txn: &WriteTransaction,
     author: &AuthorKey,
     id: &Hash,
@@ -1161,6 +1158,7 @@ mod tests {
             note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1574,6 +1572,7 @@ mod tests {
                     audit_blob: None,
                 },
             }),
+            rotation: None,
         };
         let y0 = sign(&y, 0, None, None, ext).unwrap();
         assert_eq!(ingest(&mut store, &y0), Ingest::Waiting { id: y0.id });
@@ -1631,6 +1630,7 @@ mod tests {
                     audit_blob: None,
                 },
             }),
+            rotation: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1881,6 +1881,7 @@ mod tests {
                 note: None,
                 link: None,
                 checkpoint: None,
+                rotation: None,
             };
             sign(&signer, seq, backlink, None, ext).unwrap()
         };
@@ -1916,6 +1917,7 @@ mod tests {
             note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
         (event, body)
@@ -3102,6 +3104,118 @@ mod tests {
         // A proof header never applies, so it stays held for good. It is neither stored nor held
         // if the fork drops it.
         assert!(store.is_waiting(&held.id), "a held proof header stays held");
+        store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_a_hold_of_an_arrived_key_is_skipped_and_leaves_no_row() {
+        // #3911: the ordinary hold path refuses a key the pool has already
+        // arrived, without a duplicate release. The pool does not hold it, and
+        // no row survives the transaction.
+        let (_dir, mut store) = open();
+        let signer = key(60);
+        let events = chain_of(&signer, 2);
+        store
+            .transact(0, |m| {
+                let held = m.hold(events[1].clone(), vec![events[0].id], false, 0)?;
+                assert_eq!(held, waiting_rows::Hold::Held);
+                let released = m.release(&events[1].id, 0)?;
+                assert!(released.is_empty());
+                Ok(((), true))
+            })
+            .unwrap();
+
+        // Simulate a durable stale row for the key after it has arrived. The
+        // skipped hold must remove that row in its own transaction; release
+        // itself already deleted the original row above.
+        let stale = Row {
+            id: events[1].id,
+            author: author(&signer),
+            seq: 1,
+            arrived_at: 0,
+            arrival: 0,
+            deps: vec![events[0].id],
+            bytes: events[1].bytes.clone(),
+        };
+        store.write(|txn| waiting_rows::put(txn, &stale)).unwrap();
+        let again = store
+            .transact(0, |m| {
+                let again = m.hold(events[1].clone(), vec![events[0].id], false, 0)?;
+                Ok((again, true))
+            })
+            .unwrap();
+        assert_eq!(again, waiting_rows::Hold::Skipped);
+        assert!(!store.is_waiting(&events[1].id));
+        assert!(store.waiting_ids().unwrap().is_empty());
+        store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_a_proof_header_parked_for_good_survives_a_reopen() {
+        // #3911, design #4000 phase 3a: a held event that a fork turns into a
+        // proof header stays parked through the explicit held-for-good route,
+        // even though the header is marked arrived -- and the park survives a
+        // reopen with its first arrival time, its proof, and its conflicts.
+        let (dir, mut store) = open();
+        let signer = key(61);
+        let who = author(&signer);
+        let missing = Hash::digest(b"an event that is never delivered");
+        let held = event(&signer, 1, Some(missing), Vec::new(), "message");
+        let rival = event(&signer, 1, Some(missing), Vec::new(), "rival");
+        assert_eq!(ingest(&mut store, &held), Ingest::Waiting { id: held.id });
+        assert!(matches!(
+            ingest(&mut store, &rival),
+            Ingest::Fork { seq: 1, .. }
+        ));
+        assert!(store.is_waiting(&held.id));
+        store.check_invariants().unwrap();
+        drop(store);
+        let store = reopen(&dir, WaitingLimits::default(), 0);
+        store.check_invariants().unwrap();
+        assert!(
+            store.is_waiting(&held.id),
+            "the proof park survives a reopen"
+        );
+        let proof = store.fork_proof(&who).unwrap().expect("a proof is stored");
+        assert_eq!(
+            [proof.first.id, proof.second.id],
+            sorted(&held.id, &rival.id)
+        );
+        drop(store);
+        // The park keeps its first arrival time: due at WEEK_MS, not a reopen
+        // later, and gone once it is due.
+        let store = reopen(&dir, WaitingLimits::default(), WEEK_MS - 1);
+        assert!(store.is_waiting(&held.id));
+        drop(store);
+        let store = reopen(&dir, WaitingLimits::default(), WEEK_MS);
+        assert!(!store.is_waiting(&held.id));
+        assert!(store.waiting_ids().unwrap().is_empty());
+        store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_a_row_for_an_already_stored_event_is_dropped_on_open() {
+        // #3911: a waiting row whose event is already stored is stale --
+        // restoring it would hold an already-decided event again. The reopen
+        // drops the row in the same transaction and opens cleanly.
+        let (dir, mut store) = open();
+        let signer = key(62);
+        let events = chain_of(&signer, 2);
+        ingest_all(&mut store, &events);
+        let stale = Row {
+            id: events[0].id,
+            author: author(&signer),
+            seq: 0,
+            arrived_at: 0,
+            arrival: 0,
+            deps: vec![Hash::digest(b"a dependency that never arrives")],
+            bytes: events[0].bytes.clone(),
+        };
+        store.write(|txn| waiting_rows::put(txn, &stale)).unwrap();
+        drop(store);
+        let store = reopen(&dir, WaitingLimits::default(), 0);
+        assert!(!store.is_waiting(&events[0].id));
+        assert!(store.waiting_ids().unwrap().is_empty());
         store.check_invariants().unwrap();
     }
 

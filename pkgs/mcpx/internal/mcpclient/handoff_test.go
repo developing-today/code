@@ -3,6 +3,7 @@ package mcpclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -273,5 +274,96 @@ func TestRecvQueuedBehindDetachDoesNotConsumeSuccessorFrame(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("successor could not read its frame")
+	}
+}
+
+// listenFakeTransport is a Transport that also has the HTTP transport's
+// standalone GET stream opener, so a test can see whether Activate
+// reopened it for a resumed legacy session.
+type listenFakeTransport struct {
+	closed  chan struct{}
+	mu      sync.Mutex
+	listens int
+}
+
+func (f *listenFakeTransport) Send(context.Context, []byte) error { return nil }
+func (f *listenFakeTransport) Recv() ([]byte, error) {
+	<-f.closed
+	return nil, errors.New("transport closed")
+}
+func (f *listenFakeTransport) Close() error {
+	select {
+	case <-f.closed:
+	default:
+		close(f.closed)
+	}
+	return nil
+}
+func (f *listenFakeTransport) Info() string { return "listen-fake" }
+func (f *listenFakeTransport) listen() {
+	f.mu.Lock()
+	f.listens++
+	f.mu.Unlock()
+}
+func (f *listenFakeTransport) listenCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.listens
+}
+
+// A resumed legacy session at 2025-03-26 or later must reopen the
+// standalone GET stream, as finishLegacy does on a fresh initialize:
+// server-initiated requests and list-change notifications arrive on it,
+// and a cold resume that leaves it closed hangs them. The pre-stream
+// revision (2024-11-05) has no such stream to reopen.
+func TestActivateReopensTheLegacyListenStreamOnResume(t *testing.T) {
+	for _, tc := range []struct {
+		negotiated string
+		want       int
+	}{
+		{"2025-03-26", 1},
+		{"2025-06-18", 1},
+		{"2025-11-25", 1},
+		{"2024-11-05", 0},
+	} {
+		tr := &listenFakeTransport{closed: make(chan struct{})}
+		c := Resume(tr, Session{Era: EraLegacy, Negotiated: tc.negotiated}, Options{})
+		c.Activate()
+		if got := tr.listenCount(); got != tc.want {
+			t.Errorf("negotiated %s: Activate opened the legacy GET stream %d time(s), want %d", tc.negotiated, got, tc.want)
+		}
+		_ = tr.Close()
+	}
+}
+
+// Resume must carry the URL-elicitation handler a fresh client gets
+// from the same Options: without it, a resumed 2025-11-25 upstream's
+// -32042 errors come back unanswered instead of opening the broker
+// interaction (Codex review on PR 5455).
+// Resume must carry the workspace root a fresh client gets from the
+// same Options: without it, a cold-resumed client that later recovers
+// from a session-expired 404 re-initializes with an empty root and the
+// replacement session loses the instance's workspace (Codex review on
+// PR 5455).
+func TestResumePreservesTheWorkspaceRoot(t *testing.T) {
+	tr := &listenFakeTransport{closed: make(chan struct{})}
+	defer func() { _ = tr.Close() }()
+	c := Resume(tr, Session{Era: EraLegacy, Negotiated: "2025-03-26"}, Options{Root: "/home/user/git/code"})
+	if c.root != "/home/user/git/code" {
+		t.Fatalf("Resume dropped Options.Root: root = %q", c.root)
+	}
+	uri, name, ok := c.workspaceRoot()
+	if !ok || uri != "file:///home/user/git/code" || name != "code" {
+		t.Fatalf("workspaceRoot = %q, %q, %v; want the resumed root rendered", uri, name, ok)
+	}
+}
+
+func TestResumePreservesTheURLElicitationHandler(t *testing.T) {
+	handler := func(context.Context, []URLElicitation) (bool, error) { return true, nil }
+	tr := &listenFakeTransport{closed: make(chan struct{})}
+	defer func() { _ = tr.Close() }()
+	c := Resume(tr, Session{Era: EraLegacy, Negotiated: "2025-11-25"}, Options{OnURLElicitationRequired: handler})
+	if c.onURLElicitationRequired == nil {
+		t.Fatal("Resume dropped Options.OnURLElicitationRequired")
 	}
 }

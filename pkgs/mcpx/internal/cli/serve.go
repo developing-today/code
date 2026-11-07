@@ -522,6 +522,13 @@ func (a *App) MCPServer(ctx context.Context) (*mcpserver.Server, error) {
 	// below reads -- so neither surface's cadence changes.
 	if a.daemonStore != nil {
 		srv.TaskStore = a.daemonStore
+		// Retention follows the same settings the daemon's taskStore()
+		// reads on /v1 access (#6247): without this, a tasks.ttl /
+		// tasks.maxAge change made through /v1/settings never reached
+		// the MCP surface's cached store pointer.
+		srv.TaskRetention = func() (time.Duration, time.Duration) {
+			return a.Settings().Duration("tasks.ttl"), a.Settings().Duration("tasks.maxAge")
+		}
 	} else {
 		// A standalone server (mcpx serve) keeps a private store;
 		// wire its audit seam to the durable log or its task

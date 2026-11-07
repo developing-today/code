@@ -359,6 +359,16 @@ mod cli_tests {
     }
 
     #[test]
+    fn key_export_and_import_help_are_available() {
+        let tmp = TempDir::new().unwrap();
+        for args in [["key", "export", "--help"], ["key", "import", "--help"]] {
+            let output = run_cmd(&args, tmp.path());
+            assert!(output.status.success());
+            assert!(String::from_utf8_lossy(&output.stdout).contains("passphrase"));
+        }
+    }
+
+    #[test]
     fn test_version() {
         let tmp = TempDir::new().unwrap();
         let output = run_cmd(&["--version"], tmp.path());
@@ -758,10 +768,7 @@ mod list_tests {
         // stdin auto-detect (a lone `path:name` spec does not exist
         // as a file, so it would be read as a stdin blob name and
         // parse_put_spec would never run).
-        run_cmd_success(
-            &["put", &put_spec, test_file.to_str().unwrap()],
-            tmp.path(),
-        );
+        run_cmd_success(&["put", &put_spec, test_file.to_str().unwrap()], tmp.path());
 
         let output = run_cmd_success_stdout(&["list"], tmp.path());
         let rows: Vec<_> = output.lines().filter(|line| line.contains('\t')).collect();
@@ -783,7 +790,10 @@ mod list_tests {
                 quoted_names += 1;
             }
         }
-        assert_eq!(quoted_names, 1, "the unsafe name must appear quoted: {output:?}");
+        assert_eq!(
+            quoted_names, 1,
+            "the unsafe name must appear quoted: {output:?}"
+        );
     }
 }
 
@@ -4192,10 +4202,7 @@ mod serve_tests {
         );
 
         let instance_dir = tmp.path().join(".iroh").join("space-dev");
-        assert!(
-            instance_dir.exists(),
-            ".iroh/space-dev/ should be created"
-        );
+        assert!(instance_dir.exists(), ".iroh/space-dev/ should be created");
         assert!(
             instance_dir.join(".iroh-key").exists(),
             "Key file should be in named instance directory"
@@ -4756,5 +4763,188 @@ mod tag_tests {
         let tmp = TempDir::new().unwrap();
         let output = run_cmd(&["link", "search", "--help"], tmp.path());
         assert!(output.status.success(), "link search --help should succeed");
+    }
+}
+
+/// Integration tests for the #1791 structured operational logging
+/// configuration (`ID_LOG_*`), exercised through the real binary so
+/// the production environment-reading path and `init_logging` in
+/// `main.rs` are covered — not only the library-level configuration
+/// resolution in `id::structured_logging`.
+mod structured_logging_tests {
+    use super::*;
+    use std::process::Stdio;
+
+    /// Run the fast `id` command with extra environment variables and
+    /// return its output.
+    fn run_id_with_env(work_dir: &std::path::Path, env: &[(&str, &str)]) -> std::process::Output {
+        let mut command = Command::new(get_binary_path());
+        command.args(["id"]).current_dir(work_dir);
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        command
+            .output_within(PROCESS_TIMEOUT)
+            .expect("Failed to execute command")
+    }
+
+    #[test]
+    fn test_structured_logging_unrecognized_tz_warns_and_succeeds() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_id_with_env(tmp.path(), &[("ID_LOG_TZ", "Mars/Olympus_Mons")]);
+        assert!(
+            output.status.success(),
+            "id command should succeed despite the bad ID_LOG_TZ: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("ID_LOG_TZ value not recognized"),
+            "startup should warn about the unrecognized timezone: {stderr}"
+        );
+    }
+
+    #[test]
+    fn test_structured_logging_unopenable_log_file_warns_and_succeeds() {
+        let tmp = TempDir::new().unwrap();
+        // A path whose parent is a regular file can never be opened,
+        // even after the parent-directory creation attempt.
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let log_file = blocker.join("id.log");
+        let output = run_id_with_env(tmp.path(), &[("ID_LOG_FILE", log_file.to_str().unwrap())]);
+        assert!(
+            output.status.success(),
+            "id command should succeed despite the unopenable log file: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("could not open log file"),
+            "startup should warn about the unopenable log file: {stderr}"
+        );
+    }
+
+    #[test]
+    fn test_structured_logging_json_file_with_independent_level() {
+        let tmp = TempDir::new().unwrap();
+        let log_file = tmp.path().join("id.log");
+        let console_file = tmp.path().join("console.log");
+        let console = std::fs::File::create(&console_file).unwrap();
+
+        // Console stays at the default level (warn, plus the existing
+        // per-module caps); the file destination independently takes
+        // debug. Both use the JSON format.
+        let child = Command::new(get_binary_path())
+            .args([
+                "serve",
+                "--ephemeral",
+                "--no-relay",
+                "--no-gossip",
+                "--no-mdns",
+            ])
+            .current_dir(tmp.path())
+            .env("ID_LOG_FORMAT", "json")
+            .env("ID_LOG_FILE", &log_file)
+            .env("ID_LOG_FILE_LEVEL", "debug")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(console))
+            .spawn()
+            .expect("Failed to spawn server");
+        let _guard = KillOnDrop(child);
+
+        // Wait until the file destination has recorded a DEBUG event;
+        // startup produces plenty (store, rustls, iroh internals).
+        let mut contents = String::new();
+        for _ in 0..120 {
+            contents = std::fs::read_to_string(&log_file).unwrap_or_default();
+            if contents.contains("\"level\":\"DEBUG\"") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        assert!(
+            contents.contains("\"level\":\"DEBUG\""),
+            "file destination should record DEBUG events: {}",
+            contents.chars().take(2000).collect::<String>()
+        );
+
+        // Every line in the file is a JSON object with the structured
+        // fields, and the timestamp is RFC 3339 with nanoseconds in
+        // some zone (host local by default — the suffix varies).
+        let first_line = contents.lines().next().expect("log file has lines");
+        for line in contents.lines() {
+            let value: serde_json::Value =
+                serde_json::from_str(line).expect("log file line should be JSON");
+            assert!(value["timestamp"].is_string(), "line: {line}");
+            assert!(value["level"].is_string(), "line: {line}");
+            assert!(value["target"].is_string(), "line: {line}");
+        }
+        let first: serde_json::Value =
+            serde_json::from_str(first_line).expect("first line should be JSON");
+        let timestamp = first["timestamp"].as_str().expect("timestamp field");
+        let fraction: String = timestamp
+            .split('.')
+            .nth(1)
+            .expect("timestamp has fractional seconds")
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        assert_eq!(fraction.len(), 9, "timestamp: {timestamp}");
+
+        // The console destination kept its own (higher) level: it saw
+        // the same run but recorded no DEBUG events.
+        let console_contents = std::fs::read_to_string(&console_file).unwrap_or_default();
+        assert!(
+            !console_contents.contains("\"level\":\"DEBUG\""),
+            "console should not record DEBUG events: {}",
+            console_contents.chars().take(2000).collect::<String>()
+        );
+    }
+
+    #[test]
+    fn test_structured_logging_text_file_is_plain_text() {
+        let tmp = TempDir::new().unwrap();
+        let log_file = tmp.path().join("id.log");
+        let child = Command::new(get_binary_path())
+            .args([
+                "serve",
+                "--ephemeral",
+                "--no-relay",
+                "--no-gossip",
+                "--no-mdns",
+            ])
+            .current_dir(tmp.path())
+            .env("ID_LOG_FILE", &log_file)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Failed to spawn server");
+        let _guard = KillOnDrop(child);
+
+        let mut contents = String::new();
+        for _ in 0..120 {
+            contents = std::fs::read_to_string(&log_file).unwrap_or_default();
+            if !contents.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        assert!(
+            !contents.is_empty(),
+            "file destination should record events in text mode too"
+        );
+        assert!(
+            !contents.contains('\u{1b}'),
+            "file output must not contain ANSI escapes: {:?}",
+            contents.chars().take(500).collect::<String>()
+        );
+        assert!(
+            !contents.trim_start().starts_with('{'),
+            "text mode should not emit JSON lines: {}",
+            contents.chars().take(500).collect::<String>()
+        );
     }
 }

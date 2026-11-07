@@ -1,6 +1,6 @@
 // The agent/session identity registry (#906 §3). Pure builders + merge:
 // the collector assembles records from the sources it can read (sandbox
-// OpenCode sessions, the Jules keeper state, Muse launch
+// OpenCode sessions, Muse launch
 // records), the fleet feed carries them, and the aggregator merges them
 // with the laptop's live sessions into a durable store — so a session
 // stays in the registry after it expires out of the attention feed.
