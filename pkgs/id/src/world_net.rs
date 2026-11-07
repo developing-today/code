@@ -858,6 +858,25 @@ impl WorldClient {
         Ok(reply["report"].clone())
     }
 
+    /// Validate a `policy` reply and return its payload unchanged.
+    ///
+    /// The payload is decoded as a [`crate::world::WorldPolicy`] first,
+    /// so a reply whose `policy` is missing or mistyped is refused
+    /// instead of being read as `Ok(null)` or passed through verbatim
+    /// by the three admin callers sharing this path
+    /// (`set_cross_world_write`, `force_cross_world_write`,
+    /// `set_file_scope`) — an isolation-boundary change must not
+    /// report success with no policy (#6625). Factored out of
+    /// [`WorldClient::policy_request`] (mirroring
+    /// [`WorldClient::parse_caps_reply`]) so the validation can be
+    /// unit-tested without a live host.
+    fn parse_policy_reply(reply: &serde_json::Value) -> Result<serde_json::Value> {
+        let policy = reply.get("policy").context("host sent no policy")?;
+        let _: crate::world::WorldPolicy = serde_json::from_value(policy.clone())
+            .context("host sent a malformed policy")?;
+        Ok(policy.clone())
+    }
+
     /// Grant and revoke capabilities; returns the resulting report.
     ///
     /// # Errors
@@ -1193,7 +1212,7 @@ impl WorldClient {
                     .unwrap_or("host refused the policy change")
             );
         }
-        Ok(reply["policy"].clone())
+        Self::parse_policy_reply(&reply)
     }
 
     /// Set the world's isolation with the admin token and return the new
@@ -3006,6 +3025,33 @@ mod tests {
                 .to_string()
                 .contains("admin token refused")
         );
+    }
+
+    #[test]
+    fn policy_reply_requires_a_valid_policy() {
+        // A well-formed policy is returned verbatim for Value consumers.
+        let policy = serde_json::json!({
+            "isolation": "isolated",
+            "cross_world_write": false,
+            "cross_world_forced": false,
+            "file_scope": "unrestricted",
+            "file_write_override": false
+        });
+        let reply = serde_json::json!({"type": "policy", "policy": policy});
+        assert_eq!(WorldClient::parse_policy_reply(&reply).unwrap(), policy);
+        // Missing or mistyped policies are refused (#6625).
+        for bad in [
+            serde_json::json!({"type": "policy"}),
+            serde_json::json!({"type": "policy", "policy": 123}),
+            serde_json::json!({"type": "policy", "policy": "deny"}),
+            serde_json::json!({"type": "policy", "policy": [1, 2]}),
+            serde_json::json!({"type": "policy", "policy": {"isolation": "isolated"}}),
+        ] {
+            assert!(
+                WorldClient::parse_policy_reply(&bad).is_err(),
+                "accepted a malformed policy reply: {bad}"
+            );
+        }
     }
 
     #[test]
