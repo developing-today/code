@@ -283,6 +283,7 @@ pub fn pairwise_sum_f32(a: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn validate_refuses_lone_empty_entry() {
@@ -313,6 +314,53 @@ mod tests {
         ));
         // A normal batch (including a max-context entry) validates.
         assert!(validate_id_lists(&[vec![0u32, 2], vec![7u32; MODEL_CONTEXT]]).is_ok());
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// PBT (#5373, testing doctrine): the validator accepts
+        /// exactly the nonempty batches whose entry lengths are all
+        /// in 1..=MODEL_CONTEXT — the oracle below restates that
+        /// invariant directly (first offending entry, in batch
+        /// order, decides the error and its payload).
+        #[test]
+        fn validate_matches_the_batch_invariant(
+            lengths in prop::collection::vec(prop_oneof![
+                Just(0usize),
+                1usize..=16,
+                Just(MODEL_CONTEXT),
+                (MODEL_CONTEXT + 1)..=(MODEL_CONTEXT + 64),
+            ], 0..8),
+        ) {
+            let batch: Vec<Vec<u32>> =
+                lengths.iter().map(|&n| vec![7u32; n]).collect();
+            // First offending entry in batch order decides: an
+            // empty entry reports EmptyEntry, an over-context one
+            // reports TooLong — mirroring the per-entry loop.
+            let oracle: Result<()> = if batch.is_empty() {
+                Err(Error::EmptyBatch)
+            } else if let Some(index) =
+                lengths.iter().position(|&n| n == 0 || n > MODEL_CONTEXT)
+            {
+                if lengths[index] == 0 {
+                    Err(Error::EmptyEntry { index })
+                } else {
+                    Err(Error::TooLong { tokens: lengths[index] })
+                }
+            } else {
+                Ok(())
+            };
+            match (validate_id_lists(&batch), oracle) {
+                (Ok(()), Ok(())) => {}
+                (Err(got), Err(want)) => prop_assert_eq!(
+                    format!("{got:?}"), format!("{want:?}")
+                ),
+                (got, want) => prop_assert!(
+                    false, "validate={got:?} oracle={want:?} lengths={lengths:?}"
+                ),
+            }
+        }
     }
 
     #[test]
