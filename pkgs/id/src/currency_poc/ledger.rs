@@ -394,8 +394,17 @@ impl LedgerBackend for InMemoryLedger {
                         error,
                         TransferError::LinkedEventFailed | TransferError::LinkedEventChainOpen
                     ) {
-                        for transfer in chain {
-                            self.failed_transfers.insert(transfer.id, error);
+                        // Record only the leg that actually failed
+                        // (#6627): the chain's other legs did not fail
+                        // and must remain submittable, and an ID that
+                        // is already posted must never be marked
+                        // failed -- `validate_and_stage` consults
+                        // `failed_transfers` before `transfers`, so a
+                        // failure cached against a posted ID would
+                        // break its idempotent `Exists` retry.
+                        let failing = &chain[failing_offset];
+                        if !self.transfers.contains_key(&failing.id) {
+                            self.failed_transfers.insert(failing.id, error);
                         }
                     }
                     

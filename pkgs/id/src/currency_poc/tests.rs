@@ -232,6 +232,51 @@ fn linked_chain_failure_marks_other_legs_linked_event_failed() {
 }
 
 #[test]
+fn failed_chain_records_only_the_failing_leg() {
+    // #6627 (oracle: the failing leg's own error is the only outcome
+    // the chain may cache): when a linked chain fails on one leg,
+    // only that leg's ID is recorded as failed -- a valid sibling
+    // leg remains submittable afterwards.
+    let mut ledger = funded_ledger();
+    let sibling = Transfer {
+        linked: true,
+        ..funding_transfer(700, USER_SRC, LP_SRC, 100, SRC)
+    };
+    let failing = funding_transfer(701, LP_DST, USER_DST, 999_999, DST);
+    let results = ledger.create_transfers(&[sibling.clone(), failing]);
+    assert_eq!(results[0], Err(TransferError::LinkedEventFailed));
+    assert_eq!(results[1], Err(TransferError::DebitsMustNotExceedCredits));
+    // The sibling leg was never itself invalid: resubmitted on its
+    // own (unlinked) it posts.
+    let retry = Transfer {
+        linked: false,
+        ..sibling
+    };
+    assert_eq!(ledger.create_transfers(&[retry]), vec![Ok(())]);
+    assert!(ledger.lookup_transfer(700).is_some());
+}
+
+#[test]
+fn conflicting_submission_does_not_poison_a_posted_transfer() {
+    // #6627 (oracle: a posted transfer's byte-identical retry always
+    // returns `Exists`): a submission reusing a posted ID with
+    // different fields is rejected with `ExistsWithDifferentFields`,
+    // and that rejection must not be cached against the posted ID.
+    let mut ledger = funded_ledger();
+    let posted = funding_transfer(700, USER_SRC, LP_SRC, 100, SRC);
+    assert_eq!(ledger.create_transfers(&[posted.clone()]), vec![Ok(())]);
+    let conflicting = funding_transfer(700, USER_SRC, LP_SRC, 200, SRC);
+    assert_eq!(
+        ledger.create_transfers(&[conflicting]),
+        vec![Err(TransferError::ExistsWithDifferentFields)]
+    );
+    assert_eq!(
+        ledger.create_transfers(&[posted]),
+        vec![Err(TransferError::Exists)]
+    );
+}
+
+#[test]
 fn single_unterminated_linked_transfer_rejected() {
     // #4121: a lone transfer with `linked: true` promises a following
     // leg; the batch ending there leaves the chain open, so nothing
