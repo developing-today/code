@@ -251,7 +251,10 @@ def clone_status_record(line):
     a future writer change), is NOT a record: this returns None and
     the reader ignores the line exactly as it ignores unparseable
     lines. Records are returned as-is; missing keys are the caller's
-    existing concern.
+    existing concern, and a caller that puts a field value into a set
+    must require the field's expected type (a record can still carry
+    a malformed field value, e.g. a list "repo" — both current
+    consumers require a string repo).
     """
     try:
         value = json.loads(line)

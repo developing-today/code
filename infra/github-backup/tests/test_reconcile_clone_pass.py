@@ -209,10 +209,17 @@ with open(os.path.join(root, "clone-status.jsonl"), "w") as f:
         f.write(shape + "\n")
     f.write(json.dumps({"repo": "owner/good", "status": "ok"}) + "\n")
     f.write(json.dumps({"status": "fail"}) + "\n")
+    f.write(json.dumps({"repo": ["owner/bad2"], "status": "fail"}) + "\n")
 entries = reconcile._clone_status_entries(root, 0)
-check("reader keeps only dict records", all(isinstance(e, dict) for e in entries) and len(entries) == 3)
+check("reader keeps only dict records", all(isinstance(e, dict) for e in entries) and len(entries) == 4)
 consumer = sorted(
-    {e["repo"] for e in entries if e.get("status") == "fail" and e.get("repo")}
+    {
+        e["repo"]
+        for e in entries
+        if e.get("status") == "fail"
+        and isinstance(e.get("repo"), str)
+        and e.get("repo")
+    }
 )
 check("consumer returns exactly the valid fail repos", consumer == ["owner/bad"])
 

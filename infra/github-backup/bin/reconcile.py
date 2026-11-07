@@ -165,7 +165,9 @@ def main():
                 {
                     e["repo"]
                     for e in _clone_status_entries(root, status_offset)
-                    if e.get("status") == "fail" and e.get("repo")
+                    if e.get("status") == "fail"
+                    and isinstance(e.get("repo"), str)
+                    and e.get("repo")
                 }
             )
     if clone_rc is None:

@@ -95,7 +95,12 @@ def main():
             # Shared line contract: ghb_common.clone_status_record
             # (#6606) — non-record lines are ignored, never crash.
             r = clone_status_record(line)
-            if r is not None and r.get("status") == "ok" and r.get("repo"):
+            if (
+                r is not None
+                and r.get("status") == "ok"
+                and isinstance(r.get("repo"), str)
+                and r["repo"]
+            ):
                 ok_prev.add(r["repo"])
 
     def clone_one(item, ref_ok):
