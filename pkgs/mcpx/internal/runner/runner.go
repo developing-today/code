@@ -638,6 +638,11 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			rt.Bin = abs
 		}
 	}
+	if rt.Kind == KindNode {
+		if err := checkNodeTransformTypes(rt.Bin); err != nil {
+			return nil, err
+		}
+	}
 
 	// Checked after the launcher is written, because the launcher is what
 	// actually gets run and therefore what has to be valid. Doing it here
