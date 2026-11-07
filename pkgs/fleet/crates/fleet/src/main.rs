@@ -636,9 +636,12 @@ fn run_proxy(surface: &Surface, args: &[String]) -> i32 {
 /// the recovery command to an arbitrary host. Options (including their
 /// separate operands) remain byte-for-byte argument values, not shell text.
 fn split_ssh_options_and_command(args: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
-    const OPTIONS_WITH_OPERANDS: &[&str] = &[
-        "-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m", "-O", "-o",
-        "-p", "-Q", "-R", "-S", "-W", "-w",
+    // Operand-bearing ssh option characters, per ssh(1) -- including
+    // `P` (tag), which a whole-argument table lookup missed along
+    // with every clustered form such as `-vL` (#6679).
+    const OPTIONS_WITH_OPERANDS: &[char] = &[
+        'B', 'b', 'c', 'D', 'E', 'e', 'F', 'I', 'i', 'J', 'L', 'l', 'm', 'O', 'o', 'P', 'p', 'Q',
+        'R', 'S', 'W', 'w',
     ];
 
     let mut options = Vec::new();
@@ -652,16 +655,33 @@ fn split_ssh_options_and_command(args: &[String]) -> Result<(Vec<String>, Vec<St
             return Ok((options, args[index..].to_vec()));
         }
         options.push(arg.clone());
-        if OPTIONS_WITH_OPERANDS.contains(&arg.as_str()) {
+        index += 1;
+        // Walk the option cluster character by character: a
+        // non-operand character continues the cluster, and an
+        // operand-bearing character consumes the rest of the
+        // cluster as its operand -- or, when it is the cluster's
+        // last character, the next argument. Everything after the
+        // operand belongs to the next argument, never this cluster.
+        let cluster = &arg[1..];
+        let mut operand_char = None;
+        for (offset, ch) in cluster.char_indices() {
+            if OPTIONS_WITH_OPERANDS.contains(&ch) {
+                if offset + ch.len_utf8() == cluster.len() {
+                    operand_char = Some(ch);
+                }
+                break;
+            }
+        }
+        if let Some(ch) = operand_char {
             let operand = args
-                .get(index + 1)
-                .ok_or_else(|| format!("SSH option {arg} needs an argument"))?;
+                .get(index)
+                .ok_or_else(|| format!("SSH option -{ch} in {arg} needs an argument"))?;
             if operand == "--" {
-                return Err(format!("SSH option {arg} needs an argument before '--'"));
+                return Err(format!(
+                    "SSH option -{ch} in {arg} needs an argument before '--'"
+                ));
             }
             options.push(operand.clone());
-            index += 2;
-        } else {
             index += 1;
         }
     }
@@ -1125,6 +1145,45 @@ mod tests {
         assert_eq!(strings[target + 1], "bash");
         assert_eq!(strings[target + 2], "-s");
         assert_eq!(strings[target + 3], "echo; touch /tmp/not-interpolated");
+    }
+
+    #[test]
+    fn proxy_ssh_splits_clustered_options_and_operands() {
+        // Clustered forwarding: `-vL` walks v (flag) then L
+        // (operand-bearing, last in cluster) so the next argument is
+        // L's operand and the command starts after it (#6679).
+        let (options, command) = split_ssh_options_and_command(&args(&[
+            "-vL",
+            "127.0.0.1:2222:localhost:22",
+            "bash",
+            "-s",
+        ]))
+        .expect("clustered -vL splits");
+        assert_eq!(options, args(&["-vL", "127.0.0.1:2222:localhost:22"]));
+        assert_eq!(command, args(&["bash", "-s"]));
+
+        // `-P` takes an operand (tag) even though the old
+        // whole-argument table omitted it.
+        let (options, command) =
+            split_ssh_options_and_command(&args(&["-P", "mytag", "uptime"])).expect("-P splits");
+        assert_eq!(options, args(&["-P", "mytag"]));
+        assert_eq!(command, args(&["uptime"]));
+
+        // Attached operand: the rest of the cluster is the operand,
+        // so no following argument is consumed.
+        let (options, command) =
+            split_ssh_options_and_command(&args(&["-L127.0.0.1:2222:localhost:22", "uptime"]))
+                .expect("attached -L splits");
+        assert_eq!(options, args(&["-L127.0.0.1:2222:localhost:22"]));
+        assert_eq!(command, args(&["uptime"]));
+
+        // A clustered operand-bearing option with nothing after it
+        // is an error, not a silent command start.
+        assert!(
+            split_ssh_options_and_command(&args(&["-vL"]))
+                .unwrap_err()
+                .contains("needs an argument")
+        );
     }
 
     #[test]
