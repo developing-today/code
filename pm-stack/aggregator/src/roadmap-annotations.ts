@@ -5,6 +5,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isObjectRef, validateAuthor } from "./comments.ts";
+import { quarantineUnreadableStore } from "./store-recovery.ts";
 import type { DashAuthor } from "./model.ts";
 
 export type RoadmapAnnotationKind = "decision" | "outcome" | "context";
@@ -102,7 +103,31 @@ export class RoadmapAnnotationsStore {
       raw = await readFile(this.file, "utf8");
     } catch (err) {
       if ((err as { code?: unknown })?.code === "ENOENT") return;
-      throw err;
+      // #2980 / #4200: a non-ENOENT read failure (EACCES, a transient
+      // I/O error, a directory in place of the file, ...) is NOT "no
+      // store yet": the on-disk annotation history may be intact but
+      // unread. Mirror the sibling stores -- quarantine the original
+      // to <file>.corrupt-<timestamp>, log loudly, and start empty, so
+      // the load does not reject and the memoized load cannot latch
+      // the store for the process lifetime. A failed quarantine is
+      // surfaced explicitly: continuing would let the next persist
+      // silently overwrite history the read never saw.
+      let quarantined: string;
+      try {
+        quarantined = await quarantineUnreadableStore(this.file);
+      } catch (renameErr) {
+        throw new Error(
+          `[roadmap-annotations] refusing to continue because ${this.file} could not be read or quarantined: ${renameErr instanceof Error ? renameErr.message : String(renameErr)}`,
+          { cause: err },
+        );
+      }
+      this.annotations = [];
+      this.aliases = {};
+      console.error(
+        `[roadmap-annotations] WARNING: roadmap annotations store ${this.file} could not be read (${err instanceof Error ? err.message : String(err)}); ` +
+          `quarantined the original to ${quarantined} and started empty. The quarantined item holds the prior annotation history -- do not delete it.`,
+      );
+      return;
     }
     try {
       const parsed: unknown = JSON.parse(raw);
