@@ -240,6 +240,67 @@ describe("epicGraph", () => {
     expect(g.edges).toEqual([]);
     expect(g.blockedCount).toBe(0);
   });
+
+  // Oracle: the diamond fixture from issue #6371 (20 layers of two nodes, each
+  // node blocked by both nodes of the next layer; 43 nodes with the epic and
+  // member). Per-branch visited copies made this ~2x slower per layer.
+  function diamondPool(layers: number): ProjectPoolItem[] {
+    const pool: ProjectPoolItem[] = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), blockedBy: [R(100), R(101)] }),
+    ];
+    for (let layer = 0; layer < layers; layer++) {
+      const next = layer + 1 < layers ? [R(100 + (layer + 1) * 2), R(101 + (layer + 1) * 2)] : [];
+      for (const n of [100 + layer * 2, 101 + layer * 2]) {
+        pool.push(item({ number: n, kind: "Epic", blockedBy: next }));
+      }
+    }
+    return pool;
+  }
+
+  test("diamond blockedBy graph (#6371) scores in linear time with each ref listed once", () => {
+    const layers = 20;
+    const started = performance.now();
+    const g = epicGraph(diamondPool(layers), R(1));
+    const elapsedMs = performance.now() - started;
+    expect(g.status).toBe("ok");
+    expect(elapsedMs).toBeLessThan(500); // was ~1757 ms before the fix; linear is a few ms
+    const row = g.rankedBlocked.find((r) => r.ref === R(2));
+    expect(row).toBeDefined();
+    expect(row!.blockers).toEqual([R(100), R(101)]);
+    const expected = new Set<RefKey>();
+    for (let n = 100; n < 100 + layers * 2; n++) expected.add(R(n));
+    expect(new Set(row!.contributingItems)).toEqual(expected);
+    expect(row!.contributingItems.length).toBe(expected.size);
+    // worst single blocker (#100) reaches itself plus 19 full layers, not its sibling
+    expect(row!.downstreamCount).toBe(expected.size - 1);
+  });
+
+  test("two blockers sharing a downstream epic list it once, in deterministic order", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), blockedBy: [R(10), R(11)] }),
+      item({ number: 10, kind: "Epic", blockedBy: [R(20)] }),
+      item({ number: 11, kind: "Epic", blockedBy: [R(20)] }),
+      item({ number: 20, kind: "Epic" }),
+    ];
+    const first = epicGraph(pool, R(1)).rankedBlocked.find((r) => r.ref === R(2))!;
+    const again = epicGraph(pool, R(1)).rankedBlocked.find((r) => r.ref === R(2))!;
+    expect(first.contributingItems.filter((r) => r === R(20)).length).toBe(1);
+    expect([...first.contributingItems].sort()).toEqual([R(10), R(11), R(20)].sort());
+    expect(again.contributingItems).toEqual(first.contributingItems);
+  });
+
+  test("blockedBy cycles terminate with the correct contributing set", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), blockedBy: [R(10)] }),
+      item({ number: 10, kind: "Epic", blockedBy: [R(11)] }),
+      item({ number: 11, kind: "Epic", blockedBy: [R(10)] }),
+    ];
+    const row = epicGraph(pool, R(1)).rankedBlocked.find((r) => r.ref === R(2))!;
+    expect([...row.contributingItems].sort()).toEqual([R(10), R(11)].sort());
+  });
 });
 
 import type { GhItem, Provenance } from "../src/model.ts";
