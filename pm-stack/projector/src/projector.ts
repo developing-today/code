@@ -18,7 +18,13 @@ export interface ProjectorStore {
   upsertItem(i: Omit<ItemRow, "fetched_at">): Promise<void>;
   upsertComment(c: Omit<CommentRow, "fetched_at">): Promise<void>;
   markCommentDeleted(c: Omit<CommentRow, "fetched_at">): Promise<void>;
-  deleteItem(ref: string): Promise<void>;
+  deleteItem(ref: string, sourceUpdatedAt?: string): Promise<void>;
+  /**
+   * Optional deletion-marker read (#6782). Optional so lightweight test
+   * stores keep working; the real libSQL store always provides it, and
+   * its upsertItem guard absorbs stale replays even without this check.
+   */
+  itemDeletion?(ref: string): Promise<{ source_updated_at: string } | null>;
   recordPush(p: {
     deliveryId: string;
     repo: string;
@@ -193,9 +199,20 @@ export async function applyEvent(
     });
   };
 
+  // A deletion marker at or after the incoming item's source timestamp
+  // absorbs the whole sub-event (#6782): no item resurrection, and no
+  // comment/review rows projected for an item that no longer exists.
+  const deletionBlocks = async (ref: string, sourceUpdatedAt: string): Promise<boolean> => {
+    if (!store.itemDeletion) return false;
+    const marker = await store.itemDeletion(ref);
+    return marker !== null && marker.source_updated_at >= sourceUpdatedAt;
+  };
+
   const applyIssue = async (issue: Record<string, any>) => {
     const kind = issueIsPr(issue) ? "pr" : "issue";
-    await store.upsertItem(fromIssueOrPr(repo, issue, kind));
+    const row = fromIssueOrPr(repo, issue, kind);
+    if (await deletionBlocks(row.ref, row.source_updated_at)) return;
+    await store.upsertItem(row);
     addRef(itemRef(repo, issue.number));
     hot(`${kind}:${issue.id ?? issue.number}`, {
       ref: itemRef(repo, issue.number),
@@ -209,7 +226,22 @@ export async function applyEvent(
   const applyComment = async (comment: Record<string, any>) => {
     const issue = payload.issue ?? payload.pull_request;
     if (!issue) return;
-    await store.upsertItem(fromIssueOrPr(repo, issue, issueIsPr(issue) ? "pr" : "issue"));
+    const itemRow = fromIssueOrPr(repo, issue, issueIsPr(issue) ? "pr" : "issue");
+    if (await deletionBlocks(itemRow.ref, itemRow.source_updated_at)) {
+      // The parent item stays absent, but a comment *deletion* still
+      // records its tombstone (Codex P2 on PR #6792): reconcile writes
+      // comments through a direct upsertComment that consults comment
+      // tombstones, not item markers — skipping the tombstone here
+      // would let an in-flight reconcile resurrect the deleted comment.
+      if (event === "issue_comment" && payload.action === "deleted") {
+        await store.markCommentDeleted(
+          commentCommon(comment, repo, itemRef(repo, issue.number), "issue_comment"),
+        );
+        wrote = true;
+      }
+      return;
+    }
+    await store.upsertItem(itemRow);
     addRef(itemRef(repo, issue.number));
     const row = commentCommon(comment, repo, itemRef(repo, issue.number), "issue_comment");
     if (event === "issue_comment" && payload.action === "deleted") {
@@ -233,7 +265,7 @@ export async function applyEvent(
         // A deleted issue must leave the read model, not be re-upserted
         // by its own deletion event (#4210).
         const ref = itemRef(repo, issue.number);
-        await store.deleteItem(ref);
+        await store.deleteItem(ref, iso(issue.updated_at) ?? iso(issue.created_at) ?? undefined);
         addRef(ref);
         hot(`issue:${issue.id ?? issue.number}`, {
           ref,
@@ -248,7 +280,9 @@ export async function applyEvent(
     case "pull_request": {
       const pr = payload.pull_request;
       if (pr) {
-        await store.upsertItem(fromIssueOrPr(repo, pr, "pr"));
+        const row = fromIssueOrPr(repo, pr, "pr");
+        if (await deletionBlocks(row.ref, row.source_updated_at)) break;
+        await store.upsertItem(row);
         addRef(itemRef(repo, pr.number));
         hot(`pr:${pr.id ?? pr.number}`, {
           ref: itemRef(repo, pr.number),
@@ -268,7 +302,9 @@ export async function applyEvent(
       const review = payload.review;
       const pr = payload.pull_request;
       if (review && pr) {
-        await store.upsertItem(fromIssueOrPr(repo, pr, "pr"));
+        const itemRow = fromIssueOrPr(repo, pr, "pr");
+        if (await deletionBlocks(itemRow.ref, itemRow.source_updated_at)) break;
+        await store.upsertItem(itemRow);
         addRef(itemRef(repo, pr.number));
         const ref = itemRef(repo, pr.number);
         const base = commentCommon(review, repo, ref, "review");
@@ -290,13 +326,24 @@ export async function applyEvent(
       const comment = payload.comment;
       const pr = payload.pull_request;
       if (comment && pr) {
-        await store.upsertItem(fromIssueOrPr(repo, pr, "pr"));
-        addRef(itemRef(repo, pr.number));
+        const itemRow = fromIssueOrPr(repo, pr, "pr");
         const ref = itemRef(repo, pr.number);
         const base = commentCommon(comment, repo, ref, "review_comment");
         base.path = iso(comment.path);
         base.line = typeof comment.line === "number" ? comment.line : null;
         base.diff_hunk = iso(comment.diff_hunk);
+        if (await deletionBlocks(itemRow.ref, itemRow.source_updated_at)) {
+          // Same tombstone preservation as applyComment (Codex P2 on
+          // PR #6792): suppress the parent-item and live-comment
+          // writes, but a review-comment deletion keeps its tombstone.
+          if (payload.action === "deleted") {
+            await store.markCommentDeleted(base);
+            wrote = true;
+          }
+          break;
+        }
+        await store.upsertItem(itemRow);
+        addRef(itemRef(repo, pr.number));
         if (payload.action === "deleted") {
           await store.markCommentDeleted(base);
         } else {
