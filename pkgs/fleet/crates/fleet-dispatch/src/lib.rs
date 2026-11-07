@@ -543,6 +543,9 @@ fn parse_args(args: &[String], value_flags: &[&str], bool_flags: &[&str]) -> Res
             }
             flags.insert(name.to_string(), Value::Bool(true));
         } else if value_flags.contains(&name) {
+            if values.contains_key(name) {
+                return Err(usage(format!("--{name} may only be supplied once")));
+            }
             let value = match inline {
                 Some(v) => v,
                 None => {
@@ -578,11 +581,25 @@ impl Args {
 }
 
 fn prompt_of(args: &Args) -> Result<String> {
+    if args.get("prompt").is_some() && args.get("prompt-file").is_some() {
+        return Err(usage("cannot combine --prompt and --prompt-file"));
+    }
     if let Some(path) = args.get("prompt-file") {
         return std::fs::read_to_string(path)
             .map_err(|e| usage(format!("cannot read prompt file {path}: {e}")));
     }
     args.require("prompt").map(str::to_string)
+}
+
+fn validate_launch_flags(args: &Args) -> Result<()> {
+    for (positive, negative) in [("issue", "no-issue"), ("wait", "no-wait")] {
+        if args.flag(positive) && args.flag(negative) {
+            return Err(usage(format!(
+                "cannot combine --{positive} and --{negative}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Priority crosses the wire as a number when it parses as one —
@@ -614,6 +631,7 @@ fn verb_launch(config: &Config, args: &[String]) -> Result<Value> {
         ],
         &["issue", "no-issue", "wait", "no-wait"],
     )?;
+    validate_launch_flags(&parsed)?;
     let mut body = Map::new();
     body.insert(
         "repo".into(),
@@ -816,6 +834,7 @@ mod tests {
                 "developing-today/code",
                 "--prompt",
                 "fix it",
+                "--issue",
                 "--no-wait",
             ]),
             &[
@@ -832,9 +851,107 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.require("repo").unwrap(), "developing-today/code");
         assert!(parsed.flag("no-wait"));
-        assert!(!parsed.flag("issue"));
+        assert!(parsed.flag("issue"));
         assert!(parse_args(&strings(&["--repo"]), &["repo"], &[]).is_err());
         assert!(parse_args(&strings(&["--bogus", "x"]), &["repo"], &[]).is_err());
+    }
+
+    #[test]
+    fn repeated_value_flags_are_usage_errors_for_separate_and_inline_values() {
+        for args in [
+            strings(&["--repo", "first", "--repo", "second"]),
+            strings(&["--repo=first", "--repo=second"]),
+            strings(&["--repo", "first", "--repo=second"]),
+        ] {
+            let error = parse_args(&args, &["repo"], &[])
+                .err()
+                .expect("duplicate value flag must be rejected");
+            assert_eq!(error.exit_code(), EXIT_USAGE);
+            assert!(error.message().contains("--repo"));
+        }
+    }
+
+    #[test]
+    fn contradictory_launch_flags_are_rejected_in_either_order() {
+        for (positive, negative) in [("issue", "no-issue"), ("wait", "no-wait")] {
+            for (first, second) in [(positive, negative), (negative, positive)] {
+                let args = strings(&["--repo", "developing-today/code", "--prompt", "fix it"]);
+                let args = [
+                    args,
+                    strings(&[&format!("--{first}"), &format!("--{second}")]),
+                ]
+                .concat();
+                let parsed = parse_args(
+                    &args,
+                    &[
+                        "repo",
+                        "prompt",
+                        "prompt-file",
+                        "title",
+                        "model",
+                        "directory",
+                        "priority",
+                    ],
+                    &["issue", "no-issue", "wait", "no-wait"],
+                )
+                .unwrap();
+                let error = validate_launch_flags(&parsed)
+                    .expect_err("contradictory launch flags must be rejected");
+                assert_eq!(error.exit_code(), EXIT_USAGE);
+                assert!(error.message().contains(&format!("--{positive}")));
+                assert!(error.message().contains(&format!("--{negative}")));
+            }
+        }
+    }
+
+    #[test]
+    fn prompt_and_prompt_file_are_mutually_exclusive_before_file_access() {
+        let config = Config::default();
+        let launch_error = verb_launch(
+            &config,
+            &strings(&[
+                "--repo",
+                "developing-today/code",
+                "--prompt",
+                "inline prompt",
+                "--prompt-file",
+                "/path/that/does/not/exist",
+            ]),
+        )
+        .expect_err("launch must reject both prompt forms");
+        let enqueue_error = verb_enqueue(
+            &config,
+            &strings(&[
+                "--repo",
+                "developing-today/code",
+                "--title",
+                "test",
+                "--prompt",
+                "inline prompt",
+                "--prompt-file",
+                "/path/that/does/not/exist",
+            ]),
+        )
+        .expect_err("enqueue must reject both prompt forms");
+
+        for error in [launch_error, enqueue_error] {
+            assert_eq!(error.exit_code(), EXIT_USAGE);
+            assert!(error.message().contains("--prompt"));
+            assert!(error.message().contains("--prompt-file"));
+        }
+    }
+
+    #[test]
+    fn launch_and_enqueue_help_still_precedes_argument_validation() {
+        let config = Config::default();
+        assert_eq!(
+            verb_launch(&config, &strings(&["--prompt", "--help"])).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            verb_enqueue(&config, &strings(&["--prompt", "--help"])).unwrap(),
+            Value::Null
+        );
     }
 
     #[test]
