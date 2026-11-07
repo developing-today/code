@@ -137,6 +137,8 @@ class ReaperRun:
             "deny_paths": list(deny_paths),
             "generated_dirt_prefixes": ["pkgs/mcpx/internal/cli/logs/"],
             "generated_dirt_files": ["fleet-feed.json"],
+            "ignored_dirt_prefixes": ["target/", "node_modules/"],
+            "ignored_dirt_files": [],
         }
         cfg_path = os.path.join(self.state_dir, "test-config.json")
         os.makedirs(self.state_dir, exist_ok=True)
@@ -247,6 +249,50 @@ class GateTests(unittest.TestCase):
         # Caught either at evaluation or at the pre-removal re-scan.
         self.assertTrue(decisions[t_occupied]["reason"].startswith("occupied"))
 
+    def _tree_with_ignored(self, branch, rule, ignored_rel):
+        """A pushed tree whose branch commits a .gitignore rule, with an
+        ignored file present in the working tree."""
+        tree = self.repo.branch_tree(branch, push=True)
+        self.repo.write(tree, ".gitignore", rule + "\n")
+        git(tree, "add", ".gitignore")
+        git(tree, "commit", "--quiet", "-m", "ignore rule")
+        git(tree, "push", "--quiet", "origin", branch)
+        self.repo.write(tree, ignored_rel, "local state\n")
+        return tree
+
+    def test_05_ignored_gate(self):
+        # Ignored-only tree: the CLEAN gate must see the ignored file
+        # and keep the tree (#6734 — before the fix, status_entries
+        # returned ([], []) for this tree and it reaped as clean).
+        t_ignored = self._tree_with_ignored("t/ignored-only", "local-state.db", "local-state.db")
+        tracked, untracked, ignored = wr.status_entries(t_ignored)
+        self.assertEqual((tracked, untracked), ([], []))
+        self.assertEqual(ignored, ["local-state.db"])
+
+        # Allowlisted untracked dirt does not launder an unlisted
+        # ignored file: the tree is still kept.
+        t_mixed = self._tree_with_ignored("t/untracked-plus-ignored", "notes.db", "notes.db")
+        self.repo.write(t_mixed, "fleet-feed.json", "{}\n")
+
+        # Ignored build output under an allowlisted prefix reaps, and
+        # the record names the ignored paths it deleted.
+        t_target = self._tree_with_ignored("t/ignored-target", "target/", "target/build.o")
+
+        decisions = self.runner.run()
+        for tree in (t_ignored, t_mixed):
+            self.assertTrue(os.path.isdir(tree), f"{tree} must survive")
+            self.assertEqual(decisions[tree]["action"], "keep")
+            self.assertEqual(decisions[tree]["reason"], "dirty")
+        self.assertIn("local-state.db", decisions[t_ignored]["gates"]["clean"]["ignored_other"])
+        self.assertIn("notes.db", decisions[t_mixed]["gates"]["clean"]["ignored_other"])
+
+        self.assertFalse(os.path.isdir(t_target), "allowlisted ignored dirt should reap")
+        self.assertEqual(decisions[t_target]["action"], "reaped")
+        self.assertTrue(
+            any("target" in p for p in decisions[t_target]["ignored_paths"]),
+            f"reaped tree's record must name its ignored paths: {decisions[t_target]}",
+        )
+
     def test_04_quiet_gate(self):
         tree = self.repo.branch_tree("t/fresh", push=True)
         decisions = self.runner.run(quiet_hours=100000)
@@ -289,6 +335,16 @@ class UnitTests(unittest.TestCase):
         self.assertIsNone(entries[1]["branch"])
         self.assertEqual(entries[2]["branch"], "queue/1-2-z")
         self.assertTrue(entries[2]["locked"])
+
+    def test_ignored_allowlisted(self):
+        cfg = {"ignored_dirt_prefixes": ["target/", "node_modules/"],
+               "ignored_dirt_files": ["scratch.db"]}
+        allow, other = wr.ignored_allowlisted(
+            ["target/", "target/build.o", "pkgs/id/target/deps/x.o",
+             "node_modules/pkg/index.js", "data/scratch.db",
+             "pkgs/id/.identity.db", "local-state.db"], cfg)
+        self.assertEqual(len(allow), 5)
+        self.assertEqual(other, ["pkgs/id/.identity.db", "local-state.db"])
 
     def test_dirt_allowlisted(self):
         cfg = {"generated_dirt_prefixes": ["pkgs/mcpx/internal/cli/logs/"],
