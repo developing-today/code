@@ -3422,101 +3422,128 @@ mod tests {
         host.router.shutdown().await.unwrap();
     }
 
-    #[tokio::test]
-    async fn info_details_rejects_malformed_active_module_hash() {
-        let host = host(Some("admin")).await;
+
+    // PROBE (worktree-only, never committed): admin_event_history reads a
+    // mistyped module_hash in the begin frame as Ok(None).
+    #[derive(Clone, Debug)]
+    struct ProbeMhHost {
+        begin: serde_json::Value,
+    }
+
+    impl iroh::protocol::ProtocolHandler for ProbeMhHost {
+        async fn accept(
+            &self,
+            conn: iroh::endpoint::Connection,
+        ) -> Result<(), iroh::protocol::AcceptError> {
+            while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+                let begin = self.begin.clone();
+                tokio::spawn(async move {
+                    let _ = crate::frames::read_frame(&mut recv).await;
+                    if crate::frames::write_frame(&mut send, begin.to_string().as_bytes())
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    let page = serde_json::json!({
+                        "type": "records", "sequence": 7,
+                        "records": {}, "next_after": null
+                    });
+                    let _ =
+                        crate::frames::write_frame(&mut send, page.to_string().as_bytes()).await;
+                    let _ = send.finish();
+                });
+            }
+            Ok(())
+        }
+    }
+
+    async fn probe_mh(
+        begin: serde_json::Value,
+    ) -> (Result<crate::world::AdminEventHistory>, Router, Endpoint) {
+        let host_ep = endpoint().await;
+        let router = Router::builder(host_ep.clone())
+            .accept(WORLD_ALPN, ProbeMhHost { begin })
+            .spawn();
+        let addr = EndpointAddr::from_parts(
+            host_ep.id(),
+            host_ep.bound_sockets().iter().map(|a| {
+                let ip = if a.ip().is_unspecified() {
+                    std::net::Ipv4Addr::LOCALHOST.into()
+                } else {
+                    a.ip()
+                };
+                iroh::TransportAddr::Ip(std::net::SocketAddr::new(ip, a.port()))
+            }),
+        );
         let client_ep = endpoint().await;
-        let cap = invite_for(&client_ep, &host.addr, None, "ann").await;
-
-        let mut client = WorldClient::connect(&client_ep, host.addr.clone())
-            .await
-            .unwrap();
-
-        // Test with a valid string hash
-        let valid_reply = json!({
-            "type": "module_info",
-            "world_id": "test:world",
-            "active_module_hash": "abc123",
-            "current_sequence": 42,
-            "active_module_provenance": null,
-        });
-        client.inject_json(valid_reply).await;
-        let info = client.info_details(&cap).await.unwrap();
-        assert_eq!(info.active_module_hash, Some("abc123".to_string()));
-
-        // Test with null hash (legitimate no-module case)
-        let null_reply = json!({
-            "type": "module_info",
-            "world_id": "test:world",
-            "active_module_hash": null,
-            "current_sequence": 42,
-            "active_module_provenance": null,
-        });
-        client.inject_json(null_reply).await;
-        let info = client.info_details(&cap).await.unwrap();
-        assert_eq!(info.active_module_hash, None);
-
-        // Test with missing hash field (older hosts)
-        let missing_reply = json!({
-            "type": "module_info",
-            "world_id": "test:world",
-            "current_sequence": 42,
-            "active_module_provenance": null,
-        });
-        client.inject_json(missing_reply).await;
-        let info = client.info_details(&cap).await.unwrap();
-        assert_eq!(info.active_module_hash, None);
-
-        // Test with malformed hash (number) - should error
-        let number_reply = json!({
-            "type": "module_info",
-            "world_id": "test:world",
-            "active_module_hash": 123,
-            "current_sequence": 42,
-            "active_module_provenance": null,
-        });
-        client.inject_json(number_reply).await;
-        let err = client.info_details(&cap).await.unwrap_err();
-        assert!(err.to_string().contains("malformed active_module_hash"));
-
-        // Test with malformed hash (boolean) - should error
-        let bool_reply = json!({
-            "type": "module_info",
-            "world_id": "test:world",
-            "active_module_hash": true,
-            "current_sequence": 42,
-            "active_module_provenance": null,
-        });
-        client.inject_json(bool_reply).await;
-        let err = client.info_details(&cap).await.unwrap_err();
-        assert!(err.to_string().contains("malformed active_module_hash"));
-
-        // Test with malformed hash (array) - should error
-        let array_reply = json!({
-            "type": "module_info",
-            "world_id": "test:world",
-            "active_module_hash": ["abc"],
-            "current_sequence": 42,
-            "active_module_provenance": null,
-        });
-        client.inject_json(array_reply).await;
-        let err = client.info_details(&cap).await.unwrap_err();
-        assert!(err.to_string().contains("malformed active_module_hash"));
-
-        // Test with malformed hash (object) - should error
-        let object_reply = json!({
-            "type": "module_info",
-            "world_id": "test:world",
-            "active_module_hash": {"hash": "abc"},
-            "current_sequence": 42,
-            "active_module_provenance": null,
-        });
-        client.inject_json(object_reply).await;
-        let err = client.info_details(&cap).await.unwrap_err();
-        assert!(err.to_string().contains("malformed active_module_hash"));
-
+        let mut client = WorldClient::connect(&client_ep, addr).await.unwrap();
+        let result = client.admin_event_history("admin").await;
         client.close();
-        client_ep.close().await;
-        host.router.shutdown().await.unwrap();
+        (result, router, client_ep)
+    }
+
+    fn probe_begin(module_hash: serde_json::Value, include: bool) -> serde_json::Value {
+        let mut begin = serde_json::json!({
+            "type": "event_history_begin",
+            "world_id": "w",
+            "current_sequence": 7,
+            "complete": true,
+            "event_count": 0
+        });
+        if include {
+            begin["module_hash"] = module_hash;
+        }
+        begin
+    }
+
+    #[tokio::test]
+    async fn probe_admin_history_module_hash_shapes() {
+        // Control: string hash survives.
+        let (r, router, ep) = probe_mh(probe_begin(serde_json::json!("abc123"), true)).await;
+        println!("CONTROL string -> {:?}", r.as_ref().map(|h| &h.module_hash));
+        assert_eq!(r.unwrap().module_hash.as_deref(), Some("abc123"));
+        ep.close().await;
+        router.shutdown().await.unwrap();
+
+        // Control: null hash is the legit no-module case.
+        let (r, router, ep) = probe_mh(probe_begin(serde_json::Value::Null, true)).await;
+        println!("CONTROL null -> {:?}", r.as_ref().map(|h| &h.module_hash));
+        assert_eq!(r.unwrap().module_hash, None);
+        ep.close().await;
+        router.shutdown().await.unwrap();
+
+        // Bug cases: every mistyped shape collapses to Ok(None).
+        for (name, v) in [
+            ("number", serde_json::json!(123)),
+            ("bool", serde_json::json!(true)),
+            ("array", serde_json::json!(["abc"])),
+            ("object", serde_json::json!({"h": "abc"})),
+        ] {
+            let (r, router, ep) = probe_mh(probe_begin(v, true)).await;
+            println!("CASE mistyped {name} -> {:?}", r.as_ref().map(|h| &h.module_hash));
+            assert!(
+                matches!(&r, Ok(h) if h.module_hash.is_none()),
+                "BUG REPRO: mistyped {name} must read as Ok(None), got {r:?}"
+            );
+            ep.close().await;
+            router.shutdown().await.unwrap();
+        }
+
+        // Missing key also collapses to Ok(None).
+        let (r, router, ep) = probe_mh(probe_begin(serde_json::Value::Null, false)).await;
+        println!("CASE missing -> {:?}", r.as_ref().map(|h| &h.module_hash));
+        assert!(matches!(&r, Ok(h) if h.module_hash.is_none()));
+        ep.close().await;
+        router.shutdown().await.unwrap();
+
+        // Oracle: a mistyped world_id in the same frame IS refused.
+        let mut bad = probe_begin(serde_json::json!("abc123"), true);
+        bad["world_id"] = serde_json::json!(123);
+        let (r, router, ep) = probe_mh(bad).await;
+        println!("ORACLE mistyped world_id -> {:?}", r.as_ref().map(|_| ()));
+        assert!(r.is_err(), "oracle: mistyped world_id must error");
+        ep.close().await;
+        router.shutdown().await.unwrap();
     }
 }
