@@ -14,6 +14,8 @@ import {
   incidentObjectRef,
   incidentUrl,
   inQuietHours,
+  MAX_CLASS_KEY_LENGTH,
+  MAX_CLASS_KEYS,
   mergeClasses,
   mergeQuiet,
   runAlertTick,
@@ -95,6 +97,36 @@ describe("class + quiet merges (design §1/§2)", () => {
     expect(mergeClasses({ incident: false })).toEqual({ incident: false });
     expect(mergeClasses({ incident: true, "quota-wall": false })).toEqual({ incident: true, "quota-wall": false });
     expect(mergeClasses({ incident: "yes" })).toEqual({ incident: true }); // non-boolean ignored
+  });
+  // #4981: bound class-key growth until the class registry lands (#3317).
+  test("class keys are capped in count beyond the incident default", () => {
+    const many: Record<string, boolean> = {};
+    for (let i = 0; i < MAX_CLASS_KEYS + 5; i++) many[`class-${i}`] = true;
+    const out = mergeClasses(many);
+    expect(Object.keys(out).filter((k) => k !== "incident")).toHaveLength(MAX_CLASS_KEYS);
+    expect(out["class-0"]).toBe(true);
+    expect(out[`class-${MAX_CLASS_KEYS}`]).toBeUndefined(); // over-limit dropped
+    // The default still merges even when the cap is reached.
+    expect(out.incident).toBe(true);
+  });
+  test("class keys longer than the maximum are dropped", () => {
+    const longest = "k".repeat(MAX_CLASS_KEY_LENGTH);
+    const tooLong = "k".repeat(MAX_CLASS_KEY_LENGTH + 1);
+    expect(mergeClasses({ [longest]: false })).toEqual({ incident: true, [longest]: false });
+    expect(mergeClasses({ [tooLong]: true })).toEqual({ incident: true });
+  });
+  test("accepted class keys keep their explicit true/false", () => {
+    expect(mergeClasses({ incident: false, "quota-wall": true })).toEqual({
+      incident: false,
+      "quota-wall": true,
+    });
+  });
+  test("prototype-named keys count against the cap", () => {
+    const input: Record<string, unknown> = { toString: true, constructor: false };
+    expect(mergeClasses(input)).toEqual({ incident: true, toString: true, constructor: false });
+  });
+  test("non-boolean class values are ignored", () => {
+    expect(mergeClasses({ "quota-wall": "yes", a: 1, b: null })).toEqual({ incident: true });
   });
   test("classEnabled: only an explicit false disables", () => {
     expect(classEnabled({ classes: {} }, "incident")).toBe(true);
