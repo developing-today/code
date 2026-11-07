@@ -123,8 +123,16 @@ fn key_entry(key: u8, include_history: bool) -> Entry {
     }
 }
 
+/// An admin source with no admin data at any frontier: Admin thresholds
+/// fail closed (admit nobody) for expanders built on it. Tests that model
+/// admins supply their own source keyed on the frontier, the way the
+/// groups fold's replay would answer for a real causal position.
+fn no_admins(_: &[Hash], _: Hash) -> BTreeSet<[u8; 32]> {
+    BTreeSet::new()
+}
+
 fn expand(membership: &mut Membership, set: &WriterSet, frontier: Vec<Hash>) -> BTreeSet<[u8; 32]> {
-    Expander::new(membership)
+    Expander::new(membership, &no_admins)
         .expand(&SetVersion {
             set,
             frontier,
@@ -257,7 +265,7 @@ fn test_expand_retro_subset_and_empty_without_history_entries() {
         frontier: vec![group()],
         resolution: hash(80),
     };
-    let mut expander = Expander::new(&mut membership);
+    let mut expander = Expander::new(&mut membership, &no_admins);
     let full = expander.expand(&version).unwrap();
     let retro = expander.expand_retro(&version).unwrap();
 
@@ -319,7 +327,7 @@ fn test_expand_fork_invalidated_grant_changes_expansion_and_cache_keys_on_resolu
     // The grant stands: Dave is in the expansion under R1.
     let mut membership = base_layer();
     add_dave(&mut membership, true);
-    let mut expander = Expander::new(&mut membership);
+    let mut expander = Expander::new(&mut membership, &no_admins);
     let under_r1 = expander
         .expand(&SetVersion {
             set: &set,
@@ -355,7 +363,7 @@ fn test_expand_fork_invalidated_grant_changes_expansion_and_cache_keys_on_resolu
     // same frontier no longer expands to Dave.
     let mut forked = base_layer();
     add_dave(&mut forked, false);
-    let under_r2 = Expander::new(&mut forked)
+    let under_r2 = Expander::new(&mut forked, &no_admins)
         .expand(&SetVersion {
             set: &set,
             frontier,
@@ -438,7 +446,7 @@ fn test_expand_public_entry_refused_not_materialized() {
         frontier: vec![group()],
         resolution: hash(80),
     };
-    let mut expander = Expander::new(&mut membership);
+    let mut expander = Expander::new(&mut membership, &no_admins);
     assert_eq!(expander.expand(&version), Err(ExpandError::PublicEntry));
     assert_eq!(expander.expand_retro(&version).unwrap(), BTreeSet::new());
 }
@@ -462,7 +470,7 @@ fn test_expand_public_exclusion_admits_nobody_not_refused() {
         frontier: vec![group()],
         resolution: hash(80),
     };
-    let mut expander = Expander::new(&mut membership);
+    let mut expander = Expander::new(&mut membership, &no_admins);
     assert_eq!(expander.expand(&version).unwrap(), BTreeSet::new());
     assert_eq!(expander.expand_retro(&version).unwrap(), BTreeSet::new());
 
@@ -479,19 +487,132 @@ fn test_expand_public_exclusion_admits_nobody_not_refused() {
     );
 }
 
-/// Codex P2 on PR #6787: the membership layer records Admin as Manage, so
-/// an Admin `role_min` is answered at Manage, the layer's top role —
-/// admins (managers in the layer) are admitted rather than nobody, and
-/// the approximation is pinned here until admin-at-frontier plumbing
-/// exists. Bob (Read) and Carol (Write) stay below the threshold.
+/// #6798, fail-closed baseline: the membership layer records Admin as
+/// Manage and the default test source carries no admin data, so an Admin
+/// `role_min` admits nobody — it no longer widens to Manage (the pre-#6798
+/// clamp, pinned by the test this one replaces). Manage itself is still
+/// answered exactly by the layer: Alice (Manage) clears a Manage entry,
+/// Bob (Read) and Carol (Write) stay below it.
 #[test]
-fn test_expand_role_min_admin_is_answered_at_manage_the_layers_top_role() {
+fn test_expand_role_min_admin_without_admin_data_admits_nobody() {
     let mut membership = base_layer();
+    let admin_set = set(vec![group_entry(Role::Admin, false)], vec![]);
+    assert!(expand(&mut membership, &admin_set, vec![group()]).is_empty());
+    let manage_set = set(vec![group_entry(Role::Manage, false)], vec![]);
+    let expanded = expand(&mut membership, &manage_set, vec![group()]);
+    assert_eq!(expanded, [author(ALICE)].into_iter().collect());
+}
+
+/// #6798, exactness: with an admin source naming Alice at the frontier,
+/// an Admin `role_min` admits Alice and NOT Erin, a second manager who
+/// holds the layer's top access (Manage) but not the Admin policy role.
+/// (Before the plumbing, the clamp admitted every manager.)
+#[test]
+fn test_expand_role_min_admin_admits_admin_not_non_admin_manager() {
+    let mut membership = base_layer();
+    let add_erin = hash(11);
+    feed_auth(
+        &mut membership,
+        add_erin,
+        vec![group()],
+        author(ALICE),
+        Some(group()),
+        GroupAction::Add {
+            member: individual(author(ERIN)),
+            access: Access::manage(),
+        },
+    );
+    // The fold-side answer at this frontier: Alice is the group's admin;
+    // Erin is a manager, never an admin.
+    let admins = |frontier: &[Hash], _group: Hash| -> BTreeSet<[u8; 32]> {
+        if frontier == [add_erin] {
+            [author(ALICE)].into_iter().collect()
+        } else {
+            BTreeSet::new()
+        }
+    };
+    let admin_set = set(vec![group_entry(Role::Admin, false)], vec![]);
+    let expanded = Expander::new(&mut membership, &admins)
+        .expand(&SetVersion {
+            set: &admin_set,
+            frontier: vec![add_erin],
+            resolution: hash(80),
+        })
+        .unwrap();
+    assert_eq!(expanded, [author(ALICE)].into_iter().collect());
+    // Sanity: a Manage threshold at the same frontier admits both
+    // managers, so Erin's exclusion above is the Admin distinction, not
+    // a membership miss.
+    let manage_set = set(vec![group_entry(Role::Manage, false)], vec![]);
+    let managers = expand(&mut membership, &manage_set, vec![add_erin]);
+    assert_eq!(
+        managers,
+        [author(ALICE), author(ERIN)].into_iter().collect()
+    );
+}
+
+/// #6798, frontier pinning for the policy role (the Admin analogue of
+/// spec test 6): Erin is promoted to Admin only at the later position
+/// (modelled by the source, whose answer changes at the hash(12)
+/// frontier — the fold replays exactly this way over settled events).
+/// A set version pinned at the earlier frontier must not admit her; the
+/// same set judged at the later frontier does.
+#[test]
+fn test_expand_role_min_admin_promoted_after_frontier_is_not_admitted() {
+    let mut membership = base_layer();
+    let add_erin = hash(11);
+    feed_auth(
+        &mut membership,
+        add_erin,
+        vec![group()],
+        author(ALICE),
+        Some(group()),
+        GroupAction::Add {
+            member: individual(author(ERIN)),
+            access: Access::manage(),
+        },
+    );
+    // A later layer event marks the position at which the fold-side
+    // promotion to Admin has happened.
+    let later = hash(12);
+    feed_auth(
+        &mut membership,
+        later,
+        vec![add_erin],
+        author(ALICE),
+        Some(group()),
+        GroupAction::Add {
+            member: individual(author(FRANK)),
+            access: Access::read(),
+        },
+    );
+    let admins = |frontier: &[Hash], _group: Hash| -> BTreeSet<[u8; 32]> {
+        if frontier == [later] {
+            [author(ERIN)].into_iter().collect()
+        } else {
+            BTreeSet::new()
+        }
+    };
     let set = set(vec![group_entry(Role::Admin, false)], vec![]);
-    let expanded = expand(&mut membership, &set, vec![group()]);
-    assert!(expanded.contains(&author(ALICE)));
-    assert!(!expanded.contains(&author(BOB)));
-    assert!(!expanded.contains(&author(CAROL)));
+    let pinned = Expander::new(&mut membership, &admins)
+        .expand(&SetVersion {
+            set: &set,
+            frontier: vec![add_erin],
+            resolution: hash(80),
+        })
+        .unwrap();
+    assert!(
+        pinned.is_empty(),
+        "promotion after the frontier leaked into the pinned expansion: {pinned:?}"
+    );
+    let at_promotion = Expander::new(&mut membership, &admins)
+        .expand(&SetVersion {
+            set: &set,
+            frontier: vec![later],
+            resolution: hash(80),
+        })
+        .unwrap();
+    assert_eq!(at_promotion, [author(ERIN)].into_iter().collect());
 }
 
 // ---------------------------------------------------------------------------
@@ -555,12 +676,12 @@ proptest! {
         let mut membership = base_layer();
         let plain = set(entries.clone(), excludes.clone());
         let shuffled = set(permute(&entries, seed), permute(&excludes, seed + 1));
-        let a = Expander::new(&mut membership).expand(&SetVersion {
+        let a = Expander::new(&mut membership, &no_admins).expand(&SetVersion {
             set: &plain,
             frontier: vec![group()],
             resolution: hash(80),
         });
-        let b = Expander::new(&mut membership).expand(&SetVersion {
+        let b = Expander::new(&mut membership, &no_admins).expand(&SetVersion {
             set: &shuffled,
             frontier: vec![group()],
             resolution: hash(80),
@@ -583,7 +704,7 @@ proptest! {
             frontier: vec![group()],
             resolution: hash(80),
         };
-        let mut expander = Expander::new(&mut membership);
+        let mut expander = Expander::new(&mut membership, &no_admins);
         if let Ok(full) = expander.expand(&version) {
             let retro = expander.expand_retro(&version).unwrap();
             prop_assert!(retro.is_subset(&full), "retro {retro:?} not a subset of {full:?}");
@@ -606,7 +727,7 @@ proptest! {
             frontier: vec![group()],
             resolution: hash(80),
         };
-        let before = Expander::new(&mut membership).expand(&version);
+        let before = Expander::new(&mut membership, &no_admins).expand(&version);
 
         let mut after = vec![group()];
         for (i, (who, kind, level)) in ops.iter().enumerate() {
@@ -645,7 +766,7 @@ proptest! {
             after = vec![id];
         }
 
-        let after_expand = Expander::new(&mut membership).expand(&version);
+        let after_expand = Expander::new(&mut membership, &no_admins).expand(&version);
         prop_assert_eq!(before, after_expand);
     }
 }
