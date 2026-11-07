@@ -61,6 +61,12 @@ impl Sigil {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct StoreId(pub String);
 
+impl Default for StoreId {
+    fn default() -> Self {
+        Self::local()
+    }
+}
+
 impl StoreId {
     /// The local store of the PoC.
     #[must_use]
@@ -121,7 +127,7 @@ impl Reference {
                 }
                 ']' if chars.next() == Some('(') => {
                     let rest: String = chars.collect();
-                    break rest.strip_prefix("id://")?.strip_suffix(')')?;
+                    break rest.strip_prefix("id://")?.strip_suffix(')').map(str::to_owned)?;
                 }
                 chr => surface.push(chr),
             }
