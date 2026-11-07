@@ -1725,4 +1725,27 @@ mod tests {
         );
         assert_eq!(*doc2.hash.read().await, "hash_2");
     }
+    #[test]
+    fn probe_lane_b_cursor_name_passes_verbatim() {
+        // PROBE (not for commit): a client-supplied cursor name with a newline,
+        // an ANSI escape and 100k chars round-trips decode() unchanged.
+        let hostile = format!("Alice\nFORGED\u{1b}[31m{}", "x".repeat(100_000));
+        let msg = CollabMessage::Cursor {
+            client_id: 7,
+            head: 1,
+            anchor: 1,
+            name: Some(hostile.clone()),
+            idle_secs: None,
+        };
+        let decoded = CollabMessage::decode(&msg.encode()).expect("cursor decodes");
+        match decoded {
+            CollabMessage::Cursor { name, .. } => {
+                assert_eq!(name.as_deref(), Some(hostile.as_str()));
+                println!("PROBE cursor name verbatim: len={} has_newline={} has_esc={}",
+                    hostile.len(), hostile.contains('\n'), hostile.contains('\u{1b}'));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
 }

@@ -1,0 +1,959 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.26
+   Compiling cfg-if v1.0.5
+   Compiling libc v0.2.190
+   Compiling serde_core v1.0.229
+   Compiling serde v1.0.229
+   Compiling typenum v1.20.1
+   Compiling version_check v0.9.5
+   Compiling pin-project-lite v0.2.17
+   Compiling subtle v2.6.1
+   Compiling log v0.4.34
+   Compiling scopeguard v1.2.0
+   Compiling memchr v2.8.3
+   Compiling rand_core v0.10.1
+   Compiling futures-core v0.3.34
+   Compiling foldhash v0.2.0
+   Compiling portable-atomic v1.15.0
+   Compiling lock_api v0.4.14
+   Compiling cpufeatures v0.3.1
+   Compiling parking_lot_core v0.9.12
+   Compiling critical-section v1.2.0
+   Compiling futures-io v0.3.34
+   Compiling futures-sink v0.3.34
+   Compiling semver v1.0.28
+   Compiling slab v0.4.12
+   Compiling find-msvc-tools v0.1.14
+   Compiling thiserror v2.0.21
+   Compiling generic-array v0.14.7
+   Compiling rustc_version v0.4.1
+   Compiling shlex v2.0.1
+   Compiling futures-channel v0.3.34
+   Compiling futures-task v0.3.34
+   Compiling stable_deref_trait v1.2.1
+   Compiling cfg_aliases v0.2.2
+   Compiling equivalent v1.0.2
+   Compiling cpufeatures v0.2.17
+   Compiling hashbrown v0.17.1
+   Compiling bitflags v2.13.2
+   Compiling cc v1.8.0
+   Compiling const-oid v0.10.2
+   Compiling itoa v1.0.18
+   Compiling getrandom v0.4.3
+   Compiling libm v0.2.16
+   Compiling cmov v0.5.4
+   Compiling zerocopy v0.8.62
+   Compiling fnv v1.0.7
+   Compiling chacha20 v0.10.2
+   Compiling litemap v0.8.3
+   Compiling percent-encoding v2.3.2
+   Compiling writeable v0.6.4
+   Compiling anyhow v1.0.104
+   Compiling icu_normalizer_data v2.3.0
+   Compiling ctutils v0.4.3
+   Compiling utf8_iter v1.0.4
+   Compiling icu_properties_data v2.3.0
+   Compiling untrusted v0.9.0
+   Compiling httparse v1.10.1
+   Compiling hybrid-array v0.4.15
+   Compiling autocfg v1.5.1
+   Compiling heck v0.5.0
+   Compiling form_urlencoded v1.2.2
+   Compiling syn v2.0.119
+   Compiling syn v3.0.8
+   Compiling rustls v0.23.45
+   Compiling fastrand v2.5.0
+   Compiling unicode-segmentation v1.13.3
+   Compiling parking v2.2.1
+   Compiling tower-service v0.3.3
+   Compiling ipnet v2.12.2
+   Compiling spin v0.9.9
+   Compiling hashbrown v0.16.1
+   Compiling rustversion v1.0.23
+   Compiling rustc-hash v2.1.3
+   Compiling data-encoding v2.11.1
+   Compiling num-traits v0.2.19
+   Compiling convert_case v0.10.0
+   Compiling atomic-waker v1.1.2
+   Compiling opaque-debug v0.3.1
+   Compiling base64 v0.23.1
+   Compiling unicode-xid v0.2.6
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling sync_wrapper v1.0.2
+   Compiling base64ct v1.8.3
+   Compiling num-conv v0.2.2
+   Compiling time-core v0.1.9
+   Compiling siphasher v1.0.4
+   Compiling httpdate v1.0.3
+   Compiling try-lock v0.2.5
+   Compiling time-macros v0.2.32
+   Compiling pem-rfc7468 v1.0.0
+   Compiling want v0.3.2
+   Compiling futures-lite v2.6.1
+   Compiling powerfmt v0.2.1
+   Compiling getrandom v0.2.17
+   Compiling errno v0.3.14
+   Compiling socket2 v0.6.5
+   Compiling mio v1.2.4
+   Compiling signal-hook-registry v1.4.8
+   Compiling ring v0.17.14
+   Compiling rand v0.10.3
+   Compiling digest v0.11.3
+   Compiling indexmap v2.14.2
+   Compiling rand_core v0.6.4
+   Compiling sha2 v0.11.0
+   Compiling deranged v0.5.8
+   Compiling openssl-probe v0.2.1
+   Compiling tower-layer v0.3.3
+   Compiling getrandom v0.3.4
+   Compiling zmij v1.0.23
+   Compiling curve25519-dalek v5.0.0
+   Compiling heapless v0.7.17
+   Compiling minimal-lexical v0.2.1
+   Compiling byteorder v1.5.0
+   Compiling tinyvec v1.13.3
+   Compiling arrayvec v0.7.8
+   Compiling base16ct v1.0.0
+   Compiling serde_json v1.0.154
+   Compiling hash32 v0.2.1
+   Compiling nom v7.1.3
+   Compiling serde_bytes v0.11.19
+   Compiling blake3 v1.8.7
+   Compiling n0-future v0.3.2
+   Compiling signature v3.0.0
+   Compiling cordyceps v0.3.5
+   Compiling spin v0.10.1
+   Compiling diatomic-waker v0.2.3
+   Compiling rand_core v0.9.5
+   Compiling noq-udp v1.3.0
+   Compiling constant_time_eq v0.4.2
+   Compiling base64 v0.22.1
+   Compiling paste v1.0.15
+   Compiling futures-buffered v0.2.13
+   Compiling winnow v1.0.4
+   Compiling num-integer v0.1.47
+   Compiling oid-registry v0.8.1
+   Compiling mime v0.3.17
+   Compiling time v0.3.55
+   Compiling toml_datetime v1.1.2+spec-1.1.0
+   Compiling lazy_static v1.5.1
+   Compiling wasmtime-internal-core v43.0.2
+   Compiling curve25519-dalek v4.1.3
+   Compiling num-bigint v0.4.8
+   Compiling utf8parse v0.2.2
+   Compiling crossbeam-utils v0.8.23
+   Compiling cranelift-srcgen v0.130.2
+   Compiling cranelift-assembler-x64-meta v0.130.2
+   Compiling lru v0.18.5
+   Compiling const-oid v0.9.6
+   Compiling simdutf8 v0.1.5
+   Compiling ryu v1.0.23
+   Compiling regex-syntax v0.8.11
+   Compiling netlink-packet-core v0.8.2
+   Compiling rusticata-macros v4.1.0
+   Compiling toml_parser v1.1.5+spec-1.1.0
+   Compiling anstyle-parse v1.0.0
+   Compiling arc-swap v1.9.2
+   Compiling encoding_rs v0.8.42
+   Compiling synstructure v0.13.2
+   Compiling ff v0.13.1
+   Compiling pem v4.0.0
+   Compiling noq v1.3.0
+   Compiling rand_pcg v0.10.2
+   Compiling sha1_smol v1.0.1
+   Compiling sorted-index-buffer v0.2.1
+   Compiling synstructure v0.14.0
+   Compiling iana-time-zone v0.1.65
+   Compiling toml_edit v0.25.17+spec-1.1.0
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling n0-dns-resolver v0.1.0
+   Compiling netlink-packet-core v0.9.0
+   Compiling anstyle v1.0.14
+   Compiling identity-hash v0.1.0
+   Compiling netdev v0.46.3
+   Compiling base16ct v0.2.0
+   Compiling core_detect v1.0.0
+   Compiling lru-slab v0.1.3
+   Compiling anstyle-query v1.1.5
+   Compiling colorchoice v1.0.5
+   Compiling crc32fast v1.5.2
+   Compiling chrono v0.4.45
+   Compiling cranelift-bitset v0.130.2
+   Compiling yasna v0.6.0
+   Compiling anstream v1.0.0
+   Compiling group v0.13.0
+   Compiling simple-dns v0.12.0
+   Compiling netwatch v0.19.3
+   Compiling iroh-dns v1.3.0
+   Compiling multer v3.1.0
+   Compiling clap_lex v1.1.1
+   Compiling strsim v0.11.1
+   Compiling allocator-api2 v0.2.21
+   Compiling xml-rs v0.8.29
+   Compiling proc-macro-crate v3.5.0
+   Compiling cranelift-isle v0.130.2
+   Compiling reloadable-core v0.1.0
+   Compiling mac-addr v0.3.0
+   Compiling rustix v1.1.5
+   Compiling multiversion_no_op v1.0.0
+   Compiling syn v1.0.109
+   Compiling regex-automata v0.4.18
+   Compiling bumpalo v3.20.3
+   Compiling zeroize_derive v1.5.0
+   Compiling tracing-attributes v0.1.31
+   Compiling zerocopy-derive v0.8.62
+   Compiling curve25519-dalek-derive v0.1.1
+   Compiling derive_more-impl v2.1.1
+   Compiling pin-project-internal v1.1.13
+   Compiling spez v0.1.2
+   Compiling n0-error-macros v1.0.1
+   Compiling postcard-derive v0.2.2
+   Compiling asn1-rs-derive v0.6.0
+   Compiling serde_derive v1.0.229
+   Compiling tokio-macros v2.7.2
+   Compiling zeroize v1.9.1
+   Compiling futures-macro v0.3.34
+   Compiling thiserror-impl v2.0.21
+   Compiling displaydoc v0.2.7
+   Compiling zerofrom-derive v0.1.8
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling yoke-derive v0.8.4
+   Compiling digest v0.10.7
+   Compiling zerovec-derive v0.11.6
+   Compiling rustls-pki-types v1.15.1
+   Compiling inout v0.1.4
+   Compiling universal-hash v0.5.1
+   Compiling futures-util v0.3.34
+   Compiling aead v0.5.2
+   Compiling cipher v0.4.4
+   Compiling pin-project v1.1.13
+   Compiling n0-error v1.0.1
+   Compiling der v0.8.2
+   Compiling polyval v0.6.2
+   Compiling ctr v0.9.2
+   Compiling rustls-webpki v0.103.15
+   Compiling rustls-native-certs v0.8.4
+   Compiling ghash v0.5.1
+   Compiling aes v0.8.4
+   Compiling asn1-rs-impl v0.2.0
+   Compiling sha2 v0.10.9
+   Compiling data-encoding-macro-internal v0.1.19
+   Compiling webpki-roots v1.0.9
+   Compiling aes-gcm v0.10.3
+   Compiling hmac v0.12.1
+   Compiling der v0.7.10
+   Compiling cobs v0.3.0
+   Compiling asn1-rs v0.7.2
+   Compiling enum-assoc v1.4.1
+   Compiling data-encoding-macro v0.1.21
+   Compiling pulley-macros v43.0.2
+   Compiling hkdf v0.12.4
+   Compiling rustls-cert-read v0.3.0
+   Compiling sha1 v0.10.7
+   Compiling crypto-bigint v0.5.5
+   Compiling async-trait v0.1.92
+   Compiling zerofrom v0.1.8
+   Compiling num_enum_derive v0.7.6
+   Compiling yoke v0.8.3
+   Compiling strum_macros v0.28.0
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+   Compiling spki v0.8.1
+   Compiling sec1 v0.7.3
+   Compiling pkcs8 v0.11.0
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling iroh-metrics-derive v1.0.1
+   Compiling pulley-interpreter v43.0.2
+   Compiling icu_locale_core v2.3.0
+   Compiling icu_collections v2.3.0
+   Compiling der-parser v10.0.0
+   Compiling matchers v0.2.0
+   Compiling elliptic-curve v0.13.8
+   Compiling num_enum v0.7.6
+   Compiling clap_derive v4.6.7
+   Compiling smallvec v1.16.3
+   Compiling bytes v1.12.1
+   Compiling serdect v0.4.3
+   Compiling ed25519 v3.0.0
+   Compiling futures-executor v0.3.34
+   Compiling parking_lot v0.12.5
+   Compiling x509-parser v0.18.1
+   Compiling futures v0.3.34
+   Compiling hex v0.4.3
+   Compiling once_cell v1.21.4
+   Compiling tokio v1.53.2
+   Compiling http v1.5.0
+   Compiling icu_provider v2.3.1
+   Compiling postcard v1.1.3
+   Compiling fastbloom v0.17.0
+   Compiling tracing-core v0.1.36
+   Compiling derive_more v2.1.1
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling tracing v0.1.44
+   Compiling netlink-sys v0.9.0
+   Compiling tracing-log v0.2.0
+   Compiling ed25519-dalek v3.0.0
+   Compiling strum v0.28.0
+   Compiling xmltree v0.10.3
+   Compiling clap_builder v4.6.7
+   Compiling netlink-packet-route v0.31.0
+   Compiling sharded-slab v0.1.7
+   Compiling http-body v1.1.0
+   Compiling pem v3.0.6
+   Compiling http-body-util v0.1.5
+   Compiling serde_spanned v1.1.2
+   Compiling iroh-relay v1.3.0
+   Compiling thread_local v1.1.10
+   Compiling rcgen v0.14.10
+   Compiling linux-raw-sys v0.12.1
+   Compiling hashbrown v0.14.5
+   Compiling toml_writer v1.1.3+spec-1.1.0
+   Compiling target-lexicon v0.13.5
+   Compiling cranelift-codegen-shared v0.130.2
+   Compiling nu-ansi-term v0.50.3
+   Compiling cranelift-codegen-meta v0.130.2
+   Compiling toml v1.1.8+spec-1.1.0
+   Compiling axum-core v0.5.6
+   Compiling ppv-lite86 v0.2.21
+   Compiling idna_adapter v1.2.2
+   Compiling netlink-packet-route v0.33.0
+   Compiling dashmap v6.2.1
+   Compiling idna v1.1.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling rand_chacha v0.9.0
+   Compiling rand v0.9.5
+   Compiling url v2.5.8
+   Compiling cranelift-entity v0.130.2
+   Compiling clap v4.6.7
+   Compiling tungstenite v0.29.0
+   Compiling serde_urlencoded v0.7.1
+   Compiling cranelift-assembler-x64 v0.130.2
+   Compiling iroh-base v1.3.0
+   Compiling attohttpc v0.30.1
+   Compiling sha1 v0.11.0
+   Compiling serde_path_to_error v0.1.20
+   Compiling iroh v1.3.0
+   Compiling proc-macro-error-attr v0.4.12
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling matchit v0.8.4
+   Compiling noq-proto v1.3.0
+   Compiling hax-lib v0.3.7
+   Compiling seize v0.5.1
+   Compiling leb128fmt v0.1.0
+   Compiling papaya v0.2.5
+   Compiling cranelift-bforest v0.130.2
+   Compiling primeorder v0.13.6
+   Compiling poly1305 v0.8.0
+   Compiling hax-lib-macros v0.3.7
+   Compiling gimli v0.33.0
+   Compiling inout v0.2.2
+   Compiling proc-macro-error v0.4.12
+   Compiling proc-macro-hack v0.5.20+deprecated
+   Compiling signature v2.2.0
+   Compiling tokio-util v0.7.20
+   Compiling tokio-rustls v0.26.6
+   Compiling tower v0.5.3
+   Compiling netlink-sys v0.8.8
+   Compiling reloadable-state v0.1.0
+   Compiling rustls-cert-reloadable-resolver v0.7.1
+   Compiling netlink-proto v0.12.2
+   Compiling rustls-cert-file-reader v0.4.2
+   Compiling tokio-tungstenite v0.29.0
+   Compiling backon v1.6.0
+   Compiling tower-http v0.6.11
+   Compiling arbitrary v1.5.0
+   Compiling ed25519 v2.2.3
+   Compiling rand_chacha v0.3.1
+   Compiling h2 v0.4.20
+   Compiling tokio-stream v0.1.19
+   Compiling n0-watcher v1.0.0
+   Compiling tokio-websockets v0.13.3
+   Compiling syn-mid v0.5.4
+   Compiling cranelift-control v0.130.2
+   Compiling regalloc2 v0.15.2
+   Compiling chacha20 v0.9.1
+   Compiling object v0.38.1
+   Compiling fixedbitset v0.5.7
+   Compiling ref-cast v1.0.27
+   Compiling cranelift-codegen v0.130.2
+   Compiling unicase v2.10.0
+   Compiling wasmparser v0.245.1
+   Compiling mime_guess v2.0.5
+   Compiling chacha20poly1305 v0.10.1
+   Compiling rand v0.8.8
+   Compiling ed25519-dalek v2.2.0
+   Compiling cipher v0.5.2
+   Compiling p256 v0.13.2
+   Compiling cbor-core v0.10.1
+   Compiling x25519-dalek v2.0.1
+   Compiling ref-cast-impl v1.0.27
+   Compiling irpc-derive v0.17.0
+   Compiling hmac v0.13.0
+   Compiling phf_shared v0.14.0
+   Compiling libcrux-intrinsics v0.0.8
+   Compiling termcolor v1.4.1
+   Compiling same-file v1.0.6
+   Compiling simd-adler32 v0.3.10
+   Compiling adler2 v2.0.1
+   Compiling walkdir v2.5.0
+   Compiling phf_generator v0.14.0
+   Compiling miniz_oxide v0.9.1
+   Compiling genawaiter-proc-macro v0.99.1
+   Compiling libcrux-secrets v0.0.6
+   Compiling wasm-encoder v0.245.1
+   Compiling inplace-vec-builder v0.1.1
+   Compiling wasmtime-internal-versioned-export-macros v43.0.2
+   Compiling p2panda-core v0.7.1 (https://github.com/p2panda/p2panda?rev=da80c05b95269926bf58121cf6a2d3dd5ca41dfc#da80c05b)
+   Compiling acto v0.8.2
+   Compiling libcrux-sha3 v0.0.10
+   Compiling wasmtime-internal-unwinder v43.0.2
+   Compiling redb v4.3.0
+   Compiling hyper v1.12.0
+   Compiling binary-merge v0.1.2
+   Compiling crc-catalog v2.5.0
+   Compiling unicode-width v0.2.2
+   Compiling cpubits v0.1.1
+   Compiling genawaiter-macro v0.99.1
+   Compiling crc v3.4.0
+   Compiling genawaiter v0.99.1
+   Compiling range-collections v0.4.6
+   Compiling flate2 v1.1.10
+   Compiling libcrux-traits v0.0.8
+   Compiling phf_codegen v0.14.0
+   Compiling futures-concurrency v7.7.1
+   Compiling iroh-io v0.6.2
+   Compiling tempfile v3.27.0
+   Compiling serde_bencode v0.2.4
+   Compiling hpke-rs-crypto v0.7.0
+   Compiling async-stream-impl v0.3.6
+   Compiling unicode-normalization v0.1.25
+   Compiling universal-hash v0.6.1
+   Compiling libcrux-platform v0.0.3
+   Compiling positioned-io v0.3.5
+   Compiling hyper-util v0.1.21
+   Compiling flume v0.12.0
+   Compiling event-listener v5.4.2
+   Compiling iroh-blobs v0.103.1
+   Compiling nix v0.31.3
+   Compiling litrs v1.0.0
+   Compiling redb v3.1.3
+   Compiling foldhash v0.1.5
+   Compiling either v1.19.0
+   Compiling entities v1.0.1
+   Compiling smol_str v0.1.24
+   Compiling dyn-clone v1.0.20
+   Compiling compression-core v0.4.33
+   Compiling self_cell v1.3.0
+   Compiling comrak v0.56.0
+   Compiling bao-tree v0.16.1
+   Compiling compression-codecs v0.4.45
+   Compiling hashbrown v0.15.5
+   Compiling document-features v0.2.12
+   Compiling itertools v0.14.0
+   Compiling event-listener-strategy v0.5.4
+   Compiling async-stream v0.3.6
+   Compiling hyper-rustls v0.27.10
+   Compiling igd-next v0.17.1
+   Compiling axum v0.8.9
+   Compiling polyval v0.7.3
+   Compiling reqwest v0.13.5
+   Compiling rust-embed-utils v8.13.0
+   Compiling wasmtime v43.0.2
+   Compiling hkdf v0.13.0
+   Compiling hpke v0.13.0
+   Compiling p384 v0.13.1
+   Compiling wasmprinter v0.245.1
+   Compiling reflink-copy v0.1.30
+   Compiling iroh-tickets v1.0.0
+   Compiling hickory-proto v0.26.3
+   Compiling iroh-metrics v1.0.2
+   Compiling tokio-rustls-acme v0.9.1
+   Compiling rand_chacha v0.10.0
+   Compiling nibble_vec v0.1.0
+   Compiling k256 v0.13.4
+   Compiling fearless_simd_macros v0.1.0
+   Compiling portmapper v0.19.3
+   Compiling wasmtime-environ v43.0.2
+   Compiling irpc v0.17.0
+   Compiling nested_enum_utils v0.2.3
+   Compiling concurrent-queue v2.5.0
+   Compiling iroh-docs v0.101.0
+   Compiling endian-type v0.2.0
+   Compiling lru v0.16.4
+   Compiling fearless_simd v1.1.0
+   Compiling mainline v7.0.0
+   Compiling radix_trie v0.3.0
+   Compiling phf v0.14.0
+   Compiling async-channel v2.5.0
+   Compiling swarm-discovery v0.6.4
+   Compiling hpke-rs-rust-crypto v0.7.0
+   Compiling ed25519-dalek-hpke v0.0.5
+   Compiling hpke-rs v0.7.0
+   Compiling rust-embed-impl v8.13.0
+   Compiling ghash v0.6.0
+   Compiling p2panda-store v0.7.1 (https://github.com/p2panda/p2panda?rev=da80c05b95269926bf58121cf6a2d3dd5ca41dfc#da80c05b)
+   Compiling petgraph v0.8.3
+   Compiling async-compression v0.4.50
+   Compiling actor-helper v0.3.0
+   Compiling caseless v0.2.2
+   Compiling aes v0.9.3
+   Compiling pbkdf2 v0.13.0
+   Compiling salsa20 v0.11.0
+   Compiling ctr v0.10.1
+   Compiling aead v0.6.1
+   Compiling memfd v0.6.6
+   Compiling wasmtime-internal-jit-icache-coherence v43.0.2
+   Compiling serde-error v0.1.3
+   Compiling rmp v0.8.15
+   Compiling typed-arena v2.0.2
+   Compiling finl_unicode v1.5.0
+   Compiling g2poly v1.2.2
+   Compiling home v0.5.12
+   Compiling http-range-header v0.4.2
+   Compiling rmp-serde v1.3.1
+   Compiling aes-gcm v0.11.1
+   Compiling g2gen v1.2.2
+   Compiling tower-http v0.7.1
+   Compiling scrypt v0.12.0
+   Compiling rust-embed v8.13.0
+   Compiling p2panda-sync v0.7.1 (/home/user/git/fleet/probe-2026-10-28-laneB-collabname/pkgs/id/vendor/p2panda-sync)
+   Compiling p2panda-encryption v0.7.1 (/home/user/git/fleet/probe-2026-10-28-laneB-collabname/pkgs/id/vendor/p2panda-encryption)
+   Compiling wasm-encoder v0.261.0
+   Compiling rustyline v18.0.1
+   Compiling wait-timeout v0.2.1
+   Compiling p2panda-auth v0.7.1 (https://github.com/p2panda/p2panda?rev=da80c05b95269926bf58121cf6a2d3dd5ca41dfc#da80c05b)
+   Compiling quick-error v1.2.3
+   Compiling urlencoding v2.1.3
+   Compiling bit-vec v0.10.1
+   Compiling qrcode v0.14.1
+   Compiling bit-set v0.11.1
+   Compiling rusty-fork v0.3.1
+   Compiling g2p v1.2.2
+   Compiling half v2.7.1
+   Compiling salsa20 v0.10.2
+   Compiling vte v0.15.0
+   Compiling wast v261.0.0
+   Compiling rand_xorshift v0.5.0
+   Compiling unarray v0.1.4
+   Compiling proptest v1.12.0
+   Compiling dcbor v0.25.2
+   Compiling vt100 v0.16.2
+   Compiling crypto_secretbox v0.1.1
+   Compiling rqrr v0.11.0
+   Compiling n0-mainline v0.7.1
+   Compiling memchr-n v0.1.9
+   Compiling wat v1.261.0
+   Compiling cranelift-native v0.130.2
+   Compiling cranelift-frontend v0.130.2
+   Compiling wasmtime-internal-cranelift v43.0.2
+   Compiling iroh-gossip v0.101.0
+   Compiling iroh-util v0.6.0
+   Compiling iroh-mdns-address-lookup v0.6.0
+   Compiling distributed-topic-tracker v0.3.5
+   Compiling id v0.1.0 (/home/user/git/fleet/probe-2026-10-28-laneB-collabname/pkgs/id)
+error: #[derive(RustEmbed)] folder '/home/user/git/fleet/probe-2026-10-28-laneB-collabname/pkgs/id/web/dist' does not exist. cwd: '/home/user/git/fleet/probe-2026-10-28-laneB-collabname/pkgs/id'
+  --> src/web/assets.rs:15:1
+   |
+15 | / /// Embedded web assets from the `web/dist` directory.
+16 | | ///
+17 | | /// These assets are bundled at compile time using rust-embed.
+18 | | /// The directory structure is preserved:
+...  |
+25 | | #[prefix = ""]
+26 | | pub struct Assets;
+   | |__________________^
+
+warning: unused import: `MatchKind`
+  --> src/commands/repl.rs:98:44
+   |
+98 |     CLIENT_KEY_FILE, FindMatch, META_ALPN, MatchKind, MetaRequest, MetaResponse, StoreType,
+   |                                            ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unnecessary qualification
+   --> src/world_doctor.rs:202:9
+    |
+202 |         std::path::Path::new(roc_bin).is_file()
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+    |
+202 -         std::path::Path::new(roc_bin).is_file()
+202 +         Path::new(roc_bin).is_file()
+    |
+
+warning: unused import: `CompileFile`
+  --> src/world_session/mod.rs:54:39
+   |
+54 |     CAPS_CEILING_NOTICE, ClientFrame, CompileFile, MAX_ADMIN_TOKEN_BYTES, MAX_CAPABILITY_BYTES,
+   |                                       ^^^^^^^^^^^
+
+warning: unused import: `JOURNAL_VERSION_EXECUTION_PROFILE`
+  --> src/world_store.rs:31:22
+   |
+31 |     JOURNAL_VERSION, JOURNAL_VERSION_EXECUTION_PROFILE, JournalEntry, WorldCore, WorldEventKind,
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unnecessary qualification
+   --> src/log_sync.rs:841:15
+    |
+841 |         match tokio::time::timeout(std::time::Duration::from_secs(10), results.recv()).await {
+    |               ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+    |
+841 -         match tokio::time::timeout(std::time::Duration::from_secs(10), results.recv()).await {
+841 +         match timeout(std::time::Duration::from_secs(10), results.recv()).await {
+    |
+
+warning: unnecessary qualification
+   --> src/log_sync.rs:841:36
+    |
+841 |         match tokio::time::timeout(std::time::Duration::from_secs(10), results.recv()).await {
+    |                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+841 -         match tokio::time::timeout(std::time::Duration::from_secs(10), results.recv()).await {
+841 +         match tokio::time::timeout(Duration::from_secs(10), results.recv()).await {
+    |
+
+warning: unused import: `crate::world::*`
+    --> src/world/tests.rs:2505:9
+     |
+2505 |     use crate::world::*;
+     |         ^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::world::*`
+    --> src/world/tests.rs:2775:9
+     |
+2775 |     use crate::world::*;
+     |         ^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::world::*`
+    --> src/world/tests.rs:3137:9
+     |
+3137 |     use crate::world::*;
+     |         ^^^^^^^^^^^^^^^
+
+warning: unnecessary qualification
+    --> src/world_compile.rs:1319:9
+     |
+1319 |         crate::world_compile::locate_roc()
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1319 -         crate::world_compile::locate_roc()
+1319 +         locate_roc()
+     |
+
+warning: unnecessary qualification
+   --> src/world_doctor.rs:202:9
+    |
+202 |         std::path::Path::new(roc_bin).is_file()
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+202 -         std::path::Path::new(roc_bin).is_file()
+202 +         Path::new(roc_bin).is_file()
+    |
+
+warning: unused import: `super::*`
+ --> src/world_session/tests.rs:7:9
+  |
+7 |     use super::*;
+  |         ^^^^^^^^
+
+warning: unnecessary qualification
+    --> src/world_store.rs:1442:23
+     |
+1442 |                 kind: crate::world::WorldEventKind::ProgramInstalled {
+     |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1442 -                 kind: crate::world::WorldEventKind::ProgramInstalled {
+1442 +                 kind: WorldEventKind::ProgramInstalled {
+     |
+
+warning: unnecessary qualification
+    --> src/world_store.rs:1510:17
+     |
+1510 |                 crate::world::Authority::Admin,
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1510 -                 crate::world::Authority::Admin,
+1510 +                 Authority::Admin,
+     |
+
+warning: unnecessary qualification
+    --> src/world_store.rs:1511:17
+     |
+1511 |                 crate::world::Isolation::Unisolated,
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1511 -                 crate::world::Isolation::Unisolated,
+1511 +                 Isolation::Unisolated,
+     |
+
+warning: unnecessary qualification
+    --> src/web/routes.rs:2468:66
+     |
+2468 |     async fn get_blob(router: Router, uri: &str) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+     |                                                                  ^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+2468 -     async fn get_blob(router: Router, uri: &str) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+2468 +     async fn get_blob(router: Router, uri: &str) -> (StatusCode, HeaderMap, Vec<u8>) {
+     |
+
+warning: unnecessary qualification
+    --> src/web/routes.rs:2485:36
+     |
+2485 |     fn header_str<'a>(headers: &'a axum::http::HeaderMap, name: &str) -> Option<&'a str> {
+     |                                    ^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+2485 -     fn header_str<'a>(headers: &'a axum::http::HeaderMap, name: &str) -> Option<&'a str> {
+2485 +     fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+     |
+
+error[E0599]: no associated function or constant named `get` found for struct `Assets` in the current scope
+  --> src/web/assets.rs:45:19
+   |
+26 | pub struct Assets;
+   | ----------------- associated function or constant `get` not found for this struct
+...
+45 |     match Assets::get(path) {
+   |                   ^^^ associated function or constant not found in `Assets`
+   |
+   = help: items from traits can only be used if the trait is implemented and in scope
+   = note: the following traits define an item `get`, perhaps you need to implement one of them:
+           candidate #1: `DynRustEmbed`
+           candidate #2: `Embed`
+           candidate #3: `ReadableMultimapTable`
+           candidate #4: `ReadableTable`
+           candidate #5: `SliceIndex`
+           candidate #6: `Watcher`
+           candidate #7: `hax_lib::Refinement`
+           candidate #8: `icu_collections::codepointtrie::cptrie::TypedCodePointTrie`
+           candidate #9: `icu_properties::names::PropertyEnumToValueNameLookup`
+           candidate #10: `icu_provider::baked::DataStore`
+           candidate #11: `itertools::Itertools`
+           candidate #12: `object::read::elf::relocation::Relr`
+           candidate #13: `redb::multimap_table::ReadableMultimapTable`
+           candidate #14: `redb::table::ReadableTable`
+           candidate #15: `rustls::server::server_conn::StoresServerSessions`
+           candidate #16: `rustyline::history::History`
+           candidate #17: `toml_parser::source::SourceIndex`
+           candidate #18: `wasmtime_environ::compile::CacheStore`
+
+error[E0599]: no associated function or constant named `get` found for struct `Assets` in the current scope
+   --> src/web/assets.rs:136:13
+    |
+ 26 | pub struct Assets;
+    | ----------------- associated function or constant `get` not found for this struct
+...
+136 |     Assets::get(path).and_then(|content| String::from_utf8(content.data.into_owned()).ok())
+    |             ^^^ associated function or constant not found in `Assets`
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following traits define an item `get`, perhaps you need to implement one of them:
+            candidate #1: `DynRustEmbed`
+            candidate #2: `Embed`
+            candidate #3: `ReadableMultimapTable`
+            candidate #4: `ReadableTable`
+            candidate #5: `SliceIndex`
+            candidate #6: `Watcher`
+            candidate #7: `hax_lib::Refinement`
+            candidate #8: `icu_collections::codepointtrie::cptrie::TypedCodePointTrie`
+            candidate #9: `icu_properties::names::PropertyEnumToValueNameLookup`
+            candidate #10: `icu_provider::baked::DataStore`
+            candidate #11: `itertools::Itertools`
+            candidate #12: `object::read::elf::relocation::Relr`
+            candidate #13: `redb::multimap_table::ReadableMultimapTable`
+            candidate #14: `redb::table::ReadableTable`
+            candidate #15: `rustls::server::server_conn::StoresServerSessions`
+            candidate #16: `rustyline::history::History`
+            candidate #17: `toml_parser::source::SourceIndex`
+            candidate #18: `wasmtime_environ::compile::CacheStore`
+
+error[E0599]: no associated function or constant named `get` found for struct `Assets` in the current scope
+   --> src/web/mod.rs:225:39
+    |
+225 |     let Some(manifest_data) = Assets::get("manifest.json") else {
+    |                                       ^^^ associated function or constant not found in `Assets`
+    |
+   ::: src/web/assets.rs:26:1
+    |
+ 26 | pub struct Assets;
+    | ----------------- associated function or constant `get` not found for this struct
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following traits define an item `get`, perhaps you need to implement one of them:
+            candidate #1: `DynRustEmbed`
+            candidate #2: `Embed`
+            candidate #3: `ReadableMultimapTable`
+            candidate #4: `ReadableTable`
+            candidate #5: `SliceIndex`
+            candidate #6: `Watcher`
+            candidate #7: `hax_lib::Refinement`
+            candidate #8: `icu_collections::codepointtrie::cptrie::TypedCodePointTrie`
+            candidate #9: `icu_properties::names::PropertyEnumToValueNameLookup`
+            candidate #10: `icu_provider::baked::DataStore`
+            candidate #11: `itertools::Itertools`
+            candidate #12: `object::read::elf::relocation::Relr`
+            candidate #13: `redb::multimap_table::ReadableMultimapTable`
+            candidate #14: `redb::table::ReadableTable`
+            candidate #15: `rustls::server::server_conn::StoresServerSessions`
+            candidate #16: `rustyline::history::History`
+            candidate #17: `toml_parser::source::SourceIndex`
+            candidate #18: `wasmtime_environ::compile::CacheStore`
+
+For more information about this error, try `rustc --explain E0599`.
+warning: `id` (lib) generated 4 warnings
+error: could not compile `id` (lib) due to 4 previous errors; 4 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+error[E0599]: no associated function or constant named `get` found for struct `assets::Assets` in the current scope
+  --> src/web/assets.rs:45:19
+   |
+26 | pub struct Assets;
+   | ----------------- associated function or constant `get` not found for this struct
+...
+45 |     match Assets::get(path) {
+   |                   ^^^ associated function or constant not found in `assets::Assets`
+   |
+   = help: items from traits can only be used if the trait is implemented and in scope
+   = note: the following traits define an item `get`, perhaps you need to implement one of them:
+           candidate #1: `DynRustEmbed`
+           candidate #2: `ResultCache`
+           candidate #3: `RustEmbed`
+           candidate #4: `SliceIndex`
+           candidate #5: `Watcher`
+           candidate #6: `hax_lib::Refinement`
+           candidate #7: `icu_collections::codepointtrie::cptrie::TypedCodePointTrie`
+           candidate #8: `icu_properties::names::PropertyEnumToValueNameLookup`
+           candidate #9: `icu_provider::baked::DataStore`
+           candidate #10: `itertools::Itertools`
+           candidate #11: `object::read::elf::relocation::Relr`
+           candidate #12: `redb::ReadableMultimapTable`
+           candidate #13: `redb::ReadableTable`
+           candidate #14: `redb::multimap_table::ReadableMultimapTable`
+           candidate #15: `redb::table::ReadableTable`
+           candidate #16: `rustls::server::server_conn::StoresServerSessions`
+           candidate #17: `rustyline::history::History`
+           candidate #18: `toml_parser::source::SourceIndex`
+           candidate #19: `wasmtime_environ::compile::CacheStore`
+
+error[E0599]: no associated function or constant named `get` found for struct `assets::Assets` in the current scope
+   --> src/web/assets.rs:136:13
+    |
+ 26 | pub struct Assets;
+    | ----------------- associated function or constant `get` not found for this struct
+...
+136 |     Assets::get(path).and_then(|content| String::from_utf8(content.data.into_owned()).ok())
+    |             ^^^ associated function or constant not found in `assets::Assets`
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following traits define an item `get`, perhaps you need to implement one of them:
+            candidate #1: `DynRustEmbed`
+            candidate #2: `ResultCache`
+            candidate #3: `RustEmbed`
+            candidate #4: `SliceIndex`
+            candidate #5: `Watcher`
+            candidate #6: `hax_lib::Refinement`
+            candidate #7: `icu_collections::codepointtrie::cptrie::TypedCodePointTrie`
+            candidate #8: `icu_properties::names::PropertyEnumToValueNameLookup`
+            candidate #9: `icu_provider::baked::DataStore`
+            candidate #10: `itertools::Itertools`
+            candidate #11: `object::read::elf::relocation::Relr`
+            candidate #12: `redb::ReadableMultimapTable`
+            candidate #13: `redb::ReadableTable`
+            candidate #14: `redb::multimap_table::ReadableMultimapTable`
+            candidate #15: `redb::table::ReadableTable`
+            candidate #16: `rustls::server::server_conn::StoresServerSessions`
+            candidate #17: `rustyline::history::History`
+            candidate #18: `toml_parser::source::SourceIndex`
+            candidate #19: `wasmtime_environ::compile::CacheStore`
+
+error[E0599]: no associated function or constant named `iter` found for struct `assets::Assets` in the current scope
+   --> src/web/assets.rs:148:25
+    |
+ 26 | pub struct Assets;
+    | ----------------- associated function or constant `iter` not found for this struct
+...
+148 |         let _ = Assets::iter();
+    |                         ^^^^ associated function or constant not found in `assets::Assets`
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following traits define an item `iter`, perhaps you need to implement one of them:
+            candidate #1: `RustEmbed`
+            candidate #2: `bitflags::traits::Flags`
+            candidate #3: `iroh_metrics::base::MetricsGroup`
+            candidate #4: `iroh_metrics::base::MetricsGroupSet`
+            candidate #5: `petgraph::visit::traversal::Walker`
+            candidate #6: `radix_trie::trie_common::TrieCommon`
+            candidate #7: `redb::ReadableMultimapTable`
+            candidate #8: `redb::ReadableTable`
+            candidate #9: `redb::multimap_table::ReadableMultimapTable`
+            candidate #10: `redb::table::ReadableTable`
+            candidate #11: `strum::IntoEnumIterator`
+            candidate #12: `strum::VariantIterator`
+
+error[E0599]: no associated function or constant named `get` found for struct `assets::Assets` in the current scope
+   --> src/web/mod.rs:225:39
+    |
+225 |     let Some(manifest_data) = Assets::get("manifest.json") else {
+    |                                       ^^^ associated function or constant not found in `assets::Assets`
+    |
+   ::: src/web/assets.rs:26:1
+    |
+ 26 | pub struct Assets;
+    | ----------------- associated function or constant `get` not found for this struct
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following traits define an item `get`, perhaps you need to implement one of them:
+            candidate #1: `DynRustEmbed`
+            candidate #2: `ResultCache`
+            candidate #3: `RustEmbed`
+            candidate #4: `SliceIndex`
+            candidate #5: `Watcher`
+            candidate #6: `hax_lib::Refinement`
+            candidate #7: `icu_collections::codepointtrie::cptrie::TypedCodePointTrie`
+            candidate #8: `icu_properties::names::PropertyEnumToValueNameLookup`
+            candidate #9: `icu_provider::baked::DataStore`
+            candidate #10: `itertools::Itertools`
+            candidate #11: `object::read::elf::relocation::Relr`
+            candidate #12: `redb::ReadableMultimapTable`
+            candidate #13: `redb::ReadableTable`
+            candidate #14: `redb::multimap_table::ReadableMultimapTable`
+            candidate #15: `redb::table::ReadableTable`
+            candidate #16: `rustls::server::server_conn::StoresServerSessions`
+            candidate #17: `rustyline::history::History`
+            candidate #18: `toml_parser::source::SourceIndex`
+            candidate #19: `wasmtime_environ::compile::CacheStore`
+
+warning: unused import: `std::io::Write`
+   --> src/directory_mail.rs:257:9
+    |
+257 |     use std::io::Write as _;
+    |         ^^^^^^^^^^^^^^
+
+warning: `id` (lib test) generated 16 warnings (2 duplicates)
+error: could not compile `id` (lib test) due to 5 previous errors; 16 warnings emitted

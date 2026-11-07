@@ -1425,4 +1425,16 @@ mod tests {
             Err(e) => println!("PROBE: {e}"),
         }
     }
+    #[test]
+    fn probe_lane_b_sanitize_name_keeps_control_chars() {
+        // PROBE (not for commit): sanitize_name trims/truncates but does not
+        // remove control characters from a web identity name.
+        let hostile = "Alice\nFORGED\t\u{1b}[31m\u{202e}Bob";
+        let out = sanitize_name(Some(hostile.to_owned())).expect("name kept");
+        println!("PROBE sanitize_name output: {out:?}");
+        assert!(out.contains('\n'), "newline survives sanitize_name");
+        assert!(out.contains('\u{1b}'), "ESC survives sanitize_name");
+        assert!(out.contains('\u{202e}'), "U+202E survives sanitize_name");
+    }
+
 }

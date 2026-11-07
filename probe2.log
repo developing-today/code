@@ -1,0 +1,431 @@
+   Compiling id v0.1.0 (/home/user/git/fleet/probe-2026-10-28-laneB-collabname/pkgs/id)
+warning: unused import: `MatchKind`
+  --> src/commands/repl.rs:98:44
+   |
+98 |     CLIENT_KEY_FILE, FindMatch, META_ALPN, MatchKind, MetaRequest, MetaResponse, StoreType,
+   |                                            ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unnecessary qualification
+   --> src/world_doctor.rs:202:9
+    |
+202 |         std::path::Path::new(roc_bin).is_file()
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+    |
+202 -         std::path::Path::new(roc_bin).is_file()
+202 +         Path::new(roc_bin).is_file()
+    |
+
+warning: unused import: `CompileFile`
+  --> src/world_session/mod.rs:54:39
+   |
+54 |     CAPS_CEILING_NOTICE, ClientFrame, CompileFile, MAX_ADMIN_TOKEN_BYTES, MAX_CAPABILITY_BYTES,
+   |                                       ^^^^^^^^^^^
+
+warning: unused import: `JOURNAL_VERSION_EXECUTION_PROFILE`
+  --> src/world_store.rs:31:22
+   |
+31 |     JOURNAL_VERSION, JOURNAL_VERSION_EXECUTION_PROFILE, JournalEntry, WorldCore, WorldEventKind,
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unnecessary qualification
+   --> src/log_sync.rs:841:15
+    |
+841 |         match tokio::time::timeout(std::time::Duration::from_secs(10), results.recv()).await {
+    |               ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+    |
+841 -         match tokio::time::timeout(std::time::Duration::from_secs(10), results.recv()).await {
+841 +         match timeout(std::time::Duration::from_secs(10), results.recv()).await {
+    |
+
+warning: unnecessary qualification
+   --> src/log_sync.rs:841:36
+    |
+841 |         match tokio::time::timeout(std::time::Duration::from_secs(10), results.recv()).await {
+    |                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+841 -         match tokio::time::timeout(std::time::Duration::from_secs(10), results.recv()).await {
+841 +         match tokio::time::timeout(Duration::from_secs(10), results.recv()).await {
+    |
+
+warning: unused import: `crate::world::*`
+    --> src/world/tests.rs:2505:9
+     |
+2505 |     use crate::world::*;
+     |         ^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::world::*`
+    --> src/world/tests.rs:2775:9
+     |
+2775 |     use crate::world::*;
+     |         ^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::world::*`
+    --> src/world/tests.rs:3137:9
+     |
+3137 |     use crate::world::*;
+     |         ^^^^^^^^^^^^^^^
+
+warning: unnecessary qualification
+    --> src/world_compile.rs:1319:9
+     |
+1319 |         crate::world_compile::locate_roc()
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1319 -         crate::world_compile::locate_roc()
+1319 +         locate_roc()
+     |
+
+warning: unnecessary qualification
+   --> src/world_doctor.rs:202:9
+    |
+202 |         std::path::Path::new(roc_bin).is_file()
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+202 -         std::path::Path::new(roc_bin).is_file()
+202 +         Path::new(roc_bin).is_file()
+    |
+
+warning: unused import: `super::*`
+ --> src/world_session/tests.rs:7:9
+  |
+7 |     use super::*;
+  |         ^^^^^^^^
+
+warning: unnecessary qualification
+    --> src/world_store.rs:1442:23
+     |
+1442 |                 kind: crate::world::WorldEventKind::ProgramInstalled {
+     |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1442 -                 kind: crate::world::WorldEventKind::ProgramInstalled {
+1442 +                 kind: WorldEventKind::ProgramInstalled {
+     |
+
+warning: unnecessary qualification
+    --> src/world_store.rs:1510:17
+     |
+1510 |                 crate::world::Authority::Admin,
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1510 -                 crate::world::Authority::Admin,
+1510 +                 Authority::Admin,
+     |
+
+warning: unnecessary qualification
+    --> src/world_store.rs:1511:17
+     |
+1511 |                 crate::world::Isolation::Unisolated,
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1511 -                 crate::world::Isolation::Unisolated,
+1511 +                 Isolation::Unisolated,
+     |
+
+warning: unnecessary qualification
+    --> src/web/routes.rs:2468:66
+     |
+2468 |     async fn get_blob(router: Router, uri: &str) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+     |                                                                  ^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+2468 -     async fn get_blob(router: Router, uri: &str) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+2468 +     async fn get_blob(router: Router, uri: &str) -> (StatusCode, HeaderMap, Vec<u8>) {
+     |
+
+warning: unnecessary qualification
+    --> src/web/routes.rs:2485:36
+     |
+2485 |     fn header_str<'a>(headers: &'a axum::http::HeaderMap, name: &str) -> Option<&'a str> {
+     |                                    ^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+2485 -     fn header_str<'a>(headers: &'a axum::http::HeaderMap, name: &str) -> Option<&'a str> {
+2485 +     fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+     |
+
+warning: unused import: `std::io::Write`
+   --> src/directory_mail.rs:257:9
+    |
+257 |     use std::io::Write as _;
+    |         ^^^^^^^^^^^^^^
+
+warning: method `keeps` is never used
+   --> src/event_store/ingest.rs:468:8
+    |
+466 | impl Staged {
+    | ----------- method in this implementation
+467 |     /// Whether the event is kept: stored, or held. A refused event and a fork are not.
+468 |     fn keeps(&self) -> bool {
+    |        ^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `collect_list_items` is never used
+   --> src/web/markdown.rs:824:4
+    |
+824 | fn collect_list_items<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `lobby_with_bo` is never used
+   --> src/web/explore.rs:673:14
+    |
+673 |     async fn lobby_with_bo() -> (Router, String) {
+    |              ^^^^^^^^^^^^^
+
+warning: function `test_footnote_roundtrip_fixpoint` is never used
+    --> src/web/markdown.rs:3440:8
+     |
+3440 |     fn test_footnote_roundtrip_fixpoint() {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `id` (lib) generated 6 warnings (run `cargo fix --lib -p id` to apply 4 suggestions)
+warning: `id` (lib test) generated 20 warnings (4 duplicates) (run `cargo fix --lib -p id --tests` to apply 13 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15m 53s
+     Running unittests src/lib.rs (target/debug/deps/id-393fa75899167a81)
+
+running 2 tests
+PROBE sanitize_name output: "Alice\nFORGED\t\u{1b}[31m\u{202e}Bob"
+test web::identity::tests::probe_lane_b_sanitize_name_keeps_control_chars ... ok
+PROBE cursor name verbatim: len=100017 has_newline=true has_esc=true
+test web::collab::tests::probe_lane_b_cursor_name_passes_verbatim ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1823 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/id-4ad489e53c35453e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/aliases.rs (target/debug/deps/aliases-9cc2d6d48a1f497b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+     Running tests/blob_gate.rs (target/debug/deps/blob_gate-487e21b69bf23ef3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+     Running tests/chain_properties.rs (target/debug/deps/chain_properties-eea75ffac262a744)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+     Running tests/cli_delegation.rs (target/debug/deps/cli_delegation-08c50d8f8c064651)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/cli_documents.rs (target/debug/deps/cli_documents-06b74d0123ed7507)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+     Running tests/cli_groups.rs (target/debug/deps/cli_groups-4d69622c3cbde086)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+     Running tests/cli_integration.rs (target/debug/deps/cli_integration-c8341d4b4ce71c11)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 117 filtered out; finished in 0.00s
+
+     Running tests/cli_tags.rs (target/debug/deps/cli_tags-ab4ee18916130905)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+     Running tests/cli_warnings.rs (target/debug/deps/cli_warnings-befcef7109076a1c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/content_removal.rs (target/debug/deps/content_removal-8c812c979684849c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+     Running tests/crash/main.rs (target/debug/deps/crash-4139bbab7d0f38b8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 0.00s
+
+     Running tests/dht_opt_in.rs (target/debug/deps/dht_opt_in-d10795f8badbd83c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/documents.rs (target/debug/deps/documents-372ea2b0a561af3a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/event_store_properties.rs (target/debug/deps/event_store_properties-ede2214057fc8f3f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+     Running tests/invites.rs (target/debug/deps/invites-42604987f4e375ef)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+     Running tests/membership_properties.rs (target/debug/deps/membership_properties-3b9ff66458fbdb4f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/membership_scenarios.rs (target/debug/deps/membership_scenarios-e2199a627cbc497c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+
+     Running tests/multidevice.rs (target/debug/deps/multidevice-2b782159845f23eb)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/production_ingest.rs (target/debug/deps/production_ingest-5f0cd06d7cf84750)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+     Running tests/regression_replay.rs (target/debug/deps/regression_replay-b4e7f508efc63274)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+     Running tests/relay_ops.rs (target/debug/deps/relay_ops-f1bf27b9dbc3e60b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 22 filtered out; finished in 0.00s
+
+     Running tests/remote_write_access.rs (target/debug/deps/remote_write_access-a826c0c856b11b43)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/retention_pruning.rs (target/debug/deps/retention_pruning-9887170d028d1c4a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.01s
+
+     Running tests/search.rs (target/debug/deps/search-9520f723d94194ef)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+     Running tests/tag_claims.rs (target/debug/deps/tag_claims-e7928615ae3608c1)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+     Running tests/tag_index.rs (target/debug/deps/tag_index-71c47aa9ec1cce73)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/toolchain_pin.rs (target/debug/deps/toolchain_pin-8cb906e641c7e480)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/tuple_properties.rs (target/debug/deps/tuple_properties-1d1b577e5d3baec0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+     Running tests/views_explorer.rs (target/debug/deps/views_explorer-381c3bbc59ec0dad)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/voiding_properties.rs (target/debug/deps/voiding_properties-91021071ee723ce6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/voiding_scenarios.rs (target/debug/deps/voiding_scenarios-dbc68d4b387cf546)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+     Running tests/waiting_properties.rs (target/debug/deps/waiting_properties-766ac0fae568b13a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/world_dos.rs (target/debug/deps/world_dos-68c8ecc59a073127)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/world_fork.rs (target/debug/deps/world_fork-6eb1d34360c35faf)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/world_roles.rs (target/debug/deps/world_roles-930d4733f794ab95)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
