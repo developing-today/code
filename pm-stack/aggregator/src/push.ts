@@ -34,7 +34,8 @@ let configurePromise: Promise<boolean> | null = null;
  * secrets layer already heals its own null cache after 5 minutes; an
  * unbounded latch here defeated that). Concurrent callers still share
  * the one in-flight attempt. Same retry-after-failure shape as
- * createAlertsStoreGetter in alerts.ts. */
+ * createAlertsStoreGetter in alerts.ts.
+ * Lazy-init contract (success-only memoization): README "Lazy-initialization contract" (#3879). */
 export function ensurePushConfigured(): Promise<boolean> {
   if (configured) return Promise.resolve(true);
   if (!configurePromise) {
