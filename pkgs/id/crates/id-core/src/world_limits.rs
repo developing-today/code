@@ -48,7 +48,8 @@ pub const JOURNAL_ENTRY_OVERHEAD_BYTES: u64 = 64;
 /// payload length plus the fixed structural allowance.
 #[must_use]
 pub fn journal_entry_charge(serialized_len: usize) -> u64 {
-    u64::try_from(serialized_len).unwrap_or(u64::MAX)
+    u64::try_from(serialized_len)
+        .unwrap_or(u64::MAX)
         .saturating_add(JOURNAL_ENTRY_OVERHEAD_BYTES)
 }
 
@@ -367,9 +368,11 @@ impl WorldExecutionProfile {
         // them beneath the budget lands with the enforcement charge sites
         // (Phase 3), so a configured budget never silently shrinks guest
         // limits before the ledger exists to account for it.
-        let total_memory_bytes = self.total_memory_bytes.map_or(hard.total_memory_bytes, |value| {
-            value.min(hard.total_memory_bytes)
-        });
+        let total_memory_bytes = self
+            .total_memory_bytes
+            .map_or(hard.total_memory_bytes, |value| {
+                value.min(hard.total_memory_bytes)
+            });
         #[cfg(feature = "sandbox")]
         let sandbox = {
             let hard_memory = u64::try_from(hard.sandbox.memory_bytes)?;
@@ -654,10 +657,7 @@ mod tests {
     fn an_empty_profile_inherits_the_server_total_budget() {
         let hard = RuntimeLimits::default();
         let effective = WorldExecutionProfile::default().resolve(hard).unwrap();
-        assert_eq!(
-            effective.total_memory_bytes,
-            hard.total_memory_bytes
-        );
+        assert_eq!(effective.total_memory_bytes, hard.total_memory_bytes);
     }
 
     #[test]
@@ -669,10 +669,7 @@ mod tests {
         }
         .resolve(hard)
         .unwrap();
-        assert_eq!(
-            lowered.total_memory_bytes,
-            hard.total_memory_bytes / 2
-        );
+        assert_eq!(lowered.total_memory_bytes, hard.total_memory_bytes / 2);
         let raised = WorldExecutionProfile {
             total_memory_bytes: Some(u64::MAX),
             ..Default::default()
@@ -700,14 +697,8 @@ mod tests {
         #[cfg(feature = "sandbox")]
         {
             assert_eq!(effective.sandbox.fuel, hard.sandbox.fuel);
-            assert_eq!(
-                effective.sandbox.memory_bytes,
-                hard.sandbox.memory_bytes
-            );
-            assert_eq!(
-                effective.sandbox.message_bytes,
-                hard.sandbox.message_bytes
-            );
+            assert_eq!(effective.sandbox.memory_bytes, hard.sandbox.memory_bytes);
+            assert_eq!(effective.sandbox.message_bytes, hard.sandbox.message_bytes);
         }
     }
 

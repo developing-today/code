@@ -268,7 +268,6 @@ impl Default for AbusePolicy {
     }
 }
 
-
 /// Which way traffic crosses a budget scope (#2247).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Direction {
@@ -499,7 +498,10 @@ impl WindowCounter {
     /// True when both fixed windows are empty, so the state carries
     /// no information and may be dropped.
     fn is_empty(&self) -> bool {
-        self.cur_bytes == 0 && self.cur_messages == 0 && self.prev_bytes == 0 && self.prev_messages == 0
+        self.cur_bytes == 0
+            && self.cur_messages == 0
+            && self.prev_bytes == 0
+            && self.prev_messages == 0
     }
 
     /// True when, rolled to `now_ms`, this counter would be empty:
@@ -718,11 +720,7 @@ impl AbuseEvaluator {
     /// the app-wide, per-endpoint (or per-counterparty override),
     /// and direct-IP scopes in addition to the token buckets.
     #[must_use]
-    pub fn with_budgets(
-        policy: AbusePolicy,
-        local_node: NodeId,
-        budgets: BudgetPolicy,
-    ) -> Self {
+    pub fn with_budgets(policy: AbusePolicy, local_node: NodeId, budgets: BudgetPolicy) -> Self {
         let mut evaluator = Self::new(policy, local_node);
         evaluator.budgets = Some(budgets);
         evaluator
@@ -769,7 +767,11 @@ impl AbuseEvaluator {
             ),
         ];
         if let Some(ip) = direct_ip {
-            scopes.push((BudgetKey::Ip(ip), BudgetScope::Ip(ip), policy.per_ip.clone()));
+            scopes.push((
+                BudgetKey::Ip(ip),
+                BudgetScope::Ip(ip),
+                policy.per_ip.clone(),
+            ));
         }
         scopes
     }
@@ -790,10 +792,12 @@ impl AbuseEvaluator {
         let mut retry_ms = 0_u64;
         let mut refused = false;
         for (key, _scope, limits) in &scopes {
-            let counters = self
-                .budget_state
-                .entry(*key)
-                .or_insert_with(|| limits.iter().map(|l| WindowCounter::new(l, now_ms)).collect());
+            let counters = self.budget_state.entry(*key).or_insert_with(|| {
+                limits
+                    .iter()
+                    .map(|l| WindowCounter::new(l, now_ms))
+                    .collect()
+            });
             for (counter, limit) in counters.iter_mut().zip(limits.iter()) {
                 counter.roll(now_ms);
                 if !counter.can_admit(limit, bytes, now_ms) {
@@ -816,10 +820,12 @@ impl AbuseEvaluator {
     ) {
         let scopes = self.budget_scopes(direction, endpoint, direct_ip);
         for (key, _scope, limits) in &scopes {
-            let counters = self
-                .budget_state
-                .entry(*key)
-                .or_insert_with(|| limits.iter().map(|l| WindowCounter::new(l, now_ms)).collect());
+            let counters = self.budget_state.entry(*key).or_insert_with(|| {
+                limits
+                    .iter()
+                    .map(|l| WindowCounter::new(l, now_ms))
+                    .collect()
+            });
             for counter in counters.iter_mut() {
                 counter.roll(now_ms);
                 counter.record(bytes);
@@ -930,9 +936,10 @@ impl AbuseEvaluator {
             let (scope, limits): (BudgetScope, &[BudgetLimit]) = match key {
                 BudgetKey::AppInbound => (BudgetScope::AppInbound, &policy.app_inbound),
                 BudgetKey::AppOutbound => (BudgetScope::AppOutbound, &policy.app_outbound),
-                BudgetKey::Peer(endpoint) => {
-                    (BudgetScope::Peer(*endpoint), policy.limits_for_peer(endpoint))
-                }
+                BudgetKey::Peer(endpoint) => (
+                    BudgetScope::Peer(*endpoint),
+                    policy.limits_for_peer(endpoint),
+                ),
                 BudgetKey::Ip(ip) => (BudgetScope::Ip(*ip), &policy.per_ip),
             };
             for (counter, limit) in counters.iter().zip(limits.iter()) {
@@ -1483,9 +1490,10 @@ mod budget_tests {
         // 1_000-byte default.
         eval.check_budget(Direction::Inbound, capped, None, 100, 0)
             .expect("at override cap");
-        assert!(eval
-            .check_budget(Direction::Inbound, capped, None, 1, 0)
-            .is_err());
+        assert!(
+            eval.check_budget(Direction::Inbound, capped, None, 1, 0)
+                .is_err()
+        );
         // The raised peer may exceed the default per-peer budget.
         eval.check_budget(Direction::Inbound, raised, None, 3_000, 0)
             .expect("override raises the cap");
@@ -1523,9 +1531,10 @@ mod budget_tests {
         eval.check_budget(Direction::Inbound, endpoint(1), Some(ip), 700, 0)
             .expect("first endpoint on the ip");
         // A second endpoint behind the same direct IP shares its budget.
-        assert!(eval
-            .check_budget(Direction::Inbound, endpoint(2), Some(ip), 400, 0)
-            .is_err());
+        assert!(
+            eval.check_budget(Direction::Inbound, endpoint(2), Some(ip), 400, 0)
+                .is_err()
+        );
         // Relayed traffic (no directly observed IP) charges no IP scope.
         eval.check_budget(Direction::Inbound, endpoint(2), None, 400, 0)
             .expect("no ip observed, no ip scope");
@@ -1544,9 +1553,10 @@ mod budget_tests {
         let mut eval = budgeted(policy);
         eval.check_budget(Direction::Inbound, endpoint(1), None, 800, 0)
             .expect("first peer inbound");
-        assert!(eval
-            .check_budget(Direction::Inbound, endpoint(2), None, 300, 0)
-            .is_err());
+        assert!(
+            eval.check_budget(Direction::Inbound, endpoint(2), None, 300, 0)
+                .is_err()
+        );
         // Outbound has its own app-wide scope.
         eval.check_budget(Direction::Outbound, endpoint(2), None, 300, 0)
             .expect("outbound separate");
@@ -1560,9 +1570,10 @@ mod budget_tests {
         let ep = endpoint(3);
         eval.check_budget(Direction::Inbound, ep, None, 100, 0)
             .expect("full window");
-        assert!(eval
-            .check_budget(Direction::Inbound, ep, None, 1, 0)
-            .is_err());
+        assert!(
+            eval.check_budget(Direction::Inbound, ep, None, 1, 0)
+                .is_err()
+        );
         // Two windows later the usage has fully aged out.
         eval.check_budget(Direction::Inbound, ep, None, 100, 2_000)
             .expect("recovered after roll");

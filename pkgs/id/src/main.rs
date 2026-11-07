@@ -110,10 +110,8 @@ async fn main() -> Result<()> {
             .subcommand_matches("serve")
             .map(|serve| {
                 (
-                    serve.value_source("bind")
-                        == Some(clap::parser::ValueSource::CommandLine),
-                    serve.value_source("port")
-                        == Some(clap::parser::ValueSource::CommandLine),
+                    serve.value_source("bind") == Some(clap::parser::ValueSource::CommandLine),
+                    serve.value_source("port") == Some(clap::parser::ValueSource::CommandLine),
                 )
             })
             .unwrap_or((false, false))

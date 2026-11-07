@@ -3263,10 +3263,7 @@ mod tests {
     struct FixedScreenSsh;
 
     impl crate::world::WorldProgram for FixedScreenSsh {
-        fn view(
-            &mut self,
-            _viewer: &crate::world::Participant,
-        ) -> anyhow::Result<Option<String>> {
+        fn view(&mut self, _viewer: &crate::world::Participant) -> anyhow::Result<Option<String>> {
             Ok(Some(
                 r#"{"kind":"screen","version":1,"width":4,"height":2,"rows":["abcd","wxyz"]}"#
                     .to_owned(),

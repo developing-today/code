@@ -223,9 +223,8 @@ fn parse_iso_timestamp(s: &str) -> Option<u64> {
     // only (#4329). parse::<u64>() alone accepts any width and a leading
     // '+', so non-canonical spellings like "2026-3-2T6:4:2Z" or a
     // "+2026" year used to map onto the canonical instant.
-    let canonical = |s: &str, width: usize| {
-        s.len() == width && s.bytes().all(|b| b.is_ascii_digit())
-    };
+    let canonical =
+        |s: &str, width: usize| s.len() == width && s.bytes().all(|b| b.is_ascii_digit());
     if !canonical(date_strs[0], 4)
         || !date_strs[1..].iter().all(|p| canonical(p, 2))
         || !time_strs.iter().all(|p| canonical(p, 2))
@@ -2619,11 +2618,8 @@ mod upload_router_tests {
         state.world = Some(crate::world_hub::WorldHub::single(
             crate::world_session::WorldService::new(
                 crate::world::WorldHandle::spawn(
-                    crate::world::WorldCore::new(
-                        "lobby",
-                        crate::world::WorldLimits::default(),
-                    )
-                    .unwrap(),
+                    crate::world::WorldCore::new("lobby", crate::world::WorldLimits::default())
+                        .unwrap(),
                 ),
                 None,
             ),

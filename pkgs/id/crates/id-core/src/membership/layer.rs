@@ -551,8 +551,7 @@ fn canonical_feed_order(events: &[CausalEvent]) -> Vec<CausalEvent> {
         }
         waiting.insert(event.id, dependencies.len());
     }
-    let by_id: HashMap<Hash, &CausalEvent> =
-        events.iter().map(|event| (event.id, event)).collect();
+    let by_id: HashMap<Hash, &CausalEvent> = events.iter().map(|event| (event.id, event)).collect();
     let mut placed: HashSet<Hash> = HashSet::new();
     let mut order = Vec::with_capacity(events.len());
     while let Some(Reverse(id)) = ready.pop() {
@@ -1089,4 +1088,3 @@ mod tests {
         }
     }
 }
-

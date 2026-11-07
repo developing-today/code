@@ -123,7 +123,11 @@ pub fn advance_cursor(cursor: ReplicationCursor, entry_bytes: &[u8]) -> Replicat
     let mut hasher = blake3::Hasher::new();
     hasher.update(REPLICATION_DOMAIN);
     hasher.update(&cursor.digest);
-    hasher.update(&u64::try_from(entry_bytes.len()).unwrap_or(u64::MAX).to_le_bytes());
+    hasher.update(
+        &u64::try_from(entry_bytes.len())
+            .unwrap_or(u64::MAX)
+            .to_le_bytes(),
+    );
     hasher.update(entry_bytes);
     ReplicationCursor {
         ordinal: cursor.ordinal + 1,
@@ -249,7 +253,9 @@ impl ReplicationEnvelope {
     /// from the cursors so it cannot disagree with them.
     #[must_use]
     pub fn entry_count(&self) -> u64 {
-        self.cursor_after.ordinal.saturating_sub(self.cursor_before.ordinal)
+        self.cursor_after
+            .ordinal
+            .saturating_sub(self.cursor_before.ordinal)
     }
 
     /// Build a tail frame continuing `cursor_before`, computing the
@@ -538,7 +544,12 @@ impl SignedReplicationEnvelope {
         let signature =
             Signature::from_slice(&self.signature).map_err(|_| ReplicationError::BadSignature)?;
         verifying_key
-            .verify_strict(&self.signing_bytes().map_err(|_| ReplicationError::BadSignature)?, &signature)
+            .verify_strict(
+                &self
+                    .signing_bytes()
+                    .map_err(|_| ReplicationError::BadSignature)?,
+                &signature,
+            )
             .map_err(|_| ReplicationError::BadSignature)
     }
 
@@ -707,7 +718,9 @@ impl ReplicationTracker {
             .ok_or(ReplicationError::MalformedFrame)?;
         let envelope = &signed.envelope;
         if envelope.version != REPLICATION_ENVELOPE_VERSION {
-            return Err(ReplicationError::UnsupportedEnvelopeVersion(envelope.version));
+            return Err(ReplicationError::UnsupportedEnvelopeVersion(
+                envelope.version,
+            ));
         }
         // The supported journal range is 1..=MAX_JOURNAL_VERSION,
         // matching validate_committed_journal on the receiver side:
@@ -743,8 +756,11 @@ impl ReplicationTracker {
                 // A snapshot rebases the chain: its before-cursor must be
                 // the base for its own header version, whatever the
                 // current chain is (first sync, compaction, header bump).
-                let base =
-                    chain_base_cursor(&envelope.world_id, &envelope.source, envelope.header_version);
+                let base = chain_base_cursor(
+                    &envelope.world_id,
+                    &envelope.source,
+                    envelope.header_version,
+                );
                 if envelope.cursor_before != base {
                     return Err(ReplicationError::CursorFork);
                 }
@@ -852,16 +868,9 @@ mod tests {
         prev: [u8; 32],
         payload: Vec<u8>,
     ) -> Vec<u8> {
-        let envelope = ReplicationEnvelope::tail(
-            WORLD,
-            source_of(key),
-            1,
-            NONCE,
-            cursor,
-            prev,
-            payload,
-        )
-        .unwrap();
+        let envelope =
+            ReplicationEnvelope::tail(WORLD, source_of(key), 1, NONCE, cursor, prev, payload)
+                .unwrap();
         SignedReplicationEnvelope::sign(envelope, key)
             .unwrap()
             .encode_frame()
@@ -876,7 +885,10 @@ mod tests {
         // Pinned vector: any change to the domain tag, seed fields, or
         // seed encoding changes this digest and must be a deliberate,
         // version-bumped contract change.
-        assert_eq!(hex(&base.digest), "d32092e6f4f8a8e813644b4e8a14ad2439d50c320c41fcb2aa9d24e6c0d1d291");
+        assert_eq!(
+            hex(&base.digest),
+            "d32092e6f4f8a8e813644b4e8a14ad2439d50c320c41fcb2aa9d24e6c0d1d291"
+        );
         // Domain separation: another world, source, or header version is
         // a different chain.
         assert_ne!(base, chain_base_cursor("other-world", &source, 1));
@@ -1117,8 +1129,7 @@ mod tests {
         let base = chain_base_cursor(WORLD, &source_of(&key), 1);
         let frame = signed_tail(&key, base, [0; 32], entry_payload());
         // A receiver pinned to a different source refuses the frame.
-        let mut pinned_elsewhere =
-            ReplicationTracker::new(WORLD, source_of(&stranger), 1, NONCE);
+        let mut pinned_elsewhere = ReplicationTracker::new(WORLD, source_of(&stranger), 1, NONCE);
         assert_eq!(
             pinned_elsewhere.accept(&frame),
             Err(ReplicationError::UntrustedSource)
@@ -1241,8 +1252,11 @@ mod tests {
         assert_eq!(accepted.cursor_after.ordinal, 3);
         assert_eq!(
             accepted.cursor_after,
-            chain_payload(chain_base_cursor(WORLD, &source_of(&key), 2), &snapshot_payload)
-                .unwrap()
+            chain_payload(
+                chain_base_cursor(WORLD, &source_of(&key), 2),
+                &snapshot_payload
+            )
+            .unwrap()
         );
         // A tail on the old header version is now refused.
         let stale_tail = ReplicationEnvelope::tail(
@@ -1375,14 +1389,8 @@ mod tests {
         // A payload whose lines do not decode as journal entries is
         // refused before the verified cursor advances, even when the
         // pinned source signed it.
-        let mut bogus = ReplicationEnvelope::terminal(
-            WORLD,
-            source_of(&key),
-            1,
-            NONCE,
-            base,
-            [0; 32],
-        );
+        let mut bogus =
+            ReplicationEnvelope::terminal(WORLD, source_of(&key), 1, NONCE, base, [0; 32]);
         bogus.kind = ReplicationKind::Tail;
         bogus.payload = b"not-json\n".to_vec();
         bogus.payload_digest = payload_digest(&bogus.payload);

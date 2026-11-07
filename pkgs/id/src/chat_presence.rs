@@ -161,7 +161,9 @@ impl PresenceHeartbeat {
         let Ok(signature) = Signature::from_slice(&self.signature) else {
             return false;
         };
-        verifying_key.verify(&self.signing_bytes(), &signature).is_ok()
+        verifying_key
+            .verify(&self.signing_bytes(), &signature)
+            .is_ok()
     }
 
     /// Whether the heartbeat claims typing in `channel`.
@@ -710,7 +712,10 @@ mod tests {
             Liveness::Offline
         );
         let roster = table.roster_at(&chan, &[alice], replay_at);
-        assert!(!roster[0].typing, "a replayed typing claim must not refresh");
+        assert!(
+            !roster[0].typing,
+            "a replayed typing claim must not refresh"
+        );
     }
 
     #[test]
@@ -734,7 +739,9 @@ mod tests {
         forged.ts += 1;
         assert!(!forged.verify());
         let mut forged = hb;
-        forged.node = SigningKey::from_bytes(&[8u8; 32]).verifying_key().to_bytes();
+        forged.node = SigningKey::from_bytes(&[8u8; 32])
+            .verifying_key()
+            .to_bytes();
         assert!(!forged.verify());
     }
 

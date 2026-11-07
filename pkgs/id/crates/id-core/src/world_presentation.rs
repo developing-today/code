@@ -1036,11 +1036,10 @@ mod tests {
 
     #[test]
     fn text_parses_and_round_trips() {
-        let parsed = parse_surface(
-            r#"{"kind":"text","version":1,"lines":["hello","wide 界 line"]}"#,
-        )
-        .unwrap()
-        .unwrap();
+        let parsed =
+            parse_surface(r#"{"kind":"text","version":1,"lines":["hello","wide 界 line"]}"#)
+                .unwrap()
+                .unwrap();
         let WorldSurface::Text(text) = &parsed else {
             panic!("expected a text surface");
         };
@@ -1064,19 +1063,21 @@ mod tests {
         let text = TextSurface::with_width(4, vec!["abcdefghij".to_owned()]).unwrap();
         assert_eq!(text.lines, ["abcd", "efgh", "ij"]);
         let text = TextSurface::with_width(3, vec!["ab界cd".to_owned()]).unwrap();
-        assert!(text
-            .lines
-            .iter()
-            .all(|line| UnicodeWidthStr::width(line.as_str()) <= 3));
+        assert!(
+            text.lines
+                .iter()
+                .all(|line| UnicodeWidthStr::width(line.as_str()) <= 3)
+        );
         assert_eq!(text.lines.concat(), "ab界cd");
 
         // The default is 80 and any requested width is capped like a screen.
         let text = TextSurface::with_width(10_000, vec!["x".repeat(200)]).unwrap();
         assert_eq!(usize::from(text.width), MAX_SCREEN_WIDTH);
-        assert!(text
-            .lines
-            .iter()
-            .all(|line| UnicodeWidthStr::width(line.as_str()) <= MAX_SCREEN_WIDTH));
+        assert!(
+            text.lines
+                .iter()
+                .all(|line| UnicodeWidthStr::width(line.as_str()) <= MAX_SCREEN_WIDTH)
+        );
         assert!(TextSurface::with_width(0, vec!["x".to_owned()]).is_err());
     }
 

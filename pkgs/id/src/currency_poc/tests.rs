@@ -1103,7 +1103,10 @@ fn uppercase_extension_alias_is_scanned_and_blocks_conflicting_put() {
     let alias = dir.join(format!("{:032x}.JSON", 10));
     std::fs::rename(dir.join(canonical_name(10)), &alias).expect("rename to .JSON alias");
 
-    assert_eq!(store.get(10).expect("get via .JSON alias"), Some(original.clone()));
+    assert_eq!(
+        store.get(10).expect("get via .JSON alias"),
+        Some(original.clone())
+    );
     let listed = store.unresolved().expect("listing via .JSON alias");
     assert_eq!(listed, vec![original.clone()]);
 
@@ -1115,7 +1118,9 @@ fn uppercase_extension_alias_is_scanned_and_blocks_conflicting_put() {
         .put(&conflicting)
         .expect_err("conflicting put over the .JSON alias must fail closed");
     assert!(
-        error.to_string().contains("refusing to write conversion 10"),
+        error
+            .to_string()
+            .contains("refusing to write conversion 10"),
         "unexpected put error: {error}"
     );
     // The alias still holds the original record, byte for byte.
@@ -1164,16 +1169,22 @@ fn canonical_file_holding_another_conversions_record_blocks_get_and_put() {
 
     let get_error = store.get(10).expect_err("occupied get must fail closed");
     assert!(
-        get_error.to_string().contains("currently stores conversion 9"),
+        get_error
+            .to_string()
+            .contains("currently stores conversion 9"),
         "unexpected get error: {get_error}"
     );
     let intruder = bare_record(
         10,
         vec![funding_transfer(601, ISSUER_SRC, USER_SRC, 10_000, SRC)],
     );
-    let put_error = store.put(&intruder).expect_err("occupied put must fail closed");
+    let put_error = store
+        .put(&intruder)
+        .expect_err("occupied put must fail closed");
     assert!(
-        put_error.to_string().contains("currently stores conversion 9"),
+        put_error
+            .to_string()
+            .contains("currently stores conversion 9"),
         "unexpected put error: {put_error}"
     );
     assert_eq!(
@@ -1185,7 +1196,10 @@ fn canonical_file_holding_another_conversions_record_blocks_get_and_put() {
     // it, and the listing yields it exactly once.
     assert_eq!(store.get(9).expect("get occupant"), Some(occupant));
     let listed = store.unresolved().expect("listing with an occupant");
-    assert_eq!(listed.iter().map(|r| r.conversion_id).collect::<Vec<_>>(), vec![9]);
+    assert_eq!(
+        listed.iter().map(|r| r.conversion_id).collect::<Vec<_>>(),
+        vec![9]
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1208,11 +1222,13 @@ fn state_only_divergent_copies_resolve_to_the_most_advanced_state() {
     submitted.state = IntentState::Submitted;
     let (other_dir, mut other_store) = empty_file_store("states4578-b");
     other_store.put(&submitted).expect("seed submitted");
-    std::fs::copy(other_dir.join(canonical_name(11)), dir.join(canonical_name(11)))
-        .expect("plant advanced canonical copy");
+    std::fs::copy(
+        other_dir.join(canonical_name(11)),
+        dir.join(canonical_name(11)),
+    )
+    .expect("plant advanced canonical copy");
     let _ = std::fs::remove_dir_all(&other_dir);
-    std::fs::copy(dir.join(canonical_name(11)), dir.join("stray.json"))
-        .expect("plant stray copy");
+    std::fs::copy(dir.join(canonical_name(11)), dir.join("stray.json")).expect("plant stray copy");
     // Downgrade the stray to the Recorded copy's bytes: rewrite it
     // from a fresh store holding only the Recorded record.
     let (old_dir, mut old_store) = empty_file_store("states4578-c");
@@ -1258,7 +1274,9 @@ fn put_never_deletes_a_filesystem_alias_of_the_canonical_file() {
 
     let mut submitted = recorded.clone();
     submitted.state = IntentState::Submitted;
-    store.put(&submitted).expect("state-advancing put over an alias");
+    store
+        .put(&submitted)
+        .expect("state-advancing put over an alias");
 
     assert_eq!(
         store.get(10).expect("get after alias put"),

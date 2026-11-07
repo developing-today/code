@@ -1976,7 +1976,10 @@ mod tests {
         }
         assert_eq!(core.admin_history.len(), 2);
         assert!(!core.admin_history_complete);
-        assert_eq!(core.admin_history_ledger.tracked(), core.admin_history.len());
+        assert_eq!(
+            core.admin_history_ledger.tracked(),
+            core.admin_history.len()
+        );
         let rescanned: usize = core
             .admin_history
             .iter()
@@ -2087,8 +2090,7 @@ mod tests {
             panic!("checkpoint entry missing");
         }
         assert!(
-            WorldCore::restore("ledger-restore-bytes", WorldLimits::default(), checkpoint)
-                .is_err(),
+            WorldCore::restore("ledger-restore-bytes", WorldLimits::default(), checkpoint).is_err(),
             "a checkpoint whose admin history exceeds the byte bound must be refused"
         );
     }
@@ -4471,9 +4473,7 @@ mod tests {
         assert_eq!(actor.view_failures, 1, "the oversized view is counted");
 
         let (reply, rx) = tokio::sync::oneshot::channel();
-        actor
-            .handle(WorldCommand::View { token, reply })
-            .await;
+        actor.handle(WorldCommand::View { token, reply }).await;
         let second = rx.await.unwrap();
         assert!(
             matches!(&second, Ok(Some(text)) if text == "recovered view"),

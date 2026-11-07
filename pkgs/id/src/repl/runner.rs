@@ -41,8 +41,8 @@ use std::io::Write;
 
 use super::{ReplInput, continue_heredoc, preprocess_repl_line};
 use crate::{
-    FindMatch, MatchKind, PeekOptions, ReplContext, SearchOptions, download_output_path, is_node_id,
-    print_match_repl,
+    FindMatch, MatchKind, PeekOptions, ReplContext, SearchOptions, download_output_path,
+    is_node_id, print_match_repl,
 };
 
 /// Run the interactive REPL.
@@ -737,9 +737,7 @@ fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> Result<Find
             // redirection token is not the number (it is handled by
             // the output branch below), so `--first >out.txt` keeps
             // the default limit of 1.
-            if i + 1 < rest.len()
-                && !rest[i + 1].starts_with('-')
-                && !rest[i + 1].starts_with('>')
+            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') && !rest[i + 1].starts_with('>')
             {
                 let value = rest[i + 1];
                 args.first =
@@ -753,9 +751,7 @@ fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> Result<Find
         } else if arg == "--last" {
             // --last with optional number argument; same
             // redirection exclusion as --first.
-            if i + 1 < rest.len()
-                && !rest[i + 1].starts_with('-')
-                && !rest[i + 1].starts_with('>')
+            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') && !rest[i + 1].starts_with('>')
             {
                 let value = rest[i + 1];
                 args.last =
@@ -1132,8 +1128,7 @@ async fn output_all_matches_filtered(
                     return Ok(());
                 }
             };
-            if let Some(previous) = destinations.insert(output_path.clone(), m.name.as_str())
-            {
+            if let Some(previous) = destinations.insert(output_path.clone(), m.name.as_str()) {
                 println!(
                     "refusing bulk download: destination collision between matches {:?} and {:?} at {:?}",
                     previous, m.name, output_path
@@ -1426,9 +1421,7 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> Result<(FindArgs<'a>, PeekOptions)> 
             // A `>file` redirection token is not the number (handled
             // by the output branch above), so `--first >out.txt`
             // keeps the default limit of 1.
-            if i + 1 < rest.len()
-                && !rest[i + 1].starts_with('-')
-                && !rest[i + 1].starts_with('>')
+            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') && !rest[i + 1].starts_with('>')
             {
                 let value = rest[i + 1];
                 find_args.first =
@@ -1441,9 +1434,7 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> Result<(FindArgs<'a>, PeekOptions)> 
             }
         } else if arg == "--last" {
             // Same redirection exclusion as --first.
-            if i + 1 < rest.len()
-                && !rest[i + 1].starts_with('-')
-                && !rest[i + 1].starts_with('>')
+            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') && !rest[i + 1].starts_with('>')
             {
                 let value = rest[i + 1];
                 find_args.last =
@@ -1459,9 +1450,7 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> Result<(FindArgs<'a>, PeekOptions)> 
         } else if arg == "--lines" || arg == "-n" {
             // Same redirection exclusion: `--lines >out.txt` keeps
             // the default line count and lets the `>` branch run.
-            if i + 1 < rest.len()
-                && !rest[i + 1].starts_with('-')
-                && !rest[i + 1].starts_with('>')
+            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') && !rest[i + 1].starts_with('>')
             {
                 let value = rest[i + 1];
                 let n = value
@@ -1819,10 +1808,7 @@ mod tests {
     async fn test_interactive_dir_refuses_basename_collisions_without_partial_writes() {
         // Distinct matches reducing to the same final component are refused
         // as a batch before any write (consistent with #2178 CLI batching).
-        let matches = vec![
-            test_find_match("a/same.txt"),
-            test_find_match("b/same.txt"),
-        ];
+        let matches = vec![test_find_match("a/same.txt"), test_find_match("b/same.txt")];
         let mut rec = RecordingGetter::default();
         output_selected_matches_to_dir(&mut rec, &[1, 2], &matches, "downloads").await;
         assert!(

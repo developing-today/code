@@ -833,16 +833,13 @@ fn decide_in(
             match stored_by_id(txn, &prev_id)? {
                 Some(prev) => {
                     let predecessor = author_of(&prev) == author
-                        && prev
-                            .header
-                            .extensions
-                            .checkpoint
-                            .as_ref()
-                            .is_some_and(|prev_checkpoint| {
+                        && prev.header.extensions.checkpoint.as_ref().is_some_and(
+                            |prev_checkpoint| {
                                 prev_checkpoint.header == checkpoint.header
                                     && prev_checkpoint.segment.segment_seq + 1
                                         == checkpoint.segment.segment_seq
-                            });
+                            },
+                        );
                     if !predecessor {
                         return Ok(Decision::Refuse(Refusal::Malformed(
                             "a session checkpoint's prev_checkpoint is not the previous                              segment's checkpoint of the same session"

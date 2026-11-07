@@ -352,9 +352,18 @@ mod tests {
             WORLD,
             live(docs_world(key(1).public(), key(2).public(), false)),
         )
-        .with_blocks(super::testing::stub_blocks(&[*key(9).public().as_bytes()], &[]));
-        assert!(!gate.admits(&key(9).public()), "the blocked peer is refused");
-        assert!(gate.admits(&key(2).public()), "an unblocked peer still pulls");
+        .with_blocks(super::testing::stub_blocks(
+            &[*key(9).public().as_bytes()],
+            &[],
+        ));
+        assert!(
+            !gate.admits(&key(9).public()),
+            "the blocked peer is refused"
+        );
+        assert!(
+            gate.admits(&key(2).public()),
+            "an unblocked peer still pulls"
+        );
     }
 
     /// #2245: a blocked topic tag is not pulled — a gate whose world is a
@@ -367,8 +376,14 @@ mod tests {
             live(docs_world(key(1).public(), key(2).public(), false)),
         )
         .with_blocks(super::testing::stub_blocks(&[], &[WORLD]));
-        assert!(!gate.admits(&key(2).public()), "a member of a blocked topic");
-        assert!(!gate.admits(&key(1).public()), "the founder of a blocked topic");
+        assert!(
+            !gate.admits(&key(2).public()),
+            "a member of a blocked topic"
+        );
+        assert!(
+            !gate.admits(&key(1).public()),
+            "the founder of a blocked topic"
+        );
     }
 
     /// #2245, against the real store-backed list: a permanent block

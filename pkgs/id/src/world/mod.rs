@@ -47,8 +47,8 @@ mod tests;
 
 pub(crate) use actor::{WorldActor, WorldCommand};
 pub use clock::{Clock, ManualClock, SystemClock};
-pub use core::WorldCore;
 pub(crate) use core::AdminHistoryByteLedger;
+pub use core::WorldCore;
 pub use handle::WorldHandle;
 pub use metrics::{HistogramSnapshot, MetricsSnapshot, WorldMetrics};
 pub use replica::{
@@ -69,9 +69,8 @@ pub use replication_receiver::{
 };
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{
-    constant_time_eq, hex_decode_32, legacy_sanitize_display_name, sanitize_chat,
-    is_pre_fix_mint_display_name, pre_fix_sanitize_display_name,
-    sanitize_display_name, token_digest,
+    constant_time_eq, hex_decode_32, is_pre_fix_mint_display_name, legacy_sanitize_display_name,
+    pre_fix_sanitize_display_name, sanitize_chat, sanitize_display_name, token_digest,
 };
 
 /// Identity of one live connection. It stays in memory only and is never part
@@ -295,10 +294,11 @@ impl WorldScopes {
     /// connected participant may read; `chat.say` also needs `CHAT`.
     #[must_use]
     pub fn allows_effect(self, cap: &str) -> bool {
-        match crate::world_caps::PROVIDER_REGISTRY.get(cap).map_or(
-            crate::world_caps::RequiredScope::Join,
-            |provider| provider.required_scope,
-        ) {
+        match crate::world_caps::PROVIDER_REGISTRY
+            .get(cap)
+            .map_or(crate::world_caps::RequiredScope::Join, |provider| {
+                provider.required_scope
+            }) {
             crate::world_caps::RequiredScope::Chat => self.contains(Self::CHAT),
             // Reading chat needs only the right to read it (`CHAT` or
             // `HISTORY`), the same rule the event stream applies.

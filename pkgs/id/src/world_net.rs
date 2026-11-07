@@ -144,7 +144,8 @@ impl WorldProtocol {
         budgets: BudgetPolicy,
         blocks: Option<Arc<dyn BlockList>>,
     ) -> Self {
-        let mut evaluator = AbuseEvaluator::with_budgets(AbusePolicy::default(), local_node, budgets);
+        let mut evaluator =
+            AbuseEvaluator::with_budgets(AbusePolicy::default(), local_node, budgets);
         if let Some(blocks) = blocks {
             evaluator = evaluator.with_block_list(blocks);
         }
@@ -171,7 +172,13 @@ impl WorldProtocol {
     /// operator-visibility surface for budgets, alongside
     /// [`WorldProtocol::abuse_counters`].
     #[must_use]
-    pub fn budget_usage(&self) -> Vec<(crate::abuse::BudgetScope, crate::abuse::BudgetLimit, BudgetUsage)> {
+    pub fn budget_usage(
+        &self,
+    ) -> Vec<(
+        crate::abuse::BudgetScope,
+        crate::abuse::BudgetLimit,
+        BudgetUsage,
+    )> {
         self.abuse
             .lock()
             .map(|abuse| abuse.budget_usage(abuse_now_ms()))

@@ -120,7 +120,11 @@ pub(crate) fn legacy_sanitize_display_name(name: &str) -> String {
 /// cannot recognize them by equality; see the #2960 check in
 /// `WorldCore::restore`.)
 pub(crate) fn is_pre_fix_mint_display_name(name: &str) -> bool {
-    if name.chars().next().is_none_or(|first| first.is_whitespace()) {
+    if name
+        .chars()
+        .next()
+        .is_none_or(|first| first.is_whitespace())
+    {
         return false;
     }
     if name
@@ -147,8 +151,8 @@ pub(crate) fn sanitize_chat(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_pre_fix_mint_display_name, legacy_sanitize_display_name,
-        pre_fix_sanitize_display_name, sanitize_chat, sanitize_display_name,
+        is_pre_fix_mint_display_name, legacy_sanitize_display_name, pre_fix_sanitize_display_name,
+        sanitize_chat, sanitize_display_name,
     };
 
     #[test]
@@ -201,8 +205,14 @@ mod tests {
         // 48-char cap is trimmed after truncation, and every minted
         // name is a fixed point of the sanitizer.
         let cases = [
-            (format!("{} {}", "a".repeat(47), "b".repeat(10)), "a".repeat(47)),
-            (format!("{}  {}", "a".repeat(46), "b".repeat(10)), "a".repeat(46)),
+            (
+                format!("{} {}", "a".repeat(47), "b".repeat(10)),
+                "a".repeat(47),
+            ),
+            (
+                format!("{}  {}", "a".repeat(46), "b".repeat(10)),
+                "a".repeat(46),
+            ),
             (
                 format!("{}\u{a0}{}", "a".repeat(47), "b".repeat(10)),
                 "a".repeat(47),

@@ -235,11 +235,7 @@ impl LinkProjection {
     /// links, and an edge to an inaccessible target is dropped whole, so the
     /// target's existence does not leak through the link.
     #[must_use]
-    pub fn links_from_visible(
-        &self,
-        source: Hash,
-        visible: &HashSet<Hash>,
-    ) -> Vec<&LinkRecord> {
+    pub fn links_from_visible(&self, source: Hash, visible: &HashSet<Hash>) -> Vec<&LinkRecord> {
         if !visible.contains(&source) {
             return Vec::new();
         }
@@ -254,11 +250,7 @@ impl LinkProjection {
     /// backlinks, and a backlink from an inaccessible source is dropped with its
     /// authored surface, which is the source's content.
     #[must_use]
-    pub fn backlinks_to_visible(
-        &self,
-        target: Hash,
-        visible: &HashSet<Hash>,
-    ) -> Vec<&LinkRecord> {
+    pub fn backlinks_to_visible(&self, target: Hash, visible: &HashSet<Hash>) -> Vec<&LinkRecord> {
         if !visible.contains(&target) {
             return Vec::new();
         }
@@ -304,10 +296,12 @@ pub fn project_links(
             surface,
             pin,
         } = &link.op;
-        let source_note = by_note.get(source).ok_or(LinkProjectionError::UnknownSource {
-            link: link.id,
-            note: *source,
-        })?;
+        let source_note = by_note
+            .get(source)
+            .ok_or(LinkProjectionError::UnknownSource {
+                link: link.id,
+                note: *source,
+            })?;
         if source_note.revision(*revision).is_none() {
             return Err(LinkProjectionError::RevisionNotOfSource {
                 link: link.id,
@@ -315,10 +309,12 @@ pub fn project_links(
                 note: *source,
             });
         }
-        let target_note = by_note.get(target).ok_or(LinkProjectionError::UnknownTarget {
-            link: link.id,
-            target: *target,
-        })?;
+        let target_note = by_note
+            .get(target)
+            .ok_or(LinkProjectionError::UnknownTarget {
+                link: link.id,
+                target: *target,
+            })?;
         if let Some(pin) = pin {
             if target_note.revision(*pin).is_none() {
                 return Err(LinkProjectionError::PinNotOfTarget {
@@ -342,12 +338,18 @@ pub fn project_links(
         });
     }
     edges.sort_by(|a, b| {
-        (*a.source.as_bytes(), *a.target.as_bytes(), &a.surface, *a.id.as_bytes()).cmp(&(
-            *b.source.as_bytes(),
-            *b.target.as_bytes(),
-            &b.surface,
-            *b.id.as_bytes(),
-        ))
+        (
+            *a.source.as_bytes(),
+            *a.target.as_bytes(),
+            &a.surface,
+            *a.id.as_bytes(),
+        )
+            .cmp(&(
+                *b.source.as_bytes(),
+                *b.target.as_bytes(),
+                &b.surface,
+                *b.id.as_bytes(),
+            ))
     });
     Ok(LinkProjection { edges })
 }
@@ -435,8 +437,8 @@ mod tests {
             revise(21, 20, b"second", &[20]),
         ]);
         // The pin names revision 20 even though the target's head is 21.
-        let projection = project_links(&folded, &[link(40, 10, 10, 20, "[[Target]]", Some(20))])
-            .unwrap();
+        let projection =
+            project_links(&folded, &[link(40, 10, 10, 20, "[[Target]]", Some(20))]).unwrap();
         assert_eq!(projection.edges().len(), 1);
         let edge = &projection.edges()[0];
         assert_eq!(edge.target, hash(20));
@@ -664,13 +666,17 @@ mod tests {
         // A viewer who cannot access target 20 learns nothing from note 10's links:
         // the edge is dropped, not returned with its target redacted.
         let only_source: HashSet<Hash> = HashSet::from([hash(10)]);
-        assert!(projection
-            .links_from_visible(hash(10), &only_source)
-            .is_empty());
+        assert!(
+            projection
+                .links_from_visible(hash(10), &only_source)
+                .is_empty()
+        );
         // And an inaccessible target has no visible backlinks at all.
-        assert!(projection
-            .backlinks_to_visible(hash(20), &only_source)
-            .is_empty());
+        assert!(
+            projection
+                .backlinks_to_visible(hash(20), &only_source)
+                .is_empty()
+        );
     }
 
     #[test]
