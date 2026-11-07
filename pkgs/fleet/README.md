@@ -160,6 +160,47 @@ nix build .#fleet .#fleet-serve .#fleet-connect .#fleet-connect-static
 cargo test --workspace   # unit tests (registry, config, proto, secrets)
 ```
 
+## Deploy: the two live installs (read this before merging a new verb)
+
+A verb is **not shipped when it merges** — it is shipped when BOTH
+live installs report it. #6728 is the failure this section exists to
+prevent: `fleet queue fallback` was merged as source + docs
+(`crates/fleet-queue/src/fallback.rs`, wired in `lib.rs`/`client.rs`)
+while the installed 0.1.0 binaries kept answering
+`repo-queue: unknown command "fallback"` for a full day of
+backend-down shifts.
+
+Build ONE artifact from current `main` and deploy that same build to
+both installs:
+
+```sh
+nix build .#fleet
+./result/bin/fleet version   # record the source rev; both installs must match it
+```
+
+1. **Laptop install** — a plain binary copy at `~/.local/bin/fleet`
+   (lane-writable). Copy the fresh artifact over it, then verify.
+2. **Sandbox install** — `~/tools/fleet`, reached through the
+   `~/tools/bin/fleet` and `~/tools/bin/repo-queue` symlinks. This
+   file is **root-owned provisioning** (read-only to lanes): a lane
+   cannot redeploy it. The sandbox redeploy is done by whoever
+   provisions `~/tools`; a lane that verifies the sandbox install is
+   stale files/updates the tracking issue with both source revs
+   (installed vs current `main`) instead of improvising a replacement
+   on `PATH` — the symlinks are the contract every lane resolves.
+
+Verify BOTH installs after every deploy, with the verb surface as
+the check (a version string alone proves nothing):
+
+```sh
+fleet queue --help            # on the laptop AND on the sandbox
+fleet queue fallback scan --repo developing-today/code   # JSON items, exit 0
+```
+
+If the two installs ever disagree on source rev or verb list, the
+stale one is a bug: file it against this section (the #6728 shape)
+rather than working around it silently.
+
 The connect variants carry the D7 size contract: **≤ 2 MiB hard
 gate** (target ≤ 1.5 MiB), enforced in `default.nix` postFixup
 against the final stripped artifact and re-asserted by smoke.sh.
