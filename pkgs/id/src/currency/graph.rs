@@ -176,9 +176,6 @@ impl CurrencyDefinition {
         if self.scale > 18 {
             return Err(DefinitionError::ScaleOutOfRange(self.scale));
         }
-        if self.supply.capped == 0 {
-            return Err(DefinitionError::ZeroSupplyCap);
-        }
         Ok(())
     }
 
@@ -201,9 +198,9 @@ impl CurrencyDefinition {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CurrencyId {
     /// Issuer verifying key that signed the definition.
-    pub issuer: IssuerId,
+    issuer: IssuerId,
     /// BLAKE3 hash of the canonical-CBOR definition body.
-    pub definition_hash: Hash,
+    definition_hash: Hash,
 }
 
 impl CurrencyId {
@@ -217,6 +214,18 @@ impl CurrencyId {
             issuer,
             definition_hash: Hash::digest(&body),
         })
+    }
+
+    /// The issuer component of the semantic identity.
+    #[must_use]
+    pub const fn issuer(&self) -> IssuerId {
+        self.issuer
+    }
+
+    /// The canonical definition-body hash component of the semantic identity.
+    #[must_use]
+    pub const fn definition_hash(&self) -> Hash {
+        self.definition_hash
     }
 
     /// Compact lookup/reference form. The pair above remains authoritative.
@@ -332,9 +341,6 @@ pub enum DefinitionError {
     /// V1 supports scales from 0 through 18.
     #[error("currency scale {0} is outside 0..=18")]
     ScaleOutOfRange(u8),
-    /// V1 definitions require a finite positive issuance cap.
-    #[error("currency supply cap must be positive")]
-    ZeroSupplyCap,
 }
 
 /// A body was oversized, malformed, non-canonical, or had the wrong schema.
@@ -546,7 +552,7 @@ mod tests {
         let changed = CurrencyId::from_definition(issuer, &definition("Tokens", 3, 1_000)).unwrap();
 
         assert_eq!(first, same);
-        assert_eq!(first.definition_hash, Hash::digest(&def.body().unwrap()));
+        assert_eq!(first.definition_hash(), Hash::digest(&def.body().unwrap()));
         assert_ne!(first, other_issuer);
         assert_ne!(first, changed);
         assert_ne!(first.compact_hash(), other_issuer.compact_hash());
@@ -557,6 +563,12 @@ mod tests {
         let def = definition("Tokens", 2, 1_000);
         let body = def.body().unwrap();
         assert_eq!(CurrencyDefinition::from_body(&body).unwrap(), def);
+
+        let zero_cap = definition("Non-issuable", 0, 0);
+        assert_eq!(
+            CurrencyDefinition::from_body(&zero_cap.body().unwrap()).unwrap(),
+            zero_cap
+        );
 
         let mut value: serde_json::Value =
             serde_json::from_slice(&serde_json::to_vec(&def).unwrap()).unwrap();
@@ -582,10 +594,7 @@ mod tests {
             definition("Tokens", 19, 1).validate(),
             Err(DefinitionError::ScaleOutOfRange(19))
         );
-        assert_eq!(
-            definition("Tokens", 0, 0).validate(),
-            Err(DefinitionError::ZeroSupplyCap)
-        );
+        assert_eq!(definition("Tokens", 0, 0).validate(), Ok(()));
     }
 
     #[test]

@@ -15,7 +15,7 @@ This slice does not implement balance/supply folds, ancestry and fork resolution
 
 - A semantic currency identity is the issuer verifying key paired with the BLAKE3 hash of the canonical-CBOR definition body. Its compact hash is only a lookup/reference form; the pair remains authoritative.
 - Definition names and symbols are display labels, never identity fields outside the definition hash. A changed definition creates a different identity.
-- V1 definitions require a finite positive issuance cap, following the newer #2043 recommendation over the earlier `open` option in the graph-token wire spec. Open supply is not accepted by this contract.
+- V1 definitions require a finite issuance cap, following the newer #2043 recommendation over the earlier `open` option in the graph-token wire spec. A cap of zero is valid; open supply is not accepted by this contract.
 - Definition scale is limited to 0–18 and is immutable because it participates in the definition body. Definitions require an NFC, non-empty name.
 - Token payloads use canonical CBOR with strict decoding and closed schemas. Amount-bearing issue/transfer/burn objects reject zero amounts.
 - Signing helpers bind each object to the existing `id.events.v1` chained-event envelope. Issue signing requires the definition identity and issuer key to agree; transfer and burn are signed by the holder.
@@ -30,3 +30,9 @@ This slice does not implement balance/supply folds, ancestry and fork resolution
 ## Remaining work
 
 The graph-native fold and its causal/fork/cap rules, plus every anchored and real-service phase, remain outside this slice. No API here should be treated as exposing settled balances or accepted payments until those layers are implemented and verified against the governing design.
+
+---
+
+## 2026-11-07T04-14-25Z Update: permit a zero issuance cap
+
+An earlier implementation note said “finite positive” cap. Re-reading #2043 §55 and the #2251 wire schema showed that v1 requires a finite cap but does not forbid zero. The implementation accepts a zero cap, which represents a currency definition that can never issue; this avoids imposing a policy not present in the governing design.
