@@ -1817,6 +1817,39 @@ impl WorldClient {
         ))
     }
 
+    /// Parse one admin-history records page's `next_after` cursor.
+    ///
+    /// Factored out of [`WorldClient::admin_event_history`] so the frame
+    /// validation can be unit-tested without a rogue host. The host's
+    /// typed frame (`ServerFrame::Records`) serializes `next_after` as a
+    /// string or `null`, with the key always present, so a missing key
+    /// or a present non-string, non-null value is a malformed reply
+    /// (#6600), never "end of pages" — the same match-and-bail pattern
+    /// `parse_event_history_begin` applies to the begin frame (#6641).
+    /// Returns the cursor to continue from, or `None` at the last page.
+    fn parse_admin_history_cursor(frame: &serde_json::Value) -> Result<Option<String>> {
+        match frame.get("next_after") {
+            Some(serde_json::Value::Null) => Ok(None),
+            Some(value) => {
+                if let Some(next) = value.as_str() {
+                    Ok(Some(next.to_owned()))
+                } else {
+                    bail!(
+                        "admin history cursor is malformed: expected string or null, got {}",
+                        match value {
+                            serde_json::Value::Bool(_) => "boolean",
+                            serde_json::Value::Number(_) => "number",
+                            serde_json::Value::Array(_) => "array",
+                            serde_json::Value::Object(_) => "object",
+                            _ => "unknown",
+                        }
+                    );
+                }
+            }
+            None => bail!("admin history records reply has no next_after cursor"),
+        }
+    }
+
     /// Export the retained journal-order event window and its records as an
     /// administrator. Join capabilities cannot request this frame.
     ///
@@ -1904,14 +1937,16 @@ impl WorldClient {
                 after = Some(key.clone());
                 records.insert(key, value);
             }
-            match frame["next_after"].as_str() {
+            match Self::parse_admin_history_cursor(&frame)? {
                 Some(next) => {
                     anyhow::ensure!(
-                        after.as_deref() == Some(next),
+                        after.as_deref() == Some(next.as_str()),
                         "invalid admin history cursor"
                     );
                     anyhow::ensure!(
-                        page_cursor.as_deref().is_none_or(|cursor| next > cursor),
+                        page_cursor
+                            .as_deref()
+                            .is_none_or(|cursor| next.as_str() > cursor),
                         "admin history record cursor did not advance"
                     );
                 }
@@ -4141,6 +4176,108 @@ mod tests {
             assert!(
                 err.to_string().contains("malformed module_hash"),
                 "unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn admin_event_history_cursor_requires_a_string_or_null_next_after() {
+        // Issue #6600: a missing or mistyped `next_after` in a records
+        // page is a malformed reply, not end-of-pages. Oracle: the
+        // host's ServerFrame::Records serializes the key always, as a
+        // string or null; the pre-fix `.as_str()` match read a number,
+        // a boolean, and a missing key exactly like the null
+        // terminator, silently truncating the export (and any fixture
+        // recorded from it) while `complete` stayed true.
+        let page_with = |next_after: serde_json::Value| {
+            serde_json::json!({
+                "type": "records",
+                "sequence": 7,
+                "records": {"a": 1},
+                "next_after": next_after,
+            })
+        };
+        let parse = |frame: serde_json::Value| WorldClient::parse_admin_history_cursor(&frame);
+
+        assert_eq!(
+            parse(page_with(serde_json::json!("a"))).unwrap(),
+            Some("a".to_string())
+        );
+        assert_eq!(parse(page_with(serde_json::Value::Null)).unwrap(), None);
+
+        // Missing key: malformed, not a terminator.
+        let mut missing = page_with(serde_json::Value::Null);
+        missing.as_object_mut().unwrap().remove("next_after");
+        let result = parse(missing);
+        assert!(result.is_err(), "missing next_after must be refused");
+        assert!(
+            result
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("no next_after cursor"),
+            "missing-key error must name the field"
+        );
+
+        // Mistyped shapes are refused, naming the field.
+        for bad in [
+            serde_json::json!(123),
+            serde_json::json!(true),
+            serde_json::json!(["a"]),
+            serde_json::json!({"k": "a"}),
+        ] {
+            let result = parse(page_with(bad));
+            assert!(result.is_err(), "mistyped next_after must be refused");
+            let err = result.err().unwrap();
+            assert!(
+                err.to_string().contains("malformed"),
+                "unexpected error: {err}"
+            );
+        }
+    }
+
+    // Property coverage for the cursor parser, same doctrine and
+    // oracle as the begin-frame parser below: a string cursor passes
+    // through verbatim, null is the only terminator, and every other
+    // JSON type is refused as malformed.
+    proptest! {
+        #[test]
+        fn admin_event_history_cursor_next_after_invariants(
+            cursor in any::<String>(),
+            mistyped in prop_oneof![
+                any::<i64>().prop_map(serde_json::Value::from),
+                any::<bool>().prop_map(serde_json::Value::from),
+                proptest::collection::vec(any::<String>(), 0..4)
+                    .prop_map(serde_json::Value::from),
+                proptest::collection::hash_map(any::<String>(), any::<String>(), 0..4)
+                    .prop_map(|m| serde_json::to_value(m).unwrap()),
+            ],
+        ) {
+            let page = |next_after: serde_json::Value| {
+                serde_json::json!({
+                    "type": "records",
+                    "sequence": 7,
+                    "records": {"a": 1},
+                    "next_after": next_after,
+                })
+            };
+            let parsed = WorldClient::parse_admin_history_cursor(
+                &page(serde_json::Value::String(cursor.clone())),
+            )
+            .unwrap();
+            prop_assert_eq!(parsed.as_deref(), Some(cursor.as_str()));
+            prop_assert_eq!(
+                WorldClient::parse_admin_history_cursor(&page(serde_json::Value::Null)).unwrap(),
+                None
+            );
+            let result = WorldClient::parse_admin_history_cursor(&page(mistyped));
+            prop_assert!(result.is_err());
+            prop_assert!(
+                result
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("malformed")
             );
         }
     }
