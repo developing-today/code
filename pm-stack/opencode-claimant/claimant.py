@@ -19,7 +19,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
@@ -70,7 +70,7 @@ def log_fire(mode: str, candidates: List[Dict], launched: List[Dict], cap_room: 
     ensure_state_dir()
     
     fire_entry = {
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
         "candidates_seen": candidates,
         "sessions_launched": launched,
