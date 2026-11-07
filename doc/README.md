@@ -37,6 +37,7 @@ Folders are named `<UTC datetime>_<kind>_<name>`. The kinds in use are `feature`
 - [Next stage platform architecture](2026-10-17T15-00-00Z_architecture_next_stage_platform/2026-10-17T15-00-00Z_architecture_next_stage_platform.md)
 - [Portable world surfaces](2026-10-14T19-39-30Z_architecture_portable_world_surfaces/2026-10-14T19-39-30Z_architecture_portable_world_surfaces.md)
 - [Roc worlds architecture](2026-10-07T00-20-00Z_architecture_roc_worlds/2026-10-07T00-20-00Z_architecture_roc_worlds.md)
+- [AGPL/GPL hosting: inspectable worlds, uploads, and self-hosting](2026-11-05T15-08-16Z_research_id5986_agpl_gpl_hosting/2026-11-05T15-08-16Z_research_id5986_agpl_gpl_hosting.md)
 - [Research workflow design](2026-10-19T06-09-02Z_design_research_workflow/2026-10-19T06-09-02Z_design_research_workflow.md)
 - [Project-management stack design](2026-10-24T11-05-38Z_design_project-management-stack/2026-10-24T11-05-38Z_design_project-management-stack.md)
 - [T3 Code V2 integration](2026-10-26T21-18-21Z_feature_t3code-v2-integration/main.md)
