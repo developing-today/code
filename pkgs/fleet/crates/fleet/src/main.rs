@@ -445,6 +445,20 @@ fn wants_domain_help(d: &Domain, args: &[String]) -> bool {
     d.name == "serve" && args.get(1).is_some_and(|a| is_help_flag(a))
 }
 
+/// A broker role is a complete invocation: the broker entry point has
+/// no argument parser, so reject a trailing argument rather than silently
+/// starting the daemon with it discarded.
+fn broker_argument_error(d: &Domain, args: &[String]) -> Option<String> {
+    if d.name != "serve" {
+        return None;
+    }
+    let role = args.first()?.as_str();
+    if !matches!(role, "queue-broker" | "secrets-broker") {
+        return None;
+    }
+    args.get(1)
+        .map(|extra| format!("unexpected argument '{extra}' for 'fleet serve {role}'"))
+}
 /// The arguments after the role name when this invocation is the
 /// search service role, in either spelling: `serve search ...` or
 /// `search serve ...` (the `atlas-search serve` argv0 route).
@@ -475,6 +489,9 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
     if wants_domain_help(d, args) {
         print_domain_help(surface, d);
         return EXIT_OK;
+    }
+    if let Some(message) = broker_argument_error(d, args) {
+        return usage_error(&message);
     }
     let cap = match required_capability(d, args) {
         Ok(c) => c,
@@ -909,6 +926,66 @@ mod tests {
         }
         assert_eq!(search_serve_tail(serve, &args(&["queue-broker"])), None);
         assert_eq!(search_serve_tail(search, &args(&["search"])), None);
+    }
+
+    #[test]
+    fn broker_roles_reject_trailing_args_through_serve_and_argv0_aliases() {
+        let serve = domain("serve").expect("serve domain exists");
+        let surface = Surface::new(None, fleet_config::Config::default());
+
+        for role in ["queue-broker", "secrets-broker"] {
+            let trailing = args(&[role, "--bogus-junk", "extra"]);
+            let expected = format!("unexpected argument '--bogus-junk' for 'fleet serve {role}'");
+            assert_eq!(
+                broker_argument_error(serve, &trailing).as_deref(),
+                Some(expected.as_str()),
+                "the first unexpected argument should be named"
+            );
+            assert_eq!(
+                run_domain(&surface, serve, &trailing, "fleet"),
+                EXIT_USAGE,
+                "fleet serve {role} must reject extras before starting the daemon"
+            );
+
+            // The argv0 alias dispatch prepends its implied role and then
+            // uses run_domain; exercise that same route without invoking run().
+            let route = alias_route(role).expect("broker alias is registered");
+            let routed_domain = domain(route.domain).expect("alias route has a domain");
+            let mut routed = Vec::new();
+            if let Some(implied) = route.implied_arg {
+                routed.push(implied.to_string());
+            }
+            routed.push("--bogus-junk".to_string());
+            assert_eq!(
+                broker_argument_error(routed_domain, &routed).as_deref(),
+                Some(expected.as_str())
+            );
+            assert_eq!(
+                run_domain(&surface, routed_domain, &routed, role),
+                EXIT_USAGE,
+                "{role} alias must reject extras before starting the daemon"
+            );
+
+            // A bare role must retain the run path. Do not call run_domain
+            // here: the real daemon intentionally blocks waiting for work.
+            assert_eq!(broker_argument_error(serve, &args(&[role])), None);
+        }
+
+        assert_eq!(
+            broker_argument_error(serve, &args(&["search", "subcommand"])),
+            None,
+            "the serve search role owns its own arguments"
+        );
+        for role in ["queue-broker", "secrets-broker"] {
+            for flag in ["--help", "-h", "help"] {
+                assert!(wants_domain_help(serve, &args(&[role, flag])));
+                assert_eq!(
+                    run_domain(&surface, serve, &args(&[role, flag]), "fleet"),
+                    EXIT_OK,
+                    "broker help must return before argument rejection or daemon startup"
+                );
+            }
+        }
     }
 
     #[test]
