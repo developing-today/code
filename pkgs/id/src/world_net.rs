@@ -2829,6 +2829,58 @@ mod tests {
         assert!(err.to_string().contains("admin token refused"), "{err}");
     }
 
+    // Property coverage for the same parser (repo testing doctrine:
+    // a parser's invariants are stated once and hammered with
+    // generated inputs, not just the examples above). Oracle: the
+    // typed frame contract — `ServerFrame::WorldState.seed` is an
+    // `Option<u64>` on the wire (a u64, or null when the host hides
+    // the seed, #240), and `schedules` is a string→u64 map that
+    // passes through untouched.
+    proptest! {
+        #[test]
+        fn world_state_reply_seed_and_schedule_invariants(
+            seed in any::<u64>(),
+            schedules in proptest::collection::btree_map(any::<String>(), any::<u64>(), 0..8),
+            mistyped in prop_oneof![
+                any::<String>().prop_map(serde_json::Value::from),
+                any::<bool>().prop_map(serde_json::Value::from),
+                proptest::collection::vec(any::<u64>(), 0..4)
+                    .prop_map(serde_json::Value::from),
+                proptest::collection::hash_map(any::<String>(), any::<u64>(), 0..4)
+                    .prop_map(|m| serde_json::to_value(m).unwrap()),
+            ],
+        ) {
+            let frame = |seed_value: serde_json::Value| {
+                serde_json::json!({
+                    "type": "world_state",
+                    "seed": seed_value,
+                    "schedules": serde_json::to_value(&schedules).unwrap(),
+                })
+            };
+            // A valid u64 seed is preserved; the schedule map passes
+            // through verbatim.
+            let (parsed_seed, parsed_schedules) =
+                WorldClient::parse_world_state_reply(&frame(serde_json::Value::from(seed)))
+                    .unwrap();
+            prop_assert_eq!(parsed_seed, Some(seed));
+            prop_assert_eq!(parsed_schedules, schedules.clone());
+            // Null (the host's hidden-seed shape) reads as None.
+            let (parsed_seed, _) =
+                WorldClient::parse_world_state_reply(&frame(serde_json::Value::Null)).unwrap();
+            prop_assert_eq!(parsed_seed, None);
+            // Any other seed type is refused as malformed.
+            let result = WorldClient::parse_world_state_reply(&frame(mistyped));
+            prop_assert!(result.is_err());
+            prop_assert!(
+                result
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("malformed seed")
+            );
+        }
+    }
+
     #[test]
     fn caps_reply_requires_a_valid_report() {
         // Issue #6624: a `caps` frame carrying no valid CapsReport must
