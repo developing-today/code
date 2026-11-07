@@ -37,6 +37,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.join(HERE, "..", "bin", "worktree_reaper.py")
@@ -316,6 +317,55 @@ class UnitTests(unittest.TestCase):
             mtime3, _s3, complete3 = wr.walk_activity(root, now - 1000)
             self.assertTrue(complete3)
             self.assertAlmostEqual(mtime3, old, delta=2)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+class ProcScanFailClosedTests(unittest.TestCase):
+    """#5740: a /proc scan failure is UNKNOWN occupancy — fail closed."""
+
+    def test_proc_cwds_raises_on_listdir_failure(self):
+        with mock.patch("os.listdir", side_effect=OSError("proc gone")):
+            with self.assertRaises(wr.ProcScanError):
+                wr.proc_cwds()
+
+    def test_successful_empty_scan_is_unoccupied(self):
+        root = tempfile.mkdtemp(prefix="wtreaper-empty-scan-")
+        try:
+            with mock.patch("os.listdir", return_value=[]):
+                self.assertEqual(wr.proc_cwds(), [])
+                self.assertFalse(wr.tree_occupied(root))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_confirmed_matching_process_still_occupied(self):
+        root = tempfile.mkdtemp(prefix="wtreaper-occupied-")
+        try:
+            self.assertTrue(wr.tree_occupied(root, cwds=[root]))
+            self.assertFalse(wr.tree_occupied(root, cwds=["/nonexistent-elsewhere"]))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_reap_tree_retains_candidate_and_never_calls_git(self):
+        root = tempfile.mkdtemp(prefix="wtreaper-failclosed-")
+        try:
+            rec = {"tree": root, "branch": "queue/test", "action": "candidate"}
+            git_calls = []
+
+            def fake_run_git(*args, **kwargs):
+                git_calls.append(args)
+                return 0, "", ""
+
+            with mock.patch("os.listdir", side_effect=OSError("proc gone")), \
+                mock.patch.object(wr, "run_git", fake_run_git), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+                result = wr.reap_tree("/nonexistent-primary", rec, {})
+            self.assertFalse(result)
+            self.assertEqual(rec["action"], "keep")
+            self.assertEqual(rec["reason"], "occupied-unknown-at-removal")
+            self.assertEqual(git_calls, [], "no git worktree/branch call may run")
+            self.assertTrue(os.path.isdir(root), "candidate tree must be retained")
+            self.assertIn("WARNING", out.getvalue())
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
