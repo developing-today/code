@@ -48,6 +48,10 @@ function signOidc(repository: string): string {
   return `${header}.${payload}.${b64url(signer.sign(privateKey))}`;
 }
 
+// src/server.ts loads config at import; loadConfig requires SUPABASE_URL
+// (#5120), so the suite pins a fixture project (no service-role key: the
+// queue stays disabled, as these tests intend).
+process.env.SUPABASE_URL ??= "https://fixture.supabase.co";
 const { handler } = await import("../src/server.ts");
 
 function sessionsRequest(token: string, body: Record<string, unknown>): Request {

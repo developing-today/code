@@ -121,7 +121,7 @@ describe("recordsFromPaygLines", () => {
     ];
     const recs = recordsFromPaygLines(lines, "fleet-feed-collector");
     expect(recs.map((r) => `${r.serviceId}/${r.metricId}`)).toEqual([
-      "meta:high-usage/payg-accrued",
+      "meta/payg-accrued",
       "cloudflare/gateway-accrual-est",
     ]);
     expect(recs[0]).toMatchObject({ value: 23.92, unit: "usd", source: "console" });
@@ -206,8 +206,8 @@ describe("recordsFromProviderUsage", () => {
     const recs = recordsFromProviderUsage(answered, "check-usage");
     expect(recs.map((r) => `${r.serviceId}/${r.metricId}=${r.value}`)).toEqual([
       "opencode-server/sessions-listed=0",
-      "openai:codex/7-day=12",
-      "openai:codex/5-hour=3",
+      "openai.main/7-day=12",
+      "openai.main/5-hour=3",
     ]);
     expect(recordsFromProviderUsage(null, "check-usage")).toEqual([]);
     expect(recordsFromProviderUsage({ sessions: [] }, "check-usage")).toEqual([]);
@@ -229,7 +229,7 @@ describe("recordsFromProviderUsage", () => {
 
     expect(
       recordsFromProviderUsage(snapshot, "check-usage").map((r) => `${r.serviceId}/${r.metricId}=${r.value}`),
-    ).toEqual(["opencode-server/sessions-listed=1", "openai:codex/5-hour=100"]);
+    ).toEqual(["opencode-server/sessions-listed=1", "openai.main/5-hour=100"]);
   });
 
   test("skips percentages above 100 and non-finite values", () => {
@@ -266,7 +266,7 @@ describe("recordsFromProviderUsage", () => {
 
     expect(
       recordsFromProviderUsage(snapshot, "check-usage").map((r) => `${r.serviceId}/${r.metricId}=${r.value}`),
-    ).toEqual(["openai:codex/7-day=0", "openai:codex/5-hour=100"]);
+    ).toEqual(["openai.main/7-day=0", "openai.main/5-hour=100"]);
   });
 });
 
@@ -288,7 +288,7 @@ describe("DeepSeek CNY balance (#1052)", () => {
     expect(recs).toHaveLength(1);
     expect(recs[0]).toMatchObject({
       ts: dayTs("2026-10-25"),
-      serviceId: "deepseek:api",
+      serviceId: "deepseek",
       metricId: "credits_balance",
       value: 44.63,
       unit: "cny",
@@ -343,7 +343,7 @@ describe("DeepSeek CNY balance (#1052)", () => {
       expect(isSnapshotRecord(recs[0])).toBe(true);
       expect(await store.append(recs)).toBe(1);
       expect(await store.append(recs)).toBe(0); // re-run dedupes
-      const stored = (await store.readAll()).filter((r) => r.serviceId === "deepseek:api");
+      const stored = (await store.readAll()).filter((r) => r.serviceId === "deepseek");
       expect(stored).toHaveLength(1);
       expect(stored[0].unit).toBe("cny");
       expect(stored[0].value).toBe(44.63);

@@ -595,7 +595,16 @@ func (s *Server) taskStore() *tasks.Store {
 	s.taskOnce.Do(func() {
 		if s.paths.State != "" {
 			dbPath := filepath.Join(s.paths.State, "tasks.db")
-			if store, err := tasks.Open(dbPath); err == nil {
+			// Retention must reach the store before Open migrates
+			// legacy rows, or startup deletes results the configured
+			// retention promises to keep (issue #6248). The hot
+			// Configure refresh below still applies later updates.
+			var cfgTTL, cfgMaxAge time.Duration
+			if s.set != nil {
+				cfgTTL = s.set.Duration("tasks.ttl")
+				cfgMaxAge = s.set.Duration("tasks.maxAge")
+			}
+			if store, err := tasks.OpenWithRetention(dbPath, cfgTTL, cfgMaxAge); err == nil {
 				s.tasks = store
 			} else if s.logger != nil {
 				s.logger.Printf("task store: could not open %s: %v; using in-memory fallback", dbPath, err)
@@ -625,6 +634,12 @@ func (s *Server) taskStore() *tasks.Store {
 			}
 		}
 	})
+	// Retention settings are hot: refresh them on access so runtime updates
+	// affect new tasks and subsequent item/result reads without replacing the
+	// shared store.
+	if s.set != nil {
+		s.tasks.Configure(s.set.Duration("tasks.ttl"), s.set.Duration("tasks.maxAge"))
+	}
 	return s.tasks
 }
 
@@ -669,7 +684,7 @@ func (s *Server) handleTaskGet(w http.ResponseWriter, r *http.Request) {
 	store := s.taskStore()
 	id := r.PathValue("id")
 	store.RecordRetrieval("v1", "tasks/get", id)
-	t, ok := store.Get(id)
+	t, ok := store.Read(id)
 	if !ok {
 		writeErr(w, http.StatusNotFound, tasks.ErrNoTask{ID: id})
 		return
@@ -692,7 +707,7 @@ func (s *Server) handleTaskResult(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), wait)
 	defer cancel()
 
-	result, fault, err := store.Result(ctx, id)
+	result, fault, err := store.ReadResult(ctx, id)
 	switch {
 	case err != nil:
 		var missing tasks.ErrNoTask

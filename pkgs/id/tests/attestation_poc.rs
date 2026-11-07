@@ -28,8 +28,8 @@ use p2panda_core::{Hash, SigningKey};
 use tempfile::TempDir;
 
 use id::attestation::{
-    GenesisAgreement, MatchState, ResultClaim, author_id, compute_state, player_id, sign_claim,
-    sign_genesis,
+    GenesisAgreement, MatchState, ResultClaim, SignError, author_id, compute_state, player_id,
+    sign_claim, sign_genesis,
 };
 use id::chain;
 use id::event_store::{EventStore, Ingest};
@@ -243,6 +243,45 @@ fn one_claim_only_stays_proposed() {
     );
 }
 
+/// Builds the viewer inputs for a two-player match directly, the way
+/// decoded peer-authored objects arrive — for claim shapes
+/// [`sign_claim`] now refuses to produce itself (#6441), a viewer can
+/// still be handed them and must ignore them.
+fn viewer_match(
+    x_outcome: &str,
+    o_outcome: &str,
+) -> (
+    GenesisAgreement,
+    Vec<(id::attestation::PlayerId, GenesisAgreement)>,
+    Vec<(id::attestation::PlayerId, ResultClaim)>,
+) {
+    let x = key(0);
+    let o = key(100);
+    let agreement = GenesisAgreement {
+        game_id: "tic-tac-toe".to_owned(),
+        logic_hash: Hash::digest(include_bytes!("../apps/tic-tac-toe/program/main.roc")),
+        players: [player_id(&x), player_id(&o)],
+        witness: None,
+        objection_window_secs: 3600,
+    };
+    let genesis = vec![
+        (player_id(&x), agreement.clone()),
+        (player_id(&o), agreement.clone()),
+    ];
+    let hash = Hash::digest(FINAL_BOARD_JSON.as_bytes());
+    let claims = vec![
+        (
+            player_id(&x),
+            claim_for(&agreement, x_outcome.to_owned(), hash),
+        ),
+        (
+            player_id(&o),
+            claim_for(&agreement, o_outcome.to_owned(), hash),
+        ),
+    ];
+    (agreement, genesis, claims)
+}
+
 #[test]
 fn out_of_domain_outcomes_are_ignored() {
     let x = key(0);
@@ -256,9 +295,9 @@ fn out_of_domain_outcomes_are_ignored() {
         "banana".to_owned(),
         uppercase_seat_id,
     ] {
-        let played = play_match(&outcome, &outcome);
+        let (agreement, genesis, claims) = viewer_match(&outcome, &outcome);
         assert_eq!(
-            computed_state(&played),
+            compute_state(&agreement, &genesis, &claims),
             MatchState::Proposed,
             "outcome: {outcome}"
         );
@@ -268,8 +307,11 @@ fn out_of_domain_outcomes_are_ignored() {
 #[test]
 fn one_in_domain_and_one_out_of_domain_claim_stays_proposed() {
     let x = key(0);
-    let played = play_match(&hex(&player_id(&x)), "banana");
-    assert_eq!(computed_state(&played), MatchState::Proposed);
+    let (agreement, genesis, claims) = viewer_match(&hex(&player_id(&x)), "banana");
+    assert_eq!(
+        compute_state(&agreement, &genesis, &claims),
+        MatchState::Proposed
+    );
 }
 
 #[test]
@@ -326,6 +368,94 @@ fn same_position_claims_with_different_frontiers_still_agree() {
             MatchState::Agreed,
         );
     }
+}
+
+/// A malformed agreement naming the same player in both seats (#2863).
+///
+/// Only a viewer can be handed this shape now — [`sign_genesis`] refuses
+/// it — so the viewer tests construct the pairs directly, the way a
+/// decoded peer-authored event arrives.
+fn duplicate_seat_agreement() -> (SigningKey, GenesisAgreement) {
+    let a = key(0);
+    let agreement = GenesisAgreement {
+        game_id: "tic-tac-toe".to_owned(),
+        logic_hash: Hash::digest(include_bytes!("../apps/tic-tac-toe/program/main.roc")),
+        players: [player_id(&a), player_id(&a)],
+        witness: None,
+        objection_window_secs: 3600,
+    };
+    (a, agreement)
+}
+
+fn claim_for(agreement: &GenesisAgreement, outcome: String, final_state_hash: Hash) -> ResultClaim {
+    ResultClaim {
+        agreement: agreement.agreement_hash().unwrap(),
+        outcome,
+        final_state_hash,
+        frontiers: vec![],
+    }
+}
+
+#[test]
+fn duplicate_seat_agreement_with_one_genesis_and_one_claim_stays_proposed() {
+    let (a, agreement) = duplicate_seat_agreement();
+    let seat = player_id(&a);
+    let genesis = vec![(seat, agreement.clone())];
+    let claims = vec![(
+        seat,
+        claim_for(
+            &agreement,
+            hex(&seat),
+            Hash::digest(FINAL_BOARD_JSON.as_bytes()),
+        ),
+    )];
+
+    assert_eq!(
+        compute_state(&agreement, &genesis, &claims),
+        MatchState::Proposed
+    );
+}
+
+#[test]
+fn duplicate_seat_agreement_with_two_distinct_claims_stays_proposed() {
+    let (a, agreement) = duplicate_seat_agreement();
+    let seat = player_id(&a);
+    let genesis = vec![(seat, agreement.clone())];
+    let first = claim_for(
+        &agreement,
+        hex(&seat),
+        Hash::digest(FINAL_BOARD_JSON.as_bytes()),
+    );
+    let mut second = first.clone();
+    second.outcome = "draw".to_owned();
+
+    // Two differing positions from the same key would be `Disputed` for
+    // distinct seats; a self-match is simply not a match.
+    let claims = vec![(seat, first), (seat, second)];
+    assert_eq!(
+        compute_state(&agreement, &genesis, &claims),
+        MatchState::Proposed
+    );
+}
+
+#[test]
+fn duplicate_seat_agreement_stays_proposed_without_genesis_or_claims() {
+    let (_a, agreement) = duplicate_seat_agreement();
+
+    assert_eq!(compute_state(&agreement, &[], &[]), MatchState::Proposed);
+}
+
+#[test]
+fn sign_genesis_refuses_duplicate_seat_agreement() {
+    let (a, agreement) = duplicate_seat_agreement();
+
+    let err = sign_genesis(&a, 0, None, &agreement, vec![])
+        .err()
+        .expect("a duplicate-seat agreement must not be signed");
+    assert!(
+        matches!(err, SignError::DuplicateSeat),
+        "expected DuplicateSeat, got {err:?}"
+    );
 }
 
 #[test]

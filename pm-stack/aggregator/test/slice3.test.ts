@@ -252,6 +252,78 @@ describe("dns register parser", () => {
     expect(dnsSectionFromRegisterJson(dup, "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
   });
 
+  test("register.json section: impossible renewal dates yield null, leap date kept (#4858)", () => {
+    const mdEntries = parseDnsRegister(REGISTER_MD);
+    const row = (domain: string, next_renewal: string) => ({
+      domain,
+      registrar: "Porkbun",
+      dns_hosted_at: "Porkbun",
+      next_renewal,
+      auto_renew: true,
+      renewal_price_usd: 10,
+    });
+    // One impossible row poisons the whole JSON section: the builder
+    // returns null on ANY malformation so the caller falls back to
+    // the Markdown parse, mirroring the #2199 Markdown cases (#4835).
+    for (const bad of ["2027-02-30", "2026-13-01", "2026-00-10", "2026-04-31"]) {
+      const json = JSON.stringify({ domains: [row("good.example", "2027-01-15"), row("bad.example", bad)] });
+      expect(dnsSectionFromRegisterJson(json, "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
+    }
+    // Real dates still parse, including the leap date.
+    const ok = JSON.stringify({ domains: [row("leap.example", "2024-02-29"), row("real.example", "2027-01-15")] });
+    const section = dnsSectionFromRegisterJson(ok, "2026-11-01T17:00:00Z", "t", mdEntries);
+    expect(section?.entries.map((e) => e.domain)).toEqual(["leap.example", "real.example"]);
+    expect(section?.totalAnnualListUsd).toBe(20);
+    expect(isDnsSection(section)).toBe(true);
+  });
+
+  test("register.json section: negative renewal prices yield null, zero kept (#4883)", () => {
+    const mdEntries = parseDnsRegister(REGISTER_MD);
+    const row = (domain: string, renewal_price_usd: number | null) => ({
+      domain,
+      registrar: "Porkbun",
+      dns_hosted_at: "Porkbun",
+      next_renewal: "2027-01-15",
+      auto_renew: true,
+      renewal_price_usd,
+    });
+    // A finite negative price is money the shared gate refuses
+    // (#4226): one negative row poisons the whole JSON section, so
+    // the builder returns null and the caller falls back to the
+    // Markdown parse — including a mixed register whose total only
+    // goes negative in aggregate.
+    for (const domains of [
+      [row("neg.example", -25)],
+      [row("neg.example", -0.01)],
+      [row("good.example", 10), row("neg.example", -40)],
+    ]) {
+      const json = JSON.stringify({ domains });
+      expect(dnsSectionFromRegisterJson(json, "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
+    }
+    // Zero is valid money (#4226) and positive prices still build a
+    // section the gate accepts — the builder/gate invariant holds.
+    const ok = JSON.stringify({ domains: [row("free.example", 0), row("paid.example", 12.5)] });
+    const section = dnsSectionFromRegisterJson(ok, "2026-11-01T17:00:00Z", "t", mdEntries);
+    expect(section).not.toBeNull();
+    expect(section?.totalAnnualListUsd).toBe(12.5);
+    expect(isDnsSection(section)).toBe(true);
+  });
+
+  test("isDnsSection rejects impossible entry renewal dates (#4858)", () => {
+    const good = dnsSectionFromRegister(REGISTER_MD, "2026-10-25T00:00:00Z", "test");
+    expect(good).not.toBeNull();
+    expect(isDnsSection(good)).toBe(true);
+    const withRenewal = (renewal: unknown) => ({
+      ...good,
+      entries: good!.entries.map((e, i) => (i === 0 ? { ...e, renewal } : e)),
+    });
+    for (const bad of ["2027-02-30", "2026-13-01", "2026-00-10", "2026-04-31", "soon", 20270209, undefined]) {
+      expect(isDnsSection(withRenewal(bad))).toBe(false);
+    }
+    expect(isDnsSection(withRenewal("2024-02-29"))).toBe(true);
+    expect(isDnsSection(withRenewal("2027-01-15"))).toBe(true);
+  });
+
   test("isDnsSection owns the finite-number + status rules (#2412)", () => {
     const good = dnsSectionFromRegister(REGISTER_MD, "2026-10-25T00:00:00Z", "test");
     expect(good).not.toBeNull();
@@ -735,6 +807,23 @@ afterAll(() => {
 });
 
 describe("slice-3 routes", () => {
+  test("global search HTML and JSON share ref/title matching", async () => {
+    const q = encodeURIComponent("developing-today/code#902");
+    const data = (await (await fetch(`http://127.0.0.1:${port}/api/search.json?q=${q}`)).json()) as {
+      query: string;
+      total: number;
+      results: { title: string; refs: string[] }[];
+    };
+    expect(data.query).toBe("developing-today/code#902");
+    expect(data.total).toBeGreaterThan(0);
+    expect(data.results.some((result) => result.refs.includes("developing-today/code#902"))).toBe(true);
+
+    const html = await (await fetch(`http://127.0.0.1:${port}/search?q=${q}`)).text();
+    expect(html).toContain("Search board and roadmap work");
+    expect(html).toContain("developing-today/code#902");
+    expect(html).toContain("items · fixtures");
+  });
+
   test("dns + sessions + pages routes serve", async () => {
     const dns = await (await fetch(`http://127.0.0.1:${port}/dns`)).text();
     expect(dns).toContain("DNS / domain register");

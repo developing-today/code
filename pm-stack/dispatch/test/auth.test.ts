@@ -65,8 +65,7 @@ describe("timing-safe bearer compare", () => {
 
 describe("bearer auth via authenticate", () => {
   const deps = { apiToken: "test-bearer-token", oidcAudience: "pm-dispatch", allowlist: ["developing-today/code"] };
-  const req = (auth?: string) =>
-    new Request("http://x/v1/tasks", { headers: auth ? { authorization: auth } : {} });
+  const req = (auth?: string) => new Request("http://x/v1/tasks", { headers: auth ? { authorization: auth } : {} });
 
   test("accepts the configured token", async () => {
     const id = await authenticate(req("Bearer test-bearer-token"), deps);

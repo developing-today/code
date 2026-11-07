@@ -43,7 +43,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { DaemonOps, OpError } from "./ops.gen.ts";
+import { DaemonOps, OPERATION_FINGERPRINT, OpError } from "./ops.gen.ts";
 
 /**
  * Every tunable in one place.
@@ -92,8 +92,12 @@ export const TUNING = {
  */
 export const goDurationMs = (v: string | undefined): number | undefined => {
   if (!v) return undefined;
-  const unit: Record<string, number> = { ns: 1e-6, us: 1e-3, µs: 1e-3, ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
-  const re = /(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)/g;
+  const unit: Record<string, number> = { ns: 1e-6, us: 1e-3, µs: 1e-3, μs: 1e-3, ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
+  // Go's number grammar is digits[.digits*] or .digits, so ".5s" and
+  // "1.s" are whole components (#3490); Go also accepts both mu
+  // codepoints for microseconds -- U+00B5 (micro sign) and U+03BC
+  // (Greek small letter mu) -- so both are in the unit table and here.
+  const re = /((?:\d+(?:\.\d*)?|\.\d+))(ns|us|µs|μs|ms|s|m|h)/g;
   let total = 0;
   let matched = 0;
   let m: RegExpExecArray | null;
@@ -394,7 +398,12 @@ export const withDaemonAuth = (init: RequestInit): RequestInit => {
  * path for both transports and no hand-rolled HTTP.
  */
 export class DaemonClient {
-  constructor(readonly target: Target) {}
+  readonly ops: DaemonOps;
+  private operationCompatibility?: Promise<void>;
+
+  constructor(readonly target: Target) {
+    this.ops = new DaemonOps((path, init) => this.operationFetch(path, init));
+  }
 
   /**
    * Every /v1 operation as a typed method, generated from the table the
@@ -403,7 +412,31 @@ export class DaemonClient {
    * surface, so nothing the daemon serves is reachable only through a
    * hand-built URL.
    */
-  readonly ops: DaemonOps = new DaemonOps((path, init) => this.raw(path, init));
+  private async operationFetch(path: string, init: RequestInit): Promise<Response> {
+    await this.assertOperationCompatibility();
+    return this.raw(path, init);
+  }
+
+  private assertOperationCompatibility(): Promise<void> {
+    this.operationCompatibility ??= this.verifyOperationCompatibility().catch((error: unknown) => {
+      this.operationCompatibility = undefined;
+      throw error;
+    });
+    return this.operationCompatibility;
+  }
+
+  private async verifyOperationCompatibility(): Promise<void> {
+    const health = await this.health();
+    if (!health) {
+      throw new Error("mcpx: cannot verify /v1 operation compatibility because the daemon health endpoint did not answer; update or restart the mcpx daemon and plugin");
+    }
+    if (typeof health.operationFingerprint !== "string" || health.operationFingerprint.length === 0) {
+      throw new Error("mcpx: cannot verify /v1 operation compatibility because the daemon does not publish an operation fingerprint; update and restart the mcpx daemon before using generated plugin operations");
+    }
+    if (health.operationFingerprint !== OPERATION_FINGERPRINT) {
+      throw new Error(`mcpx: /v1 operation table mismatch (plugin ${OPERATION_FINGERPRINT}, daemon ${health.operationFingerprint}); update the mcpx plugin and daemon from matching versions`);
+    }
+  }
 
   private url(path: string): string {
     // Any host works over a socket; the dispatcher ignores it.
@@ -470,7 +503,7 @@ export class DaemonClient {
    */
   async health(
     timeoutMs = TUNING.healthTimeoutMs,
-  ): Promise<{ status: string; version?: string; pid?: number; uptime?: string; endpoint?: string } | undefined> {
+  ): Promise<{ status: string; version?: string; pid?: number; uptime?: string; endpoint?: string; operationFingerprint?: string } | undefined> {
     try {
       return await this.get("/v1/health", timeoutMs);
     } catch {
@@ -747,6 +780,7 @@ export class DaemonClient {
 /** What /v1/status answers, as much of it as discovery cares about. */
 export type DaemonStatus = {
   version?: string;
+  operationFingerprint?: string;
   pid?: number;
   uptime?: string;
   endpoint?: string;

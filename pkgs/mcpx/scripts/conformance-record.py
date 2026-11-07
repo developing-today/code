@@ -15,8 +15,15 @@ fewer checks ran. When it is not given, passed+failed is used.
 <skipped> is the number of checks the suite recorded as SKIPPED. A run with
 more skipped checks than the best record fails this step, whatever else it
 does: a skipped check passes nothing, and an increase usually means a fixture
-or a capability went missing. Records written before skipped_count existed
-are not compared.
+or a capability went missing. The skipped names are compared as a set as
+well as a count (#6392): a run that skips a check the best record does not
+-- at any count, even a lower one, so an equal-count swap or a swap masked
+by a pass increase fails the same way, naming the newly skipped checks. A
+run that fails this step moves neither record: the workflow saves whatever
+state this script writes even on exit 3, so a contradicting run must not
+re-baseline best, and must not leave best and largest naming different
+skipped checks. Records written before skipped_count existed are not
+compared; records that predate skipped names are compared on counts only.
 
 Two records per leg, both kept in one variable as JSON, each always one whole
 run -- a record is replaced, never patched in place:
@@ -38,8 +45,8 @@ run that reports them, rather than compared against.
 
 Writes the new variable value to <new-value-file> only when it differs from the
 stored one; the workflow decides whether to save it (main only). Exits 3 when
-more checks were skipped than the best record, so the job can fail after every
-leg is saved; otherwise 0.
+more checks were skipped than the best record, or when a check was newly
+skipped against it, so the job can fail after every leg is saved; otherwise 0.
 """
 import json
 import sys
@@ -103,7 +110,13 @@ def compare(leg, passed, failed, run, now, stored, checks=None, warnings_count=0
     largest  the most checks the suite recorded. More replaces it; the same
              number replaces its counts and keeps first_timestamp; fewer warns.
 
-    A run with more skipped checks than the best record is an error.
+    A run with more skipped checks than the best record is an error, and
+    so is a run that newly skips a check the record does not (set
+    comparison, #6392). Either error freezes both records: the run does
+    not move best or largest, so the state the workflow saves can never
+    leave the two records naming different skipped checks for a run
+    both were updated from, and a passed increase cannot silently
+    re-baseline best onto a newly skipped check.
     """
     cur = record(passed, failed, run, now, checks, warnings_count, skipped, info, names)
     state = json.loads(json.dumps(stored)) if stored else {}
@@ -117,14 +130,29 @@ def compare(leg, passed, failed, run, now, stored, checks=None, warnings_count=0
             state[k] = cur
 
     best = state.get("best")
-    if (cur_complete and complete(best) and best is not cur
-            and cur["skipped_count"] > best["skipped_count"]):
-        newly = sorted(set(names or []) - set(best.get("skipped", [])))
-        errors.append(f"skipped checks rose from {best['skipped_count']} to {cur['skipped_count']}.\n"
-                      f"  this run: {describe(cur)}\n  record:   {describe(best)}"
-                      + (f"\n  newly skipped: {', '.join(newly)}" if newly else ""))
+    if cur_complete and complete(best) and best is not cur:
+        # The set comparison (#6392): the count guard alone lets an
+        # equal-count swap pass silently (one check stops running,
+        # another starts), and lets a swap ride a passed increase
+        # into a wholesale best replacement. Names are only compared
+        # when both sides recorded them; a record that predates
+        # skipped names is compared on counts only.
+        newly = (sorted(set(names) - set(best.get("skipped", [])))
+                 if names is not None and "skipped" in best else [])
+        if cur["skipped_count"] > best["skipped_count"]:
+            errors.append(f"skipped checks rose from {best['skipped_count']} to {cur['skipped_count']}.\n"
+                          f"  this run: {describe(cur)}\n  record:   {describe(best)}"
+                          + (f"\n  newly skipped: {', '.join(newly)}" if newly else ""))
+        elif newly:
+            errors.append(f"checks were newly skipped against the best record "
+                          f"at an unchanged skipped count of {cur['skipped_count']}: "
+                          f"{', '.join(newly)}.\n"
+                          f"  this run: {describe(cur)}\n  record:   {describe(best)}")
 
-    if best is None:
+    if errors:
+        lines.append("records unchanged: a run that newly skips checks does not "
+                     "move the best or largest record")
+    elif best is None:
         state["best"] = cur
         lines.append("best: no record yet; this run becomes it")
     elif best is not cur:
@@ -139,13 +167,30 @@ def compare(leg, passed, failed, run, now, stored, checks=None, warnings_count=0
         elif t >= bt and lhs == rhs and passed == best["passed_count"]:
             state["best"] = dict(best, latest_timestamp=now)
             lines.append("best: matched the record; latest_timestamp updated")
+            if (names is not None and "skipped" in best
+                    and set(best.get("skipped", [])) != set(names)):
+                # No newly skipped name (that errors above), so the
+                # difference is a check that runs again -- but the
+                # retained record's skipped list now contradicts this
+                # run, and largest (below) takes this run's names.
+                # Report the divergence instead of absorbing it
+                # silently (#6392): the record itself is a whole past
+                # run and is never patched in place.
+                lines.append(
+                    f"best: note -- the retained record's skipped list "
+                    f"({', '.join(sorted(best.get('skipped', []))) or 'none'}) differs from "
+                    f"this run's ({', '.join(sorted(names)) or 'none'}); the record is "
+                    f"retained unchanged, so its skipped list still describes the run "
+                    f"that set it")
         else:
             why = ("fewer checks ran than in the record" if t < bt
                    else "a larger share of checks did not pass than in the record")
             warnings.append(f"best: {why}.\n  this run: {describe(cur)}\n  record:   {describe(best)}")
 
     largest = state.get("largest")
-    if largest is None:
+    if errors:
+        pass  # frozen above: largest keeps the stored record too
+    elif largest is None:
         state["largest"] = cur
         lines.append("largest: no record yet; this run becomes it")
     elif largest is not cur:

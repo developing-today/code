@@ -88,6 +88,142 @@ describe("dashboard actions store", () => {
     expect(retry?.action.state).toBe("applied");
   });
 
+  test("answer question slots dedupe option and survey submissions with an audit pointer", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-answer-dedupe-"));
+    const store = new ActionsStore(join(dir, "actions.json"));
+    const objectRef = "orch:shared-question";
+
+    const option = await store.add(
+      newAction({ verb: "answer", objectRef, payload: { optionId: "yes", questionId: "q1" } }),
+    );
+    const otherQuestion = await store.add(
+      newAction({ verb: "answer", objectRef, payload: { answers: [{ questionId: "q2", value: "notes" }] } }),
+    );
+    expect(otherQuestion.action.state).toBe("new");
+
+    const surveyDuplicate = await store.add(
+      newAction({ verb: "answer", objectRef, payload: { answers: [{ questionId: "q1", value: "no" }] } }),
+    );
+    expect(surveyDuplicate.action.state).toBe("rejected");
+    expect(surveyDuplicate.duplicateOf).toBe(option.action.id);
+    expect(surveyDuplicate.action.duplicateOf).toBe(option.action.id);
+    expect(surveyDuplicate.action.resultNote).toContain(option.action.id);
+
+    await store.markResult(option.action.id, { outcome: "rejected", byRun: "orch-test", note: "not applied" });
+    const retryAfterReject = await store.add(
+      newAction({ verb: "answer", objectRef, payload: { answers: [{ questionId: "q1", value: "no" }] } }),
+    );
+    expect(retryAfterReject.action.state).toBe("new");
+
+    const structuredFirst = await store.add(
+      newAction({
+        verb: "answer",
+        objectRef: "orch:structured-first",
+        payload: { answers: [{ questionId: "q3", value: "yes" }] },
+      }),
+    );
+    const optionSecond = await store.add(
+      newAction({
+        verb: "answer",
+        objectRef: "orch:structured-first",
+        payload: { optionId: "yes", questionId: "q3" },
+      }),
+    );
+    expect(optionSecond.duplicateOf).toBe(structuredFirst.action.id);
+
+    const applied = await store.add(
+      newAction({
+        verb: "answer",
+        objectRef: "orch:applied",
+        payload: { answers: [{ questionId: "q4", value: "yes" }] },
+      }),
+    );
+    await store.markResult(applied.action.id, { outcome: "applied", byRun: "orch-test" });
+    const appliedDuplicate = await store.add(
+      newAction({ verb: "answer", objectRef: "orch:applied", payload: { optionId: "no", questionId: "q4" } }),
+    );
+    expect(appliedDuplicate.duplicateOf).toBe(applied.action.id);
+
+    const concurrent = await Promise.all([
+      store.add(
+        newAction({ verb: "answer", objectRef: "orch:concurrent", payload: { optionId: "yes", questionId: "q5" } }),
+      ),
+      store.add(
+        newAction({
+          verb: "answer",
+          objectRef: "orch:concurrent",
+          payload: { answers: [{ questionId: "q5", value: "yes" }] },
+        }),
+      ),
+    ]);
+    expect(concurrent.filter((result) => result.action.state === "new")).toHaveLength(1);
+    expect(concurrent.filter((result) => result.duplicateOf)).toHaveLength(1);
+  });
+
+  test("text answers dedupe only while pending: the next reply lands after the first is applied", async () => {
+    const store = new ActionsStore(join(mkdtempSync(join(tmpdir(), "agg-answer-text-")), "actions.json"));
+    const objectRef = "session:reply-turns";
+    const first = await store.add(
+      newAction({ kind: "session", verb: "answer", objectRef, payload: { text: "first" } }),
+    );
+    expect(first.action.state).toBe("new");
+    const doubleSubmit = await store.add(
+      newAction({ kind: "session", verb: "answer", objectRef, payload: { text: "first" } }),
+    );
+    expect(doubleSubmit.duplicateOf).toBe(first.action.id);
+    await store.markResult(first.action.id, { outcome: "applied", byRun: "orch-test" });
+    const nextTurn = await store.add(
+      newAction({ kind: "session", verb: "answer", objectRef, payload: { text: "second" } }),
+    );
+    expect(nextTurn.duplicateOf).toBeUndefined();
+    expect(nextTurn.action.state).toBe("new");
+  });
+
+  test("duplicate detection scans past malformed persisted answer shapes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-answer-malformed-"));
+    const file = join(dir, "actions.json");
+    const raw = (id: string, payload: unknown) => ({
+      id,
+      clientToken: `ct-${id}`,
+      kind: "triage",
+      verb: "answer",
+      objectRef: "orch:malformed-scan",
+      payload,
+      author: drew,
+      createdAt: iso(NOW),
+      state: "new",
+    });
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        actions: [
+          raw("bad-null-entry", { answers: [null] }),
+          raw("bad-answers-object", { answers: { questionId: "q1", value: "x" } }),
+          raw("bad-answers-string", { answers: "nope" }),
+          raw("good", { answers: [{ questionId: "q1", value: "good" }] }),
+        ],
+      }),
+    );
+    const store = new ActionsStore(file);
+    const fresh = await store.add(
+      newAction({
+        verb: "answer",
+        objectRef: "orch:malformed-scan",
+        payload: { answers: [{ questionId: "q9", value: "new" }] },
+      }),
+    );
+    expect(fresh.action.state).toBe("new");
+    const dup = await store.add(
+      newAction({
+        verb: "answer",
+        objectRef: "orch:malformed-scan",
+        payload: { answers: [{ questionId: "q1", value: "again" }] },
+      }),
+    );
+    expect(dup.duplicateOf).toBe("good");
+  });
+
   test("supersede transitions a still-new action; applied history stands", async () => {
     const store = new ActionsStore(file);
     const snooze = await store.add(
@@ -111,6 +247,23 @@ describe("dashboard actions store", () => {
         "snooze",
       )?.id,
     ).toBe(unsnooze.action.id);
+  });
+
+  test("cardState exposes option answers under their canonical question id", () => {
+    const action: DashAction = {
+      id: "da-option-q1",
+      clientToken: "ct-option-q1-abcdefgh",
+      kind: "triage",
+      verb: "answer",
+      objectRef: "orch:item-q1",
+      payload: { optionId: "yes", questionId: "q1" },
+      author: drew,
+      createdAt: iso(NOW),
+      state: "new",
+    };
+    const state = cardState([action], NOW);
+    expect(state.answered.get("q1")).toBe("yes");
+    expect(state.answerActionsByQuestion.get("q1")).toBe(action);
   });
 
   test("drops malformed payload records on load and cardState ignores malformed answer shapes", async () => {
@@ -241,7 +394,7 @@ describe("dashboard actions validation", () => {
       verb: "answer",
       objectRef: "session:ses_1",
       sessionId: "ses_1",
-      sessionSource: "jules",
+      sessionSource: "opencode-laptop",
       author: drew,
       payload: { text: "proceed" },
     });
@@ -425,16 +578,16 @@ describe("attention action controls (#1152/#1156)", () => {
     expect(html).toContain('data-verb="snooze"'); // the unsnooze control rides the strip
   });
 
-  test("jules session card: answer enabled, poke/stop disabled keeper-mediated", async () => {
+  test("retired jules source: no keeper-mediated session cards", async () => {
     const src = fixtureSource();
     const view = buildAttention(await src.attention(), SECTION, NOW);
     const html = renderAttention(view, await src.coverage(), src.provenance(), undefined, undefined, {
       identities,
       actionsByObject: new Map(),
     });
-    // The fixture feed carries Jules sessions; their cards must show
-    // the keeper-mediated honesty, not enabled poke/stop buttons.
-    expect(html).toContain("keeper-mediated — answer only");
+    // Jules was retired (code#5098): the fixture feed carries no
+    // jules sessions and the keeper-mediated treatment is gone.
+    expect(html).not.toContain("keeper-mediated");
   });
 });
 
@@ -475,7 +628,7 @@ describe("status-request + session renders (#1154/#1156)", () => {
     expect(html).toContain("A request, not a write");
   });
 
-  test("live jules registry row: answer only; a stale row gets no controls", () => {
+  test("retired jules registry row: renders as history, without controls", () => {
     const live: SessionRecord = {
       id: "jules-live-1",
       source: "jules",
@@ -492,8 +645,12 @@ describe("status-request + session renders (#1154/#1156)", () => {
       identities,
       actionsByObject: new Map(),
     });
-    expect(html).toContain('data-session-id="jules-live-1"');
-    expect(html).toContain("keeper-mediated — answer only");
+    expect(html).toContain("jules-live-1");
+    expect(html).not.toContain("keeper-mediated");
+    // No action box for either row (data-session-id rides the box):
+    // the retired source has no verb support, and a stale row never
+    // gets controls.
+    expect(html).not.toContain('data-session-id="jules-live-1"');
     expect(html).not.toContain('data-session-id="jules-old-1"');
   });
 });
@@ -611,6 +768,40 @@ describe("actions HTTP round-trip (fixture consumer)", () => {
       ).status,
     ).toBe(400);
     expect((await post("/api/actions", { ...body, clientToken: "ct-http-bad-2", author: undefined })).status).toBe(400);
+  });
+
+  test("duplicate answer response includes the persisted audit pointer", async () => {
+    const body = {
+      clientToken: "ct-session-answer-1",
+      kind: "session",
+      verb: "answer",
+      objectRef: "session:duplicate-answer",
+      sessionId: "duplicate-answer",
+      sessionSource: "opencode-laptop",
+      author: drew,
+      payload: { text: "continue" },
+    };
+    const first = await post("/api/actions", body);
+    expect(first.status).toBe(201);
+    const { action: original } = (await first.json()) as { action: DashAction };
+
+    const duplicate = await post("/api/actions", { ...body, clientToken: "ct-session-answer-2" });
+    expect(duplicate.status).toBe(409);
+    const recorded = (await duplicate.json()) as { action: DashAction; duplicateOf: string };
+    expect(recorded.action.state).toBe("rejected");
+    expect(recorded.action.duplicateOf).toBe(original.id);
+    expect(recorded.duplicateOf).toBe(original.id);
+    // Replaying the persisted duplicate attempt (same client token) keeps
+    // the 409 semantics instead of reading as a fresh success.
+    const replay = await post("/api/actions", { ...body, clientToken: "ct-session-answer-2" });
+    expect(replay.status).toBe(409);
+    await post("/api/actions/result", { id: original.id, outcome: "applied", byRun: "jules-fixture" });
+    // Once the first reply is applied, the session's next reply is a new
+    // turn, not a duplicate (Codex P1 on PR #4024).
+    const nextTurn = await post("/api/actions", { ...body, clientToken: "ct-session-answer-3" });
+    expect(nextTurn.status).toBe(201);
+    const { action: nextAction } = (await nextTurn.json()) as { action: DashAction };
+    await post("/api/actions/result", { id: nextAction.id, outcome: "applied", byRun: "jules-fixture" });
   });
 
   test("/attention serves the action forms; /api/actions.json is inspectable", async () => {

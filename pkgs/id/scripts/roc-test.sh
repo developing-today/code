@@ -17,4 +17,6 @@ for module in RocJson Screen Key; do
   echo "=== roc test examples/roc-world/${module}.roc ==="
   roc test "examples/roc-world/${module}.roc"
 done
-echo "✓ Roc library expectations passed (RocJson, Screen, Key)"
+echo "=== roc-cap-demo: capability-dependent library + app, both negative tests (#5957) ==="
+bash examples/roc-cap-demo/roc-cap-demo-test.sh
+echo "✓ Roc library expectations passed (RocJson, Screen, Key; roc-cap-demo positive + negative tests)"

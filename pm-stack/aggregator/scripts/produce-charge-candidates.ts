@@ -44,6 +44,14 @@
 // label (card brand + mask). No balances, no debt, no account
 // numbers, no account-owner names ever enter the file.
 //
+// Admission (#3161, the charges contract's first rule): a
+// candidate exists only where money demonstrably moved.
+// Declined/failed alerts and amounts merely due are excluded by
+// isNotChargeSubject below, and a candidate's amount is the
+// amount PAID: explicit paid/charged labels outrank a bare total,
+// and a bare total counts only as a standalone label, never as a
+// substring of "Subtotal".
+//
 // Usage: bun run scripts/produce-charge-candidates.ts
 //   [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--out <path>] [--skip-gmail]
 // Defaults: start = first of the current month, end = today,
