@@ -847,7 +847,9 @@ impl WorldClient {
     ///
     /// # Errors
     ///
-    /// Fails with the host's message if the admin token or names are refused.
+    /// Fails with the host's message if the admin token or names are refused,
+    /// or with "host sent a malformed capability report" if the reply's
+    /// `report` is missing or does not parse as a `CapsReport`.
     pub async fn set_caps_ceiling(
         &mut self,
         admin_token: &str,
@@ -863,6 +865,18 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_caps_ceiling_reply(&reply)
+    }
+
+    /// Validate a `caps_ceiling` reply frame: the host's typed contract
+    /// (`ServerFrame::CapsCeiling`) always carries a [`crate::world_caps::CapsReport`],
+    /// so a reply whose `report` is missing or malformed is not a success —
+    /// it is a host that did not confirm the ceiling change (#6636).
+    /// Returns the frame with its `report` replaced by the validated
+    /// report, re-serialized. Factored out of
+    /// [`WorldClient::set_caps_ceiling`] so the validation can be
+    /// unit-tested without a live host sending frames no real host sends.
+    fn parse_caps_ceiling_reply(reply: &serde_json::Value) -> Result<serde_json::Value> {
         if reply["type"] != "caps_ceiling" {
             bail!(
                 "{}",
@@ -871,7 +885,13 @@ impl WorldClient {
                     .unwrap_or("host refused the capability ceiling change")
             );
         }
-        Ok(reply)
+        let report: crate::world_caps::CapsReport =
+            serde_json::from_value(reply["report"].clone())
+                .context("host sent a malformed capability report")?;
+        let mut validated = reply.clone();
+        validated["report"] =
+            serde_json::to_value(report).context("re-encode the capability report")?;
+        Ok(validated)
     }
 
     /// Persist the world's requested resource profile. The response includes
@@ -2580,6 +2600,57 @@ mod tests {
 
         client_ep.close().await;
         host.router.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn set_caps_ceiling_reply_requires_a_valid_report() {
+        // Issue #6636: a `caps_ceiling` frame carrying no valid CapsReport
+        // must not read as a successful ceiling change. Driven through the
+        // factored reply parser. Oracle: the host's typed
+        // `ServerFrame::CapsCeiling` always carries a real report, and the
+        // sibling `set_schedule` validates its reply payload the same way.
+        let valid_report = serde_json::json!({
+            "granted": ["time.now"],
+            "requested": ["time.now"],
+            "missing": [],
+            "usage": {},
+            "policy": "deny",
+            "catalog": ["time.now"],
+            "ceiling": ["time.now"],
+        });
+        let ok = WorldClient::parse_caps_ceiling_reply(&serde_json::json!({
+            "type": "caps_ceiling",
+            "report": valid_report,
+            "message": "the ceiling applies immediately",
+        }))
+        .unwrap();
+        assert_eq!(ok["type"], "caps_ceiling");
+        assert_eq!(ok["report"]["ceiling"], serde_json::json!(["time.now"]));
+        assert_eq!(ok["report"]["granted"], serde_json::json!(["time.now"]));
+
+        // Missing, null, non-object, and wrong-shaped reports all refuse
+        // with the malformed-report context.
+        for bad_reply in [
+            serde_json::json!({"type": "caps_ceiling", "message": "the ceiling applies immediately"}),
+            serde_json::json!({"type": "caps_ceiling", "report": null, "message": "ok"}),
+            serde_json::json!({"type": "caps_ceiling", "report": 123, "message": "ok"}),
+            serde_json::json!({"type": "caps_ceiling", "report": {"granted": "time.now"}, "message": "ok"}),
+        ] {
+            let result = WorldClient::parse_caps_ceiling_reply(&bad_reply);
+            assert!(result.is_err(), "reply {bad_reply} must be refused");
+            let err = result.err().unwrap();
+            assert!(
+                err.to_string().contains("malformed capability report"),
+                "unexpected error: {err}"
+            );
+        }
+
+        // A non-caps_ceiling frame still bails with the host's message.
+        let refused = WorldClient::parse_caps_ceiling_reply(&serde_json::json!({
+            "type": "error",
+            "message": "admin token refused",
+        }));
+        assert!(refused.err().unwrap().to_string().contains("admin token refused"));
     }
 
     #[tokio::test]
