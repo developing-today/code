@@ -6,6 +6,7 @@ import {
   upsertItem as storeUpsertItem,
   upsertComment as storeUpsertComment,
   markCommentDeleted as storeMarkCommentDeleted,
+  deleteItem as storeDeleteItem,
   recordPush as storeRecordPush,
   getItems,
 } from "../src/store";
@@ -19,6 +20,7 @@ function fakeStore() {
   const comments = new Map<string, Omit<CommentRow, "fetched_at">>();
   const pushes: any[] = [];
   const deleted: string[] = [];
+  const deletedItems: string[] = [];
   const store: ProjectorStore = {
     async upsertItem(i) {
       const prev = items.get(i.ref);
@@ -34,11 +36,18 @@ function fakeStore() {
       deleted.push(c.id);
       comments.set(c.id, { ...c, deleted: 1 });
     },
+    async deleteItem(ref) {
+      deletedItems.push(ref);
+      items.delete(ref);
+      for (const [id, c] of comments) {
+        if (c.ref === ref) comments.delete(id);
+      }
+    },
     async recordPush(p) {
       pushes.push(p);
     },
   };
-  return { store, items, comments, pushes, deleted };
+  return { store, items, comments, pushes, deleted, deletedItems };
 }
 
 describe("projector: repo allow-list", () => {
@@ -73,6 +82,32 @@ describe("projector: issues", () => {
     expect(r.refs).toEqual(["developing-today/code#100"]);
     expect(items.get("developing-today/code#100")?.kind).toBe("issue");
     expect(JSON.parse(items.get("developing-today/code#100")!.labels)).toEqual(["bug", "status:backlog"]);
+  });
+
+  test("deleted issue is removed, not re-upserted (#4210)", async () => {
+    const { store, items, deletedItems } = fakeStore();
+    const issue = {
+      number: 102,
+      title: "Spam",
+      state: "open",
+      html_url: "https://github.com/developing-today/code/issues/102",
+      url: "https://api.github.com/repos/developing-today/code/issues/102",
+      user: { login: "dezren39" },
+      created_at: "2026-10-25T00:00:00Z",
+      updated_at: "2026-10-25T00:00:00Z",
+    };
+    const repo = { full_name: "developing-today/code" };
+    await applyEvent(store, "issues", { action: "opened", repository: repo, issue });
+    expect(items.has("developing-today/code#102")).toBe(true);
+    const r = await applyEvent(store, "issues", {
+      action: "deleted",
+      repository: repo,
+      issue: { ...issue, updated_at: "2026-10-25T01:00:00Z" },
+    });
+    expect(r.wrote).toBe(true);
+    expect(r.refs).toEqual(["developing-today/code#102"]);
+    expect(deletedItems).toEqual(["developing-today/code#102"]);
+    expect(items.has("developing-today/code#102")).toBe(false);
   });
 
   test("issue with pull_request field is classified as a PR", async () => {
@@ -391,6 +426,7 @@ describe("projector: issue-shaped payloads never reset merge fields (#4158)", ()
         upsertItem: (i) => storeUpsertItem(db, i),
         upsertComment: (c) => storeUpsertComment(db, c),
         markCommentDeleted: (c) => storeMarkCommentDeleted(db, c),
+        deleteItem: (ref) => storeDeleteItem(db, ref),
         recordPush: (p) => storeRecordPush(db, p),
       };
       await applyEvent(store, "pull_request", mergedPrEvent);

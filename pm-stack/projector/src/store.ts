@@ -362,6 +362,19 @@ export async function deleteLink(db: Client, subject: string, ref: string, relat
   });
 }
 
+/**
+ * Remove an item and everything keyed off it, for a GitHub `issues`
+ * `deleted` event (#4210). Links (subject = the item ref) and comments
+ * (ref = the item ref) are projection data with no consumer independent
+ * of the item -- every read joins through it -- so they go with the
+ * item row instead of becoming orphans (triage decision on #4210).
+ */
+export async function deleteItem(db: Client, ref: string): Promise<void> {
+  await db.execute({ sql: `DELETE FROM pmp_items WHERE ref = ?`, args: [ref] });
+  await db.execute({ sql: `DELETE FROM pmp_comments WHERE ref = ?`, args: [ref] });
+  await db.execute({ sql: `DELETE FROM pmp_links WHERE subject = ?`, args: [ref] });
+}
+
 export async function getLinks(db: Client, opts: { subject?: string; ref?: string } = {}): Promise<LinkRow[]> {
   const clauses: string[] = [];
   const args: string[] = [];

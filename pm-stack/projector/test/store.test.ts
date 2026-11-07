@@ -8,6 +8,7 @@ import {
   upsertItem,
   upsertComment,
   markCommentDeleted,
+  deleteItem,
   upsertLink,
   getItems,
   getComments,
@@ -117,6 +118,21 @@ describe("store: items", () => {
     );
     const rows = await getItems(db, ["developing-today/code#1"]);
     expect(rows[0].title).toBe("Equal ts again");
+  });
+});
+
+describe("store: deleteItem (#4210)", () => {
+  test("removes the item row, its comments, and its subject links", async () => {
+    const ref = "developing-today/code#4210";
+    await upsertItem(db, item({ ref, number: 4210 }));
+    await upsertComment(db, comment({ id: "c-4210", ref }));
+    await upsertLink(db, { subject: ref, ref: "developing-today/code#1", relation: "tracks" });
+    await deleteItem(db, ref);
+    expect(await getItems(db, [ref])).toHaveLength(0);
+    expect(await getComments(db, [ref], { includeDeleted: true })).toHaveLength(0);
+    expect(await getLinks(db, { subject: ref })).toHaveLength(0);
+    // The linked-to item itself is untouched: only the subject side goes.
+    expect(await getItems(db, ["developing-today/code#1"])).toHaveLength(1);
   });
 });
 
