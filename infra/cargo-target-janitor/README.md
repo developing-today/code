@@ -12,6 +12,10 @@ ad-hoc targets are considered.
   its newest file/directory mtime is at least **48 hours** old. If eligible
   targets cannot bring the fleet total under the cap, the janitor reports the
   overage and leaves younger, non-terminal targets alone.
+- Liveness reads are single-page and fail closed: if the claimed-task
+  read or the open-PR read returns a full page (1,000 / 500 rows), the
+  run aborts with a safety error instead of planning deletions from a
+  possibly truncated set.
 - Never remove a target for a currently claimed `repo-health-code-pilot`
   task, a worktree whose branch has an open PR, an unmapped worktree/ad-hoc
   target, or a worktree/target containing a current-user Cargo, rustc,

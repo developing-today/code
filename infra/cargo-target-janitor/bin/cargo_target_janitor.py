@@ -20,6 +20,13 @@ from pathlib import Path
 GIB = 1024**3
 QUEUE = "repo-health-code-pilot"
 REPO = "developing-today/code"
+# Liveness reads are single-page by design and fail closed (SafetyError)
+# when a page comes back exactly full: a full page is indistinguishable
+# from a truncated one, and deletion must never proceed on a set that is
+# known to be possibly incomplete (issue #6618).
+CLAIMS_PAGE_LIMIT = 1000
+TASK_STATES_PAGE_LIMIT = 1000
+PR_PAGE_LIMIT = 500
 TASK_ID_RE = re.compile(r"(?:queue/|task-|target-)(\d+)(?:-|$)")
 # Ad-hoc targets are exactly "target-<task-id>" (README). Anything else
 # starting with "target-" (e.g. a registered worktree named
@@ -188,9 +195,14 @@ def queue_claims(client) -> set[int]:
     module, key = client
     query = (
         "tasks?select=id,queue,status,payload&"
-        f"queue=eq.{QUEUE}&status=eq.claimed&limit=1000"
+        f"queue=eq.{QUEUE}&status=eq.claimed&limit={CLAIMS_PAGE_LIMIT}"
     )
     rows = module.http("GET", query, key) or []
+    if len(rows) >= CLAIMS_PAGE_LIMIT:
+        raise SafetyError(
+            f"claimed-task read returned a full page ({CLAIMS_PAGE_LIMIT}); "
+            "the claimed set may be truncated, refusing to plan deletions"
+        )
     return {
         int(row["id"])
         for row in rows
@@ -203,12 +215,17 @@ def queue_claims(client) -> set[int]:
 def queue_task_states(client, task_ids: set[int]) -> dict[int, str]:
     if not task_ids:
         return {}
+    if len(task_ids) > TASK_STATES_PAGE_LIMIT:
+        raise SafetyError(
+            f"task-state read needs {len(task_ids)} ids, over the "
+            f"{TASK_STATES_PAGE_LIMIT}-row page; refusing a truncated read"
+        )
     module, key = client
     ids = ",".join(str(task_id) for task_id in sorted(task_ids))
     rows = (
         module.http(
             "GET",
-            f"tasks?select=id,status&queue=eq.{QUEUE}&id=in.%28{ids}%29&limit=1000",
+            f"tasks?select=id,status&queue=eq.{QUEUE}&id=in.%28{ids}%29&limit={TASK_STATES_PAGE_LIMIT}",
             key,
         )
         or []
@@ -227,7 +244,7 @@ def open_pr_branches(repo: str = REPO) -> set[str]:
             "--state",
             "open",
             "--limit",
-            "500",
+            str(PR_PAGE_LIMIT),
             "--json",
             "headRefName",
         ],
@@ -237,9 +254,15 @@ def open_pr_branches(repo: str = REPO) -> set[str]:
     )
     try:
         rows = json.loads(proc.stdout)
-        return {str(row["headRefName"]) for row in rows}
+        branches = {str(row["headRefName"]) for row in rows}
     except (ValueError, KeyError, TypeError) as exc:
         raise SafetyError(f"invalid gh PR response: {exc}") from exc
+    if len(rows) >= PR_PAGE_LIMIT:
+        raise SafetyError(
+            f"open-PR read returned a full page ({PR_PAGE_LIMIT}); the "
+            "branch set may be truncated, refusing to plan deletions"
+        )
+    return branches
 
 
 def discover_targets(

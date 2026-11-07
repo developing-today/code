@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 import importlib.util
+import json
+import types
+from unittest import mock
 import sys
 import tempfile
 import time
@@ -210,3 +213,61 @@ class JanitorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeQueueModule:
+    """Stand-in for the queue helper module: serves scripted rows."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def http(self, method, query, key):
+        return self.rows
+
+
+def claimed_row(task_id):
+    return {
+        "id": task_id,
+        "status": "claimed",
+        "queue": janitor.QUEUE,
+        "payload": {"repo": janitor.REPO},
+    }
+
+
+class LivenessPageTests(unittest.TestCase):
+    def test_queue_claims_full_page_fails_closed(self):
+        rows = [claimed_row(i) for i in range(janitor.CLAIMS_PAGE_LIMIT)]
+        with self.assertRaises(janitor.SafetyError):
+            janitor.queue_claims((FakeQueueModule(rows), "key"))
+
+    def test_queue_claims_below_cap_returns_ids(self):
+        limit = janitor.CLAIMS_PAGE_LIMIT
+        rows = [claimed_row(i) for i in range(limit - 1)]
+        self.assertEqual(
+            janitor.queue_claims((FakeQueueModule(rows), "key")),
+            set(range(limit - 1)),
+        )
+
+    def test_open_pr_branches_full_page_fails_closed(self):
+        rows = [{"headRefName": f"b{i}"} for i in range(janitor.PR_PAGE_LIMIT)]
+        proc = types.SimpleNamespace(stdout=json.dumps(rows))
+        with mock.patch.object(janitor.subprocess, "run", return_value=proc):
+            with self.assertRaises(janitor.SafetyError):
+                janitor.open_pr_branches()
+
+    def test_open_pr_branches_below_cap_returns_branches(self):
+        rows = [{"headRefName": "a"}, {"headRefName": "b"}]
+        proc = types.SimpleNamespace(stdout=json.dumps(rows))
+        with mock.patch.object(janitor.subprocess, "run", return_value=proc):
+            self.assertEqual(janitor.open_pr_branches(), {"a", "b"})
+
+    def test_queue_task_states_oversized_id_set_fails_closed(self):
+        ids = set(range(janitor.TASK_STATES_PAGE_LIMIT + 1))
+        with self.assertRaises(janitor.SafetyError):
+            janitor.queue_task_states((FakeQueueModule([]), "key"), ids)
+
+    def test_queue_task_states_at_cap_reads_all(self):
+        ids = set(range(janitor.TASK_STATES_PAGE_LIMIT))
+        rows = [{"id": i, "status": "done"} for i in sorted(ids)]
+        states = janitor.queue_task_states((FakeQueueModule(rows), "key"), ids)
+        self.assertEqual(len(states), janitor.TASK_STATES_PAGE_LIMIT)
