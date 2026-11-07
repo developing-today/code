@@ -19,8 +19,12 @@ Usage: python3 -I scripts/program_tending.py --run [--repo owner/name ...]
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
+import hashlib
 import json
+import os
+import re
 import sys
 import urllib.request
 
@@ -39,6 +43,10 @@ HARD_STOPS = ("held", "user/owned", "do-not-merge", "do-not-auto-edit")
 # The fleet monitor tends issues and queue state; this job reports the
 # planning layer and never changes monitor or stewardship-cycle behavior.
 OUT_OF_SCOPE = ("fleet monitor behavior", "stewardship-cycle behavior")
+
+MAX_ACTIONS = 12
+QUIET_DAYS = 7
+ROADMAP_LABEL = "meta/roadmap-drift"
 
 
 def _utcnow() -> str:
