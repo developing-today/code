@@ -824,7 +824,10 @@ fn handle_request(
 pub fn run() -> i32 {
     let bind =
         std::env::var("QUEUE_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4801".to_string());
-    let home = std::env::var("HOME").expect("HOME unset");
+    let home = crate::home::from_env().unwrap_or_else(|error| {
+        eprintln!("queue-broker: {error}");
+        std::process::exit(2);
+    });
     let token_file = std::env::var("QUEUE_BROKER_TOKEN_FILE")
         .unwrap_or_else(|_| format!("{home}/.config/queue-broker/token"));
     let token = crate::token_file::load_token_file(&token_file).unwrap_or_else(|e| {

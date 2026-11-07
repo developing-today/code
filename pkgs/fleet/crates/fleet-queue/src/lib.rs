@@ -22,6 +22,7 @@
 
 pub mod backoff;
 pub mod bin_args;
+mod home;
 pub mod log;
 pub mod token_file;
 
