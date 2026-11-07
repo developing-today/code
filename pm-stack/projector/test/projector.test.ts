@@ -40,7 +40,7 @@ function fakeStore() {
       deletedItems.push(ref);
       items.delete(ref);
       for (const [id, c] of comments) {
-        if (c.ref === ref) comments.delete(id);
+        if (c.ref === ref && c.deleted === 0) comments.delete(id);
       }
     },
     async recordPush(p) {

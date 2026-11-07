@@ -122,15 +122,20 @@ describe("store: items", () => {
 });
 
 describe("store: deleteItem (#4210)", () => {
-  test("removes the item row, its comments, and its subject links", async () => {
+  test("removes the item row, its live comments, and its subject links; tombstones survive", async () => {
     const ref = "developing-today/code#4210";
     await upsertItem(db, item({ ref, number: 4210 }));
     await upsertComment(db, comment({ id: "c-4210", ref }));
-    await upsertLink(db, { subject: ref, ref: "developing-today/code#1", relation: "tracks" });
+    await markCommentDeleted(db, comment({ id: "c-4210-gone", ref }));
+    await upsertLink(db, { subject: `gh:${ref}`, ref: "developing-today/code#1", relation: "tracks" });
     await deleteItem(db, ref);
     expect(await getItems(db, [ref])).toHaveLength(0);
-    expect(await getComments(db, [ref], { includeDeleted: true })).toHaveLength(0);
-    expect(await getLinks(db, { subject: ref })).toHaveLength(0);
+    // The live comment is gone; the tombstone is retained so a stale
+    // replay of it stays absorbed (Codex review on PR #6775).
+    const remaining = await getComments(db, [ref], { includeDeleted: true });
+    expect(remaining.map((c) => c.id)).toEqual(["c-4210-gone"]);
+    expect(remaining[0].deleted).toBe(1);
+    expect(await getLinks(db, { subject: `gh:${ref}` })).toHaveLength(0);
     // The linked-to item itself is untouched: only the subject side goes.
     expect(await getItems(db, ["developing-today/code#1"])).toHaveLength(1);
   });
