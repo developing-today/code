@@ -515,6 +515,78 @@ describe("projector: item deletion marker (#6782)", () => {
     expect(comments.has("9001")).toBe(false);
   });
 
+  test("a comment deletion after the parent deletion still records its tombstone", async () => {
+    const { store, items, comments, deleted } = fakeStore();
+    await applyEvent(store, "issues", { action: "opened", repository: repo, issue: issueAt("2026-10-25T00:00:00Z") });
+    await applyEvent(store, "issues", { action: "deleted", repository: repo, issue: issueAt("2026-10-25T02:00:00Z") });
+    expect(items.has(ref)).toBe(false);
+    // A delayed issue_comment *deletion* arrives after the parent item
+    // was deleted. The parent must stay absent and no live comment may
+    // be written, but the comment tombstone is still recorded — it is
+    // what blocks reconcile's direct upsertComment replay (Codex P2
+    // on PR #6792).
+    const r = await applyEvent(store, "issue_comment", {
+      action: "deleted",
+      repository: repo,
+      issue: issueAt("2026-10-25T01:00:00Z"),
+      comment: { id: 9002, body: "since removed", created_at: "2026-10-25T01:00:00Z", updated_at: "2026-10-25T01:30:00Z" },
+    });
+    expect(items.has(ref)).toBe(false);
+    expect(deleted).toContain("9002");
+    expect(comments.get("9002")?.deleted).toBe(1);
+    expect(r.wrote).toBe(true);
+  });
+
+  test("a review-comment deletion after the parent deletion still records its tombstone", async () => {
+    const { store, items, comments, deleted } = fakeStore();
+    const pr = {
+      number: 6782,
+      title: "Doomed PR",
+      state: "open",
+      html_url: "https://github.com/developing-today/code/pull/6782",
+      url: "https://api.github.com/repos/developing-today/code/pulls/6782",
+      user: { login: "dezren39" },
+      created_at: "2026-10-25T00:00:00Z",
+      updated_at: "2026-10-25T00:00:00Z",
+    };
+    const reviewComment = {
+      id: 9003,
+      body: "since removed",
+      user: { login: "reviewer" },
+      path: "src/foo.ts",
+      line: 42,
+      diff_hunk: "@@ -1 +1 @@",
+      created_at: "2026-10-25T01:00:00Z",
+      updated_at: "2026-10-25T01:30:00Z",
+      html_url: "https://github.com/developing-today/code/pull/6782#discussion_r9003",
+    };
+    await applyEvent(store, "pull_request_review_comment", {
+      action: "created",
+      repository: repo,
+      pull_request: pr,
+      comment: reviewComment,
+    });
+    expect(items.has(ref)).toBe(true);
+    // The parent is deleted via its issues-shaped event (GitHub fires
+    // issues events for PRs too).
+    await applyEvent(store, "issues", {
+      action: "deleted",
+      repository: repo,
+      issue: { ...pr, updated_at: "2026-10-25T02:00:00Z" },
+    });
+    expect(items.has(ref)).toBe(false);
+    const r = await applyEvent(store, "pull_request_review_comment", {
+      action: "deleted",
+      repository: repo,
+      pull_request: { ...pr, updated_at: "2026-10-25T01:00:00Z" },
+      comment: reviewComment,
+    });
+    expect(items.has(ref)).toBe(false);
+    expect(deleted).toContain("9003");
+    expect(comments.get("9003")?.deleted).toBe(1);
+    expect(r.wrote).toBe(true);
+  });
+
   test("an event newer than the deletion clears the marker and recreates the item", async () => {
     const { store, items, deletions } = fakeStore();
     await applyEvent(store, "issues", { action: "opened", repository: repo, issue: issueAt("2026-10-25T00:00:00Z") });

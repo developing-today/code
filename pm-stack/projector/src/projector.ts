@@ -227,7 +227,20 @@ export async function applyEvent(
     const issue = payload.issue ?? payload.pull_request;
     if (!issue) return;
     const itemRow = fromIssueOrPr(repo, issue, issueIsPr(issue) ? "pr" : "issue");
-    if (await deletionBlocks(itemRow.ref, itemRow.source_updated_at)) return;
+    if (await deletionBlocks(itemRow.ref, itemRow.source_updated_at)) {
+      // The parent item stays absent, but a comment *deletion* still
+      // records its tombstone (Codex P2 on PR #6792): reconcile writes
+      // comments through a direct upsertComment that consults comment
+      // tombstones, not item markers — skipping the tombstone here
+      // would let an in-flight reconcile resurrect the deleted comment.
+      if (event === "issue_comment" && payload.action === "deleted") {
+        await store.markCommentDeleted(
+          commentCommon(comment, repo, itemRef(repo, issue.number), "issue_comment"),
+        );
+        wrote = true;
+      }
+      return;
+    }
     await store.upsertItem(itemRow);
     addRef(itemRef(repo, issue.number));
     const row = commentCommon(comment, repo, itemRef(repo, issue.number), "issue_comment");
@@ -314,14 +327,23 @@ export async function applyEvent(
       const pr = payload.pull_request;
       if (comment && pr) {
         const itemRow = fromIssueOrPr(repo, pr, "pr");
-        if (await deletionBlocks(itemRow.ref, itemRow.source_updated_at)) break;
-        await store.upsertItem(itemRow);
-        addRef(itemRef(repo, pr.number));
         const ref = itemRef(repo, pr.number);
         const base = commentCommon(comment, repo, ref, "review_comment");
         base.path = iso(comment.path);
         base.line = typeof comment.line === "number" ? comment.line : null;
         base.diff_hunk = iso(comment.diff_hunk);
+        if (await deletionBlocks(itemRow.ref, itemRow.source_updated_at)) {
+          // Same tombstone preservation as applyComment (Codex P2 on
+          // PR #6792): suppress the parent-item and live-comment
+          // writes, but a review-comment deletion keeps its tombstone.
+          if (payload.action === "deleted") {
+            await store.markCommentDeleted(base);
+            wrote = true;
+          }
+          break;
+        }
+        await store.upsertItem(itemRow);
+        addRef(itemRef(repo, pr.number));
         if (payload.action === "deleted") {
           await store.markCommentDeleted(base);
         } else {
