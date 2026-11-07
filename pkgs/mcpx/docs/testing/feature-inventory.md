@@ -190,6 +190,21 @@ Local `bun test plugin/opencode/mcpx/`: 24 pass, 5 skip, 21 fail — **all 21 fa
 
 **The hole: no feature has a recorded behavioural-exercise mapping.** The `exercised-by` column this inventory needs can only be filled by the runtime ledger (Approach C, issue criterion 2): e2e harness logs the resolved command/op per test, `TestMain` writes `{test, kind, name}` JSON lines, a guard compares against these three registries plus a checked-in exemption file. Until that guard lands, *every* group above is trivially "a feature with no proven integration test" — per-group gap issues would just restate this section, so they wait on the guard.
 
+## Guard status
+
+The guard is implemented in `internal/e2e/feature_coverage_test.go` (#2691,
+PR #3705): the full suite writes the ledger, and the `Feature coverage
+guard` CI step runs a second, cheap invocation that fails when an
+inventory feature has neither a ledger row nor a reasoned exemption. The
+baseline for features the suite does not reach yet is
+`internal/e2e/testdata/feature-coverage-exemptions.json` (one reason per
+entry); setting exemptions reuse the ratcheted `settings.EffectExemptions`
+rather than a second copy. The plugin op surface is checked in the same
+guard (`TestFeatureCoveragePluginOpsAreCurrent`). Per-feature-group gap
+issues are filed from the first guard run, per #1978 acceptance
+criterion 3.
+
+
 ## Guard design pin (Approach C — for the follow-up implementation issue)
 
 - **Enumerate from:** `api.Ops()`, `cli.Commands()` (+ `App.Handlers()` keys for aliases), `settings.Registry()`, and the plugin op surface (`ops.gen.ts`, generated — assert freshness in the same guard).

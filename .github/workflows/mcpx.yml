@@ -474,6 +474,37 @@ jobs:
         with:
           node-version: 24
 
+      # The feature-coverage guard (#2691) on PRs that can change the
+      # inventory: a registry, the generated plugin surface, the guard, its
+      # baseline, or the inventory doc. It runs before the stress leg (the
+      # expensive one, and not a required check) so its verdict is visible
+      # even when repetition is still running. The push-only `basic: test`
+      # job runs the same guard after its full suite.
+      - name: Feature coverage guard (feature-surface PRs)
+        working-directory: pkgs/mcpx
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MCPX_FEATURE_COVERAGE_LEDGER: ${{ runner.temp }}/mcpx-feature-coverage-pr.jsonl
+        run: |
+          set -euo pipefail
+          changed=$(git -C "$GITHUB_WORKSPACE" diff --name-only "$BASE_SHA...$HEAD_SHA" -- \
+            pkgs/mcpx/internal/api \
+            pkgs/mcpx/internal/cli \
+            pkgs/mcpx/internal/settings \
+            pkgs/mcpx/internal/e2e/feature_coverage_test.go \
+            pkgs/mcpx/internal/e2e/testdata \
+            pkgs/mcpx/plugin/opencode/mcpx/ops.gen.ts \
+            pkgs/mcpx/docs/testing/feature-inventory.md || true)
+          if [ -z "$changed" ]; then
+            echo "no feature-surface files changed; the guard is not needed on this PR"
+            exit 0
+          fi
+          echo "feature surfaces changed:"
+          printf '%s\n' "$changed"
+          go test ./internal/e2e -count=1 -timeout 25m
+          MCPX_FEATURE_COVERAGE_GUARD=1 go test ./internal/e2e -run '^TestFeatureCoverageGuard$' -count=1
+
       - name: Stress the packages this PR changed
         working-directory: pkgs/mcpx
         env:
