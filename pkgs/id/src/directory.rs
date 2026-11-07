@@ -3071,4 +3071,57 @@ mod tests {
         };
         assert!(envelope.verify().is_err());
     }
+    #[test]
+    fn probe_cross_pair_removal_voids_another_pairs_request() {
+        // Setup mirrors friends_across_servers + the late-delivery test:
+        // Ann<->Bo become friends across home/away; Cy (on home) sends Di
+        // (on away) a friend request that away has NOT seen yet.
+        let mut home = Directory::new();
+        let mut away = Directory::new();
+        let (ann, ann_credential) = account(&mut home, "Ann");
+        let (bo, bo_credential) = account(&mut away, "Bo");
+        let (cy, cy_credential) = account(&mut home, "Cy");
+        let (di, _di_credential) = account(&mut away, "Di");
+        let (request, _) = home.request_friend(&ann_credential, &bo, "away", 1).unwrap();
+        away.receive(&request, "away", 1).unwrap();
+        let (accept, _) = away.accept_friend(&bo_credential, &ann, "home", 2).unwrap();
+        home.receive(&accept, "home", 2).unwrap();
+        assert!(away.are_friends(&ann, &bo));
+
+        // Cy -> Di request, created on home, never delivered to away.
+        let (cy_request, _) = home.request_friend(&cy_credential, &di, "away", 3).unwrap();
+        let cy_request_id = cy_request.id.clone();
+
+        // Ann legitimately removes Bo; away applies it and they are no longer friends.
+        let removal = home.remove_friend(&ann_credential, &bo).unwrap();
+        assert_eq!(away.receive_artifact(&removal).unwrap(), Stored::New);
+        assert!(!away.are_friends(&ann, &bo));
+
+        // Ann now signs a SECOND friend_remove artifact (seq 2, chained on the
+        // first) naming the same pair (ann, bo) but listing Cy->Di's request ID,
+        // which belongs to a completely different pair.
+        let cross = SignedArtifact::sign(
+            &key_of(&ann_credential),
+            2,
+            &removal.hash,
+            artifact::FRIEND_REMOVE,
+            json!({
+                "a": ann.clone(),
+                "b": bo.clone(),
+                "requests": [cy_request_id.clone()]
+            }),
+        )
+        .unwrap();
+        let stored = away.receive_artifact(&cross).unwrap();
+        println!("PROBE cross stored: {stored:?}");
+        println!("PROBE away removed_requests contains cy/di id: {}", away.removed_requests.contains(&cy_request_id));
+
+        // The genuine Cy -> Di request now arrives at away (late delivery).
+        let delivered = away.receive(&cy_request, "away", 3);
+        println!("PROBE cy->di request after cross removal: {delivered:?}");
+        assert_eq!(stored, Stored::New, "cross-pair removal was stored/applied");
+        assert!(away.removed_requests.contains(&cy_request_id), "cross-pair request id was voided");
+        assert!(delivered.is_err(), "genuine cy->di request refused after cross-pair void");
+    }
+
 }
