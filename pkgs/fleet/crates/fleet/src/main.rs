@@ -684,6 +684,27 @@ fn build_proxy_ssh_argv(
     config: &fleet_config::Config,
     ssh_args: &[String],
 ) -> Result<Vec<std::ffi::OsString>, String> {
+    build_proxy_ssh_argv_with_home(
+        executable,
+        config,
+        &fleet_config::Config::home_dir(),
+        ssh_args,
+    )
+}
+
+fn build_proxy_ssh_argv_with_home(
+    executable: &std::path::Path,
+    config: &fleet_config::Config,
+    home: &std::path::Path,
+    ssh_args: &[String],
+) -> Result<Vec<std::ffi::OsString>, String> {
+    // OpenSSH expands a literal `~` from the passwd database, not
+    // from $HOME, so the recovery paths are resolved from Fleet's
+    // $HOME-based home before the arguments are built (#6680) --
+    // the same construction fleet-search's client uses.
+    let known_hosts = home.join(".ssh/known_hosts_laptop");
+    let identity = home.join(".ssh/id_ed25519");
+    let control_path = home.join(".ssh/cm-%r@%h:%p");
     let (options, command) = split_ssh_options_and_command(ssh_args)?;
     let target_host = config.target_host();
     let proxy_command = format!(
@@ -699,11 +720,11 @@ fn build_proxy_ssh_argv(
         "-o".into(),
         "User=user".into(),
         "-o".into(),
-        "UserKnownHostsFile=~/.ssh/known_hosts_laptop".into(),
+        format!("UserKnownHostsFile={}", known_hosts.display()).into(),
         "-o".into(),
         "IdentitiesOnly=yes".into(),
         "-i".into(),
-        "~/.ssh/id_ed25519".into(),
+        identity.into(),
         "-o".into(),
         "ConnectTimeout=60".into(),
         "-o".into(),
@@ -715,7 +736,7 @@ fn build_proxy_ssh_argv(
         "-o".into(),
         "ControlMaster=auto".into(),
         "-o".into(),
-        "ControlPath=~/.ssh/cm-%r@%h:%p".into(),
+        format!("ControlPath={}", control_path.display()).into(),
         "-o".into(),
         "ControlPersist=3600".into(),
         "-o".into(),
@@ -1056,21 +1077,30 @@ mod tests {
             "echo; touch /tmp/not-interpolated",
         ]);
         let executable = std::path::Path::new("/tmp/fleet path/fleet'bin");
-        let argv = build_proxy_ssh_argv(executable, &fleet_config::Config::default(), &ssh_args)
-            .expect("valid SSH argv");
+        // A Fleet home that is not the passwd home: the recovery
+        // paths must come from Fleet's home, never a literal `~`
+        // (OpenSSH would expand that from the passwd database).
+        let home = std::path::Path::new("/fleet-home");
+        let argv = build_proxy_ssh_argv_with_home(
+            executable,
+            &fleet_config::Config::default(),
+            home,
+            &ssh_args,
+        )
+        .expect("valid SSH argv");
         let strings: Vec<&str> = argv.iter().map(|arg| arg.to_str().unwrap()).collect();
         for setting in [
             "StrictHostKeyChecking=yes",
             "HostName=100.99.113.103",
             "User=user",
-            "UserKnownHostsFile=~/.ssh/known_hosts_laptop",
+            "UserKnownHostsFile=/fleet-home/.ssh/known_hosts_laptop",
             "IdentitiesOnly=yes",
             "ConnectTimeout=60",
             "ConnectionAttempts=3",
             "ServerAliveInterval=15",
             "ServerAliveCountMax=8",
             "ControlMaster=auto",
-            "ControlPath=~/.ssh/cm-%r@%h:%p",
+            "ControlPath=/fleet-home/.ssh/cm-%r@%h:%p",
             "ControlPersist=3600",
         ] {
             assert!(
@@ -1078,7 +1108,11 @@ mod tests {
                 "missing fixed SSH option {setting}"
             );
         }
-        assert!(strings.contains(&"~/.ssh/id_ed25519"));
+        assert!(strings.contains(&"/fleet-home/.ssh/id_ed25519"));
+        assert!(
+            strings.iter().all(|arg| !arg.contains('~')),
+            "no literal ~ may reach OpenSSH: {strings:?}"
+        );
         assert!(strings.iter().any(|arg| {
             *arg == "ProxyCommand='/tmp/fleet path/fleet'\\''bin' proxy connect --stdio --host '100.99.113.103' --port %p"
         }));

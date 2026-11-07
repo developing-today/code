@@ -48,6 +48,11 @@ fn proxy_ssh_execs_system_ssh_with_fixed_argv_and_stdio() {
     permissions.set_mode(0o755);
     fs::set_permissions(&fake_ssh, permissions).expect("make fake ssh executable");
 
+    // Fleet home for the child: deliberately not the passwd home,
+    // and containing spaces. The recovery paths in the ssh argv
+    // must be built from this home (#6680) -- a literal `~` would
+    // make OpenSSH resolve them from the passwd database instead.
+    let home = dir.0.join("home with spaces");
     let old_path = std::env::var_os("PATH").unwrap_or_default();
     let path = format!("{}:{}", fake_bin.display(), old_path.to_string_lossy());
     let remote_command = format!("echo; touch {}/injected", dir.0.display());
@@ -66,7 +71,7 @@ fn proxy_ssh_execs_system_ssh_with_fixed_argv_and_stdio() {
         .env("PATH", path)
         .env("FLEET_SSH_CAPTURE", &capture)
         .env("FLEET_TARGET_HOST", "100.99.113.103")
-        .env("HOME", dir.0.join("home with spaces"))
+        .env("HOME", &home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -103,9 +108,19 @@ fn proxy_ssh_execs_system_ssh_with_fixed_argv_and_stdio() {
     assert!(argv.contains(&"HostName=100.99.113.103"));
     assert!(argv.contains(&"User=user"));
     assert!(argv.contains(&"StrictHostKeyChecking=yes"));
-    assert!(argv.contains(&"UserKnownHostsFile=~/.ssh/known_hosts_laptop"));
-    assert!(argv.contains(&"~/.ssh/id_ed25519"));
-    assert!(argv.contains(&"ControlPath=~/.ssh/cm-%r@%h:%p"));
+    let known_hosts = format!(
+        "UserKnownHostsFile={}",
+        home.join(".ssh/known_hosts_laptop").display()
+    );
+    let identity = home.join(".ssh/id_ed25519").display().to_string();
+    let control_path = format!("ControlPath={}", home.join(".ssh/cm-%r@%h:%p").display());
+    assert!(argv.contains(&known_hosts.as_str()));
+    assert!(argv.contains(&identity.as_str()));
+    assert!(argv.contains(&control_path.as_str()));
+    assert!(
+        argv.iter().all(|argument| !argument.contains('~')),
+        "no literal ~ may reach OpenSSH: {argv:?}"
+    );
     assert!(argv.contains(&proxy.as_str()));
     assert!(argv.contains(&"127.0.0.1:2222:localhost:22"));
     let target = argv

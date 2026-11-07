@@ -241,6 +241,15 @@ fn resolve_under_home(path: &str) -> PathBuf {
 impl Config {
     /// The config file path: `$FLEET_CONFIG`, else
     /// `${XDG_CONFIG_HOME:-~/.config}/fleet/fleet.toml`.
+    /// Fleet's home directory: `$HOME`, or `.` when unset/empty.
+    /// This is the home every Fleet path resolution uses; callers
+    /// that hand paths to external tools (e.g. OpenSSH, which
+    /// expands `~` from the passwd database instead) must build
+    /// absolute paths from here rather than passing `~` (#6680).
+    pub fn home_dir() -> PathBuf {
+        home_dir()
+    }
+
     pub fn file_path() -> PathBuf {
         Self::file_path_from(
             env_path("FLEET_CONFIG"),
