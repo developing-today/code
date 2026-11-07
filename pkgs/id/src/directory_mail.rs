@@ -956,4 +956,35 @@ mod tests {
             started.elapsed()
         );
     }
+    #[test]
+    fn probe_command_sink_forwards_unvalidated_headers() {
+        // Cases that OutboxSink and SmtpSink both refuse via validate_header_fields
+        let cases: Vec<(Mail, &str)> = vec![
+            (Mail { to: "a@b.co".into(), subject: "Your code\nBcc: attacker@evil.example".into(), body: "hi".into() }, "subject-control"),
+            (Mail { to: "a@b.co>\r\nRCPT TO:<x@y.z".into(), subject: "Your code".into(), body: "hi".into() }, "recipient-crlf"),
+            (Mail { to: "ü@example.test".into(), subject: "Your code".into(), body: "hi".into() }, "recipient-nonascii"),
+            (Mail { to: "not-an-address".into(), subject: "Your code".into(), body: "hi".into() }, "recipient-notplain"),
+            (Mail { to: "".into(), subject: "Your code".into(), body: "hi".into() }, "recipient-empty"),
+        ];
+        for (mail, tag) in &cases {
+            // Controls: Outbox refuses
+            let dir = scratch(&format!("probe-cmd-{tag}"));
+            let outbox_err = OutboxSink::new(dir.clone()).send(mail).unwrap_err().to_string();
+            // CommandSink: recording script
+            let out = dir.join("out.txt");
+            let script = format!("printf '%s|%s|%s' \"$ID_MAIL_TO\" \"$ID_MAIL_SUBJECT\" \"$ID_MAIL_BODY\" > {}", out.display());
+            let cmd_result = CommandSink::new(PathBuf::from("/bin/sh"), vec!["-c".to_owned(), script]).send(mail);
+            let recorded = std::fs::read_to_string(&out).unwrap_or_else(|_| "<no file>".into());
+            println!("PROBE {tag}: outbox_err={outbox_err:?} cmd_result={cmd_result:?} recorded={recorded:?}");
+            std::fs::remove_dir_all(dir).ok();
+        }
+        // Valid control
+        let dir = scratch("probe-cmd-valid");
+        let out = dir.join("out.txt");
+        let script = format!("printf '%s|%s|%s' \"$ID_MAIL_TO\" \"$ID_MAIL_SUBJECT\" \"$ID_MAIL_BODY\" > {}", out.display());
+        let ok = CommandSink::new(PathBuf::from("/bin/sh"), vec!["-c".to_owned(), script]).send(&sample());
+        println!("PROBE valid: cmd_result={ok:?} recorded={:?}", std::fs::read_to_string(&out).unwrap_or_default());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
 }
