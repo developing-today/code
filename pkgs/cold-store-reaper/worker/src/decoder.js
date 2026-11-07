@@ -24,6 +24,13 @@ import { Decompress } from "fzstd";
 // larger of the limit and MIN_WINDOW_ALLOWANCE_BYTES (encoders
 // legitimately use windows up to a few MiB even for small objects:
 // the reaper's own packer runs zstd -3, whose window caps at 2 MiB).
+// The same bypass would otherwise reopen through a SECOND frame:
+// fzstd's streaming decoder walks concatenated frames on its own,
+// allocating each frame's declared window as it reaches it (Codex
+// P1, second round). This decoder's contract has always been
+// exactly one frame — the reaper stores one frame per object — so
+// the first frame's block chain is walked to its exact end and any
+// trailing bytes are rejected before fzstd runs at all.
 //
 // This module is the single decoder implementation for the whole package:
 // the Worker bundles it (esbuild -> dist/worker.js) and the local proof
@@ -50,11 +57,11 @@ const SKIPPABLE_MAGIC_MIN = 0x184d2a50;
 const SKIPPABLE_MAGIC_MAX = 0x184d2a5f;
 
 /** Parse the first real frame's header. Returns
- * { contentSize: number | null, windowSize: number }, or null when
- * the header cannot be positively parsed (too short, bad magic,
- * truncated) — in which case the streaming decoder is left to
- * succeed or fail exactly as it would without the pre-check. Only a
- * positively parsed violation is refused up front. */
+ * { contentSize, windowSize, frameStart, headerLength, checksum },
+ * or null when the header cannot be positively parsed (too short,
+ * bad magic, truncated) — in which case the streaming decoder is
+ * left to succeed or fail exactly as it would without the
+ * pre-check. Only a positively parsed violation is refused. */
 function parseZstdFrameHeader(bytes) {
   let off = 0;
   for (;;) {
@@ -73,6 +80,7 @@ function parseZstdFrameHeader(bytes) {
   const descriptor = bytes[head];
   const fcsCode = descriptor >> 6;
   const singleSegment = (descriptor & 0x20) !== 0;
+  const checksum = (descriptor & 0x04) !== 0;
   const dictIdCode = descriptor & 0x03;
   const dictIdBytes = [0, 1, 2, 4][dictIdCode];
   const fcsBytes = singleSegment ? [1, 2, 4, 8][fcsCode] : [0, 2, 4, 8][fcsCode];
@@ -104,7 +112,31 @@ function parseZstdFrameHeader(bytes) {
     }
   }
   if (singleSegment) windowSize = contentSize;
-  return { contentSize, windowSize };
+  return { contentSize, windowSize, frameStart: off, headerLength, checksum };
+}
+
+/** The exact end offset of the frame whose header `info` describes,
+ * found by walking its block chain (raw and compressed blocks carry
+ * their size; an RLE block carries one byte), plus the optional
+ * content checksum. Returns null when the chain cannot be walked
+ * positively (truncated, reserved block type, overrun) — the
+ * streaming decoder is then left to fail as it would anyway. */
+function zstdFrameEnd(bytes, info) {
+  let pos = info.frameStart + 4 + info.headerLength;
+  for (;;) {
+    if (pos + 3 > bytes.length) return null;
+    const bh = bytes[pos] | (bytes[pos + 1] << 8) | (bytes[pos + 2] << 16);
+    pos += 3;
+    const last = (bh & 1) !== 0;
+    const type = (bh >> 1) & 3;
+    const size = bh >> 3;
+    if (type === 3) return null;
+    pos += type === 1 ? 1 : size;
+    if (pos > bytes.length) return null;
+    if (last) break;
+  }
+  if (info.checksum) pos += 4;
+  return pos <= bytes.length ? pos : null;
 }
 
 export function decompressFrame(frameBytes, maxPlainBytes) {
@@ -130,6 +162,16 @@ export function decompressFrame(frameBytes, maxPlainBytes) {
         header.windowSize,
         `zstd frame declares a ${header.windowSize}-byte window, over the ${windowCap}-byte ` +
           `bound for an expected size of ${maxPlainBytes} bytes — refusing to return unverified bytes`,
+      );
+    }
+    const end = zstdFrameEnd(frameBytes, header);
+    if (end !== null && end < frameBytes.length) {
+      // Exactly one frame per object is the storage contract; a
+      // second frame would be decoded by the streaming decoder on
+      // its own, allocating its declared window unchecked.
+      throw new Error(
+        `expected exactly one zstd frame, but ${frameBytes.length - end} trailing ` +
+          "byte(s) follow it — refusing to decode concatenated frames",
       );
     }
   }

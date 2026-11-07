@@ -288,6 +288,57 @@ function mulberry32(seed) {
     propFailures === 0, `${propFailures} violated cases`);
 }
 
+// --- exactly one frame (Codex P1, second round, PR #6726) ----------
+//
+// The streaming decoder walks concatenated frames on its own and
+// would allocate a second frame's declared window unchecked, so
+// trailing data after the first frame is rejected up front.
+
+{
+  // The reported bypass shape: a small valid frame, then a frame
+  // declaring a 512 MiB window over a 256-byte payload, limit 256.
+  const first = new Uint8Array(zstdCompressSync(smallContent));
+  const concat = new Uint8Array([...first, ...rawBlockFrame(smallContent, 29)]);
+  let err = null;
+  try {
+    decompressFrame(concat, smallContent.length);
+  } catch (e) {
+    err = e;
+  }
+  check("decoder rejects a concatenated second frame before decoding it",
+    err !== null && String(err.message).includes("exactly one zstd frame"),
+  `got ${err}`);
+}
+
+{
+  // Even two well-formed frames are refused: one object is one frame.
+  const one = new Uint8Array(zstdCompressSync(smallContent));
+  const concat = new Uint8Array([...one, ...one]);
+  let err = null;
+  try {
+    decompressFrame(concat, smallContent.length * 2);
+  } catch (e) {
+    err = e;
+  }
+  check("decoder rejects two concatenated well-formed frames",
+    err !== null && String(err.message).includes("exactly one zstd frame"),
+  `got ${err}`);
+}
+
+{
+  // A leading skippable frame before the one real frame is fine:
+  // skippable frames carry no payload and allocate no window.
+  const skippable = new Uint8Array([
+    0x50, 0x2a, 0x4d, 0x18, // skippable magic 0x184d2a50, little-endian
+    0x03, 0x00, 0x00, 0x00, // payload size 3
+    0xaa, 0xbb, 0xcc,
+  ]);
+  const real = new Uint8Array(zstdCompressSync(smallContent));
+  const plain = decompressFrame(new Uint8Array([...skippable, ...real]), smallContent.length);
+  check("decoder still decodes a single frame preceded by a skippable frame",
+    Buffer.from(plain).equals(Buffer.from(smallContent)));
+}
+
 if (failures > 0) {
   console.error(`FAIL: ${failures} check(s) failed`);
   process.exit(1);

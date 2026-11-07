@@ -701,6 +701,7 @@ function parseZstdFrameHeader(bytes) {
   const descriptor = bytes[head];
   const fcsCode = descriptor >> 6;
   const singleSegment = (descriptor & 32) !== 0;
+  const checksum = (descriptor & 4) !== 0;
   const dictIdCode = descriptor & 3;
   const dictIdBytes = [0, 1, 2, 4][dictIdCode];
   const fcsBytes = singleSegment ? [1, 2, 4, 8][fcsCode] : [0, 2, 4, 8][fcsCode];
@@ -731,7 +732,24 @@ function parseZstdFrameHeader(bytes) {
     }
   }
   if (singleSegment) windowSize = contentSize;
-  return { contentSize, windowSize };
+  return { contentSize, windowSize, frameStart: off, headerLength, checksum };
+}
+function zstdFrameEnd(bytes, info) {
+  let pos = info.frameStart + 4 + info.headerLength;
+  for (; ; ) {
+    if (pos + 3 > bytes.length) return null;
+    const bh = bytes[pos] | bytes[pos + 1] << 8 | bytes[pos + 2] << 16;
+    pos += 3;
+    const last = (bh & 1) !== 0;
+    const type = bh >> 1 & 3;
+    const size = bh >> 3;
+    if (type === 3) return null;
+    pos += type === 1 ? 1 : size;
+    if (pos > bytes.length) return null;
+    if (last) break;
+  }
+  if (info.checksum) pos += 4;
+  return pos <= bytes.length ? pos : null;
 }
 function decompressFrame(frameBytes, maxPlainBytes) {
   if (!Number.isSafeInteger(maxPlainBytes) || maxPlainBytes < 0) {
@@ -754,6 +772,12 @@ function decompressFrame(frameBytes, maxPlainBytes) {
         maxPlainBytes,
         header.windowSize,
         `zstd frame declares a ${header.windowSize}-byte window, over the ${windowCap}-byte bound for an expected size of ${maxPlainBytes} bytes \u2014 refusing to return unverified bytes`
+      );
+    }
+    const end = zstdFrameEnd(frameBytes, header);
+    if (end !== null && end < frameBytes.length) {
+      throw new Error(
+        `expected exactly one zstd frame, but ${frameBytes.length - end} trailing byte(s) follow it \u2014 refusing to decode concatenated frames`
       );
     }
   }
