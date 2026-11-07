@@ -128,82 +128,110 @@ export async function upsertItem(db: Client, i: Omit<ItemRow, "fetched_at">): Pr
   // event strictly newer than the marker wins and clears it — GitHub is
   // the source of truth, and such an event means the item demonstrably
   // exists at a later source time than its deletion.
-  const marker = await getItemDeletion(db, i.ref);
-  if (marker) {
-    if (marker.source_updated_at >= i.source_updated_at) return;
-    await db.execute({ sql: `DELETE FROM pmp_item_deletions WHERE ref = ?`, args: [i.ref] });
-  }
-  // Two steps, so "the payload shape does not carry merge fields" (null
-  // draft/merged, #4158) stays distinguishable from an explicit 0 on the
-  // update path: the INSERT materializes defaults for a brand-new row, the
-  // UPDATE preserves the stored merge fields whenever the incoming row
-  // does not carry them. (A single INSERT ... ON CONFLICT cannot do this:
-  // excluded.draft would already be the COALESCE'd insert value.)
-  await db.execute({
-    sql: `INSERT OR IGNORE INTO pmp_items (
-            ref, repo, number, kind, url, api_url, title, state, state_reason,
-            draft, merged, author, labels, assignees, created_at, updated_at,
-            closed_at, merged_at, source_updated_at, fetched_at
-          ) VALUES (?,?,?,?,?,?,?,?,?,COALESCE(?,0),COALESCE(?,0),?,?,?,?,?,?,?,?,?)`,
-    args: [
-      i.ref,
-      i.repo,
-      i.number,
-      i.kind,
-      i.url,
-      i.api_url,
-      i.title,
-      i.state,
-      i.state_reason,
-      i.draft,
-      i.merged,
-      i.author,
-      i.labels,
-      i.assignees,
-      i.created_at,
-      i.updated_at,
-      i.closed_at,
-      i.merged_at,
-      i.source_updated_at,
-      now(),
+  //
+  // The three statements run as one write batch (a single transaction),
+  // so the marker decision and the item writes are atomic relative to a
+  // concurrent deleteItem (Codex P2 on PR #6792 — the previous
+  // read-then-unconditional-delete could remove a marker a racing
+  // deleteItem had just refreshed, then recreate the stale item). The
+  // clear only removes markers this event legitimately beats (strictly
+  // older), and both item writes are guarded by NOT EXISTS over whatever
+  // marker survives that clear: a marker refreshed mid-flight to a
+  // timestamp at/after this event's blocks the writes instead of being
+  // silently discarded.
+  //
+  // Two steps for the item write, so "the payload shape does not carry
+  // merge fields" (null draft/merged, #4158) stays distinguishable from
+  // an explicit 0 on the update path: the INSERT materializes defaults
+  // for a brand-new row, the UPDATE preserves the stored merge fields
+  // whenever the incoming row does not carry them. (A single INSERT ...
+  // ON CONFLICT cannot do this: excluded.draft would already be the
+  // COALESCE'd insert value.)
+  await db.batch(
+    [
+      {
+        sql: `DELETE FROM pmp_item_deletions WHERE ref = ? AND source_updated_at < ?`,
+        args: [i.ref, i.source_updated_at],
+      },
+      {
+        sql: `INSERT OR IGNORE INTO pmp_items (
+                ref, repo, number, kind, url, api_url, title, state, state_reason,
+                draft, merged, author, labels, assignees, created_at, updated_at,
+                closed_at, merged_at, source_updated_at, fetched_at
+              ) SELECT ?,?,?,?,?,?,?,?,?,COALESCE(?,0),COALESCE(?,0),?,?,?,?,?,?,?,?,?
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM pmp_item_deletions
+                  WHERE ref = ? AND source_updated_at >= ?
+                )`,
+        args: [
+          i.ref,
+          i.repo,
+          i.number,
+          i.kind,
+          i.url,
+          i.api_url,
+          i.title,
+          i.state,
+          i.state_reason,
+          i.draft,
+          i.merged,
+          i.author,
+          i.labels,
+          i.assignees,
+          i.created_at,
+          i.updated_at,
+          i.closed_at,
+          i.merged_at,
+          i.source_updated_at,
+          now(),
+          i.ref,
+          i.source_updated_at,
+        ],
+      },
+      {
+        sql: `UPDATE pmp_items SET
+                repo = ?, number = ?, kind = ?, url = ?, api_url = ?, title = ?,
+                state = ?, state_reason = ?,
+                draft = COALESCE(?, draft),
+                merged = COALESCE(?, merged),
+                author = ?, labels = ?, assignees = ?, created_at = ?, updated_at = ?,
+                closed_at = ?,
+                merged_at = CASE WHEN ? IS NULL THEN merged_at ELSE ? END,
+                source_updated_at = ?, fetched_at = ?
+              WHERE ref = ? AND ? >= source_updated_at
+                AND NOT EXISTS (
+                  SELECT 1 FROM pmp_item_deletions
+                  WHERE ref = pmp_items.ref AND source_updated_at >= ?
+                )`,
+        args: [
+          i.repo,
+          i.number,
+          i.kind,
+          i.url,
+          i.api_url,
+          i.title,
+          i.state,
+          i.state_reason,
+          i.draft,
+          i.merged,
+          i.author,
+          i.labels,
+          i.assignees,
+          i.created_at,
+          i.updated_at,
+          i.closed_at,
+          i.merged,
+          i.merged_at,
+          i.source_updated_at,
+          now(),
+          i.ref,
+          i.source_updated_at,
+          i.source_updated_at,
+        ],
+      },
     ],
-  });
-  await db.execute({
-    sql: `UPDATE pmp_items SET
-            repo = ?, number = ?, kind = ?, url = ?, api_url = ?, title = ?,
-            state = ?, state_reason = ?,
-            draft = COALESCE(?, draft),
-            merged = COALESCE(?, merged),
-            author = ?, labels = ?, assignees = ?, created_at = ?, updated_at = ?,
-            closed_at = ?,
-            merged_at = CASE WHEN ? IS NULL THEN merged_at ELSE ? END,
-            source_updated_at = ?, fetched_at = ?
-          WHERE ref = ? AND ? >= source_updated_at`,
-    args: [
-      i.repo,
-      i.number,
-      i.kind,
-      i.url,
-      i.api_url,
-      i.title,
-      i.state,
-      i.state_reason,
-      i.draft,
-      i.merged,
-      i.author,
-      i.labels,
-      i.assignees,
-      i.created_at,
-      i.updated_at,
-      i.closed_at,
-      i.merged,
-      i.merged_at,
-      i.source_updated_at,
-      now(),
-      i.ref,
-      i.source_updated_at,
-    ],
-  });
+    "write",
+  );
 }
 
 export async function getItems(db: Client, refs: string[]): Promise<ItemRow[]> {
@@ -407,25 +435,35 @@ export async function deleteLink(db: Client, subject: string, ref: string, relat
  *   tombstone rows are already excluded from default reads.
  */
 export async function deleteItem(db: Client, ref: string, sourceUpdatedAt?: string): Promise<void> {
-  await db.execute({ sql: `DELETE FROM pmp_items WHERE ref = ?`, args: [ref] });
-  await db.execute({ sql: `DELETE FROM pmp_comments WHERE ref = ? AND deleted = 0`, args: [ref] });
-  await db.execute({ sql: `DELETE FROM pmp_links WHERE subject IN (?, ?)`, args: [`gh:${ref}`, ref] });
-  // Persist the deletion marker (#6782) so stale replays cannot resurrect
-  // the item. Monotonic: a later delete event refreshes the marker, an
-  // older one never moves it backwards. Without a payload timestamp
-  // (direct callers), the write time is the marker — every replayed event
-  // carries a past source timestamp, so absorption still holds.
+  // One write batch (a single transaction), atomic relative to a
+  // concurrent upsertItem (Codex P2 on PR #6792): the marker write and
+  // the row removals land together, so an upsert racing this delete
+  // decides against either the pre-delete or the post-delete state —
+  // never a torn mix (marker present but row rewritten, or row deleted
+  // with no marker).
+  //
+  // The marker is monotonic (#6782): a later delete event refreshes it,
+  // an older one never moves it backwards. Without a payload timestamp
+  // (direct callers), the write time is the marker — every replayed
+  // event carries a past source timestamp, so absorption still holds.
   const ts = sourceUpdatedAt ?? now();
-  await db.execute({
-    sql: `INSERT INTO pmp_item_deletions (ref, source_updated_at, fetched_at) VALUES (?,?,?)
-          ON CONFLICT(ref) DO UPDATE SET
-            source_updated_at = excluded.source_updated_at,
-            fetched_at = excluded.fetched_at
-          WHERE excluded.source_updated_at >= pmp_item_deletions.source_updated_at`,
-    args: [ref, ts, now()],
-  });
+  await db.batch(
+    [
+      {
+        sql: `INSERT INTO pmp_item_deletions (ref, source_updated_at, fetched_at) VALUES (?,?,?)
+              ON CONFLICT(ref) DO UPDATE SET
+                source_updated_at = excluded.source_updated_at,
+                fetched_at = excluded.fetched_at
+              WHERE excluded.source_updated_at >= pmp_item_deletions.source_updated_at`,
+        args: [ref, ts, now()],
+      },
+      { sql: `DELETE FROM pmp_items WHERE ref = ?`, args: [ref] },
+      { sql: `DELETE FROM pmp_comments WHERE ref = ? AND deleted = 0`, args: [ref] },
+      { sql: `DELETE FROM pmp_links WHERE subject IN (?, ?)`, args: [`gh:${ref}`, ref] },
+    ],
+    "write",
+  );
 }
-
 export async function getLinks(db: Client, opts: { subject?: string; ref?: string } = {}): Promise<LinkRow[]> {
   const clauses: string[] = [];
   const args: string[] = [];
