@@ -437,6 +437,7 @@ fn print_json(v: &Value) {
 fn bearer_token(config: &Config) -> Result<SecretValue> {
     let name = config.dispatch_token_name();
     Resolver::default_chain(config)
+        .map_err(|e| transport_err(e.to_string()))?
         .resolve(name)
         .map_err(|e| transport_err(e.to_string()))
 }

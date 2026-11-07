@@ -145,7 +145,9 @@ pub fn ensure_broker(
     client: &str,
     capabilities: &[String],
 ) -> Result<Ensured, ClientError> {
-    let socket = config.broker_socket();
+    let socket = config
+        .broker_socket()
+        .map_err(|e| ClientError::Transport(e.to_string()))?;
     if let Ok(mut stream) = UnixStream::connect(&socket) {
         let negotiated = say_hello(&mut stream, client, capabilities)?;
         return Ok(Ensured {
@@ -181,7 +183,9 @@ pub fn ensure_broker(
 /// broker.log beside the socket — the Python auto-start's shape).
 fn spawn_serve(config: &Config) -> Result<(), ClientError> {
     use std::os::unix::process::CommandExt;
-    let socket = config.broker_socket();
+    let socket = config
+        .broker_socket()
+        .map_err(|e| ClientError::Transport(e.to_string()))?;
     let sock_dir = socket
         .parent()
         .map(|p| p.to_path_buf())
@@ -222,7 +226,8 @@ fn sync_shims_from(
 ) -> Result<shims::ShimSync, ClientError> {
     let exe = shims::current_fleet_exe()
         .map_err(|e| ClientError::Transport(format!("current exe: {e}")))?;
-    shims::sync_shims(&Config::shims_dir(), services, &exe)
+    let shims_dir = Config::shims_dir().map_err(|e| ClientError::Transport(e.to_string()))?;
+    shims::sync_shims(&shims_dir, services, &exe)
         .map_err(|e| ClientError::Transport(format!("shim sync: {e}")))
 }
 
@@ -385,7 +390,8 @@ pub fn run_connect(
     let sync = sync_shims_from(&services)?;
     print_warnings(&sync);
     if args.print_path {
-        println!("{}", Config::shims_dir().display());
+        let shims_dir = Config::shims_dir().map_err(|e| ClientError::Transport(e.to_string()))?;
+        println!("{}", shims_dir.display());
         return Ok(0);
     }
     if let Some(req) = &args.request {
@@ -413,7 +419,10 @@ pub fn run_connect(
             ""
         }
     );
-    println!("  socket: {}", config.broker_socket().display());
+    let socket = config
+        .broker_socket()
+        .map_err(|e| ClientError::Transport(e.to_string()))?;
+    println!("  socket: {}", socket.display());
     println!(
         "  services: {}",
         services
@@ -422,9 +431,10 @@ pub fn run_connect(
             .collect::<Vec<_>>()
             .join(", ")
     );
+    let shims_dir = Config::shims_dir().map_err(|e| ClientError::Transport(e.to_string()))?;
     println!(
         "  shims: {}{}",
-        Config::shims_dir().display(),
+        shims_dir.display(),
         if sync.tools.is_empty() {
             " (none advertised)".to_string()
         } else {
@@ -468,7 +478,9 @@ pub fn run_init(
             argv[0]
         )));
     }
-    let socket = config.broker_socket();
+    let socket = config
+        .broker_socket()
+        .map_err(|e| ClientError::Transport(e.to_string()))?;
     // Probe: connect and say hello. A legacy answer still means
     // "running" — init never fights an incumbent broker.
     if let Ok(mut stream) = UnixStream::connect(&socket) {
@@ -503,9 +515,10 @@ pub fn run_init(
     };
     let sync = sync_shims_from(&services)?;
     print_warnings(&sync);
+    let shims_dir = Config::shims_dir().map_err(|e| ClientError::Transport(e.to_string()))?;
     println!(
         "fleet: proxy started; shims at {} [{}]",
-        Config::shims_dir().display(),
+        shims_dir.display(),
         sync.tools.join(", ")
     );
     Ok(0)

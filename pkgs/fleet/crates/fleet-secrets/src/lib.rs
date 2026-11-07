@@ -154,14 +154,16 @@ impl Resolver {
     }
 
     /// The default chain for a resolved fleet config.
-    pub fn default_chain(config: &fleet_config::Config) -> Resolver {
-        Resolver::new(vec![
+    pub fn default_chain(
+        config: &fleet_config::Config,
+    ) -> Result<Resolver, fleet_config::ConfigError> {
+        Ok(Resolver::new(vec![
             Box::new(BrokerSource {
-                broker_socket: config.broker_socket(),
-                token_file: config.secrets_token_file(),
+                broker_socket: config.broker_socket()?,
+                token_file: config.secrets_token_file()?,
             }),
             Box::new(BwsSource::new()),
-        ])
+        ]))
     }
 
     pub fn resolve(&self, name: &str) -> Result<SecretValue, SecretError> {

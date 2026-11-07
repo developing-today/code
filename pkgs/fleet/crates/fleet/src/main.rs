@@ -213,13 +213,16 @@ fn stub(surface: &Surface, domain_name: &str, state: &CapState, invoked_as: &str
             ));
         }
         CapState::DisabledByConfig => {
+            let config_location = match fleet_config::Config::file_path() {
+                Ok(path) => format!("in {}", path.display()),
+                Err(error) => format!("after resolving the config path: {error}"),
+            };
             out.push_str(&format!(
                 "fleet: '{domain_name}' is disabled by config on this host.\n"
             ));
             out.push_str(&format!("Enabled capabilities: {caps}.\n"));
             out.push_str(&format!(
-                "This is the {build} build ({VERSION}). Re-enable '{domain_name}' under [domains] in {}.\n",
-                fleet_config::Config::file_path().display()
+                "This is the {build} build ({VERSION}). Re-enable '{domain_name}' under [domains] {config_location}.\n"
             ));
         }
         CapState::Available => {

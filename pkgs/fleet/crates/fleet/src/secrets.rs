@@ -120,7 +120,14 @@ fn cmd_get(config: &Config, args: &[String]) -> i32 {
         return EXIT_USAGE;
     }
     let name = &args[0];
-    match Resolver::default_chain(config).resolve(name) {
+    let resolver = match Resolver::default_chain(config) {
+        Ok(resolver) => resolver,
+        Err(e) => {
+            eprintln!("fleet secrets: {e}");
+            return EXIT_UNRESOLVED;
+        }
+    };
+    match resolver.resolve(name) {
         Ok(value) => print_value(value.expose()),
         Err(e) => {
             eprintln!("fleet secrets: {e}");
@@ -138,9 +145,15 @@ fn cmd_list(config: &Config, args: &[String]) -> i32 {
         eprintln!("usage: fleet secrets list");
         return EXIT_USAGE;
     }
-    let source = BrokerSource {
-        broker_socket: config.broker_socket(),
-        token_file: config.secrets_token_file(),
+    let source = match (config.broker_socket(), config.secrets_token_file()) {
+        (Ok(broker_socket), Ok(token_file)) => BrokerSource {
+            broker_socket,
+            token_file,
+        },
+        (Err(e), _) | (_, Err(e)) => {
+            eprintln!("fleet secrets: {e}");
+            return EXIT_UNRESOLVED;
+        }
     };
     match source.list_names() {
         Ok(names) => {
