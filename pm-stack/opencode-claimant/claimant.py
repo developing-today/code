@@ -108,30 +108,47 @@ def run_poll() -> Dict[str, Any]:
         raise RuntimeError(f"poll.py returned invalid JSON: {e}")
 
 
+_poll_module = None
+
+
+def _load_poll_module():
+    """Load the sibling poll.py as a module (cached).
+
+    Cap counting delegates to poll.py's pinned functions so both entry
+    points read the same verified live session shape (root = no
+    parentID/parent_id, activity = time.updated falling back to
+    time.created, finished = time.idle or a top-level outcome, the
+    server's active set authoritative) and can never diverge again
+    (#6609)."""
+    global _poll_module
+    if _poll_module is None:
+        import importlib.util
+
+        poll_path = Path(__file__).resolve().parent / "poll.py"
+        spec = importlib.util.spec_from_file_location("claimant_poll", poll_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _poll_module = module
+    return _poll_module
+
+
 def get_active_root_session_count() -> int:
-    """Get the count of active root sessions from the OpenCode server."""
-    import requests
-    
+    """Get the count of active root sessions from the OpenCode server.
+
+    Delegates to poll.py: fetch the session list and the server's
+    active set, then count_active_roots over both. Returns -1
+    (unknown) when either read fails, so cap_step fails closed."""
     try:
-        response = requests.get("http://127.0.0.1:13420/api/session", timeout=5)
-        response.raise_for_status()
-        sessions = response.json()
-        
-        active_count = 0
-        for session in sessions:
-            # Count root sessions that are active (no terminal marker, activity in last 30 min)
-            if session.get("is_root", False):
-                # Check for terminal markers
-                has_terminal = any(
-                    marker in session.get("outcome", "") or 
-                    marker in session.get("time", {}).get("idle", "")
-                    for marker in ["idle", "outcome"]
-                )
-                
-                if not has_terminal:
-                    active_count += 1
-        
-        return active_count
+        poll = _load_poll_module()
+        sessions = poll.fetch_sessions()
+        if sessions is None:
+            return -1  # Unknown
+        active_ids = poll.fetch_active_ids()
+        if active_ids is None:
+            return -1  # Unknown
+        return poll.count_active_roots(
+            sessions, int(time.time() * 1000), active_ids
+        )
     except Exception as e:
         print(f"Warning: Could not get active session count: {e}")
         return -1  # Unknown
