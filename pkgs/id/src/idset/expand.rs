@@ -18,15 +18,19 @@
 //! - A member's role is their access at that frontier, mapped the way the
 //!   groups fold maps it (`access_role` in `crate::groups::fold`). The
 //!   membership layer records Admin as Manage — Admin is a policy role the
-//!   groups fold tracks apart from access — so it cannot distinguish an
-//!   admin from any other manager at a frontier. A `role_min` of
-//!   [`Role::Admin`] is therefore evaluated at [`Role::Manage`], the
-//!   highest role the layer can answer for: admins are admitted (they are
-//!   managers in the layer), and so are non-admin managers. Answering
-//!   Admin exactly needs the fold's admin-at-frontier state plumbed into
-//!   expansion, which no caller can supply yet; the limitation is pinned
-//!   by a named test beside the spec tests (`test_expand_role_min_admin_*`
-//!   in `tests/writer_set_expansion.rs`).
+//!   groups fold tracks apart from access — so the layer alone cannot
+//!   distinguish an admin from any other manager at a frontier. The
+//!   expander therefore takes an admin-at-frontier source beside the
+//!   layer ([`AdminsAtPosition`], modelled on the fold's
+//!   `admins_at_position` replay): members the source names for the
+//!   pinned frontier are marked [`Role::Admin`] in the snapshot, so a
+//!   `role_min` of [`Role::Admin`] is answered exactly — an admin is
+//!   admitted, a non-admin manager is not, and a member promoted to
+//!   Admin only after the frontier is not an admin for this version.
+//!   A source with no admin data returns an empty set and Admin
+//!   thresholds fail closed (admit nobody) rather than widening to
+//!   Manage. The behaviour is pinned by the `test_expand_role_min_admin_*`
+//!   tests in `tests/writer_set_expansion.rs`.
 //! - Resolved groups are cached under the §4.5 key `(group, frontier, R)`,
 //!   where `R` is the caller's resolution-state identity
 //!   ([`SetVersion::resolution`]). Within one resolution state an expansion
@@ -96,16 +100,32 @@ type CacheKey = (Hash, Vec<Hash>, Hash);
 /// One expander serves one resolution epoch of one store: when the store's
 /// resolution state moves (a fork proof lands), build a fresh expander
 /// over the rebuilt layer and name the new `R` in each [`SetVersion`].
+/// The admin-at-frontier source an [`Expander`] consults beside
+/// [`Membership::members_at_position`]: given a causal frontier and a
+/// group, the author keys that held the Admin policy role in that group
+/// at that frontier. The model implementation is the groups fold's
+/// `admins_at_position` replay (`crate::groups::fold`), which replays
+/// settled group events at a causal position; a caller adapts it by
+/// closing over its fold state and event index. The source is fixed for
+/// the expander's life, so the §4.5 cache key needs no admin component:
+/// one expander serves one resolution epoch, and the source is part of
+/// that epoch's state.
+pub type AdminsAtPosition<'a> = dyn Fn(&[Hash], Hash) -> BTreeSet<AuthorKey> + 'a;
+
 pub struct Expander<'a> {
     membership: &'a mut Membership,
+    admins_at: &'a AdminsAtPosition<'a>,
     cache: HashMap<CacheKey, BTreeMap<AuthorKey, Role>>,
 }
 
 impl<'a> Expander<'a> {
-    /// An expander over `membership` with an empty cache.
-    pub fn new(membership: &'a mut Membership) -> Self {
+    /// An expander over `membership` with an empty cache, answering
+    /// Admin thresholds exactly from the `admins_at` source (see
+    /// [`AdminsAtPosition`]).
+    pub fn new(membership: &'a mut Membership, admins_at: &'a AdminsAtPosition<'a>) -> Self {
         Self {
             membership,
+            admins_at,
             cache: HashMap::new(),
         }
     }
@@ -168,17 +188,10 @@ impl<'a> Expander<'a> {
         if admits_public(version.set, retro) && !public_excluded {
             return Err(ExpandError::PublicEntry);
         }
-        // The membership layer's highest distinguishable role is Manage
-        // (Admin is recorded as Manage there), so an Admin threshold is
-        // evaluated at Manage for the layer-backed snapshot; see the
-        // module doc for the limitation and its follow-up.
-        let effective;
-        let set = if has_admin_threshold(version.set) {
-            effective = clamp_admin_thresholds(version.set);
-            &effective
-        } else {
-            version.set
-        };
+        // Admin thresholds are answered exactly: the snapshot built by
+        // `group_members` marks the admin source's members `Role::Admin`
+        // (see the module doc), so the set is evaluated as written.
+        let set = version.set;
         let mut groups = Vec::new();
         for group in referenced_groups(set) {
             let members = self.group_members(group, version)?;
@@ -216,12 +229,22 @@ impl<'a> Expander<'a> {
         if let Some(members) = self.cache.get(&key) {
             return Ok(members.clone());
         }
-        let members: BTreeMap<AuthorKey, Role> = self
+        let mut members: BTreeMap<AuthorKey, Role> = self
             .membership
             .members_at_position(&version.frontier, group)?
             .into_iter()
             .map(|(author, access)| (author, access_role(&access)))
             .collect();
+        // The layer records Admin as Manage; the admin source is the
+        // only frontier-pinned evidence of the policy role, so its
+        // members are upgraded in the snapshot. A named author who is
+        // not a member at this frontier stays absent: admin status
+        // never creates membership.
+        for author in (self.admins_at)(&version.frontier, group) {
+            if let Some(role) = members.get_mut(&author) {
+                *role = Role::Admin;
+            }
+        }
         self.cache.insert(key, members.clone());
         Ok(members)
     }
@@ -253,7 +276,8 @@ fn referenced_groups(set: &WriterSet) -> Vec<Hash> {
 
 /// A member's role as their membership access gives it. Mirrors the groups
 /// fold's `access_role`: Admin is recorded apart from the access level and
-/// shows as Manage here.
+/// shows as Manage here; `group_members` upgrades the members the admin
+/// source names to `Role::Admin`.
 fn access_role(access: &Access<()>) -> Role {
     if access.is_manage() {
         Role::Manage
@@ -263,52 +287,5 @@ fn access_role(access: &Access<()>) -> Role {
         Role::Read
     } else {
         Role::Pull
-    }
-}
-
-/// Whether any group entry in the set (admissions or exclusions) carries
-/// an Admin `role_min` threshold.
-fn has_admin_threshold(set: &WriterSet) -> bool {
-    set.entries
-        .iter()
-        .chain(set.excludes.0.iter())
-        .any(|entry| {
-            matches!(
-                entry,
-                Entry::Group {
-                    role_min: Role::Admin,
-                    ..
-                }
-            )
-        })
-}
-
-/// A copy of `set` with every Admin `role_min` lowered to Manage, the
-/// highest role the membership layer distinguishes at a frontier.
-fn clamp_admin_thresholds(set: &WriterSet) -> WriterSet {
-    fn clamp(entries: &[Entry]) -> Vec<Entry> {
-        entries
-            .iter()
-            .map(|entry| match entry {
-                Entry::Group {
-                    id,
-                    role_min: Role::Admin,
-                    include_history,
-                } => Entry::Group {
-                    id: *id,
-                    role_min: Role::Manage,
-                    include_history: *include_history,
-                },
-                other => other.clone(),
-            })
-            .collect()
-    }
-    WriterSet {
-        set_id: set.set_id,
-        version: set.version,
-        owner: set.owner,
-        scope: set.scope.clone(),
-        entries: clamp(&set.entries),
-        excludes: super::Excludes(clamp(&set.excludes.0)),
     }
 }
