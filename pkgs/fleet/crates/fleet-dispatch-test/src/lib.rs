@@ -254,11 +254,22 @@ impl Args {
 fn parse_threshold(raw: Option<&str>, config: &Config) -> Result<u64> {
     match raw {
         None => Ok(config.dispatch_test_threshold()),
-        Some(v) => v.parse::<u64>().map_err(|_| {
-            usage(format!(
-                "--threshold must be a non-negative integer, got {v:?}"
-            ))
-        }),
+        Some(v) => {
+            let parsed = v.parse::<u64>().map_err(|_| {
+                usage(format!(
+                    "--threshold must be a positive integer, got {v:?}"
+                ))
+            })?;
+            // #6603: 0 is the #6412 misspelling class on the CLI path
+            // too — `active < 0` is false for every count, so no
+            // execution home could ever be eligible.
+            if parsed == 0 {
+                return Err(usage(
+                    "--threshold must not be 0; omit --threshold for the configured threshold",
+                ));
+            }
+            Ok(parsed)
+        }
     }
 }
 
@@ -1150,6 +1161,20 @@ mod tests {
         ]});
         assert!(!workflow_present(&disabled));
         assert!(!workflow_present(&json!({"workflows": []})));
+    }
+
+    #[test]
+    fn threshold_zero_is_a_usage_error() {
+        // #6603: --threshold 0 can never be satisfied (active < 0 is
+        // always false), so it is a usage error (exit 2), not a scan
+        // against a dead threshold. Positive values and the omitted
+        // flag (config default 40) pass unchanged.
+        let config = Config::default();
+        let err = parse_threshold(Some("0"), &config).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.message().contains("must not be 0"), "{}", err.message());
+        assert_eq!(parse_threshold(Some("7"), &config).unwrap(), 7);
+        assert_eq!(parse_threshold(None, &config).unwrap(), 40);
     }
 
     #[test]
