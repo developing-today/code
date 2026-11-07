@@ -54,6 +54,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Run the --check fixture tests (stubbed bws/sops, no credentials)
         run: bash lib/bws-to-sops-check.test.sh
+      - name: Run the drift-issue finder tests (stubbed gh, no credentials)
+        run: bash lib/bws-freshness-drift-issue.test.sh
 
   live-check:
     name: "full (main tier): bws freshness live check"
@@ -84,6 +86,7 @@ jobs:
         run: |
           title="bws.yaml mirror drift detected"
           {
+            echo "<!-- bws-freshness-drift-issue v1 -->"
             echo "The scheduled names-only freshness check (#5451) found drift between BWS and \`secrets/sops/common/bws.yaml\`. Key names only — no values are ever printed by the check."
             echo
             echo '```'
@@ -92,11 +95,11 @@ jobs:
             echo
             echo "Fix: run \`lib/bws-to-sops.sh\` on a credentialed machine and commit the regenerated mirror. This issue closes automatically when a later check finds the mirror fresh."
           } > issue-body.md
-          existing="$(gh issue list --search "$title in:title state:open" --json number --jq '.[0].number // empty')"
+          existing="$(bash lib/bws-freshness-drift-issue.sh)"
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --body-file issue-body.md
           else
-            gh issue create --title "$title" --body-file issue-body.md --label "priority/normal"
+            gh issue create --title "$title" --body-file issue-body.md --label "bws-drift" --label "priority/normal"
           fi
       - name: Close the drift issue when the mirror is fresh again
         if: steps.check.outputs.rc == '0'
@@ -104,7 +107,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           title="bws.yaml mirror drift detected"
-          existing="$(gh issue list --search "$title in:title state:open" --json number --jq '.[0].number // empty')"
+          existing="$(bash lib/bws-freshness-drift-issue.sh)"
           if [ -n "$existing" ]; then
             gh issue close "$existing" --comment "A later scheduled freshness check (#5451) found the mirror up to date; closing this drift episode."
           fi
