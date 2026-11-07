@@ -31,6 +31,8 @@ pub mod client;
 pub mod fallback;
 #[cfg(feature = "queue-broker")]
 pub mod queue_broker;
+#[cfg(feature = "queue-broker")]
+pub mod turso_queue;
 #[cfg(feature = "secrets-broker")]
 pub mod secrets_broker;
 #[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]
