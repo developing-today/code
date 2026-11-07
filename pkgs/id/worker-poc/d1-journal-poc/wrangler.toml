@@ -1,0 +1,10 @@
+name = "id-d1-journal-poc"
+main = "worker.mjs"
+compatibility_date = "2025-03-01"
+
+# This placeholder ID is used only by local Wrangler with --local. The smoke
+# always supplies its own temporary --persist-to directory and never deploys.
+[[d1_databases]]
+binding = "DB"
+database_name = "id-d1-journal-poc"
+database_id = "00000000-0000-0000-0000-000000000001"
