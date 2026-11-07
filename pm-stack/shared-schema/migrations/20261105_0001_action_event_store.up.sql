@@ -37,6 +37,11 @@ CREATE TABLE public.agg_actions (
       'delete-view', 'set-default-view'
     ))
   ),
+  CONSTRAINT agg_actions_result_timestamp_check CHECK (
+    (state IN ('applied', 'rejected') AND applied_at IS NOT NULL)
+    OR (state = 'new' AND applied_at IS NULL)
+    OR state = 'superseded'
+  ),
   CONSTRAINT agg_actions_not_self_superseded_check CHECK (
     supersedes_action_id IS NULL OR supersedes_action_id <> id
   ),
@@ -59,6 +64,8 @@ CREATE TABLE public.shared_events (
   id text PRIMARY KEY CHECK (btrim(id) <> ''),
   event_at timestamptz NOT NULL,
   ingested_at timestamptz NOT NULL DEFAULT now(),
+  event_at_raw text CHECK (event_at_raw IS NULL OR btrim(event_at_raw) <> ''),
+  ingested_at_raw text CHECK (ingested_at_raw IS NULL OR btrim(ingested_at_raw) <> ''),
   actor text NOT NULL CHECK (btrim(actor) <> ''),
   kind text NOT NULL CHECK (btrim(kind) <> ''),
   ref text NOT NULL CHECK (btrim(ref) <> ''),
@@ -67,7 +74,7 @@ CREATE TABLE public.shared_events (
     CHECK (
       jsonb_typeof(attribution) = 'object'
       AND coalesce(attribution->>'confidence' IN ('authenticated', 'pre-sso', 'unknown'), false)
-      AND jsonb_typeof(attribution->'asserted') = 'boolean'
+      AND coalesce(jsonb_typeof(attribution->'asserted') = 'boolean', false)
       AND (attribution->>'confidence' <> 'authenticated' OR attribution->'asserted' = 'true'::jsonb)
     ),
   source jsonb NOT NULL DEFAULT '{"identity":"pm-stack/aggregator"}'::jsonb
@@ -80,7 +87,7 @@ CREATE TABLE public.shared_events (
   prev_hash text NOT NULL CHECK (prev_hash ~ '^[0-9a-f]{64}$'),
   hash text NOT NULL CHECK (hash ~ '^[0-9a-f]{64}$'),
   action_id text REFERENCES public.agg_actions(id) ON DELETE RESTRICT,
-  idempotency_key text,
+  idempotency_key text CHECK (idempotency_key IS NULL OR btrim(idempotency_key) <> ''),
   CONSTRAINT shared_events_action_link_check CHECK (
     (
       kind IN ('action-applied', 'action-rejected')

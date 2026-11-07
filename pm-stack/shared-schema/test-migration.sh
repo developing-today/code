@@ -44,7 +44,9 @@ psql_test() {
   docker exec -i "$container" psql -X -v ON_ERROR_STOP=1 -U postgres -d pm_actions_test "$@"
 }
 
-psql_test -c 'CREATE ROLE service_role;'
+# Supabase's service_role carries BYPASSRLS; model that so the test proves
+# the role can actually operate under the RLS model, not just hold grants.
+psql_test -c 'CREATE ROLE service_role BYPASSRLS LOGIN;'
 psql_test < "$up"
 
 # A pre-token action is valid, as are modern actions and the source's JSON
@@ -74,6 +76,23 @@ if [[ "$privileges" != "true:true:true:false:true" ]]; then
   exit 1
 fi
 echo "ok - RLS and service_role privileges"
+
+# The service_role must actually be able to operate under RLS (Supabase's
+# service_role carries BYPASSRLS); a role that only holds grants but is
+# blocked by RLS would pass the privilege probe above while being
+# unusable in production.
+svc_hash="$(printf '%064d' 7)"
+docker exec -i "$container" psql -X -v ON_ERROR_STOP=1 -U service_role -d pm_actions_test -c "INSERT INTO public.shared_events
+  (id, event_at, actor, kind, ref, summary, prev_hash, hash)
+  VALUES ('event-service-role', now(), 'run-svc', 'comment', 'orch:item-1',
+    'service_role write probe', '$svc_hash', '$svc_hash');"
+svc_seen="$(docker exec -i "$container" psql -X -qAt -v ON_ERROR_STOP=1 -U service_role -d pm_actions_test -c "SELECT count(*) FROM public.shared_events WHERE id = 'event-service-role'")"
+if [[ "$svc_seen" != "1" ]]; then
+  echo "service_role could not read back its own event row under RLS" >&2
+  exit 1
+fi
+docker exec -i "$container" psql -X -v ON_ERROR_STOP=1 -U service_role -d pm_actions_test -c "DELETE FROM public.shared_events WHERE id = 'event-service-role';"
+echo "ok - service_role can write and read under RLS"
 
 expect_rejected() {
   local label="$1"
@@ -150,6 +169,33 @@ expect_rejected "authenticated but unasserted attribution" "INSERT INTO public.s
   (id, event_at, actor, kind, ref, summary, attribution, prev_hash, hash)
   VALUES ('event-bad-attribution', now(), 'run-old', 'comment', 'orch:item-1', 'bad attribution',
     '{\"confidence\":\"authenticated\",\"asserted\":false}', '$zero_hash', '$one_hash')"
+expect_rejected "attribution missing the asserted flag" "INSERT INTO public.shared_events
+  (id, event_at, actor, kind, ref, summary, attribution, prev_hash, hash)
+  VALUES ('event-missing-asserted', now(), 'run-old', 'comment', 'orch:item-1', 'missing asserted',
+    '{\"confidence\":\"authenticated\"}', '$zero_hash', '$one_hash')"
+expect_rejected "applied action without a result timestamp" "INSERT INTO public.agg_actions
+  (id, kind, verb, object_ref, payload, author, created_at, state)
+  VALUES ('da-applied-no-ts', 'triage', 'acknowledge', 'orch:item-7', '{}',
+    '{\"kind\":\"drew\",\"id\":\"drew\",\"label\":\"Drew\"}', now(), 'applied')"
+expect_rejected "empty idempotency key" "INSERT INTO public.shared_events
+  (id, event_at, actor, kind, ref, summary, prev_hash, hash, idempotency_key)
+  VALUES ('event-empty-key', now(), 'run-old', 'comment', 'orch:item-1', 'empty key',
+    '$zero_hash', '$one_hash', '')"
+
+# The raw timestamp strings are the hash inputs: an offset-spelled original
+# must round-trip verbatim even though timestamptz normalizes the instant.
+psql_test -c "INSERT INTO public.shared_events
+  (id, event_at, ingested_at, event_at_raw, ingested_at_raw, actor, kind, ref, summary, prev_hash, hash)
+  VALUES ('event-raw-ts', '2026-11-05T03:00:00+03:00', '2026-11-05T03:00:01+03:00',
+    '2026-11-05T03:00:00+03:00', '2026-11-05T03:00:01+03:00',
+    'run-old', 'comment', 'orch:item-1', 'raw timestamp preservation',
+    '$zero_hash', '$one_hash');"
+raw_seen="$(psql_test -Atc "SELECT event_at_raw || '|' || ingested_at_raw || '|' || (event_at AT TIME ZONE 'UTC')::text FROM public.shared_events WHERE id = 'event-raw-ts'")"
+if [[ "$raw_seen" != "2026-11-05T03:00:00+03:00|2026-11-05T03:00:01+03:00|2026-11-05 00:00:00" ]]; then
+  echo "raw timestamp strings did not round-trip: $raw_seen" >&2
+  exit 1
+fi
+echo "ok - raw timestamp strings preserved alongside normalized timestamptz"
 
 if psql_test < "$down" >/dev/null 2>&1; then
   echo "down migration should refuse populated tables" >&2

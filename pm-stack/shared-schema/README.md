@@ -26,7 +26,7 @@ text because action IDs are application-generated strings, not UUIDs.
 | `payload` | `jsonb`, not null | `payload` | Must be a JSON object; verb-specific validation stays at the application boundary. |
 | `author` | `jsonb`, not null | `author` | Must contain a supported `kind`, non-empty `id`, and non-empty `label`. This is self-asserted authorship, **not authenticated identity**. |
 | `created_at` | `timestamptz`, not null | `createdAt` | Creation time; no `updated_at` field exists in the source contract. |
-| `state` | `text`, not null, default `new` | `state` | Check-constrained to `new`, `applied`, `rejected`, `superseded`. A result timestamp is recorded in `applied_at` for both applied and rejected transitions. |
+| `state` | `text`, not null, default `new` | `state` | Check-constrained to `new`, `applied`, `rejected`, `superseded`. A result timestamp is recorded in `applied_at` for both applied and rejected transitions; a check constraint enforces this (`applied`/`rejected` require `applied_at`, `new` forbids it). |
 | `applied_at`, `applied_by_run`, `result_note` | `timestamptz`, `text`, `text`, nullable | `appliedAt`, `appliedByRun`, `resultNote` | First consumer result time, run ID, and optional explanation. |
 | `supersedes_action_id`, `duplicate_of_action_id` | `text`, nullable | `supersedes`, `duplicateOf` | Optional self-references with restrictive foreign keys. History is superseded/rejected, never deleted. |
 
@@ -46,6 +46,7 @@ event's independent stable text ID; it is not the action ID.
 |---|---|---|---|
 | `id` | `text` primary key | `id` | Stable event identity. |
 | `event_at`, `ingested_at` | `timestamptz`, not null | `at`, `ingestedAt` | When the event happened and when the store accepted it; they are distinct. `ingested_at` defaults to database time. |
+| `event_at_raw`, `ingested_at_raw` | `text`, nullable | `at`, `ingestedAt` (verbatim) | The exact timestamp strings the event hash was computed over (`canonicalFields` in `../aggregator/src/events.ts` hashes the literal strings). `timestamptz` normalizes spellings (`2026-11-05T03:00:00+03:00` and `2026-11-05T00:00:00Z` are the same instant but different hash inputs), so importers MUST store the original strings here and DB-authored writers MUST store the exact strings they feed the hash; without them, exported rows cannot be hash-verified against the JSON rollback path. |
 | `actor`, `kind`, `ref`, `summary` | `text`, not null | same | Current stream fields. Action results use `action-applied` / `action-rejected`, run actor, the action's `objectRef`, and the current summary format. |
 | `attribution`, `source` | `jsonb`, not null | same | Attribution must have a supported confidence and boolean `asserted`; source must identify its writer. Defaults preserve current unknown/unasserted attribution and `pm-stack/aggregator` source. |
 | `corrects_event_id` | `text`, nullable | `corrects` | Soft reference, intentionally not a foreign key: event retention can prune the corrected record. |
