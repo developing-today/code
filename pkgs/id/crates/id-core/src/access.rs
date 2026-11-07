@@ -121,10 +121,27 @@ pub fn parse_allowed_nodes(text: &str) -> Vec<EndpointId> {
 }
 
 /// Load the optional allow-list file from `dir`. Missing file means empty list.
+///
+/// A file that is present but cannot be read as UTF-8 text (saved as
+/// UTF-16 by an editor, replaced by a directory, permission denied, ...)
+/// also yields an empty list — the policy stays fail-closed — but it is
+/// NOT silent: a warning names the file and the read failure, so the
+/// operator can tell a broken allow list from a missing one. Collapsing
+/// both cases into a silent empty list (#6677) left allowed peers denied
+/// with no diagnostic pointing at the file they wrote.
 pub fn load_allowed_nodes(dir: &Path) -> Vec<EndpointId> {
-    std::fs::read_to_string(dir.join(ALLOWED_NODES_FILE))
-        .map(|t| parse_allowed_nodes(&t))
-        .unwrap_or_default()
+    let path = dir.join(ALLOWED_NODES_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => parse_allowed_nodes(&text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(err) => {
+            warn!(
+                "ignoring unreadable allow list {}: {err}; no nodes from it will be allowed to write",
+                path.display()
+            );
+            Vec::new()
+        }
+    }
 }
 
 /// Build an iroh-blobs [`EventSender`] that enforces `policy` on push requests.
@@ -233,5 +250,90 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join(ALLOWED_NODES_FILE), format!("{}\n", id(7))).unwrap();
         assert_eq!(load_allowed_nodes(dir.path()), vec![id(7)]);
+    }
+
+    /// Minimal `tracing` subscriber that records event fields, so tests
+    /// can assert a diagnostic was (or was not) emitted (#6677).
+    #[derive(Default)]
+    struct CapturedEvents {
+        lines: std::sync::Mutex<Vec<String>>,
+    }
+
+    struct CaptureSubscriber(std::sync::Arc<CapturedEvents>);
+
+    impl tracing::Subscriber for CaptureSubscriber {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            struct Visitor(String);
+            impl tracing::field::Visit for Visitor {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    use std::fmt::Write;
+                    let _ = write!(self.0, "{}={value:?} ", field.name());
+                }
+            }
+            let mut visitor = Visitor(String::new());
+            event.record(&mut visitor);
+            self.0.lines.lock().unwrap().push(visitor.0);
+        }
+        fn enter(&self, _span: &tracing::span::Id) {}
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    fn captured_load(dir: &Path) -> (Vec<EndpointId>, Vec<String>) {
+        let captured = std::sync::Arc::new(CapturedEvents::default());
+        let loaded = tracing::subscriber::with_default(
+            CaptureSubscriber(captured.clone()),
+            || load_allowed_nodes(dir),
+        );
+        let lines = captured.lines.lock().unwrap().clone();
+        (loaded, lines)
+    }
+
+    #[test]
+    fn load_allowed_nodes_missing_file_is_empty_and_silent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (loaded, lines) = captured_load(dir.path());
+        assert!(loaded.is_empty());
+        assert!(lines.is_empty(), "missing file must not warn: {lines:?}");
+    }
+
+    #[test]
+    fn load_allowed_nodes_directory_in_place_of_file_warns_and_stays_empty() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join(ALLOWED_NODES_FILE)).unwrap();
+        let (loaded, lines) = captured_load(dir.path());
+        assert!(loaded.is_empty(), "fail-closed: a directory grants nothing");
+        assert!(
+            lines.iter().any(|l| l.contains(ALLOWED_NODES_FILE)),
+            "unreadable file must be named in a diagnostic: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn load_allowed_nodes_non_utf8_warns_and_stays_empty() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // UTF-16LE with BOM, as a Windows editor would save the file.
+        std::fs::write(
+            dir.path().join(ALLOWED_NODES_FILE),
+            [0xFF, 0xFE, 0x61, 0x00, 0x0A, 0x00],
+        )
+        .unwrap();
+        let (loaded, lines) = captured_load(dir.path());
+        assert!(loaded.is_empty(), "fail-closed: non-UTF-8 grants nothing");
+        assert!(
+            lines.iter().any(|l| l.contains(ALLOWED_NODES_FILE)),
+            "unreadable file must be named in a diagnostic: {lines:?}"
+        );
     }
 }
