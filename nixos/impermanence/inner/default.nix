@@ -9,7 +9,10 @@
         "/var"
         "/tmp"
       ];
-      files = [ "/etc/ssh/ssh_host_ed25519_key" ];
+      files = [
+        "/etc/machine-id"
+        "/etc/ssh/ssh_host_ed25519_key"
+      ];
     };
   };
 
