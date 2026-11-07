@@ -1852,3 +1852,54 @@ fn execute_retry_on_posted_record_fails_explicitly() {
         "the persisted record stays Posted after the retry"
     );
 }
+
+// --- Lane F triage probe for #4669 (throwaway; asserts the BUGGY outcome) ---
+struct ShortBackend {
+    inner: InMemoryLedger,
+}
+
+impl LedgerBackend for ShortBackend {
+    fn create_accounts(&mut self, accounts: &[Account]) -> Vec<Result<(), AccountError>> {
+        self.inner.create_accounts(accounts)
+    }
+    fn create_transfers(&mut self, _batch: &[Transfer]) -> Vec<Result<(), TransferError>> {
+        Vec::new() // silently posts nothing, returns a short (empty) result vector
+    }
+    fn lookup_transfer(&self, id: u128) -> Option<Transfer> {
+        self.inner.lookup_transfer(id)
+    }
+    fn lookup_account(&self, id: AccountId) -> Option<Account> {
+        self.inner.lookup_account(id)
+    }
+    fn account_balance(&self, id: AccountId) -> Option<super::ledger::AccountBalance> {
+        self.inner.account_balance(id)
+    }
+    fn transfers_with_user_data_128(&self, value: u128) -> Vec<Transfer> {
+        self.inner.transfers_with_user_data_128(value)
+    }
+}
+
+#[test]
+fn probe_4669_executor_short_results_mark_posted_with_no_legs() {
+    let mut executor = ConversionExecutor::new(
+        ShortBackend { inner: funded_ledger() },
+        InMemoryIntentStore::new(),
+    );
+    let record = executor.execute(&request()).expect("execute returns Ok (bug)");
+    assert_eq!(record.state, IntentState::Posted);
+    assert_eq!(executor.backend.inner.transfers_with_user_data_128(777).len(), 0);
+}
+
+#[test]
+fn probe_4669_recovery_short_results_resubmits_with_no_legs() {
+    let mut prep = executor();
+    let record = prep.prepare(&request()).expect("intent prepared");
+    assert_eq!(record.state, IntentState::Recorded);
+    let mut store = InMemoryIntentStore::new();
+    store.put(&record).unwrap();
+    let mut backend = ShortBackend { inner: funded_ledger() };
+    let outcomes = reconcile(&mut backend, &mut store, RecoveryPolicy::Resubmit).expect("reconcile Ok (bug)");
+    assert_eq!(outcomes, vec![(777, ReconcileOutcome::Resubmitted)]);
+    assert_eq!(store.get(777).unwrap().unwrap().state, IntentState::Posted);
+    assert_eq!(backend.inner.transfers_with_user_data_128(777).len(), 0);
+}
