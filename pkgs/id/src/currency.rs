@@ -35,6 +35,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::chain::{self, ChainExt, Event};
 
+/// Graph-native currency definitions and value-event contracts.
+pub mod graph;
+
 /// The event kind carrying a rate authorisation body.
 pub const RATE_AUTHORISATION_KIND: &str = "currency.rate_authorisation";
 
@@ -348,6 +351,7 @@ pub fn sign_authorisation(
             note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
         },
     )?)
 }
@@ -380,6 +384,7 @@ pub fn sign_revoke(
             note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
         },
     )?)
 }
@@ -548,8 +553,14 @@ mod tests {
         let forward_order = [(author, rate_8000.clone()), (author, rate_9000.clone())];
         let reverse_order = [(author, rate_9000.clone()), (author, rate_8000)];
         let expected = Some(AuthorisationState::Live(rate_9000));
-        assert_eq!(fold_authorisation(7, &author, &forward_order, &[]), expected);
-        assert_eq!(fold_authorisation(7, &author, &reverse_order, &[]), expected);
+        assert_eq!(
+            fold_authorisation(7, &author, &forward_order, &[]),
+            expected
+        );
+        assert_eq!(
+            fold_authorisation(7, &author, &reverse_order, &[]),
+            expected
+        );
     }
 
     #[test]

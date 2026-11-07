@@ -144,7 +144,8 @@ impl WorldProtocol {
         budgets: BudgetPolicy,
         blocks: Option<Arc<dyn BlockList>>,
     ) -> Self {
-        let mut evaluator = AbuseEvaluator::with_budgets(AbusePolicy::default(), local_node, budgets);
+        let mut evaluator =
+            AbuseEvaluator::with_budgets(AbusePolicy::default(), local_node, budgets);
         if let Some(blocks) = blocks {
             evaluator = evaluator.with_block_list(blocks);
         }
@@ -171,7 +172,13 @@ impl WorldProtocol {
     /// operator-visibility surface for budgets, alongside
     /// [`WorldProtocol::abuse_counters`].
     #[must_use]
-    pub fn budget_usage(&self) -> Vec<(crate::abuse::BudgetScope, crate::abuse::BudgetLimit, BudgetUsage)> {
+    pub fn budget_usage(
+        &self,
+    ) -> Vec<(
+        crate::abuse::BudgetScope,
+        crate::abuse::BudgetLimit,
+        BudgetUsage,
+    )> {
         self.abuse
             .lock()
             .map(|abuse| abuse.budget_usage(abuse_now_ms()))
@@ -241,9 +248,11 @@ impl ProtocolHandler for WorldProtocol {
         let remote_endpoint: AbuseEndpointId = *remote.as_bytes();
         let direct_ip = direct_ip_of(&conn);
         let connection_id = match self.abuse.lock() {
-            Ok(mut abuse) => match abuse
-                .open_connection_with_direct_ip(remote_endpoint, direct_ip, abuse_now_ms())
-            {
+            Ok(mut abuse) => match abuse.open_connection_with_direct_ip(
+                remote_endpoint,
+                direct_ip,
+                abuse_now_ms(),
+            ) {
                 Ok(connection_id) => connection_id,
                 Err(refusal) if refusal.reason == RefusalReason::BlockedByOperator => {
                     // #2245: an operator block is not a cap refusal — it
@@ -598,6 +607,64 @@ impl AdminHistoryBudget {
     }
 }
 
+/// Budget for validating records returned by a plain records query.
+/// Enforces the same caps as `parse_records` and `read_records`.
+#[derive(Default)]
+struct RecordsBudget {
+    record_count: usize,
+    last_key: Option<String>,
+}
+
+impl RecordsBudget {
+    fn validate_record(&mut self, key: &str, value: &serde_json::Value) -> Result<()> {
+        // Check key length and non-empty
+        anyhow::ensure!(
+            !key.is_empty() && key.len() <= crate::world::MAX_RECORD_KEY_BYTES,
+            "record key must be 1..={} bytes",
+            crate::world::MAX_RECORD_KEY_BYTES
+        );
+
+        // Check for control characters
+        anyhow::ensure!(
+            !key.chars().any(char::is_control),
+            "record key {key:?} contains a control character"
+        );
+
+        // Check value size
+        let value_bytes = serde_json::to_vec(value)
+            .context("measure record value")?
+            .len();
+        anyhow::ensure!(
+            value_bytes <= crate::world::MAX_RECORD_VALUE_BYTES,
+            "record {key:?} is {value_bytes} bytes; the limit is {} bytes",
+            crate::world::MAX_RECORD_VALUE_BYTES
+        );
+
+        // Check total count
+        self.record_count = self
+            .record_count
+            .checked_add(1)
+            .context("record count overflow")?;
+        anyhow::ensure!(
+            self.record_count <= crate::world::MAX_RECORDS,
+            "records query contains more than {} records; the limit is {}",
+            self.record_count,
+            crate::world::MAX_RECORDS
+        );
+
+        // Check ordering: keys must be strictly ascending
+        if let Some(last) = &self.last_key {
+            anyhow::ensure!(
+                key > last.as_str(),
+                "records are out of order: key {key:?} <= last key {last:?}"
+            );
+        }
+
+        self.last_key = Some(key.to_owned());
+        Ok(())
+    }
+}
+
 /// A client-side world connection (one session).
 #[derive(Debug)]
 pub struct WorldClient {
@@ -701,26 +768,63 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
-        match reply["type"].as_str() {
-            Some("compiled") => Ok((
-                reply["module_hash"].as_str().unwrap_or_default().to_owned(),
-                reply["sequence"].as_u64().unwrap_or_default(),
-                reply["diagnostics"].as_str().unwrap_or_default().to_owned(),
-            )),
-            _ => bail!(
+        Self::parse_compile_reply(&reply)
+    }
+
+    /// Parse a `compiled` reply frame into `(module_hash, sequence,
+    /// diagnostics)`.
+    ///
+    /// Factored out of [`WorldClient::compile`] so the reply
+    /// validation can be unit-tested without a live host. All three
+    /// fields constitute the answer — the hash is what callers
+    /// capture, `0` is a real sequence, and diagnostics are the
+    /// compiler's report — so a missing or mistyped field must never
+    /// default: that shape is corruption or version skew and errors
+    /// instead (issue #6620, Phase 1 of #6669).
+    fn parse_compile_reply(reply: &serde_json::Value) -> Result<(String, u64, String)> {
+        if reply["type"] != "compiled" {
+            bail!(
                 "{}",
                 reply["message"]
                     .as_str()
                     .unwrap_or("host refused to compile")
-            ),
+            );
         }
+        let module_hash = match reply.get("module_hash") {
+            Some(serde_json::Value::String(hash)) => hash.clone(),
+            Some(_) => {
+                bail!("host sent a malformed compiled reply: `module_hash` is not a string")
+            }
+            None => bail!("host sent no module hash in compiled reply"),
+        };
+        let sequence = match reply.get("sequence") {
+            Some(value) => match value.as_u64() {
+                Some(sequence) => sequence,
+                None => {
+                    bail!(
+                        "host sent a malformed compiled reply: `sequence` is not an unsigned integer"
+                    )
+                }
+            },
+            None => bail!("host sent no sequence in compiled reply"),
+        };
+        let diagnostics = match reply.get("diagnostics") {
+            Some(serde_json::Value::String(diagnostics)) => diagnostics.clone(),
+            Some(_) => {
+                bail!("host sent a malformed compiled reply: `diagnostics` is not a string")
+            }
+            None => bail!("host sent no diagnostics in compiled reply"),
+        };
+        Ok((module_hash, sequence, diagnostics))
     }
 
     /// The world's capability report, as JSON.
     ///
     /// # Errors
     ///
-    /// Fails with the host's message if the capability is refused.
+    /// Fails with the host's message if the capability is refused, or with
+    /// "host sent a malformed capability report" if the reply's `report`
+    /// is missing or does not parse as a `CapsReport`.
     pub async fn caps(&mut self, capability: &str) -> Result<serde_json::Value> {
         self.send_json(&serde_json::json!({
             "type": "caps",
@@ -731,22 +835,55 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_caps_reply(&reply, "host refused the capability report")
+    }
+
+    /// Validate a `caps` reply frame and extract its report: the host's
+    /// typed contract (`ServerFrame::Caps`) always carries a
+    /// [`crate::world_caps::CapsReport`], so a reply whose `report` is
+    /// missing or malformed is not a success — for `update_caps` it would
+    /// report a grant/revoke that no report confirms (#6624). The report
+    /// is returned as the original JSON value, unchanged for existing
+    /// `Value` consumers. Factored out of [`WorldClient::caps`] and
+    /// [`WorldClient::update_caps`] (mirroring
+    /// [`WorldClient::parse_caps_ceiling_reply`]) so the validation can
+    /// be unit-tested without a live host sending frames no real host
+    /// sends.
+    fn parse_caps_reply(reply: &serde_json::Value, refusal: &str) -> Result<serde_json::Value> {
         if reply["type"] != "caps" {
-            bail!(
-                "{}",
-                reply["message"]
-                    .as_str()
-                    .unwrap_or("host refused the capability report")
-            );
+            bail!("{}", reply["message"].as_str().unwrap_or(refusal));
         }
+        let _: crate::world_caps::CapsReport = serde_json::from_value(reply["report"].clone())
+            .context("host sent a malformed capability report")?;
         Ok(reply["report"].clone())
+    }
+
+    /// Validate a `policy` reply and return its payload unchanged.
+    ///
+    /// The payload is decoded as a [`crate::world::WorldPolicy`] first,
+    /// so a reply whose `policy` is missing or mistyped is refused
+    /// instead of being read as `Ok(null)` or passed through verbatim
+    /// by the three admin callers sharing this path
+    /// (`set_cross_world_write`, `force_cross_world_write`,
+    /// `set_file_scope`) — an isolation-boundary change must not
+    /// report success with no policy (#6625). Factored out of
+    /// [`WorldClient::policy_request`] (mirroring
+    /// [`WorldClient::parse_caps_reply`]) so the validation can be
+    /// unit-tested without a live host.
+    fn parse_policy_reply(reply: &serde_json::Value) -> Result<serde_json::Value> {
+        let policy = reply.get("policy").context("host sent no policy")?;
+        let _: crate::world::WorldPolicy = serde_json::from_value(policy.clone())
+            .context("host sent a malformed policy")?;
+        Ok(policy.clone())
     }
 
     /// Grant and revoke capabilities; returns the resulting report.
     ///
     /// # Errors
     ///
-    /// Fails with the host's message if the admin token or names are refused.
+    /// Fails with the host's message if the admin token or names are
+    /// refused, or with "host sent a malformed capability report" if the
+    /// reply's `report` is missing or does not parse as a `CapsReport`.
     pub async fn update_caps(
         &mut self,
         admin_token: &str,
@@ -764,15 +901,7 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
-        if reply["type"] != "caps" {
-            bail!(
-                "{}",
-                reply["message"]
-                    .as_str()
-                    .unwrap_or("host refused the capability change")
-            );
-        }
-        Ok(reply["report"].clone())
+        Self::parse_caps_reply(&reply, "host refused the capability change")
     }
 
     /// Replace the world's capability ceiling. The reply carries the report and
@@ -780,7 +909,9 @@ impl WorldClient {
     ///
     /// # Errors
     ///
-    /// Fails with the host's message if the admin token or names are refused.
+    /// Fails with the host's message if the admin token or names are refused,
+    /// or with "host sent a malformed capability report" if the reply's
+    /// `report` is missing or does not parse as a `CapsReport`.
     pub async fn set_caps_ceiling(
         &mut self,
         admin_token: &str,
@@ -796,6 +927,18 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_caps_ceiling_reply(&reply)
+    }
+
+    /// Validate a `caps_ceiling` reply frame: the host's typed contract
+    /// (`ServerFrame::CapsCeiling`) always carries a [`crate::world_caps::CapsReport`],
+    /// so a reply whose `report` is missing or malformed is not a success —
+    /// it is a host that did not confirm the ceiling change (#6636).
+    /// Returns the frame with its `report` replaced by the validated
+    /// report, re-serialized. Factored out of
+    /// [`WorldClient::set_caps_ceiling`] so the validation can be
+    /// unit-tested without a live host sending frames no real host sends.
+    fn parse_caps_ceiling_reply(reply: &serde_json::Value) -> Result<serde_json::Value> {
         if reply["type"] != "caps_ceiling" {
             bail!(
                 "{}",
@@ -804,7 +947,12 @@ impl WorldClient {
                     .unwrap_or("host refused the capability ceiling change")
             );
         }
-        Ok(reply)
+        let report: crate::world_caps::CapsReport = serde_json::from_value(reply["report"].clone())
+            .context("host sent a malformed capability report")?;
+        let mut validated = reply.clone();
+        validated["report"] =
+            serde_json::to_value(report).context("re-encode the capability report")?;
+        Ok(validated)
     }
 
     /// Persist the world's requested resource profile. The response includes
@@ -890,7 +1038,9 @@ impl WorldClient {
     ///
     /// # Errors
     ///
-    /// Fails with the host's message if neither credential is accepted.
+    /// Fails with the host's message if neither credential is accepted,
+    /// or with "host sent a malformed seed" if the reply's `seed` field
+    /// is present but not a `u64`.
     pub async fn manifest_state(
         &mut self,
         admin_token: Option<&str>,
@@ -906,12 +1056,42 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_world_state_reply(&reply)
+    }
+
+    /// Validate a `world_state` reply frame and extract the manifest
+    /// state: a `seed` that is *absent* is the one legitimate `None`
+    /// (a capability-only read, where the host deliberately hides the
+    /// seed, #240), but a seed that is present with the wrong type is
+    /// corruption, not a hidden seed -- reading it with a bare
+    /// `as_u64()` silently downgraded it to the capability-only shape,
+    /// and the manifest-capture consumer then baked it in as seed 0
+    /// (#6626). `schedules` keeps its strict decode. Factored out of
+    /// [`WorldClient::manifest_state`] (mirroring
+    /// [`WorldClient::parse_caps_reply`]) so the validation can be
+    /// unit-tested without a live host sending frames no real host
+    /// sends.
+    fn parse_world_state_reply(
+        reply: &serde_json::Value,
+    ) -> Result<(Option<u64>, std::collections::BTreeMap<String, u64>)> {
         match reply["type"].as_str() {
-            Some("world_state") => Ok((
-                reply["seed"].as_u64(),
-                serde_json::from_value(reply["schedules"].clone())
-                    .context("host sent a malformed schedule map")?,
-            )),
+            Some("world_state") => {
+                let seed = match reply.get("seed") {
+                    // Absent, or null: the host serializes a hidden seed
+                    // as null (`ServerFrame::WorldState.seed` is an
+                    // `Option<u64>` with no skip-serializing, and both
+                    // host reply paths set it to
+                    // `admin_ok.then_some(seed)`), so null is the
+                    // legitimate capability-only shape (#240).
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => Some(value.as_u64().context("host sent a malformed seed")?),
+                };
+                Ok((
+                    seed,
+                    serde_json::from_value(reply["schedules"].clone())
+                        .context("host sent a malformed schedule map")?,
+                ))
+            }
             _ => bail!(
                 "{}",
                 reply["message"]
@@ -958,7 +1138,8 @@ impl WorldClient {
     /// # Errors
     ///
     /// Fails with the host's message if neither a valid admin token nor a valid
-    /// guest capability is supplied.
+    /// guest capability is supplied, or if the reply is missing the expected
+    /// `update.requested` field.
     pub async fn execution_profile(
         &mut self,
         admin_token: Option<&str>,
@@ -982,7 +1163,14 @@ impl WorldClient {
                     .unwrap_or("host refused the execution profile query")
             );
         }
-        Ok(reply)
+        // Extract the requested profile from update.requested
+        // The reply has structure: { "type": "execution_profile", "update": { "requested": {...}, "applies_on_next_program_install_or_process_restart": bool }, "message": "..." }
+        let requested_profile = reply
+            .get("update")
+            .and_then(|update| update.get("requested"))
+            .context("host returned a malformed execution profile")?
+            .clone();
+        Ok(requested_profile)
     }
 
     /// Let other unisolated worlds write into this world, with the admin token.
@@ -1056,7 +1244,7 @@ impl WorldClient {
                     .unwrap_or("host refused the policy change")
             );
         }
-        Ok(reply["policy"].clone())
+        Self::parse_policy_reply(&reply)
     }
 
     /// Set the world's isolation with the admin token and return the new
@@ -1132,25 +1320,54 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_worlds_reply(&reply, refuse_message)
+    }
+
+    /// Parse a `worlds` reply frame into `(default, [(name, open,
+    /// presence)])`.
+    ///
+    /// Factored out of [`WorldClient::read_worlds_reply`] so the reply
+    /// validation can be unit-tested without a live host. Every field
+    /// of every entry is required in its wire shape (the host's
+    /// `WorldInfo` always serializes `name`, `open`, and `presence`):
+    /// a malformed entry fails the whole listing with an error naming
+    /// the entry and field — a listing is complete or it errors
+    /// (issue #6621, design #6669 rule 4). Silently dropping the
+    /// entry, or defaulting a mistyped `presence` to 0, would present
+    /// a partial listing as ground truth.
+    fn parse_worlds_reply(
+        reply: &serde_json::Value,
+        refuse_message: &str,
+    ) -> Result<(String, Vec<(String, bool, usize)>)> {
         if reply["type"] != "worlds" {
-            bail!(
-                "{}",
-                reply["message"].as_str().unwrap_or(refuse_message)
-            );
+            bail!("{}", reply["message"].as_str().unwrap_or(refuse_message));
         }
-        let default = reply["default"].as_str().unwrap_or_default().to_owned();
-        let worlds = reply["worlds"]
+        // The host's wire type always sends `default` as a string
+        // (ServerFrame::Worlds); a missing or mistyped field is a
+        // malformed reply, refused like the missing list below (#6647).
+        // An explicitly empty string is a well-formed shape and passes:
+        // shape is what this parser judges, not the name's content.
+        let default = reply["default"]
+            .as_str()
+            .context("worlds reply had no default world")?
+            .to_owned();
+        let entries = reply["worlds"]
             .as_array()
-            .context("worlds reply had no list")?
-            .iter()
-            .filter_map(|w| {
-                Some((
-                    w["name"].as_str()?.to_owned(),
-                    w["open"].as_bool()?,
-                    w["presence"].as_u64().unwrap_or(0) as usize,
-                ))
-            })
-            .collect();
+            .context("worlds reply had no list")?;
+        let mut worlds = Vec::with_capacity(entries.len());
+        for (index, entry) in entries.iter().enumerate() {
+            let name = entry["name"]
+                .as_str()
+                .with_context(|| format!("worlds reply entry {index} had no name"))?
+                .to_owned();
+            let open = entry["open"]
+                .as_bool()
+                .with_context(|| format!("worlds reply entry {index} ({name}) had no open flag"))?;
+            let presence = entry["presence"].as_u64().with_context(|| {
+                format!("worlds reply entry {index} ({name}) had no presence count")
+            })? as usize;
+            worlds.push((name, open, presence));
+        }
         Ok((default, worlds))
     }
 
@@ -1170,6 +1387,17 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_create_world_reply(&reply)
+    }
+
+    /// Parse a `world_created` reply frame into the `created` flag.
+    ///
+    /// Factored out of [`WorldClient::create_world`] so the reply
+    /// validation can be unit-tested without a live host. `false` is a
+    /// real answer (the world already existed), so a missing or
+    /// mistyped `created` field must never default to it: that shape
+    /// is corruption or version skew and errors instead (issue #6632).
+    fn parse_create_world_reply(reply: &serde_json::Value) -> Result<bool> {
         if reply["type"] != "world_created" {
             bail!(
                 "{}",
@@ -1178,7 +1406,13 @@ impl WorldClient {
                     .unwrap_or("host refused to create the world")
             );
         }
-        Ok(reply["created"].as_bool().unwrap_or(false))
+        match reply.get("created") {
+            Some(serde_json::Value::Bool(created)) => Ok(*created),
+            Some(_) => {
+                bail!("host sent a malformed world_created reply: `created` is not a boolean")
+            }
+            None => bail!("host sent no created flag in world_created reply"),
+        }
     }
 
     /// Receive one JSON frame; `None` when the host ended the session.
@@ -1400,13 +1634,43 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_module_info_reply(&reply)
+    }
+
+    /// Parse a `module_info` reply frame into [`WorldModuleInfo`].
+    ///
+    /// Factored out of [`WorldClient::info_details`] so the reply validation
+    /// can be unit-tested without a live host: the malformed-reply cases of
+    /// issue #6633 need frames no real host will send. Validation is strict
+    /// in the same way for every field — a present field with the wrong
+    /// shape is corruption or version skew and errors, never a default.
+    fn parse_module_info_reply(reply: &serde_json::Value) -> Result<WorldModuleInfo> {
         match reply["type"].as_str() {
             Some("module_info") => {
                 let world_id = reply["world_id"]
                     .as_str()
                     .context("host omitted world id")?
                     .to_owned();
-                let active_module_hash = reply["active_module_hash"].as_str().map(str::to_owned);
+                let active_module_hash = match reply.get("active_module_hash") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => {
+                        if let Some(hash) = value.as_str() {
+                            Some(hash.to_owned())
+                        } else {
+                            bail!(
+                                "host sent malformed active_module_hash: expected string or null, got {}",
+                                match value {
+                                    serde_json::Value::Null => "null",
+                                    serde_json::Value::Bool(_) => "boolean",
+                                    serde_json::Value::Number(_) => "number",
+                                    serde_json::Value::String(_) => "string",
+                                    serde_json::Value::Array(_) => "array",
+                                    serde_json::Value::Object(_) => "object",
+                                }
+                            );
+                        }
+                    }
+                };
                 let current_sequence = reply["current_sequence"]
                     .as_u64()
                     .context("host omitted sequence")?;
@@ -1443,7 +1707,14 @@ impl WorldClient {
         prefix: Option<&str>,
     ) -> Result<crate::world::Records> {
         let mut all = crate::world::Records::new();
+        let mut budget = RecordsBudget::default();
         for (_, page) in self.record_pages(capability, prefix).await? {
+            // Validate each page's records against caps, ordering, and total count
+            for (key, value) in &page {
+                budget
+                    .validate_record(key, value)
+                    .with_context(|| format!("invalid record in page"))?;
+            }
             all.extend(page);
         }
         Ok(all)
@@ -1463,11 +1734,27 @@ impl WorldClient {
     ) -> Result<(u64, crate::world::Records)> {
         let mut pages = self.record_pages(capability, prefix).await?.into_iter();
         let (sequence, mut all) = pages.next().context("host sent no records page")?;
+        let mut budget = RecordsBudget::default();
+
+        // Validate the first page
+        for (key, value) in &all {
+            budget
+                .validate_record(key, value)
+                .with_context(|| format!("invalid record in first page (sequence {sequence})"))?;
+        }
+
         for (page_sequence, page) in pages {
             anyhow::ensure!(
                 page_sequence == sequence,
                 "the world changed while its records were read"
             );
+
+            // Validate subsequent pages
+            for (key, value) in &page {
+                budget.validate_record(key, value).with_context(|| {
+                    format!("invalid record in page (sequence {page_sequence})")
+                })?;
+            }
             all.extend(page);
         }
         Ok((sequence, all))
@@ -1481,12 +1768,13 @@ impl WorldClient {
     ) -> Result<Vec<(u64, crate::world::Records)>> {
         let mut pages = Vec::new();
         let mut after: Option<String> = None;
+        let mut budget = RecordsBudget::default();
         loop {
             self.send_json(&serde_json::json!({
                 "type": "records",
                 "capability": capability,
                 "prefix": prefix,
-                "after": after,
+                "after": after.as_deref(),
             }))
             .await?;
             let reply = self
@@ -1506,11 +1794,153 @@ impl WorldClient {
                 .context("records reply has no sequence")?;
             let page: crate::world::Records =
                 serde_json::from_value(reply["records"].clone()).context("decode records page")?;
+
+            // Validate the page's records against caps, ordering, and total count
+            for (key, value) in &page {
+                budget
+                    .validate_record(key, value)
+                    .with_context(|| format!("invalid record in page for sequence {sequence}"))?;
+            }
+
+            // Disposition the cursor strictly (#6778): the host's
+            // typed frame (ServerFrame::Records, world/actor.rs)
+            // serializes next_after as a string or null — null (or
+            // absent) ends the listing, a string continues it, and
+            // any other type is a malformed reply, never a silent
+            // end-of-listing. Same shape as parse_admin_history_cursor
+            // below and the SSH drain's records_cursor.
+            let next_after: Option<String> = match reply.get("next_after") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::String(next)) => Some(next.clone()),
+                Some(other) => anyhow::bail!(
+                    "malformed records reply: next_after must be a string or null, got {}",
+                    match other {
+                        serde_json::Value::Bool(_) => "boolean",
+                        serde_json::Value::Number(_) => "number",
+                        serde_json::Value::Array(_) => "array",
+                        serde_json::Value::Object(_) => "object",
+                        _ => "unknown",
+                    }
+                ),
+            };
+            if let Some(next) = &next_after {
+                // Validate that next_after matches the last key in this page
+                if let Some((last_key, _)) = page.iter().next_back() {
+                    anyhow::ensure!(
+                        next == last_key,
+                        "invalid records cursor: next_after={next:?} does not match last key {last_key:?}"
+                    );
+                } else {
+                    // Empty page should only happen when after is not null
+                    anyhow::ensure!(
+                        after.is_some(),
+                        "empty records page returned on first request"
+                    );
+                }
+
+                // Validate that the cursor advanced from what we sent
+                if let Some(cursor) = &after {
+                    anyhow::ensure!(
+                        next.as_str() > cursor.as_str(),
+                        "records cursor did not advance: next_after={next:?}, previous cursor={cursor:?}"
+                    );
+                }
+            }
+
             pages.push((sequence, page));
-            match reply["next_after"].as_str() {
-                Some(next) => after = Some(next.to_owned()),
+            match next_after {
+                Some(next) => after = Some(next),
                 None => return Ok(pages),
             }
+        }
+    }
+
+    /// Parse the head fields of an `event_history_begin` frame.
+    ///
+    /// Factored out of [`WorldClient::admin_event_history`] so the frame
+    /// validation can be unit-tested without a rogue host. Every field is
+    /// strict: the host's typed frame (`ServerFrame::EventHistoryBegin`)
+    /// serializes `module_hash` as a string or `null`, so a present
+    /// non-string, non-null `module_hash` is a malformed reply (#6641),
+    /// never "this world has no module" — the same match-and-bail pattern
+    /// `parse_module_info_reply` applies to the `module_info` reply (#6633).
+    /// Returns `(world_id, module_hash, current_sequence, complete, event_count)`.
+    fn parse_event_history_begin(
+        begin: &serde_json::Value,
+    ) -> Result<(String, Option<String>, u64, bool, usize)> {
+        let world_id = begin["world_id"]
+            .as_str()
+            .context("history reply has no world ID")?
+            .to_owned();
+        let module_hash = match begin.get("module_hash") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => {
+                if let Some(hash) = value.as_str() {
+                    Some(hash.to_owned())
+                } else {
+                    bail!(
+                        "history reply has a malformed module_hash: expected string or null, got {}",
+                        match value {
+                            serde_json::Value::Bool(_) => "boolean",
+                            serde_json::Value::Number(_) => "number",
+                            serde_json::Value::Array(_) => "array",
+                            serde_json::Value::Object(_) => "object",
+                            _ => "unknown",
+                        }
+                    );
+                }
+            }
+        };
+        let current_sequence = begin["current_sequence"]
+            .as_u64()
+            .context("history reply has no sequence")?;
+        let complete = begin["complete"]
+            .as_bool()
+            .context("history reply has no completeness flag")?;
+        let event_count = begin["event_count"]
+            .as_u64()
+            .and_then(|count| usize::try_from(count).ok())
+            .filter(|count| *count <= crate::world::MAX_ADMIN_HISTORY_EVENTS)
+            .context("history reply has an invalid event count")?;
+        Ok((
+            world_id,
+            module_hash,
+            current_sequence,
+            complete,
+            event_count,
+        ))
+    }
+
+    /// Parse one admin-history records page's `next_after` cursor.
+    ///
+    /// Factored out of [`WorldClient::admin_event_history`] so the frame
+    /// validation can be unit-tested without a rogue host. The host's
+    /// typed frame (`ServerFrame::Records`) serializes `next_after` as a
+    /// string or `null`, with the key always present, so a missing key
+    /// or a present non-string, non-null value is a malformed reply
+    /// (#6600), never "end of pages" — the same match-and-bail pattern
+    /// `parse_event_history_begin` applies to the begin frame (#6641).
+    /// Returns the cursor to continue from, or `None` at the last page.
+    fn parse_admin_history_cursor(frame: &serde_json::Value) -> Result<Option<String>> {
+        match frame.get("next_after") {
+            Some(serde_json::Value::Null) => Ok(None),
+            Some(value) => {
+                if let Some(next) = value.as_str() {
+                    Ok(Some(next.to_owned()))
+                } else {
+                    bail!(
+                        "admin history cursor is malformed: expected string or null, got {}",
+                        match value {
+                            serde_json::Value::Bool(_) => "boolean",
+                            serde_json::Value::Number(_) => "number",
+                            serde_json::Value::Array(_) => "array",
+                            serde_json::Value::Object(_) => "object",
+                            _ => "unknown",
+                        }
+                    );
+                }
+            }
+            None => bail!("admin history records reply has no next_after cursor"),
         }
     }
 
@@ -1543,22 +1973,8 @@ impl WorldClient {
                     .unwrap_or("host refused admin history export")
             );
         }
-        let world_id = begin["world_id"]
-            .as_str()
-            .context("history reply has no world ID")?
-            .to_owned();
-        let module_hash = begin["module_hash"].as_str().map(str::to_owned);
-        let current_sequence = begin["current_sequence"]
-            .as_u64()
-            .context("history reply has no sequence")?;
-        let complete = begin["complete"]
-            .as_bool()
-            .context("history reply has no completeness flag")?;
-        let event_count = begin["event_count"]
-            .as_u64()
-            .and_then(|count| usize::try_from(count).ok())
-            .filter(|count| *count <= crate::world::MAX_ADMIN_HISTORY_EVENTS)
-            .context("history reply has an invalid event count")?;
+        let (world_id, module_hash, current_sequence, complete, event_count) =
+            Self::parse_event_history_begin(&begin)?;
         let mut events = Vec::with_capacity(event_count);
         for _ in 0..event_count {
             let (frame, frame_bytes) = self
@@ -1615,14 +2031,16 @@ impl WorldClient {
                 after = Some(key.clone());
                 records.insert(key, value);
             }
-            match frame["next_after"].as_str() {
+            match Self::parse_admin_history_cursor(&frame)? {
                 Some(next) => {
                     anyhow::ensure!(
-                        after.as_deref() == Some(next),
+                        after.as_deref() == Some(next.as_str()),
                         "invalid admin history cursor"
                     );
                     anyhow::ensure!(
-                        page_cursor.as_deref().is_none_or(|cursor| next > cursor),
+                        page_cursor
+                            .as_deref()
+                            .is_none_or(|cursor| next.as_str() > cursor),
                         "admin history record cursor did not advance"
                     );
                 }
@@ -1879,12 +2297,15 @@ impl WorldSessions {
             let session = self
                 .roots
                 .get(&key.0)
-                .expect("root inserted above")
+                .context("root inserted above")?
                 .open_session(world)
                 .await?;
             self.sessions.insert(key.clone(), session);
         }
-        Ok(self.sessions.get_mut(&key).expect("session inserted above"))
+        Ok(self
+            .sessions
+            .get_mut(&key)
+            .context("session inserted above")?)
     }
 
     /// The live session for (`addr`, `world`), if one is open.
@@ -1937,6 +2358,8 @@ mod tests {
         endpoint::{RelayMode, presets},
         protocol::Router,
     };
+
+    use proptest::prelude::*;
 
     use super::*;
     use crate::world::{WorldCore, WorldHandle, WorldLimits, WorldScopes};
@@ -2148,10 +2571,19 @@ mod tests {
     async fn inbound_refusal_backpressures_authorized_streams_but_sheds_preauth() {
         use crate::abuse::{AbusePolicy, BucketLimits};
 
+        // One token per second against a burst of one: a drained bucket
+        // stays empty for ~1 s, so the pre-auth shed below cannot race
+        // the refill. At 1_000 tokens/sec the single burst token
+        // refilled in 1 ms, and any >= 1 ms scheduling stall between
+        // the two pre-auth charges admitted the second one instead —
+        // the intermittent "a pre-auth refusal sheds the stream"
+        // failure (#5195). The authorized leg keeps its shape: the
+        // refusal sleeps the 1 s retry floor and then charges against
+        // the refilled bucket, inside the existing 3 s bound.
         let limits = BucketLimits {
-            frames_per_sec: 1_000,
+            frames_per_sec: 1,
             frame_burst: 1,
-            bytes_per_sec: 1_000,
+            bytes_per_sec: 1,
             byte_burst: 1,
         };
         let evaluator = Arc::new(Mutex::new(AbuseEvaluator::new(
@@ -2164,10 +2596,20 @@ mod tests {
         )));
 
         // Pre-authorization: the first frame fits the burst, the next is
-        // refused immediately — no waiting, the stream is shed.
+        // refused immediately — no waiting, the stream is shed. Every
+        // await in this test is bounded (#5195): a wedged charge fails
+        // loudly here instead of stalling the suite.
         let preauth = [3; 32];
         let flag = AtomicBool::new(false);
-        assert!(charge_inbound_frame(&evaluator, preauth, &flag, 1).await);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                charge_inbound_frame(&evaluator, preauth, &flag, 1),
+            )
+            .await
+            .expect("the first pre-auth charge should return promptly"),
+            "the first frame fits the burst"
+        );
         assert!(
             !tokio::time::timeout(
                 Duration::from_millis(500),
@@ -2182,7 +2624,15 @@ mod tests {
         // charge completes once the bucket refills instead of failing.
         let authed = [4; 32];
         let flag = AtomicBool::new(true);
-        assert!(charge_inbound_frame(&evaluator, authed, &flag, 1).await);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                charge_inbound_frame(&evaluator, authed, &flag, 1),
+            )
+            .await
+            .expect("the first authorized charge should return promptly"),
+            "the first frame fits the burst"
+        );
         assert!(
             tokio::time::timeout(
                 Duration::from_secs(3),
@@ -2295,6 +2745,203 @@ mod tests {
         );
     }
 
+    /// A host that answers `records` requests with scripted pages, however
+    /// rogue, instead of serving a real world. The last page repeats
+    /// forever, which is what a stuck-cursor host looks like on the wire.
+    #[derive(Debug, Clone)]
+    struct RogueRecordsHost {
+        pages: Arc<Vec<serde_json::Value>>,
+    }
+
+    impl ProtocolHandler for RogueRecordsHost {
+        async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+            while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+                let pages = Arc::clone(&self.pages);
+                tokio::spawn(async move {
+                    let mut index = 0usize;
+                    while let Ok(Some(_frame)) = crate::frames::read_frame(&mut recv).await {
+                        let Some(reply) = pages.get(index).or_else(|| pages.last()) else {
+                            break;
+                        };
+                        index += 1;
+                        let text = reply.to_string();
+                        if crate::frames::write_frame(&mut send, text.as_bytes())
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+            }
+            Ok(())
+        }
+    }
+
+    async fn rogue_host(pages: Vec<serde_json::Value>) -> (Router, EndpointAddr) {
+        let ep = endpoint().await;
+        let router = Router::builder(ep.clone())
+            .accept(
+                WORLD_ALPN,
+                RogueRecordsHost {
+                    pages: Arc::new(pages),
+                },
+            )
+            .spawn();
+        let addr = EndpointAddr::from_parts(
+            ep.id(),
+            ep.bound_sockets().iter().map(|a| {
+                let ip = if a.ip().is_unspecified() {
+                    std::net::Ipv4Addr::LOCALHOST.into()
+                } else {
+                    a.ip()
+                };
+                iroh::TransportAddr::Ip(std::net::SocketAddr::new(ip, a.port()))
+            }),
+        );
+        (router, addr)
+    }
+
+    fn records_page(records: serde_json::Value, next_after: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "type": "records",
+            "sequence": 7,
+            "records": records,
+            "next_after": next_after,
+        })
+    }
+
+    /// Drive `WorldClient::records` against a rogue host and return the
+    /// result. The timeout is the promptness oracle: an unvalidated client
+    /// hangs or balloons on several of these scripts instead of erroring.
+    async fn rogue_records(pages: Vec<serde_json::Value>) -> Result<crate::world::Records> {
+        let (router, addr) = rogue_host(pages).await;
+        let client_ep = endpoint().await;
+        let mut client = WorldClient::connect(&client_ep, addr).await.unwrap();
+        let result =
+            tokio::time::timeout(Duration::from_secs(10), client.records("capability", None))
+                .await
+                .expect("records() must refuse a rogue page promptly, not hang");
+        client_ep.close().await;
+        router.shutdown().await.unwrap();
+        result
+    }
+
+    #[tokio::test]
+    async fn test_records_client_rejects_over_count_page() {
+        let mut map = serde_json::Map::new();
+        for i in 0..=crate::world::MAX_RECORDS {
+            map.insert(format!("k{i:05}"), serde_json::json!(i));
+        }
+        let err = rogue_records(vec![records_page(serde_json::Value::Object(map), None)])
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:?}").contains("4096"),
+            "over-count error must name the cap: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_records_client_rejects_oversized_value() {
+        let page = records_page(
+            serde_json::json!({"a": "x".repeat(crate::world::MAX_RECORD_VALUE_BYTES + 1)}),
+            None,
+        );
+        let err = rogue_records(vec![page]).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("\"a\""),
+            "oversized-value error must name the key: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_records_client_rejects_control_char_key() {
+        let page = records_page(serde_json::json!({"a\u{1}b": 1}), None);
+        let err = rogue_records(vec![page]).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("control character"),
+            "control-char error must say why: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_records_client_rejects_stuck_cursor() {
+        // One page, repeated forever: next_after never advances past "a".
+        let page = records_page(serde_json::json!({"a": 1}), Some("a"));
+        let err = rogue_records(vec![page]).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("out of order")
+                || format!("{err:?}").contains("did not advance"),
+            "stuck cursor must be refused: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_records_client_rejects_duplicate_key_across_pages() {
+        let pages = vec![
+            records_page(serde_json::json!({"a": 1, "b": 2}), Some("b")),
+            records_page(serde_json::json!({"b": 3}), None),
+        ];
+        let err = rogue_records(pages).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("out of order"),
+            "duplicate key across pages must be refused: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_records_client_rejects_out_of_order_page() {
+        let pages = vec![
+            records_page(serde_json::json!({"m": 1}), Some("m")),
+            records_page(serde_json::json!({"a": 2}), None),
+        ];
+        let err = rogue_records(pages).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("out of order"),
+            "out-of-order key across pages must be refused: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_records_client_rejects_mismatched_cursor() {
+        let page = records_page(serde_json::json!({"a": 1}), Some("zzz"));
+        let err = rogue_records(vec![page]).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("does not match last key"),
+            "mismatched cursor must be refused: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_records_client_rejects_mistyped_cursor() {
+        // next_after as a number: present but mistyped must be
+        // refused as malformed (#6778), never read as the final page
+        // while the host may hold more records.
+        let page = serde_json::json!({
+            "type": "records",
+            "sequence": 7,
+            "records": {"a": 1},
+            "next_after": 42,
+        });
+        let err = rogue_records(vec![page]).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("next_after"),
+            "mistyped cursor error must name next_after: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_records_client_accepts_conforming_pages() {
+        let pages = vec![
+            records_page(serde_json::json!({"a": 1, "b": 2}), Some("b")),
+            records_page(serde_json::json!({"c": 3}), None),
+        ];
+        let records = rogue_records(pages).await.unwrap();
+        assert_eq!(records.len(), 3);
+        assert_eq!(records["c"], serde_json::json!(3));
+    }
+
     #[tokio::test]
     async fn peers_invite_join_chat_and_catch_up_over_iroh() {
         let host = host(Some("admin")).await;
@@ -2392,6 +3039,314 @@ mod tests {
         host.router.shutdown().await.unwrap();
     }
 
+    #[test]
+    fn set_caps_ceiling_reply_requires_a_valid_report() {
+        // Issue #6636: a `caps_ceiling` frame carrying no valid CapsReport
+        // must not read as a successful ceiling change. Driven through the
+        // factored reply parser. Oracle: the host's typed
+        // `ServerFrame::CapsCeiling` always carries a real report, and the
+        // sibling `set_schedule` validates its reply payload the same way.
+        let valid_report = serde_json::json!({
+            "granted": ["time.now"],
+            "requested": ["time.now"],
+            "missing": [],
+            "usage": {},
+            "policy": "deny",
+            "catalog": ["time.now"],
+            "ceiling": ["time.now"],
+        });
+        let ok = WorldClient::parse_caps_ceiling_reply(&serde_json::json!({
+            "type": "caps_ceiling",
+            "report": valid_report,
+            "message": "the ceiling applies immediately",
+        }))
+        .unwrap();
+        assert_eq!(ok["type"], "caps_ceiling");
+        assert_eq!(ok["report"]["ceiling"], serde_json::json!(["time.now"]));
+        assert_eq!(ok["report"]["granted"], serde_json::json!(["time.now"]));
+
+        // Missing, null, non-object, and wrong-shaped reports all refuse
+        // with the malformed-report context.
+        for bad_reply in [
+            serde_json::json!({"type": "caps_ceiling", "message": "the ceiling applies immediately"}),
+            serde_json::json!({"type": "caps_ceiling", "report": null, "message": "ok"}),
+            serde_json::json!({"type": "caps_ceiling", "report": 123, "message": "ok"}),
+            serde_json::json!({"type": "caps_ceiling", "report": {"granted": "time.now"}, "message": "ok"}),
+        ] {
+            let result = WorldClient::parse_caps_ceiling_reply(&bad_reply);
+            assert!(result.is_err(), "reply {bad_reply} must be refused");
+            let err = result.err().unwrap();
+            assert!(
+                err.to_string().contains("malformed capability report"),
+                "unexpected error: {err}"
+            );
+        }
+
+        // A non-caps_ceiling frame still bails with the host's message.
+        let refused = WorldClient::parse_caps_ceiling_reply(&serde_json::json!({
+            "type": "error",
+            "message": "admin token refused",
+        }));
+        assert!(
+            refused
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("admin token refused")
+        );
+    }
+
+    #[test]
+    fn policy_reply_requires_a_valid_policy() {
+        // A well-formed policy is returned verbatim for Value consumers.
+        let policy = serde_json::json!({
+            "isolation": "isolated",
+            "cross_world_write": false,
+            "cross_world_forced": false,
+            "file_scope": "unrestricted",
+            "file_write_override": false
+        });
+        let reply = serde_json::json!({"type": "policy", "policy": policy});
+        assert_eq!(WorldClient::parse_policy_reply(&reply).unwrap(), policy);
+        // Missing or mistyped policies are refused (#6625).
+        for bad in [
+            serde_json::json!({"type": "policy"}),
+            serde_json::json!({"type": "policy", "policy": 123}),
+            serde_json::json!({"type": "policy", "policy": "deny"}),
+            serde_json::json!({"type": "policy", "policy": [1, 2]}),
+            serde_json::json!({"type": "policy", "policy": {"isolation": "isolated"}}),
+        ] {
+            assert!(
+                WorldClient::parse_policy_reply(&bad).is_err(),
+                "accepted a malformed policy reply: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn world_state_reply_requires_a_u64_seed_when_present() {
+        // Issue #6626: a present-but-mistyped `seed` must error, not
+        // silently read as the capability-only `None` (which the
+        // manifest-capture consumer then bakes in as seed 0). Only an
+        // absent seed is `None` outright; a null seed is also `None`,
+        // because that is how the host serializes a hidden seed
+        // (`ServerFrame::WorldState.seed`, #240 seed-hiding). Driven
+        // through the factored reply parser manifest_state() uses.
+        let parse = WorldClient::parse_world_state_reply;
+
+        // Controls: a numeric seed, and the legitimate absent seed.
+        let (seed, schedules) = parse(&serde_json::json!({
+            "type": "world_state", "seed": 42, "schedules": {"a": 1},
+        }))
+        .unwrap();
+        assert_eq!(seed, Some(42));
+        assert_eq!(schedules.get("a"), Some(&1));
+        let (seed, schedules) = parse(&serde_json::json!({
+            "type": "world_state", "schedules": {},
+        }))
+        .unwrap();
+        assert_eq!(seed, None);
+        assert!(schedules.is_empty());
+        // The host's actual capability-only shape: `"seed": null`.
+        let (seed, schedules) = parse(&serde_json::json!({
+            "type": "world_state", "seed": null, "schedules": {"b": 2},
+        }))
+        .unwrap();
+        assert_eq!(seed, None);
+        assert_eq!(schedules.get("b"), Some(&2));
+
+        // Every mistyped shape errors and names the malformed seed.
+        for bad in [
+            serde_json::json!("42"),
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!({}),
+            serde_json::json!([]),
+            serde_json::json!(true),
+        ] {
+            let err = parse(&serde_json::json!({
+                "type": "world_state", "seed": bad, "schedules": {},
+            }))
+            .err()
+            .unwrap_or_else(|| panic!("seed {bad} must be refused"));
+            assert!(
+                err.to_string().contains("malformed seed"),
+                "seed {bad}: {err}"
+            );
+        }
+
+        // The sibling field keeps its strict decode.
+        let err = parse(&serde_json::json!({
+            "type": "world_state", "seed": 42, "schedules": {"a": "x"},
+        }))
+        .err()
+        .unwrap();
+        assert!(err.to_string().contains("malformed schedule map"), "{err}");
+
+        // A refusal frame still surfaces the host's message.
+        let err = parse(&serde_json::json!({
+            "type": "error", "message": "admin token refused",
+        }))
+        .err()
+        .unwrap();
+        assert!(err.to_string().contains("admin token refused"), "{err}");
+    }
+
+    // Property coverage for the same parser (repo testing doctrine:
+    // a parser's invariants are stated once and hammered with
+    // generated inputs, not just the examples above). Oracle: the
+    // typed frame contract — `ServerFrame::WorldState.seed` is an
+    // `Option<u64>` on the wire (a u64, or null when the host hides
+    // the seed, #240), and `schedules` is a string→u64 map that
+    // passes through untouched.
+    proptest! {
+        #[test]
+        fn world_state_reply_seed_and_schedule_invariants(
+            seed in any::<u64>(),
+            schedules in proptest::collection::btree_map(any::<String>(), any::<u64>(), 0..8),
+            mistyped in prop_oneof![
+                any::<String>().prop_map(serde_json::Value::from),
+                any::<bool>().prop_map(serde_json::Value::from),
+                proptest::collection::vec(any::<u64>(), 0..4)
+                    .prop_map(serde_json::Value::from),
+                proptest::collection::hash_map(any::<String>(), any::<u64>(), 0..4)
+                    .prop_map(|m| serde_json::to_value(m).unwrap()),
+            ],
+        ) {
+            let frame = |seed_value: serde_json::Value| {
+                serde_json::json!({
+                    "type": "world_state",
+                    "seed": seed_value,
+                    "schedules": serde_json::to_value(&schedules).unwrap(),
+                })
+            };
+            // A valid u64 seed is preserved; the schedule map passes
+            // through verbatim.
+            let (parsed_seed, parsed_schedules) =
+                WorldClient::parse_world_state_reply(&frame(serde_json::Value::from(seed)))
+                    .unwrap();
+            prop_assert_eq!(parsed_seed, Some(seed));
+            prop_assert_eq!(parsed_schedules, schedules.clone());
+            // Null (the host's hidden-seed shape) reads as None.
+            let (parsed_seed, _) =
+                WorldClient::parse_world_state_reply(&frame(serde_json::Value::Null)).unwrap();
+            prop_assert_eq!(parsed_seed, None);
+            // Any other seed type is refused as malformed.
+            let result = WorldClient::parse_world_state_reply(&frame(mistyped));
+            prop_assert!(result.is_err());
+            prop_assert!(
+                result
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("malformed seed")
+            );
+        }
+    }
+
+    #[test]
+    fn caps_reply_requires_a_valid_report() {
+        // Issue #6624: a `caps` frame carrying no valid CapsReport must
+        // not read as a successful capability report — for update_caps
+        // it would confirm a grant/revoke that never happened. Driven
+        // through the factored reply parser shared by caps() and
+        // update_caps(). Oracle: the host's typed `ServerFrame::Caps`
+        // always carries a real report, and the sibling
+        // parse_caps_ceiling_reply (#6636) validates the same way.
+        let valid_report = serde_json::json!({
+            "granted": ["time.now"],
+            "requested": ["time.now"],
+            "missing": [],
+            "usage": {},
+            "policy": "deny",
+            "catalog": ["time.now"],
+            "ceiling": ["time.now"],
+        });
+        for refusal in [
+            "host refused the capability report",
+            "host refused the capability change",
+        ] {
+            let ok = WorldClient::parse_caps_reply(
+                &serde_json::json!({"type": "caps", "report": valid_report}),
+                refusal,
+            )
+            .unwrap();
+            // The report comes back as the original value, unchanged.
+            assert_eq!(ok, valid_report);
+
+            // A pre-ceiling report (no ceiling/effective/view_failures)
+            // still parses via the serde defaults and returns unchanged.
+            let old_report = serde_json::json!({
+                "granted": ["time.now"],
+                "requested": [],
+                "missing": [],
+                "usage": {},
+                "policy": "grant-on-use",
+                "catalog": ["time.now"],
+            });
+            let ok = WorldClient::parse_caps_reply(
+                &serde_json::json!({"type": "caps", "report": old_report}),
+                refusal,
+            )
+            .unwrap();
+            assert_eq!(ok, old_report);
+        }
+
+        // The issue's malformed shapes: missing report, null, string,
+        // number, array, a mistyped field, and a report missing the
+        // required fields — all refuse with the malformed-report
+        // context, through both methods' refusal wording.
+        for bad_report in [
+            None,
+            Some(serde_json::json!(null)),
+            Some(serde_json::json!("yes")),
+            Some(serde_json::json!(123)),
+            Some(serde_json::json!([])),
+            Some(serde_json::json!({
+                "granted": "time.now",
+                "requested": [],
+                "missing": [],
+                "usage": {},
+                "policy": "deny",
+                "catalog": [],
+            })),
+            Some(serde_json::json!({
+                "granted": [],
+                "requested": [],
+                "missing": [],
+                "usage": {},
+                "policy": 42,
+                "catalog": [],
+            })),
+            Some(serde_json::json!({"granted": []})),
+        ] {
+            let mut reply = serde_json::json!({"type": "caps"});
+            if let Some(report) = bad_report {
+                reply["report"] = report;
+            }
+            let result = WorldClient::parse_caps_reply(&reply, "host refused");
+            assert!(result.is_err(), "reply {reply} must be refused");
+            let err = result.err().unwrap();
+            assert!(
+                err.to_string().contains("malformed capability report"),
+                "unexpected error: {err}"
+            );
+        }
+
+        // A refusal frame still bails with the host's own message.
+        let refused = WorldClient::parse_caps_reply(
+            &serde_json::json!({"type": "error", "message": "capability refused"}),
+            "host refused the capability report",
+        );
+        assert!(
+            refused
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("capability refused")
+        );
+    }
+
     #[tokio::test]
     async fn execution_profile_can_be_queried_and_updated_over_iroh() {
         let host = host(Some("admin")).await;
@@ -2421,7 +3376,11 @@ mod tests {
             .execution_profile(None, Some(&capability))
             .await
             .unwrap();
-        assert_eq!(res["type"], "execution_profile");
+        // execution_profile now returns just the requested profile, not the
+        // whole frame. A fresh world has requested nothing: every bound is
+        // None (inherit the server ceiling) and serializes away, so the
+        // default requested profile is the empty object (#6687).
+        assert_eq!(res, serde_json::json!({}));
         guest.close();
 
         // 3. Admin can update profile
@@ -2437,6 +3396,7 @@ mod tests {
             .set_execution_profile("admin", custom_profile)
             .await
             .unwrap();
+        // set_execution_profile still returns the whole frame
         assert_eq!(set_res["type"], "execution_profile");
         assert_eq!(set_res["update"]["requested"]["wasm_fuel"], 750_000);
         admin.close();
@@ -2449,7 +3409,8 @@ mod tests {
             .execution_profile(Some("admin"), None)
             .await
             .unwrap();
-        assert_eq!(query_res["update"]["requested"]["wasm_fuel"], 750_000);
+        // execution_profile now returns just the requested profile
+        assert_eq!(query_res["wasm_fuel"], 750_000);
         admin_query.close();
 
         client_ep.close().await;
@@ -3238,5 +4199,480 @@ mod tests {
         sessions.close_all();
         client_ep.close().await;
         host.router.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn info_details_rejects_malformed_active_module_hash() {
+        // Issue #6633: a present-but-mistyped `active_module_hash` is
+        // corruption or version skew, never "this world has no module".
+        // Driven through the factored reply parser — the previous version
+        // of this test called a nonexistent `inject_json` helper on the
+        // client and broke the whole lib-test build (issues #6640, #6643).
+        // Oracle: the parser's strictness for the sibling fields of the
+        // same reply (`world_id`, `current_sequence`, provenance).
+        let parse = |reply: serde_json::Value| WorldClient::parse_module_info_reply(&reply);
+        let reply_with = |hash: serde_json::Value| {
+            serde_json::json!({
+                "type": "module_info",
+                "world_id": "test:world",
+                "active_module_hash": hash,
+                "current_sequence": 42,
+                "active_module_provenance": null,
+            })
+        };
+
+        // Valid string hash -> Some(hash).
+        let info = parse(reply_with(serde_json::json!("abc123"))).unwrap();
+        assert_eq!(info.active_module_hash, Some("abc123".to_string()));
+        assert_eq!(info.world_id, "test:world");
+        assert_eq!(info.current_sequence, 42);
+
+        // Null hash -> None (the legitimate no-module case).
+        let info = parse(reply_with(serde_json::Value::Null)).unwrap();
+        assert_eq!(info.active_module_hash, None);
+
+        // Missing hash field (older hosts) -> None.
+        let info = parse(serde_json::json!({
+            "type": "module_info",
+            "world_id": "test:world",
+            "current_sequence": 42,
+            "active_module_provenance": null,
+        }))
+        .unwrap();
+        assert_eq!(info.active_module_hash, None);
+
+        // Mistyped hash shapes -> an error naming the malformed field.
+        for bad in [
+            serde_json::json!(123),
+            serde_json::json!(true),
+            serde_json::json!(["abc"]),
+            serde_json::json!({"hash": "abc"}),
+        ] {
+            let result = parse(reply_with(bad));
+            assert!(result.is_err(), "mistyped hash must error, got {result:?}");
+            let err = result.err().unwrap();
+            assert!(
+                err.to_string().contains("malformed active_module_hash"),
+                "unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn create_world_reply_requires_created_flag() {
+        // Issue #6632: `false` is a real answer ("the world already
+        // existed"), so a `world_created` reply whose `created` field
+        // is missing or mistyped must error, never read as Ok(false).
+        // Oracle: the sibling strictness of parse_module_info_reply —
+        // a present-but-wrong-shape field is corruption, not a default.
+        let parse = |reply: serde_json::Value| WorldClient::parse_create_world_reply(&reply);
+
+        // Well-formed controls keep their meaning.
+        assert!(
+            parse(serde_json::json!({"type": "world_created", "world": "arena", "created": true}))
+                .unwrap()
+        );
+        assert!(
+            !parse(
+                serde_json::json!({"type": "world_created", "world": "arena", "created": false})
+            )
+            .unwrap()
+        );
+
+        // Missing `created` -> an error naming the flag.
+        let result = parse(serde_json::json!({"type": "world_created", "world": "arena"}));
+        assert!(
+            result.is_err(),
+            "missing created must error, got {result:?}"
+        );
+        assert!(
+            result.err().unwrap().to_string().contains("created"),
+            "error must name the created flag"
+        );
+
+        // Mistyped `created` shapes -> an error, never Ok(false).
+        for bad in [
+            serde_json::json!("true"),
+            serde_json::json!(1),
+            serde_json::Value::Null,
+            serde_json::json!(["true"]),
+        ] {
+            let result = parse(
+                serde_json::json!({"type": "world_created", "world": "arena", "created": bad}),
+            );
+            assert!(
+                result.is_err(),
+                "mistyped created must error, got {result:?}"
+            );
+        }
+
+        // The refusal path still surfaces the host's message.
+        let result = parse(serde_json::json!({"type": "error", "message": "bad admin token"}));
+        assert_eq!(result.err().unwrap().to_string(), "bad admin token");
+        let result = parse(serde_json::json!({"type": "error"}));
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            "host refused to create the world"
+        );
+    }
+
+    #[test]
+    fn compile_reply_requires_all_fields() {
+        // Issue #6620: ("", 0, "") is a plausible-looking success —
+        // an empty hash scripts capture as a compiled module, and
+        // sequence 0 is a fresh world's real first state — so a
+        // `compiled` reply whose module_hash / sequence /
+        // diagnostics field is missing or mistyped must error,
+        // never default. Oracle: the sibling strictness of
+        // parse_create_world_reply — a field that constitutes the
+        // answer is required and typed (#6669 rule: a reply is not
+        // its defaults).
+        let parse = |reply: serde_json::Value| WorldClient::parse_compile_reply(&reply);
+
+        // Well-formed control returns its fields unchanged.
+        assert_eq!(
+            parse(serde_json::json!({"type": "compiled", "module_hash": "abc123", "sequence": 7, "diagnostics": "warn"}))
+                .unwrap(),
+            ("abc123".to_string(), 7, "warn".to_string())
+        );
+        // A genuine sequence 0 and empty diagnostics keep meaning.
+        assert_eq!(
+            parse(serde_json::json!({"type": "compiled", "module_hash": "abc123", "sequence": 0, "diagnostics": ""}))
+                .unwrap(),
+            ("abc123".to_string(), 0, String::new())
+        );
+
+        // Missing fields -> an error naming the field.
+        for (reply, field) in [
+            (
+                serde_json::json!({"type": "compiled", "sequence": 7, "diagnostics": ""}),
+                "module hash",
+            ),
+            (
+                serde_json::json!({"type": "compiled", "module_hash": "abc123", "diagnostics": ""}),
+                "sequence",
+            ),
+            (
+                serde_json::json!({"type": "compiled", "module_hash": "abc123", "sequence": 7}),
+                "diagnostics",
+            ),
+            (serde_json::json!({"type": "compiled"}), "module hash"),
+        ] {
+            let result = parse(reply);
+            assert!(
+                result.is_err(),
+                "missing {field} must error, got {result:?}"
+            );
+            assert!(
+                result.err().unwrap().to_string().contains(field),
+                "error must name the {field} field"
+            );
+        }
+
+        // Mistyped fields -> an error, never a defaulted Ok.
+        for bad_reply in [
+            serde_json::json!({"type": "compiled", "module_hash": 123, "sequence": 7, "diagnostics": ""}),
+            serde_json::json!({"type": "compiled", "module_hash": "abc123", "sequence": "7", "diagnostics": ""}),
+            serde_json::json!({"type": "compiled", "module_hash": "abc123", "sequence": -1, "diagnostics": ""}),
+            serde_json::json!({"type": "compiled", "module_hash": "abc123", "sequence": 7, "diagnostics": 42}),
+            serde_json::json!({"type": "compiled", "module_hash": null, "sequence": 7, "diagnostics": ""}),
+        ] {
+            let result = parse(bad_reply);
+            assert!(result.is_err(), "mistyped field must error, got {result:?}");
+        }
+
+        // The refusal path still surfaces the host's message.
+        let result = parse(serde_json::json!({"type": "error", "message": "bad admin token"}));
+        assert_eq!(result.err().unwrap().to_string(), "bad admin token");
+        let result = parse(serde_json::json!({"type": "error"}));
+        assert_eq!(result.err().unwrap().to_string(), "host refused to compile");
+    }
+
+    #[test]
+    fn admin_event_history_begin_requires_a_string_or_null_module_hash() {
+        // Issue #6641 (duplicate: #6642): a present, mistyped `module_hash`
+        // in the begin frame is a malformed reply, not "no module".
+        // Oracle: every sibling field of the same frame is strict, and the
+        // host's ServerFrame::EventHistoryBegin serializes the hash as a
+        // string or null only.
+        let begin_with = |hash: serde_json::Value| {
+            serde_json::json!({
+                "type": "event_history_begin",
+                "world_id": "test:world",
+                "module_hash": hash,
+                "current_sequence": 7,
+                "complete": true,
+                "event_count": 0,
+            })
+        };
+        let parse = |begin: serde_json::Value| WorldClient::parse_event_history_begin(&begin);
+
+        let (world_id, module_hash, seq, complete, count) =
+            parse(begin_with(serde_json::json!("abc123"))).unwrap();
+        assert_eq!(world_id, "test:world");
+        assert_eq!(module_hash, Some("abc123".to_string()));
+        assert_eq!(seq, 7);
+        assert!(complete);
+        assert_eq!(count, 0);
+
+        // Null and missing both read as None (legitimate no-module / older hosts).
+        let (_, module_hash, ..) = parse(begin_with(serde_json::Value::Null)).unwrap();
+        assert_eq!(module_hash, None);
+        let mut missing = begin_with(serde_json::Value::Null);
+        missing.as_object_mut().unwrap().remove("module_hash");
+        let (_, module_hash, ..) = parse(missing).unwrap();
+        assert_eq!(module_hash, None);
+
+        // Mistyped shapes are refused, naming the field.
+        for bad in [
+            serde_json::json!(123),
+            serde_json::json!(true),
+            serde_json::json!(["abc"]),
+            serde_json::json!({"hash": "abc"}),
+        ] {
+            let result = parse(begin_with(bad));
+            assert!(result.is_err(), "mistyped module_hash must be refused");
+            let err = result.err().unwrap();
+            assert!(
+                err.to_string().contains("malformed module_hash"),
+                "unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn admin_event_history_cursor_requires_a_string_or_null_next_after() {
+        // Issue #6600: a missing or mistyped `next_after` in a records
+        // page is a malformed reply, not end-of-pages. Oracle: the
+        // host's ServerFrame::Records serializes the key always, as a
+        // string or null; the pre-fix `.as_str()` match read a number,
+        // a boolean, and a missing key exactly like the null
+        // terminator, silently truncating the export (and any fixture
+        // recorded from it) while `complete` stayed true.
+        let page_with = |next_after: serde_json::Value| {
+            serde_json::json!({
+                "type": "records",
+                "sequence": 7,
+                "records": {"a": 1},
+                "next_after": next_after,
+            })
+        };
+        let parse = |frame: serde_json::Value| WorldClient::parse_admin_history_cursor(&frame);
+
+        assert_eq!(
+            parse(page_with(serde_json::json!("a"))).unwrap(),
+            Some("a".to_string())
+        );
+        assert_eq!(parse(page_with(serde_json::Value::Null)).unwrap(), None);
+
+        // Missing key: malformed, not a terminator.
+        let mut missing = page_with(serde_json::Value::Null);
+        missing.as_object_mut().unwrap().remove("next_after");
+        let result = parse(missing);
+        assert!(result.is_err(), "missing next_after must be refused");
+        assert!(
+            result
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("no next_after cursor"),
+            "missing-key error must name the field"
+        );
+
+        // Mistyped shapes are refused, naming the field.
+        for bad in [
+            serde_json::json!(123),
+            serde_json::json!(true),
+            serde_json::json!(["a"]),
+            serde_json::json!({"k": "a"}),
+        ] {
+            let result = parse(page_with(bad));
+            assert!(result.is_err(), "mistyped next_after must be refused");
+            let err = result.err().unwrap();
+            assert!(
+                err.to_string().contains("malformed"),
+                "unexpected error: {err}"
+            );
+        }
+    }
+
+    // Property coverage for the cursor parser, same doctrine and
+    // oracle as the begin-frame parser below: a string cursor passes
+    // through verbatim, null is the only terminator, and every other
+    // JSON type is refused as malformed.
+    proptest! {
+        #[test]
+        fn admin_event_history_cursor_next_after_invariants(
+            cursor in any::<String>(),
+            mistyped in prop_oneof![
+                any::<i64>().prop_map(serde_json::Value::from),
+                any::<bool>().prop_map(serde_json::Value::from),
+                proptest::collection::vec(any::<String>(), 0..4)
+                    .prop_map(serde_json::Value::from),
+                proptest::collection::hash_map(any::<String>(), any::<String>(), 0..4)
+                    .prop_map(|m| serde_json::to_value(m).unwrap()),
+            ],
+        ) {
+            let page = |next_after: serde_json::Value| {
+                serde_json::json!({
+                    "type": "records",
+                    "sequence": 7,
+                    "records": {"a": 1},
+                    "next_after": next_after,
+                })
+            };
+            let parsed = WorldClient::parse_admin_history_cursor(
+                &page(serde_json::Value::String(cursor.clone())),
+            )
+            .unwrap();
+            prop_assert_eq!(parsed.as_deref(), Some(cursor.as_str()));
+            prop_assert_eq!(
+                WorldClient::parse_admin_history_cursor(&page(serde_json::Value::Null)).unwrap(),
+                None
+            );
+            let result = WorldClient::parse_admin_history_cursor(&page(mistyped));
+            prop_assert!(result.is_err());
+            prop_assert!(
+                result
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("malformed")
+            );
+        }
+    }
+
+    // Property coverage for the same parser (repo testing doctrine: a
+    // parser's invariants are stated once and hammered with generated
+    // inputs, not just the examples above). Oracle: the typed frame
+    // contract — `module_hash` is a string or null on the wire, and the
+    // sibling fields pass through untouched.
+    proptest! {
+        #[test]
+        fn admin_event_history_begin_module_hash_invariants(
+            hash in any::<String>(),
+            world_id in "[a-z][a-z0-9:_-]{0,20}",
+            seq in any::<u64>(),
+            complete in any::<bool>(),
+            count in 0u64..=1000,
+            mistyped in prop_oneof![
+                any::<i64>().prop_map(serde_json::Value::from),
+                any::<bool>().prop_map(serde_json::Value::from),
+                proptest::collection::vec(any::<String>(), 0..4)
+                    .prop_map(serde_json::Value::from),
+                proptest::collection::hash_map(any::<String>(), any::<String>(), 0..4)
+                    .prop_map(|m| serde_json::to_value(m).unwrap()),
+            ],
+        ) {
+            let begin = |module_hash: serde_json::Value| {
+                serde_json::json!({
+                    "type": "event_history_begin",
+                    "world_id": world_id,
+                    "module_hash": module_hash,
+                    "current_sequence": seq,
+                    "complete": complete,
+                    "event_count": count,
+                })
+            };
+            // Any string hash is preserved verbatim; siblings pass through.
+            let (w, h, s, c, n) = WorldClient::parse_event_history_begin(
+                &begin(serde_json::Value::String(hash.clone())),
+            )
+            .unwrap();
+            prop_assert_eq!(w.as_str(), world_id.as_str());
+            prop_assert_eq!(h.as_deref(), Some(hash.as_str()));
+            prop_assert_eq!(s, seq);
+            prop_assert_eq!(c, complete);
+            prop_assert_eq!(n, count as usize);
+            // Null reads as no module.
+            let (_, h, ..) =
+                WorldClient::parse_event_history_begin(&begin(serde_json::Value::Null)).unwrap();
+            prop_assert_eq!(h, None);
+            // Any other JSON type is refused as malformed.
+            let result = WorldClient::parse_event_history_begin(&begin(mistyped));
+            prop_assert!(result.is_err());
+            prop_assert!(
+                result
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("malformed module_hash")
+            );
+        }
+    }
+
+    #[test]
+    fn worlds_reply_rejects_malformed_entries() {
+        // Issue #6621 (design #6669 rule 4): a listing is complete or
+        // it errors. A malformed entry must fail the parse with an
+        // error naming the entry/field — never a silent drop, and a
+        // mistyped `presence` never reads as 0. Oracle: the parser's
+        // own top level, which already refuses a non-list `worlds`
+        // and a missing/mistyped `default` (#6647).
+        let parse = |reply: serde_json::Value| {
+            WorldClient::parse_worlds_reply(&reply, "host refused to list worlds")
+        };
+        let entry = |name: &str, open: bool, presence: u64| serde_json::json!({"name": name, "open": open, "presence": presence});
+
+        // Well-formed replies return exactly the host's entries.
+        let (default, worlds) = parse(serde_json::json!({
+            "type": "worlds",
+            "default": "lobby",
+            "worlds": [entry("lobby", true, 3), entry("arena", false, 0)],
+        }))
+        .unwrap();
+        assert_eq!(default, "lobby");
+        assert_eq!(
+            worlds,
+            vec![
+                ("lobby".to_string(), true, 3),
+                ("arena".to_string(), false, 0)
+            ]
+        );
+
+        // One malformed entry among valid ones fails the whole parse,
+        // with the entry index and field in the error.
+        for (bad, field) in [
+            (serde_json::json!("not-an-object"), "name"),
+            (
+                serde_json::json!({"name": 123, "open": true, "presence": 0}),
+                "name",
+            ),
+            (
+                serde_json::json!({"name": "ghost", "open": "yes", "presence": 0}),
+                "open",
+            ),
+            (
+                serde_json::json!({"name": "ghost", "open": true, "presence": "many"}),
+                "presence",
+            ),
+            (
+                serde_json::json!({"name": "ghost", "open": true}),
+                "presence",
+            ),
+        ] {
+            let result = parse(serde_json::json!({
+                "type": "worlds",
+                "default": "lobby",
+                "worlds": [entry("lobby", true, 3), bad],
+            }));
+            assert!(
+                result.is_err(),
+                "malformed entry must error, got {result:?}"
+            );
+            let err = result.err().unwrap().to_string();
+            assert!(err.contains("entry 1"), "error must name the entry: {err}");
+            assert!(err.contains(field), "error must name the field: {err}");
+        }
+
+        // The refusal path and the top-level checks are unchanged.
+        let result = parse(serde_json::json!({"type": "error", "message": "admin denied"}));
+        assert_eq!(result.err().unwrap().to_string(), "admin denied");
+        let result = parse(serde_json::json!({
+            "type": "worlds", "default": "lobby", "worlds": {"name": "x"}
+        }));
+        assert!(result.err().unwrap().to_string().contains("no list"));
+        let result = parse(serde_json::json!({"type": "worlds", "worlds": []}));
+        assert!(result.err().unwrap().to_string().contains("no default"));
     }
 }

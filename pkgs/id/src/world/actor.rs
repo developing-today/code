@@ -796,6 +796,10 @@ impl WorldActor {
     /// `records.read`: a byte-bounded, prefix-scoped page of the world's
     /// published records, key-ordered with the same exclusive `after` cursor
     /// the session protocol uses. Follow `next_after` while it is non-empty.
+    /// The page is bounded by the cap-result budget
+    /// (world_caps::MAX_RECORDS_RESULT_PAGE_BYTES), not the session
+    /// protocol's larger page budget, so an admitted page always fits
+    /// the result event that delivers it (#4888).
     fn execute_records_read(
         &self,
         args: &serde_json::Value,
@@ -818,8 +822,12 @@ impl WorldActor {
             {
                 continue;
             }
-            let size = key.len() + serde_json::to_vec(value).map_or(0, |v| v.len()) + 8;
-            if used + size > crate::world_session::MAX_RECORDS_PAGE_BYTES {
+            // Count the entry as it will actually be serialized in
+            // the result value, plus one byte for its array comma.
+            let size = serde_json::to_vec(&serde_json::json!({"key": key, "value": value}))
+                .map_or(usize::MAX, |entry| entry.len())
+                + 1;
+            if used + size > crate::world_caps::MAX_RECORDS_RESULT_PAGE_BYTES {
                 if page.is_empty() {
                     return Err(CapError::bad_args());
                 }
@@ -1469,9 +1477,19 @@ impl WorldActor {
                                                         Some(fallback_text)
                                                     };
                                                     match bounded {
-                                                        Some(text) if text.len() <= self.core.limits.presentation_bytes => Ok(Some(text)),
+                                                        Some(text)
+                                                            if text.len()
+                                                                <= self
+                                                                    .core
+                                                                    .limits
+                                                                    .presentation_bytes =>
+                                                        {
+                                                            Ok(Some(text))
+                                                        }
                                                         _ => {
-                                                            self.view_failures = self.view_failures.saturating_add(1);
+                                                            self.view_failures = self
+                                                                .view_failures
+                                                                .saturating_add(1);
                                                             Err(anyhow::anyhow!(
                                                                 "world presentation exceeds {} bytes",
                                                                 self.core.limits.presentation_bytes

@@ -88,7 +88,9 @@ describe("credential lifecycle", () => {
       userAction: { owner: "user", title: "Open Claude Code to sign in again" },
     });
     const flags = buildAttentionFlags(out, { services: [], payg: [] });
-    expect(flags).toContainEqual(expect.objectContaining({ kind: "credential-lifecycle", label: expect.stringContaining("expired") }));
+    expect(flags).toContainEqual(
+      expect.objectContaining({ kind: "credential-lifecycle", label: expect.stringContaining("expired") }),
+    );
     const html = renderQuota(out, {} as never);
     expect(html).toContain("Credential lifecycle");
     expect(html).toContain("Open Claude Code to sign in again");
@@ -112,6 +114,8 @@ describe("credential lifecycle", () => {
       ),
     ];
     const sanitized = sanitizeQuotaView(view);
-    expect(sanitized.view.credentialLifecycle?.[0].reason).toBe("credential rejected: Bearer [redacted] token=[redacted]");
+    expect(sanitized.view.credentialLifecycle?.[0].reason).toBe(
+      "credential rejected: Bearer [redacted] token=[redacted]",
+    );
   });
 });

@@ -291,8 +291,8 @@ describe("project registry", () => {
     const cards = fleet.repoCards ?? [];
     expect(cards.map((c) => c.repo)).toEqual([
       "developing-today/code",
-      "developing-today/opencode",
-      "developing-today/openchamber",
+      "developing-today-forks/opencode",
+      "developing-today-forks/openchamber",
       "dezren39/nix",
     ]);
     for (const card of cards) {
@@ -314,8 +314,8 @@ describe("project registry", () => {
     expect(gaps).toContain("does not claim pool completeness");
     // Card + sweep-health refs resolve through the shared ref set.
     const refs = allProjectRefs();
-    expect(refs).toContain("developing-today/opencode#365");
-    expect(refs).toContain("developing-today/openchamber#214");
+    expect(refs).toContain("developing-today-forks/opencode#365");
+    expect(refs).toContain("developing-today-forks/openchamber#214");
     expect(refs).toContain("dezren39/nix#512");
   });
 
@@ -353,9 +353,7 @@ describe("project registry", () => {
     };
     expect(validateProjectConfigs([{ ...base, repoCards: [repoCard] }])).toEqual([]);
     for (const date of ["2026-02-30", "2026-13-01", "2026-00-00", "2026-04-31", "2026-02-29"]) {
-      const errors = validateProjectConfigs([
-        { ...base, repoCards: [{ ...repoCard, openIssuesAsOf: date }] },
-      ]);
+      const errors = validateProjectConfigs([{ ...base, repoCards: [{ ...repoCard, openIssuesAsOf: date }] }]);
       expect(errors.some((e) => e.includes("openIssuesAsOf"))).toBe(true);
     }
     const badLinks = validateProjectConfigs([
@@ -496,7 +494,12 @@ describe("renderProgramProject", () => {
     expect(fleetHtml).toContain("1,119 open issues");
     // Per-repo cards + sweep health render (#1126).
     expect(fleetHtml).toContain("Per-repo cards");
-    for (const repo of ["developing-today/code", "developing-today/opencode", "developing-today/openchamber", "dezren39/nix"]) {
+    for (const repo of [
+      "developing-today/code",
+      "developing-today-forks/opencode",
+      "developing-today-forks/openchamber",
+      "dezren39/nix",
+    ]) {
       expect(fleetHtml).toContain(repo);
     }
     expect(fleetHtml).toContain("Open issues (GitHub search, 2026-10-29)");
@@ -506,25 +509,36 @@ describe("renderProgramProject", () => {
 
   test("detail builder splits pool and roadmap by repo for the fleet cards (#1126)", () => {
     const pool = [
-      poolItem({ area: "fleet-ops", repo: "developing-today/code", ref: "developing-today/code#1", title: "code item" }),
+      poolItem({
+        area: "fleet-ops",
+        repo: "developing-today/code",
+        ref: "developing-today/code#1",
+        title: "code item",
+      }),
       poolItem({ area: "fleet-ops", repo: "dezren39/nix", ref: "dezren39/nix#2", number: 2, title: "nix item" }),
-      poolItem({ area: "pm-dashboard", repo: "developing-today/code", ref: "developing-today/code#3", number: 3, title: "other area" }),
+      poolItem({
+        area: "pm-dashboard",
+        repo: "developing-today/code",
+        ref: "developing-today/code#3",
+        number: 3,
+        title: "other area",
+      }),
     ];
     const fleet = projectConfigById("repo-fleet")!;
     const detail = buildProjectDetail(fleet, new Map(), pool, FIXTURE_ROADMAP);
     expect(detail.repoCards.map((c) => c.card.repo)).toEqual([
       "developing-today/code",
-      "developing-today/opencode",
-      "developing-today/openchamber",
+      "developing-today-forks/opencode",
+      "developing-today-forks/openchamber",
       "dezren39/nix",
     ]);
     const byRepo = new Map(detail.repoCards.map((c) => [c.card.repo, c]));
     expect(byRepo.get("developing-today/code")?.poolItems.map((p) => p.title)).toEqual(["code item"]);
     expect(byRepo.get("dezren39/nix")?.poolItems.map((p) => p.title)).toEqual(["nix item"]);
-    expect(byRepo.get("developing-today/opencode")?.poolItems).toEqual([]);
+    expect(byRepo.get("developing-today-forks/opencode")?.poolItems).toEqual([]);
     // Fixture roadmap rows name their repo in the title / links.
-    expect(byRepo.get("developing-today/opencode")?.roadmapRows.length).toBeGreaterThan(0);
-    expect(byRepo.get("developing-today/openchamber")?.roadmapRows.length).toBeGreaterThan(0);
+    expect(byRepo.get("developing-today-forks/opencode")?.roadmapRows.length).toBeGreaterThan(0);
+    expect(byRepo.get("developing-today-forks/openchamber")?.roadmapRows.length).toBeGreaterThan(0);
   });
 
   test("pm-dashboard page retains the full #1046 document", async () => {

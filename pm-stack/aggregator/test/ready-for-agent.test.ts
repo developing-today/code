@@ -89,9 +89,15 @@ describe("rfaHealthFacet", () => {
   });
 
   test("down when a backend is not READY, naming the reason", () => {
-    const s = parseRfaState(repositoriesPayload, {
-      data: { agentBackendStatuses: [{ kind: "UNAVAILABLE", reason: "opencode not found", backend: { id: "opencode" } }] },
-    }, []);
+    const s = parseRfaState(
+      repositoriesPayload,
+      {
+        data: {
+          agentBackendStatuses: [{ kind: "UNAVAILABLE", reason: "opencode not found", backend: { id: "opencode" } }],
+        },
+      },
+      [],
+    );
     const facet = rfaHealthFacet(s);
     expect(facet.state).toBe("down");
     expect(facet.detail).toContain("opencode not found");

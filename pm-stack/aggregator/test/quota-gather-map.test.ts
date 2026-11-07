@@ -87,6 +87,27 @@ describe("entryFromResult", () => {
     expect(absent.state).toBe("unconfigured");
     expect(absent.credentialWatch).toBe(true);
   });
+  test.each([
+    ["impossible timestamp", "2026-02-30T00:00:00.000Z"],
+    ["impossible date-only value", "2026-04-31"],
+    ["non-ISO string", "March 2, 2026"],
+  ])("rejects %s credential expiry strings", (_kind, credentialExpiresAt) => {
+    const tick = "2026-10-27T05:00:00.000Z";
+    const entry = entryFromResult({ ...OK_RESULT, credentialExpiresAt }, tick);
+    expect(entry.credentialExpiresAt).toBeUndefined();
+  });
+
+  test("maps a valid ISO credential expiry string", () => {
+    const tick = "2026-10-27T05:00:00.000Z";
+    const validIso = entryFromResult({ ...OK_RESULT, credentialExpiresAt: "2027-01-15T00:00:00.000Z" }, tick);
+    expect(validIso.credentialExpiresAt).toBe("2027-01-15T00:00:00.000Z");
+  });
+
+  test("maps numeric epoch-ms credential expiry", () => {
+    const tick = "2026-10-27T05:00:00.000Z";
+    const validEpoch = entryFromResult({ ...OK_RESULT, credentialExpiresAt: 1793438427299 }, tick);
+    expect(validEpoch.credentialExpiresAt).toBe("2026-10-31T09:20:27.299Z");
+  });
   test("falls back for invalid fetchedAt values without dropping a mixed batch", () => {
     const tickIso = "2026-11-02T03:00:00.000Z";
     const fetchedAts = [1e16, -1e16, 0, -1, NaN, Infinity, -Infinity, undefined, 1793075143879];
@@ -165,6 +186,40 @@ describe("entryFromResult", () => {
       ["full", 100],
       ["valid", 42],
       ["zero", 0],
+    ]);
+  });
+  test("turso windows keep over-limit percentages; other providers keep the [0,100] gate (#6227)", () => {
+    // The live path: the opencode quota subcommand's turso result
+    // reaches the gatherer through entryFromResult. Its storage and
+    // rows-read windows are usage-vs-limit ratios that legitimately
+    // exceed 100 over the Starter limits (see the entryFromTurso
+    // fixture above); negative and non-finite values still drop.
+    const entry = entryFromResult(
+      {
+        providerId: "turso",
+        providerName: "Turso",
+        ok: true,
+        configured: true,
+        usage: {
+          windows: {
+            databases: { usedPercent: 44 },
+            storage: { usedPercent: 147.16 },
+            "rows-read": { usedPercent: 164.287 },
+            "rows-written": { usedPercent: 16.721 },
+            sync: { usedPercent: 0 },
+            negative: { usedPercent: -1 },
+          },
+        },
+      },
+      "2026-11-05T13:00:00.000Z",
+    );
+    expect(entry.serviceId).toBe("turso");
+    expect(entry.windows.map((w) => [w.name, w.pctOfLimit])).toEqual([
+      ["databases", 44],
+      ["storage", 147.16],
+      ["rows-read", 164.287],
+      ["rows-written", 16.721],
+      ["sync", 0],
     ]);
   });
   test("error and unconfigured states stay distinct", () => {
@@ -618,6 +673,73 @@ describe("entryFromTurso (#1049)", () => {
     const empty = entryFromTurso({ organization: { usage: {} } }, subDoc, { measuredAt: at });
     expect(empty.state).toBe("error");
     expect(empty.windows).toEqual([]);
+  });
+  test("over-limit usage is kept with its native value and >100 pct (#6227)", () => {
+    // The 2026-11-05 live shape from issue #6227: storage and
+    // rows-read over their Starter limits — the exact windows the
+    // [0,100] percent gate used to drop, leaving a fresh-looking
+    // partial row that read as recovery.
+    const entry = entryFromTurso(
+      {
+        organization: {
+          usage: {
+            databases: 44,
+            storage_bytes: 7_358_009_000,
+            rows_read: 821_437_321,
+            rows_written: 1_672_071,
+            bytes_synced: 0,
+          },
+        },
+      },
+      subDoc,
+      { measuredAt: at },
+    );
+    expect(entry.state).toBe("ok");
+    const byName = new Map(entry.windows.map((w) => [w.name, w]));
+    expect(byName.get("storage")?.value).toBe(7.358009);
+    expect(byName.get("storage")?.pctOfLimit).toBe(147.16);
+    expect(byName.get("rows-read")?.value).toBe(821_437_321);
+    expect(byName.get("rows-read")?.pctOfLimit).toBe(164.287);
+    expect(byName.get("databases")?.pctOfLimit).toBe(44);
+    expect(byName.get("sync")?.pctOfLimit).toBe(0);
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    const byMetric = new Map(records.map((r) => [r.metricId, r]));
+    expect(byMetric.get("storage")).toMatchObject({ value: 7.358009, unit: "gb", limit: 5 });
+    expect(byMetric.get("rows-read")).toMatchObject({ value: 164.287, unit: "pct" });
+  });
+});
+
+describe("entryFromTurso period stamps (#5091)", () => {
+  const usageDoc = { organization: { usage: { databases: 3 } } };
+  const at = "2026-10-29T02:30:00.000Z";
+  const subWith = (start: unknown, end: unknown) => ({
+    subscription: {
+      plan: "starter",
+      current_billing_period_start: start,
+      current_billing_period_end: end,
+    },
+  });
+  const windowSecondsOf = (sub: unknown): number | null => {
+    const entry = entryFromTurso(usageDoc, sub as never, { measuredAt: at });
+    expect(entry.state).toBe("ok");
+    expect(entry.windows.length).toBeGreaterThan(0);
+    return entry.windows[0].windowSeconds;
+  };
+  test("impossible period start yields a null window, not a rolled-over length", () => {
+    // 2026-02-30 does not exist; raw Date.parse rolls it to Mar 2 and would
+    // publish a 28-day window against the 2026-03-30 end.
+    expect(windowSecondsOf(subWith("2026-02-30T00:00:00Z", "2026-03-30T00:00:00Z"))).toBeNull();
+  });
+  test("impossible period end yields a null window", () => {
+    expect(windowSecondsOf(subWith("2026-02-01T00:00:00Z", "2026-02-30T00:00:00Z"))).toBeNull();
+  });
+  test("non-ISO period stamps yield a null window", () => {
+    // Raw Date.parse accepts these (timezone-dependently); the gate refuses.
+    expect(windowSecondsOf(subWith("February 1, 2026", "March 3, 2026"))).toBeNull();
+  });
+  test("valid ISO period stamps still compute the window", () => {
+    // 2026-02-01 -> 2026-03-03 is exactly 30 days.
+    expect(windowSecondsOf(subWith("2026-02-01T00:00:00Z", "2026-03-03T00:00:00Z"))).toBe(2_592_000);
   });
 });
 

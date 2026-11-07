@@ -31,7 +31,10 @@ export function safeProviderReason(reason: string): string {
   return reason
     .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
     .replace(/\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}(?:\.[a-zA-Z0-9_-]+)?\b/g, "[redacted]")
-    .replace(/\b((?:access|refresh|api|auth)?[_-]?(?:token|secret|password|cookie|api[_-]?key))\s*[:=]\s*["']?[^\s,;"'}]+/gi, "$1=[redacted]")
+    .replace(
+      /\b((?:access|refresh|api|auth)?[_-]?(?:token|secret|password|cookie|api[_-]?key))\s*[:=]\s*["']?[^\s,;"'}]+/gi,
+      "$1=[redacted]",
+    )
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[redacted]")
     .slice(0, 240);
 }
@@ -45,7 +48,10 @@ export function lifecycleForEntry(entry: QuotaCurrentEntry, now = new Date()): C
 
   if (entry.state === "unconfigured") state = "not-configured";
   else if (entry.state === "error" && /\bClaude session expired\b/i.test(error ?? "")) state = "expired";
-  else if (entry.state === "error" && /\b(?:credential rejected|invalid (?:api )?key|invalid token)\b/i.test(error ?? "")) {
+  else if (
+    entry.state === "error" &&
+    /\b(?:credential rejected|invalid (?:api )?key|invalid token)\b/i.test(error ?? "")
+  ) {
     state = "rejected";
   } else if (entry.state === "error") state = "provider-error";
   else if (hasExpiry && expiresMs <= now.getTime()) state = "expired";
@@ -85,7 +91,15 @@ export function lifecycleForEntry(entry: QuotaCurrentEntry, now = new Date()): C
 export function isCredentialLifecycleRow(value: unknown): value is CredentialLifecycleRow {
   if (!value || typeof value !== "object") return false;
   const row = value as Record<string, unknown>;
-  const states: CredentialLifecycleState[] = ["ok", "expiring", "expired", "rejected", "provider-error", "not-configured", "unknown"];
+  const states: CredentialLifecycleState[] = [
+    "ok",
+    "expiring",
+    "expired",
+    "rejected",
+    "provider-error",
+    "not-configured",
+    "unknown",
+  ];
   return (
     typeof row.providerId === "string" &&
     typeof row.providerName === "string" &&

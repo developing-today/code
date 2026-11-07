@@ -337,9 +337,7 @@ describe("POST-boundary checks against the published item (#1291/#1293)", () => 
       questions: [{ id: "confirm", prompt: "Is it ready?", type: "yesno", required: true, covers: "readiness" }],
     });
     expect(questionIdForOption(mapped, "yes")).toBe("confirm");
-    expect(
-      checkActionAgainstItem(actionInput({ payload: { optionId: "yes" } }), mapped, NOW),
-    ).toBeNull(); // the shortcut can answer one question without closing the rest of a survey
+    expect(checkActionAgainstItem(actionInput({ payload: { optionId: "yes" } }), mapped, NOW)).toBeNull(); // the shortcut can answer one question without closing the rest of a survey
   });
 
   test("survey answers: unknown ids and bad values are legible 400s; partial submits are accepted (#1451)", () => {
