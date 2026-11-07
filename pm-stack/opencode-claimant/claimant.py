@@ -19,6 +19,8 @@ import json
 import os
 import sys
 import time
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -80,6 +82,20 @@ def log_fire(mode: str, candidates: List[Dict], launched: List[Dict], cap_room: 
     
     with FIRES_FILE.open("a") as f:
         f.write(json.dumps(fire_entry) + "\n")
+
+
+def _http_get(url: str, timeout: int = 10) -> Optional[Dict]:
+    """Helper to make HTTP GET requests using urllib."""
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            data = json.loads(response.read())
+            if isinstance(data, dict) and "data" in data:
+                return data["data"]
+            return data
+    except (urllib.error.URLError, json.JSONDecodeError, Exception) as e:
+        print(f"Warning: HTTP GET {url} failed: {e}")
+        return None
 
 
 def run_poll() -> Dict[str, Any]:
@@ -160,6 +176,8 @@ def supervision_step(mode: str) -> List[Dict]:
     
     Returns list of tasks that need recovery (bound but stuck/zero-message sessions).
     """
+    import subprocess
+    
     if mode != "live":
         return []
     
@@ -194,26 +212,26 @@ def supervision_step(mode: str) -> List[Dict]:
                         
                         # Check if session exists and is progressing
                         try:
-                            session_response = requests.get(
-                                f"http://127.0.0.1:13420/api/session/{session_id}",
-                                timeout=5
+                            session_response = subprocess.run(
+                                ["curl", "-s", "-m", "5", 
+                                 f"http://127.0.0.1:13420/api/session/{session_id}"],
+                                capture_output=True,
+                                text=True
                             )
                             
-                            if session_response.status_code == 200:
-                                session = session_response.json()
+                            if session_response.returncode == 0:
+                                session = json.loads(session_response.stdout)
                                 # Check for terminal state
                                 has_terminal = any(
                                     marker in session.get("outcome", "") or 
-                                    marker in session.get("time", {}).get("idle", "")
+                                    marker in (session.get("time", {}).get("idle", "") or "")
                                     for marker in ["idle", "outcome", "completed", "failed"]
                                 )
                                 
                                 if not has_terminal:
                                     # Session exists and is active - nothing to do
                                     continue
-                            else:
-                                # Session gone from server
-                                pass
+                            # else: Session gone from server or error
                         except Exception:
                             # Could not verify session - leave bound
                             continue
@@ -223,9 +241,11 @@ def supervision_step(mode: str) -> List[Dict]:
                         if task.get("attempts", 0) < task.get("max_attempts", 5):
                             # Verify zero messages first
                             try:
-                                messages = requests.get(
-                                    f"http://127.0.0.1:13420/api/session/{session_id}/messages",
-                                    timeout=5
+                                messages_response = subprocess.run(
+                                    ["curl", "-s", "-m", "5",
+                                     f"http://127.0.0.1:13420/api/session/{session_id}/messages"],
+                                    capture_output=True,
+                                    text=True
                                 )
                                 
                                 if messages.status_code == 200:
@@ -249,12 +269,14 @@ def supervision_step(mode: str) -> List[Dict]:
         
         try:
             # Delete the zero-message session
-            delete_response = requests.delete(
-                f"http://127.0.0.1:13420/api/session/{session_id}",
-                timeout=5
+            delete_result = subprocess.run(
+                ["curl", "-s", "-m", "5", "-X", "DELETE",
+                 f"http://127.0.0.1:13420/api/session/{session_id}"],
+                capture_output=True,
+                text=True
             )
             
-            if delete_response.status_code == 200:
+            if delete_result.returncode == 0:
                 # Attempt recovery via atomic bind operation
                 bind_result = subprocess.run(
                     [
@@ -389,25 +411,30 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
             }
             
             try:
-                create_response = requests.post(
-                    "http://127.0.0.1:13420/api/session",
-                    json=session_create_body,
-                    timeout=10
+                # Create session using curl (POST)
+                create_cmd = ["curl", "-s", "-m", "10", "-X", "POST",
+                             "-H", "Content-Type: application/json",
+                             "-d", json.dumps(session_create_body),
+                             "http://127.0.0.1:13420/api/session"]
+                
+                create_result = subprocess.run(
+                    create_cmd,
+                    capture_output=True,
+                    text=True
                 )
                 
-                if create_response.status_code != 200:
-                    raise RuntimeError(f"Session creation failed: {create_response.text}")
+                if create_result.returncode != 0:
+                    raise RuntimeError(f"Session creation failed: {create_result.stderr}")
                 
-                session = create_response.json()
+                session = json.loads(create_result.stdout)
                 session_id = session.get("id")
                 
                 # Verify location before proceeding
                 if session.get("location", {}).get("directory") != str(PRIMARY_CLONE):
                     # Wrong location - delete and skip
-                    requests.delete(
-                        f"http://127.0.0.1:13420/api/session/{session_id}",
-                        timeout=5
-                    )
+                    delete_cmd = ["curl", "-s", "-m", "5", "-X", "DELETE",
+                                 f"http://127.0.0.1:13420/api/session/{session_id}"]
+                    subprocess.run(delete_cmd, capture_output=True)
                     skips.append({
                         "task_id": task_id,
                         "reason": "session_wrong_location"
@@ -430,10 +457,9 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
                 
                 if bind_result.returncode != 0:
                     # Bind failed - delete session and skip
-                    requests.delete(
-                        f"http://127.0.0.1:13420/api/session/{session_id}",
-                        timeout=5
-                    )
+                    delete_cmd = ["curl", "-s", "-m", "5", "-X", "DELETE",
+                                 f"http://127.0.0.1:13420/api/session/{session_id}"]
+                    subprocess.run(delete_cmd, capture_output=True)
                     skips.append({
                         "task_id": task_id,
                         "reason": "bind_failed"
