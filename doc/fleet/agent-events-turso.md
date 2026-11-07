@@ -112,14 +112,21 @@ Writer flips prepared outside this repo, defaults unchanged:
   insert (fatal, as today) + Turso insert (non-fatal, the existing
   ci_events mirror pattern). `turso` = Turso insert (fatal —
   preserves today's 500-on-loss semantics) + PG skipped. Target is
-  `muse-queue` via new secrets `AGENT_EVENTS_TURSO_URL` /
+  `fleet-queue` via new secrets `AGENT_EVENTS_TURSO_URL` /
   `AGENT_EVENTS_TURSO_AUTH_TOKEN` (the ci mirror's `TURSO_*`
   secrets point at muse-platform and are *not* reused).
 - `fleet-fetch.py`: `AGENT_EVENTS_SINK=pg|dual|turso`, default
   `pg`; the `snapshot_refresh` row goes to the PG batch, the Turso
-  pipeline (token by name `turso.muse-queue-rw-token` via the
+  pipeline (token by name `turso.fleet-queue-rw-token` via the
   secrets CLI), or both. The `agent.watermarks` and
   `agent.repo_snapshots` writes are a different bullet and stay PG.
+
+  Rename note (2026-11-07): the sink was first verified live
+  against the interim muse-queue instance; that instance was
+  destroyed at the #6741 cutover and recreated fresh as
+  fleet-queue (--tursodb), and the secrets + writer targets
+  above were re-pointed and the sink re-verified against
+  fleet-queue in PR #6762 follow-through.
 
 ## Cutover procedure
 
@@ -131,7 +138,7 @@ reversible until C5.
 - **C1 — dual-write the external writers.** Deploy the Edge
   Function with `AGENT_EVENTS_SINK=dual` + the two new secrets;
   set `AGENT_EVENTS_SINK=dual` for the fleet-fetch timer. Verify
-  for 24 h: muse-queue `events` shows `push`/`issues`/
+  for 24 h: fleet-queue `events` shows `push`/`issues`/
   `pull_request` and `snapshot_refresh` kinds arriving
   (`/events-count` per kind), counts ≈ PG counts for the same
   window ( Management API SQL while PG lives).
@@ -157,7 +164,7 @@ reversible until C5.
   window: capture `max(id)` watermark, export
   `agent.events WHERE id <= watermark` (the DIY pg_dump backup is
   a valid source), and import into a new `agent_events_pg_history`
-  table in muse-queue (columns mirror PG: `pg_id, ts, worker_id,
+  table in fleet-queue (columns mirror PG: `pg_id, ts, worker_id,
   task_id, kind, detail`) — an archive beside the live stream,
   never merged (id spaces differ, §2). Anything past the watermark
   is covered by C1 dual-write overlap.
@@ -167,7 +174,7 @@ reversible until C5.
   cycle.
 - **C6 — prune + backup.** Daily timer calling `/events-prune`
   (keep_days 30) replaces pg_cron `agent-prune-events`. Re-point
-  the backup-of-record for the stream: muse-queue joins the Turso
+  the backup-of-record for the stream: fleet-queue joins the Turso
   backup routine; the PG `agent` schema dump keeps covering the
   pre-cutover history until C4 is verified, then events is
   excluded from the PG expectation (the table itself stays in PG,
