@@ -269,7 +269,8 @@ func (o Options) WantsArtifacts() bool {
 // after end so that a consumer can read the answer and disconnect before
 // paying for them.
 type Frame struct {
-	Type string `json:"type"`
+	Type string      `json:"type"`
+	Kind FailureKind `json:"kind,omitempty"`
 
 	RunID   string          `json:"runId,omitempty"`
 	Level   string          `json:"level,omitempty"`
@@ -476,6 +477,7 @@ type LogRecord struct {
 // Result is the structured answer.
 type Result struct {
 	RunID  string            `json:"runId"`
+	Kind   FailureKind       `json:"kind,omitempty"`
 	Result any               `json:"result,omitempty"`
 	Emits  []json.RawMessage `json:"emits"`
 	Logs   []LogRecord       `json:"logs"`
@@ -499,6 +501,16 @@ type Result struct {
 	// the script "did" happened.
 	DryRun bool `json:"dryRun,omitempty"`
 }
+
+// FailureKind distinguishes execution outcomes without discarding the
+// actionable error text, exit code, or timeout flag.
+type FailureKind string
+
+const (
+	FailureExecution FailureKind = "ExecutionFailure"
+	FailureTimeout   FailureKind = "TimeoutExceeded"
+	FailureStartup   FailureKind = "StartupFailure"
+)
 
 // Source supplies the generated client the script is run against.
 //
@@ -1012,8 +1024,9 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 			msg = rerr.Error()
 		}
 		res.Error = msg
+		res.Kind = FailureStartup
 		res.ExitCode = 1
-		emitFrame(Frame{Type: FrameError, Error: msg})
+		emitFrame(Frame{Type: FrameError, Kind: res.Kind, Error: msg})
 		// Suffix is documented as running on both paths: a `before` hook
 		// that allocated something is owed its cleanup even when the main
 		// script never started (a type error, an unreadable launcher).
@@ -1114,7 +1127,12 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	}
 
 	if res.Error != "" {
-		emitFrame(Frame{Type: FrameError, Error: res.Error})
+		if res.TimedOut {
+			res.Kind = FailureTimeout
+		} else {
+			res.Kind = FailureExecution
+		}
+		emitFrame(Frame{Type: FrameError, Kind: res.Kind, Error: res.Error})
 	} else if res.Result != nil {
 		b, merr := json.Marshal(res.Result)
 		if merr == nil {

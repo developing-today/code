@@ -426,6 +426,47 @@ func TestAFailedScriptExplainsItself(t *testing.T) {
 	}
 }
 
+func TestExecutionFailuresHaveTypedKinds(t *testing.T) {
+	needRuntime(t)
+	svc := service(t, store(t))
+	res, frames := run(t, svc, `throw new Error("boom");`, execsvc.Options{Output: execsvc.OutputStructured})
+	if res.Kind != execsvc.FailureExecution {
+		t.Errorf("runtime failure kind = %q, want %q", res.Kind, execsvc.FailureExecution)
+	}
+	if res.Error == "" || res.ExitCode == 0 {
+		t.Errorf("runtime failure lost its detail: %+v", res)
+	}
+
+	svc = service(t, store(t))
+	var err error
+	frames = nil
+	res, err = svc.RunWith(context.Background(), runner.Options{
+		Source:       `await new Promise((resolve) => setTimeout(resolve, 5000));`,
+		ClientSource: minimalClient, Permissions: "all", Timeout: 100 * time.Millisecond,
+	}, execsvc.Options{Output: execsvc.OutputStructured}, func(f execsvc.Frame) error {
+		frames = append(frames, f)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("timeout run: %v (%+v)", err, res)
+	}
+	if res.Kind != execsvc.FailureTimeout {
+		t.Errorf("timeout failure kind = %q, want %q", res.Kind, execsvc.FailureTimeout)
+	}
+	if !res.TimedOut || res.Error == "" {
+		t.Errorf("timeout failure lost its details: %+v", res)
+	}
+	foundErrorKind := false
+	for _, frame := range frames {
+		if frame.Type == execsvc.FrameError {
+			foundErrorKind = frame.Kind == execsvc.FailureTimeout
+		}
+	}
+	if !foundErrorKind {
+		t.Errorf("stream error frame did not carry timeout kind: %+v", frames)
+	}
+}
+
 // The sink is called from two goroutines -- the one copying the script's
 // stdout and the one parsing records off its stderr. An HTTP stream writes
 // each frame straight to the response, so two calls at once interleave

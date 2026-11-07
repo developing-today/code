@@ -149,14 +149,17 @@ Three renderings of one run.
   must keep doing so.
 - **structured** — the `/v1` and MCP default. One document:
   `{result, emits[], logs[], stdout, artifacts[], exitCode, durationMs,
-error?}`. A caller over HTTP wants fields, not text it has to scrape.
+error?, kind?}`. Failed executions carry a typed `kind` (`ExecutionFailure`,
+`TimeoutExceeded`, or `StartupFailure`) alongside the diagnostic and exit
+details. A caller over HTTP wants fields, not text it has to scrape.
 - **stream** — frames as they happen. SSE by default because it is plain
   HTTP and a browser consumes it with no code; NDJSON on
   `Accept: application/x-ndjson`, because a program with a JSON decoder should
   not have to strip `data: ` off every line first.
 
 `result` is the script's stdout parsed when stdout is JSON. That rule is
-inherited from `mcpx --json run` rather than invented, so the two agree.
+inherited from `mcpx --json run` rather than invented, so the two agree. An
+`error` stream frame carries the same typed `kind` as the structured result.
 
 ### The frame order, and why it is the order
 
