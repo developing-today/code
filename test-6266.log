@@ -1,0 +1,1778 @@
+    Blocking waiting for file lock on build directory
+warning: method `render_ansi_diff` is never used
+   --> crates/id-core/src/world_presentation.rs:457:19
+    |
+420 | impl ScreenSurface {
+    | ------------------ method in this implementation
+...
+457 |     pub(crate) fn render_ansi_diff(&self, previous: &Self) -> Option<String> {
+    |                   ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: missing documentation for a method
+   --> crates/id-core/src/world_limits.rs:182:5
+    |
+182 |     pub fn resolve(self, hard: RuntimeLimits) -> Result<RuntimeLimits> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W missing-docs`
+
+warning: `id-core` (lib) generated 2 warnings
+warning: unused import: `FILE_NAME as GROUPS_FILE_NAME`
+  --> src/commands/serve.rs:79:26
+   |
+79 | use crate::groups::log::{FILE_NAME as GROUPS_FILE_NAME, GroupLog};
+   |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unnecessary qualification
+    --> src/commands/world.rs:1257:33
+     |
+1257 |     let mut paths: Vec<(String, std::path::PathBuf)> = Vec::new();
+     |                                 ^^^^^^^^^^^^^^^^^^
+     |
+     = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+     |
+1257 -     let mut paths: Vec<(String, std::path::PathBuf)> = Vec::new();
+1257 +     let mut paths: Vec<(String, PathBuf)> = Vec::new();
+     |
+
+warning: unnecessary qualification
+    --> src/commands/world.rs:1260:31
+     |
+1260 |         let mut siblings: Vec<std::path::PathBuf> = std::fs::read_dir(source)
+     |                               ^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1260 -         let mut siblings: Vec<std::path::PathBuf> = std::fs::read_dir(source)
+1260 +         let mut siblings: Vec<PathBuf> = std::fs::read_dir(source)
+     |
+
+warning: usage of an `unsafe` block
+  --> src/directory_mail.rs:91:12
+   |
+91 |         if unsafe { libc::killpg(pgid, libc::SIGKILL) } == 0 {
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: requested on the command line with `-W unsafe-code`
+
+warning: unnecessary qualification
+   --> src/protocol.rs:253:30
+    |
+253 | pub const DEFAULT_BLOB_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+    |                              ^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+253 - pub const DEFAULT_BLOB_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+253 + pub const DEFAULT_BLOB_WAIT: Duration = std::time::Duration::from_secs(5);
+    |
+
+warning: unnecessary qualification
+   --> src/protocol.rs:253:52
+    |
+253 | pub const DEFAULT_BLOB_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+    |                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+253 - pub const DEFAULT_BLOB_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+253 + pub const DEFAULT_BLOB_WAIT: std::time::Duration = Duration::from_secs(5);
+    |
+
+warning: unnecessary qualification
+   --> src/protocol.rs:507:20
+    |
+507 |     pub blob_wait: std::time::Duration,
+    |                    ^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+507 -     pub blob_wait: std::time::Duration,
+507 +     pub blob_wait: Duration,
+    |
+
+warning: unnecessary qualification
+   --> src/world/actor.rs:156:23
+    |
+156 |         trust: Option<crate::world::TrustDecision>,
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+156 -         trust: Option<crate::world::TrustDecision>,
+156 +         trust: Option<TrustDecision>,
+    |
+
+warning: unnecessary qualification
+   --> src/world/actor.rs:535:33
+    |
+535 |                     let error = crate::world_caps::CapError::bad_args_with(format!(
+    |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+535 -                     let error = crate::world_caps::CapError::bad_args_with(format!(
+535 +                     let error = CapError::bad_args_with(format!(
+    |
+
+warning: unnecessary qualification
+   --> src/world/handle.rs:818:23
+    |
+818 |         trust: Option<crate::world::TrustDecision>,
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+818 -         trust: Option<crate::world::TrustDecision>,
+818 +         trust: Option<TrustDecision>,
+    |
+
+warning: unnecessary qualification
+   --> src/world_session/mod.rs:747:19
+    |
+747 |         let hash: iroh_blobs::Hash = expected_hash
+    |                   ^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+747 -         let hash: iroh_blobs::Hash = expected_hash
+747 +         let hash: Hash = expected_hash
+    |
+
+warning: unused attribute
+   --> src/world_net.rs:136:5
+    |
+136 |     #[must_use]
+    |     ^^^^^^^^^^^ help: remove this attribute
+    |
+note: attribute also specified here
+   --> src/world_net.rs:132:5
+    |
+132 |     #[must_use]
+    |     ^^^^^^^^^^^
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: `#[warn(unused_attributes)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `web`
+   --> src/commands/serve.rs:847:9
+    |
+847 |         web,
+    |         ^^^ help: try ignoring the field: `web: _`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `web_token`
+   --> src/commands/serve.rs:862:9
+    |
+862 |         web_token,
+    |         ^^^^^^^^^ help: try ignoring the field: `web_token: _`
+
+warning: unused variable: `web_cookie_secure`
+   --> src/commands/serve.rs:863:9
+    |
+863 |         web_cookie_secure,
+    |         ^^^^^^^^^^^^^^^^^ help: try ignoring the field: `web_cookie_secure: _`
+
+warning: unused variable: `web_bindings`
+   --> src/commands/serve.rs:900:9
+    |
+900 |     let web_bindings = resolve_web_bindings(
+    |         ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_web_bindings`
+
+warning: method `keeps` is never used
+   --> src/event_store/ingest.rs:468:8
+    |
+466 | impl Staged {
+    | ----------- method in this implementation
+467 |     /// Whether the event is kept: stored, or held. A refused event and a fork are not.
+468 |     fn keeps(&self) -> bool {
+    |        ^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `HostView` is never constructed
+   --> src/world/actor.rs:124:5
+    |
+ 53 | pub(crate) enum WorldCommand {
+    |                 ------------ variant in this enum
+...
+124 |     HostView {
+    |     ^^^^^^^^
+
+warning: method `handoff_transfers` is never used
+   --> src/world/core.rs:872:19
+    |
+ 99 | impl WorldCore {
+    | -------------- method in this implementation
+...
+872 |     pub(crate) fn handoff_transfers(&self) -> &[HandoffTransferState] {
+    |                   ^^^^^^^^^^^^^^^^^
+
+warning: method `host_view` is never used
+   --> src/world/handle.rs:684:25
+    |
+ 25 | impl WorldHandle {
+    | ---------------- method in this implementation
+...
+684 |     pub(crate) async fn host_view(&self) -> Result<(WorldSnapshot, Option<String>)> {
+    |                         ^^^^^^^^^
+
+warning: field `profile` is never read
+   --> src/world_manifest.rs:183:9
+    |
+181 |     struct ProfileProbe {
+    |            ------------ field in this struct
+182 |         #[serde(default)]
+183 |         profile: Option<ProfileKeysProbe>,
+    |         ^^^^^^^
+
+warning: fields `wasm_fuel`, `wasm_memory_bytes`, `wasm_message_bytes`, `native_memory_bytes`, `native_cpu_seconds`, and `native_call_deadline_ms` are never read
+   --> src/world_manifest.rs:190:9
+    |
+188 |     struct ProfileKeysProbe {
+    |            ---------------- fields in this struct
+189 |         #[serde(default)]
+190 |         wasm_fuel: Option<serde::de::IgnoredAny>,
+    |         ^^^^^^^^^
+191 |         #[serde(default)]
+192 |         wasm_memory_bytes: Option<serde::de::IgnoredAny>,
+    |         ^^^^^^^^^^^^^^^^^
+193 |         #[serde(default)]
+194 |         wasm_message_bytes: Option<serde::de::IgnoredAny>,
+    |         ^^^^^^^^^^^^^^^^^^
+195 |         #[serde(default)]
+196 |         native_memory_bytes: Option<serde::de::IgnoredAny>,
+    |         ^^^^^^^^^^^^^^^^^^^
+197 |         #[serde(default)]
+198 |         native_cpu_seconds: Option<serde::de::IgnoredAny>,
+    |         ^^^^^^^^^^^^^^^^^^
+199 |         #[serde(default)]
+200 |         native_call_deadline_ms: Option<serde::de::IgnoredAny>,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> src/abuse.rs:537:5
+    |
+537 |     pub fn new() -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W missing-docs`
+
+warning: missing documentation for an associated function
+   --> src/abuse.rs:663:5
+    |
+663 |     pub fn new(policy: AbusePolicy, local_node: NodeId) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:13:5
+   |
+13 |     pub app: AppInfo,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:14:5
+   |
+14 |     pub interfaces: Interfaces,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:16:5
+   |
+16 |     pub program: Option<Program>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:18:5
+   |
+18 |     pub capabilities: Option<Capabilities>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:20:5
+   |
+20 |     pub resources: Option<Resources>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/app_manifest.rs:25:1
+   |
+25 | pub struct AppInfo {
+   | ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:26:5
+   |
+26 |     pub id: String,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:27:5
+   |
+27 |     pub name: String,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:28:5
+   |
+28 |     pub version: String,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:30:5
+   |
+30 |     pub description: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/app_manifest.rs:35:1
+   |
+35 | pub struct Program {
+   | ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:36:5
+   |
+36 |     pub kind: String,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:38:5
+   |
+38 |     pub source: Option<PathBuf>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:40:5
+   |
+40 |     pub module_hash: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/app_manifest.rs:45:1
+   |
+45 | pub struct Interfaces {
+   | ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:47:5
+   |
+47 |     pub cli: Option<CliInterface>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:49:5
+   |
+49 |     pub web: Option<WebInterface>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/app_manifest.rs:54:1
+   |
+54 | pub struct CliInterface {
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:55:5
+   |
+55 |     pub commands: Vec<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/app_manifest.rs:60:1
+   |
+60 | pub struct WebInterface {
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:61:5
+   |
+61 |     pub mode: String,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:62:5
+   |
+62 |     pub route: String,
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:64:5
+   |
+64 |     pub socket: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/app_manifest.rs:69:1
+   |
+69 | pub struct Capabilities {
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:71:5
+   |
+71 |     pub request: Vec<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/app_manifest.rs:76:1
+   |
+76 | pub struct Resources {
+   | ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:78:5
+   |
+78 |     pub files: Vec<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:84:5
+   |
+84 |     pub path: PathBuf,
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:85:5
+   |
+85 |     pub manifest: AppManifest,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:92:5
+   |
+92 |     pub apps: Vec<DiscoveredApp>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/app_manifest.rs:93:5
+   |
+93 |     pub errors: Vec<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+   --> src/cli.rs:307:1
+    |
+307 | pub enum Command {
+    | ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/commands/put.rs:393:1
+    |
+393 | / pub async fn cmd_put_multi(
+394 | |     files: Vec<String>,
+395 | |     content_mode: bool,
+396 | |     from_stdin: bool,
+397 | |     hash_only: bool,
+398 | |     no_relay: bool,
+399 | | ) -> Result<()> {
+    | |_______________^
+
+warning: missing documentation for a function
+   --> src/commands/serve.rs:841:1
+    |
+841 | pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:31:5
+   |
+31 |     pub numerator: u128,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:32:5
+   |
+32 |     pub denominator: u128,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:33:5
+   |
+33 |     pub authorisation_id: String,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:56:5
+   |
+56 |     pub conversion_id: u128,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:61:5
+   |
+61 |     pub user_source: AccountId,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:62:5
+   |
+62 |     pub lp_source: AccountId,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:63:5
+   |
+63 |     pub fee_account: Option<AccountId>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:64:5
+   |
+64 |     pub lp_dest: AccountId,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:65:5
+   |
+65 |     pub user_dest: AccountId,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:66:5
+   |
+66 |     pub source_ledger: u32,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:67:5
+   |
+67 |     pub dest_ledger: u32,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:68:5
+   |
+68 |     pub amount_in: u128,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:71:5
+   |
+71 |     pub quote: RateQuote,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: type does not implement `Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+  --> src/currency_poc/executor.rs:76:1
+   |
+76 | / pub struct ConversionExecutor<B: LedgerBackend, S: IntentStore> {
+77 | |     pub backend: B,
+78 | |     pub store: S,
+79 | | }
+   | |_^
+   |
+   = note: requested on the command line with `-W missing-debug-implementations`
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:77:5
+   |
+77 |     pub backend: B,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:78:5
+   |
+78 |     pub store: S,
+   |     ^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> src/currency_poc/executor.rs:82:5
+   |
+82 |     pub fn new(backend: B, store: S) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: type does not implement `Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+  --> src/currency_poc/harness.rs:66:1
+   |
+66 | / pub struct TestCluster {
+67 | |     dir: PathBuf,
+68 | |     child: Option<Child>,
+69 | |     /// The `host:port` address clients should connect to.
+70 | |     pub address: String,
+71 | | }
+   | |_^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:47:5
+   |
+47 |     pub conversion_id: u128,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:52:5
+   |
+52 |     pub user_source: AccountId,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:53:5
+   |
+53 |     pub lp_source: AccountId,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:54:5
+   |
+54 |     pub fee_account: Option<AccountId>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:55:5
+   |
+55 |     pub lp_dest: AccountId,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:56:5
+   |
+56 |     pub user_dest: AccountId,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:57:5
+   |
+57 |     pub source_ledger: u32,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:58:5
+   |
+58 |     pub dest_ledger: u32,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:59:5
+   |
+59 |     pub amount_in: u128,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:60:5
+   |
+60 |     pub amount_out: u128,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:61:5
+   |
+61 |     pub fee_amount: u128,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:65:5
+   |
+65 |     pub state: IntentState,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/currency_poc/intent.rs:69:5
+   |
+69 |     pub fn transfer_ids(&self) -> Vec<u128> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/currency_poc/intent.rs:79:5
+   |
+79 |     fn get(&self, conversion_id: u128) -> io::Result<Option<IntentRecord>>;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/currency_poc/intent.rs:80:5
+   |
+80 |     fn unresolved(&self) -> io::Result<Vec<IntentRecord>>;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: type does not implement `Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+  --> src/currency_poc/intent.rs:85:1
+   |
+85 | / pub struct InMemoryIntentStore {
+86 | |     records: HashMap<u128, IntentRecord>,
+87 | | }
+   | |_^
+
+warning: missing documentation for an associated function
+  --> src/currency_poc/intent.rs:90:5
+   |
+90 |     pub fn new() -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: type does not implement `Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+   --> src/currency_poc/intent.rs:118:1
+    |
+118 | / pub struct FileIntentStore {
+119 | |     dir: PathBuf,
+120 | | }
+    | |_^
+
+warning: missing documentation for an associated function
+   --> src/currency_poc/intent.rs:123:5
+    |
+123 |     pub fn open(dir: PathBuf) -> io::Result<Self> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:41:5
+   |
+41 |     pub id: AccountId,
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:42:5
+   |
+42 |     pub ledger: u32,
+   |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:43:5
+   |
+43 |     pub code: u16,
+   |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:44:5
+   |
+44 |     pub flags: AccountFlags,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:52:5
+   |
+52 |     pub id: TransferId,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:53:5
+   |
+53 |     pub debit_account_id: AccountId,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:54:5
+   |
+54 |     pub credit_account_id: AccountId,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:55:5
+   |
+55 |     pub amount: u128,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:56:5
+   |
+56 |     pub ledger: u32,
+   |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:59:5
+   |
+59 |     pub code: u16,
+   |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:60:5
+   |
+60 |     pub linked: bool,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:66:5
+   |
+66 |     pub debits_posted: u128,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:67:5
+   |
+67 |     pub credits_posted: u128,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/currency_poc/ledger.rs:101:5
+    |
+101 |     DebitAccountNotFound,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/currency_poc/ledger.rs:102:5
+    |
+102 |     CreditAccountNotFound,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/currency_poc/ledger.rs:103:5
+    |
+103 |     AccountsMustBeDifferent,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/currency_poc/ledger.rs:104:5
+    |
+104 |     AmountMustNotBeZero,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/currency_poc/ledger.rs:109:5
+    |
+109 |     DebitsMustNotExceedCredits,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/currency_poc/ledger.rs:110:5
+    |
+110 |     CreditsMustNotExceedDebits,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> src/currency_poc/ledger.rs:115:5
+    |
+115 |     fn create_accounts(&mut self, accounts: &[Account]) -> Vec<Result<(), AccountError>>;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> src/currency_poc/ledger.rs:119:5
+    |
+119 |     fn lookup_transfer(&self, id: TransferId) -> Option<Transfer>;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> src/currency_poc/ledger.rs:120:5
+    |
+120 |     fn lookup_account(&self, id: AccountId) -> Option<Account>;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> src/currency_poc/ledger.rs:121:5
+    |
+121 |     fn account_balance(&self, id: AccountId) -> Option<AccountBalance>;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: type does not implement `Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+   --> src/currency_poc/ledger.rs:131:1
+    |
+131 | / pub struct InMemoryLedger {
+132 | |     accounts: HashMap<AccountId, Account>,
+133 | |     balances: HashMap<AccountId, AccountBalance>,
+134 | |     transfers: HashMap<TransferId, Transfer>,
+135 | |     transfer_order: Vec<TransferId>,
+136 | | }
+    | |_^
+
+warning: missing documentation for an associated function
+   --> src/currency_poc/ledger.rs:139:5
+    |
+139 |     pub fn new() -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/repl/input.rs:408:1
+    |
+408 | pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+    --> src/tags.rs:1529:28
+     |
+1529 |     EmptyQuotedComponent { term: String },
+     |                            ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+    --> src/tags.rs:1531:25
+     |
+1531 |     UnterminatedQuote { term: String },
+     |                         ^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> src/world_net.rs:144:5
+    |
+144 |     pub fn abuse_counters(&self) -> Vec<((NodeId, AbuseEndpointId), Counters)> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/world_session/types.rs:286:5
+    |
+286 |     pub public_key: String,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/world_session/types.rs:287:5
+    |
+287 |     pub signature: String,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: `id` (lib) generated 126 warnings (run `cargo fix --lib -p id` to apply 15 suggestions)
+   Compiling id v0.1.0 (/home/user/git/fleet/6266/pkgs/id)
+warning: duplicated attribute
+    --> src/cli.rs:3276:5
+     |
+3276 |     #[test]
+     |     ^^^^^^^
+     |
+     = note: `#[warn(duplicate_macro_attributes)]` on by default
+
+warning: duplicated attribute
+    --> src/commands/find.rs:1054:5
+     |
+1054 |     #[test]
+     |     ^^^^^^^
+
+warning: usage of an `unsafe` block
+   --> src/directory_mail.rs:537:16
+    |
+537 |             if unsafe { libc::kill(pid, 0) } != 0 {
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unnecessary qualification
+    --> src/encryption/tests.rs:1037:30
+     |
+1037 |     let chunk = |index: u32| super::welcome::Chunk {
+     |                              ^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1037 -     let chunk = |index: u32| super::welcome::Chunk {
+1037 +     let chunk = |index: u32| welcome::Chunk {
+     |
+
+warning: unused import: `super::*`
+   --> src/fileops.rs:971:9
+    |
+971 |     use super::*;
+    |         ^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unnecessary qualification
+   --> src/log_sync.rs:946:15
+    |
+946 |         match tokio::time::timeout(std::time::Duration::from_secs(10), results.recv()).await {
+    |               ^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+946 -         match tokio::time::timeout(std::time::Duration::from_secs(10), results.recv()).await {
+946 +         match timeout(std::time::Duration::from_secs(10), results.recv()).await {
+    |
+
+warning: unnecessary qualification
+   --> src/log_sync.rs:946:36
+    |
+946 |         match tokio::time::timeout(std::time::Duration::from_secs(10), results.recv()).await {
+    |                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+946 -         match tokio::time::timeout(std::time::Duration::from_secs(10), results.recv()).await {
+946 +         match tokio::time::timeout(Duration::from_secs(10), results.recv()).await {
+    |
+
+warning: unnecessary qualification
+    --> src/protocol.rs:1213:9
+     |
+1213 |         iroh_base::SecretKey::from_bytes(&[n; 32]).public()
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1213 -         iroh_base::SecretKey::from_bytes(&[n; 32]).public()
+1213 +         SecretKey::from_bytes(&[n; 32]).public()
+     |
+
+warning: duplicated attribute
+    --> src/repl/runner.rs:1894:5
+     |
+1894 |     #[test]
+     |     ^^^^^^^
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:483:24
+    |
+483 |         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+483 -         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+483 +         let deadline = Instant::now() + std::time::Duration::from_secs(2);
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:483:52
+    |
+483 |         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    |                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+483 -         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+483 +         let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:493:21
+    |
+493 |             assert!(std::time::Instant::now() < deadline, "no refusal recorded");
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+493 -             assert!(std::time::Instant::now() < deadline, "no refusal recorded");
+493 +             assert!(Instant::now() < deadline, "no refusal recorded");
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:494:32
+    |
+494 |             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+494 -             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+494 +             tokio::time::sleep(Duration::from_millis(10)).await;
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:512:24
+    |
+512 |         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+512 -         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+512 +         let deadline = Instant::now() + std::time::Duration::from_secs(2);
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:512:52
+    |
+512 |         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    |                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+512 -         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+512 +         let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:517:21
+    |
+517 |             assert!(std::time::Instant::now() < deadline, "no answer recorded");
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+517 -             assert!(std::time::Instant::now() < deadline, "no answer recorded");
+517 +             assert!(Instant::now() < deadline, "no answer recorded");
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:518:32
+    |
+518 |             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+518 -             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+518 +             tokio::time::sleep(Duration::from_millis(10)).await;
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:559:24
+    |
+559 |         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+559 -         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+559 +         let deadline = Instant::now() + std::time::Duration::from_secs(2);
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:559:52
+    |
+559 |         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    |                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+559 -         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+559 +         let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:570:17
+    |
+570 |                 std::time::Instant::now() < deadline,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+570 -                 std::time::Instant::now() < deadline,
+570 +                 Instant::now() < deadline,
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:573:32
+    |
+573 |             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+573 -             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+573 +             tokio::time::sleep(Duration::from_millis(10)).await;
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:588:24
+    |
+588 |         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+588 -         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+588 +         let deadline = Instant::now() + std::time::Duration::from_secs(2);
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:588:52
+    |
+588 |         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    |                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+588 -         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+588 +         let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:590:46
+    |
+590 |             let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+    |                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+590 -             let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+590 +             let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:599:21
+    |
+599 |             assert!(std::time::Instant::now() < deadline, "chat never arrived");
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+599 -             assert!(std::time::Instant::now() < deadline, "chat never arrived");
+599 +             assert!(Instant::now() < deadline, "chat never arrived");
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:619:24
+    |
+619 |         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+619 -         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+619 +         let deadline = Instant::now() + std::time::Duration::from_secs(2);
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:619:52
+    |
+619 |         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    |                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+619 -         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+619 +         let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:630:21
+    |
+630 |             assert!(std::time::Instant::now() < deadline, "no refusal recorded");
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+630 -             assert!(std::time::Instant::now() < deadline, "no refusal recorded");
+630 +             assert!(Instant::now() < deadline, "no refusal recorded");
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:631:32
+    |
+631 |             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+631 -             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+631 +             tokio::time::sleep(Duration::from_millis(10)).await;
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:653:24
+    |
+653 |         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+653 -         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+653 +         let deadline = Instant::now() + std::time::Duration::from_secs(2);
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:653:52
+    |
+653 |         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    |                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+653 -         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+653 +         let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:665:17
+    |
+665 |                 std::time::Instant::now() < deadline,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+665 -                 std::time::Instant::now() < deadline,
+665 +                 Instant::now() < deadline,
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:668:32
+    |
+668 |             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+668 -             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+668 +             tokio::time::sleep(Duration::from_millis(10)).await;
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:676:24
+    |
+676 |         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+676 -         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+676 +         let deadline = Instant::now() + std::time::Duration::from_secs(2);
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:676:52
+    |
+676 |         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    |                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+676 -         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+676 +         let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:681:21
+    |
+681 |             assert!(std::time::Instant::now() < deadline, "never granted");
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+681 -             assert!(std::time::Instant::now() < deadline, "never granted");
+681 +             assert!(Instant::now() < deadline, "never granted");
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:682:32
+    |
+682 |             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+682 -             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+682 +             tokio::time::sleep(Duration::from_millis(10)).await;
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:755:43
+    |
+755 |     fn restore_with_scopes(scopes: u8) -> anyhow::Result<RestoredWorld> {
+    |                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+755 -     fn restore_with_scopes(scopes: u8) -> anyhow::Result<RestoredWorld> {
+755 +     fn restore_with_scopes(scopes: u8) -> Result<RestoredWorld> {
+    |
+
+warning: unnecessary qualification
+   --> src/world/tests.rs:903:28
+    |
+903 |         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+903 -         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+903 +         tokio::time::sleep(Duration::from_millis(100)).await;
+    |
+
+warning: unnecessary qualification
+    --> src/world/tests.rs:2852:24
+     |
+2852 |         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+     |                        ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+2852 -         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+2852 +         let deadline = Instant::now() + std::time::Duration::from_secs(2);
+     |
+
+warning: unnecessary qualification
+    --> src/world/tests.rs:2852:52
+     |
+2852 |         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+     |                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+2852 -         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+2852 +         let deadline = std::time::Instant::now() + Duration::from_secs(2);
+     |
+
+warning: unnecessary qualification
+    --> src/world/tests.rs:2862:21
+     |
+2862 |             assert!(std::time::Instant::now() < deadline, "no refusal recorded");
+     |                     ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+2862 -             assert!(std::time::Instant::now() < deadline, "no refusal recorded");
+2862 +             assert!(Instant::now() < deadline, "no refusal recorded");
+     |
+
+warning: unnecessary qualification
+    --> src/world/tests.rs:2863:32
+     |
+2863 |             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+     |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+2863 -             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+2863 +             tokio::time::sleep(Duration::from_millis(10)).await;
+     |
+
+warning: unnecessary qualification
+    --> src/world/tests.rs:2878:17
+     |
+2878 |                 std::time::Instant::now() < deadline,
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+2878 -                 std::time::Instant::now() < deadline,
+2878 +                 Instant::now() < deadline,
+     |
+
+warning: unnecessary qualification
+    --> src/world/tests.rs:2881:32
+     |
+2881 |             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+     |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+2881 -             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+2881 +             tokio::time::sleep(Duration::from_millis(10)).await;
+     |
+
+warning: unused import: `crate::world::*`
+    --> src/world/tests.rs:3239:9
+     |
+3239 |     use crate::world::*;
+     |         ^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::world::*`
+    --> src/world/tests.rs:3509:9
+     |
+3509 |     use crate::world::*;
+     |         ^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::world::*`
+    --> src/world/tests.rs:3871:9
+     |
+3871 |     use crate::world::*;
+     |         ^^^^^^^^^^^^^^^
+
+warning: unnecessary qualification
+    --> src/world_compile.rs:1613:9
+     |
+1613 |         crate::world_compile::locate_roc()
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1613 -         crate::world_compile::locate_roc()
+1613 +         locate_roc()
+     |
+
+warning: unnecessary qualification
+    --> src/world_net.rs:1481:30
+     |
+1481 |         tokio::time::timeout(std::time::Duration::from_secs(10), client.recv_json())
+     |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1481 -         tokio::time::timeout(std::time::Duration::from_secs(10), client.recv_json())
+1481 +         tokio::time::timeout(Duration::from_secs(10), client.recv_json())
+     |
+
+warning: unnecessary qualification
+    --> src/world_net.rs:2275:34
+     |
+2275 |             tokio::time::timeout(std::time::Duration::from_secs(10), read_frame(&mut recv))
+     |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+2275 -             tokio::time::timeout(std::time::Duration::from_secs(10), read_frame(&mut recv))
+2275 +             tokio::time::timeout(Duration::from_secs(10), read_frame(&mut recv))
+     |
+
+warning: unnecessary qualification
+    --> src/world_net.rs:2331:40
+     |
+2331 |             match tokio::time::timeout(std::time::Duration::from_secs(10), read_frame(recv)).await {
+     |                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+2331 -             match tokio::time::timeout(std::time::Duration::from_secs(10), read_frame(recv)).await {
+2331 +             match tokio::time::timeout(Duration::from_secs(10), read_frame(recv)).await {
+     |
+
+warning: unused import: `super::*`
+ --> src/world_session/tests.rs:7:9
+  |
+7 |     use super::*;
+  |         ^^^^^^^^
+
+warning: unnecessary qualification
+    --> src/world_store.rs:1495:23
+     |
+1495 |                 kind: crate::world::WorldEventKind::ProgramInstalled {
+     |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1495 -                 kind: crate::world::WorldEventKind::ProgramInstalled {
+1495 +                 kind: WorldEventKind::ProgramInstalled {
+     |
+
+warning: unnecessary qualification
+    --> src/world_store.rs:1565:17
+     |
+1565 |                 crate::world::Authority::Admin,
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1565 -                 crate::world::Authority::Admin,
+1565 +                 Authority::Admin,
+     |
+
+warning: unnecessary qualification
+    --> src/world_store.rs:1566:17
+     |
+1566 |                 crate::world::Isolation::Unisolated,
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1566 -                 crate::world::Isolation::Unisolated,
+1566 +                 Isolation::Unisolated,
+     |
+
+warning: unused import: `std::io::Write`
+   --> src/directory_mail.rs:422:9
+    |
+422 |     use std::io::Write as _;
+    |         ^^^^^^^^^^^^^^
+
+warning: unused import: `super`
+   --> src/fileops.rs:662:9
+    |
+662 |     use super::*;
+    |         ^^^^^
+
+warning: unused variable: `JOURNAL_VERSION_EXECUTION_PROFILE`
+    --> src/world_store.rs:1629:30
+     |
+1629 |                     version: JOURNAL_VERSION_EXECUTION_PROFILE,
+     |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: you might have meant to pattern match on the similarly named constant `JOURNAL_VERSION_EXECUTION_PROFILE`
+     |
+1629 |                     version: world::JOURNAL_VERSION_EXECUTION_PROFILE,
+     |                              +++++++
+help: if this is intentional, prefix it with an underscore
+     |
+1629 |                     version: _JOURNAL_VERSION_EXECUTION_PROFILE,
+     |                              +
+
+warning: unused variable: `JOURNAL_VERSION_EXECUTION_PROFILE`
+    --> src/world_store.rs:1675:26
+     |
+1675 |                 version: JOURNAL_VERSION_EXECUTION_PROFILE,
+     |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: you might have meant to pattern match on the similarly named constant `JOURNAL_VERSION_EXECUTION_PROFILE`
+     |
+1675 |                 version: world::JOURNAL_VERSION_EXECUTION_PROFILE,
+     |                          +++++++
+help: if this is intentional, prefix it with an underscore
+     |
+1675 |                 version: _JOURNAL_VERSION_EXECUTION_PROFILE,
+     |                          +
+
+warning: unused variable: `JOURNAL_VERSION_EXECUTION_PROFILE`
+    --> src/world_store.rs:1683:26
+     |
+1683 |                 version: JOURNAL_VERSION_EXECUTION_PROFILE,
+     |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: you might have meant to pattern match on the similarly named constant `JOURNAL_VERSION_EXECUTION_PROFILE`
+     |
+1683 |                 version: world::JOURNAL_VERSION_EXECUTION_PROFILE,
+     |                          +++++++
+help: if this is intentional, prefix it with an underscore
+     |
+1683 |                 version: _JOURNAL_VERSION_EXECUTION_PROFILE,
+     |                          +
+
+warning: function `test_cli_rejects_first_and_last_together` is never used
+    --> src/cli.rs:3305:8
+     |
+3305 |     fn test_cli_rejects_first_and_last_together() {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `keeps` is never used
+   --> src/event_store/ingest.rs:468:8
+    |
+466 | impl Staged {
+    | ----------- method in this implementation
+467 |     /// Whether the event is kept: stored, or held. A refused event and a fork are not.
+468 |     fn keeps(&self) -> bool {
+    |        ^^^^^
+
+warning: function `test_parse_find_args_basic` is never used
+    --> src/repl/runner.rs:1970:8
+     |
+1970 |     fn test_parse_find_args_basic() {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: calls to `std::mem::drop` with a value that implements `Copy` does nothing
+    --> src/abuse.rs:1239:9
+     |
+1239 |         drop(big);
+     |         ^^^^^---^
+     |              |
+     |              argument has type `ConnectionId`
+     |
+     = note: `#[warn(dropping_copy_types)]` on by default
+help: use `let _ = ...` to ignore the expression or result
+     |
+1239 -         drop(big);
+1239 +         let _ = big;
+     |
+
+warning: variable `JOURNAL_VERSION_EXECUTION_PROFILE` should have a snake case name
+    --> src/world_store.rs:1629:30
+     |
+1629 |                     version: JOURNAL_VERSION_EXECUTION_PROFILE,
+     |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case: `journal_version_execution_profile`
+     |
+     = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: variable `JOURNAL_VERSION_EXECUTION_PROFILE` should have a snake case name
+    --> src/world_store.rs:1675:26
+     |
+1675 |                 version: JOURNAL_VERSION_EXECUTION_PROFILE,
+     |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case: `journal_version_execution_profile`
+
+warning: variable `JOURNAL_VERSION_EXECUTION_PROFILE` should have a snake case name
+    --> src/world_store.rs:1683:26
+     |
+1683 |                 version: JOURNAL_VERSION_EXECUTION_PROFILE,
+     |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case: `journal_version_execution_profile`
+
+warning: `id` (lib test) generated 191 warnings (123 duplicates) (run `cargo fix --lib -p id --tests` to apply 55 suggestions)
+warning: `id-core` (lib test) generated 1 warning (1 duplicate)
+error: couldn't read `tests/../examples/tic-tac-toe/tic-tac-toe.wasm`: No such file or directory (os error 2)
+  --> tests/game_post_async_turns_poc.rs:32:29
+   |
+32 | const PACKAGE_WASM: &[u8] = include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm");
+   |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0063]: missing field `link` in initializer of `ChainExt`
+  --> tests/aliases.rs:51:19
+   |
+51 |         let ext = ChainExt {
+   |                   ^^^^^^^^ missing `link`
+
+error[E0063]: missing field `link` in initializer of `ChainExt`
+  --> tests/search.rs:84:19
+   |
+84 |         self.send(ChainExt {
+   |                   ^^^^^^^^ missing `link`
+
+error[E0063]: missing field `link` in initializer of `ChainExt`
+  --> tests/search.rs:97:5
+   |
+97 |     ChainExt {
+   |     ^^^^^^^^ missing `link`
+
+error[E0063]: missing field `link` in initializer of `ChainExt`
+  --> tests/tag_claims.rs:71:19
+   |
+71 |         let ext = ChainExt {
+   |                   ^^^^^^^^ missing `link`
+
+error[E0063]: missing field `link` in initializer of `ChainExt`
+   --> tests/tag_claims.rs:258:20
+    |
+258 |     let mismatch = ChainExt {
+    |                    ^^^^^^^^ missing `link`
+
+error[E0063]: missing field `link` in initializer of `ChainExt`
+   --> tests/tag_claims.rs:268:19
+    |
+268 |     let missing = ChainExt {
+    |                   ^^^^^^^^ missing `link`
+
+For more information about this error, try `rustc --explain E0063`.
+error[E0063]: missing field `link` in initializer of `ChainExt`
+  --> tests/chain_properties.rs:57:9
+   |
+57 |         ChainExt {
+   |         ^^^^^^^^ missing `link`
+
+error: could not compile `id` (test "search") due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `id` (test "aliases") due to 1 previous error
+error[E0063]: missing field `link` in initializer of `ChainExt`
+   --> tests/event_store_properties.rs:144:15
+    |
+144 |     let ext = ChainExt {
+    |               ^^^^^^^^ missing `link`
+
+error[E0063]: missing field `link` in initializer of `ChainExt`
+   --> tests/event_store_properties.rs:332:15
+    |
+332 |     let ext = ChainExt {
+    |               ^^^^^^^^ missing `link`
+
+error: could not compile `id` (test "tag_claims") due to 3 previous errors
+error[E0063]: missing field `link` in initializer of `ChainExt`
+  --> tests/voiding_scenarios.rs:88:19
+   |
+88 |         let ext = ChainExt {
+   |                   ^^^^^^^^ missing `link`
+
+error[E0063]: missing field `link` in initializer of `ChainExt`
+   --> tests/chain_properties.rs:121:19
+    |
+121 |         let ext = ChainExt {
+    |                   ^^^^^^^^ missing `link`
+
+error[E0063]: missing field `link` in initializer of `ChainExt`
+   --> tests/chain_properties.rs:188:17
+    |
+188 |                 ChainExt {
+    |                 ^^^^^^^^ missing `link`
+
+error[E0063]: missing field `link` in initializer of `ChainExt`
+   --> tests/event_store_properties.rs:757:17
+    |
+757 |                 ChainExt {
+    |                 ^^^^^^^^ missing `link`
+
+warning: trivial numeric cast: `usize` as `usize`
+   --> tests/game_post_async_turns_poc.rs:300:29
+    |
+300 |     let expected = &players[(line.len() % 2) as usize];
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: cast can be replaced by coercion; this might require a temporary variable
+    = note: requested on the command line with `-W trivial-numeric-casts`
+
+error[E0063]: missing field `link` in initializer of `ChainExt`
+   --> tests/event_store_properties.rs:797:23
+    |
+797 |             let ext = ChainExt {
+    |                       ^^^^^^^^ missing `link`
+
+error: could not compile `id` (test "chain_properties") due to 3 previous errors
+error[E0063]: missing field `link` in initializer of `ChainExt`
+   --> tests/crash/store.rs:430:46
+    |
+430 |     let ext = |kind: &str, after: Vec<Hash>| ChainExt {
+    |                                              ^^^^^^^^ missing `link`
+
+error: could not compile `id` (test "voiding_scenarios") due to 1 previous error
+warning: `id` (test "game_post_async_turns_poc") generated 1 warning
+error: could not compile `id` (test "game_post_async_turns_poc") due to 1 previous error; 1 warning emitted
+error: could not compile `id` (test "event_store_properties") due to 4 previous errors
+error[E0063]: missing field `link` in initializer of `ChainExt`
+   --> tests/bridge_poc.rs:159:19
+    |
+159 |         let ext = ChainExt {
+    |                   ^^^^^^^^ missing `link`
+
+error[E0063]: missing field `link` in initializer of `ChainExt`
+   --> tests/bridge_poc.rs:190:19
+    |
+190 |         let ext = ChainExt {
+    |                   ^^^^^^^^ missing `link`
+
+error: could not compile `id` (test "crash") due to 1 previous error
+error: could not compile `id` (test "bridge_poc") due to 2 previous errors
