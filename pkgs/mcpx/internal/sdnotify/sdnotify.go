@@ -4,10 +4,18 @@
 package sdnotify
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
+	"time"
 )
+
+const notifyTimeout = time.Second
+
+type unixgramDialer interface {
+	DialContext(context.Context, string, string) (net.Conn, error)
+}
 
 // Send writes one state assignment, such as "READY=1", to $NOTIFY_SOCKET.
 // Outside systemd the variable is unset and Send does nothing.
@@ -16,13 +24,22 @@ func Send(state string) error {
 	if path == "" {
 		return nil
 	}
-	// A leading '@' names an abstract socket. Go's net package takes the same
-	// convention, so the name is passed through unchanged.
-	conn, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: path, Net: "unixgram"})
+	// DialContext accepts Go's leading-@ convention for abstract sockets and
+	// bounds connection setup as well as the write below.
+	return sendWithDialer(path, state, &net.Dialer{}, notifyTimeout)
+}
+
+func sendWithDialer(path, state string, dialer unixgramDialer, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	conn, err := dialer.DialContext(ctx, "unixgram", path)
 	if err != nil {
 		return fmt.Errorf("notify %s: %w", path, err)
 	}
 	defer conn.Close()
+	if err := conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+		return fmt.Errorf("notify %s: set write deadline: %w", path, err)
+	}
 	if _, err := conn.Write([]byte(state)); err != nil {
 		return fmt.Errorf("notify %s: %w", path, err)
 	}
