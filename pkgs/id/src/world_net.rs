@@ -2707,8 +2707,11 @@ mod tests {
             .execution_profile(None, Some(&capability))
             .await
             .unwrap();
-        // execution_profile now returns just the requested profile, not the whole frame
-        assert!(res.get("wasm_fuel").is_some() || res.get("total_memory_bytes").is_some());
+        // execution_profile now returns just the requested profile, not the
+        // whole frame. A fresh world has requested nothing: every bound is
+        // None (inherit the server ceiling) and serializes away, so the
+        // default requested profile is the empty object (#6687).
+        assert_eq!(res, serde_json::json!({}));
         guest.close();
 
         // 3. Admin can update profile
