@@ -1241,10 +1241,10 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/aa") {
-    return html(renderAa(await source.aa(), prov(), provDetail()));
+    return html(renderAa(await source.aa(url.searchParams.get("batch")), prov(), provDetail()));
   }
   if (path === "/api/aa.json") {
-    const section = await source.aa();
+    const section = await source.aa(url.searchParams.get("batch"));
     return json(section ?? { status: "absent", reason: "no AA explorer section in the fleet feed yet" });
   }
 

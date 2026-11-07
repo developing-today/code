@@ -5795,7 +5795,7 @@ const AA_EXPLORER_SCRIPT = `<script>
   });
   function csvCell(v) { return '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"'; }
   var dlJsonEl = document.getElementById("xf-dl-json");
-  if (dlJsonEl) dlJsonEl.addEventListener("click", function () { downloadFile("cost-explorer-data.json", JSON.stringify(DATA, null, 2), "application/json"); });
+  if (dlJsonEl) dlJsonEl.addEventListener("click", function () { downloadFile("cost-explorer-data-" + String(DATA.batch || "latest").slice(0, 8) + ".json", JSON.stringify(DATA, null, 2), "application/json"); });
   var dlCsvEl = document.getElementById("xf-dl-csv");
   if (dlCsvEl) dlCsvEl.addEventListener("click", function () {
     var lines = [];
@@ -5955,13 +5955,37 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance, 
 </div>`
     : `<div class="banner">The collector has not carried the fleet catalog yet — it is built from the same <code>.opencode/opencode.jsonc</code> read as the coverage section and appears once a collector build that knows it has run. No catalog is shown rather than a stale one.</div>`;
   const explorerJson = jsonForScript(
-    JSON.stringify({ points: aaPoints(s), caiPoints: s.cai ? aaCaiPoints(s.cai) : [], catalog: catalog ?? null }),
+    JSON.stringify({
+      batch: s.batch,
+      points: aaPoints(s),
+      caiPoints: s.cai ? aaCaiPoints(s.cai) : [],
+      catalog: catalog ?? null,
+    }),
   );
+  // #3302: dataset-version selector. The selected batch scopes the whole
+  // explorer (charts, tables, recommendations) because the server hands
+  // renderAa that batch's section; downloads read the same embedded DATA.
+  const batches = s.batches ?? [];
+  const latestBatch = batches.find((b) => b.latest)?.importBatch ?? batches[0]?.importBatch ?? s.batch;
+  const selectedIsLatest = s.batch === latestBatch;
+  const batchOptions = batches
+    .map(
+      (b) =>
+        `<option value="${esc(b.importBatch)}"${b.importBatch === s.batch ? " selected" : ""}>${esc(b.label)}${b.importBatch === latestBatch ? " (latest)" : ""}${b.cached ? "" : " — not cached yet"}</option>`,
+    )
+    .join("");
+  const batchSelector =
+    batches.length > 1
+      ? `<div class="card" id="aa-batch-picker"><label><strong>Dataset version</strong>
+<select id="xf-batch" onchange="location.href = this.value ? '/aa?batch=' + encodeURIComponent(this.value) : '/aa'">${batchOptions}</select></label>
+<span class="muted">Older versions show that import's rankings, thresholds, timings and coding-agent rows. The latest is the default. Token prices remain the current <code>v_current_prices</code> overlay, not a historical price snapshot.</span></div>`
+      : "";
   const body = `<h1>Cost Explorer</h1>
 ${s.stale ? `<div class="banner">The latest collection failed (${esc(s.staleReason ?? "unknown error")}) — showing the last good data, collected ${fmtDate(s.generatedAt)}. It refreshes automatically on the next successful collection.</div>` : ""}
-<p class="muted">${s.rankings.length} ranked configurations · ${s.configs.length} AA Intelligence Index configurations · ${s.testRuns.length} timing rows${s.cai ? ` · ${s.cai.length} Coding Agent Index observations` : ""}${catalog ? ` · ${catalog.length} catalog models` : ""} · collected ${fmtDate(s.generatedAt)} from ainventory batch <code>${esc(s.batch.slice(0, 8))}…</code>. Machine-first: <a href="/api/aa.json">/api/aa.json</a>.</p>
+${batchSelector}
+<p class="muted">${s.rankings.length} ranked configurations · ${s.configs.length} AA Intelligence Index configurations · ${s.testRuns.length} timing rows${s.cai ? ` · ${s.cai.length} Coding Agent Index observations` : ""}${catalog ? ` · ${catalog.length} catalog models` : ""} · collected ${fmtDate(s.generatedAt)} from ainventory batch <code>${esc(s.batch.slice(0, 8))}…</code>${selectedIsLatest ? " (latest)" : " (historical version)"}. Machine-first: <a href="/api/aa.json${selectedIsLatest ? "" : `?batch=${encodeURIComponent(s.batch)}`}">/api/aa.json${selectedIsLatest ? "" : `?batch=${encodeURIComponent(s.batch)}`}</a>.</p>
 <div class="card"><strong>Provenance</strong><br>
-<span class="muted">These are the import snapshot's figures, not a live Artificial Analysis pull.${summary.snapshotVintage ? ` Test_Runs snapshots in this batch: ${esc(summary.snapshotVintage.min)} – ${esc(summary.snapshotVintage.max)}.` : ""} A new import (coding-plan-watch) flips the batch; the feed collector picks it up within minutes. The explorer renders from the feed alone — when the data pipeline lands new models (Terra, Beam), they appear here with no page change.</span>
+<span class="muted">These are the import snapshot's figures, not a live Artificial Analysis pull.${summary.snapshotVintage ? ` Test_Runs snapshots in this batch: ${esc(summary.snapshotVintage.min)} – ${esc(summary.snapshotVintage.max)}.` : ""} A new import (coding-plan-watch) flips the batch; the feed collector picks it up within minutes. The explorer renders from the feed alone — when the data pipeline lands new models (Terra, Beam), they appear here with no page change. Token prices come from <code>v_current_prices</code>, a current-price overlay that is not scoped to the selected dataset version.</span>
 <ul>${sourcesHtml || '<li class="muted">source files not recorded for this batch</li>'}</ul></div>
 <div class="xtabs" role="tablist"><button type="button" class="xtab" data-xtab="aa">AA Explorer</button><button type="button" class="xtab" data-xtab="models">Model Explorer</button></div>
 <div class="card xpl-filters" id="xpl-filters">
