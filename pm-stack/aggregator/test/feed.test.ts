@@ -85,6 +85,24 @@ describe("feed project-pool section gate (#2399)", () => {
     expect(projectPoolSectionProblem([{ ...EDGElESS, blocks: "developing-today/code#1" }])).toBe("item 0");
   });
 
+  test("every edge ref uses the shared parseRef validity rule and drops only its bad item", () => {
+    const unsafe = "developing-today/code#99999999999999999999";
+    const malformed = [
+      { ...GRAPHED, blockedBy: [unsafe] },
+      { ...GRAPHED, blockedBy: ["812"] },
+      { ...GRAPHED, blocks: [unsafe] },
+      { ...GRAPHED, parentRef: "812" },
+      { ...GRAPHED, epicRef: unsafe },
+    ];
+
+    expect(isProjectPoolItem(GRAPHED)).toBe(true);
+    for (const bad of malformed) expect(isProjectPoolItem(bad)).toBe(false);
+    expect(projectPoolSectionProblem([GRAPHED, malformed[0]])).toBe("item 1");
+    expect(
+      poolFromFeed({ projects: [EDGElESS, ...malformed, GRAPHED] as unknown as never }).map((p) => p.ref),
+    ).toEqual([EDGElESS.ref, GRAPHED.ref]);
+  });
+
   test("structural fields + optional-field types are gated (#2418)", () => {
     // labels: a bare string or non-string members crash renders; both fail.
     expect(isProjectPoolItem({ ...EDGElESS, labels: "blocked" })).toBe(false);

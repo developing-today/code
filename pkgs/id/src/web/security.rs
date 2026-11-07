@@ -513,7 +513,12 @@ mod tests {
         .await;
         assert_eq!(query.status(), StatusCode::SEE_OTHER);
         assert_eq!(
-            query.headers().get(header::LOCATION).unwrap().to_str().unwrap(),
+            query
+                .headers()
+                .get(header::LOCATION)
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "/"
         );
         let set = query
@@ -556,7 +561,12 @@ mod tests {
         assert_eq!(loc, "/page?a=1&b=2");
         assert!(!loc.contains("s3cret"));
         assert!(!loc.contains("token="));
-        let set = r.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap();
+        let set = r
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(set.starts_with("id_token=s3cret"), "{set}");
         assert!(set.contains("HttpOnly"));
         assert!(set.contains("SameSite=Strict"));

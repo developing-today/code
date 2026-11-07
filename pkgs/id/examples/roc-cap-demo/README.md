@@ -40,5 +40,5 @@ just recipe and flake check) runs:
    wrong signature. Compilation must fail with a type mismatch at
    that call.
 
-Each negative test pins *why* it fails (asserted error content), not
+Each negative test pins _why_ it fails (asserted error content), not
 just that it fails.

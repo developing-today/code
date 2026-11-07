@@ -227,7 +227,14 @@ function isLinedUpElement(v: unknown): boolean {
     typeof v.horizon === "string" &&
     LINED_UP_HORIZONS.includes(v.horizon) &&
     (v.status === undefined || (typeof v.status === "string" && LINED_UP_STATUSES.includes(v.status))) &&
-    (v.horizonWhy === undefined || typeof v.horizonWhy === "string")
+    (v.horizonWhy === undefined || typeof v.horizonWhy === "string") &&
+    // #6174: consumers dereference `ref` as a string (assembleWorkItems
+    // keys items by it; todayFromSection carries it to the render), so
+    // its type is gated here like the other dereferenced fields. A
+    // string that is not a GitHub ref stays valid at the gate — goal
+    // ids are legitimate lined-up refs in live data (#6149); consumers
+    // guard those with isValidRef at the render (#6149/#6205).
+    (v.ref === undefined || typeof v.ref === "string")
   );
 }
 
