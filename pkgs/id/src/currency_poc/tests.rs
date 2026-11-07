@@ -12,8 +12,8 @@
 use super::executor::{ConversionExecutor, ConversionRequest, RateQuote};
 use super::intent::{FileIntentStore, InMemoryIntentStore, IntentRecord, IntentState, IntentStore};
 use super::ledger::{
-    Account, AccountError, AccountFlags, AccountId, InMemoryLedger, LedgerBackend, Transfer,
-    TransferError,
+    Account, AccountBalance, AccountError, AccountFlags, AccountId, InMemoryLedger, LedgerBackend,
+    Transfer, TransferError, TransferId,
 };
 use super::recovery::{ReconcileOutcome, RecoveryPolicy, reconcile};
 
@@ -1851,4 +1851,107 @@ fn execute_retry_on_posted_record_fails_explicitly() {
         IntentState::Posted,
         "the persisted record stays Posted after the retry"
     );
+}
+
+/// A backend violating the `create_transfers` result contract
+/// (#4669): it reports `keep` `Ok` results and posts nothing, no
+/// matter how many transfers were submitted. Everything else
+/// delegates to a funded in-memory ledger, so lookups honestly
+/// report that no legs are present.
+struct ShortResultBackend {
+    inner: InMemoryLedger,
+    keep: usize,
+}
+
+impl LedgerBackend for ShortResultBackend {
+    fn create_accounts(&mut self, accounts: &[Account]) -> Vec<Result<(), AccountError>> {
+        self.inner.create_accounts(accounts)
+    }
+
+    fn create_transfers(&mut self, _batch: &[Transfer]) -> Vec<Result<(), TransferError>> {
+        (0..self.keep).map(|_| Ok(())).collect()
+    }
+
+    fn lookup_transfer(&self, id: TransferId) -> Option<Transfer> {
+        self.inner.lookup_transfer(id)
+    }
+
+    fn lookup_account(&self, id: AccountId) -> Option<Account> {
+        self.inner.lookup_account(id)
+    }
+
+    fn account_balance(&self, id: AccountId) -> Option<AccountBalance> {
+        self.inner.account_balance(id)
+    }
+
+    fn transfers_with_user_data_128(&self, value: u128) -> Vec<Transfer> {
+        self.inner.transfers_with_user_data_128(value)
+    }
+}
+
+fn short_result_executor(
+    keep: usize,
+) -> ConversionExecutor<ShortResultBackend, InMemoryIntentStore> {
+    ConversionExecutor::new(
+        ShortResultBackend {
+            inner: funded_ledger(),
+            keep,
+        },
+        InMemoryIntentStore::new(),
+    )
+}
+
+#[test]
+fn a_short_create_transfers_result_never_marks_posted() {
+    // #4669: zip() stops at the shorter side, so a backend returning
+    // fewer results than legs used to sail through to Posted with
+    // nothing (or only part) in the ledger. Any length but one result
+    // per leg is a backend failure: submit errors and the record
+    // stays Submitted for the recovery scanner.
+    for keep in [0, 1, 2] {
+        let mut executor = short_result_executor(keep);
+        let error = executor
+            .execute(&request())
+            .expect_err("a short result vector must fail the submission");
+        assert!(
+            error.to_string().contains("results for 3 legs"),
+            "the error should name the short result vector: {error:#}"
+        );
+        assert_eq!(
+            executor.store.get(777).unwrap().unwrap().state,
+            IntentState::Submitted,
+            "keep={keep}: the record must not advance to Posted"
+        );
+    }
+}
+
+#[test]
+fn recovery_resubmit_rejects_a_short_create_transfers_result() {
+    // #4669: the Resubmit path scanned the result vector for a
+    // failure entry, so an empty (or short) vector read as vacuous
+    // success and the record was persisted Posted. A short vector is
+    // a rejected resubmission: the record stays unresolved for a
+    // later scan.
+    for keep in [0, 2] {
+        let mut executor = short_result_executor(keep);
+        let record = executor.prepare(&request()).expect("intent prepared");
+        assert_eq!(record.state, IntentState::Recorded);
+
+        let outcomes = reconcile(
+            &mut executor.backend,
+            &mut executor.store,
+            RecoveryPolicy::Resubmit,
+        )
+        .expect("reconcile");
+        assert_eq!(
+            outcomes,
+            vec![(777, ReconcileOutcome::ResubmissionRejected)],
+            "keep={keep}"
+        );
+        assert_eq!(
+            executor.store.get(777).unwrap().unwrap().state,
+            IntentState::Recorded,
+            "keep={keep}: the record must stay unresolved, not Posted"
+        );
+    }
 }
