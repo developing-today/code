@@ -187,6 +187,26 @@ fn cli_get_chunk_not_found_exits_1() {
 }
 
 #[test]
+fn cli_get_chunk_neighbors_above_cap_exits_2() {
+    // Command-level coverage for the --neighbors cap (#6594): the unit
+    // tests in main.rs call count() directly, so dropping the cap at
+    // the cmd_get_chunk call site would fail nothing there. Through
+    // the binary, 101 must be refused before any lookup, with exit 2
+    // and the bound message on stderr.
+    let db = build_fixture_db("neighborscap");
+    let out = run_bin(
+        &db,
+        &["get-chunk", "2", "--neighbors", "101", "--backend", "local"],
+    );
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--neighbors must be between 0 and 100"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
 fn cli_text_goldens_match_python() {
     let db = build_fixture_db("text");
     let cases: [(&str, &str); 3] = [
