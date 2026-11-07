@@ -156,3 +156,26 @@ test("no candidate exists: store-missing failure document, exit 3", async () => 
   assert.equal(doc.status, "store-missing");
   assert.equal(doc.sessions, undefined);
 });
+
+test("wrong-shape state.json is treated as no previous state (#6915)", async () => {
+  // Valid JSON of the wrong shape must not wedge the tick (null used to
+  // throw a raw TypeError -> read-failed on every tick) and must not
+  // fabricate a `moved` report (a non-string storePath used to surface
+  // as moved.from). The tick proceeds as a normal ok export and rewrites
+  // state.json in the correct shape, so the state self-heals.
+  for (const content of ["null", "[]", '"just a string"', "5", JSON.stringify({ storePath: 123 }), JSON.stringify({ storePath: "" })]) {
+    const { home, outDir } = await fakeHome();
+    await makeStore(defaultDb(home), {
+      sessions: [{ id: "ses_live", cost: 1 }],
+      messages: [assistantMsg("ses_live", { cost: 1 })],
+    });
+    await writeFile(join(outDir, "state.json"), content);
+    const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir] });
+    assert.equal(exitCode, 0, `state.json=${content}`);
+    assert.equal(doc.status, "ok", `state.json=${content}`);
+    assert.equal(doc.moved, null, `state.json=${content}`);
+    assert.equal(doc.sessions.length, 1, `state.json=${content}`);
+    const state = JSON.parse(await readFile(join(outDir, "state.json"), "utf8"));
+    assert.equal(state.storePath, defaultDb(home), `state.json=${content}`);
+  }
+});
