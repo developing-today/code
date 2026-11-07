@@ -218,8 +218,7 @@ const LINED_UP_STATUSES: readonly string[] = ["in-progress", "queued", "blocked"
 // element fields directly (t.horizon, s.blocker), so a record alone is
 // not enough — the fields it dereferences must be the right shapes, or
 // the designed invalid-section fallback never happens and the consumer
-// throws (or silently renders falsified state) instead. linedUp
-// blockedBy stays out of scope here (#4316 owns the nested shape).
+// throws (or silently renders falsified state) instead.
 function isLinedUpElement(v: unknown): boolean {
   if (!isRecord(v)) return false;
   return (
@@ -234,7 +233,15 @@ function isLinedUpElement(v: unknown): boolean {
     // string that is not a GitHub ref stays valid at the gate — goal
     // ids are legitimate lined-up refs in live data (#6149); consumers
     // guard those with isValidRef at the render (#6149/#6205).
-    (v.ref === undefined || typeof v.ref === "string")
+    (v.ref === undefined || typeof v.ref === "string") &&
+    // #4316: blockedBy is a DependencyRef[] — the same shape the
+    // top-level dependencies array is gated with (isDependencyElement).
+    // Ungated, a malformed blockedBy passed the section as valid and
+    // its blockers were silently dropped by the canonical layer
+    // (asBlockers), rendering a blocked task as unblocked. Absence is
+    // fine; a present value must be an array of dependency elements.
+    (v.blockedBy === undefined ||
+      (Array.isArray(v.blockedBy) && v.blockedBy.every(isDependencyElement)))
   );
 }
 

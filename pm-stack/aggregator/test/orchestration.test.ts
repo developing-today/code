@@ -201,6 +201,36 @@ describe("orchestration section validation", () => {
     expect(() => todayFromSection(rich as OrchestrationSection)).not.toThrow();
   });
 
+  test("rejects a lined-up task with a malformed blockedBy, accepts a shaped one (#4316)", () => {
+    const base = SECTION;
+    const goal = base.goals[0]!;
+    const task = { title: "Task A", status: "in-progress", horizon: "today", horizonWhy: "due" };
+    for (const blockedBy of [
+      "code#123",
+      [null],
+      [{ task: "Other" }],
+      [{ task: "Other", status: "bogus" }],
+      [{ task: "Other", status: "queued", ref: 42 }],
+      [{ status: "queued" }],
+    ]) {
+      const section = { ...base, goals: [{ ...goal, linedUp: [{ ...task, blockedBy }] }] };
+      expect(isOrchestrationSection(section)).toBe(false);
+    }
+    const shaped = {
+      ...base,
+      goals: [
+        {
+          ...goal,
+          linedUp: [
+            { ...task, blockedBy: [{ task: "Other", status: "queued", ref: "code#123" }] },
+            { ...task, title: "Task B", blockedBy: [] },
+          ],
+        },
+      ],
+    };
+    expect(isOrchestrationSection(shaped)).toBe(true);
+  });
+
   test("rejects poisoned dependency elements and bad dependency shapes", () => {
     const nullDep = { ...SECTION, dependencies: [null] };
     expect(isOrchestrationSection(nullDep)).toBe(false);
