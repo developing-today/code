@@ -1328,6 +1328,86 @@ mod tests {
     }
 
     #[test]
+    fn pagination_property_generated_page_sequences() {
+        // Property coverage for the pagination state machine
+        // (testing doctrine: state the invariants, generate the
+        // inputs, name the oracles). Invariants over generated page
+        // sequences: (1) the merged items are exactly the served
+        // pages concatenated, order and contents preserved —
+        // oracle: the model item list; (2) the walk requests pages
+        // 1..=k and stops at the first short page, fetching exactly
+        // one extra empty page when the last page is exactly full —
+        // oracle: the request sequence computed from the model;
+        // (3) object bodies keep their shape with total_count
+        // corrected to the merged length. A hand-rolled xorshift
+        // generator keeps the test dependency-free and reproducible
+        // (the seed is the failing input).
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            (state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) as u32
+        };
+        for seed in 0..200u32 {
+            let n = (next() % 451) as usize; // 0..=450 items: 0, short, exact-full, multi-page
+            let model: Vec<Value> = (0..n).map(|i| json!({"id": i})).collect();
+            let pages: Vec<Vec<Value>> = model
+                .chunks(PAGE_SIZE as usize)
+                .map(|c| c.to_vec())
+                .collect();
+            let full_pages = n / PAGE_SIZE as usize;
+            let expected_requests = if n % PAGE_SIZE as usize == 0 {
+                full_pages + 1 // exactly-full last page (or empty list) costs one empty fetch
+            } else {
+                pages.len()
+            };
+            let object_body = seed % 2 == 0;
+            let mut requests: Vec<u64> = Vec::new();
+            let merged = fetch_all_pages(|page_no| {
+                requests.push(page_no);
+                let items = pages
+                    .get((page_no - 1) as usize)
+                    .cloned()
+                    .unwrap_or_default();
+                Ok(if object_body {
+                    json!({"total_count": n, "workflow_runs": items})
+                } else {
+                    json!(items)
+                })
+            })
+            .unwrap();
+            assert_eq!(
+                requests,
+                (1..=expected_requests as u64).collect::<Vec<_>>(),
+                "seed {seed}: request sequence"
+            );
+            if object_body {
+                assert_eq!(
+                    run_ids(&merged),
+                    (0..n as u64).collect::<Vec<_>>(),
+                    "seed {seed}"
+                );
+                assert_eq!(total_count(&merged), n as u64, "seed {seed}");
+            } else {
+                assert_eq!(page_items(&merged), model, "seed {seed}: concatenation");
+            }
+        }
+        // Cap invariant: an endless full-page list is rejected
+        // loudly after exactly MAX_PAGES requests, never truncated
+        // into a plausible count.
+        let mut calls = 0u64;
+        let endless = fetch_all_pages(|_| {
+            calls += 1;
+            Ok(json!(
+                (0..PAGE_SIZE).map(|i| json!({"id": i})).collect::<Vec<_>>()
+            ))
+        });
+        assert!(endless.is_err());
+        assert_eq!(calls, MAX_PAGES);
+    }
+
+    #[test]
     fn pagination_exact_page_then_empty_and_error_propagates() {
         // A full page followed by an empty page ends the walk; a
         // transport error mid-walk fails the scan, never a
