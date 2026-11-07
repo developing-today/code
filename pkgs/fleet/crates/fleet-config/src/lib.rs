@@ -102,6 +102,29 @@ pub const PORT_DISPATCH: u16 = 4879;
 /// only.
 pub const DEFAULT_DISPATCH_TOKEN_NAME: &str = "pm-dispatch.api-token";
 
+/// The fleet-secrets name the dispatch-test domain resolves its
+/// GitHub token by (design developing-today/code#6580).
+pub const DEFAULT_DISPATCH_TEST_TOKEN_NAME: &str = "github.ghcr-classic-pat";
+
+/// The fleet-secrets name the dispatch-test domain resolves its
+/// Turso jobs-store token by.
+pub const DEFAULT_DISPATCH_TEST_TURSO_TOKEN_NAME: &str = "turso.fleet-dispatch-jobs-token";
+
+/// The Turso jobs store the dispatch-test domain records jobs in.
+pub const DEFAULT_DISPATCH_TEST_TURSO_URL: &str =
+    "https://fleet-dispatch-jobs-dezren39.aws-us-east-1.turso.io";
+
+/// The default Actions-capacity threshold for dispatch-test scope
+/// selection: a scope is eligible below this many active jobs.
+pub const DEFAULT_DISPATCH_TEST_THRESHOLD: u64 = 40;
+
+/// The fleet repo: the dezren39 repo that holds the other fleet
+/// repos as git submodules (developing-today/code#6580 phase 2).
+/// Its copies — the source plus its fork network — are the
+/// dispatch-test execution homes, discovered dynamically unless
+/// `[dispatch-test] scopes` pins an explicit list.
+pub const DEFAULT_DISPATCH_TEST_FLEET_REPO: &str = "dezren39/fleet";
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -110,6 +133,8 @@ pub struct Config {
     pub proxy: ProxyConfig,
     pub secrets: SecretsConfig,
     pub dispatch: DispatchConfig,
+    #[serde(rename = "dispatch-test")]
+    pub dispatch_test: DispatchTestConfig,
     pub search: SearchConfig,
 }
 
@@ -189,6 +214,36 @@ pub struct DispatchConfig {
     /// [`PORT_DISPATCH`]). `0` is rejected at load (#6412): port 0
     /// cannot be dialled.
     pub port: Option<u16>,
+}
+
+/// `[dispatch-test]` — the dispatch-test domain's view
+/// (developing-today/code#6580). All optional: the defaults name
+/// the live GitHub token, the Turso jobs store, and the scope
+/// repos used for capacity-based selection.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DispatchTestConfig {
+    /// The fleet-secrets name the GitHub token resolves by
+    /// (default [`DEFAULT_DISPATCH_TEST_TOKEN_NAME`]).
+    pub token_name: Option<String>,
+    /// The fleet-secrets name the Turso token resolves by
+    /// (default [`DEFAULT_DISPATCH_TEST_TURSO_TOKEN_NAME`]).
+    pub turso_token_name: Option<String>,
+    /// The Turso database URL (default
+    /// [`DEFAULT_DISPATCH_TEST_TURSO_URL`]).
+    pub turso_url: Option<String>,
+    /// Actions-capacity threshold (default
+    /// [`DEFAULT_DISPATCH_TEST_THRESHOLD`]).
+    pub threshold: Option<u64>,
+    /// The fleet repo whose copies are the execution homes
+    /// (default [`DEFAULT_DISPATCH_TEST_FLEET_REPO`]).
+    pub fleet_repo: Option<String>,
+    /// Scope repos, in selection order — a PIN/OVERRIDE: when
+    /// non-empty, exactly these execution-home copies are scanned.
+    /// Empty (the default) means DISCOVER: the fleet repo plus its
+    /// fork network.
+    #[serde(default)]
+    pub scopes: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -509,6 +564,54 @@ impl Config {
     /// pm-dispatch's port on the target host.
     pub fn dispatch_port(&self) -> u16 {
         self.dispatch.port.unwrap_or(PORT_DISPATCH)
+    }
+
+    /// The fleet-secrets name the dispatch-test GitHub token
+    /// resolves by.
+    pub fn dispatch_test_token_name(&self) -> &str {
+        self.dispatch_test
+            .token_name
+            .as_deref()
+            .unwrap_or(DEFAULT_DISPATCH_TEST_TOKEN_NAME)
+    }
+
+    /// The fleet-secrets name the dispatch-test Turso token
+    /// resolves by.
+    pub fn dispatch_test_turso_token_name(&self) -> &str {
+        self.dispatch_test
+            .turso_token_name
+            .as_deref()
+            .unwrap_or(DEFAULT_DISPATCH_TEST_TURSO_TOKEN_NAME)
+    }
+
+    /// The dispatch-test Turso jobs-store URL.
+    pub fn dispatch_test_turso_url(&self) -> &str {
+        self.dispatch_test
+            .turso_url
+            .as_deref()
+            .unwrap_or(DEFAULT_DISPATCH_TEST_TURSO_URL)
+    }
+
+    /// The dispatch-test Actions-capacity threshold.
+    pub fn dispatch_test_threshold(&self) -> u64 {
+        self.dispatch_test
+            .threshold
+            .unwrap_or(DEFAULT_DISPATCH_TEST_THRESHOLD)
+    }
+
+    /// The dispatch-test fleet repo (execution-home source).
+    pub fn dispatch_test_fleet_repo(&self) -> &str {
+        self.dispatch_test
+            .fleet_repo
+            .as_deref()
+            .unwrap_or(DEFAULT_DISPATCH_TEST_FLEET_REPO)
+    }
+
+    /// The pinned dispatch-test scope repos, in selection order.
+    /// Empty means no pin: the caller discovers the fleet repo's
+    /// copies (source + fork network) instead.
+    pub fn dispatch_test_scopes(&self) -> Vec<String> {
+        self.dispatch_test.scopes.clone()
     }
 
     /// The search domain's routing preference from `[search] via`

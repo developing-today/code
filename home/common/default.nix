@@ -17,8 +17,16 @@ let
   # clefProxyPort (18742) retired 2026-11-04 (opencode#1410):
   # the OpenChamber classifier rides the in-fork facade's
   # /v1/systemone (127.0.0.1:13420); the port is free.
-  codexProxyPort = 18744;
-  museProxyPort = 18747;
+  # codexProxyPort (18744) retired 2026-11-06 (Drew, proxy-infra
+  # decommission): the fork's native openai provider replaced the
+  # Codex CLI bridge, so the proxy had no consumers left; its let,
+  # units, session variable, bin program, launcher and guard row
+  # were removed in one change. The port is free.
+  # museProxyPort (18747) retired 2026-11-06 (Drew, muse-direct
+  # order): the fork's native muse-direct provider replaced the
+  # proxy, so it had no consumers left; its let, unit, session
+  # variable, bin program, launcher and guard row were removed in
+  # one change. The port is free.
   # commandcodeProxyPort (18748) and claudeCodeProxyPort (18749)
   # retired 2026-11-06 (Drew, proxy-infra decommission): both
   # providers were repointed to the fork's native wire-emulation
@@ -59,6 +67,14 @@ let
       rustc = atlasSearchToolchain;
     };
   };
+  # Which artifact the atlas-search user unit runs (#5604, fleet
+  # step 5 residual). true: `fleet serve search`, the Atlas service
+  # rehomed into the fleet multicall binary. false: the standalone
+  # atlas-search artifact's `serve` — the kept rollback, one flag
+  # flip. Same config (service.json), same wire, same port either way.
+  # Flipping this only changes what the NEXT home-manager activation
+  # installs; it never restarts the live unit by itself.
+  atlasSearchServeViaFleet = true;
   # The fleet multicall package (pkgs/fleet), built with the
   # toolchain pinned by its own rust-toolchain.toml — the
   # atlas-search pattern above. Used as the broker units'
@@ -703,43 +719,18 @@ in
   # remains the keyring credential owner and the native provider
   # refreshes in memory, in place.
 
-  systemd.user.services.codex-proxy = {
-    Unit = {
-      Description = "OpenAI Codex CLI (codex) Local Proxy Bridge for OpenCode";
-      After = [ "network-online.target" ];
-      Wants = [ "network-online.target" ];
-    };
-    Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "codex-proxy-start" ''
-          export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec /run/current-system/sw/bin/node "$HOME/code/bin/codex-proxy.mjs"
-        ''
-      );
-      Restart = "always";
-      RestartSec = 3;
-      Environment = [
-        "CODEX_PROXY_PORT=${toString codexProxyPort}"
-        "CODEX_PROXY_HOST=127.0.0.1"
-        # Gate 1 cutover (opencode#1154): the in-fork codex credential
-        # sync (opencode#1468) owns the token copy now; the door must
-        # not overwrite the true JWT expiry with its synthetic one.
-        "CODEX_PROXY_TOKEN_SYNC=0"
-      ];
-    };
-    # No Install: codex-proxy.socket owns the listener and activates this
-    # service on first connection (#1821). Enabling the service directly
-    # as well would race the socket for the same port.
-  };
-
-  systemd.user.sockets.codex-proxy = {
-    Unit.Description = "Codex proxy listener";
-    Socket = {
-      ListenStream = "127.0.0.1:${toString codexProxyPort}";
-      Service = "codex-proxy.service";
-    };
-    Install.WantedBy = [ "sockets.target" ];
-  };
+  # Codex proxy removed (2026-11-06, Drew): its unit + socket
+  # definitions stood here. The fork's native openai provider
+  # replaced the Codex CLI bridge -- the proxy-fronting providers
+  # (openai-codex, chatgpt) were deleted 2026-11-03 and their route
+  # legs re-seated onto openai-plan, and the token sync the door
+  # also performed was re-homed into the fork (opencode#1468).
+  # The definitions are removed, not commented out, so the switch
+  # stops the service and it stays off. bin/codex-proxy.mjs was
+  # removed in the same change. To undo: restore the two unit
+  # blocks, the bin program and the codexProxyPort let from git
+  # history, and re-add a proxy-fronting provider to
+  # opencode.jsonc.
 
   # Antigravity LS proxy retired (2026-10-30, Drew): its unit definition
   # stood here. The language-server door and the agy CLI-spawn door are
@@ -783,13 +774,13 @@ in
   # reproduced: a switch that changes a unit's ExecStart restarts that
   # proxy, per the normal flake service pattern (cf. mcpx/openchamber).
 
-  # CLI proxy workroot (muse): the muse unit below points its
-  # MUSE_PROXY_WORKDIR override at ~/.local/state/cli-proxies/muse,
-  # so runtime session state lives outside the checkout (the script's
+  # CLI proxy workroot: the retired proxy units pointed their
+  # workdir overrides at ~/.local/state/cli-proxies/<name>, so
+  # runtime session state lived outside the checkout (the scripts'
   # default, bin/work inside ~/code, dirtied the primary checkout
-  # with every session and blocked pm-git-sync). The commandcode and
-  # claude-code units that shared the cli-proxies root (#2785, #3067)
-  # are retired below; their state subtrees are left in place.
+  # with every session and blocked pm-git-sync). All three units
+  # that shared the cli-proxies root (#2785, #3067) are retired
+  # below; their state subtrees are left in place.
   #
   # Command Code proxy retired 2026-11-06 (Drew, proxy-infra
   # decommission): its unit definition stood here. The provider was
@@ -807,42 +798,14 @@ in
   # unit, session variable, bin/claude-code-proxy.mjs and its test
   # were removed in the same change. The port is free.
 
-  # Muse (Meta) proxy (#2104): also previously supervisor-config only.
-  # Runs the checkout start script, the supervisor's exact invocation;
-  # the script owns its environment (including keeping META_API_KEY out).
-  # Enrolled here so retiring the supervisor does not strand :18747 --
-  # the redesign leaves exactly one owner for every proxy port.
-  #
-  # Direct mode (#2753, 2026-10-30): bin/muse-proxy.mjs defaults to
-  # exchanging the Muse CLI account token for the plan's minted key
-  # and serving the OpenCode muse-direct provider (declared in
-  # .opencode/opencode.jsonc, the sole enabled Meta door) over the
-  # Responses API; the CLI harness remains only as a fallback. The
-  # credential is read at runtime from ~/.config/muse/auth.json --
-  # it is never part of this config. Direct mode changes nothing
-  # about this unit: same port, same start script, same env contract.
-  systemd.user.services.muse-proxy = {
-    Unit = {
-      Description = "Muse (Meta) Local Proxy Bridge for OpenCode";
-      After = [ "network-online.target" ];
-      Wants = [ "network-online.target" ];
-    };
-    Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "muse-proxy-start-unit" ''
-          exec /run/current-system/sw/bin/bash "$HOME/code/bin/muse-proxy-start.sh"
-        ''
-      );
-      Restart = "always";
-      RestartSec = 3;
-      Environment = [
-        "MUSE_PROXY_PORT=${toString museProxyPort}"
-        "MUSE_PROXY_HOST=127.0.0.1"
-        "MUSE_PROXY_WORKDIR=%h/.local/state/cli-proxies/muse"
-      ];
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
+  # Muse (Meta) proxy retired 2026-11-06 (Drew, muse-direct order):
+  # its unit definition stood here. The provider was rebuilt as a
+  # native fork provider (@opencode/ai/providers/muse-direct,
+  # opencode PR #1872) speaking the Meta Responses wire in-process —
+  # the same /muse-code/key minted-key exchange the proxy's direct
+  # mode performed, with no hop — and the proxy's let, unit, session
+  # variable, bin/muse-proxy.mjs, its start script and its test
+  # were removed in the same change. The port is free.
 
   # Route proxy retired 2026-11-04 (opencode#1153): the door's
   # only live consumer, OpenClaw's opencode-route provider, was
@@ -855,8 +818,8 @@ in
   # door's behaviour is lost. bin/opencode-route-proxy.mjs, its
   # start script and test were removed in the same change.
 
-  # Atlas search service (code#5350 step 5, #5355): the packaged
-  # atlas-search binary's serve mode — one resident Snowflake
+  # Atlas search service (code#5350 step 5, #5355): the Atlas
+  # service — one resident Snowflake
   # embedder shared by every client, the job protocol with its
   # in-memory temp store + dedupe cache, and per-client ceiling
   # caps enforced from ~/.local/state/atlas-search/service.json
@@ -874,6 +837,13 @@ in
   # added Install.WantedBy below, issued the real client
   # tokens via `atlas-search init`, and created the
   # tailscale serve mapping.
+  #
+  # #5604 (fleet step 5 residual): ExecStart is `fleet serve search`
+  # (atlasSearchServeViaFleet above) — the same service rehomed into
+  # the fleet binary. The unit name, config, port and wire are
+  # unchanged; rollback is atlasSearchServeViaFleet = false (the
+  # standalone `atlas-search serve`), a single re-point. `init` and
+  # `fetch-model` stay on the standalone atlas-search on PATH.
   systemd.user.services.atlas-search = {
     Unit = {
       Description = "Atlas search service (hybrid corpus search, serve mode)";
@@ -881,7 +851,11 @@ in
       Wants = [ "network-online.target" ];
     };
     Service = {
-      ExecStart = "${atlasSearch}/bin/atlas-search serve";
+      ExecStart =
+        if atlasSearchServeViaFleet then
+          "${fleetPkgs.fleet}/bin/fleet serve search"
+        else
+          "${atlasSearch}/bin/atlas-search serve";
       Restart = "on-failure";
       RestartSec = 3;
     };
@@ -1646,17 +1620,10 @@ in
       OPENCODE_EXPERIMENTAL_OXFMT = "1";
       OPENCODE_EXPERIMENTAL_EXA = "1";
       OPENCODE_EXPERIMENTAL_EVENT_SYSTEM = "1";
-      # Single source for the local proxy ports (see the let block):
-      # opencode.jsonc reads them via {env:...} substitution.
-      CODEX_PROXY_PORT = toString codexProxyPort;
-      # MUSE_PROXY_PORT below was one of three missing session
-      # variables whose {env:...} templates in opencode.jsonc
-      # resolved to an empty port in the OpenChamber serve
-      # (2026-10-25 audit) because the variables never reached its
-      # environment; the other two (commandcode, claude-code) were
-      # removed with their retired proxies on 2026-11-06. The session
-      # list must cover every let-block port.
-      MUSE_PROXY_PORT = toString museProxyPort;
+      # Proxy-port session variables stood here: the last of them
+      # (MUSE_PROXY_PORT) was removed with the muse proxy's
+      # retirement on 2026-11-06. Every provider proxy is gone, and
+      # no {env:...} templates remain in opencode.jsonc.
       OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT = "1";
       # File watcher off by default (Drew, 2026-10-20): the working trees
       # are giant, and watching costs more than the live-external-edit
@@ -1708,10 +1675,9 @@ in
         # their .mjs files removed in the 2026-11-06 proxy-infra
         # decommission — a PATH launcher would resurrect a retired door
         # on its canonical port.
-        (pkgs.writeShellScriptBin "codex-proxy" ''
-          export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/codex-proxy.mjs "$@"
-        '')
+        # No "codex-proxy" launcher either: the door was retired
+        # 2026-11-06 in the proxy-infra decommission (the fork's
+        # native openai provider replaced the CLI bridge).
         (pkgs.writeShellScriptBin "sync-models" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
           exec ${pkgs.nodejs}/bin/node ${../../bin/sync-models.mjs} "$@"

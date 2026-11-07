@@ -43,6 +43,8 @@ pub enum Capability {
     SearchServe,
     /// `fleet dispatch …` — thin client over pm-stack dispatch.
     Dispatch,
+    /// `fleet dispatch-test …` — explicit-dispatch CI test surface.
+    DispatchTest,
     /// `fleet laptop-agent …` — client for the (Python) laptop-agent daemon.
     LaptopAgent,
     /// `fleet secrets …` — resolve secrets by name (step 6, #5554):
@@ -63,6 +65,7 @@ impl Capability {
             Capability::Search => "search",
             Capability::SearchServe => "search-serve",
             Capability::Dispatch => "dispatch",
+            Capability::DispatchTest => "dispatch-test",
             Capability::LaptopAgent => "laptop-agent",
             Capability::Secrets => "secrets",
         }
@@ -79,6 +82,7 @@ impl Capability {
         Capability::Search,
         Capability::SearchServe,
         Capability::Dispatch,
+        Capability::DispatchTest,
         Capability::LaptopAgent,
         Capability::Secrets,
     ];
@@ -219,6 +223,7 @@ pub const DOMAINS: &[Domain] = &[
             "complete",
             "health",
             "signal",
+            "fallback",
         ],
     },
     Domain {
@@ -248,6 +253,14 @@ pub const DOMAINS: &[Domain] = &[
         primary: Capability::Dispatch,
         aliases: &[],
         subcommands: &["status", "launch", "enqueue"],
+    },
+    Domain {
+        name: "dispatch-test",
+        summary: "Explicit-dispatch CI test: scan fleet repos for free Actions capacity, submit a job, track its stored status.",
+        capabilities: &[Capability::DispatchTest],
+        primary: Capability::DispatchTest,
+        aliases: &[],
+        subcommands: &["scan", "submit", "status"],
     },
     Domain {
         name: "secrets",

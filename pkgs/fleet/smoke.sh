@@ -126,6 +126,19 @@ run "connect as atlas-search stubs 69" 69 "this build does not include 'search'"
 run "serve as queue-broker reaches the real broker role (missing token file: exit 3)" 3 "cannot read token file" \
   env QUEUE_BROKER_TOKEN_FILE="$TMP/no-such-token" "$TMP/queue-broker"
 
+echo "== search serve role (#5604): reaches the real service role, no stub =="
+# Hermetic: the service config path does not exist, so the role stops
+# at config load (exit 2) before any Turso token, embedder or socket.
+run "connect: fleet serve search stubs" 69 "this build does not include 'serve'" \
+  "$CONNECT_OUT/bin/fleet" serve search
+run "serve: fleet serve search reaches the real role (missing config: exit 2)" 2 "cannot read service config" \
+  env ATLAS_SEARCH_SERVICE_CONFIG="$TMP/no-such-service.json" "$SERVE_OUT/bin/fleet" serve search
+run "full: fleet serve search --help prints the role usage" 0 "usage: fleet serve search" \
+  "$FULL_OUT/bin/fleet" serve search --help
+mkdir -p "$TMP/asp" && ln -sf "$SERVE_OUT/bin/fleet" "$TMP/asp/atlas-search"
+run "serve as atlas-search: 'serve' is the same role (the rollback spelling)" 2 "cannot read service config" \
+  env ATLAS_SEARCH_SERVICE_CONFIG="$TMP/no-such-service.json" "$TMP/asp/atlas-search" serve
+
 echo "== proxy domain: serve + connect + init + shims (step 3, #5431) =="
 # Hermetic proxy world: a scratch HOME (token file), scratch socket,
 # scratch state dirs, and a stub HTTP upstream on loopback ports. The

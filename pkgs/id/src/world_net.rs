@@ -787,7 +787,9 @@ impl WorldClient {
     ///
     /// # Errors
     ///
-    /// Fails with the host's message if the capability is refused.
+    /// Fails with the host's message if the capability is refused, or with
+    /// "host sent a malformed capability report" if the reply's `report`
+    /// is missing or does not parse as a `CapsReport`.
     pub async fn caps(&mut self, capability: &str) -> Result<serde_json::Value> {
         self.send_json(&serde_json::json!({
             "type": "caps",
@@ -798,14 +800,30 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_caps_reply(&reply, "host refused the capability report")
+    }
+
+    /// Validate a `caps` reply frame and extract its report: the host's
+    /// typed contract (`ServerFrame::Caps`) always carries a
+    /// [`crate::world_caps::CapsReport`], so a reply whose `report` is
+    /// missing or malformed is not a success — for `update_caps` it would
+    /// report a grant/revoke that no report confirms (#6624). The report
+    /// is returned as the original JSON value, unchanged for existing
+    /// `Value` consumers. Factored out of [`WorldClient::caps`] and
+    /// [`WorldClient::update_caps`] (mirroring
+    /// [`WorldClient::parse_caps_ceiling_reply`]) so the validation can
+    /// be unit-tested without a live host sending frames no real host
+    /// sends.
+    fn parse_caps_reply(
+        reply: &serde_json::Value,
+        refusal: &str,
+    ) -> Result<serde_json::Value> {
         if reply["type"] != "caps" {
-            bail!(
-                "{}",
-                reply["message"]
-                    .as_str()
-                    .unwrap_or("host refused the capability report")
-            );
+            bail!("{}", reply["message"].as_str().unwrap_or(refusal));
         }
+        let _: crate::world_caps::CapsReport =
+            serde_json::from_value(reply["report"].clone())
+                .context("host sent a malformed capability report")?;
         Ok(reply["report"].clone())
     }
 
@@ -813,7 +831,9 @@ impl WorldClient {
     ///
     /// # Errors
     ///
-    /// Fails with the host's message if the admin token or names are refused.
+    /// Fails with the host's message if the admin token or names are
+    /// refused, or with "host sent a malformed capability report" if the
+    /// reply's `report` is missing or does not parse as a `CapsReport`.
     pub async fn update_caps(
         &mut self,
         admin_token: &str,
@@ -831,15 +851,7 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
-        if reply["type"] != "caps" {
-            bail!(
-                "{}",
-                reply["message"]
-                    .as_str()
-                    .unwrap_or("host refused the capability change")
-            );
-        }
-        Ok(reply["report"].clone())
+        Self::parse_caps_reply(&reply, "host refused the capability change")
     }
 
     /// Replace the world's capability ceiling. The reply carries the report and
@@ -847,7 +859,9 @@ impl WorldClient {
     ///
     /// # Errors
     ///
-    /// Fails with the host's message if the admin token or names are refused.
+    /// Fails with the host's message if the admin token or names are refused,
+    /// or with "host sent a malformed capability report" if the reply's
+    /// `report` is missing or does not parse as a `CapsReport`.
     pub async fn set_caps_ceiling(
         &mut self,
         admin_token: &str,
@@ -863,6 +877,18 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_caps_ceiling_reply(&reply)
+    }
+
+    /// Validate a `caps_ceiling` reply frame: the host's typed contract
+    /// (`ServerFrame::CapsCeiling`) always carries a [`crate::world_caps::CapsReport`],
+    /// so a reply whose `report` is missing or malformed is not a success —
+    /// it is a host that did not confirm the ceiling change (#6636).
+    /// Returns the frame with its `report` replaced by the validated
+    /// report, re-serialized. Factored out of
+    /// [`WorldClient::set_caps_ceiling`] so the validation can be
+    /// unit-tested without a live host sending frames no real host sends.
+    fn parse_caps_ceiling_reply(reply: &serde_json::Value) -> Result<serde_json::Value> {
         if reply["type"] != "caps_ceiling" {
             bail!(
                 "{}",
@@ -871,7 +897,13 @@ impl WorldClient {
                     .unwrap_or("host refused the capability ceiling change")
             );
         }
-        Ok(reply)
+        let report: crate::world_caps::CapsReport =
+            serde_json::from_value(reply["report"].clone())
+                .context("host sent a malformed capability report")?;
+        let mut validated = reply.clone();
+        validated["report"] =
+            serde_json::to_value(report).context("re-encode the capability report")?;
+        Ok(validated)
     }
 
     /// Persist the world's requested resource profile. The response includes
@@ -1025,7 +1057,8 @@ impl WorldClient {
     /// # Errors
     ///
     /// Fails with the host's message if neither a valid admin token nor a valid
-    /// guest capability is supplied.
+    /// guest capability is supplied, or if the reply is missing the expected
+    /// `update.requested` field.
     pub async fn execution_profile(
         &mut self,
         admin_token: Option<&str>,
@@ -1049,7 +1082,14 @@ impl WorldClient {
                     .unwrap_or("host refused the execution profile query")
             );
         }
-        Ok(reply)
+        // Extract the requested profile from update.requested
+        // The reply has structure: { "type": "execution_profile", "update": { "requested": {...}, "applies_on_next_program_install_or_process_restart": bool }, "message": "..." }
+        let requested_profile = reply
+            .get("update")
+            .and_then(|update| update.get("requested"))
+            .context("host returned a malformed execution profile")?
+            .clone();
+        Ok(requested_profile)
     }
 
     /// Let other unisolated worlds write into this world, with the admin token.
@@ -1202,7 +1242,15 @@ impl WorldClient {
         if reply["type"] != "worlds" {
             bail!("{}", reply["message"].as_str().unwrap_or(refuse_message));
         }
-        let default = reply["default"].as_str().unwrap_or_default().to_owned();
+        // The host's wire type always sends `default` as a string
+        // (ServerFrame::Worlds); a missing or mistyped field is a
+        // malformed reply, refused like the missing list below (#6647).
+        // An explicitly empty string is a well-formed shape and passes:
+        // shape is what this parser judges, not the name's content.
+        let default = reply["default"]
+            .as_str()
+            .context("worlds reply had no default world")?
+            .to_owned();
         let worlds = reply["worlds"]
             .as_array()
             .context("worlds reply had no list")?
@@ -1234,6 +1282,17 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_create_world_reply(&reply)
+    }
+
+    /// Parse a `world_created` reply frame into the `created` flag.
+    ///
+    /// Factored out of [`WorldClient::create_world`] so the reply
+    /// validation can be unit-tested without a live host. `false` is a
+    /// real answer (the world already existed), so a missing or
+    /// mistyped `created` field must never default to it: that shape
+    /// is corruption or version skew and errors instead (issue #6632).
+    fn parse_create_world_reply(reply: &serde_json::Value) -> Result<bool> {
         if reply["type"] != "world_created" {
             bail!(
                 "{}",
@@ -1242,7 +1301,13 @@ impl WorldClient {
                     .unwrap_or("host refused to create the world")
             );
         }
-        Ok(reply["created"].as_bool().unwrap_or(false))
+        match reply.get("created") {
+            Some(serde_json::Value::Bool(created)) => Ok(*created),
+            Some(_) => {
+                bail!("host sent a malformed world_created reply: `created` is not a boolean")
+            }
+            None => bail!("host sent no created flag in world_created reply"),
+        }
     }
 
     /// Receive one JSON frame; `None` when the host ended the session.
@@ -1464,13 +1529,43 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_module_info_reply(&reply)
+    }
+
+    /// Parse a `module_info` reply frame into [`WorldModuleInfo`].
+    ///
+    /// Factored out of [`WorldClient::info_details`] so the reply validation
+    /// can be unit-tested without a live host: the malformed-reply cases of
+    /// issue #6633 need frames no real host will send. Validation is strict
+    /// in the same way for every field — a present field with the wrong
+    /// shape is corruption or version skew and errors, never a default.
+    fn parse_module_info_reply(reply: &serde_json::Value) -> Result<WorldModuleInfo> {
         match reply["type"].as_str() {
             Some("module_info") => {
                 let world_id = reply["world_id"]
                     .as_str()
                     .context("host omitted world id")?
                     .to_owned();
-                let active_module_hash = reply["active_module_hash"].as_str().map(str::to_owned);
+                let active_module_hash = match reply.get("active_module_hash") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => {
+                        if let Some(hash) = value.as_str() {
+                            Some(hash.to_owned())
+                        } else {
+                            bail!(
+                                "host sent malformed active_module_hash: expected string or null, got {}",
+                                match value {
+                                    serde_json::Value::Null => "null",
+                                    serde_json::Value::Bool(_) => "boolean",
+                                    serde_json::Value::Number(_) => "number",
+                                    serde_json::Value::String(_) => "string",
+                                    serde_json::Value::Array(_) => "array",
+                                    serde_json::Value::Object(_) => "object",
+                                }
+                            );
+                        }
+                    }
+                };
                 let current_sequence = reply["current_sequence"]
                     .as_u64()
                     .context("host omitted sequence")?;
@@ -1636,6 +1731,56 @@ impl WorldClient {
         }
     }
 
+    /// Parse the head fields of an `event_history_begin` frame.
+    ///
+    /// Factored out of [`WorldClient::admin_event_history`] so the frame
+    /// validation can be unit-tested without a rogue host. Every field is
+    /// strict: the host's typed frame (`ServerFrame::EventHistoryBegin`)
+    /// serializes `module_hash` as a string or `null`, so a present
+    /// non-string, non-null `module_hash` is a malformed reply (#6641),
+    /// never "this world has no module" — the same match-and-bail pattern
+    /// `parse_module_info_reply` applies to the `module_info` reply (#6633).
+    /// Returns `(world_id, module_hash, current_sequence, complete, event_count)`.
+    fn parse_event_history_begin(
+        begin: &serde_json::Value,
+    ) -> Result<(String, Option<String>, u64, bool, usize)> {
+        let world_id = begin["world_id"]
+            .as_str()
+            .context("history reply has no world ID")?
+            .to_owned();
+        let module_hash = match begin.get("module_hash") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => {
+                if let Some(hash) = value.as_str() {
+                    Some(hash.to_owned())
+                } else {
+                    bail!(
+                        "history reply has a malformed module_hash: expected string or null, got {}",
+                        match value {
+                            serde_json::Value::Bool(_) => "boolean",
+                            serde_json::Value::Number(_) => "number",
+                            serde_json::Value::Array(_) => "array",
+                            serde_json::Value::Object(_) => "object",
+                            _ => "unknown",
+                        }
+                    );
+                }
+            }
+        };
+        let current_sequence = begin["current_sequence"]
+            .as_u64()
+            .context("history reply has no sequence")?;
+        let complete = begin["complete"]
+            .as_bool()
+            .context("history reply has no completeness flag")?;
+        let event_count = begin["event_count"]
+            .as_u64()
+            .and_then(|count| usize::try_from(count).ok())
+            .filter(|count| *count <= crate::world::MAX_ADMIN_HISTORY_EVENTS)
+            .context("history reply has an invalid event count")?;
+        Ok((world_id, module_hash, current_sequence, complete, event_count))
+    }
+
     /// Export the retained journal-order event window and its records as an
     /// administrator. Join capabilities cannot request this frame.
     ///
@@ -1665,22 +1810,8 @@ impl WorldClient {
                     .unwrap_or("host refused admin history export")
             );
         }
-        let world_id = begin["world_id"]
-            .as_str()
-            .context("history reply has no world ID")?
-            .to_owned();
-        let module_hash = begin["module_hash"].as_str().map(str::to_owned);
-        let current_sequence = begin["current_sequence"]
-            .as_u64()
-            .context("history reply has no sequence")?;
-        let complete = begin["complete"]
-            .as_bool()
-            .context("history reply has no completeness flag")?;
-        let event_count = begin["event_count"]
-            .as_u64()
-            .and_then(|count| usize::try_from(count).ok())
-            .filter(|count| *count <= crate::world::MAX_ADMIN_HISTORY_EVENTS)
-            .context("history reply has an invalid event count")?;
+        let (world_id, module_hash, current_sequence, complete, event_count) =
+            Self::parse_event_history_begin(&begin)?;
         let mut events = Vec::with_capacity(event_count);
         for _ in 0..event_count {
             let (frame, frame_bytes) = self
@@ -2062,6 +2193,8 @@ mod tests {
         endpoint::{RelayMode, presets},
         protocol::Router,
     };
+
+    use proptest::prelude::*;
 
     use super::*;
     use crate::world::{WorldCore, WorldHandle, WorldLimits, WorldScopes};
@@ -2723,6 +2856,160 @@ mod tests {
         host.router.shutdown().await.unwrap();
     }
 
+    #[test]
+    fn set_caps_ceiling_reply_requires_a_valid_report() {
+        // Issue #6636: a `caps_ceiling` frame carrying no valid CapsReport
+        // must not read as a successful ceiling change. Driven through the
+        // factored reply parser. Oracle: the host's typed
+        // `ServerFrame::CapsCeiling` always carries a real report, and the
+        // sibling `set_schedule` validates its reply payload the same way.
+        let valid_report = serde_json::json!({
+            "granted": ["time.now"],
+            "requested": ["time.now"],
+            "missing": [],
+            "usage": {},
+            "policy": "deny",
+            "catalog": ["time.now"],
+            "ceiling": ["time.now"],
+        });
+        let ok = WorldClient::parse_caps_ceiling_reply(&serde_json::json!({
+            "type": "caps_ceiling",
+            "report": valid_report,
+            "message": "the ceiling applies immediately",
+        }))
+        .unwrap();
+        assert_eq!(ok["type"], "caps_ceiling");
+        assert_eq!(ok["report"]["ceiling"], serde_json::json!(["time.now"]));
+        assert_eq!(ok["report"]["granted"], serde_json::json!(["time.now"]));
+
+        // Missing, null, non-object, and wrong-shaped reports all refuse
+        // with the malformed-report context.
+        for bad_reply in [
+            serde_json::json!({"type": "caps_ceiling", "message": "the ceiling applies immediately"}),
+            serde_json::json!({"type": "caps_ceiling", "report": null, "message": "ok"}),
+            serde_json::json!({"type": "caps_ceiling", "report": 123, "message": "ok"}),
+            serde_json::json!({"type": "caps_ceiling", "report": {"granted": "time.now"}, "message": "ok"}),
+        ] {
+            let result = WorldClient::parse_caps_ceiling_reply(&bad_reply);
+            assert!(result.is_err(), "reply {bad_reply} must be refused");
+            let err = result.err().unwrap();
+            assert!(
+                err.to_string().contains("malformed capability report"),
+                "unexpected error: {err}"
+            );
+        }
+
+        // A non-caps_ceiling frame still bails with the host's message.
+        let refused = WorldClient::parse_caps_ceiling_reply(&serde_json::json!({
+            "type": "error",
+            "message": "admin token refused",
+        }));
+        assert!(refused.err().unwrap().to_string().contains("admin token refused"));
+    }
+
+    #[test]
+    fn caps_reply_requires_a_valid_report() {
+        // Issue #6624: a `caps` frame carrying no valid CapsReport must
+        // not read as a successful capability report — for update_caps
+        // it would confirm a grant/revoke that never happened. Driven
+        // through the factored reply parser shared by caps() and
+        // update_caps(). Oracle: the host's typed `ServerFrame::Caps`
+        // always carries a real report, and the sibling
+        // parse_caps_ceiling_reply (#6636) validates the same way.
+        let valid_report = serde_json::json!({
+            "granted": ["time.now"],
+            "requested": ["time.now"],
+            "missing": [],
+            "usage": {},
+            "policy": "deny",
+            "catalog": ["time.now"],
+            "ceiling": ["time.now"],
+        });
+        for refusal in [
+            "host refused the capability report",
+            "host refused the capability change",
+        ] {
+            let ok = WorldClient::parse_caps_reply(
+                &serde_json::json!({"type": "caps", "report": valid_report}),
+                refusal,
+            )
+            .unwrap();
+            // The report comes back as the original value, unchanged.
+            assert_eq!(ok, valid_report);
+
+            // A pre-ceiling report (no ceiling/effective/view_failures)
+            // still parses via the serde defaults and returns unchanged.
+            let old_report = serde_json::json!({
+                "granted": ["time.now"],
+                "requested": [],
+                "missing": [],
+                "usage": {},
+                "policy": "grant-on-use",
+                "catalog": ["time.now"],
+            });
+            let ok = WorldClient::parse_caps_reply(
+                &serde_json::json!({"type": "caps", "report": old_report}),
+                refusal,
+            )
+            .unwrap();
+            assert_eq!(ok, old_report);
+        }
+
+        // The issue's malformed shapes: missing report, null, string,
+        // number, array, a mistyped field, and a report missing the
+        // required fields — all refuse with the malformed-report
+        // context, through both methods' refusal wording.
+        for bad_report in [
+            None,
+            Some(serde_json::json!(null)),
+            Some(serde_json::json!("yes")),
+            Some(serde_json::json!(123)),
+            Some(serde_json::json!([])),
+            Some(serde_json::json!({
+                "granted": "time.now",
+                "requested": [],
+                "missing": [],
+                "usage": {},
+                "policy": "deny",
+                "catalog": [],
+            })),
+            Some(serde_json::json!({
+                "granted": [],
+                "requested": [],
+                "missing": [],
+                "usage": {},
+                "policy": 42,
+                "catalog": [],
+            })),
+            Some(serde_json::json!({"granted": []})),
+        ] {
+            let mut reply = serde_json::json!({"type": "caps"});
+            if let Some(report) = bad_report {
+                reply["report"] = report;
+            }
+            let result = WorldClient::parse_caps_reply(&reply, "host refused");
+            assert!(result.is_err(), "reply {reply} must be refused");
+            let err = result.err().unwrap();
+            assert!(
+                err.to_string().contains("malformed capability report"),
+                "unexpected error: {err}"
+            );
+        }
+
+        // A refusal frame still bails with the host's own message.
+        let refused = WorldClient::parse_caps_reply(
+            &serde_json::json!({"type": "error", "message": "capability refused"}),
+            "host refused the capability report",
+        );
+        assert!(
+            refused
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("capability refused")
+        );
+    }
+
     #[tokio::test]
     async fn execution_profile_can_be_queried_and_updated_over_iroh() {
         let host = host(Some("admin")).await;
@@ -2752,7 +3039,11 @@ mod tests {
             .execution_profile(None, Some(&capability))
             .await
             .unwrap();
-        assert_eq!(res["type"], "execution_profile");
+        // execution_profile now returns just the requested profile, not the
+        // whole frame. A fresh world has requested nothing: every bound is
+        // None (inherit the server ceiling) and serializes away, so the
+        // default requested profile is the empty object (#6687).
+        assert_eq!(res, serde_json::json!({}));
         guest.close();
 
         // 3. Admin can update profile
@@ -2768,6 +3059,7 @@ mod tests {
             .set_execution_profile("admin", custom_profile)
             .await
             .unwrap();
+        // set_execution_profile still returns the whole frame
         assert_eq!(set_res["type"], "execution_profile");
         assert_eq!(set_res["update"]["requested"]["wasm_fuel"], 750_000);
         admin.close();
@@ -2780,7 +3072,8 @@ mod tests {
             .execution_profile(Some("admin"), None)
             .await
             .unwrap();
-        assert_eq!(query_res["update"]["requested"]["wasm_fuel"], 750_000);
+        // execution_profile now returns just the requested profile
+        assert_eq!(query_res["wasm_fuel"], 750_000);
         admin_query.close();
 
         client_ep.close().await;
@@ -3569,5 +3862,231 @@ mod tests {
         sessions.close_all();
         client_ep.close().await;
         host.router.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn info_details_rejects_malformed_active_module_hash() {
+        // Issue #6633: a present-but-mistyped `active_module_hash` is
+        // corruption or version skew, never "this world has no module".
+        // Driven through the factored reply parser — the previous version
+        // of this test called a nonexistent `inject_json` helper on the
+        // client and broke the whole lib-test build (issues #6640, #6643).
+        // Oracle: the parser's strictness for the sibling fields of the
+        // same reply (`world_id`, `current_sequence`, provenance).
+        let parse = |reply: serde_json::Value| WorldClient::parse_module_info_reply(&reply);
+        let reply_with = |hash: serde_json::Value| {
+            serde_json::json!({
+                "type": "module_info",
+                "world_id": "test:world",
+                "active_module_hash": hash,
+                "current_sequence": 42,
+                "active_module_provenance": null,
+            })
+        };
+
+        // Valid string hash -> Some(hash).
+        let info = parse(reply_with(serde_json::json!("abc123"))).unwrap();
+        assert_eq!(info.active_module_hash, Some("abc123".to_string()));
+        assert_eq!(info.world_id, "test:world");
+        assert_eq!(info.current_sequence, 42);
+
+        // Null hash -> None (the legitimate no-module case).
+        let info = parse(reply_with(serde_json::Value::Null)).unwrap();
+        assert_eq!(info.active_module_hash, None);
+
+        // Missing hash field (older hosts) -> None.
+        let info = parse(serde_json::json!({
+            "type": "module_info",
+            "world_id": "test:world",
+            "current_sequence": 42,
+            "active_module_provenance": null,
+        }))
+        .unwrap();
+        assert_eq!(info.active_module_hash, None);
+
+        // Mistyped hash shapes -> an error naming the malformed field.
+        for bad in [
+            serde_json::json!(123),
+            serde_json::json!(true),
+            serde_json::json!(["abc"]),
+            serde_json::json!({"hash": "abc"}),
+        ] {
+            let result = parse(reply_with(bad));
+            assert!(result.is_err(), "mistyped hash must error, got {result:?}");
+            let err = result.err().unwrap();
+            assert!(
+                err.to_string().contains("malformed active_module_hash"),
+                "unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn create_world_reply_requires_created_flag() {
+        // Issue #6632: `false` is a real answer ("the world already
+        // existed"), so a `world_created` reply whose `created` field
+        // is missing or mistyped must error, never read as Ok(false).
+        // Oracle: the sibling strictness of parse_module_info_reply —
+        // a present-but-wrong-shape field is corruption, not a default.
+        let parse = |reply: serde_json::Value| WorldClient::parse_create_world_reply(&reply);
+
+        // Well-formed controls keep their meaning.
+        assert!(
+            parse(serde_json::json!({"type": "world_created", "world": "arena", "created": true}))
+                .unwrap()
+        );
+        assert!(
+            !parse(
+                serde_json::json!({"type": "world_created", "world": "arena", "created": false})
+            )
+            .unwrap()
+        );
+
+        // Missing `created` -> an error naming the flag.
+        let result = parse(serde_json::json!({"type": "world_created", "world": "arena"}));
+        assert!(
+            result.is_err(),
+            "missing created must error, got {result:?}"
+        );
+        assert!(
+            result.err().unwrap().to_string().contains("created"),
+            "error must name the created flag"
+        );
+
+        // Mistyped `created` shapes -> an error, never Ok(false).
+        for bad in [
+            serde_json::json!("true"),
+            serde_json::json!(1),
+            serde_json::Value::Null,
+            serde_json::json!(["true"]),
+        ] {
+            let result = parse(
+                serde_json::json!({"type": "world_created", "world": "arena", "created": bad}),
+            );
+            assert!(
+                result.is_err(),
+                "mistyped created must error, got {result:?}"
+            );
+        }
+
+        // The refusal path still surfaces the host's message.
+        let result = parse(serde_json::json!({"type": "error", "message": "bad admin token"}));
+        assert_eq!(result.err().unwrap().to_string(), "bad admin token");
+        let result = parse(serde_json::json!({"type": "error"}));
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            "host refused to create the world"
+        );
+    }
+
+    #[test]
+    fn admin_event_history_begin_requires_a_string_or_null_module_hash() {
+        // Issue #6641 (duplicate: #6642): a present, mistyped `module_hash`
+        // in the begin frame is a malformed reply, not "no module".
+        // Oracle: every sibling field of the same frame is strict, and the
+        // host's ServerFrame::EventHistoryBegin serializes the hash as a
+        // string or null only.
+        let begin_with = |hash: serde_json::Value| {
+            serde_json::json!({
+                "type": "event_history_begin",
+                "world_id": "test:world",
+                "module_hash": hash,
+                "current_sequence": 7,
+                "complete": true,
+                "event_count": 0,
+            })
+        };
+        let parse = |begin: serde_json::Value| WorldClient::parse_event_history_begin(&begin);
+
+        let (world_id, module_hash, seq, complete, count) =
+            parse(begin_with(serde_json::json!("abc123"))).unwrap();
+        assert_eq!(world_id, "test:world");
+        assert_eq!(module_hash, Some("abc123".to_string()));
+        assert_eq!(seq, 7);
+        assert!(complete);
+        assert_eq!(count, 0);
+
+        // Null and missing both read as None (legitimate no-module / older hosts).
+        let (_, module_hash, ..) = parse(begin_with(serde_json::Value::Null)).unwrap();
+        assert_eq!(module_hash, None);
+        let mut missing = begin_with(serde_json::Value::Null);
+        missing.as_object_mut().unwrap().remove("module_hash");
+        let (_, module_hash, ..) = parse(missing).unwrap();
+        assert_eq!(module_hash, None);
+
+        // Mistyped shapes are refused, naming the field.
+        for bad in [
+            serde_json::json!(123),
+            serde_json::json!(true),
+            serde_json::json!(["abc"]),
+            serde_json::json!({"hash": "abc"}),
+        ] {
+            let result = parse(begin_with(bad));
+            assert!(result.is_err(), "mistyped module_hash must be refused");
+            let err = result.err().unwrap();
+            assert!(
+                err.to_string().contains("malformed module_hash"),
+                "unexpected error: {err}"
+            );
+        }
+    }
+
+    // Property coverage for the same parser (repo testing doctrine: a
+    // parser's invariants are stated once and hammered with generated
+    // inputs, not just the examples above). Oracle: the typed frame
+    // contract — `module_hash` is a string or null on the wire, and the
+    // sibling fields pass through untouched.
+    proptest! {
+        #[test]
+        fn admin_event_history_begin_module_hash_invariants(
+            hash in any::<String>(),
+            world_id in "[a-z][a-z0-9:_-]{0,20}",
+            seq in any::<u64>(),
+            complete in any::<bool>(),
+            count in 0u64..=1000,
+            mistyped in prop_oneof![
+                any::<i64>().prop_map(serde_json::Value::from),
+                any::<bool>().prop_map(serde_json::Value::from),
+                proptest::collection::vec(any::<String>(), 0..4)
+                    .prop_map(serde_json::Value::from),
+                proptest::collection::hash_map(any::<String>(), any::<String>(), 0..4)
+                    .prop_map(|m| serde_json::to_value(m).unwrap()),
+            ],
+        ) {
+            let begin = |module_hash: serde_json::Value| {
+                serde_json::json!({
+                    "type": "event_history_begin",
+                    "world_id": world_id,
+                    "module_hash": module_hash,
+                    "current_sequence": seq,
+                    "complete": complete,
+                    "event_count": count,
+                })
+            };
+            // Any string hash is preserved verbatim; siblings pass through.
+            let (w, h, s, c, n) = WorldClient::parse_event_history_begin(
+                &begin(serde_json::Value::String(hash.clone())),
+            )
+            .unwrap();
+            prop_assert_eq!(w.as_str(), world_id.as_str());
+            prop_assert_eq!(h.as_deref(), Some(hash.as_str()));
+            prop_assert_eq!(s, seq);
+            prop_assert_eq!(c, complete);
+            prop_assert_eq!(n, count as usize);
+            // Null reads as no module.
+            let (_, h, ..) =
+                WorldClient::parse_event_history_begin(&begin(serde_json::Value::Null)).unwrap();
+            prop_assert_eq!(h, None);
+            // Any other JSON type is refused as malformed.
+            let result = WorldClient::parse_event_history_begin(&begin(mistyped));
+            prop_assert!(result.is_err());
+            prop_assert!(
+                result
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("malformed module_hash")
+            );
+        }
     }
 }

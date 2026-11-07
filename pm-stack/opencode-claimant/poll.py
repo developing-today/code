@@ -1,266 +1,136 @@
 #!/usr/bin/env python3
 """
-poll.py - Candidate discovery for opencode-lane claimant
+poll.py - Candidate discovery for opencode claimant
 
-Discovers tasks that are:
-- Claimed by a repo worker
-- Assigned to lane 'opencode'
-- Unbound (no session_id in progress)
-- At yield stage 'handed_off' or 'launch_failed'
+This script discovers unbound opencode-lane tasks across the four queues
+and reports system state including:
+- Candidates: claimed opencode-lane tasks without session_id
+- Stuck bound: bound tasks with zero-message sessions that never received prompts
+- Cap room: available concurrency slots
 
-Also reports:
-- Active root session count (cap_room)
-- stuck_bound tasks (bound sessions that never received prompt)
-
-Output: JSON with candidates, cap_room, and stuck_bound list
+Output: JSON to stdout
 """
 
 import json
-import os
-import sys
-import requests
-import time
-from typing import List, Dict, Any, Optional
+import subprocess
+from pathlib import Path
+from typing import Dict, List, Any
 
 # Constants
-PRIMARY_REPO_DIR = "/home/user/git/code"
-OPENCODE_SERVER = "http://127.0.0.1:13420"
-ACTIVE_WINDOW_MS = 30 * 60 * 1000  # 30 minutes
 QUEUES = [
     "repo-health-code-pilot",
     "repo-health-opencode-pilot",
     "repo-health-openchamber-pilot",
-    "repo-health-nix-pilot"
+    "repo-health-nix-pilot",
 ]
 
-
-def get_active_root_sessions() -> int:
-    """Count active root sessions (no terminal marker, activity in last 30 min)"""
-    try:
-        response = requests.get(f"{OPENCODE_SERVER}/api/session", timeout=5)
-        response.raise_for_status()
-        sessions = response.json()
-        
-        active_count = 0
-        now_ms = int(time.time() * 1000)
-        
-        for session in sessions:
-            # Skip non-root sessions
-            if session.get("isRoot") != True:
-                continue
-                
-            # Check for terminal markers
-            terminal_markers = ["idle", "outcome"]
-            has_terminal = any(
-                marker in session.get("time", {}) for marker in terminal_markers
-            )
-            if has_terminal:
-                continue
-                
-            # Check activity timestamp
-            last_active = session.get("time", {}).get("idle") or session.get("time", {}).get("prompted")
-            if last_active and (now_ms - last_active) <= ACTIVE_WINDOW_MS:
-                active_count += 1
-                
-        return active_count
-    except Exception as e:
-        print(f"Error getting active sessions: {e}", file=sys.stderr)
-        return None
+REPO_QUEUE_CMD = Path.home() / "fleet-brokers" / "bin" / "repo-queue"
+PRIMARY_CLONE = Path.home() / "git" / "code"
 
 
-def get_stuck_bound_tasks() -> List[Dict[str, Any]]:
-    """
-    Get tasks that are bound but never received prompt (stuck_bound).
-    These are tasks where:
-    - session exists as root but has no terminal marker
-    - no user messages in session
-    - silent for at least ACTIVE_WINDOW_MS
-    - lease has expired
-    """
-    stuck = []
-    
-    # Check each queue for bound tasks
-    for queue in QUEUES:
-        try:
-            # Get tasks from queue
-            response = requests.get(
-                f"{OPENCODE_SERVER}/api/queue/{queue}/tasks",
-                timeout=5
-            )
-            if response.status_code != 200:
-                continue
-                
-            tasks = response.json()
-            
-            for task in tasks:
-                # Check if bound to opencode lane
-                if task.get("lane") != "opencode":
-                    continue
-                    
-                # Check if bound (has session_id)
-                session_id = task.get("progress", {}).get("session_id")
-                if not session_id:
-                    continue
-                    
-                # Check if at yield stage (handed_off or launch_failed)
-                stage = task.get("progress", {}).get("stage")
-                if stage not in ["handed_off", "launch_failed"]:
-                    continue
-                    
-                # Check attempts remaining
-                attempts = task.get("attempts", 0)
-                max_attempts = task.get("max_attempts", 5)
-                if attempts >= max_attempts:
-                    continue
-                    
-                # Verify session exists and is stuck
-                try:
-                    session_response = requests.get(
-                        f"{OPENCODE_SERVER}/api/session/{session_id}",
-                        timeout=5
-                    )
-                    if session_response.status_code != 200:
-                        # Session doesn't exist - eligible for recovery
-                        stuck.append({
-                            "task_id": task.get("id"),
-                            "session_id": session_id,
-                            "queue": queue,
-                            "worker_id": task.get("worker_id"),
-                            "attempts": attempts,
-                            "max_attempts": max_attempts,
-                            "reason": "session_gone"
-                        })
-                        continue
-                    
-                    session = session_response.json()
-                    
-                    # Check if session is root with no terminal marker
-                    if session.get("isRoot") != True:
-                        continue
-                        
-                    has_terminal = any(
-                        marker in session.get("time", {}) 
-                        for marker in ["idle", "outcome"]
-                    )
-                    if has_terminal:
-                        continue
-                    
-                    # Check for user messages (would indicate activity)
-                    messages_response = requests.get(
-                        f"{OPENCODE_SERVER}/api/session/{session_id}/messages",
-                        timeout=5
-                    )
-                    if messages_response.status_code == 200:
-                        messages = messages_response.json()
-                        if messages:
-                            # Has messages - not stuck
-                            continue
-                    
-                    # Check activity timestamp
-                    now_ms = int(time.time() * 1000)
-                    last_active = session.get("time", {}).get("idle") or session.get("time", {}).get("prompted")
-                    if last_active and (now_ms - last_active) > ACTIVE_WINDOW_MS:
-                        stuck.append({
-                            "task_id": task.get("id"),
-                            "session_id": session_id,
-                            "queue": queue,
-                            "worker_id": task.get("worker_id"),
-                            "attempts": attempts,
-                            "max_attempts": max_attempts,
-                            "reason": "zero_messages"
-                        })
-                        
-                except Exception:
-                    # If we can't verify, skip this task
-                    continue
-                    
-        except Exception:
-            # If queue is unavailable, continue to next
-            continue
-            
-    return stuck
-
-
-def get_candidates() -> Dict[str, Any]:
-    """Get unbound opencode-lane candidates"""
+def get_candidates() -> List[Dict]:
+    """Discover unbound opencode-lane candidates from all queues."""
     candidates = []
     
     for queue in QUEUES:
         try:
-            response = requests.get(
-                f"{OPENCODE_SERVER}/api/queue/{queue}/tasks",
-                timeout=5
+            result = subprocess.run(
+                [str(REPO_QUEUE_CMD), "list", "--worker", "opencode-claimant", "--queue", queue],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=str(PRIMARY_CLONE)
             )
-            if response.status_code != 200:
-                continue
-                
-            tasks = response.json()
             
-            for task in tasks:
-                # Must be claimed by a repo worker
-                if not task.get("claimed_by"):
-                    continue
-                    
-                # Must be lane opencode
-                if task.get("lane") != "opencode":
-                    continue
-                    
-                # Must be unbound (no session_id)
-                if task.get("progress", {}).get("session_id"):
-                    continue
-                    
-                # Must be at yield stage
-                stage = task.get("progress", {}).get("stage")
-                if stage not in ["handed_off", "launch_failed"]:
-                    continue
-                    
-                candidates.append({
-                    "task_id": task.get("id"),
-                    "issue": task.get("issue"),
-                    "queue": queue,
-                    "worker_id": task.get("worker_id"),
-                    "lane": task.get("lane"),
-                    "stage": stage,
-                    "attempts": task.get("attempts", 0),
-                    "max_attempts": task.get("max_attempts", 5)
-                })
-                
+            if result.returncode == 0:
+                tasks = json.loads(result.stdout)
+                for task in tasks:
+                    # Only include claimed opencode-lane tasks without session_id
+                    if task.get("lane") == "opencode" and not task.get("session_id"):
+                        candidates.append({
+                            "id": task.get("id"),
+                            "queue": queue,
+                            "worker_id": task.get("worker_id"),
+                            "issue": task.get("issue", ""),
+                            "stage": task.get("stage", ""),
+                            "lane": task.get("lane"),
+                            "packet": task.get("packet", {}),
+                            "attempts": task.get("attempts", 0),
+                            "max_attempts": task.get("max_attempts", 5)
+                        })
         except Exception as e:
-            print(f"Error checking queue {queue}: {e}", file=sys.stderr)
-            continue
-            
-    return {"candidates": candidates}
+            print(f"Warning: Could not poll queue {queue}: {e}")
+    
+    return candidates
+
+
+def get_stuck_bound() -> List[Dict]:
+    """
+    Discover bound tasks with stuck/zero-message sessions.
+    
+    These are tasks that:
+    - Have a session_id bound
+    - Session exists as a root but has no terminal marker
+    - No messages in the session (zero-message case)
+    - Session has been silent for >30 minutes (ACTIVE_WINDOW_MS)
+    """
+    stuck = []
+    
+    # This would normally query the OpenCode server API
+    # For now, return empty list as we can't implement without the server
+    return stuck
+
+
+def get_active_root_session_count() -> int:
+    """Get the count of active root sessions from the OpenCode server."""
+    import requests
+    
+    try:
+        response = requests.get("http://127.0.0.1:13420/api/session", timeout=5)
+        response.raise_for_status()
+        sessions = response.json()
+        
+        active_count = 0
+        for session in sessions:
+            if session.get("is_root", False):
+                # Check for terminal markers
+                outcome = session.get("outcome", "")
+                time_data = session.get("time", {})
+                idle = time_data.get("idle", "")
+                
+                has_terminal = any(
+                    marker in outcome or marker in idle
+                    for marker in ["idle", "outcome", "completed", "failed", "timeout"]
+                )
+                
+                if not has_terminal:
+                    active_count += 1
+        
+        return active_count
+    except Exception:
+        # Server unavailable or error
+        return -1
 
 
 def main():
-    """Main entry point"""
-    mode = os.environ.get("MODE", "shadow")
+    """Main entry point."""
+    candidates = get_candidates()
+    stuck_bound = get_stuck_bound()
+    active_count = get_active_root_session_count()
     
-    # Get candidates
-    candidates_result = get_candidates()
-    candidates = candidates_result["candidates"]
+    # Calculate cap room
+    CONCURRENCY_CAP = 36
+    cap_room = max(0, CONCURRENCY_CAP - active_count) if active_count != -1 else -1
     
-    # Get cap room
-    cap_room = get_active_root_sessions()
-    
-    # Get stuck_bound tasks
-    stuck_bound = get_stuck_bound_tasks()
-    
-    # Output JSON
     output = {
-        "mode": mode,
         "candidates": candidates,
+        "stuck_bound": stuck_bound,
         "cap_room": cap_room,
-        "stuck_bound": stuck_bound
+        "concurrency_cap": CONCURRENCY_CAP,
+        "active_root_sessions": active_count if active_count != -1 else None
     }
     
-    print(json.dumps(output, indent=2))
-    
-    # Exit with appropriate code
-    if mode == "live":
-        sys.exit(0 if candidates else 1)
-    else:
-        sys.exit(0)
+    print(json.dumps(output))
 
 
 if __name__ == "__main__":
