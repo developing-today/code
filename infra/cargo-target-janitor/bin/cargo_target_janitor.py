@@ -196,23 +196,33 @@ def queue_claims(client) -> set[int]:
 
     Paginated (#6618): a single page capped at 1000 rows silently
     dropped every claimed task past row 1000 from the never-delete
-    set. Pages are followed with offset until a short page arrives;
-    needing more than MAX_CLAIM_PAGES pages fails closed.
+    set. Pages are followed until a short page arrives; needing more
+    than MAX_CLAIM_PAGES pages fails closed.
+
+    Keyset pagination on id (#6790): pages are ordered by id and each
+    next page asks for id greater than the largest id seen. Offset
+    paging over this LIVE set was not stable — PostgREST re-evaluates
+    offset against the current filtered set on every request, so a
+    task leaving the claimed set mid-read shifted every later row one
+    position forward and the next offset page skipped a still-claimed
+    task, dropping it from the never-delete set. Rows leaving behind
+    the keyset cursor cannot shift rows ahead of it; rows ahead are
+    read exactly once, in order.
     """
     module, key = client
     rows = []
-    offset = 0
+    after = 0
     for _ in range(MAX_CLAIM_PAGES):
         query = (
             "tasks?select=id,queue,status,payload&"
             f"queue=eq.{QUEUE}&status=eq.claimed"
-            f"&limit={CLAIMS_PAGE}&offset={offset}"
+            f"&id=gt.{after}&order=id.asc&limit={CLAIMS_PAGE}"
         )
         page = module.http("GET", query, key) or []
         rows.extend(page)
         if len(page) < CLAIMS_PAGE:
             break
-        offset += CLAIMS_PAGE
+        after = max(int(row["id"]) for row in page)
     else:
         raise SafetyError(
             f"claimed-task read exceeded {MAX_CLAIM_PAGES} pages "
