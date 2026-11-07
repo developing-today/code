@@ -5789,6 +5789,7 @@ mod tests {
         // interior separator must survive.
         for original in [
             "> ```rust\n> code\n> ```\n",
+            "> ```rust\n> first\n> \n> second\n> ```\n",
             "> | a | b |\n> | --- | --- |\n> | 1 | 2 |\n",
             "> -----\n> \n> after\n",
             "> > ```rust\n> > code\n> > ```\n",
