@@ -1,0 +1,7 @@
+{
+  "tickAt": "2026-11-05T13:27:12.958Z",
+  "ok": false,
+  "durationMs": 258,
+  "perProvider": {},
+  "error": "opencode quota subcommand failed: opencode quota (listing): unparseable output (2371 bytes)"
+}

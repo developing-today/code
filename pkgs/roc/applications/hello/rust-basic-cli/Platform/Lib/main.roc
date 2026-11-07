@@ -1,5 +1,0 @@
-package [
-    Display,
-    Hello,
-    Square,
-] {}

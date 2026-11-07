@@ -1,0 +1,1 @@
+{"version":3,"file":"DocumentTimeline.d.ts","sourceRoot":"","sources":["../../src/animation/DocumentTimeline.ts"],"names":[],"mappings":"AAAA,OAAO,iBAAiB,MAAM,wBAAwB,CAAC;AAEvD,MAAM,WAAW,wBAAwB;IACxC,UAAU,CAAC,EAAE,MAAM,CAAC;CACpB;AAED;;;;GAIG;AACH,MAAM,CAAC,OAAO,OAAO,gBAAiB,SAAQ,iBAAiB;;IAG9D;;;;OAIG;gBACS,OAAO,GAAE,wBAA6B;IAKlD;;;;OAIG;IACH,IAAoB,WAAW,IAAI,MAAM,CAExC;CACD"}

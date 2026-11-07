@@ -1,0 +1,44 @@
+08:36:29.559 INFO  daemon starting config=/home/user/git/code/.mcpx.json event=daemon.start go.version=go1.27.3 host.arch=amd64 host.cpus=16 host.name=amd host.os=linux log.file=.local/state/mcpx/logs/mcpx-2026-11-04.jsonl mcpx.version=0.1.0 process.cwd=/home/user/git/code process.exe=/nix/store/pahg1lqscygyb912nk29w676k71pwawy-mcpx-0.1.0/bin/.mcpx-wrapped process.pid=1529297 servers=15 trace=dmn-456513762d3b09e0 user.name=user user.uid=1337
+08:36:29.559 INFO  started detached trace=dmn-456513762d3b09e0
+08:36:29.936 INFO  mcpx 0.1.0 listening on .local/state/mcpx/daemon-a34bb225ae80.sock and http://127.0.0.1:38161 trace=dmn-456513762d3b09e0
+08:36:29.936 INFO  config: /home/user/git/code/.mcpx.json (15 servers) trace=dmn-456513762d3b09e0
+08:36:30.191 INFO  warm fff-worktree ok in 624ms trace=dmn-456513762d3b09e0
+08:36:30.488 INFO  warm codedb ok in 921ms trace=dmn-456513762d3b09e0
+08:36:30.673 INFO  warm fff ok in 1.105s trace=dmn-456513762d3b09e0
+08:36:30.680 INFO  warm fff-nix ok in 1.112s trace=dmn-456513762d3b09e0
+08:36:31.032 INFO  warm gopls-mcp-server failed after 1.464s: server "gopls-mcp-server": initialize: mcp error -32000: connection closed: go run golang.org/x/tools/gopls@latest mcp exited: exit status 1 (stderr: go: go: module cache not found: neither GOMODCACHE nor GOPATH is set) trace=dmn-456513762d3b09e0
+08:36:34.632 INFO  warm sequential-thinking ok in 5.064s trace=dmn-456513762d3b09e0
+08:36:35.842 INFO  warm codex-connectors ok in 6.274s trace=dmn-456513762d3b09e0
+08:36:36.129 INFO  warm antigravity ok in 6.562s trace=dmn-456513762d3b09e0
+08:36:37.812 INFO  warm desktop-commander ok in 8.247s trace=dmn-456513762d3b09e0
+08:36:37.813 INFO  warm context7 ok in 8.246s trace=dmn-456513762d3b09e0
+08:36:38.270 INFO  warm chrome-devtools ok in 8.703s trace=dmn-456513762d3b09e0
+08:36:39.205 INFO  warm codebase-memory ok in 9.638s trace=dmn-456513762d3b09e0
+08:36:39.461 INFO  warm deepwiki ok in 9.893s trace=dmn-456513762d3b09e0
+08:36:40.655 INFO  warm mcp-server-neon failed after 11.088s: server "mcp-server-neon": initialize: mcp error -32000: connection closed: npx -y mcp-remote https://mcp.neon.tech/sse exited: exit status 1 (stderr: to https://mcp.neon.tech/mcp using Streamable HTTP. Stdio-only clients can bridge it with `npx -y mcp-remote https://mcp.neon.tech/mcp`. See https://neon.com/docs/ai/neon-mcp-server#retired-sse."}
+    at StreamableHTTPClientTransport._send (file:///home/user/.npm/_npx/705d23756ff7dacc/node_modules/mcp-remote/dist/chunk-K6DREQAS.js:31464:15)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5) {
+  code: 'CLIENT_HTTP_NOT_IMPLEMENTED',
+  data: {
+    status: 410,
+    statusText: 'Gone',
+    text: '{"error":"transport_gone","message":"HTTP+SSE was removed. Connect to https://mcp.neon.tech/mcp using Streamable HTTP. Stdio-only clients can bridge it with `npx -y mcp-remote https://mcp.neon.tech/mcp`. See https://neon.com/docs/ai/neon-mcp-server#retired-sse."}'
+  }
+}) trace=dmn-456513762d3b09e0
+08:36:40.777 INFO  warm cloudrun ok in 11.21s trace=dmn-456513762d3b09e0
+08:36:40.783 INFO  warm complete in 11.218s (2 failed) trace=dmn-456513762d3b09e0
+08:41:59.988 INFO  reaped 1 idle desktop-commander instance(s) trace=dmn-456513762d3b09e0
+08:42:00.011 INFO  reaped 1 idle antigravity instance(s) trace=dmn-456513762d3b09e0
+08:42:00.054 INFO  reaped 1 idle cloudrun instance(s) trace=dmn-456513762d3b09e0
+08:42:00.234 INFO  reaped 1 idle codebase-memory instance(s) trace=dmn-456513762d3b09e0
+08:42:00.241 INFO  reaped 1 idle codedb instance(s) trace=dmn-456513762d3b09e0
+08:42:00.266 INFO  reaped 1 idle codex-connectors instance(s) trace=dmn-456513762d3b09e0
+08:42:00.298 INFO  reaped 1 idle context7 instance(s) trace=dmn-456513762d3b09e0
+08:42:00.410 INFO  reaped 1 idle fff-worktree instance(s) trace=dmn-456513762d3b09e0
+08:42:00.457 INFO  reaped 1 idle fff-nix instance(s) trace=dmn-456513762d3b09e0
+08:42:00.509 INFO  reaped 1 idle deepwiki instance(s) trace=dmn-456513762d3b09e0
+08:42:00.643 INFO  reaped 1 idle fff instance(s) trace=dmn-456513762d3b09e0
+08:42:00.677 INFO  reaped 1 idle sequential-thinking instance(s) trace=dmn-456513762d3b09e0
+09:36:38.088 INFO  received terminated, shutting down trace=dmn-456513762d3b09e0
+09:36:38.127 INFO  stopped trace=dmn-456513762d3b09e0
+09:36:38.129 INFO  daemon stopping event=daemon.stop trace=dmn-456513762d3b09e0
