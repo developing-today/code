@@ -622,6 +622,7 @@ func TestReadOnlyGuardRejectsAnythingThatWrites(t *testing.T) {
 		`PRAGMA compile_options`,
 		`PRAGMA main.journal_mode`,
 		`PRAGMA integrity_check`,
+		`PRAGMA read_uncommitted`,
 		`EXPLAIN SELECT 1`,
 	}
 	for _, q := range ok {

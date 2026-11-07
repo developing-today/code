@@ -91,6 +91,7 @@ var bareReadPragmas = map[string]bool{
 	"max_page_count": true, "max_recursive": true, "mmap_size": true,
 	"module_list": true, "page_count": true, "page_size": true,
 	"pragma_list": true, "query_only": true, "quick_check": true,
+	"read_uncommitted":   true,
 	"recursive_triggers": true, "reverse_unordered_selects": true,
 	"schema_version": true, "secure_delete": true,
 	"short_column_names": true, "soft_heap_limit": true,
