@@ -26,7 +26,12 @@
         "rule": "Per-crate Go suite grouping, with separately named plugin, conformance, real-software, container, and packaging suites."
       },
       {
-        "path": "doc/**/spikes/** and doc/**/research-round*/**",
+        "path": "doc/**/spikes/**",
+        "decision": "out_of_scope",
+        "reason": "Experimental/research scratch projects are not product suites."
+      },
+      {
+        "path": "doc/**/research-round*/**",
         "decision": "out_of_scope",
         "reason": "Experimental/research scratch projects are not product suites."
       },
@@ -41,7 +46,7 @@
         "reason": "Vendored dependencies are not first-party product suites and are not members of the id workspace test run."
       },
       {
-        "path": "fixtures, golden data, and test helper/generator files",
+        "category": "fixtures, golden data, and test helper/generator files",
         "decision": "not_a_suite",
         "reason": "Data and helpers are inputs to suites, not independently invoked test suites."
       }
