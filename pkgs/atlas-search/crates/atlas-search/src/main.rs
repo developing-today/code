@@ -28,6 +28,7 @@ use std::process::ExitCode;
 use std::sync::OnceLock;
 
 use atlas_core::filters::{Filters, split_csv};
+use atlas_core::shards::{ShardedBackend, TierCeiling, open_from_spec};
 use atlas_core::turso::{TURSO_HOST, resolve_turso_token};
 use atlas_core::{
     AtlasEmbedder, Error as CoreError, FixedEmbedder, LocalBackend, QueryEmbedder, SearchBackend,
@@ -203,6 +204,9 @@ struct SearchArgs {
     /// human-readable output instead of JSON
     #[arg(long)]
     text: bool,
+    /// EXPERIMENTAL, off by default: serve the vector branch from the atlas core shard fan-out (dir:<path> or turso[:<org>]); FTS, details and --expand stay on the backend (issue #5755). Skips --via-service.
+    #[arg(long, env = "ATLAS_SHARDS", hide = true)]
+    shards: Option<String>,
     #[command(flatten)]
     backend: BackendArgs,
     #[command(flatten)]
@@ -606,13 +610,18 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
     let expand = count("--expand", args.expand, 0, None)?;
     let trunc = count("--trunc", args.vector.trunc, 0, None)?;
     let mut note: Option<String> = None;
-    match try_via_service_search(&args) {
-        Ok(Some(out)) => {
-            print_output(&out, args.text);
-            return Ok(());
+    // The shard fan-out is standalone-only: the service does not
+    // honor it yet, so a via-service answer would silently come
+    // from the monolith.
+    if args.shards.is_none() {
+        match try_via_service_search(&args) {
+            Ok(Some(out)) => {
+                print_output(&out, args.text);
+                return Ok(());
+            }
+            Ok(None) => {}
+            Err(n) => note = Some(n),
         }
-        Ok(None) => {}
-        Err(n) => note = Some(n),
     }
     let filters = Filters::new(
         split_csv(args.kind.as_deref()),
@@ -624,7 +633,16 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
         args.until.clone(),
     )
     .map_err(map_err)?;
-    let backend = pick_backend(&args.backend, &args.vector.vec_table, trunc)?;
+    let mut backend = pick_backend(&args.backend, &args.vector.vec_table, trunc)?;
+    if let Some(spec) = args.shards.as_deref() {
+        let set = open_from_spec(
+            spec,
+            TierCeiling::from_sensitivity(filters.max_sensitivity),
+            &args.vector.vec_table,
+        )
+        .map_err(map_err)?;
+        backend = Box::new(ShardedBackend::new(backend, set));
+    }
     let embedder = CliEmbedder::new(args.vector.model.clone(), args.vector.embedder);
     let opts = SearchOptions {
         query: args.query.clone(),
