@@ -31,9 +31,11 @@
 //!   * A claim posted while another worker's claim is live CONTESTS
 //!     the issue: hands-off for everyone while the contest is
 //!     younger than the lease. A contest is not permanent (#6668):
-//!     it ages out one lease window after it lands if the challenger
-//!     posts no further claim, and a release from the challenger
-//!     clears it at once. The holder may heartbeat throughout; once
+//!     it ages out once every challenger has been silent for a full
+//!     lease window (a repeat claim refreshes that challenger's
+//!     contest), and a release from a challenger clears that
+//!     challenger's contest at once. The holder may heartbeat
+//!     throughout; once
 //!     a contest has aged out, the holder's last activity governs as
 //!     usual — live if the holder kept heartbeating, stale (and
 //!     claimable) if everyone went silent.
@@ -417,7 +419,12 @@ impl ClaimState {
 fn fold_claim(events: &[Marker], now: i64, lease_seconds: i64) -> ClaimState {
     let mut holder: Option<(String, i64)> = None; // (worker, last activity)
     let mut released: Option<(String, String, i64)> = None;
-    let mut contested: Option<(String, String, i64)> = None;
+    // Active challengers, in first-claim order: (worker, that
+    // worker's LAST conflicting claim ts). A repeat claim refreshes
+    // the challenger's entry — a contest only ages out once every
+    // challenger has been silent for a full lease (Codex review on
+    // PR #6676).
+    let mut challengers: Vec<(String, i64)> = Vec::new();
     for ev in events {
         match ev.kind {
             MarkerKind::Claim => {
@@ -432,9 +439,15 @@ fn fold_claim(events: &[Marker], now: i64, lease_seconds: i64) -> ClaimState {
                             // The previous claim was already stale
                             // when this claim landed: clean supersede.
                             holder = Some((ev.worker.clone(), ev.ts));
-                            contested = None;
-                        } else if contested.is_none() {
-                            contested = Some((w.clone(), ev.worker.clone(), ev.ts));
+                            challengers.clear();
+                        } else if let Some(entry) =
+                            challengers.iter_mut().find(|(cw, _)| *cw == ev.worker)
+                        {
+                            // A repeat claim from the same challenger
+                            // refreshes its contest activity.
+                            entry.1 = ev.ts;
+                        } else {
+                            challengers.push((ev.worker.clone(), ev.ts));
                         }
                     }
                 }
@@ -450,7 +463,7 @@ fn fold_claim(events: &[Marker], now: i64, lease_seconds: i64) -> ClaimState {
                 if let Some((w, _)) = &holder {
                     if *w == ev.worker {
                         holder = None;
-                        contested = None;
+                        challengers.clear();
                         released = Some((
                             ev.worker.clone(),
                             ev.outcome.clone().unwrap_or_else(|| "done".to_string()),
@@ -458,30 +471,29 @@ fn fold_claim(events: &[Marker], now: i64, lease_seconds: i64) -> ClaimState {
                         ));
                     }
                 }
-                // A release from the challenger withdraws the
-                // contest: the holder's claim stands on its own
-                // again (#6668 Case 3). Releases from anyone else
-                // change nothing.
-                if let Some((_, challenger, _)) = &contested {
-                    if *challenger == ev.worker {
-                        contested = None;
-                    }
-                }
+                // A release from a challenger withdraws only that
+                // challenger's contest (#6668 Case 3; Codex review
+                // on PR #6676): other challengers' contests stand.
+                // Releases from anyone else change nothing.
+                challengers.retain(|(cw, _)| *cw != ev.worker);
             }
         }
     }
-    if let Some((holder_w, challenger, ts)) = contested {
-        // A contest older than the lease has aged out: the
-        // challenger has posted no claim for a full lease window,
-        // so the contest no longer bricks the issue (#6668). Fall
-        // through and let the holder's last activity govern — Live
-        // if the holder kept heartbeating, Stale (claimable) if
-        // everyone went silent.
-        if holder.is_some() && now - ts <= lease_seconds {
+    // A contest stands while at least one challenger has claimed
+    // within the lease window. Once every challenger has been
+    // silent for a full lease the contest has aged out and no
+    // longer bricks the issue (#6668): fall through and let the
+    // holder's last activity govern — Live if the holder kept
+    // heartbeating, Stale (claimable) if everyone went silent.
+    if let Some((worker, _)) = &holder {
+        if let Some((challenger, ts)) = challengers
+            .iter()
+            .find(|(_, cts)| now - cts <= lease_seconds)
+        {
             return ClaimState::Contested {
-                holder: holder_w,
-                challenger,
-                ts,
+                holder: worker.clone(),
+                challenger: challenger.clone(),
+                ts: *ts,
             };
         }
     }
@@ -1348,6 +1360,40 @@ mod tests {
             other => panic!("expected live a after challenger release, got {other:?}"),
         }
         assert!(fold_claim(&events, T0 + 100 * LEASE, LEASE).claimable());
+    }
+
+    #[test]
+    fn fold_contest_repeat_claim_refreshes_and_multi_challenger() {
+        // Codex review on PR #6676, finding 1: a repeat claim from
+        // the same challenger refreshes its contest activity, so
+        // the contest does NOT age out one lease after the FIRST
+        // conflicting claim while the challenger is still claiming.
+        let events = vec![
+            ev(MarkerKind::Claim, "a", T0),
+            ev(MarkerKind::Claim, "b", T0 + 60),
+            ev(MarkerKind::Claim, "b", T0 + LEASE - 100),
+        ];
+        match fold_claim(&events, T0 + 60 + LEASE + 1, LEASE) {
+            ClaimState::Contested { challenger, .. } => assert_eq!(challenger, "b"),
+            other => panic!("expected contested b after repeat claim, got {other:?}"),
+        }
+        // Finding 2: with two challengers, one withdrawing clears
+        // only its own contest — the other challenger's stands.
+        let mut multi = vec![
+            ev(MarkerKind::Claim, "a", T0),
+            ev(MarkerKind::Claim, "b", T0 + 60),
+            ev(MarkerKind::Claim, "c", T0 + 90),
+        ];
+        multi.push(rel("b", "free", T0 + 120));
+        match fold_claim(&multi, T0 + 240, LEASE) {
+            ClaimState::Contested {
+                holder, challenger, ..
+            } => {
+                assert_eq!(holder, "a");
+                assert_eq!(challenger, "c");
+            }
+            other => panic!("expected contested by c after b withdrew, got {other:?}"),
+        }
     }
 
     #[test]
