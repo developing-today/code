@@ -68,7 +68,7 @@ pub(crate) fn hex_decode_32(encoded: &str) -> Option<[u8; 32]> {
 
 pub(crate) fn sanitize_display_name(name: &str) -> String {
     name.chars()
-        .filter(|ch| !ch.is_control())
+        .filter(|ch| !ch.is_control() && !crate::petname::is_format_char(*ch))
         .take(48)
         .collect::<String>()
         .trim()
@@ -77,8 +77,32 @@ pub(crate) fn sanitize_display_name(name: &str) -> String {
 
 pub(crate) fn sanitize_chat(text: &str) -> String {
     text.chars()
-        .filter(|ch| !ch.is_control() || *ch == '\n' || *ch == '\t')
+        .filter(|ch| {
+            (!ch.is_control() || *ch == '\n' || *ch == '\t')
+                && (!crate::petname::is_format_char(*ch) || matches!(*ch, '\u{200c}' | '\u{200d}'))
+        })
         .collect::<String>()
         .trim()
         .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sanitize_chat, sanitize_display_name};
+
+    #[test]
+    fn display_names_strip_format_chars_and_control_characters() {
+        assert_eq!(sanitize_display_name("Al\u{202e}ice\u{200b}"), "Alice");
+        assert_eq!(sanitize_display_name("a\u{200c}\u{200d}b"), "ab");
+        assert_eq!(sanitize_display_name("\u{200b}\u{202e} \t"), "");
+        assert_eq!(sanitize_display_name("a\u{0007}b"), "ab");
+    }
+
+    #[test]
+    fn chat_strips_bidi_format_chars_but_preserves_joiners_and_line_controls() {
+        assert_eq!(sanitize_chat("a\u{2066}b\u{202e}c\u{2069}"), "abc");
+        assert_eq!(sanitize_chat("👩\u{200d}💻"), "👩\u{200d}💻");
+        assert_eq!(sanitize_chat("ک\u{200c}ی"), "ک\u{200c}ی");
+        assert_eq!(sanitize_chat("a\n\tb\u{0007}c"), "a\n\tbc");
+    }
 }
