@@ -123,7 +123,10 @@ pub enum TransferError {
 /// The ledger operations the conversion executor needs.
 pub trait LedgerBackend {
     fn create_accounts(&mut self, accounts: &[Account]) -> Vec<Result<(), AccountError>>;
-    /// Submit a batch. Contiguous runs ending at a transfer with
+    /// Submit a batch and return exactly one result per input transfer,
+    /// in the same order. Callers rely on this cardinality to associate
+    /// each result with its leg and must reject a mismatched result count.
+    /// Contiguous runs ending at a transfer with
     /// `linked == false` form linked chains and post atomically.
     ///
     /// A batch whose final chain is unterminated — its last transfer

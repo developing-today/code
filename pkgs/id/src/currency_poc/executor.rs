@@ -313,6 +313,18 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
             .put(record)
             .context("intent state persist (Submitted) failed")?;
         let results = self.backend.create_transfers(&record.legs);
+        // One result per leg (#4669): a backend that returns a short
+        // vector must not read as success — `zip` would silently drop
+        // the legs without results and the record would be persisted
+        // Posted with legs missing from the ledger.
+        if results.len() != record.legs.len() {
+            bail!(
+                "conversion {} backend returned {} transfer results for {} legs; refusing to mark Posted",
+                record.conversion_id,
+                results.len(),
+                record.legs.len()
+            );
+        }
         for (leg, result) in record.legs.iter().zip(results.iter()) {
             match result {
                 Ok(()) | Err(TransferError::Exists) => {}

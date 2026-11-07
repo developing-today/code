@@ -9,6 +9,8 @@
 //! cluster lives in `super::harness` and has its own ignored smoke
 //! test.
 
+use std::collections::VecDeque;
+
 use super::executor::{ConversionExecutor, ConversionRequest, RateQuote};
 use super::intent::{FileIntentStore, InMemoryIntentStore, IntentRecord, IntentState, IntentStore};
 use super::ledger::{
@@ -108,6 +110,55 @@ fn executor() -> TestExecutor {
     ConversionExecutor::new(funded_ledger(), InMemoryIntentStore::new())
 }
 
+/// Backend double for violating the one-result-per-transfer contract.
+/// `Some(n)` returns only `n` successes without posting anything;
+/// `None` delegates to the real in-memory backend.
+struct ShortResultBackend {
+    inner: InMemoryLedger,
+    result_counts: VecDeque<Option<usize>>,
+}
+
+impl ShortResultBackend {
+    fn new(inner: InMemoryLedger, result_counts: impl IntoIterator<Item = Option<usize>>) -> Self {
+        Self {
+            inner,
+            result_counts: result_counts.into_iter().collect(),
+        }
+    }
+}
+
+impl LedgerBackend for ShortResultBackend {
+    fn create_accounts(
+        &mut self,
+        accounts: &[Account],
+    ) -> Vec<Result<(), super::ledger::AccountError>> {
+        self.inner.create_accounts(accounts)
+    }
+
+    fn create_transfers(&mut self, batch: &[Transfer]) -> Vec<Result<(), TransferError>> {
+        match self.result_counts.pop_front() {
+            Some(Some(count)) => vec![Ok(()); count.min(batch.len())],
+            Some(None) | None => self.inner.create_transfers(batch),
+        }
+    }
+
+    fn lookup_transfer(&self, id: u128) -> Option<Transfer> {
+        self.inner.lookup_transfer(id)
+    }
+
+    fn lookup_account(&self, id: AccountId) -> Option<Account> {
+        self.inner.lookup_account(id)
+    }
+
+    fn account_balance(&self, id: AccountId) -> Option<super::ledger::AccountBalance> {
+        self.inner.account_balance(id)
+    }
+
+    fn transfers_with_user_data_128(&self, value: u128) -> Vec<Transfer> {
+        self.inner.transfers_with_user_data_128(value)
+    }
+}
+
 #[test]
 fn posted_conversion_legs_findable_by_user_data_128() {
     let mut executor = executor();
@@ -198,6 +249,32 @@ fn atomic_failure_moves_nothing() {
     );
     // The record stays Submitted (unresolved) for the recovery scanner.
     assert_eq!(record.state, IntentState::Submitted);
+}
+
+#[test]
+fn submit_rejects_empty_and_partial_transfer_result_vectors() {
+    for returned_results in [0, 1] {
+        let backend = ShortResultBackend::new(funded_ledger(), [Some(returned_results)]);
+        let mut executor = ConversionExecutor::new(backend, InMemoryIntentStore::new());
+        let mut record = executor.prepare(&request()).expect("intent prepared");
+
+        let error = executor
+            .submit(&mut record)
+            .expect_err("a short result vector must not be treated as success");
+        assert!(error.to_string().contains("returned"));
+        assert!(error.to_string().contains("3 legs"));
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("{returned_results} transfer results"))
+        );
+        assert_eq!(record.state, IntentState::Submitted);
+        assert_eq!(
+            executor.store.get(777).unwrap().unwrap().state,
+            IntentState::Submitted,
+            "the write-ahead record stays unresolved"
+        );
+    }
 }
 
 #[test]
@@ -812,6 +889,53 @@ fn recovery_scan_continues_after_a_rejected_resubmission() {
     assert!(outcomes.contains(&(777, ReconcileOutcome::ResubmissionRejected)));
     assert!(outcomes.contains(&(888, ReconcileOutcome::Resubmitted)));
     assert_eq!(executor.backend.transfers_with_user_data_128(888).len(), 3);
+}
+
+#[test]
+fn recovery_rejects_empty_and_partial_resubmit_vectors_and_continues() {
+    for returned_results in [0, 1] {
+        let mut preparer = executor();
+        preparer.prepare(&request()).expect("first intent prepared");
+        let mut later_request = request();
+        later_request.conversion_id = 888;
+        later_request.transfer_ids = vec![604, 605, 606];
+        later_request.amount_in = 100;
+        preparer
+            .prepare(&later_request)
+            .expect("later intent prepared");
+        let mut store = preparer.store;
+
+        let mut backend = ShortResultBackend::new(funded_ledger(), [Some(returned_results), None]);
+        let outcomes = reconcile(&mut backend, &mut store, RecoveryPolicy::Resubmit)
+            .expect("a short result must not abort the scan");
+
+        // The scan order is not part of the contract: exactly one
+        // record sees the short vector and is rejected, while the
+        // other resubmits through the real backend and posts.
+        assert_eq!(outcomes.len(), 2);
+        let rejected = outcomes
+            .iter()
+            .find(|(_, outcome)| *outcome == ReconcileOutcome::ResubmissionRejected)
+            .expect("one record rejected on the short result vector")
+            .0;
+        let resubmitted = outcomes
+            .iter()
+            .find(|(_, outcome)| *outcome == ReconcileOutcome::Resubmitted)
+            .expect("the scan continues to the later record")
+            .0;
+        assert_ne!(rejected, resubmitted);
+        assert_eq!(
+            store.get(rejected).unwrap().unwrap().state,
+            IntentState::Recorded,
+            "the record with a short result vector stays unresolved"
+        );
+        assert_eq!(
+            store.get(resubmitted).unwrap().unwrap().state,
+            IntentState::Posted
+        );
+        assert!(backend.transfers_with_user_data_128(rejected).is_empty());
+        assert_eq!(backend.transfers_with_user_data_128(resubmitted).len(), 3);
+    }
 }
 
 /// A bare `Recorded` intent with the given legs, bypassing the
