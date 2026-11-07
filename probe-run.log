@@ -1,0 +1,12 @@
+=== RUN   TestProbeInvalidNumericParams
+    probe_laneA_test.go:37: log limit valid control -> 200 body="{\"records\":[]}\n"
+    probe_laneA_test.go:37: log limit banana -> 200 body="{\"records\":[]}\n"
+    probe_laneA_test.go:37: log limit fractional -> 200 body="{\"records\":[]}\n"
+    probe_laneA_test.go:37: log limit scientific -> 200 body="{\"records\":[]}\n"
+    probe_laneA_test.go:37: log since banana (contrast) -> 400 body="{\"error\":\"cannot read \\\"banana\\\" as a duration (15m, 2h) or a time (RFC3339)\"}\n"
+    probe_laneA_test.go:37: stats top valid control -> 200 body="{\"dimension\":\"calls\",\"rows\":[]}\n"
+    probe_laneA_test.go:37: stats top banana -> 200 body="{\"dimension\":\"calls\",\"rows\":[]}\n"
+    probe_laneA_test.go:37: stats top fractional -> 200 body="{\"dimension\":\"calls\",\"rows\":[]}\n"
+--- PASS: TestProbeInvalidNumericParams (0.10s)
+PASS
+ok  	github.com/developing-today/code/pkgs/mcpx/internal/daemon	0.173s
