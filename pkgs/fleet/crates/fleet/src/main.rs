@@ -57,7 +57,7 @@ const EXIT_UNAVAILABLE: i32 = 69;
 /// The capabilities this artifact was compiled with (its Cargo feature
 /// set). `proxy-connect` is unconditional: it is in every variant (§2).
 fn compiled_capabilities() -> CapabilitySet {
-    let mut caps = capability_set(&[Capability::ProxyConnect]);
+    let mut caps = capability_set(&[Capability::ProxyConnect, Capability::ProxyRawSplice]);
     if cfg!(feature = "proxy-serve") {
         caps.insert(Capability::ProxyServe);
     }
@@ -421,8 +421,9 @@ fn required_capability(d: &Domain, args: &[String]) -> Result<Capability, i32> {
             match sub {
                 Some("serve") => Ok(Capability::ProxyServe),
                 Some("connect") | Some("init") | Some("ssh") => Ok(Capability::ProxyConnect),
+                Some("splice") => Ok(Capability::ProxyRawSplice),
                 _ => Err(usage_error(
-                    "'fleet proxy' needs a command: serve, connect, init, or ssh",
+                    "'fleet proxy' needs a command: serve, connect, init, ssh, or splice",
                 )),
             }
         }
@@ -654,6 +655,14 @@ is sent only by the CONNECT relay.
 
 The inner SSH destination is fixed; do not pass an SSH `--` separator.";
 
+const PROXY_SPLICE_USAGE: &str = "\
+Usage: fleet proxy splice
+
+Listen on 127.0.0.1:21118 and relay each accepted TCP stream through
+the fleet broker to the laptop's RustDesk direct-access service.
+
+Takes no arguments.";
+
 /// What the arguments after `fleet proxy serve` ask for. The serve
 /// leaf takes no arguments at all (`fleet_proxy::serve::run` is
 /// config-only), so anything trailing is either a help request or a
@@ -737,6 +746,24 @@ fn run_proxy(surface: &Surface, args: &[String]) -> i32 {
         }
         Some("init") => run_init_call(surface, &args[1..]),
         Some("ssh") => run_proxy_ssh(&args[1..], config),
+        Some("splice") => {
+            if args[1..].iter().any(|a| is_help_flag(a)) {
+                println!("{PROXY_SPLICE_USAGE}");
+                return EXIT_OK;
+            }
+            if let Some(arg) = args.get(1) {
+                return usage_error(&format!(
+                    "'fleet proxy splice' takes no arguments, got {arg:?}\n\n{PROXY_SPLICE_USAGE}"
+                ));
+            }
+            match fleet_proxy::raw_splice::run(config, &client, &capabilities) {
+                Ok(code) => code,
+                Err(e) => {
+                    eprintln!("fleet: {e}");
+                    e.exit_code()
+                }
+            }
+        }
         _ => unreachable!("required_capability rejects other proxy commands first"),
     }
 }
