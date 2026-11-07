@@ -814,16 +814,12 @@ impl WorldClient {
     /// [`WorldClient::parse_caps_ceiling_reply`]) so the validation can
     /// be unit-tested without a live host sending frames no real host
     /// sends.
-    fn parse_caps_reply(
-        reply: &serde_json::Value,
-        refusal: &str,
-    ) -> Result<serde_json::Value> {
+    fn parse_caps_reply(reply: &serde_json::Value, refusal: &str) -> Result<serde_json::Value> {
         if reply["type"] != "caps" {
             bail!("{}", reply["message"].as_str().unwrap_or(refusal));
         }
-        let _: crate::world_caps::CapsReport =
-            serde_json::from_value(reply["report"].clone())
-                .context("host sent a malformed capability report")?;
+        let _: crate::world_caps::CapsReport = serde_json::from_value(reply["report"].clone())
+            .context("host sent a malformed capability report")?;
         Ok(reply["report"].clone())
     }
 
@@ -897,9 +893,8 @@ impl WorldClient {
                     .unwrap_or("host refused the capability ceiling change")
             );
         }
-        let report: crate::world_caps::CapsReport =
-            serde_json::from_value(reply["report"].clone())
-                .context("host sent a malformed capability report")?;
+        let report: crate::world_caps::CapsReport = serde_json::from_value(reply["report"].clone())
+            .context("host sent a malformed capability report")?;
         let mut validated = reply.clone();
         validated["report"] =
             serde_json::to_value(report).context("re-encode the capability report")?;
@@ -1239,6 +1234,25 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_worlds_reply(&reply, refuse_message)
+    }
+
+    /// Parse a `worlds` reply frame into `(default, [(name, open,
+    /// presence)])`.
+    ///
+    /// Factored out of [`WorldClient::read_worlds_reply`] so the reply
+    /// validation can be unit-tested without a live host. Every field
+    /// of every entry is required in its wire shape (the host's
+    /// `WorldInfo` always serializes `name`, `open`, and `presence`):
+    /// a malformed entry fails the whole listing with an error naming
+    /// the entry and field — a listing is complete or it errors
+    /// (issue #6621, design #6669 rule 4). Silently dropping the
+    /// entry, or defaulting a mistyped `presence` to 0, would present
+    /// a partial listing as ground truth.
+    fn parse_worlds_reply(
+        reply: &serde_json::Value,
+        refuse_message: &str,
+    ) -> Result<(String, Vec<(String, bool, usize)>)> {
         if reply["type"] != "worlds" {
             bail!("{}", reply["message"].as_str().unwrap_or(refuse_message));
         }
@@ -1251,18 +1265,23 @@ impl WorldClient {
             .as_str()
             .context("worlds reply had no default world")?
             .to_owned();
-        let worlds = reply["worlds"]
+        let entries = reply["worlds"]
             .as_array()
-            .context("worlds reply had no list")?
-            .iter()
-            .filter_map(|w| {
-                Some((
-                    w["name"].as_str()?.to_owned(),
-                    w["open"].as_bool()?,
-                    w["presence"].as_u64().unwrap_or(0) as usize,
-                ))
-            })
-            .collect();
+            .context("worlds reply had no list")?;
+        let mut worlds = Vec::with_capacity(entries.len());
+        for (index, entry) in entries.iter().enumerate() {
+            let name = entry["name"]
+                .as_str()
+                .with_context(|| format!("worlds reply entry {index} had no name"))?
+                .to_owned();
+            let open = entry["open"]
+                .as_bool()
+                .with_context(|| format!("worlds reply entry {index} ({name}) had no open flag"))?;
+            let presence = entry["presence"].as_u64().with_context(|| {
+                format!("worlds reply entry {index} ({name}) had no presence count")
+            })? as usize;
+            worlds.push((name, open, presence));
+        }
         Ok((default, worlds))
     }
 
@@ -1778,7 +1797,13 @@ impl WorldClient {
             .and_then(|count| usize::try_from(count).ok())
             .filter(|count| *count <= crate::world::MAX_ADMIN_HISTORY_EVENTS)
             .context("history reply has an invalid event count")?;
-        Ok((world_id, module_hash, current_sequence, complete, event_count))
+        Ok((
+            world_id,
+            module_hash,
+            current_sequence,
+            complete,
+            event_count,
+        ))
     }
 
     /// Export the retained journal-order event window and its records as an
@@ -2725,7 +2750,13 @@ mod tests {
             "type": "error",
             "message": "admin token refused",
         }));
-        assert!(refused.err().unwrap().to_string().contains("admin token refused"));
+        assert!(
+            refused
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("admin token refused")
+        );
     }
 
     #[test]
@@ -3909,5 +3940,80 @@ mod tests {
                     .contains("malformed module_hash")
             );
         }
+    }
+
+    #[test]
+    fn worlds_reply_rejects_malformed_entries() {
+        // Issue #6621 (design #6669 rule 4): a listing is complete or
+        // it errors. A malformed entry must fail the parse with an
+        // error naming the entry/field — never a silent drop, and a
+        // mistyped `presence` never reads as 0. Oracle: the parser's
+        // own top level, which already refuses a non-list `worlds`
+        // and a missing/mistyped `default` (#6647).
+        let parse = |reply: serde_json::Value| {
+            WorldClient::parse_worlds_reply(&reply, "host refused to list worlds")
+        };
+        let entry = |name: &str, open: bool, presence: u64| serde_json::json!({"name": name, "open": open, "presence": presence});
+
+        // Well-formed replies return exactly the host's entries.
+        let (default, worlds) = parse(serde_json::json!({
+            "type": "worlds",
+            "default": "lobby",
+            "worlds": [entry("lobby", true, 3), entry("arena", false, 0)],
+        }))
+        .unwrap();
+        assert_eq!(default, "lobby");
+        assert_eq!(
+            worlds,
+            vec![
+                ("lobby".to_string(), true, 3),
+                ("arena".to_string(), false, 0)
+            ]
+        );
+
+        // One malformed entry among valid ones fails the whole parse,
+        // with the entry index and field in the error.
+        for (bad, field) in [
+            (serde_json::json!("not-an-object"), "name"),
+            (
+                serde_json::json!({"name": 123, "open": true, "presence": 0}),
+                "name",
+            ),
+            (
+                serde_json::json!({"name": "ghost", "open": "yes", "presence": 0}),
+                "open",
+            ),
+            (
+                serde_json::json!({"name": "ghost", "open": true, "presence": "many"}),
+                "presence",
+            ),
+            (
+                serde_json::json!({"name": "ghost", "open": true}),
+                "presence",
+            ),
+        ] {
+            let result = parse(serde_json::json!({
+                "type": "worlds",
+                "default": "lobby",
+                "worlds": [entry("lobby", true, 3), bad],
+            }));
+            assert!(
+                result.is_err(),
+                "malformed entry must error, got {result:?}"
+            );
+            let err = result.err().unwrap().to_string();
+            assert!(err.contains("entry 1"), "error must name the entry: {err}");
+            assert!(err.contains(field), "error must name the field: {err}");
+        }
+
+        // The refusal path and the top-level checks are unchanged.
+        let result = parse(serde_json::json!({"type": "error", "message": "admin denied"}));
+        assert_eq!(result.err().unwrap().to_string(), "admin denied");
+        let result = parse(serde_json::json!({
+            "type": "worlds", "default": "lobby", "worlds": {"name": "x"}
+        }));
+        assert!(result.err().unwrap().to_string().contains("no list"));
+        let result = parse(serde_json::json!({"type": "worlds", "worlds": []}));
+        assert!(result.err().unwrap().to_string().contains("no default"));
     }
 }
