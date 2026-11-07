@@ -166,7 +166,22 @@ fn parse_ts(s: &str) -> Option<i64> {
     let year: i64 = dp.next()?.parse().ok()?;
     let month: u32 = dp.next()?.parse().ok()?;
     let day: u32 = dp.next()?.parse().ok()?;
-    if dp.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    // The day must exist in the given month and year (#6667):
+    // days_from_civil silently normalizes impossible dates
+    // (2026-02-31 -> 2026-03-03), which would shift a marker's
+    // authoritative ts — and with it all lease math — by days.
+    // Oracle: the Gregorian calendar (month lengths; February has
+    // 29 days only in leap years: divisible by 4, except centuries
+    // not divisible by 400).
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if dp.next().is_some() || day < 1 || day > days_in_month {
         return None;
     }
     let (time, offset_s) = if let Some(t) = rest.strip_suffix('Z') {
@@ -1172,6 +1187,33 @@ mod tests {
     }
 
     #[test]
+    fn parse_ts_rejects_impossible_dates() {
+        // #6667: days that do not exist in their month/year must be
+        // rejected, not normalized into the next month. Oracle: the
+        // Gregorian calendar, as in the ts_round_trip controls below.
+        for s in [
+            "2026-02-31T00:00:00Z", // February never has 31 days
+            "2026-02-30T00:00:00Z",
+            "2026-02-29T00:00:00Z", // 2026 is not a leap year
+            "2100-02-29T00:00:00Z", // century not divisible by 400
+            "2026-04-31T00:00:00Z", // April has 30 days
+            "2026-06-31T00:00:00Z",
+            "2026-09-31T00:00:00Z",
+            "2026-11-31T00:00:00Z",
+            "2026-01-00T00:00:00Z", // day 0 exists in no month
+            "2026-01-32T00:00:00Z",
+        ] {
+            assert_eq!(parse_ts(s), None, "{s} must not parse");
+        }
+        // Controls: real month-end and leap dates still parse.
+        assert_eq!(parse_ts("2024-02-29T00:00:00Z"), Some(1_709_164_800));
+        assert_eq!(parse_ts("2000-02-29T00:00:00Z"), Some(951_782_400));
+        assert_eq!(parse_ts("2026-02-28T00:00:00Z"), Some(1_772_236_800));
+        assert_eq!(parse_ts("2026-04-30T00:00:00Z"), Some(1_777_507_200));
+        assert_eq!(parse_ts("2026-01-31T00:00:00Z"), Some(1_769_817_600));
+    }
+
+    #[test]
     fn marker_round_trip() {
         for (kind, outcome) in [
             (MarkerKind::Claim, None),
@@ -1441,6 +1483,33 @@ mod tests {
                 prop_assert!(workers.contains(&h));
                 prop_assert!(events.iter().any(|e| e.kind == MarkerKind::Claim && e.worker == h));
             }
+        }
+
+        /// #6667 calendar invariant: parse_ts accepts a (year, month,
+        /// day) triple iff that day actually exists. Oracle: the
+        /// inverse pair days_from_civil/civil_from_days \u2014 a triple
+        /// is a real date iff the round trip returns it unchanged
+        /// (normalization moves impossible dates into the next
+        /// month, so their round trip differs).
+        #[test]
+        fn parse_ts_accepts_exactly_real_dates(
+            year in 1600i64..2400,
+            month in 1u32..=12,
+            day in 1u32..=31,
+        ) {
+            let s = format!("{year:04}-{month:02}-{day:02}T00:00:00Z");
+            let real = civil_from_days(days_from_civil(year, month, day)) == (year, month, day);
+            prop_assert_eq!(parse_ts(&s).is_some(), real, "{}", s);
+            if real {
+                prop_assert_eq!(parse_ts(&s), Some(days_from_civil(year, month, day) * 86_400));
+            }
+        }
+
+        /// Round-trip property over arbitrary epochs (#6667
+        /// acceptance: parse_ts(format_ts(e)) == Some(e)).
+        #[test]
+        fn ts_round_trip_any_epoch(epoch in -31_622_400i64..4_102_444_800) {
+            prop_assert_eq!(parse_ts(&format_ts(epoch)), Some(epoch));
         }
     }
 }
