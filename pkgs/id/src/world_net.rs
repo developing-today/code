@@ -1028,7 +1028,13 @@ impl WorldClient {
         match reply["type"].as_str() {
             Some("world_state") => {
                 let seed = match reply.get("seed") {
-                    None => None,
+                    // Absent, or null: the host serializes a hidden seed
+                    // as null (`ServerFrame::WorldState.seed` is an
+                    // `Option<u64>` with no skip-serializing, and both
+                    // host reply paths set it to
+                    // `admin_ok.then_some(seed)`), so null is the
+                    // legitimate capability-only shape (#240).
+                    None | Some(serde_json::Value::Null) => None,
                     Some(value) => Some(value.as_u64().context("host sent a malformed seed")?),
                 };
                 Ok((
@@ -2758,8 +2764,10 @@ mod tests {
     fn world_state_reply_requires_a_u64_seed_when_present() {
         // Issue #6626: a present-but-mistyped `seed` must error, not
         // silently read as the capability-only `None` (which the
-        // manifest-capture consumer then bakes in as seed 0). Only a
-        // genuinely absent seed is `None` (#240 seed-hiding). Driven
+        // manifest-capture consumer then bakes in as seed 0). Only an
+        // absent seed is `None` outright; a null seed is also `None`,
+        // because that is how the host serializes a hidden seed
+        // (`ServerFrame::WorldState.seed`, #240 seed-hiding). Driven
         // through the factored reply parser manifest_state() uses.
         let parse = WorldClient::parse_world_state_reply;
 
@@ -2776,6 +2784,13 @@ mod tests {
         .unwrap();
         assert_eq!(seed, None);
         assert!(schedules.is_empty());
+        // The host's actual capability-only shape: `"seed": null`.
+        let (seed, schedules) = parse(&serde_json::json!({
+            "type": "world_state", "seed": null, "schedules": {"b": 2},
+        }))
+        .unwrap();
+        assert_eq!(seed, None);
+        assert_eq!(schedules.get("b"), Some(&2));
 
         // Every mistyped shape errors and names the malformed seed.
         for bad in [
@@ -2785,7 +2800,6 @@ mod tests {
             serde_json::json!({}),
             serde_json::json!([]),
             serde_json::json!(true),
-            serde_json::Value::Null,
         ] {
             let err = parse(&serde_json::json!({
                 "type": "world_state", "seed": bad, "schedules": {},
