@@ -200,6 +200,25 @@ impl WorldService {
             outbox: None,
             profile_operation: Arc::new(Mutex::new(())),
             next_session_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            replica_admission: None,
+        }
+    }
+
+    /// Attach the verified Policy B lease gate to a replica service.
+    #[must_use]
+    pub fn with_replica_admission(
+        mut self,
+        admission: crate::world::ReplicaAdmission,
+    ) -> Self {
+        self.replica_admission = Some(admission);
+        self
+    }
+
+    /// Check the replica's writer-signed lease for a newly opened session.
+    pub(crate) fn check_new_replica_session(&self) -> anyhow::Result<()> {
+        match &self.replica_admission {
+            Some(admission) => admission.check_new_session(),
+            None => Ok(()),
         }
     }
 
@@ -1010,6 +1029,15 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
             return;
         }
     };
+    if let Err(error) = lease.service().check_new_replica_session() {
+        let _ = send_error(
+            lease.service().frame_meter(),
+            io,
+            &format!("replica admission denied: {error}"),
+        )
+        .await;
+        return;
+    }
     if admin.is_some_and(|token| lease.service().authorize_admin(Some(token)).is_ok()) {
         io.mark_authorized();
     }

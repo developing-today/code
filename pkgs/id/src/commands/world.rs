@@ -226,6 +226,120 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             endpoint.close().await;
             result
         }
+        WorldCommand::Follow(args) => {
+            let crate::cli::WorldFollowArgs {
+                source,
+                world,
+                dir,
+                addrs,
+                no_relay,
+                once,
+            } = args;
+            if !is_node_id(&source) {
+                bail!("`{source}` is not a node ID (expected 64 hex characters)");
+            }
+            let source_id: EndpointId = source.parse().context("parse pinned source node ID")?;
+            let endpoint = client_endpoint(&addrs, no_relay).await?;
+            let result =
+                crate::world::follow_replica(&endpoint, source_id, &addrs, &world, &dir, once)
+                    .await;
+            endpoint.close().await;
+            result
+        }
+        WorldCommand::ReplicaStatus(args) => {
+            let crate::cli::WorldReplicaStatusArgs { source, world, dir } = args;
+            if !is_node_id(&source) {
+                bail!("`{source}` is not a node ID (expected 64 hex characters)");
+            }
+            let source_id: EndpointId = source.parse().context("parse pinned source node ID")?;
+            let source_bytes = *source_id.as_bytes();
+            let status = crate::world::ReplicaStatus::read(&dir, source_bytes, &world)?;
+            let dir_for_receiver = crate::world::active_replica_dir(&dir)?;
+            let world_for_receiver = world.clone();
+            let receiver = tokio::task::spawn_blocking(move || {
+                crate::world::DurableReceiver::open(
+                    &dir_for_receiver,
+                    &world_for_receiver,
+                    source_bytes,
+                )
+            })
+            .await
+            .context("open replica status verification task")??;
+            anyhow::ensure!(
+                receiver.committed_cursor() == Some(status.cursor),
+                "replica status does not match the last verified journal cursor"
+            );
+            println!(
+                "pinned_source={} world={} verified_cursor={}:{} staleness={}s",
+                crate::world::hex_encode(&source_bytes),
+                world,
+                status.cursor.ordinal,
+                crate::world::hex_encode(&status.cursor.digest),
+                status.staleness_secs(),
+            );
+            Ok(())
+        }
+        WorldCommand::Serve(args) => {
+            let crate::cli::WorldServeArgs {
+                source,
+                world,
+                dir,
+                no_relay,
+            } = args;
+            if !is_node_id(&source) {
+                bail!("`{source}` is not a node ID (expected 64 hex characters)");
+            }
+            let source_id: EndpointId = source.parse().context("parse pinned source node ID")?;
+            let source_bytes = *source_id.as_bytes();
+            let (service, report, replica_cursor) = crate::world_store::open_replica_for_serving(
+                &dir,
+                &world,
+                source_bytes,
+                crate::world::WorldLimits::default(),
+                crate::world_limits::RuntimeLimits::default(),
+                |handle| crate::world_session::WorldService::new(handle, None),
+            )
+            .await
+            .context("open authenticated replica for serving")?;
+            let status = crate::world::ReplicaStatus::read(&dir, source_bytes, &world)?;
+            let active_dir = crate::world::active_replica_dir(&dir)?;
+            let check_dir = active_dir.clone();
+            let check_world = world.clone();
+            let receiver = tokio::task::spawn_blocking(move || {
+                crate::world::DurableReceiver::open(&check_dir, &check_world, source_bytes)
+            })
+            .await
+            .context("verify serving replica cursor task")??;
+            anyhow::ensure!(
+                receiver.committed_cursor() == Some(status.cursor),
+                "replica status does not match the authenticated serving cursor"
+            );
+            let endpoint = client_endpoint(&[], no_relay).await?;
+            let node = endpoint.id();
+            let hub = crate::world_hub::WorldHub::from(service);
+            let router = iroh::protocol::Router::builder(endpoint.clone())
+                .accept(
+                    crate::world_net::WORLD_ALPN,
+                    crate::world_net::WorldProtocol::new(hub),
+                )
+                .spawn();
+            eprintln!(
+                "replica serving node={node} pinned_source={} world={} verified_cursor={}:{} staleness={}s restored_sequence={}",
+                crate::world::hex_encode(&source_bytes),
+                world,
+                status.cursor.ordinal,
+                crate::world::hex_encode(&status.cursor.digest),
+                status.staleness_secs(),
+                report.sequence,
+            );
+            let result = tokio::signal::ctrl_c()
+                .await
+                .context("wait for replica serve shutdown signal");
+            router.shutdown().await?;
+            endpoint.close().await;
+            let _ = replica_cursor;
+            result
+        }
         WorldCommand::Compile(args) => {
             let crate::cli::WorldCompileArgs {
                 node,

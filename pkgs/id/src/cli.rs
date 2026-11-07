@@ -1872,6 +1872,59 @@ pub struct WorldDownloadArgs {
     pub no_relay: bool,
 }
 
+/// The arguments of `id world follow`, kept in a separate args struct so
+/// Clap's generated parser remains within the stack budget (#4751).
+#[derive(Args, Debug)]
+pub struct WorldFollowArgs {
+    /// Pinned writer node ID (64 hex characters).
+    pub source: String,
+    /// World on the writer to follow.
+    #[arg(long, env = "ID_WORLD")]
+    pub world: String,
+    /// Durable replica directory.
+    #[arg(long, value_name = "PATH")]
+    pub dir: PathBuf,
+    /// Direct socket address of the writer (repeatable); skips discovery.
+    #[arg(long = "addr")]
+    pub addrs: Vec<SocketAddr>,
+    /// Disable relay servers (direct connection only).
+    #[arg(long)]
+    pub no_relay: bool,
+    /// Stop after the first complete signed snapshot or batch commits.
+    #[arg(long)]
+    pub once: bool,
+}
+
+/// The arguments of `id world replica-status`.
+#[derive(Args, Debug)]
+pub struct WorldReplicaStatusArgs {
+    /// Pinned writer node ID (64 hex characters).
+    pub source: String,
+    /// Replicated world identifier.
+    #[arg(long, env = "ID_WORLD")]
+    pub world: String,
+    /// Durable replica directory.
+    #[arg(long, value_name = "PATH")]
+    pub dir: PathBuf,
+}
+
+/// The arguments of `id world serve`: expose only the current authenticated
+/// replica generation over the existing spectator protocol.
+#[derive(Args, Debug)]
+pub struct WorldServeArgs {
+    /// Pinned writer node ID (64 hex characters).
+    pub source: String,
+    /// Replicated world identifier.
+    #[arg(long, env = "ID_WORLD")]
+    pub world: String,
+    /// Durable replica directory populated by `id world follow`.
+    #[arg(long, value_name = "PATH")]
+    pub dir: PathBuf,
+    /// Disable relay servers and accept direct connections only.
+    #[arg(long)]
+    pub no_relay: bool,
+}
+
 /// The arguments of `id world join`, extracted into
 /// their own `Args` struct for the same reason as `ServeArgs`
 /// (#4751): keeping clap's derive-generated construction in its
@@ -2435,6 +2488,12 @@ pub enum WorldCommand {
     /// Download the module backing the world's current state, verified
     /// by hash. Prints the module hash; writes the bytes to `--output`.
     Download(WorldDownloadArgs),
+    /// Follow a pinned writer's signed journal into a durable replica directory.
+    Follow(WorldFollowArgs),
+    /// Show the pinned source, verified cursor and staleness of a replica.
+    ReplicaStatus(WorldReplicaStatusArgs),
+    /// Serve a verified replica; new sessions require its current writer lease.
+    Serve(WorldServeArgs),
     /// Join a world and chat. Stdin lines are chat; `/input <hex>` sends
     /// opaque input. Server frames print as JSON lines.
     Join(WorldJoinArgs),

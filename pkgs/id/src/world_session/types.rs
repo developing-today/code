@@ -557,6 +557,9 @@ pub struct WorldService {
     pub(crate) metrics: WorldMetrics,
     /// Monotonic, process-local IDs for live connections to this service.
     pub(crate) next_session_id: Arc<AtomicU64>,
+    /// Present only for a strict journal replica. Checked once when each new
+    /// session is resolved; existing sessions remain usable through expiry.
+    pub(crate) replica_admission: Option<crate::world::ReplicaAdmission>,
 }
 
 impl std::fmt::Debug for WorldService {

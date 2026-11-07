@@ -47,6 +47,7 @@ impl WorldCommand {
             Self::Metrics { .. } => "Metrics",
             Self::AdminEventHistory { .. } => "AdminEventHistory",
             Self::ReplicationFeed { .. } => "ReplicationFeed",
+            Self::ReplicaFacts { .. } => "ReplicaFacts",
             Self::Shutdown { .. } => "Shutdown",
         }
     }
@@ -256,6 +257,11 @@ pub(crate) enum WorldCommand {
                 broadcast::Receiver<ReplicationUpdate>,
             )>,
         >,
+    },
+    /// Export authorization facts required by replicas for journal subjects.
+    ReplicaFacts {
+        subjects: BTreeSet<String>,
+        reply: oneshot::Sender<Result<Vec<crate::directory::DirectoryEntry>>>,
     },
     Shutdown {
         reply: oneshot::Sender<()>,
@@ -1766,6 +1772,10 @@ impl WorldActor {
                         .and_then(|journal| journal.replication_snapshot_source())
                         .map(|snapshot_source| (world_id, snapshot_source, updates))
                 };
+                let _ = reply.send(result);
+            }
+            WorldCommand::ReplicaFacts { subjects, reply } => {
+                let result = self.core.directory().replica_facts_for(&subjects);
                 let _ = reply.send(result);
             }
             WorldCommand::CapsInfo { reply } => {

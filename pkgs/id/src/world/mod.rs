@@ -37,6 +37,10 @@ mod core;
 mod handle;
 mod metrics;
 mod replica;
+mod replica_follow;
+mod replica_status;
+mod replica_control;
+mod replica_state;
 mod replication;
 mod replication_receiver;
 pub mod signed;
@@ -55,6 +59,18 @@ pub use replica::{
     ReplicaCursor, ReplicaRestore, parse_replica_journal, restore_replica_entries,
     restore_replica_entries_with_runtime, restore_replica_journal,
     restore_replica_journal_with_runtime, serve_replica,
+};
+pub use replica_follow::follow_replica;
+pub use replica_status::{REPLICA_STATUS_FILE, ReplicaStatus};
+pub use replica_control::{
+    AdmissionLeaseBody, MAX_ADMISSION_LEASE_SECS, MAX_REPLICA_REFRESH_BYTES, ReplicaAdmission,
+    REPLICA_REFRESH_CHUNK_BYTES, ReplicaRefreshChunkBody, ReplicaRefreshHeaderBody,
+    ReplicaRefreshPayload, ReplicaRefreshRecord, SignedAdmissionLease,
+    SignedReplicaRefreshChunk, SignedReplicaRefreshHeader, now_unix_secs, sign_refresh_transfer,
+};
+pub(crate) use replica_state::{
+    active_replica_dir, create_working_generation, install_refresh, publish_generation,
+    verify_refresh,
 };
 pub use replication::{
     AcceptedFrame, MAX_REPLICATION_FRAME_BYTES, MAX_REPLICATION_PAYLOAD_BYTES, REPLICATION_DOMAIN,

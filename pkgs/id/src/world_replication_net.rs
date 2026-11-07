@@ -46,6 +46,13 @@ pub struct ReplicationRequest {
     pub world: Option<String>,
     /// Fresh, client-generated nonce bound into every signed frame.
     pub session_nonce: [u8; 16],
+    /// When present, request a signed auxiliary refresh bound to this exact
+    /// verified journal cursor instead of opening the long-lived feed.
+    #[serde(default)]
+    pub refresh_cursor: Option<crate::world::ReplicationCursor>,
+    /// Journal account subjects whose authorization facts the replica needs.
+    #[serde(default)]
+    pub subjects: Vec<String>,
 }
 
 /// Serves durable journal snapshots and tails for worlds in a hub.
@@ -117,9 +124,28 @@ async fn serve_stream(
         .lease(request.world.as_deref(), None)
         .await
         .map_err(|error| anyhow::anyhow!("open replication world: {}", error.message()))?;
+    let source = *signing_key.verifying_key().as_bytes();
+    if let Some(cursor) = request.refresh_cursor {
+        ensure!(request.subjects.len() <= 4096, "too many directory subjects in refresh request");
+        ensure!(
+            request.subjects.iter().all(|subject| subject.len() <= 512),
+            "directory subject exceeds refresh bound"
+        );
+        let subjects = request.subjects.into_iter().collect();
+        return serve_refresh(
+            &mut send,
+            lease.service(),
+            signing_key,
+            source,
+            request.session_nonce,
+            cursor,
+            subjects,
+        )
+        .await;
+    }
+    ensure!(request.subjects.is_empty(), "subjects supplied without a refresh cursor");
     let (world_id, snapshot_source, mut updates) =
         lease.service().world().replication_feed().await?;
-    let source = *signing_key.verifying_key().as_bytes();
     // Only the pinned file handle and captured length crossed the actor
     // boundary. Read the initial image on the blocking pool, then confine its
     // owned bytes to this transfer so they are dropped before following
@@ -192,6 +218,62 @@ async fn serve_stream(
             }
         }
     }
+}
+
+async fn serve_refresh(
+    send: &mut SendStream,
+    service: &crate::world_session::WorldService,
+    signing_key: &SigningKey,
+    source: [u8; 32],
+    nonce: [u8; 16],
+    expected_cursor: crate::world::ReplicationCursor,
+    subjects: std::collections::BTreeSet<String>,
+) -> Result<()> {
+    let (world_id, snapshot_source, _updates) = service.world().replication_feed().await?;
+    let snapshot = tokio::task::spawn_blocking(move || snapshot_source.read())
+        .await
+        .context("replica refresh journal snapshot task")??;
+    let cursor = crate::world::chain_payload(
+        crate::world::chain_base_cursor(&world_id, &source, snapshot.header_version),
+        &snapshot.bytes,
+    )?;
+    ensure!(cursor == expected_cursor, "replica refresh cursor is no longer current");
+
+    let directory_facts = service.world().replica_facts_for(subjects).await?;
+    let module_hash = service.module_hash.read().await.clone();
+    let module_bytes = match (&module_hash, &service.module_dir) {
+        (Some(hash), Some(modules)) => Some(modules.load(hash)?),
+        (Some(_), None) => anyhow::bail!("active world module has no module store"),
+        (None, _) => None,
+    };
+    let admission_lease = crate::world::SignedAdmissionLease::issue(
+        &world_id,
+        source,
+        cursor,
+        crate::world::now_unix_secs()?,
+        signing_key,
+    )?;
+    let payload = crate::world::ReplicaRefreshPayload {
+        module_hash,
+        module_bytes,
+        directory_facts,
+        admission_lease,
+    };
+    let payload_bytes = postcard::to_allocvec(&payload).context("encode replica refresh")?;
+    let (header, chunks) = crate::world::sign_refresh_transfer(
+        &world_id,
+        source,
+        nonce,
+        cursor,
+        &payload_bytes,
+        signing_key,
+    )?;
+    write_frame(send, &postcard::to_allocvec(&header).context("encode refresh header")?).await?;
+    for chunk in chunks {
+        write_frame(send, &postcard::to_allocvec(&chunk).context("encode refresh chunk")?).await?;
+    }
+    send.finish().context("finish replica refresh response")?;
+    Ok(())
 }
 
 fn ensure_nonce(nonce: &[u8; 16]) -> Result<()> {

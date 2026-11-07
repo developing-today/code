@@ -298,6 +298,29 @@ impl DurableReceiver {
         self.staged = None;
     }
 
+    /// Move future commits to a copied, unpublished state generation while
+    /// preserving the live stream verifier's cursor and nonce state.
+    ///
+    /// The caller must copy the last published generation to `dir` first.
+    /// The copied journal is re-verified before this receiver changes its
+    /// storage target. A failed move leaves the receiver and its last
+    /// committed journal untouched.
+    pub fn relocate(&mut self, dir: &Path) -> Result<(), ReceiverError> {
+        if self.staged.is_some() {
+            return Err(ReceiverError::NoSession);
+        }
+        let copied = Self::open(dir, &self.world_id, self.pinned_source)?;
+        if copied.committed_cursor != self.committed_cursor
+            || copied.header_version != self.header_version
+        {
+            return Err(ReceiverError::CorruptReplica(
+                "relocated state does not match the live verified cursor".to_owned(),
+            ));
+        }
+        self.dir = dir.to_path_buf();
+        Ok(())
+    }
+
     /// Verify one encoded frame and stage or commit its payload.
     ///
     /// # Errors

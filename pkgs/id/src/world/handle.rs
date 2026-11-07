@@ -199,6 +199,22 @@ impl WorldHandle {
             .context("world actor dropped replication feed response")?
     }
 
+    /// Export the current authorization facts required to reproduce replica
+    /// access for the supplied journal subjects.
+    pub(crate) async fn replica_facts_for(
+        &self,
+        subjects: std::collections::BTreeSet<String>,
+    ) -> Result<Vec<crate::directory::DirectoryEntry>> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ReplicaFacts { subjects, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped replica facts response")?
+    }
+
     /// The latest `(sequence, records)` published by the world program.
     /// Callers must authorize the reader first (see [`Self::participant_id`]).
     #[must_use]

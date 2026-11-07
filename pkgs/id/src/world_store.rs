@@ -511,9 +511,10 @@ pub async fn open_replica(
     runtime: crate::world_limits::RuntimeLimits,
     service: impl FnOnce(WorldHandle) -> WorldService,
 ) -> Result<(WorldService, OpenReport, crate::world::ReplicaCursor)> {
-    use crate::world::{DurableReceiver, restore_replica_entries_with_runtime};
+    use crate::world::{DurableReceiver, active_replica_dir, restore_replica_entries_with_runtime};
 
-    let dir_owned = dir.to_owned();
+    let state_dir = active_replica_dir(dir)?;
+    let dir_owned = state_dir.clone();
     let id = world_id.to_owned();
     let id_for_receiver = id.clone();
     let (journal_bytes, committed) = tokio::task::spawn_blocking(move || {
@@ -531,7 +532,7 @@ pub async fn open_replica(
     let entries = crate::world::parse_replica_journal(&journal_bytes, world_id)?;
     let journal_entries = entries.len();
     let subjects = replica_subjects(&entries);
-    let directory_path = dir.join("directory.jsonl");
+    let directory_path = state_dir.join("directory.jsonl");
     let restored = tokio::task::spawn_blocking({
         let directory_path = directory_path.clone();
         move || {
@@ -552,7 +553,7 @@ pub async fn open_replica(
     // local directory session can run in replica mode. Keep the default
     // in-memory model instead of opening a mutating sidecar.
     let cursor = restored.cursor;
-    let modules = ModuleDir::new(dir.join("modules"));
+    let modules = ModuleDir::new(state_dir.join("modules"));
     let mut report = OpenReport {
         sequence: cursor.sequence,
         journal_entries,
@@ -604,10 +605,56 @@ pub async fn open_replica(
     Ok((service, report, cursor))
 }
 
+/// Open a verified replica for network serving. Unlike the offline inspection
+/// path, this requires a source-signed refresh record and an unexpired
+/// Policy B lease bound to the exact committed journal cursor.
+pub async fn open_replica_for_serving(
+    dir: &Path,
+    world_id: &str,
+    pinned_source: [u8; 32],
+    limits: WorldLimits,
+    runtime: crate::world_limits::RuntimeLimits,
+    service: impl FnOnce(WorldHandle) -> WorldService,
+) -> Result<(WorldService, OpenReport, crate::world::ReplicaCursor)> {
+    use crate::world::{DurableReceiver, ReplicaAdmission, active_replica_dir, verify_refresh};
+
+    let state_dir = active_replica_dir(dir)?;
+    let dir_for_receiver = state_dir.clone();
+    let world_for_receiver = world_id.to_owned();
+    let receiver = tokio::task::spawn_blocking(move || {
+        DurableReceiver::open(&dir_for_receiver, &world_for_receiver, pinned_source)
+    })
+    .await
+    .context("verify replica admission cursor task")??;
+    let cursor = receiver
+        .committed_cursor()
+        .context("replica has no committed cursor")?;
+    let refresh = verify_refresh(&state_dir, pinned_source, world_id, cursor, true)?;
+
+    let (service, report, replica_cursor) =
+        open_replica(dir, world_id, pinned_source, limits, runtime, service).await?;
+    ensure!(
+        report.module_hash == refresh.module_hash,
+        "signed refresh module hash does not match the journal's active module"
+    );
+    ensure!(
+        report.program_error.is_none(),
+        "replica module is unavailable: {}",
+        report.program_error.as_deref().unwrap_or("unknown module restore error")
+    );
+    let service = service.with_replica_admission(ReplicaAdmission::new(
+        pinned_source,
+        world_id.to_owned(),
+        cursor,
+        refresh.admission_lease,
+    ));
+    Ok((service, report, replica_cursor))
+}
+
 /// Every account appearing in a replica journal's capability chains: the
 /// subjects the replica's directory facts must cover for
 /// [`WorldCore::effective_scopes`](crate::world::WorldCore::effective_scopes).
-fn replica_subjects(entries: &[JournalEntry]) -> std::collections::BTreeSet<String> {
+pub(crate) fn replica_subjects(entries: &[JournalEntry]) -> std::collections::BTreeSet<String> {
     entries
         .iter()
         .filter_map(|entry| match entry {
