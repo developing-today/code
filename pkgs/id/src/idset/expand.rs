@@ -16,10 +16,17 @@
 //!   level (spec §D3/D4), because `members_at_position` returns key members
 //!   only.
 //! - A member's role is their access at that frontier, mapped the way the
-//!   groups fold maps it (`access_role` in `crate::groups::fold`): the
-//!   membership layer records Admin as Manage, so a `role_min` of
-//!   [`Role::Admin`] is answered by Manage-or-above at the frontier — the
-//!   same answer every other frontier-aware caller gets.
+//!   groups fold maps it (`access_role` in `crate::groups::fold`). The
+//!   membership layer records Admin as Manage — Admin is a policy role the
+//!   groups fold tracks apart from access — so it cannot distinguish an
+//!   admin from any other manager at a frontier. A `role_min` of
+//!   [`Role::Admin`] is therefore evaluated at [`Role::Manage`], the
+//!   highest role the layer can answer for: admins are admitted (they are
+//!   managers in the layer), and so are non-admin managers. Answering
+//!   Admin exactly needs the fold's admin-at-frontier state plumbed into
+//!   expansion, which no caller can supply yet; the limitation is pinned
+//!   by a named test beside the spec tests (`test_expand_role_min_admin_*`
+//!   in `tests/writer_set_expansion.rs`).
 //! - Resolved groups are cached under the §4.5 key `(group, frontier, R)`,
 //!   where `R` is the caller's resolution-state identity
 //!   ([`SetVersion::resolution`]). Within one resolution state an expansion
@@ -43,7 +50,7 @@ use crate::groups::Role;
 use crate::membership::{Membership, MembershipError};
 use crate::waiting::AuthorKey;
 
-use super::view::{GroupMembers, ProjectionError, expand_set};
+use super::view::{expand_set, GroupMembers, ProjectionError};
 use super::{Entry, WriterSet};
 
 /// One set version, pinned for expansion: the set object, the causal
@@ -148,10 +155,30 @@ impl<'a> Expander<'a> {
         version: &SetVersion<'_>,
         retro: bool,
     ) -> Result<BTreeSet<AuthorKey>, ExpandError> {
-        let set = version.set;
-        if admits_public(set, retro) {
+        // A public exclusion admits nobody (spec §D6, the emergency
+        // stop): the expansion is the finite empty set even when the
+        // admissions are public, so the public-admission refusal below
+        // must not fire for that configuration.
+        let public_excluded = version
+            .set
+            .excludes
+            .0
+            .iter()
+            .any(|entry| matches!(entry, Entry::Public { .. }));
+        if admits_public(version.set, retro) && !public_excluded {
             return Err(ExpandError::PublicEntry);
         }
+        // The membership layer's highest distinguishable role is Manage
+        // (Admin is recorded as Manage there), so an Admin threshold is
+        // evaluated at Manage for the layer-backed snapshot; see the
+        // module doc for the limitation and its follow-up.
+        let effective;
+        let set = if has_admin_threshold(version.set) {
+            effective = clamp_admin_thresholds(version.set);
+            &effective
+        } else {
+            version.set
+        };
         let mut groups = Vec::new();
         for group in referenced_groups(set) {
             let members = self.group_members(group, version)?;
@@ -162,13 +189,7 @@ impl<'a> Expander<'a> {
                 members,
             ));
         }
-        let expanded = expand_set(
-            set,
-            &version.frontier,
-            &version.resolution,
-            &groups,
-            retro,
-        )?;
+        let expanded = expand_set(set, &version.frontier, &version.resolution, &groups, retro)?;
         // `ExpandedWriters` keeps exclusions apart from the admitted set —
         // only `contains` applies them — so the materialized expansion is
         // the admitted authors that survive exclusion (spec §D6), not the
@@ -210,9 +231,9 @@ impl<'a> Expander<'a> {
 /// `retro`) include a public entry. Exclusions never admit, so a public
 /// exclusion does not count.
 fn admits_public(set: &WriterSet, retro: bool) -> bool {
-    set.entries.iter().any(|entry| {
-        matches!(entry, Entry::Public { .. }) && (!retro || entry.include_history())
-    })
+    set.entries
+        .iter()
+        .any(|entry| matches!(entry, Entry::Public { .. }) && (!retro || entry.include_history()))
 }
 
 /// Every group named by an admission or an exclusion entry, in first-use
@@ -242,5 +263,52 @@ fn access_role(access: &Access<()>) -> Role {
         Role::Read
     } else {
         Role::Pull
+    }
+}
+
+/// Whether any group entry in the set (admissions or exclusions) carries
+/// an Admin `role_min` threshold.
+fn has_admin_threshold(set: &WriterSet) -> bool {
+    set.entries
+        .iter()
+        .chain(set.excludes.0.iter())
+        .any(|entry| {
+            matches!(
+                entry,
+                Entry::Group {
+                    role_min: Role::Admin,
+                    ..
+                }
+            )
+        })
+}
+
+/// A copy of `set` with every Admin `role_min` lowered to Manage, the
+/// highest role the membership layer distinguishes at a frontier.
+fn clamp_admin_thresholds(set: &WriterSet) -> WriterSet {
+    fn clamp(entries: &[Entry]) -> Vec<Entry> {
+        entries
+            .iter()
+            .map(|entry| match entry {
+                Entry::Group {
+                    id,
+                    role_min: Role::Admin,
+                    include_history,
+                } => Entry::Group {
+                    id: *id,
+                    role_min: Role::Manage,
+                    include_history: *include_history,
+                },
+                other => other.clone(),
+            })
+            .collect()
+    }
+    WriterSet {
+        set_id: set.set_id,
+        version: set.version,
+        owner: set.owner,
+        scope: set.scope.clone(),
+        entries: clamp(&set.entries),
+        excludes: super::Excludes(clamp(&set.excludes.0)),
     }
 }

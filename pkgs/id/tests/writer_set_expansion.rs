@@ -17,8 +17,8 @@ use id::groups::Role;
 use id::idset::expand::{ExpandError, Expander, SetVersion};
 use id::idset::{Entry, Excludes, WriterSet};
 use id::membership::{AuthId, CausalEvent, Membership, Outcome, Role as MembershipRole};
-use p2panda_auth::Access;
 use p2panda_auth::group::{GroupAction, GroupMember};
+use p2panda_auth::Access;
 use p2panda_core::Hash;
 
 fn author(n: u8) -> [u8; 32] {
@@ -227,12 +227,10 @@ fn test_expand_unchanged_by_later_group_membership_event() {
         },
     );
     // The live roster really did change.
-    assert!(
-        membership
-            .members(group())
-            .iter()
-            .any(|(id, _)| *id == AuthId::Key(author(DAVE)))
-    );
+    assert!(membership
+        .members(group())
+        .iter()
+        .any(|(id, _)| *id == AuthId::Key(author(DAVE))));
 
     let after = expand(&mut membership, &set, vec![group()]);
     assert_eq!(before, after);
@@ -443,4 +441,211 @@ fn test_expand_public_entry_refused_not_materialized() {
     let mut expander = Expander::new(&mut membership);
     assert_eq!(expander.expand(&version), Err(ExpandError::PublicEntry));
     assert_eq!(expander.expand_retro(&version).unwrap(), BTreeSet::new());
+}
+
+/// Codex P2 on PR #6787: a public exclusion is the §D6 emergency stop —
+/// the expansion is the finite empty set, so `expand` must return it
+/// instead of refusing the public admission it nullifies.
+#[test]
+fn test_expand_public_exclusion_admits_nobody_not_refused() {
+    let mut membership = base_layer();
+    let stopped = set(
+        vec![Entry::Public {
+            include_history: true,
+        }],
+        vec![Entry::Public {
+            include_history: false,
+        }],
+    );
+    let version = SetVersion {
+        set: &stopped,
+        frontier: vec![group()],
+        resolution: hash(80),
+    };
+    let mut expander = Expander::new(&mut membership);
+    assert_eq!(expander.expand(&version).unwrap(), BTreeSet::new());
+    assert_eq!(expander.expand_retro(&version).unwrap(), BTreeSet::new());
+
+    // The stop nullifies named admissions too.
+    let named = set(
+        vec![key_entry(ERIN, false)],
+        vec![Entry::Public {
+            include_history: false,
+        }],
+    );
+    assert_eq!(
+        expand(&mut membership, &named, vec![group()]),
+        BTreeSet::new()
+    );
+}
+
+/// Codex P2 on PR #6787: the membership layer records Admin as Manage, so
+/// an Admin `role_min` is answered at Manage, the layer's top role —
+/// admins (managers in the layer) are admitted rather than nobody, and
+/// the approximation is pinned here until admin-at-frontier plumbing
+/// exists. Bob (Read) and Carol (Write) stay below the threshold.
+#[test]
+fn test_expand_role_min_admin_is_answered_at_manage_the_layers_top_role() {
+    let mut membership = base_layer();
+    let set = set(vec![group_entry(Role::Admin, false)], vec![]);
+    let expanded = expand(&mut membership, &set, vec![group()]);
+    assert!(expanded.contains(&author(ALICE)));
+    assert!(!expanded.contains(&author(BOB)));
+    assert!(!expanded.contains(&author(CAROL)));
+}
+
+// ---------------------------------------------------------------------------
+// Property tests (Codex P1 on PR #6787; testing doctrine: invariants with
+// a generator, not examples only). The oracle for each property is stated
+// in its comment: permutation/subset properties are self-oracles over the
+// generated input, and the pinning property's oracle is the expansion
+// evaluated before the generated history is appended — any later event
+// that moved the pinned answer is a counterexample.
+// ---------------------------------------------------------------------------
+
+use proptest::prelude::*;
+
+fn role_strategy() -> impl Strategy<Value = Role> {
+    prop_oneof![
+        Just(Role::Pull),
+        Just(Role::Read),
+        Just(Role::Write),
+        Just(Role::Manage),
+        Just(Role::Admin),
+    ]
+}
+
+fn entry_strategy() -> impl Strategy<Value = Entry> {
+    prop_oneof![
+        (2..8u8, any::<bool>()).prop_map(|(n, include_history)| Entry::Key {
+            author: author(n),
+            include_history,
+        }),
+        (role_strategy(), any::<bool>()).prop_map(|(role_min, include_history)| Entry::Group {
+            id: group(),
+            role_min,
+            include_history,
+        }),
+        any::<bool>().prop_map(|include_history| Entry::Public { include_history }),
+    ]
+}
+
+fn permute(entries: &[Entry], seed: usize) -> Vec<Entry> {
+    let mut out = entries.to_vec();
+    out.reverse();
+    let len = out.len();
+    if len > 0 {
+        out.rotate_left(seed % len);
+    }
+    out
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    /// Invariant: expansion is a function of the entry *set*, not its
+    /// spelling — any permutation of entries and excludes expands the
+    /// same (including refusing the same).
+    #[test]
+    fn prop_expand_is_order_independent(
+        entries in proptest::collection::vec(entry_strategy(), 0..6),
+        excludes in proptest::collection::vec(entry_strategy(), 0..3),
+        seed in 0..720usize,
+    ) {
+        let mut membership = base_layer();
+        let plain = set(entries.clone(), excludes.clone());
+        let shuffled = set(permute(&entries, seed), permute(&excludes, seed + 1));
+        let a = Expander::new(&mut membership).expand(&SetVersion {
+            set: &plain,
+            frontier: vec![group()],
+            resolution: hash(80),
+        });
+        let b = Expander::new(&mut membership).expand(&SetVersion {
+            set: &shuffled,
+            frontier: vec![group()],
+            resolution: hash(80),
+        });
+        prop_assert_eq!(a, b);
+    }
+
+    /// Invariant: `expand_retro(v) ⊆ expand(v)` for every generated set.
+    /// When `expand` succeeds the retro expansion must also succeed (it
+    /// narrows the same admissions) and be a subset.
+    #[test]
+    fn prop_expand_retro_is_subset_of_expand(
+        entries in proptest::collection::vec(entry_strategy(), 0..6),
+        excludes in proptest::collection::vec(entry_strategy(), 0..3),
+    ) {
+        let mut membership = base_layer();
+        let set = set(entries, excludes);
+        let version = SetVersion {
+            set: &set,
+            frontier: vec![group()],
+            resolution: hash(80),
+        };
+        let mut expander = Expander::new(&mut membership);
+        if let Ok(full) = expander.expand(&version) {
+            let retro = expander.expand_retro(&version).unwrap();
+            prop_assert!(retro.is_subset(&full), "retro {retro:?} not a subset of {full:?}");
+        }
+    }
+
+    /// Invariant: a set version's expansion is pinned to its frontier —
+    /// appending a generated membership history (adds, removes, promotes
+    /// by the group's manager, chained after the pin) never changes it.
+    /// Oracle: the expansion evaluated before the history is appended.
+    #[test]
+    fn prop_expand_is_frontier_pinned_under_generated_history(
+        entries in proptest::collection::vec(entry_strategy(), 0..5),
+        ops in proptest::collection::vec((2..8u8, 0..3u8, 0..4u8), 0..8),
+    ) {
+        let mut membership = base_layer();
+        let set = set(entries, vec![]);
+        let version = SetVersion {
+            set: &set,
+            frontier: vec![group()],
+            resolution: hash(80),
+        };
+        let before = Expander::new(&mut membership).expand(&version);
+
+        let mut after = vec![group()];
+        for (i, (who, kind, level)) in ops.iter().enumerate() {
+            let access = match level {
+                0 => Access::pull(),
+                1 => Access::read(),
+                2 => Access::write(),
+                _ => Access::manage(),
+            };
+            let action = match kind {
+                0 => GroupAction::Add {
+                    member: individual(author(*who)),
+                    access,
+                },
+                1 => GroupAction::Remove {
+                    member: individual(author(*who)),
+                },
+                _ => GroupAction::Promote {
+                    member: individual(author(*who)),
+                    access,
+                },
+            };
+            let id = hash(20 + i as u8);
+            // Generated ops may be refused by the gate (removing a
+            // non-member, re-adding a member); a refusal is a no-op in
+            // the layer, which is fine — the pin must hold either way.
+            let _ = membership.receive(CausalEvent {
+                id,
+                after: after.clone(),
+                role: MembershipRole::Auth {
+                    author: author(ALICE),
+                    group: Some(group()),
+                    action,
+                },
+            });
+            after = vec![id];
+        }
+
+        let after_expand = Expander::new(&mut membership).expand(&version);
+        prop_assert_eq!(before, after_expand);
+    }
 }
