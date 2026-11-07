@@ -20,9 +20,27 @@ import { liveSource } from "../src/sources/live.ts";
 import { classEnabled, getAlertsStore, inQuietHours } from "../src/alerts.ts";
 import { sendPush, type PushTarget } from "../src/push.ts";
 
+const USAGE = "usage: generate-digest.ts [--kind daily|weekly] [--no-deliver] [--strict-deliver]";
+
+// A flag's value is the next argv token — but never another flag and
+// never nothing (#3723, the post-alert.ts guard). The unconditional
+// read used to make a present-but-valueless --kind indistinguishable
+// from an absent one: the ?? default in main() then silently archived
+// a daily digest for an invocation that named --kind and supplied no
+// value, and a flag token in the value slot was blamed as a bad kind
+// (#6926).
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : undefined;
+  if (i < 0) return undefined;
+  const value = process.argv[i + 1];
+  if (value === undefined || value === "" || value.startsWith("--")) {
+    console.error(
+      `generate-digest: --${name} requires a value that is not a flag (got ${value === undefined ? "no value" : JSON.stringify(value)})`,
+    );
+    console.error(USAGE);
+    process.exit(2);
+  }
+  return value;
 }
 
 async function main(): Promise<void> {
