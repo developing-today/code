@@ -1091,3 +1091,30 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod probe_heredoc_delim {
+    use super::*;
+    fn delim(line: &str) -> String {
+        match preprocess_repl_line(line).unwrap() {
+            ReplInput::NeedMore { delimiter, .. } => delimiter,
+            other => panic!("expected NeedMore, got {other:?}"),
+        }
+    }
+    #[test]
+    fn probe_control_plain_delimiter() {
+        assert_eq!(delim("put - name <<EOF"), "EOF");
+    }
+    #[test]
+    fn probe_trailing_token_after_delimiter() {
+        assert_eq!(delim("put - name <<EOF extra"), "EOF");
+    }
+    #[test]
+    fn probe_quoted_delimiter() {
+        assert_eq!(delim("put - name <<'EOF'"), "EOF");
+    }
+    #[test]
+    fn probe_double_quoted_delimiter() {
+        assert_eq!(delim("put - name <<\"EOF\""), "EOF");
+    }
+}
