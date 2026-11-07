@@ -8,6 +8,33 @@
 //! Iroh proves *which node* connected. That is logged for operators but never
 //! grants anything: the join capability inside the session is the only
 //! authority over a world.
+//!
+//! ## The validated-reply contract (#6669)
+//!
+//! Every `WorldClient` reply extraction in this module follows one
+//! contract — a reply is not its defaults:
+//!
+//! 1. A field that constitutes the answer is required and typed.
+//!    Missing or mistyped is a malformed-reply error naming the
+//!    field ("host sent a malformed …", "host omitted …"). Success
+//!    fields are never defaulted: a default that is also a real
+//!    value is a fabricated answer.
+//! 2. Optional means absent-or-null, never mistyped: absent/`null`
+//!    => `None`, a correctly typed value => `Some`, anything else
+//!    => the rule-1 error (the `parse_module_info_reply` shape).
+//! 3. Typed payloads are decoded at extraction, not cloned:
+//!    validate-then-return (`parse_caps_reply`,
+//!    `parse_caps_ceiling_reply`, `parse_policy_reply`).
+//! 4. A list reply's entries are part of the answer: a malformed
+//!    entry fails the listing. A listing is complete or it errors.
+//! 5. Extraction lives in `WorldClient`, never in callers. Callers
+//!    consume validated answers; a caller's typed decode of a
+//!    returned value is consumption, not validation.
+//!
+//! The closing inventory that dispositioned every public
+//! `WorldClient` method against these rules is recorded on issue
+//! #6670. A lax extraction found later is filed as a follow-up
+//! issue, not patched silently and not defaulted around.
 
 use std::collections::HashMap;
 use std::sync::{
