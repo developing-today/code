@@ -1,0 +1,60 @@
+name: ready-for-agent tests
+
+# CI tier policy: see .github/ci-policy.md
+#
+# Run both shell regression suites whenever ready-for-agent changes. The
+# file-presence guard ensures a green run cannot silently skip a suite.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "pm-stack/ready-for-agent/**"
+      - ".github/workflows/ready-for-agent-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "pm-stack/ready-for-agent/**"
+      - ".github/workflows/ready-for-agent-tests.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ready-for-agent-tests-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ready-for-agent-tests:
+    name: ready-for-agent shell suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Test ready-for-agent install and config suites
+        run: |
+          suites=(
+            pm-stack/ready-for-agent/test-install.sh
+            pm-stack/ready-for-agent/test-apply-config.sh
+          )
+          missing=0
+          for suite in "${suites[@]}"; do
+            if [ ! -f "$suite" ]; then
+              echo "::error::Missing suite file $suite — the ready-for-agent suites were not run in full."
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+          failed=0
+          for suite in "${suites[@]}"; do
+            bash "$suite" || failed=1
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::At least one ready-for-agent shell suite failed (see above)."
+            exit 1
+          fi
+          echo "ready-for-agent shell suites passed."
