@@ -143,6 +143,18 @@ async function readyAgentDispatchStates(items: Map<RefKey, GhItem>) {
   );
   if (!targets.length) return [];
   const observedAt = new Date().toISOString();
+  if (cfg.source !== "live") {
+    // #4969 (Codex on PR #5283): fixtures mode must never read the live
+    // harness — deterministic fixture dispatch data, mirroring the
+    // health.ts fixtures boundary. The canned set has no picked-up
+    // work item, so every labelled fixture item is honestly
+    // "not picked up".
+    return targets.map((item) => ({
+      ref: item.ref,
+      state: RFA_NOT_PICKED_UP,
+      provenance: { source: "ready-for-agent", observedAt, repository: item.ref.split("#")[0], mode: "fixtures" },
+    }));
+  }
   try {
     const state = await fetchRfaState(cfg.readyForAgent.baseUrl);
     return targets.map((item) => {
@@ -2037,6 +2049,9 @@ async function handler(req: Request): Promise<Response> {
       };
       return html(renderItem(title, id, links, items, comments, prov(), extras));
     }
+    // #4969 (Codex on PR #5283): an unresolved /api/item/<id>.json id
+    // gets the structured JSON 404, not the HTML page response.
+    if (itemJsonMatch) return notFoundResponse(path);
     return html(
       `<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${esc(id)}</code></p>`,
       404,

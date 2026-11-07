@@ -55,9 +55,24 @@ describe("server boots from fixtures", () => {
     };
     expect(body.linkedItems.find((item) => item.ref === "developing-today/code#762")?.labels).toContain("ready-for-agent");
     expect(body.dispatchStates).toHaveLength(1);
-    expect(body.dispatchStates[0].state).toBeTruthy();
+    // Fixtures mode is deterministic and never reads the live harness:
+    // the canned dispatch-trial item has no work item, so its state is
+    // exactly "not picked up" — never an environment-dependent
+    // "unavailable".
+    expect(body.dispatchStates[0].state).toBe("not picked up");
     expect(body.dispatchStates[0].provenance.source).toBe("ready-for-agent");
     expect(body.dispatchStates[0].provenance.observedAt).toBeTruthy();
+  });
+
+  test("unknown item JSON id returns a structured JSON 404", async () => {
+    const res = await fetch(`http://127.0.0.1:${port}/api/item/${encodeURIComponent("kaneo:code/no-such-item-4969")}.json`);
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("not found");
+    const page = await fetch(`http://127.0.0.1:${port}/item/${encodeURIComponent("kaneo:code/no-such-item-4969")}`);
+    expect(page.status).toBe(404);
+    expect(page.headers.get("content-type")).toContain("text/html");
   });
 
   test("front door renders the overview, board lives at /board (#1134)", async () => {
