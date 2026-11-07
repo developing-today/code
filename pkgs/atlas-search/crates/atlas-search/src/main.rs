@@ -584,12 +584,16 @@ fn u(v: i64) -> usize {
 /// Validate one CLI count flag against the service's request
 /// contract (design section 2; `validate_request` in server.rs):
 /// `--k` at least 1, `--pool` between 1 and 400, and the
-/// zero-is-valid counts (`--expand`, `--trunc`, `--neighbors`)
-/// merely non-negative. Out-of-range values are a fatal (exit 2),
-/// never a silent clamp to 0 (#5407).
+/// zero-is-valid counts (`--expand`, `--trunc`, `--neighbors`) are
+/// non-negative; `--neighbors` is also capped at the service's limit.
+/// Out-of-range values are fatal (exit 2), never silently clamped to 0
+/// (#5407).
 fn count(flag: &str, v: i64, min: i64, max: Option<i64>) -> Result<usize, CliError> {
     if v >= min && max.is_none_or(|m| v <= m) {
         return Ok(usize::try_from(v).expect("range-checked count converts"));
+    }
+    if v < min && min == 0 {
+        return Err((2, format!("{flag} must not be negative")));
     }
     let msg = match (min, max) {
         (_, Some(m)) => format!("{flag} must be between {min} and {m} (design section 2)"),
@@ -679,7 +683,7 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
 }
 
 fn cmd_get_chunk(args: GetChunkArgs) -> Result<(), CliError> {
-    let neighbors = count("--neighbors", args.neighbors, 0, None)?;
+    let neighbors = count("--neighbors", args.neighbors, 0, Some(100))?;
     let note = via_service_note_get_chunk(&args.backend);
     // The Python's get-chunk takes no vector args: pick_backend
     // sees the defaults (getattr fallbacks in its main()).
@@ -784,7 +788,7 @@ mod tests {
         assert!(count("--pool", 0, 1, Some(400)).is_err());
         assert!(count("--pool", -5, 1, Some(400)).is_err());
         // zero-is-valid counts: 0 stays valid, negatives do not
-        for flag in ["--expand", "--trunc", "--neighbors"] {
+        for flag in ["--expand", "--trunc"] {
             assert_eq!(count(flag, 0, 0, None), Ok(0), "{flag}");
             assert_eq!(
                 count(flag, -1, 0, None).unwrap_err(),
@@ -792,5 +796,19 @@ mod tests {
                 "{flag}"
             );
         }
+        // --neighbors has a 100 upper bound (service cap)
+        assert_eq!(count("--neighbors", 0, 0, Some(100)), Ok(0));
+        assert_eq!(count("--neighbors", 100, 0, Some(100)), Ok(100));
+        assert_eq!(
+            count("--neighbors", 101, 0, Some(100)).unwrap_err(),
+            (
+                2,
+                "--neighbors must be between 0 and 100 (design section 2)".to_string()
+            )
+        );
+        assert_eq!(
+            count("--neighbors", -1, 0, Some(100)).unwrap_err(),
+            (2, "--neighbors must not be negative".to_string())
+        );
     }
 }
