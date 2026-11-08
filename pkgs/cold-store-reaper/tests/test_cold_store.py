@@ -847,6 +847,63 @@ class TestAtomicPrivateJson(ColdStoreTestBase):
         self.assertIn("credentials.json", str(ctx.exception))
 
 
+class TestWrongShapePrivateJson(ColdStoreTestBase):
+    """#6845: valid JSON of the wrong shape in credentials.json /
+    state.json raises ColdStoreError naming the file and the shape -
+    never a raw AttributeError/TypeError/ValueError, and never a
+    silently mistyped folder id used against Drive."""
+
+    def test_non_object_credentials_raise_cold_store_error(self):
+        for payload in ('[]', '[{"client_id": "x"}]', '"hello"', "123",
+                        "null", "true"):
+            self.store.credentials_path.write_text(payload)
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.load_credentials()
+            self.assertIn("credentials.json", str(ctx.exception), payload)
+
+    def test_non_string_credential_value_raises_cold_store_error(self):
+        for key in ("client_id", "client_secret", "refresh_token"):
+            creds = {
+                "client_id": "fake-client-id",
+                "client_secret": "fake-secret",
+                "refresh_token": "fake-refresh-token",
+            }
+            creds[key] = 123
+            self.store._write_private_json(self.store.credentials_path, creds)
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.load_credentials()
+            self.assertIn("credentials.json", str(ctx.exception), key)
+            self.assertIn(key, str(ctx.exception), key)
+
+    def test_non_object_state_raises_cold_store_error(self):
+        for payload in ('[]', '"hello"', "123", "null", "true"):
+            self.store.state_path.write_text(payload)
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.load_state()
+            self.assertIn("state.json", str(ctx.exception), payload)
+
+    def test_non_object_folders_raises_cold_store_error(self):
+        for payload in ('{"folders": "abc"}', '{"folders": 123}',
+                        '{"folders": ["root"]}', '{"folders": null}'):
+            self.store.state_path.write_text(payload)
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.load_state()
+            self.assertIn("state.json", str(ctx.exception), payload)
+
+    def test_non_string_folder_id_raises_cold_store_error(self):
+        self.store.state_path.write_text('{"folders": {"bundles": 123}}')
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.load_state()
+        self.assertIn("state.json", str(ctx.exception))
+
+    def test_happy_path_controls_still_pass(self):
+        self.assertEqual(
+            self.store.load_credentials()["client_id"], "fake-client-id"
+        )
+        self.store.save_state({"folders": {"a": "1"}})
+        self.assertEqual(self.store.load_state(), {"folders": {"a": "1"}})
+
+
 # ------------------------------------------------------------------ fake D1
 class FakeD1:
     """Captures D1 REST query calls; can be told to fail.
