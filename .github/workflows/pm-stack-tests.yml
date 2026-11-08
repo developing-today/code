@@ -69,7 +69,7 @@ jobs:
           bash pm-stack/scripts/deploy-install-smoke.test.sh
 
       # Python suites for #5951: pm-stack/opencode-claimant/test_poll.py
-      # (36 tests, the #3026 claimant session-cap gate) and
+      # (51 candidate/session-cap tests, including #5508 stale bindings) and
       # pm-stack/grist/test_update_choice_options.py (7 tests) were run
       # by no workflow. Both files are named explicitly and asserted to
       # exist first, so a green run cannot be a silently skipped suite;

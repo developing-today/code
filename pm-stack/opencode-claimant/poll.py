@@ -4,7 +4,7 @@
 Prints one JSON object:
   {
     "queues": {<queue>: {"claimed": n, "candidates": [...],
-               "stuck_bound": [...]}, ...},
+               "stuck_bound": [...], "stale_binding": [...]}, ...},
     "candidates": [ {id, queue, priority, worker_id, lane_id,
                      lease_until, lane, stage, session_id, issue,
                      issue_number, packet, attempts, max_attempts,
@@ -24,6 +24,12 @@ Prints one JSON object:
                                               # recovery rule ONLY -- the
                                               # claimant must still verify
                                               # zero messages before acting.
+    "stale_binding": [ {id, queue, ..., cleared_session_id, cleared_at} ... ],
+                                               # progress says a previous
+                                               # session was cleared but the
+                                               # task has no current session_id;
+                                               # not launchable until its lane
+                                               # ledger is reconciled.
     "live_root_sessions": int | null,        # all root sessions;
                                               # null = server unreadable
     "active_root_sessions": int | null,      # roots still active
@@ -104,6 +110,13 @@ def is_candidate(row):
     prog = row.get("progress") or {}
     if prog.get("lane") != "opencode" or prog.get("session_id"):
         return False
+    # A prior terminal/recovery path recorded the old session in
+    # session_cleared but the task row no longer has a current binding.
+    # Older versions cleared only progress while leaving the lane-ledger
+    # row bound, so this state is ambiguous: do not offer it for another
+    # launch. Surface it through is_stale_binding for reconciliation.
+    if is_stale_binding(row):
+        return False
     # The claiming lane must have RECORDED its yield (instruction
     # section 1b: checkpoint stage "handed_off"). Assignment alone is
     # not a handoff: lanes on pre-1b instructions assign and then work
@@ -122,6 +135,24 @@ def is_candidate(row):
     if lane_id and UUID_LANE.match(lane_id):
         return False
     return True
+
+
+def is_stale_binding(row):
+    """True when progress records a cleared session but no current binding.
+
+    The claimant cannot infer from a cleared progress.session_id whether
+    the separate lane-ledger binding was cleared too. Treat the durable
+    session_cleared marker as an ambiguous possible stale binding and
+    surface it for reconciliation rather than risk a duplicate launch.
+    """
+    prog = row.get("progress") or {}
+    cleared = prog.get("session_cleared")
+    return (
+        prog.get("lane") == "opencode"
+        and not prog.get("session_id")
+        and isinstance(cleared, dict)
+        and bool(cleared.get("session_id"))
+    )
 
 
 def parse_lease_ms(value):
@@ -385,6 +416,30 @@ def _stuck_entry(row, queue, session):
     }
 
 
+def _stale_binding_entry(row, queue):
+    prog = row.get("progress") or {}
+    cleared = prog.get("session_cleared") or {}
+    issue = prog.get("issue_number") or prog.get("issue") or ""
+    return {
+        "id": row.get("id"),
+        "queue": queue,
+        "priority": row.get("priority"),
+        "worker_id": row.get("worker_id"),
+        "lane_id": row.get("lane_id"),
+        "lease_until": row.get("lease_until"),
+        "lane": prog.get("lane"),
+        "stage": prog.get("stage"),
+        "session_id": None,
+        "cleared_session_id": cleared.get("session_id"),
+        "cleared_at": cleared.get("cleared_at"),
+        "cleared_via": cleared.get("via"),
+        "issue": issue,
+        "issue_number": prog.get("issue_number"),
+        "attempts": row.get("attempts"),
+        "max_attempts": row.get("max_attempts"),
+    }
+
+
 def get_candidates(rows):
     """Unbound opencode-lane candidates from claimed rows."""
     return [r for r in rows if is_candidate(r)]
@@ -400,6 +455,11 @@ def get_stuck_bound(rows, session_by_id, active_ids, now_ms):
         ):
             stuck.append(r)
     return stuck
+
+
+def get_stale_bindings(rows):
+    """Rows with a cleared progress session that need lane-ledger review."""
+    return [r for r in rows if is_stale_binding(r)]
 
 
 def get_active_root_session_count():
@@ -428,7 +488,7 @@ def main():
         for s in sessions:
             if isinstance(s, dict) and s.get("id"):
                 session_by_id[s["id"]] = s
-    out = {"queues": {}, "candidates": [], "stuck_bound": []}
+    out = {"queues": {}, "candidates": [], "stuck_bound": [], "stale_binding": []}
     for q in QUEUES:
         rows = fetch_claimed_rows(q)
         cands = [_candidate_entry(r, q) for r in get_candidates(rows)]
@@ -436,15 +496,21 @@ def main():
             _stuck_entry(r, q, session_by_id.get((r.get("progress") or {}).get("session_id")))
             for r in get_stuck_bound(rows, session_by_id, active_ids, now_ms)
         ]
+        stale_binding = [
+            _stale_binding_entry(r, q) for r in get_stale_bindings(rows)
+        ]
         out["queues"][q] = {
             "claimed": len(rows),
             "candidates": cands,
             "stuck_bound": stuck,
+            "stale_binding": stale_binding,
         }
         out["candidates"].extend(cands)
         out["stuck_bound"].extend(stuck)
+        out["stale_binding"].extend(stale_binding)
     out["candidates"].sort(key=lambda c: (c["priority"] is None, c["priority"] or 0))
     out["stuck_bound"].sort(key=lambda c: (c["priority"] is None, c["priority"] or 0))
+    out["stale_binding"].sort(key=lambda c: (c["priority"] is None, c["priority"] or 0))
     live, active, room = summarize_cap(sessions, active_ids, now_ms)
     out["live_root_sessions"] = live
     out["active_root_sessions"] = active
