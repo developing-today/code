@@ -321,12 +321,18 @@ mod tests {
 
     #[test]
     fn pending_friendship_renders_pending_not_dissolved() {
+        use crate::groups::{Pair, friendship_id};
+
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(crate::groups::log::FILE_NAME);
         let mut log = GroupLog::open(&path).unwrap();
+        // A friendship's create must name the pair-derived group id, or
+        // the fold refuses it (see crate::groups::tests::request).
+        let pair = Pair::of(OWNER, ANN).unwrap();
+        let friendship = friendship_id(&pair, 0);
         log.record(
             OWNER,
-            None,
+            Some(friendship),
             Body::Create(Create {
                 template: Template::Friendship,
                 policy: Policy::friendship(),
