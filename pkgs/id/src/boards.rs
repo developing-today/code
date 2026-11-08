@@ -954,22 +954,87 @@ impl BoardGraph {
             let Some(signed) = self.objects.get(&hash) else {
                 continue;
             };
-            let dependencies: Vec<&ArtifactHash> = match &signed.object {
+            // The closure follows the acceptance dependencies of every
+            // object kind -- exactly the references validate_links
+            // requires to already be present -- not just roots, themes,
+            // and fork records. A frontier-cited source object (a post,
+            // say) is scoped to the *source* board, so the seed never
+            // contains its thread, that thread's forum/rules, its parent
+            // post, or its attachments; without traversing those, the
+            // export can never be accepted by a fresh graph and
+            // replication stalls (Codex P1 on PR #4545). Moderator-gated
+            // kinds (rules, forums, moderation actions) additionally
+            // depend on the grant that gives their author authority.
+            let author = signed.artifact.author.clone();
+            let moderator_grants = |board: &ArtifactHash| -> Vec<ArtifactHash> {
+                self.objects
+                    .iter()
+                    .filter_map(|(grant_hash, grant)| match &grant.object {
+                        BoardObject::RoleAttestation(value)
+                            if &value.board == board
+                                && value.member == author
+                                && value.role == BoardRole::Moderator
+                                && value.granted =>
+                        {
+                            Some(grant_hash.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            };
+            let dependencies: Vec<ArtifactHash> = match &signed.object {
                 BoardObject::Board(body) => body
                     .forked_from
                     .iter()
                     .chain(body.theme_ref.iter())
+                    .cloned()
                     .collect(),
-                BoardObject::Theme(body) => body.forked_from.iter().collect(),
+                BoardObject::Theme(body) => body.forked_from.iter().cloned().collect(),
                 BoardObject::BoardFork(body) => body
                     .source_frontier
                     .iter()
                     .chain([&body.source_board, &body.fork_board])
+                    .cloned()
                     .collect(),
-                _ => Vec::new(),
+                BoardObject::Rules(body) => std::iter::once(body.board.clone())
+                    .chain(moderator_grants(&body.board))
+                    .collect(),
+                BoardObject::Forum(body) => std::iter::once(body.board.clone())
+                    .chain(moderator_grants(&body.board))
+                    .collect(),
+                BoardObject::Thread(body) => std::iter::once(body.board.clone())
+                    .chain(body.forum_ref.iter().cloned())
+                    .chain(body.rules_ref.iter().cloned())
+                    .collect(),
+                BoardObject::Post(body) => std::iter::once(body.board.clone())
+                    .chain(std::iter::once(body.thread.clone()))
+                    .chain(body.parent_post.iter().cloned())
+                    .chain(body.attachments.iter().cloned())
+                    .chain(body.embed_ref.iter().map(|embed| embed.object.clone()))
+                    .collect(),
+                BoardObject::Attachment(body) => vec![body.board.clone()],
+                BoardObject::Membership(body) => vec![body.board.clone()],
+                BoardObject::RoleAttestation(body) => std::iter::once(body.board.clone())
+                    .chain(body.supersedes.iter().cloned())
+                    .collect(),
+                BoardObject::ModerationAction(body) => std::iter::once(body.board.clone())
+                    .chain(std::iter::once(body.target.clone()))
+                    .chain(moderator_grants(&body.board))
+                    .collect(),
+                BoardObject::Supersede(body) => vec![
+                    body.board.clone(),
+                    body.previous.clone(),
+                    body.replacement.clone(),
+                ],
+                BoardObject::Tombstone(body) => {
+                    vec![body.board.clone(), body.target.clone()]
+                }
+                BoardObject::BoardListing(body) => std::iter::once(body.board.clone())
+                    .chain(body.supersedes.iter().cloned())
+                    .collect(),
             };
             for dependency in dependencies {
-                if self.objects.contains_key(dependency) && set.insert(dependency.clone()) {
+                if self.objects.contains_key(&dependency) && set.insert(dependency.clone()) {
                     frontier.push(dependency.clone());
                 }
             }
@@ -3262,6 +3327,144 @@ mod tests {
         assert_eq!(status.state, ReplicaState::Incomplete);
         assert!(status.missing.contains(&fork_record));
         assert!(status.present_objects < status.expected_objects);
+    }
+
+    #[test]
+    fn fork_frontier_post_pulls_its_acceptance_dependencies() {
+        // Codex P1 on PR #4545: when a fork record cites a source-board
+        // post in its frontier without also listing the post's thread,
+        // the closure must still pull the thread -- and the thread's
+        // forum and rules, and the moderator grant behind those -- or a
+        // fresh replica rejects the post, then the fork record, and
+        // replication stalls instead of completing.
+        let owner = key(7);
+        let moderator = key(11);
+        let moderator_hex = hex_encode(&moderator.verifying_key().to_bytes());
+        let forker = key(8);
+        let mut source = BoardGraph::default();
+        let root = source.insert(board(&owner)).unwrap();
+        let grant = source
+            .insert(
+                SignedBoardObject::sign(
+                    &owner,
+                    2,
+                    "",
+                    BoardObject::RoleAttestation(RoleAttestation {
+                        board: root.clone(),
+                        member: moderator_hex,
+                        role: BoardRole::Moderator,
+                        granted: true,
+                        supersedes: None,
+                    }),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let rules = source
+            .insert(
+                SignedBoardObject::sign(
+                    &moderator,
+                    1,
+                    "",
+                    BoardObject::Rules(Rules {
+                        board: root.clone(),
+                        revision: 1,
+                        text: "be kind".to_owned(),
+                    }),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let forum = source
+            .insert(
+                SignedBoardObject::sign(
+                    &moderator,
+                    2,
+                    "",
+                    BoardObject::Forum(Forum {
+                        board: root.clone(),
+                        name: "general".to_owned(),
+                    }),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let thread = source
+            .insert(
+                SignedBoardObject::sign(
+                    &owner,
+                    2,
+                    "",
+                    BoardObject::Thread(Thread {
+                        board: root.clone(),
+                        forum_ref: Some(forum.clone()),
+                        rules_ref: Some(rules.clone()),
+                        title: "cited thread".to_owned(),
+                    }),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let cited_post = source
+            .insert(post(
+                &owner,
+                root.clone(),
+                thread.clone(),
+                "cited by the fork",
+            ))
+            .unwrap();
+        let fork_root = source
+            .insert(
+                SignedBoardObject::sign(
+                    &forker,
+                    1,
+                    "",
+                    BoardObject::Board(Board {
+                        board_id: "forked-board".to_owned(),
+                        forked_from: Some(root.clone()),
+                        theme_ref: None,
+                    }),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let fork_record = source
+            .insert(
+                SignedBoardObject::sign(
+                    &forker,
+                    1,
+                    "",
+                    BoardObject::BoardFork(BoardFork {
+                        source_board: root.clone(),
+                        fork_board: fork_root.clone(),
+                        source_frontier: vec![cited_post.clone()],
+                    }),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let fork_set = source.board_object_set(&fork_root);
+        for expected in [
+            &fork_record,
+            &fork_root,
+            &root,
+            &cited_post,
+            &thread,
+            &forum,
+            &rules,
+            &grant,
+        ] {
+            assert!(fork_set.contains(expected), "missing {expected:?}");
+        }
+
+        let mut replica = BoardGraph::default();
+        let report = replica.replicate_board_from(&source, &fork_root).unwrap();
+        assert_eq!(report.status.state, ReplicaState::Complete);
+        assert_eq!(
+            replica.board_object_set(&fork_root),
+            source.board_object_set(&fork_root)
+        );
     }
 
     #[test]
