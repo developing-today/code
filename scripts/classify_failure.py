@@ -100,7 +100,7 @@ RULES: list[tuple[str, str, list[re.Pattern[str]]]] = [
         [
             re.compile(r"test timed out|panic: test timed out", re.I),
             re.compile(r"timeout of \d+ ?(ms|s|sec).*exceeded|exceeded timeout of", re.I),
-            re.compile(r"\bflaky\b|\bflake\b|intermittent(ly)? fail", re.I),
+            re.compile(r"\bflaky\b|\bflaked\b|intermittent(ly)? fail", re.I),
             re.compile(r"waiting for .* timed out", re.I),
             re.compile(r"deadline exceeded.*(test|spec|case)", re.I),
         ],

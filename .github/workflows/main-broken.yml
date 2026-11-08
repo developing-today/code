@@ -164,7 +164,7 @@ jobs:
             if [ -n "$existing" ]; then
               echo "DRY-RUN: would append a comment with run $run_url to issue #$existing and queue a fresh fix task on it via the pm-dispatch queuer."
             else
-              echo "DRY-RUN: would queue '$title' via the pm-dispatch queuer (which creates the issue) with Breakage-ID: $bid, then apply labels kind/ci, priority/critical, main-broken, queue/queued, status/needs-triage; agent-note holder: chain (filing); then jules label if <3 open main-broken issues carry it."
+              echo "DRY-RUN: would run the scout classifier first; on a fix route it would queue '$title' via the pm-dispatch queuer (which creates the issue) with Breakage-ID: $bid, on a rerun/escalate route it would file the issue directly with NO fix task queued; then apply labels kind/ci, priority/critical, main-broken, status/needs-triage (queue/queued only when a fix task was queued); agent-note holder: chain (filing); then jules label if <3 open main-broken issues carry it and the scout route is fix."
             fi
             echo "action=dry" >> "$GITHUB_OUTPUT"
             exit 0
@@ -201,69 +201,15 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Identified breakage: action=${action} existing=${existing:-none} Breakage-ID=${bid}"
 
-      # Coin labels if missing (main-broken + jules included: the
-      # plain `jules` label did not exist before this workflow). Only
-      # needed on the create path, before the label-apply step.
-      - name: Coin chain labels if missing
-        if: steps.identify.outputs.action == 'create'
-        run: |
-          set -euo pipefail
-          for spec in \
-            "kind/ci|fbca04|CI/CD pipelines, workflows, and build automation" \
-            "priority/critical|b60205|Drop everything: main broken" \
-            "main-broken|B60205|main branch full-suite (main tier) is red; remediation chain owns this" \
-            "queue/queued|7057ff|Has a queued task in the fleet agent queue" \
-            "status/needs-triage|fbca04|Not yet triaged; needs a first look" \
-            "jules|57ab5a|Hand this issue to remediation (issue-labeled job in jules.yml, via pm-dispatch)"; do
-            IFS='|' read -r lname lcolor ldesc <<<"$spec"
-            gh label create "$lname" --repo "$GH_REPO" --color "$lcolor" --description "$ldesc" 2>/dev/null || true
-          done
-
-      # Create path: the queuer creates the issue (with the
-      # queue/queued + source/dispatch labels pm-dispatch applies).
-      - name: Queue the breakage via pm-dispatch (creates the issue)
-        id: dispatch-create
-        if: steps.identify.outputs.action == 'create'
-        uses: ./.github/actions/pm-dispatch-queue
-        with:
-          title: ${{ steps.identify.outputs.title }}
-          prompt: ${{ steps.identify.outputs.prompt }}
-          issue: "true"
-
-      # The queuer only applies queue/queued + source/dispatch, so this
-      # workflow's own label set is applied here from its output.
-      - name: Apply the chain label set to the created issue
-        if: steps.identify.outputs.action == 'create'
-        env:
-          INUM: ${{ steps.dispatch-create.outputs.issue_number }}
-        run: |
-          set -euo pipefail
-          if [ -z "${INUM}" ]; then
-            echo "::error::pm-dispatch queuer returned no issue_number"; exit 1
-          fi
-          gh issue edit "$INUM" --repo "$GH_REPO" \
-            --add-label "kind/ci" --add-label "priority/critical" \
-            --add-label "main-broken" --add-label "queue/queued" \
-            --add-label "status/needs-triage"
-          echo "Filed issue #$INUM via pm-dispatch: ${{ steps.dispatch-create.outputs.issue_url }}"
-
-      - name: Record the filing holder note
-        if: steps.identify.outputs.action == 'create'
-        env:
-          INUM: ${{ steps.dispatch-create.outputs.issue_number }}
-          TS: ${{ steps.identify.outputs.ts }}
-          BID: ${{ steps.identify.outputs.bid }}
-        run: |
-          set -euo pipefail
-          gh issue comment "$INUM" --repo "$GH_REPO" \
-            --body "agent-note:v1 — holder: chain (filing), at $TS. Breakage-ID: $BID"
-
-
       # Scout leg (#2176): classify from the failing jobs' log tails
-      # and post the evidence note BEFORE any remediation spend (the
-      # jules label step and the append dispatch below both gate on
-      # the scout route). Fail-open by design: if the classifier
-      # errors, route stays empty and the chain behaves as before.
+      # BEFORE any remediation spend. This step runs ahead of the
+      # create-path dispatch on purpose (Codex finding, PR #7806):
+      # pm-dispatch always enqueues a fix task, so the create dispatch,
+      # the jules label step, and the append dispatch all gate on the
+      # scout route; non-fix routes file the issue without a fix task
+      # (see the file-issue-only step below). Fail-open by design: if
+      # the classifier errors, route stays empty and the chain behaves
+      # as before.
       - name: Scout - classify the failure from job log tails (#2176)
         id: scout
         if: steps.identify.outputs.action == 'create' || steps.identify.outputs.action == 'append' || steps.identify.outputs.action == 'dry'
@@ -290,11 +236,98 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           jq -r '.evidence[]?' scout.json > scout-evidence.txt || true
 
+      # Coin labels if missing (main-broken + jules included: the
+      # plain `jules` label did not exist before this workflow). Only
+      # needed on the create path, before the label-apply step.
+      - name: Coin chain labels if missing
+        if: steps.identify.outputs.action == 'create'
+        run: |
+          set -euo pipefail
+          for spec in \
+            "kind/ci|fbca04|CI/CD pipelines, workflows, and build automation" \
+            "priority/critical|b60205|Drop everything: main broken" \
+            "main-broken|B60205|main branch full-suite (main tier) is red; remediation chain owns this" \
+            "queue/queued|7057ff|Has a queued task in the fleet agent queue" \
+            "status/needs-triage|fbca04|Not yet triaged; needs a first look" \
+            "jules|57ab5a|Hand this issue to remediation (issue-labeled job in jules.yml, via pm-dispatch)"; do
+            IFS='|' read -r lname lcolor ldesc <<<"$spec"
+            gh label create "$lname" --repo "$GH_REPO" --color "$lcolor" --description "$ldesc" 2>/dev/null || true
+          done
+
+      # Create path: the queuer creates the issue (with the
+      # queue/queued + source/dispatch labels pm-dispatch applies).
+      - name: Queue the breakage via pm-dispatch (creates the issue)
+        id: dispatch-create
+        if: steps.identify.outputs.action == 'create' && (steps.scout.outputs.route == '' || steps.scout.outputs.route == 'fix')
+        uses: ./.github/actions/pm-dispatch-queue
+        with:
+          title: ${{ steps.identify.outputs.title }}
+          prompt: ${{ steps.identify.outputs.prompt }}
+          issue: "true"
+
+      # Create path, non-fix scout routes: file the breakage issue
+      # directly WITHOUT queueing a fix task. pm-dispatch has no
+      # issue-only mode -- its POST always enqueues a fix attempt --
+      # so a quota/secret or infra/flake breakage must not go through
+      # it before classification (Codex finding, PR #7806). The scout
+      # note/routing step below attaches the classification, the
+      # escalation, or the one automatic re-run to this issue.
+      - name: File the breakage issue only (scout-gated, no fix dispatch)
+        id: file-issue-only
+        if: steps.identify.outputs.action == 'create' && steps.scout.outputs.route != '' && steps.scout.outputs.route != 'fix'
+        env:
+          TITLE: ${{ steps.identify.outputs.title }}
+          BODY: ${{ steps.identify.outputs.body }}
+        run: |
+          set -euo pipefail
+          url=$(gh issue create --repo "$GH_REPO" --title "$TITLE" --body "$BODY")
+          inum=${url##*/}
+          {
+            echo "issue_number=$inum"
+            echo "issue_url=$url"
+          } >> "$GITHUB_OUTPUT"
+          echo "Filed issue #$inum with no fix task queued (scout route: ${{ steps.scout.outputs.route }})"
+
+      # The queuer only applies queue/queued + source/dispatch, so this
+      # workflow's own label set is applied here from its output.
+      - name: Apply the chain label set to the created issue
+        if: steps.identify.outputs.action == 'create'
+        env:
+          INUM: ${{ steps.dispatch-create.outputs.issue_number || steps.file-issue-only.outputs.issue_number }}
+          ROUTE: ${{ steps.scout.outputs.route }}
+        run: |
+          set -euo pipefail
+          if [ -z "${INUM}" ]; then
+            echo "::error::pm-dispatch queuer returned no issue_number"; exit 1
+          fi
+          gh issue edit "$INUM" --repo "$GH_REPO" \
+            --add-label "kind/ci" --add-label "priority/critical" \
+            --add-label "main-broken" \
+            --add-label "status/needs-triage"
+          # queue/queued asserts a fix task exists; only the dispatch
+          # path queued one (fix route or fail-open).
+          if [ -z "$ROUTE" ] || [ "$ROUTE" = "fix" ]; then
+            gh issue edit "$INUM" --repo "$GH_REPO" --add-label "queue/queued"
+          fi
+          echo "Filed issue #$INUM via pm-dispatch: ${{ steps.dispatch-create.outputs.issue_url }}"
+
+      - name: Record the filing holder note
+        if: steps.identify.outputs.action == 'create'
+        env:
+          INUM: ${{ steps.dispatch-create.outputs.issue_number || steps.file-issue-only.outputs.issue_number }}
+          TS: ${{ steps.identify.outputs.ts }}
+          BID: ${{ steps.identify.outputs.bid }}
+        run: |
+          set -euo pipefail
+          gh issue comment "$INUM" --repo "$GH_REPO" \
+            --body "agent-note:v1 — holder: chain (filing), at $TS. Breakage-ID: $BID"
+
+
       - name: Scout - post the classification note and route (#2176)
         if: (steps.identify.outputs.action == 'create' || steps.identify.outputs.action == 'append') && steps.scout.outputs.classification != ''
         continue-on-error: true
         env:
-          INUM: ${{ steps.dispatch-create.outputs.issue_number || steps.identify.outputs.existing_number }}
+          INUM: ${{ steps.dispatch-create.outputs.issue_number || steps.file-issue-only.outputs.issue_number || steps.identify.outputs.existing_number }}
           CLASS: ${{ steps.scout.outputs.classification }}
           ROUTE: ${{ steps.scout.outputs.route }}
           DETAIL: ${{ steps.scout.outputs.detail }}
@@ -338,8 +371,15 @@ jobs:
             gh run rerun "$RUN_ID" --repo "$GH_REPO" --failed || true
           fi
           if [ "$CLASS" = "flake-suspect" ] && [ "${strikes:-0}" -ge 2 ]; then
+            # in:title + exclude this breakage issue itself: the scout
+            # note just posted carries both "flake-fix" and the
+            # Breakage-ID in a COMMENT, and issue search covers
+            # comments -- unfiltered, the breakage issue matches its
+            # own dedupe lookup and suppresses the flake-fix filing
+            # (Codex finding, PR #7806).
             existing_fix=$(gh issue list --repo "$GH_REPO" --state open \
-              --search "flake-fix Breakage-ID: $BID" --json number --jq '.[0].number // empty')
+              --search "flake-fix in:title Breakage-ID: $BID" --json number \
+              --jq '.[].number' | grep -vx "${INUM:-0}" | head -n1 || true)
             if [ -z "$existing_fix" ]; then
               gh issue create --repo "$GH_REPO" \
                 --title "flake-fix: $WF - Breakage-ID: $BID" \

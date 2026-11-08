@@ -72,6 +72,16 @@ class FlakeSuspectTests(unittest.TestCase):
         self.assertEqual(r["classification"], "flake-suspect")
         self.assertEqual(r["route"], "rerun")
 
+    def test_nix_flake_check_is_not_flake_suspect(self):
+        # The bare word "flake" in "nix flake check" output is Nix
+        # terminology, not an intermittency signal (Codex, PR #7806).
+        r = classify("+ nix flake check ./pkgs/id/ -L --keep-going\nerror[E0308]: mismatched types\n")
+        self.assertEqual(r["classification"], "real-regression")
+
+    def test_nix_flake_check_opaque_failure_is_unknown(self):
+        r = classify("+ nix flake check ./pkgs/id/\nsome opaque failure\n")
+        self.assertEqual(r["classification"], "unknown")
+
     def test_flake_beats_plain_failure_word(self):
         r = classify("FAILURES:\nflaky: TestRetries timed out waiting for server\n")
         self.assertEqual(r["classification"], "flake-suspect")
