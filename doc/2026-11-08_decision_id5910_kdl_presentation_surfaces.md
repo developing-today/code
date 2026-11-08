@@ -49,7 +49,7 @@
 | Hand upload | A **document** submitted to the pipeline with an author identity. Multi-node documents are accepted and decomposed as one compound statement set (§4) |
 | Agent statements | **The same document path**, with a machine author identity and a required provenance stamp. No agent-only endpoint, no privileged validation (§5) |
 | Trust | Trust is a **property of the author**, evaluated by one policy stage; it never changes which pipeline runs. Untrusted authors (human or agent) go to staging, not to a separate pipeline (§6) |
-| Round trip | **Export → reimport is Tier A round-trip on the canonical JSON**, not on KDL text. Statement identity is the canonical JSON content hash from #5906 §5, so a reimported export lands as the *same* statement, not a duplicate (§3.3) |
+| Round trip | **Canonical JSON → KDL → canonical JSON** has #5906's Tier A guarantee. Store/triples → KDL reconstruction, reimport idempotency, and statement identity are **not** promised here; #5907 must settle them (§3.3) |
 | Surface-specific steps | Exactly three, all outside the shared pipeline: authoring/upload UX (§4.2), the export renderer's grouping choices (§3.2), and the agent provenance stamp (§5.2) |
 | What is deferred | Decomposition rules (#5907), payload boundary (#5908), re-composition grouping heuristics (§3.4), and the annotation syntax (#5753) |
 
@@ -86,9 +86,8 @@ The parent's §1.4 constraint is the spine of this record. Stated as a
 shape:
 
 ```
-                 ┌──────────── shared pipeline (parent §2.2) ───────────┐
-export  ────────►│ (read path, reversed)                                 │
-                 │ triples ─► canonical JSON ─► KDL        [render]     │
+                 ┌──────────── export read path ────────────────────────┐
+export  ────────►│ stored canonical JSON anchor ─► KDL     [render]     │
                  └──────────────────────────────────────────────────────┘
 
 upload  ──► [front door: author + document] ──┐
@@ -100,7 +99,7 @@ agent   ──► [front door: author + document] ──┤
                  └──────────────────────────────────────────────────────┘
 ```
 
-### 2.1 The five stages, named once
+### 2.1 The shared stages, named once
 
 | Stage | Input | Output | Where it lives |
 | --- | --- | --- | --- |
@@ -108,13 +107,14 @@ agent   ──► [front door: author + document] ──┤
 | 2. Canonical JSON | validated document | canonical JSON (per #5906 §3) | shared |
 | 3. Decompose | canonical JSON | atomic triples + statement node | shared (#5907 owns rules) |
 | 4. Resolve through IDs | triples | ID-referenced triples | shared |
-| 5. Trust / policy gate | statement + author | accepted, staged, or rejected | shared (§6) |
+| 5. Trust / policy gate | statement + author | accepted, staged, or rejected | shared (§6; additive to the parent) |
 
-Every surface enters at stage 1 (write path) or exits from stage 2
-(read path). **No surface may enter at stage 3 or later.** That is the
-concrete meaning of "no agent-only back door": there is no entry point
-that takes pre-decomposed triples from a surface and skips validation
-and canonicalisation.
+Every **write** surface enters at stage 1. The export read path starts
+from a retained canonical JSON anchor and renders it as KDL; it is not
+a reversed write pipeline. **No write surface may enter at stage 3 or
+later.** That is the concrete meaning of "no agent-only back door":
+there is no entry point that takes pre-decomposed triples from a
+surface and skips validation and canonicalisation.
 
 ### 2.2 Why the gate is stage 5, not stage 0
 
@@ -144,59 +144,58 @@ and belongs in the shared stages, not in a front door.
 
 ### 3.1 Export is a derived, read-only rendering
 
-Export is **not** a data path. It reads the triple store, projects the
-statement nodes and their triples through the canonical JSON form
-(#5906 §3), and renders that JSON as KDL. Consequences:
+Export is **not** a data path. For an authored statement it reads the
+retained canonical JSON provenance anchor (#5688 §2.2; #5906 §5) and
+renders that JSON as KDL. It does **not** infer the source document by
+recomposing triples. Consequences:
 
 - Export never mutates the store and never mints IDs.
 - Export output is **not** an ingest artifact by itself; feeding it
   back in goes through the ordinary upload path (§3.3).
-- Because the renderer consumes canonical JSON, the round-trip
-  guarantee is inherited from #5906 rather than re-argued here.
+- The anchor→KDL conversion inherits #5906's JSON↔KDL round-trip
+  contract. Exporting a projection that has no source anchor is a
+  different operation, and #5907 must define whether and how to
+  synthesise it.
 
-### 3.2 Grouping: what the export chooses, and what it must preserve
+### 3.2 Grouping: preserve the authored statement boundary
 
-The export must decide which triples belong to one KDL node. The rule:
+For anchored authored statements the export uses the canonical JSON
+document's existing tree and statement boundary; it does not group
+triples heuristically. This preserves what was authored rather than
+inventing a new compound statement. Exporting an arbitrary triple
+projection is deferred to #5907; until then, an export request that
+cannot select complete source anchors must report that limitation
+rather than silently dropping or regrouping facts.
 
-- **Statement nodes are the grouping boundary.** A statement node from
-  stage 3, plus the triples that reference it as their anchor
-  (parent §2.2, #5906 §5), render as one top-level KDL node with its
-  qualifier triples as children. This is mechanical and reproducible.
-- **Ordering within a node preserves triple order** as stored; the
-  export does not sort. Ordering between top-level nodes is
-  deterministic (statement creation order, then statement ID) so a
-  diff of two exports is stable.
-- **Grouping is a presentation choice, not a data claim.** If the
-  renderer cannot find a statement anchor for a triple (e.g. a triple
-  authored directly at stage 3 by a future path), it renders it under
-  a per-statement fallback node rather than dropping it. Export must
-  never silently lose a triple.
+- **The authored anchor is the boundary.** One authored compound
+  statement is one canonical JSON document and one anchor (#5906 §5),
+  so it renders as one KDL document.
+- **Ordering follows #5906's Tier A rules** — the renderer does not
+  sort facts or invent fallback nodes.
 
 ### 3.3 Round-trip expectations (acceptance criterion 3)
 
 Stated explicitly, with the follow-on named where deferred:
 
-- **Guaranteed:** `store → canonical JSON → KDL → (upload) → canonical
-  JSON` returns a canonical JSON document **semantically equal** to the
-  first, per #5906 §2.1 Tier A. The oracle is canonical-JSON equality,
-  not KDL text equality (Tier B is not promised).
-- **Guaranteed:** because statement identity is the canonical JSON
-  content hash (#5906 §5), reimporting an unmodified export resolves to
-  the **same statement node** — the import is an idempotent no-op, not
-  a duplicate. This is the property that makes "export, annotate,
-  re-upload" safe.
-- **Guaranteed:** an *edited* export (a human changed a value) imports
-  as a **new** statement with a new content hash; the old statement is
-  not mutated. Editing is authoring.
-- **Deferred:** whether an edited export should be linked to its
-  predecessor as a revision (rather than standing as an unrelated new
-  statement) is a provenance question for #5907. Default until then:
-  new statement, no revision link.
-- **Deferred:** whether the export can re-compose *across* statement
-  nodes into a single human-readable narrative (the parent's open
-  question about re-composition grouping). Default until decided:
-  **no** — one statement node per top-level node, mechanical grouping
-  only.
+- **Guaranteed by #5906:** `canonical JSON → KDL → canonical JSON`
+  returns Tier A semantic equality. The oracle is canonical-JSON
+  equality, not KDL text equality (Tier B is not promised).
+- **Guaranteed by this surface design:** exporting an authored
+  statement from its retained canonical JSON anchor does not require
+  reconstructing that authored tree from triples.
+- **Not claimed:** `triples/store → KDL → upload → the same triples`.
+  Decomposition and re-composition rules are not settled, and #5906 §5
+  calls the content hash an identity *candidate*, not a decision that
+  reimport deduplicates. #5907 owns grouping, identity, and the
+  store-level round-trip contract. Until then, export/reimport must not
+  be represented as an idempotent store operation.
+- **Deferred:** whether an edited export is a new statement, a revision
+  linked to its predecessor, or an update is #5907's identity and
+  provenance decision. This record promises no store mutation
+  behaviour.
+- **Deferred:** exporting arbitrary triple projections, or composing
+  several statement anchors into one KDL document, is #5907's
+  re-composition/grouping decision.
 
 ### 3.4 What export is not
 
@@ -206,14 +205,15 @@ through stage 1.
 
 ## 4. Hand-authored upload
 
-### 4.1 A document with an author
+### 4.1 One authored compound statement, with an author
 
-The unit of hand upload is **one KDL document** carrying one or more
-compound statements, submitted by an identified author. The document
-is parsed as a whole (stage 1), canonicalised as a whole (stage 2), and
-decomposed into statement nodes and triples (stage 3). A multi-statement
-document is therefore **one authored act**, and its canonical JSON
-anchor records the document as authored — not one anchor per statement.
+The unit of hand upload is **one authored compound statement**,
+submitted as a KDL document by an identified author. It is parsed as a
+whole (stage 1), canonicalised as a whole (stage 2), and decomposed
+(stage 3). This follows #5906 §5: one authored compound statement is
+one canonical JSON document and one anchor. How a batch of independent
+statements is represented or split is #5907's; this record does not
+turn several independent statements into one anchor.
 
 ### 4.2 The front-door step: authoring and submission
 
@@ -337,8 +337,8 @@ emission — neither of which alters the three-front-door structure.
 It does not change any parent decision. It refines two:
 
 1. **§1.4's "same pipeline, no agent-only back door"** is made concrete
-   as a stage-entry rule (§2.1): every surface enters at stage 1 or
-   exits at stage 2.
+   as a stage-entry rule (§2.1): every write surface enters at stage 1,
+   and the export read path starts from a retained anchor.
 2. **§2.2's stage list** gains an explicit **stage 5 trust/policy
    gate**, which the parent implies (its open question about untrusted
    agents) but does not name. This is additive: stages 1–4 are
@@ -348,7 +348,7 @@ It does not change any parent decision. It refines two:
 
 | Alternative | Why rejected |
 | --- | --- |
-| Three separate pipelines, one per surface | The parent's explicit constraint; three pipelines drift, and the drift is invisible until an export fails to reimport |
+| Three separate pipelines, one per surface | The parent's explicit constraint; three pipelines drift, and the drift is invisible until an export fails to convert back |
 | An agent endpoint that accepts pre-decomposed triples | Skips validation and canonicalisation — the agent-only back door the parent forbids, and it makes the canonical JSON anchor unverifiable |
 | Trust gate at stage 0 (before parsing) | Decides trust about unparsed text; malformed documents reach reviewers as ambiguous errors |
 | Export as a first-class data path (export → store) | Export must be derived and read-only, or the store has two write paths with different validation |
@@ -361,24 +361,28 @@ It does not change any parent decision. It refines two:
 1. Every write path enters at stage 1; no path enters at stage 3 or
    later.
 2. Export is read-only and never mints IDs or mutates the store.
-3. Export never drops a triple: an unanchored triple renders under a
-   fallback node.
-4. `store → canonical JSON → KDL → upload → canonical JSON` is Tier A
-   equal (canonical-JSON oracle).
-5. Reimporting an unmodified export is idempotent — the same statement
-   node, not a duplicate.
-6. Editing an export creates a new statement; it never mutates the
-   original.
-7. Trust is evaluated on the author, after validation, and never
+3. Export never drops a fact: a request that cannot select complete
+   source anchors reports the limitation instead of silently
+   regrouping or dropping data.
+4. `canonical JSON → KDL → canonical JSON` is Tier A equal
+   (canonical-JSON oracle, per #5906).
+5. Store-level reimport identity is not assumed; it is #5907's
+   contract. Until then no surface presents export/reimport as an
+   idempotent store operation.
+6. Trust is evaluated on the author, after validation, and never
    changes which pipeline runs.
-8. Agent provenance is recorded on the anchor, not authorable as KDL.
-9. A staged submission commits exactly the canonical JSON that was
+7. Agent provenance is recorded on the anchor, not authorable as KDL.
+8. A staged submission commits exactly the canonical JSON that was
    reviewed.
-10. Every surface-specific step is one of the three in §2.3; anything
-    else is a pipeline change.
+9. Every surface-specific step is one of the three in §2.3; anything
+   else is a pipeline change.
 
 ## 12. Change log
 
 - 2026-11-08 — initial record, drafted against `origin/main` at
   `cc09dd4f5f`; consumes #5906's closed decision; defers decomposition
   (#5907), payload boundary (#5908), and annotation syntax (#5753).
+- 2026-11-08 — narrowed the round-trip promise before opening the PR:
+  store-level reimport identity and triple→KDL reconstruction are
+  #5907's to settle (#5906 calls the content hash a *candidate*), so
+  this record claims only the canonical-JSON conversion guarantee.
