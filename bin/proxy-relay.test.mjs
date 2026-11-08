@@ -329,3 +329,132 @@ test('bytes sent during the tunnel CONNECT window are forwarded byte-for-byte in
   assert.equal(received.toString('latin1'), single);
   oneShot.destroy();
 });
+
+test('endpoint.json is republished when failover changes the preferred target', async (t) => {
+  const sockets = new Set();
+  const track = (socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    return socket;
+  };
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-relay-test-'));
+  const stateDir = path.join(tmp, 'state');
+
+  const backend = http.createServer((req, res) => {
+    res.writeHead(200, { connection: 'close' });
+    res.end('live-backend');
+  });
+  backend.on('connection', track);
+  const livePort = await listen(backend);
+  const deadPort = await freePort(); // nothing listens here
+
+  // Tunnel proxy: 503 for anything but the live target, real pipe for it.
+  const tunnelProxy = net.createServer((client) => {
+    track(client);
+    let request = Buffer.alloc(0);
+    const onData = (chunk) => {
+      request = Buffer.concat([request, chunk]);
+      const headerEnd = request.indexOf('\r\n\r\n');
+      if (headerEnd === -1) return;
+      client.removeListener('data', onData);
+      const firstLine = request.slice(0, request.indexOf('\r\n')).toString('latin1');
+      const targetPort = Number(firstLine.split(' ')[1].split(':').pop());
+      if (targetPort !== livePort) {
+        client.end('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+        return;
+      }
+      const upstream = track(net.connect(livePort, '127.0.0.1'));
+      client.once('close', () => upstream.destroy());
+      client.once('error', () => upstream.destroy());
+      upstream.once('connect', () => {
+        client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        client.pipe(upstream);
+        upstream.pipe(client);
+      });
+      upstream.once('error', () => client.destroy());
+    };
+    client.on('data', onData);
+  });
+  const proxyPort = await listen(tunnelProxy);
+
+  const relayPort = await freePort();
+  const child = spawn(process.execPath, [path.join(binDir, 'proxy-relay.mjs')], {
+    env: {
+      ...process.env,
+      RELAY_LISTEN_HOST: '127.0.0.1',
+      RELAY_LISTEN_PORT: String(relayPort),
+      RELAY_TARGET_HOST: '127.0.0.1',
+      RELAY_TARGET_PORTS: `${deadPort},${livePort}`,
+      RELAY_PROXY_HOST: '127.0.0.1',
+      RELAY_PROXY_PORT: String(proxyPort),
+      RELAY_NAME: 'proxy-relay-failover-test',
+      XDG_STATE_HOME: stateDir
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let log = '';
+  child.stdout.on('data', (chunk) => { log += chunk; });
+  child.stderr.on('data', (chunk) => { log += chunk; });
+
+  const closeServer = (server) => new Promise((resolve) => {
+    if (!server.listening) return resolve();
+    server.close(() => resolve());
+  });
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+    for (const socket of sockets) socket.destroy();
+    await Promise.all([closeServer(tunnelProxy), closeServer(backend)]);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const ready = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`relay did not start:\n${log}`)), 10_000);
+    child.stdout.on('data', () => {
+      if (!log.includes('[proxy-relay-failover-test] relay http://')) return;
+      clearTimeout(timer);
+      resolve();
+    });
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once('exit', (code, signal) => {
+      clearTimeout(timer);
+      reject(new Error(`relay exited before listening (${code ?? signal}):\n${log}`));
+    });
+  });
+  await ready;
+
+  const endpointFile = path.join(stateDir, 'proxy-relay-failover-test', 'endpoint.json');
+  const readRelayTo = () => JSON.parse(fs.readFileSync(endpointFile, 'utf8')).relayTo;
+  // The relay publishes endpoint.json from its listen callback, just after
+  // its log line; on a loaded host the file can land a few ms after the log
+  // line reaches this process, so poll briefly instead of reading once.
+  // (Observed flaking ~50% on the fleet laptop, 2026-11-08, task 12671.)
+  const readRelayToEventually = async (want) => {
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      try {
+        const value = readRelayTo();
+        if (want === undefined || value === want) return value;
+      } catch { /* not published yet */ }
+      if (Date.now() >= deadline) return readRelayTo();
+      await delay(25);
+    }
+  };
+  assert.equal(await readRelayToEventually(), `127.0.0.1:${deadPort}`, 'startup endpoint names the first target');
+
+  // Force a failover with a real forwarded request (dead target first).
+  const forwarded = await within(fetch(`http://127.0.0.1:${relayPort}/proxied`, {
+    headers: { connection: 'close' }
+  }), 5000, 'forwarded request');
+  assert.equal(forwarded.status, 200);
+  assert.equal(await forwarded.text(), 'live-backend');
+
+  const health = await within(fetch(`http://127.0.0.1:${relayPort}/health`, {
+    headers: { connection: 'close' }
+  }), 5000, 'local /health');
+  const { preferredTarget } = await health.json();
+  assert.equal(preferredTarget, livePort, '/health must report the live target after failover');
+  assert.equal(await readRelayToEventually(`127.0.0.1:${preferredTarget}`), `127.0.0.1:${preferredTarget}`, 'endpoint.json relayTo must agree with /health after failover');
+});

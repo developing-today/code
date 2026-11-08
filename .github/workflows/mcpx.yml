@@ -183,6 +183,7 @@ jobs:
         run: |
           rc=0
           python3 scripts/test_gotest_report.py || rc=1
+          python3 scripts/test_conformance_record.py || rc=1
           go test ./... -count=1 -json >"$RUNNER_TEMP/gotest.json" || rc=$?
           # Readable output for the log, from the same run. Package-level
           # output first, then the full output of every failing test, so a
@@ -340,16 +341,14 @@ jobs:
             actionlint -shellcheck "shellcheck -S warning" .github/workflows/mcpx*.yml
           '
 
-      # golangci-lint runs, but is NOT blocking yet — explicitly, per
-      # #1996's acceptance fallback. Its first full run (PR #2718, run
-      # 41131293079) reported 119 pre-existing findings across the
-      # module (errcheck 50, staticcheck 50, unused 17, ineffassign 2),
-      # far beyond this slice's baseline. They are filed as #2836;
-      # when #2836 lands, this step loses `continue-on-error` and the
-      # leg becomes fully blocking. Until then the findings print on
-      # every run, visible but not gating.
-      - name: golangci-lint (non-blocking until #2836)
-        continue-on-error: true
+      # golangci-lint is blocking: #2836 cleared the module's findings
+      # (the uncapped count was 806 -- errcheck 714, staticcheck 69,
+      # unused 21, ineffassign 2; the 119 reported in PR #2718 was the
+      # linter's 50-per-linter display cap), so this step gates like
+      # every other leg. One exclusion survives in
+      # pkgs/mcpx/.golangci.yml: the SA2001 mutex barrier in
+      # internal/daemon/conns.go, with its reason recorded there.
+      - name: golangci-lint
         run: |
           nix develop .#mcpx-lint --extra-experimental-features cgroups --command bash -euo pipefail -c '
             cd pkgs/mcpx

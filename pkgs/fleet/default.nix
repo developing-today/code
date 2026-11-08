@@ -18,10 +18,31 @@
   rustPlatform,
   pkgsStatic,
   binutils,
+  callPackage,
   sourceRev ? "unknown",
 }:
 
 let
+  # ONNX Runtime, pinned to the latest upstream release through the
+  # atlas-search package's vendored copy (../atlas-search/onnxruntime):
+  # the search serve role's baked library must be the release the
+  # corpus and the Gate A fixtures are certified under (code#6765).
+  onnxruntime = callPackage ../atlas-search/onnxruntime { };
+
+  # The search serve role (#5604) consumes atlas-core / atlas-embed /
+  # atlas-proto by relative path (../atlas-search/crates/*, untouched),
+  # so the build source is the pkgs/ tree holding both workspaces and
+  # cargo runs from pkgs/fleet inside it. The fleet Cargo.lock covers
+  # the atlas crates' external dependencies.
+  fleetSrc = lib.fileset.toSource {
+    root = ./..;
+    fileset = lib.fileset.unions [
+      ./.
+      ../atlas-search/Cargo.toml
+      ../atlas-search/crates
+    ];
+  };
+
   # D7 hard gate for the runs-anywhere connect binary.
   connectMaxBytes = 2 * 1024 * 1024; # 2097152
 
@@ -32,11 +53,13 @@ let
       alias ? null,
       sizeGate ? false,
       platform ? rustPlatform,
+      static ? false,
     }:
     platform.buildRustPackage {
       inherit pname;
       version = "0.1.0";
-      src = ./.;
+      src = fleetSrc;
+      sourceRoot = "${fleetSrc.name}/fleet";
       cargoLock.lockFile = ./Cargo.lock;
 
       cargoBuildFlags = [
@@ -49,7 +72,20 @@ let
         (lib.concatStringsSep "," features)
       ];
 
-      env.FLEET_SOURCE_REV = sourceRev;
+      # ONNX Runtime is dynamically loaded (atlas-embed's ort
+      # load-dynamic) and never downloaded; the search serve role
+      # resolves it from this closure path (the atlas-search package's
+      # own ATLAS_SEARCH_ORT_LIB_DEFAULT mechanism, ported). Compiled
+      # in only where search-serve is. Not set for the connect
+      # variants (no search-serve) nor the musl static ones (a glibc
+      # libonnxruntime cannot be dlopen'd from a static binary; the
+      # role there needs ATLAS_ORT_LIB).
+      env = {
+        FLEET_SOURCE_REV = sourceRev;
+      }
+      // lib.optionalAttrs (features != [ ] && !static) {
+        ATLAS_SEARCH_ORT_LIB_DEFAULT = "${onnxruntime}/lib/libonnxruntime.so";
+      };
 
       # Side-by-side installs (NixOS) keep the hyphenated name as a
       # link to the same binary; argv0 narrows the surface.
@@ -115,7 +151,8 @@ in
   fleet-brokers = rustPlatform.buildRustPackage {
     pname = "fleet-brokers";
     version = "0.1.0";
-    src = ./.;
+    src = fleetSrc;
+    sourceRoot = "${fleetSrc.name}/fleet";
     cargoLock.lockFile = ./Cargo.lock;
 
     cargoBuildFlags = [
@@ -157,6 +194,7 @@ in
     pname = "fleet-static";
     features = null; # workspace default features = full profile
     platform = pkgsStatic.rustPlatform;
+    static = true;
   };
 
   # Connect profile, musl static: runs anywhere, no libc coupling.
@@ -166,5 +204,6 @@ in
     alias = "fleet-connect";
     sizeGate = true;
     platform = pkgsStatic.rustPlatform;
+    static = true;
   };
 }

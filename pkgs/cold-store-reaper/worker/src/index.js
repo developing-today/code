@@ -16,7 +16,7 @@
 // Secrets (set by the operator, never committed): REHYDRATOR_API_KEY,
 // GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN.
 
-import { decompressFrame } from "./decoder.js";
+import { decompressFrame, ExpansionLimitError } from "./decoder.js";
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files";
@@ -167,6 +167,18 @@ export class BundleFlight {
 
   async rehydrate(job) {
     const { drive_file_id, offset, frame_length, sha256, bundle_id } = job;
+    // The manifest's expected plaintext size (selected as o.size by the
+    // entry point) bounds decompression (#6590). A job without a usable
+    // size fails closed here, before any fetch: falling back to an
+    // unbounded decompress is exactly the failure being fixed.
+    const expectedSize =
+      typeof job.size === "string" && job.size.trim() !== "" ? Number(job.size) : job.size;
+    if (!Number.isSafeInteger(expectedSize) || expectedSize < 0) {
+      throw new HttpError(
+        502,
+        "manifest entry has no usable expected size — refusing unbounded decompression",
+      );
+    }
     const token = await this.accessToken();
     const range = `bytes=${offset}-${offset + frame_length - 1}`;
     const resp = await fetch(`${DRIVE_FILES_URL}/${drive_file_id}?alt=media`, {
@@ -193,8 +205,13 @@ export class BundleFlight {
     }
     let plain;
     try {
-      plain = decompressFrame(frame);
-    } catch {
+      plain = decompressFrame(frame, expectedSize);
+    } catch (err) {
+      if (err instanceof ExpansionLimitError) {
+        // The decoder's message names the exact bound that fired
+        // (declared content size, declared window, produced output).
+        throw new HttpError(502, err.message);
+      }
       throw new HttpError(502, "zstd frame decompression failed");
     }
     const digest = await sha256Hex(plain);

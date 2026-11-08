@@ -16,6 +16,7 @@ fleet-config = { workspace = true }
 fleet-proxy-proto = { workspace = true }
 fleet-queue = { workspace = true, optional = true }
 fleet-dispatch = { workspace = true, optional = true }
+fleet-dispatch-test = { workspace = true, optional = true }
 fleet-search = { workspace = true, optional = true }
 # The proxy CLIENT is part of every variant's registry (the
 # connect capability ships in all three builds); only the broker
@@ -46,6 +47,7 @@ full = [
   "search",
   "search-serve",
   "dispatch",
+  "dispatch-test",
   "laptop-agent",
   "secrets",
 ]
@@ -71,9 +73,13 @@ secrets-broker = [
 ]
 # The search domain (step 5, #5433): the client crate carries its
 # own token chain (atlas's client.json), so no fleet-secrets link.
-search = ["dep:fleet-search"]
-search-serve = ["dep:fleet-secrets"]
+search = ["dep:fleet-search", "fleet-search/client"]
+# The search serve role (#5604): the Atlas service, from
+# fleet-search's `serve` feature (atlas-core/embed/proto by path). Its
+# Turso token chain is atlas-core's own read-only one, so no fleet-secrets.
+search-serve = ["dep:fleet-search", "fleet-search/serve"]
 dispatch = ["dep:fleet-dispatch"]
+dispatch-test = ["dep:fleet-dispatch-test"]
 # The secrets verb (step 6, #5554): in full and serve (§2 puts the
 # secrets platform in both), never in connect ("nothing else").
 secrets = ["dep:fleet-secrets"]

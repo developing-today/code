@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use super::AppState;
 use super::content_mode::{ContentMode, detect_mode, detect_mode_with_content, get_content_type};
 use super::markdown::prosemirror_to_markdown;
+use super::security::{self, WebSecurity};
 use super::templates::{
     render_binary_viewer, render_editor, render_editor_page, render_file_list,
     render_file_list_content, render_main_page_wrapper, render_media_viewer, render_page,
@@ -484,23 +485,37 @@ const fn is_leap_year(year: u64) -> bool {
     (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
-/// Create the main router with all web routes.
-pub fn create_router(state: AppState) -> Router {
-    create_router_for_app(state, &super::app_interface::WebInterface::world_app())
+/// Create the guarded main router with all web routes.
+///
+/// `security` is applied to every request before any route handler runs. Choose
+/// an explicit policy appropriate to the listener; `WebSecurity::default()`
+/// does not require a token or restrict hosts.
+pub fn create_router(state: AppState, security: WebSecurity) -> Router {
+    create_router_for_app(
+        state,
+        &super::app_interface::WebInterface::world_app(),
+        security,
+    )
 }
 
 /// Create the main router for one packaged app, binding the world
 /// page at the app's [interfaces.web] route and the live channel at
 /// its socket (#2325, adapter mode). With the world app's own
-/// interface the result is byte-identical to create_router: same
-/// routes, same handlers, same state.
+/// interface the result has the same routes, handlers, and state as
+/// [`create_router`]. The supplied security policy guards every route.
+///
+/// # Migration
+///
+/// Callers must now pass an explicit [`WebSecurity`] policy. The default
+/// policy does not require a token or restrict hosts.
 pub fn create_router_for_app(
     mut state: AppState,
     interface: &super::app_interface::WebInterface,
+    security: WebSecurity,
 ) -> Router {
     state.web_route = interface.route.clone();
     state.web_socket = interface.socket.clone();
-    create_router_inner(state)
+    security::protect(create_router_inner(state), security)
 }
 
 /// Create the program-only router for one hosted world (#2146
@@ -511,8 +526,18 @@ pub fn create_router_for_app(
 /// settings, peers, identity, collab, tags, save/upload) are absent
 /// from this router, so a program listener cannot serve them; the
 /// session authority is unchanged (a valid world guest capability,
-/// never the web token or the world admin token).
-pub fn create_program_router(mut state: AppState, world_name: &str) -> Router {
+/// never the world admin token). The supplied [`WebSecurity`] policy
+/// guards every request to this router as well.
+///
+/// # Migration
+///
+/// Callers must now pass an explicit [`WebSecurity`] policy. The default
+/// policy does not require a token or restrict hosts.
+pub fn create_program_router(
+    mut state: AppState,
+    world_name: &str,
+    security: WebSecurity,
+) -> Router {
     state.program_world = Some(world_name.to_owned());
     let world_socket = state
         .web_socket
@@ -526,9 +551,10 @@ pub fn create_program_router(mut state: AppState, world_name: &str) -> Router {
         .route("/", get(program_page_handler))
         .route("/assets/{*path}", get(assets_handler))
         .merge(super::world_ws::world_routes_at(&world_socket).with_state(world_state));
-    router
+    let router = router
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
-        .with_state(state)
+        .with_state(state);
+    security::protect(router, security)
 }
 
 fn create_router_inner(state: AppState) -> Router {
@@ -3171,7 +3197,13 @@ mod upload_router_tests {
         )
         .await
         .unwrap();
-        (create_router(state.clone()), state, dir, endpoint, docs)
+        (
+            create_router(state.clone(), WebSecurity::default()),
+            state,
+            dir,
+            endpoint,
+            docs,
+        )
     }
 
     fn hub_with_world(name: &str, admin: Option<&str>) -> crate::world_hub::WorldHub {
@@ -3191,7 +3223,7 @@ mod upload_router_tests {
     async fn program_router_serves_only_the_program_surface() {
         let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
         state.world = Some(hub_with_world("arena", Some("s3cret")));
-        let app = create_program_router(state, "arena");
+        let app = create_program_router(state, "arena", WebSecurity::default());
 
         // Root: the program page, pinned to the bound world.
         let root = app
@@ -3247,7 +3279,7 @@ mod upload_router_tests {
     async fn program_router_404s_for_a_world_the_hub_does_not_host() {
         let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
         state.world = Some(hub_with_world("arena", None));
-        let app = create_program_router(state, "missing");
+        let app = create_program_router(state, "missing", WebSecurity::default());
         let root = app
             .clone()
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
@@ -3259,7 +3291,7 @@ mod upload_router_tests {
     #[tokio::test]
     async fn program_router_404s_without_a_hub() {
         let (_, state, _dir, _endpoint, _docs) = router_with_state().await;
-        let app = create_program_router(state, "arena");
+        let app = create_program_router(state, "arena", WebSecurity::default());
         let root = app
             .clone()
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
@@ -3292,7 +3324,7 @@ mod upload_router_tests {
         )
         .unwrap()
         .unwrap();
-        let app = crate::web::create_router_for_app(state, &interface);
+        let app = crate::web::create_router_for_app(state, &interface, WebSecurity::default());
         let arena = app
             .clone()
             .oneshot(

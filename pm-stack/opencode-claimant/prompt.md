@@ -37,6 +37,22 @@ supervision (step 1: check bound sessions, report stalls in the fire
 log -- never relaunch), write the shadow report (step 6), end.
 Never claim, bind, launch, or mutate a task in shadow mode.
 
+## BACKEND OUTAGE — FALLBACK MODE (2026-11-06, code#6619)
+
+If the queue backend is down —  (or any broker
+verb) fails with a broker/PostgREST error instead of returning
+state — do NOT improvise a fallback bind. Session binding is a
+database operation; the GitHub-native fallback protocol
+(, doc/fleet/queue-fallback-mode.md in this
+repo) deliberately has no claimant equivalent, because its claims
+are worked by the claiming worker itself. In an outage: record the
+failure in the fire log (the health error verbatim), launch
+nothing, and end the fire. The Muse lane shifts carry the work
+under their instruction's fallback section (§0a) until the backend
+returns; your supervision resumes with it. Claiming or binding
+against a half-dead backend is how double-launches happen — the
+outage is recoverable, a double-launch's damage is not.
+
 ## Constants
 
 - Queues (all four): `repo-health-code-pilot`,

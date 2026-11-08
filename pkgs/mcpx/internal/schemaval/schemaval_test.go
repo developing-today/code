@@ -52,10 +52,10 @@ func TestCorpus2020_12(t *testing.T) {
 		t.Fatalf("dialect = %q, want %q", s.Dialect(), Dialect2020_12)
 	}
 	mustValidate(t, s, `{"pair": [3, "x"], "flag": {"anything": 1}}`)
-	mustNotValidate(t, s, `{"pair": [0, "x"]}`)          // $defs minimum via internal $ref
-	mustNotValidate(t, s, `{"pair": [3, "x", "extra"]}`) // prefixItems + items:false
-	mustNotValidate(t, s, `{"never": 1}`)                // boolean false schema
-	mustNotValidate(t, s, `{"unknown": 1}`)              // additionalProperties:false
+	_ = mustNotValidate(t, s, `{"pair": [0, "x"]}`)          // $defs minimum via internal $ref
+	_ = mustNotValidate(t, s, `{"pair": [3, "x", "extra"]}`) // prefixItems + items:false
+	_ = mustNotValidate(t, s, `{"never": 1}`)                // boolean false schema
+	_ = mustNotValidate(t, s, `{"unknown": 1}`)              // additionalProperties:false
 
 	u := mustCompile(t, `{
 		"type": "object",
@@ -63,12 +63,12 @@ func TestCorpus2020_12(t *testing.T) {
 		"unevaluatedProperties": false
 	}`)
 	mustValidate(t, u, `{"a": "x"}`)
-	mustNotValidate(t, u, `{"a": "x", "b": 1}`)
+	_ = mustNotValidate(t, u, `{"a": "x", "b": 1}`)
 }
 
 func TestBooleanSchemas(t *testing.T) {
 	mustValidate(t, mustCompile(t, `true`), `{"x": 1}`)
-	mustNotValidate(t, mustCompile(t, `false`), `{"x": 1}`)
+	_ = mustNotValidate(t, mustCompile(t, `false`), `{"x": 1}`)
 }
 
 // (b) A declared draft-07 schema validates per draft-07: the array
@@ -84,8 +84,8 @@ func TestDraft07Declared(t *testing.T) {
 		t.Fatalf("dialect = %q, want %q", s.Dialect(), DialectDraft07)
 	}
 	mustValidate(t, s, `[1, "x"]`)
-	mustNotValidate(t, s, `["x", 1]`)
-	mustNotValidate(t, s, `[1, "x", true]`)
+	_ = mustNotValidate(t, s, `["x", 1]`)
+	_ = mustNotValidate(t, s, `[1, "x", true]`)
 }
 
 func TestDeclaredDialectsCompile(t *testing.T) {
@@ -100,7 +100,7 @@ func TestDeclaredDialectsCompile(t *testing.T) {
 			t.Errorf("$schema %s: dialect = %q, want %q", tc.url, s.Dialect(), tc.want)
 		}
 		mustValidate(t, s, `3`)
-		mustNotValidate(t, s, `"x"`)
+		_ = mustNotValidate(t, s, `"x"`)
 	}
 }
 
@@ -154,7 +154,7 @@ func TestIntegerFidelityPast2To53(t *testing.T) {
 	s := mustCompile(t, `{"type": "integer", "maximum": 9007199254740992}`)
 	// 2^53+1 rounds to 2^53+... as a float64 it would pass the maximum;
 	// decoded exactly it must fail it.
-	mustNotValidate(t, s, `9007199254740993`)
+	_ = mustNotValidate(t, s, `9007199254740993`)
 	mustValidate(t, s, `9007199254740992`)
 	exact := mustCompile(t, `{"type": "integer", "maximum": 9007199254740993}`)
 	mustValidate(t, exact, `9007199254740993`)
