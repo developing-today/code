@@ -638,7 +638,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
   await writeAaLastGood({
     batch: latestSection.batch,
     configFingerprint: fingerprint,
-    fingerprint: cacheMeta.get(latestSection.batch)?.fingerprint,
+    fingerprint: cacheMeta.get(latestSection.batch)?.fingerprint ?? undefined,
     section: latestSection,
   });
 

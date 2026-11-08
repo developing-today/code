@@ -1,6 +1,9 @@
 // #3302 AA dataset version switching: batch index parsing, content-fingerprint
 // dedupe, cache naming, parameterized SQL, and the /aa selector render.
 import { describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { AA_BATCH_INDEX_SQL, aaPayloadSql, batchExpression, isBatchUuid } from "../src/aa-batch-sql.ts";
 import {
   aaBatchFingerprint,
@@ -12,6 +15,9 @@ import {
   summarizeBatches,
 } from "../src/aa-batches.ts";
 import { renderAa } from "../src/render.ts";
+import { loadConfig } from "../src/config.ts";
+import { FIXTURE_AA } from "../src/sources/fixtures.ts";
+import { liveSource } from "../src/sources/live.ts";
 import type { AaBatchSummary, AaSection, Provenance } from "../src/model.ts";
 
 const B1 = "11111111-1111-4111-8111-111111111111";
@@ -199,5 +205,73 @@ describe("/aa selector", () => {
     expect(html).toContain(`value="${B1}" selected`);
     expect(html).toContain('href="/api/aa.json"');
     expect(html).not.toContain(`/api/aa.json?batch=${B1}`);
+  });
+});
+
+describe("live AA batch selection", () => {
+  test("serves the selected cached payload while preserving latest as the default", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "aa-batch-source-"));
+    const feedFile = join(dir, "fleet-feed.json");
+    const historical = { ...FIXTURE_AA, batch: B3 };
+    const latest = {
+      ...FIXTURE_AA,
+      batch: B1,
+      batches: [
+        {
+          importBatch: B1,
+          name: "latest.xlsx",
+          importedAt: "2026-10-31T15:00:00Z",
+          driveModifiedAt: null,
+          ranAt: null,
+          insertedCounts: null,
+          label: "2026-10-31 · latest.xlsx",
+          fingerprint: "latest",
+          cached: true,
+          latest: true,
+        },
+        {
+          importBatch: B3,
+          name: "historical.xlsx",
+          importedAt: "2026-10-21T10:00:00Z",
+          driveModifiedAt: null,
+          ranAt: null,
+          insertedCounts: null,
+          label: "2026-10-21 · historical.xlsx",
+          fingerprint: "historical",
+          cached: true,
+          latest: false,
+        },
+      ],
+    };
+    await writeFile(
+      feedFile,
+      JSON.stringify({
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+        attention: [],
+        aa: latest,
+      }),
+    );
+    const cacheDir = join(dir, "aa-batches");
+    await mkdir(cacheDir);
+    await writeFile(
+      join(cacheDir, aaCacheFileName(B3)),
+      JSON.stringify({
+        batch: B3,
+        configFingerprint: "config",
+        fingerprint: "historical",
+        builtAt: historical.generatedAt,
+        section: historical,
+      }),
+    );
+
+    const source = liveSource(loadConfig({ PM_AGG_SOURCE: "live", PM_AGG_FEED_FILE: feedFile }));
+    expect((await source.aa())?.batch).toBe(B1);
+    const selected = await source.aa(B3);
+    expect(selected?.status).toBe("ok");
+    expect(selected?.batch).toBe(B3);
+    expect(selected?.batches?.map((batch) => batch.importBatch)).toEqual([B1, B3]);
+    expect((await source.aa("44444444-4444-4444-8444-444444444444"))?.status).toBe("absent");
   });
 });
