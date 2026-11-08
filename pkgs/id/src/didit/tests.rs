@@ -1153,3 +1153,55 @@ fn custom_period_extreme_anchor_is_out_of_range_not_a_panic_or_wrapped_window() 
     ));
     assert!(evaluate(&[fed], &[], midnight(2026, 6, 16)).is_ok());
 }
+
+#[test]
+fn week_period_at_calendar_boundary_is_out_of_range_not_a_panic() {
+    // #7771: the Week branch of count_periods used unchecked
+    // NaiveDate +/- Duration, which panics (chrono's expect) when
+    // monday + 7, monday - 7, or the Monday offset itself leaves the
+    // representable calendar — where the Day branch answers
+    // OutOfRange via succ_opt/pred_opt (and Custom since #7766).
+    // `always` expectations evaluate in UTC.
+    for (label, at) in [
+        (
+            "max",
+            NaiveDate::MAX
+                .and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_utc()
+                .timestamp(),
+        ),
+        (
+            "min",
+            NaiveDate::MIN
+                .and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_utc()
+                .timestamp(),
+        ),
+    ] {
+        let fed = always(expectation(
+            0x64,
+            vec![dog_a()],
+            "fed",
+            Window::AtLeastOncePer {
+                period: Period::Week,
+            },
+        ));
+        assert_eq!(
+            evaluate(&[fed], &[], at),
+            Err(EvalError::OutOfRange),
+            "week period at calendar {label}"
+        );
+    }
+    // An ordinary week still evaluates.
+    let fed = always(expectation(
+        0x65,
+        vec![dog_a()],
+        "fed",
+        Window::AtLeastOncePer {
+            period: Period::Week,
+        },
+    ));
+    assert!(evaluate(&[fed], &[], midnight(2026, 6, 16)).is_ok());
+}
