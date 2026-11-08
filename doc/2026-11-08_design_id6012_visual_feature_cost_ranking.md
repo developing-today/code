@@ -54,7 +54,7 @@ The percentages are fractions of the target profile's calibrated visual-feature 
 | --- | ---: | ---: | --- |
 | **Excellent** | Largest normalized dimension ≤ 5% | Largest normalized dimension ≤ 3% | Allowed by every threshold |
 | **Good** | Largest normalized dimension > 5% and ≤ 10% | > 3% and ≤ 7% | Allowed at `Good` or a worse minimum |
-| **Medium** | Largest normalized dimension > 10% and ≤ 25% | > 7% and ≤ 15% | Allowed at `Medium` or `Very Poor` minimum |
+| **Medium** | Largest normalized dimension > 10% and ≤ 25% | > 7% and ≤ 15% | Allowed at `Medium`, `Poor`, or `Very Poor` minimum |
 | **Poor** | Largest normalized dimension > 25% and ≤ 50% | > 15% and ≤ 30% | Allowed only at `Poor` or `Very Poor` minimum |
 | **Very Poor** | Largest normalized dimension > 50% and within the profile's hard limits | Largest normalized dimension > 30% and within the profile's hard limits | Allowed only at `Very Poor` minimum |
 
@@ -64,12 +64,12 @@ Ranks are calculated per target profile. A feature can therefore be `Good` on a 
 
 ## Gate layers and precedence
 
-For candidate `c`, profile `p`, viewer `v`, and optional person `s`, display `c` only when all of the following hold:
+For candidate `c`, profile `p`, viewer `v`, and optional person `s`, display `c` only when all of the following hold. The per-person exception is checked before applying the viewer minimum because it is a narrowly scoped exception to that gate—not a gate that can undo a prior rejection:
 
 1. **World gate:** `c` is enabled by the current world's #5970 policy and does not exceed any world cost ceiling that policy already defines. A world deny is final.
 2. **Compatibility/safety gate:** `c` is supported by `p` and stays within its hard safety limits. This applies even when a viewer has a person override.
-3. **Viewer minimum:** `rank(c,p)` is at least as good as `v.minimum_rank[p]`. If it is worse, reject `c` and continue through the authored fallback chain.
-4. **Person exception:** only for a viewer-authored exception naming `s`, treat the viewer-minimum check as satisfied for that person's content. Do not skip steps 1–2 or any rights/license checks.
+3. **Person exception:** check for a viewer-authored exception matching `s` and the current scope. A match bypasses only step 4 for that person's content. It does not skip steps 1–2 or any rights/license checks.
+4. **Viewer minimum:** if step 3 did not match, `rank(c,p)` must be at least as good as `v.minimum_rank[p]`. If it is worse, reject `c` and continue through the authored fallback chain.
 
 The effective result is the intersection of the world and viewer permissions; a permissive viewer setting cannot make world-disabled content run. The person exception changes only that viewer's threshold decision. Model its memory on the existing user-grant shape: an explicit, revocable viewer-owned preference keyed by viewer ID and stable person ID, with **this person in this world** as the narrow default scope. A broader “this person across worlds” scope requires explicit selection. Store it with the viewer's ID state so it follows the viewer across devices; do not send it to the world or other viewers. The control reads “allow this person's lower-ranked content here,” exposes its scope and active state, and can be revoked from the same preference surface. Permission/license systems remain the source of truth for any separate authorization decision.
 
