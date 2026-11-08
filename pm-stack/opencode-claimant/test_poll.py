@@ -173,23 +173,56 @@ class TestIsCandidate(unittest.TestCase):
     def test_unassigned_task_is_not_candidate(self):
         self.assertFalse(poll.is_candidate(self.row(progress={})))
 
-    def test_progress_cleared_session_is_not_a_candidate(self):
-        self.assertFalse(
-            poll.is_candidate(
-                self.row(
-                    progress={
-                        "lane": "opencode",
-                        "stage": "handed_off",
-                        "session_id": None,
-                        "session_cleared": {
-                            "via": "expire_leases",
-                            "cleared_at": "2026-11-05T20:01:19Z",
-                            "session_id": "ses_old",
-                        },
-                    }
-                )
-            )
+    def test_progress_cleared_session_with_unbound_ledger_is_a_candidate(self):
+        # #5508 resume brief: every correct binding-clear path stamps
+        # session_cleared, so the marker alone must not suppress a
+        # cleanly cleared task — the ledger decides.
+        row = self.row(
+            progress={
+                "lane": "opencode",
+                "stage": "handed_off",
+                "session_id": None,
+                "session_cleared": {
+                    "via": "expire_leases",
+                    "cleared_at": "2026-11-05T20:01:19Z",
+                    "session_id": "ses_old",
+                },
+            }
         )
+        self.assertTrue(poll.is_candidate(row, ledger_lookup=lambda _id: {"session_id": None}))
+        self.assertFalse(poll.is_candidate(row, ledger_lookup=lambda _id: None))
+
+    def test_progress_cleared_session_with_bound_ledger_is_not_a_candidate(self):
+        # The genuine #5508 case: progress cleared, ledger still bound.
+        row = self.row(
+            progress={
+                "lane": "opencode",
+                "stage": "handed_off",
+                "session_id": None,
+                "session_cleared": {"via": "expire_leases", "session_id": "ses_old"},
+            }
+        )
+        self.assertFalse(
+            poll.is_candidate(row, ledger_lookup=lambda _id: {"session_id": "ses_still_bound"})
+        )
+
+    def test_cleared_row_with_unreadable_ledger_is_not_a_candidate(self):
+        # Fail closed: a task we cannot prove unbound must not launch.
+        row = self.row(
+            progress={
+                "lane": "opencode",
+                "stage": "handed_off",
+                "session_id": None,
+                "session_cleared": {"session_id": "ses_old"},
+            }
+        )
+        self.assertFalse(poll.is_candidate(row, ledger_lookup=lambda _id: None))
+
+    def test_uncleared_row_never_reads_the_ledger(self):
+        calls = []
+        row = self.row()
+        self.assertTrue(poll.is_candidate(row, ledger_lookup=lambda i: calls.append(i)))
+        self.assertEqual(calls, [])
 
 
 class TestStaleBinding(unittest.TestCase):
@@ -216,11 +249,30 @@ class TestStaleBinding(unittest.TestCase):
         r.update(over)
         return r
 
-    def test_progress_cleared_task_is_classified_for_reconciliation(self):
+    def test_progress_cleared_task_with_bound_ledger_is_stale(self):
         row = self.row()
-        self.assertTrue(poll.is_stale_binding(row))
-        self.assertEqual(poll.get_stale_bindings([row]), [row])
-        self.assertEqual(poll.get_candidates([row]), [])
+        bound = lambda _id: {"session_id": "ses_still_bound"}
+        self.assertTrue(poll.is_stale_binding(row, ledger_lookup=bound))
+        self.assertEqual(poll.get_stale_bindings([row], bound), [row])
+        self.assertEqual(poll.get_candidates([row], bound), [])
+
+    def test_progress_cleared_task_with_unbound_ledger_is_not_stale(self):
+        # The resume-brief regression: a cleanly cleared row (marker
+        # stamped, ledger binding gone) is launchable, not suppressed.
+        row = self.row()
+        unbound = lambda _id: {"session_id": None}
+        self.assertFalse(poll.is_stale_binding(row, ledger_lookup=unbound))
+        self.assertEqual(poll.get_stale_bindings([row], unbound), [])
+        self.assertEqual(poll.get_candidates([row], unbound), [row])
+
+    def test_unreadable_ledger_is_stale_and_not_a_candidate(self):
+        row = self.row()
+        self.assertTrue(poll.is_stale_binding(row, ledger_lookup=lambda _id: None))
+        self.assertFalse(poll.is_candidate(row, ledger_lookup=lambda _id: None))
+
+    def test_task_without_cleared_marker_is_never_stale(self):
+        row = self.row(progress={"lane": "opencode", "stage": "handed_off", "session_id": None})
+        self.assertFalse(poll.is_stale_binding(row, ledger_lookup=lambda _id: {"session_id": "ses_x"}))
 
     def test_current_binding_is_not_stale(self):
         self.assertFalse(
@@ -249,12 +301,58 @@ class TestStaleBinding(unittest.TestCase):
         )
 
     def test_stale_binding_entry_exposes_cleared_session_and_task(self):
-        entry = poll._stale_binding_entry(self.row(), "repo-health-code-pilot")
+        entry = poll._stale_binding_entry(
+            self.row(), "repo-health-code-pilot", {"session_id": "ses_still_bound"}
+        )
         self.assertEqual(entry["id"], 4924)
         self.assertEqual(entry["issue_number"], 5508)
         self.assertIsNone(entry["session_id"])
         self.assertEqual(entry["cleared_session_id"], "ses_old")
         self.assertEqual(entry["cleared_via"], "expire_leases")
+        self.assertEqual(entry["ledger_session_id"], "ses_still_bound")
+        self.assertTrue(entry["ledger_readable"])
+
+    def test_stale_binding_entry_marks_unreadable_ledger(self):
+        entry = poll._stale_binding_entry(self.row(), "repo-health-code-pilot", None)
+        self.assertIsNone(entry["ledger_session_id"])
+        self.assertFalse(entry["ledger_readable"])
+
+
+class TestFetchLaneLedger(unittest.TestCase):
+    """fetch_lane_ledger reads `repo-queue lane <id>` and returns None on
+    every failure shape, so classification fails closed (#5508)."""
+
+    def run_with(self, payload, returncode=0):
+        class Result:
+            def __init__(self):
+                self.returncode = returncode
+                self.stdout = payload if isinstance(payload, str) else json.dumps(payload)
+                self.stderr = "err" if returncode else ""
+
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            return Result()
+
+        with patch.object(poll.subprocess, "run", side_effect=fake_run):
+            return poll.fetch_lane_ledger(4924), captured
+
+    def test_reads_lane_verb_for_the_task(self):
+        ledger, captured = self.run_with({"task_id": 4924, "session_id": "ses_x"})
+        self.assertEqual(ledger["session_id"], "ses_x")
+        self.assertEqual(captured["argv"][1:], ["lane", "4924"])
+
+    def test_nonzero_exit_is_unreadable(self):
+        ledger, _ = self.run_with("", returncode=4)
+        self.assertIsNone(ledger)
+
+    def test_malformed_json_is_unreadable(self):
+        ledger, _ = self.run_with("not json")
+        self.assertIsNone(ledger)
+
+    def test_missing_task_id_is_unreadable(self):
+        self.assertIsNone(poll.fetch_lane_ledger(None))
 
 
 

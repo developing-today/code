@@ -24,12 +24,13 @@ Prints one JSON object:
                                               # recovery rule ONLY -- the
                                               # claimant must still verify
                                               # zero messages before acting.
-    "stale_binding": [ {id, queue, ..., cleared_session_id, cleared_at} ... ],
+    "stale_binding": [ {id, queue, ..., cleared_session_id, cleared_at,
+                        ledger_session_id, ledger_readable} ... ],
                                                # progress says a previous
-                                               # session was cleared but the
-                                               # task has no current session_id;
-                                               # not launchable until its lane
-                                               # ledger is reconciled.
+                                               # session was cleared and the
+                                               # lane ledger still binds the
+                                               # task (or is unreadable); not
+                                               # launchable until reconciled.
     "live_root_sessions": int | null,        # all root sessions;
                                               # null = server unreadable
     "active_root_sessions": int | null,      # roots still active
@@ -469,7 +470,24 @@ def _stuck_entry(row, queue, session):
     }
 
 
-def _stale_binding_entry(row, queue):
+def _ledgers_for(rows):
+    """task id -> ledger row for every cleared-progress row in `rows`.
+
+    Reads `repo-queue lane` once per cleared row so the candidate and
+    stale-binding classifiers agree on one answer per task. Rows with a
+    current progress.session_id are never classified by ledger."""
+    ledgers = {}
+    for row in rows:
+        prog = row.get("progress") or {}
+        if prog.get("lane") != "opencode" or prog.get("session_id"):
+            continue
+        if not _has_cleared_session(prog):
+            continue
+        ledgers[row.get("id")] = fetch_lane_ledger(row.get("id"))
+    return ledgers
+
+
+def _stale_binding_entry(row, queue, ledger=None):
     prog = row.get("progress") or {}
     cleared = prog.get("session_cleared") or {}
     issue = prog.get("issue_number") or prog.get("issue") or ""
@@ -486,6 +504,10 @@ def _stale_binding_entry(row, queue):
         "cleared_session_id": cleared.get("session_id"),
         "cleared_at": cleared.get("cleared_at"),
         "cleared_via": cleared.get("via"),
+        # The ledger binding is the authority (#5508): surface the id the
+        # claimant would have collided with, not just the progress copy.
+        "ledger_session_id": (ledger or {}).get("session_id"),
+        "ledger_readable": ledger is not None,
         "issue": issue,
         "issue_number": prog.get("issue_number"),
         "attempts": row.get("attempts"),
@@ -493,9 +515,9 @@ def _stale_binding_entry(row, queue):
     }
 
 
-def get_candidates(rows):
+def get_candidates(rows, ledger_lookup=None):
     """Unbound opencode-lane candidates from claimed rows."""
-    return [r for r in rows if is_candidate(r)]
+    return [r for r in rows if is_candidate(r, ledger_lookup)]
 
 
 def get_stuck_bound(rows, session_by_id, active_ids, now_ms):
@@ -510,9 +532,9 @@ def get_stuck_bound(rows, session_by_id, active_ids, now_ms):
     return stuck
 
 
-def get_stale_bindings(rows):
-    """Rows with a cleared progress session that need lane-ledger review."""
-    return [r for r in rows if is_stale_binding(r)]
+def get_stale_bindings(rows, ledger_lookup=None):
+    """Rows with a cleared progress session whose lane ledger is still bound."""
+    return [r for r in rows if is_stale_binding(r, ledger_lookup)]
 
 
 def get_active_root_session_count():
@@ -544,13 +566,19 @@ def main():
     out = {"queues": {}, "candidates": [], "stuck_bound": [], "stale_binding": []}
     for q in QUEUES:
         rows = fetch_claimed_rows(q)
-        cands = [_candidate_entry(r, q) for r in get_candidates(rows)]
+        # One ledger read per cleared row, shared by both classifiers:
+        # a task is either a candidate (ledger unbound) or a stale
+        # binding (ledger bound / unreadable), never both (#5508).
+        ledgers = _ledgers_for(rows)
+        lookup = ledgers.get
+        cands = [_candidate_entry(r, q) for r in get_candidates(rows, lookup)]
         stuck = [
             _stuck_entry(r, q, session_by_id.get((r.get("progress") or {}).get("session_id")))
             for r in get_stuck_bound(rows, session_by_id, active_ids, now_ms)
         ]
         stale_binding = [
-            _stale_binding_entry(r, q) for r in get_stale_bindings(rows)
+            _stale_binding_entry(r, q, lookup(r.get("id")))
+            for r in get_stale_bindings(rows, lookup)
         ]
         out["queues"][q] = {
             "claimed": len(rows),
