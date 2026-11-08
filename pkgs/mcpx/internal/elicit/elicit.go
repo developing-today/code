@@ -14,7 +14,6 @@ package elicit
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -187,15 +186,15 @@ func Open(path string) (*Broker, error) {
 		return nil, err
 	}
 	if err := db.Ping(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	if _, err := db.Exec(schema); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("creating elicitation tables: %w", err)
 	}
 	if err := ensureLastTouched(db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("migrating elicitation tables: %w", err)
 	}
 	b := &Broker{db: db, waiters: map[string][]chan Answer{},
@@ -208,11 +207,11 @@ func Open(path string) (*Broker, error) {
 	// pending questions into their terminal state, then prune terminal
 	// rows past the retention bounds (#1677).
 	if err := b.expireOverdue(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	if err := b.pruneTerminal(time.Now()); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return b, nil
@@ -237,7 +236,7 @@ func (b *Broker) pruneTerminal(now time.Time) error {
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		var out []string
 		for rows.Next() {
 			var id string
@@ -304,7 +303,7 @@ func ensureLastTouched(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var cid, notNull, pk int
 		var name, typ string
@@ -359,11 +358,11 @@ CREATE TABLE IF NOT EXISTS elicitation_answers (
 // NewID mints an identifier.
 func NewID() string {
 	var b [8]byte
-	_, _ = rand.Read(b[:])
+	_, _ = RandSource.Read(b[:])
 	return "elc-" + hex.EncodeToString(b[:])
 }
 
-// Open registers a question and returns its identifier.
+// OpenRequest registers a question and returns its identifier.
 func (b *Broker) OpenRequest(r Request) (Request, error) {
 	if r.ID == "" {
 		r.ID = NewID()
@@ -514,7 +513,7 @@ func (b *Broker) Respond(a Answer) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	state := Answered
 	if a.By == "expiry" {
 		state = Expired
@@ -658,7 +657,7 @@ func (b *Broker) get(id string) (Request, bool, error) {
 	if err != nil {
 		return Request{}, false, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out, err := scanRequests(rows)
 	if err != nil || len(out) == 0 {
 		return Request{}, false, err
@@ -751,7 +750,7 @@ func (b *Broker) Pending(f Filter) ([]Request, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanRequests(rows)
 }
 
@@ -770,7 +769,7 @@ func (b *Broker) expireOverdue() error {
 			ids = append(ids, id)
 		}
 	}
-	rows.Close()
+	_ = rows.Close()
 	for _, id := range ids {
 		_ = b.Respond(Answer{ID: id, Action: Cancel, By: "expiry", At: now})
 	}

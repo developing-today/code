@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "generatedAt": "2026-10-27T03:14:56Z",
+  "runId": "orch-2026-10-27T03:14:56Z",
+  "provenance": {
+    "sources": [
+      "fleet-feed.json sample run: one active session, no awaiting question; quota pools healthy",
+      "laptop session collection completed this run: 6 entries",
+      "review-state keeper last run 2026-10-26T23:03:16Z"
+    ],
+    "runId": "orch-2026-10-27T03:14:56Z"
+  },
+  "tiers": {
+    "needsDrew": [
+      {
+        "id": "example-owner/example-repo#812",
+        "kind": "decision",
+        "title": "Review an example design decision",
+        "source": "backlog",
+        "reason": "Scope requires an owner design decision.",
+        "since": "2026-10-27T03:14:56Z",
+        "lastSeenAt": "2026-10-27T03:14:56Z",
+        "ref": "example-owner/example-repo#812"
+      }
+    ],
+    "needsOrchestrator": []
+  },
+  "dependencies": [
+    {
+      "task": "Example repository wiring task",
+      "ref": "example-owner/example-repo#807",
+      "status": "queued",
+      "taskRef": "example-owner/example-repo#818"
+    }
+  ],
+  "goals": [
+    {
+      "goalId": "goal_example_01",
+      "goal": "Keep the four repos healthy",
+      "momentum": "moving",
+      "summary": "Example progress recorded since the previous run.",
+      "progressedSinceLastRun": ["Example task closed via merged PR"],
+      "linedUp": [],
+      "stalled": [],
+      "gaps": []
+    }
+  ],
+  "actions": [
+    {
+      "at": "2026-10-27T03:14:56Z",
+      "kind": "verify",
+      "target": "example queue",
+      "summary": "Reviewed the latest example feed and session collection."
+    }
+  ]
+}

@@ -89,7 +89,9 @@ function sanitizeOptions(raw: unknown): TierItemOption[] | undefined {
     const label = bounded(entry.label, 80);
     if (!label) continue;
     seen.add(id);
-    const opt: TierItemOption = { id, label };
+    const questionId =
+      typeof entry.questionId === "string" && SLUG_RE.test(entry.questionId) ? entry.questionId : undefined;
+    const opt: TierItemOption = { id, label, ...(questionId ? { questionId } : {}) };
     const description = optionalBounded(entry.description, 300);
     if (description) opt.description = description;
     const effect = optionalBounded(entry.effect, 300);
@@ -139,6 +141,22 @@ function sanitizeQuestions(raw: unknown): TierItemQuestion[] | undefined {
     out.push(q);
   }
   return out.length ? out : undefined;
+}
+
+/** Resolve a shortcut option to its canonical survey question. Explicit
+ *  publisher mapping wins; otherwise match the option id among question
+ *  choices. A sole question is NOT evidence of a mapping: an item may
+ *  carry standalone options beside one independent survey question, and
+ *  mapping the option onto it would record a wrong answer and lock the
+ *  real question (Codex P2 on PR #4024). */
+export function questionIdForOption(item: TierItem | undefined, optionId: string): string | undefined {
+  const option = item?.options?.find((candidate) => candidate.id === optionId);
+  if (!option || !item) return undefined;
+  const questions = item.questions ?? [];
+  if (option.questionId && questions.some((question) => question.id === option.questionId)) return option.questionId;
+  const matches = questions.filter((question) => question.options?.some((choice) => choice.id === optionId));
+  if (matches.length === 1) return matches[0]?.id;
+  return undefined;
 }
 
 function sanitizeDelegation(raw: unknown, whyUser: WhyUserClass | undefined): TierItemDelegation | undefined {
@@ -358,7 +376,14 @@ export function checkActionAgainstItem(input: NewAction, item: TierItem | undefi
       const qs = item.questions ?? [];
       if (!qs.length) return "this item has no survey questions to answer";
       const byId = new Map(qs.map((q) => [q.id, q]));
+      const seenAnswers = new Set<string>();
       for (const a of p.answers) {
+        // #4291: a duplicate questionId in one submit is rejected
+        // even when validateNewAction was bypassed — the item-side
+        // boundary does not merge or guess between the two values.
+        if (seenAnswers.has(a.questionId))
+          return `question "${a.questionId}" is answered more than once in this submit`;
+        seenAnswers.add(a.questionId);
         const q = byId.get(a.questionId);
         if (!q) return `unknown question id "${a.questionId}" for this item`;
         switch (q.type) {

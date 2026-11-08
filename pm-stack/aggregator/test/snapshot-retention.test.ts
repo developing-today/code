@@ -12,11 +12,13 @@ import {
   SnapshotStore,
   compactRecordsToRollups,
   expandRollup,
+  isSnapshotRecord,
   isSnapshotRollup,
   rollupFileFor,
   shiftMonth,
   withSnapshotStoreLock,
 } from "../src/snapshots.ts";
+import type { SnapshotRollup } from "../src/snapshots.ts";
 
 const NOW = new Date("2026-10-29T12:00:00Z"); // cutoff month: 2025-09
 
@@ -38,6 +40,70 @@ function rec(
     ...extra,
   };
 }
+
+function rollup(overrides: Partial<SnapshotRollup> = {}): SnapshotRollup {
+  const ts = "2025-06-03T12:00:00Z";
+  return {
+    kind: "snapshot-rollup/v1",
+    month: "2025-06",
+    serviceId: "svc-a",
+    metricId: "weekly",
+    unit: "pct",
+    source: "api",
+    observedBy: "test",
+    count: 1,
+    firstTs: ts,
+    lastTs: ts,
+    valueMin: 10,
+    minTs: ts,
+    valueMax: 10,
+    maxTs: ts,
+    valueLast: 10,
+    keys: [],
+    ...overrides,
+  };
+}
+
+describe("isSnapshotRollup", () => {
+  test("rejects impossible month, date, metadata, and value shapes", () => {
+    const invalid: Partial<SnapshotRollup>[] = [
+      { month: "2025-00" },
+      { month: "2025-13" },
+      { firstTs: "2026-02-30T12:00:00Z" },
+      { lastTs: "2026-02-30T12:00:00Z" },
+      { minTs: "2026-02-30T12:00:00Z" },
+      { maxTs: "2026-02-30T12:00:00Z" },
+      { resetsAt: "2026-02-30T12:00:00Z" },
+      { resetsAtTs: "2026-02-30T12:00:00Z" },
+      { limit: -1 },
+      { limit: "100" as unknown as number },
+      { limitTs: "2026-02-30T12:00:00Z" },
+      { valueMin: { low: Number.NaN, high: 2 } },
+      { valueMax: { low: 1, high: Number.POSITIVE_INFINITY } },
+      { valueLast: { low: 2, high: 1 } },
+    ];
+
+    for (const overrides of invalid) {
+      expect(isSnapshotRollup(rollup(overrides))).toBe(false);
+    }
+  });
+
+  test("valid pair-valued rollups with quota metadata expand to valid records", () => {
+    const pair = { low: 10, high: 12 };
+    const valid = rollup({
+      valueMin: pair,
+      valueMax: pair,
+      valueLast: pair,
+      resetsAt: "2025-06-08T00:00:00Z",
+      resetsAtTs: "2025-06-03T12:00:00Z",
+      limit: 100,
+      limitTs: "2025-06-03T12:00:00Z",
+    });
+
+    expect(isSnapshotRollup(valid)).toBe(true);
+    expect(expandRollup(valid).every(isSnapshotRecord)).toBe(true);
+  });
+});
 
 async function seedStore(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true });
@@ -448,6 +514,46 @@ describe("isSnapshotRollup count gate (#3443)", () => {
       expect(await store.rollupKeys()).toHaveLength(0);
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("isSnapshotRollup value domain (#4276)", () => {
+  test("refuses negative scalar pct values in min, max, and last", () => {
+    // Mirrors the isSnapshotRecord scalar-pct rule (#2346): a corrupt
+    // rollup must not re-seed the reading path via expandRollup.
+    expect(isSnapshotRollup(rollup({ valueLast: -5 }))).toBe(false);
+    expect(isSnapshotRollup(rollup({ valueMin: -20, valueLast: -5 }))).toBe(false);
+    expect(isSnapshotRollup(rollup({ valueMin: -20, valueMax: -5, valueLast: -5 }))).toBe(false);
+  });
+
+  test("refuses min ordered after max in scalar and pair forms", () => {
+    // aggAddRecord only lowers min / raises max, so an inverted
+    // rollup is unproducible by writers and therefore corrupt.
+    expect(isSnapshotRollup(rollup({ valueMin: 90, valueMax: 10 }))).toBe(false);
+    const invertedPair = rollup({
+      unit: "usd-est",
+      valueMin: { low: 20, high: 30 },
+      valueMax: { low: 1, high: 2 },
+      valueLast: { low: 20, high: 30 },
+    });
+    expect(isSnapshotRollup(invertedPair)).toBe(false);
+  });
+
+  test("valid pct, negative usd, and ordered pair rollups pass and expand to valid records", () => {
+    const passing = [
+      rollup(),
+      rollup({ unit: "usd", valueMin: -20, valueMax: -5, valueLast: -5 }),
+      rollup({
+        unit: "usd-est",
+        valueMin: { low: 1, high: 2 },
+        valueMax: { low: 20, high: 30 },
+        valueLast: { low: 20, high: 30 },
+      }),
+    ];
+    for (const r of passing) {
+      expect(isSnapshotRollup(r)).toBe(true);
+      expect(expandRollup(r).every(isSnapshotRecord)).toBe(true);
     }
   });
 });

@@ -7,17 +7,23 @@
 // acpx runtime) drives the fleet's ONE standing shared `opencode serve`
 // instead of `opencode acp`, which starts a private server per process.
 //
-// Mapping (per #1243):
+// Mapping (per #1243; v2 session API per #4614, probed live from the
+// standing server's OpenAPI + event stream, task 6571):
 //   ACP initialize            -> static capabilities (no server call)
-//   ACP session/new           -> POST /session (cwd -> ?directory=)
-//   ACP session/prompt        -> POST /session/:id/prompt_async, then the
-//                                GET /event SSE stream is translated back
-//                                into ACP session/update notifications;
-//                                the prompt resolves on session.idle
-//   serve permission.updated  -> ACP session/request_permission; the
+//   ACP session/new           -> POST /api/session (cwd -> body
+//                                location.directory; {data} envelope)
+//   ACP session/prompt        -> POST /api/session/:id/prompt ({text,
+//                                files}), then the GET /api/event SSE
+//                                stream (v2 event model: session.text.*
+//                                / session.reasoning.* deltas) is
+//                                translated back into ACP session/update
+//                                notifications; the prompt resolves on
+//                                session.execution.succeeded
+//   serve permission.asked    -> ACP session/request_permission; the
 //                                client's choice is posted back to
-//                                POST /session/:id/permissions/:permId
-//   ACP session/cancel        -> POST /session/:id/abort
+//                                POST /api/session/:id/permission/
+//                                :permId/reply ({decision})
+//   ACP session/cancel        -> POST /api/session/:id/interrupt
 //
 // Config:
 //   --server <url>            shared serve base URL
@@ -26,12 +32,22 @@
 //                             shared server OpenChamber attaches to)
 //   OPENCODE_SERVER_PASSWORD  when set, sent as HTTP basic auth
 //                             (user "opencode"), matching serve's auth
+//   OPENCODE_AUTH_FILE        JSON state file carrying the standing
+//                             server's "password" field, read at
+//                             runtime when the env var is unset
+//                             (default ~/.local/state/opencode/
+//                             service-prod.json — the server's own
+//                             state file, #4615). The value is never
+//                             logged or baked into tracked config.
 //   OPENCODE_ACP_ADAPTER_DEBUG=1 -> diagnostics on stderr (stdout is
 //                             the protocol channel and stays clean)
 //
 // The adapter spawns no server of its own; if the shared serve is
 // unreachable, session/new fails with the connection error.
 
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import process from 'node:process';
 
@@ -60,9 +76,61 @@ function parseServerUrl(argv) {
 
 const serverBase = parseServerUrl(process.argv.slice(2));
 
+// Resolve the standing server's password (#4615), mirroring the fleet
+// pattern (pm-stack dispatch's OpenCodeClient, bin/openchamber-start.sh):
+// the password lives in the server's own state file and is read at
+// runtime — never baked into tracked config or the Nix store, never
+// logged. Precedence: the OPENCODE_SERVER_PASSWORD env var, then the
+// JSON state file named by OPENCODE_AUTH_FILE (default
+// ~/.local/state/opencode/service-prod.json, field "password").
+// Resolved lazily on first use and cached for the process lifetime
+// (acpx launches a fresh adapter per gateway session).
+//
+// A missing state file just means no auth (a passwordless dev serve).
+// A state file that exists but is malformed, or carries no password,
+// warns once on stderr — the file path and the problem, never any
+// credential value — and requests go out unauthenticated, so the
+// serve's own 401 names the real problem instead of a silent hang.
+let resolvedPassword;
+let credentialResolved = false;
+function serverPassword() {
+  if (credentialResolved) return resolvedPassword;
+  credentialResolved = true;
+  const fromEnv = process.env.OPENCODE_SERVER_PASSWORD;
+  if (fromEnv) {
+    resolvedPassword = fromEnv;
+    return resolvedPassword;
+  }
+  const authFile =
+    process.env.OPENCODE_AUTH_FILE ||
+    join(homedir(), '.local', 'state', 'opencode', 'service-prod.json');
+  let raw;
+  try {
+    raw = readFileSync(authFile, 'utf8');
+  } catch {
+    debug(`no readable credential state file at ${authFile}; requests go unauthenticated`);
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.password === 'string' && parsed.password) {
+      resolvedPassword = parsed.password;
+      return resolvedPassword;
+    }
+    process.stderr.write(
+      `[${AGENT_NAME}] credential state file ${authFile} carries no password; requests go unauthenticated\n`,
+    );
+  } catch {
+    process.stderr.write(
+      `[${AGENT_NAME}] credential state file ${authFile} is not valid JSON; requests go unauthenticated\n`,
+    );
+  }
+  return undefined;
+}
+
 function authHeaders(extra = {}) {
   const headers = { ...extra };
-  const password = process.env.OPENCODE_SERVER_PASSWORD;
+  const password = serverPassword();
   if (password) {
     headers.Authorization = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`;
   }
@@ -81,11 +149,12 @@ async function serveJson(pathname, { method = 'GET', body } = {}) {
   }
   if (res.status === 204) return null;
   const text = await res.text();
-  return text ? JSON.parse(text) : null;
+  if (!text) return null;
+  const parsed = JSON.parse(text);
+  // The v2 API wraps responses in a {data: …} envelope.
+  if (parsed && typeof parsed === 'object' && 'data' in parsed) return parsed.data;
+  return parsed;
 }
-
-const withDirectory = (pathname, directory) =>
-  directory ? `${pathname}?directory=${encodeURIComponent(directory)}` : pathname;
 
 // ---------------------------------------------------------------------------
 // JSON-RPC peer over stdio
@@ -126,7 +195,6 @@ function requestClient(method, params) {
 const sessions = new Map(); // acpSessionId -> { directory }
 const pendingPrompts = new Map(); // acpSessionId -> { requestId }
 const cancelledSessions = new Set(); // acpSessionId
-const partTextSent = new Map(); // partId -> chars of part.text already streamed
 
 function sessionUpdate(sessionId, update) {
   sendNotification('session/update', { sessionId, update });
@@ -161,10 +229,10 @@ async function runEventStream() {
   });
   while (!shuttingDown) {
     try {
-      const res = await fetch(`${serverBase}/event`, {
+      const res = await fetch(`${serverBase}/api/event`, {
         headers: authHeaders({ Accept: 'text/event-stream' }),
       });
-      if (!res.ok || !res.body) throw new Error(`GET /event -> ${res.status}`);
+      if (!res.ok || !res.body) throw new Error(`GET /api/event -> ${res.status}`);
       markEventStreamReady();
       debug('event stream connected');
       const reader = res.body.getReader();
@@ -205,31 +273,15 @@ function handleSseBlock(block) {
   if (event && typeof event.type === 'string') handleServeEvent(event);
 }
 
-function eventSessionId(properties) {
-  return (
-    properties?.sessionID ||
-    properties?.part?.sessionID ||
-    properties?.info?.sessionID ||
-    properties?.permission?.sessionID ||
-    null
-  );
+function eventSessionId(data) {
+  return data?.sessionID || null;
 }
 
-function streamPartText(sessionId, part, delta) {
-  if (!part || (part.type !== 'text' && part.type !== 'reasoning')) return;
-  let chunk = '';
-  if (typeof delta === 'string' && delta.length > 0) {
-    chunk = delta;
-    partTextSent.set(part.id, (partTextSent.get(part.id) || 0) + delta.length);
-  } else if (typeof part.text === 'string') {
-    const sent = partTextSent.get(part.id) || 0;
-    chunk = part.text.slice(sent);
-    partTextSent.set(part.id, part.text.length);
-  }
-  if (!chunk) return;
+function streamDelta(sessionId, kind, delta) {
+  if (typeof delta !== 'string' || delta.length === 0) return;
   sessionUpdate(sessionId, {
-    sessionUpdate: part.type === 'reasoning' ? 'agent_thought_chunk' : 'agent_message_chunk',
-    content: { type: 'text', text: chunk },
+    sessionUpdate: kind === 'reasoning' ? 'agent_thought_chunk' : 'agent_message_chunk',
+    content: { type: 'text', text: delta },
   });
 }
 
@@ -240,8 +292,8 @@ const PERMISSION_OPTION_TO_RESPONSE = {
   reject_always: 'reject',
 };
 
-async function handlePermissionUpdated(properties) {
-  const permission = properties?.permission ?? properties;
+async function handlePermissionAsked(data) {
+  const permission = data || {};
   const sessionId = permission?.sessionID;
   const permissionId = permission?.id;
   if (!sessionId || !permissionId || !sessions.has(sessionId)) return;
@@ -252,8 +304,10 @@ async function handlePermissionUpdated(properties) {
       sessionId,
       toolCall: {
         toolCallId: permissionId,
-        title: permission.title || `Permission requested: ${permission.type || 'tool'}`,
-        kind: kindByType[permission.type] || 'other',
+        title:
+          permission.message ||
+          `Permission requested: ${permission.action || 'tool'}${permission.resources?.length ? ` (${permission.resources.join(', ')})` : ''}`,
+        kind: kindByType[permission.action] || 'other',
         status: 'pending',
         rawInput: permission.metadata ?? {},
       },
@@ -272,14 +326,13 @@ async function handlePermissionUpdated(properties) {
   if (outcome && outcome.outcome?.outcome === 'selected') {
     response = PERMISSION_OPTION_TO_RESPONSE[outcome.outcome.optionId] || 'reject';
   }
-  const { directory } = sessions.get(sessionId) || {};
   try {
-    await serveJson(
-      withDirectory(`/session/${sessionId}/permissions/${permissionId}`, directory),
-      { method: 'POST', body: { response } },
-    );
+    await serveJson(`/api/session/${sessionId}/permission/${permissionId}/reply`, {
+      method: 'POST',
+      body: { decision: response },
+    });
   } catch (err) {
-    debug(`posting permission response failed: ${err.message}`);
+    debug(`posting permission reply failed: ${err.message}`);
   }
 }
 
@@ -287,34 +340,43 @@ function finishPrompt(sessionId, result, error) {
   const pending = pendingPrompts.get(sessionId);
   if (!pending) return;
   pendingPrompts.delete(sessionId);
-  partTextSent.clear();
+  // A cancel marker belongs to the prompt it arrived during. Always clear
+  // it when that prompt reaches a terminal event so a cancel racing
+  // completion (or an error) cannot mislabel the next prompt (#4618).
+  cancelledSessions.delete(sessionId);
   if (error) sendError(pending.requestId, -32603, error);
   else sendResult(pending.requestId, result);
 }
 
 function handleServeEvent(event) {
-  const { type, properties } = event;
-  const sessionId = eventSessionId(properties || {});
+  const { type, data } = event;
+  const sessionId = eventSessionId(data || {});
   switch (type) {
-    case 'message.part.updated':
+    case 'session.text.delta':
       if (sessionId && pendingPrompts.has(sessionId)) {
-        streamPartText(sessionId, properties.part, properties.delta);
+        streamDelta(sessionId, 'text', data.delta);
       }
       break;
-    case 'permission.updated':
-      void handlePermissionUpdated(properties || {});
+    case 'session.reasoning.delta':
+      if (sessionId && pendingPrompts.has(sessionId)) {
+        streamDelta(sessionId, 'reasoning', data.delta);
+      }
       break;
-    case 'session.idle':
+    case 'permission.asked':
+      void handlePermissionAsked(data || {});
+      break;
+    case 'session.execution.succeeded':
       if (sessionId && pendingPrompts.has(sessionId)) {
         const wasCancelled = cancelledSessions.has(sessionId);
         cancelledSessions.delete(sessionId);
         finishPrompt(sessionId, { stopReason: wasCancelled ? 'cancelled' : 'end_turn' });
       }
       break;
-    case 'session.error': {
+    case 'session.execution.failed': {
       if (sessionId && pendingPrompts.has(sessionId)) {
         const message =
-          properties?.error?.data?.message || properties?.error?.name || 'session error';
+          data?.error?.message || data?.message || data?.error?.name || 'session execution failed';
+        cancelledSessions.delete(sessionId);
         finishPrompt(sessionId, null, `serve session error: ${message}`);
       }
       break;
@@ -328,38 +390,43 @@ function handleServeEvent(event) {
 // ACP method handlers
 // ---------------------------------------------------------------------------
 
-function acpBlocksToServeParts(blocks) {
-  const parts = [];
+// The v2 prompt body is { text, files } — there is no parts array.
+// Text-bearing ACP blocks concatenate into `text`; binary/link blocks
+// become file attachments by URI (data: URIs for embedded content).
+function acpBlocksToPromptBody(blocks) {
+  const texts = [];
+  const files = [];
   for (const block of blocks || []) {
     if (!block || typeof block.type !== 'string') continue;
     switch (block.type) {
       case 'text':
-        parts.push({ type: 'text', text: block.text || '' });
+        texts.push(block.text || '');
         break;
       case 'image':
-        parts.push({
-          type: 'file',
-          mime: block.mimeType || 'image/png',
-          url: `data:${block.mimeType || 'image/png'};base64,${block.data || ''}`,
+        files.push({
+          uri: `data:${block.mimeType || 'image/png'};base64,${block.data || ''}`,
+          name: 'image',
         });
         break;
       case 'resource':
         if (typeof block.resource?.text === 'string') {
-          parts.push({ type: 'text', text: block.resource.text });
+          texts.push(block.resource.text);
         } else if (typeof block.resource?.blob === 'string') {
           const mime = block.resource.mimeType || 'application/octet-stream';
-          parts.push({ type: 'file', mime, url: `data:${mime};base64,${block.resource.blob}` });
+          files.push({ uri: `data:${mime};base64,${block.resource.blob}`, name: 'resource' });
         }
         break;
       case 'resource_link':
-        parts.push({ type: 'file', mime: block.mimeType || '', url: block.uri });
+        files.push({ uri: block.uri, name: block.name || 'link' });
         break;
       default:
         debug(`dropping unsupported ACP content block type: ${block.type}`);
         break;
     }
   }
-  return parts;
+  const body = { text: texts.join('\n') };
+  if (files.length) body.files = files;
+  return body;
 }
 
 const handlers = {
@@ -384,8 +451,11 @@ const handlers = {
   async 'session/new'(params) {
     const cwd = params?.cwd || process.cwd();
     await ensureEventStream();
-    const session = await serveJson(withDirectory('/session', cwd), { method: 'POST', body: {} });
-    if (!session?.id) throw new Error('serve POST /session returned no session id');
+    const session = await serveJson('/api/session', {
+      method: 'POST',
+      body: { location: { directory: cwd } },
+    });
+    if (!session?.id) throw new Error('serve POST /api/session returned no session id');
     sessions.set(session.id, { directory: cwd });
     debug(`session/new -> ${session.id} (directory ${cwd})`);
     return { sessionId: session.id };
@@ -399,18 +469,19 @@ const handlers = {
     if (pendingPrompts.has(sessionId)) {
       throw new Error(`session ${sessionId} already has a prompt in flight`);
     }
-    const { directory } = sessions.get(sessionId);
-    const parts = acpBlocksToServeParts(params.prompt);
+    const body = acpBlocksToPromptBody(params.prompt);
     // Register before posting so fast events are not missed; the reply is
-    // sent by finishPrompt when the serve reports session.idle / error.
+    // sent by finishPrompt when the serve reports
+    // session.execution.succeeded / .failed.
     pendingPrompts.set(sessionId, { requestId });
     try {
-      await serveJson(withDirectory(`/session/${sessionId}/prompt_async`, directory), {
+      await serveJson(`/api/session/${sessionId}/prompt`, {
         method: 'POST',
-        body: { parts },
+        body,
       });
     } catch (err) {
       pendingPrompts.delete(sessionId);
+      cancelledSessions.delete(sessionId);
       throw err;
     }
     return undefined; // response deferred to finishPrompt
@@ -419,15 +490,20 @@ const handlers = {
   async 'session/cancel'(params) {
     const sessionId = params?.sessionId;
     if (!sessionId || !sessions.has(sessionId)) return;
+    // A cancel arriving after the prompt already reached a terminal event
+    // must not arm a stale marker for the next prompt (#4618). Prompt-state
+    // checks here are synchronous with finishPrompt, rather than racy with
+    // the abort POST outcome, because this prompt already holds a pending
+    // ACP request; terminal-event cleanup is gated on the same map.
+    if (!pendingPrompts.has(sessionId)) return;
     cancelledSessions.add(sessionId);
-    const { directory } = sessions.get(sessionId);
     try {
-      await serveJson(withDirectory(`/session/${sessionId}/abort`, directory), {
+      await serveJson(`/api/session/${sessionId}/interrupt`, {
         method: 'POST',
         body: {},
       });
     } catch (err) {
-      debug(`abort failed for ${sessionId}: ${err.message}`);
+      debug(`interrupt failed for ${sessionId}: ${err.message}`);
     }
   },
 
@@ -441,6 +517,16 @@ const handlers = {
 };
 
 async function dispatch(message) {
+  // A line can be valid JSON without being a JSON-RPC message object:
+  // `null` (the one value whose destructure throws) and other primitives
+  // carry no id/method. Ignore them like the non-JSON lines the stdin
+  // handler already skips (#6919) — destructuring `null` here escaped as
+  // an unhandled rejection from the void-called dispatch and killed the
+  // whole adapter.
+  if (!message || typeof message !== 'object') {
+    debug('ignoring non-object JSON line on stdin');
+    return;
+  }
   const { id, method, params } = message;
   const isRequest = id !== undefined && id !== null;
   if (!method) {

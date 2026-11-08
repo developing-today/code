@@ -54,25 +54,17 @@ info "${c_dim}target    : $TARGET${c_off}"
 
 # --- reuse an existing checkout, or clone -------------------------------------
 # Only clone when there is genuinely nothing there. If a hardware-doc already sits
-# beside this repo we adopt it as-is, whatever its remote or branch - the user may
-# have it checked out on a topic branch, or pointed at a fork.
+# beside this repo we adopt it (whatever its remote) and attempt the safe
+# fast-forward-only update below on its current branch; every unsafe state
+# (detached, dirty, no upstream, fetch failure, unpushed, diverged) warns and
+# leaves the checkout untouched.
 if [ -d "$TARGET/.git" ]; then
   ok "using existing checkout at $TARGET"
   ACTUAL_URL="$(git -C "$TARGET" remote get-url origin 2>/dev/null || true)"
   if [ -n "$ACTUAL_URL" ] && [ "$ACTUAL_URL" != "$REPO_URL" ]; then
     info "${c_dim}  origin: $ACTUAL_URL${c_off}"
   fi
-elif [ ! -e "$TARGET" ]; then
-  info "no $DIR_NAME beside this repo - cloning $REPO_URL"
-  if git clone "$REPO_URL" "$TARGET"; then
-    ok "cloned to $TARGET"
-  else
-    err "clone failed"; exit 1
-  fi
-elif [ ! -d "$TARGET/.git" ]; then
-  err "$TARGET exists but is not a git repository — refusing to touch it"
-  exit 1
-else
+
   # --- update, but never destructively ----------------------------------------
   BRANCH="$(git -C "$TARGET" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
 
@@ -107,6 +99,16 @@ else
       fi
     fi
   fi
+elif [ ! -e "$TARGET" ]; then
+  info "no $DIR_NAME beside this repo - cloning $REPO_URL"
+  if git clone "$REPO_URL" "$TARGET"; then
+    ok "cloned to $TARGET"
+  else
+    err "clone failed"; exit 1
+  fi
+else
+  err "$TARGET exists but is not a git repository — refusing to touch it"
+  exit 1
 fi
 
 # --- symlink helper -----------------------------------------------------------

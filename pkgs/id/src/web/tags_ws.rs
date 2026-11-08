@@ -49,7 +49,6 @@ use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use super::AppState;
-use crate::frames::MAX_FRAME_BYTES;
 use crate::tags::{CustomNamespace, NamespacePair, Tag, TagStore};
 
 /// Resolve the `ns` request parameter to a namespace pair.
@@ -221,7 +220,7 @@ async fn handle_tags_socket(socket: axum::extract::ws::WebSocket, state: AppStat
     let mut rx = state.tag_store.subscribe();
 
     // Spawn a task to drain inbound messages (keeps the socket alive).
-    let drain_handle = tokio::spawn(async move {
+    let mut drain_handle = tokio::spawn(async move {
         while let Some(Ok(msg)) = receiver.next().await {
             // Respond to pings, ignore everything else.
             if let Message::Close(_) = msg {
@@ -230,9 +229,16 @@ async fn handle_tags_socket(socket: axum::extract::ws::WebSocket, state: AppStat
         }
     });
 
-    // Forward broadcast events to the WebSocket.
+    // Forward broadcast events to the WebSocket. The loop also ends
+    // when the inbound side finishes (a disconnect, a close frame, or
+    // a protocol error such as an oversized message): nobody is
+    // reading any more, so the socket must close instead of lingering.
     loop {
-        match rx.recv().await {
+        let received = tokio::select! {
+            received = rx.recv() => received,
+            _ = &mut drain_handle => break,
+        };
+        match received {
             Ok(event) => {
                 let json = match serde_json::to_string(&event) {
                     Ok(j) => j,

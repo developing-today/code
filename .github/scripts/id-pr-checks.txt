@@ -26,10 +26,13 @@ shellcheck-check
 shfmt-check
 statix-check
 taplo-check
+justfmt-check
 clippy-lint
+clippy-native-shell
 web-lint
 cargo-check
 test-unit
+test-native-shell
 test-shard-0
 test-shard-1
 test-shard-2
@@ -37,6 +40,7 @@ test-shard-3
 test-web-unit
 test-web-typecheck
 roc-test
+roc-examples
 crash-gate-sampled
 crash-gate-sweep
 crash-gate-control

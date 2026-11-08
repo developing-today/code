@@ -1,0 +1,30 @@
+[
+  {
+    "id": "contract-session-01",
+    "source": "opencode-laptop",
+    "label": "Example opencode-laptop session 1",
+    "agentId": "opencode:main",
+    "agentLabel": "OpenCode · main (laptop)",
+    "parentId": null,
+    "startedAt": "2026-10-27T03:00:00Z",
+    "lastSeenAt": "2026-10-27T03:12:00Z",
+    "status": "in-progress",
+    "model": "example-model",
+    "title": "Example session for https://github.com/developing-today/code/issues/1177",
+    "taskRefs": ["developing-today/code#1177"]
+  },
+  {
+    "id": "contract-session-02",
+    "source": "jules",
+    "label": "Example jules session 2",
+    "agentId": "jules",
+    "agentLabel": "Jules",
+    "parentId": null,
+    "startedAt": "2026-10-27T03:00:00Z",
+    "lastSeenAt": "2026-10-27T03:12:00Z",
+    "status": "idle",
+    "model": "example-model",
+    "title": "Example session for https://github.com/developing-today/code/issues/1178",
+    "taskRefs": ["developing-today/code#1178"]
+  }
+]

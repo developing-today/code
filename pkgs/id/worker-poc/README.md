@@ -43,8 +43,13 @@ evolution only, never on execution-budget behaviour.
   `../examples/roc-counter/counter.wasm`: seed + `inc`×3 with per-step
   view/records/snapshot-hash, a guest-level cold start (restore the step-2
   snapshot into a fresh instance, hash must match the uninterrupted run),
-  and both loader-refusal assertions. Run: `npm run smoke`
-  (Node ≥ 22, no install needed for the smoke).
+  and both loader-refusal assertions. `smoke/post-update-failure.mjs` drives
+  `WorldObject` directly with a one-shot post-update view failure and asserts
+  the next step, single journal row, and cold-start restore contain only the
+  successful event. Run both with `npm run smoke` or only the regression with
+  `npm run post-update-failure` (Node ≥ 22, no install needed for the smokes).
+
+- `smoke/participant-validation.mjs` — the #4074 regression pin: `PlazaGuest.update` must reject participant value classes the native u64 host can never produce (NaN, -Infinity, negative/fractional) instead of silently coercing them. Run it on its own with `npm run participant-validation`; it also runs as part of `npm run smoke`.
 
 ## Status vs #2271 acceptance
 
@@ -59,8 +64,9 @@ evolution only, never on execution-budget behaviour.
       BLOB snapshots normalized to Uint8Array before plaza_restore, all
       request handling serialized (shared lazy-init promise; update -> hash
       -> journal insert is one unit), step inputs validated before any guest
-      mutation with the guest discarded on journal failure, guest output
-      pointers normalized unsigned, wrangler declared in nix-common.nix.
+      mutation with the guest discarded on any post-update failure before
+      journal commit, guest output pointers normalized unsigned, wrangler
+      declared in nix-common.nix.
       Smoke PASS + tsc clean after the fixes.
 - [x] Counter sequence compared against the native reference runner
       (2026-11-01): `compare/compare.mjs` diffs the isolate host against

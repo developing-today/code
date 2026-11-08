@@ -58,7 +58,7 @@ use anyhow::{Result, bail};
 use iroh_base::EndpointId;
 use iroh_mdns_address_lookup::MdnsAddressLookup;
 
-use crate::discovery::{MAX_PEERS, PeerAnnouncement, resolve_config};
+use crate::discovery::{PeerAnnouncement, PeerDiscovery, resolve_config};
 use crate::peer_announcement::SignedPeerAnnouncement;
 use crate::protocol::{MetaRequest, MetaResponse};
 use crate::store::load_or_create_keypair;
@@ -180,9 +180,7 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
         let gossip_peers = discover_via_gossip(&options).await;
         match gossip_peers {
             Ok(peers) => {
-                for peer in peers {
-                    all_peers.insert(peer.node_id, peer);
-                }
+                merge_gossip_peers(&mut all_peers, peers);
             }
             Err(e) => {
                 if options.gossip {
@@ -207,6 +205,23 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
     }
 
     Ok(())
+}
+
+/// Merge gossip results without letting an older announcement replace a
+/// fresher result already collected from RPC. Equal timestamps keep the
+/// existing arrival-order behavior: gossip, collected later, wins the tie.
+fn merge_gossip_peers(
+    all_peers: &mut HashMap<EndpointId, PeerAnnouncement>,
+    gossip_peers: impl IntoIterator<Item = PeerAnnouncement>,
+) {
+    for peer in gossip_peers {
+        if all_peers
+            .get(&peer.node_id)
+            .is_none_or(|existing| peer.timestamp_secs >= existing.timestamp_secs)
+        {
+            all_peers.insert(peer.node_id, peer);
+        }
+    }
 }
 
 /// One peer as the four tab-separated fields of the `id peers` row:
@@ -241,7 +256,7 @@ async fn query_local_peers() -> Result<Vec<PeerAnnouncement>> {
         send.write_all(&req).await?;
         send.finish()?;
         let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
         match resp {
@@ -281,7 +296,7 @@ async fn query_remote_peers(
         send.write_all(&req).await?;
         send.finish()?;
         let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
         match resp {
@@ -450,16 +465,14 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
 
     // Collect announcements for a limited time
     let collect_timeout = tokio::time::Duration::from_secs(options.timeout_secs);
-    let mut peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
+    let peers = PeerDiscovery::new();
 
     let _ = tokio::time::timeout(collect_timeout, async {
         while let Ok(event) = receiver.next().await {
             if let iroh_gossip::api::Event::Received(msg) = event
                 && let Some(announcement) = SignedPeerAnnouncement::decode_frame(&msg.content)
             {
-                if peers.contains_key(&announcement.node_id) || peers.len() < MAX_PEERS {
-                    peers.insert(announcement.node_id, announcement);
-                }
+                admit_gossip_announcement(&peers, announcement);
             }
         }
     })
@@ -469,7 +482,17 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
     accept_handle.abort();
     endpoint.close().await;
 
-    Ok(peers.into_values().collect())
+    Ok(peers
+        .peers()
+        .into_iter()
+        .map(|peer| peer.announcement)
+        .collect())
+}
+
+/// Admit a decoded gossip announcement through the shared freshness and
+/// ordering checks used by the serve-side peer table.
+fn admit_gossip_announcement(peers: &PeerDiscovery, announcement: PeerAnnouncement) {
+    peers.update(announcement);
 }
 
 /// Parse bootstrap node IDs with serve parity (#2016): warn per invalid
@@ -523,6 +546,84 @@ mod tests {
             // older than STALE_THRESHOLD relative to the wall clock.
             timestamp_secs: now_secs(),
         }
+    }
+
+    #[test]
+    fn gossip_collection_uses_freshness_and_monotonic_ordering() {
+        let discovery = PeerDiscovery::new();
+        let now = now_secs();
+
+        let mut ancient = announcement(30, Some("ancient"));
+        ancient.timestamp_secs = 1;
+        admit_gossip_announcement(&discovery, ancient);
+
+        let mut far_future = announcement(31, Some("far-future"));
+        far_future.timestamp_secs = u64::MAX;
+        admit_gossip_announcement(&discovery, far_future);
+
+        let mut newer = announcement(32, Some("newer"));
+        newer.timestamp_secs = now.saturating_sub(1);
+        admit_gossip_announcement(&discovery, newer);
+
+        let mut older_replay = announcement(32, Some("older replay"));
+        older_replay.timestamp_secs = now.saturating_sub(2);
+        admit_gossip_announcement(&discovery, older_replay);
+
+        // A fresh, in-order control remains collectable.
+        let mut fresh_control = announcement(33, Some("fresh control"));
+        fresh_control.timestamp_secs = now;
+        admit_gossip_announcement(&discovery, fresh_control);
+
+        let peers = discovery.peers();
+        assert_eq!(peers.len(), 2);
+        assert!(
+            peers
+                .iter()
+                .all(|peer| peer.announcement.node_id != announcement(30, None).node_id)
+        );
+        assert!(
+            peers
+                .iter()
+                .all(|peer| peer.announcement.node_id != announcement(31, None).node_id)
+        );
+        assert!(peers.iter().any(|peer| {
+            peer.announcement.node_id == announcement(32, None).node_id
+                && peer.announcement.name.as_deref() == Some("newer")
+        }));
+        assert!(peers.iter().any(|peer| {
+            peer.announcement.node_id == announcement(33, None).node_id
+                && peer.announcement.name.as_deref() == Some("fresh control")
+        }));
+    }
+
+    #[test]
+    fn gossip_merge_does_not_replace_fresher_rpc_results() {
+        let now = now_secs();
+
+        let mut rpc_fresher = announcement(34, Some("rpc fresher"));
+        rpc_fresher.timestamp_secs = now.saturating_sub(1);
+        let mut gossip_older = announcement(34, Some("gossip older"));
+        gossip_older.timestamp_secs = now.saturating_sub(2);
+
+        let mut rpc_older = announcement(35, Some("rpc older"));
+        rpc_older.timestamp_secs = now.saturating_sub(2);
+        let mut gossip_fresher = announcement(35, Some("gossip fresher"));
+        gossip_fresher.timestamp_secs = now.saturating_sub(1);
+
+        let mut all_peers = HashMap::from([
+            (rpc_fresher.node_id, rpc_fresher),
+            (rpc_older.node_id, rpc_older),
+        ]);
+        merge_gossip_peers(&mut all_peers, [gossip_older, gossip_fresher]);
+
+        assert_eq!(
+            all_peers[&announcement(34, None).node_id].name.as_deref(),
+            Some("rpc fresher")
+        );
+        assert_eq!(
+            all_peers[&announcement(35, None).node_id].name.as_deref(),
+            Some("gossip fresher")
+        );
     }
 
     fn valid_id_string(byte: u8) -> String {

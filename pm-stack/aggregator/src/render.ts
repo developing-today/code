@@ -23,6 +23,7 @@ import {
 import type { RoadmapReconciliation } from "./roadmap-reconcile.ts";
 import type { RoadmapAnnotation } from "./roadmap-annotations.ts";
 import { diffCoverage, type CoverageSnapshotFile } from "./coverage.ts";
+import { DIGEST_SECTION_LIMIT, type Digest, type DigestKind } from "./digest.ts";
 import { registryQueryString, type RegistryView } from "./registry-view.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
 import { applyBoardDonePolicy, DONE_STRIP_RENDER_LIMIT } from "./board-policy.ts";
@@ -33,14 +34,31 @@ import {
   effectiveStandingAuto,
   proposalExpired,
   proposalIdentity,
+  questionIdForOption,
   type NeedsOrder,
 } from "./tier-items.ts";
 import { commentKindCounts, githubCommentUrl, queuedComments, type CommentKindCounts } from "./comments.ts";
 import { serviceHomeLinks, type ItemServiceLink } from "./service-links.ts";
+import { activityCoverageHtml, gapsHtml, type ActivityCoverage, type GapRecord } from "./activity.ts";
+import type { AuditEvent } from "./events.ts";
 import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
+import {
+  applyInequalityFilters,
+  bandIndex,
+  computeRecommendations,
+  logEdges,
+  normName,
+  paretoSet,
+  pctRank,
+  projectTask,
+  scoreEdges,
+} from "./assets/aa-explorer-computations.js";
 import { summarizeDns } from "./dns.ts";
+import type { NeedsDrewCensus } from "./needs-drew.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
+import type { NotificationRollup } from "./notifications.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
+import { providerDisplayNames } from "./provider-display.ts";
 import type { QueueView, QueueRow } from "./queue-view.ts";
 import type { HealthView, PageHealth } from "./health.ts";
 import {
@@ -82,6 +100,7 @@ import {
   SESSION_SOURCE_LABELS,
   countedEstimate,
   refsInText,
+  isValidRef,
   refUrl,
 } from "./model.ts";
 import { PAGES, groupedPages, primaryGroupedPages, manifestRouteFor, pageByRoute } from "./pages.ts";
@@ -89,11 +108,15 @@ import { KEY_HINT, KEYBOARD_SCRIPT, paletteHtml } from "./keyboard.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
+import type { ConflictEntry, ConflictInbox } from "./conflicts.ts";
 import { buildItemBrief, type ItemBrief } from "./brief.ts";
-import { buildEpicRollups, type EpicRollup } from "./epics.ts";
+import { buildEpicRollups, isEpicChildDone, type EpicRollup } from "./epics.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
+import { EPIC_GRAPH_DEFAULT_CAP, epicGraph, epicSelector } from "./epic-graph.ts";
 import { type AuthorIdentity } from "./registry.ts";
+import type { SearchResult } from "./search-view.ts";
+import { dnsAnchor } from "./search-view.ts";
 
 export function esc(s: unknown): string {
   return String(s ?? "")
@@ -114,311 +137,10 @@ export function fmtDate(iso: string | null | undefined): string {
     .replace(/\.\d+Z$/, "Z");
 }
 
-const CSS = `
-:root { color-scheme: light dark; }
-* { box-sizing: border-box; }
-body { margin: 0; font: 14px/1.45 system-ui, -apple-system, sans-serif; background: #0e1117; color: #e6edf3; }
-[id] { scroll-margin-top: 96px; }
-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; padding: 8px 16px; border-bottom: 1px solid #30363d; background: #161b22; position: sticky; top: 0; }
-.navgroup { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
-.navgroup + .navgroup { border-left: 1px solid #30363d; padding-left: 12px; }
-.navlabel { color: #8b949e; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; margin-right: 4px; }
-nav a { color: #58a6ff; text-decoration: none; padding: 5px 9px; border-radius: 6px; white-space: nowrap; display: inline-flex; align-items: center; min-height: 40px; }
-nav a.active, nav a:hover { background: #21262d; }
-nav a.active { background: #1f6feb33; color: #fff; box-shadow: inset 0 -2px 0 #1f6feb; }
-.navgroup[data-current="true"] .navlabel { color: #58a6ff; }
-main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 80px; }
-h1 { font-size: 18px; } h2 { font-size: 15px; }
-a { color: #58a6ff; }
-.card { border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; margin: 8px 0; background: #161b22; overflow-wrap: anywhere; }
-.muted { color: #8b949e; font-size: 12px; }
-.badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid #30363d; margin: 1px 2px 1px 0; white-space: nowrap; }
-.badge.open { background: #1f6feb33; border-color: #1f6feb; color: #58a6ff; }
-.badge.merged { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
-.badge.closed { background: #8b949e22; border-color: #8b949e; color: #8b949e; }
-.badge.implementing { background: #d2992233; border-color: #d29922; color: #e3b341; }
-.badge.review { background: #bc8cff33; border-color: #bc8cff; color: #bc8cff; }
-.badge.healthy { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
-.badge.near { background: #d2992233; border-color: #d29922; color: #e3b341; }
-.badge.walled { background: #f8514933; border-color: #f85149; color: #f85149; }
-.badge.src { background: #21262d; color: #e6edf3; }
-.badge.acked { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
-.badge.unverified { background: transparent; border-style: dashed; opacity: 0.75; }
-.badge.drew { background: #f8514933; border-color: #f85149; color: #f85149; }
-.badge.orch { background: #1f6feb33; border-color: #1f6feb; color: #58a6ff; }
-.badge.moving { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
-.badge.stalled { background: #d2992233; border-color: #d29922; color: #e3b341; }
-.badge.blocked { background: #f8514933; border-color: #f85149; color: #f85149; }
-.strip { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-.today-health-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 0 0 12px; }
-.today-health-link { min-width: 0; border: 1px solid #30363d; border-radius: 7px; padding: 5px 8px; background: #161b22; text-decoration: none; overflow-wrap: anywhere; }
-.today-health-link.ok { border-color: #2ea04388; color: #3fb950; }
-.today-health-link.warn { border-color: #d29922; color: #e3b341; }
-.today-health-link.unknown { border-color: #6e7681; color: #c9d1d9; }
-@media (max-width: 480px) { .today-health-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.board { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; align-items: start; }
-.col { border: 1px solid #30363d; border-radius: 8px; padding: 8px; background: #0d1117; }
-.col h2 { margin: 2px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: #8b949e; }
-.tblwrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-table { border-collapse: collapse; width: 100%; }
-caption { caption-side: top; text-align: left; font-weight: 600; font-size: 12.5px; padding: 6px 8px; color: #8b949e; }
-th, td { border: 1px solid #30363d; padding: 6px 8px; vertical-align: top; text-align: left; }
-th { background: #161b22; }
-.tl-cell { min-width: 110px; }
-.banner { border: 1px solid #d29922; background: #d2992211; border-radius: 8px; padding: 8px 12px; margin: 12px 0; color: #e3b341; }
-.banner.drew { border-color: #f85149; background: #f8514911; color: #f85149; }
-.pool { display: grid; grid-template-columns: 220px 1fr; gap: 8px 16px; }
-meter { width: 140px; height: 14px; }
-.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
-.chips a { border: 1px solid #30363d; border-radius: 999px; padding: 5px 12px; text-decoration: none; color: #e6edf3; background: #161b22; display: inline-flex; align-items: center; min-height: 40px; }
-.chips a.active { border-color: #1f6feb; background: #1f6feb33; color: #58a6ff; }
-.fchip { border: 1px solid #30363d; border-radius: 999px; padding: 5px 12px; color: #e6edf3; background: #161b22; font-size: 12.5px; }
-.fchip.live { border-color: #2ea04388; }
-.fchip.stale { border-color: #d29922; color: #e3b341; }
-.fchip.invalid { border-color: #f85149; color: #f85149; }
-.fchip.error { border-color: #f85149; color: #f85149; }
-.fchip.absent { border-color: #d29922; color: #e3b341; }
-.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: #8b949e; vertical-align: baseline; }
-.dot.up, .dot.self { background: #3fb950; }
-.dot.down, .dot.invalid { background: #f85149; }
-.dot.stale, .dot.absent { background: #d29922; }
-.dot.off, .dot.unknown { background: #8b949e; }
-.dot.fixtures { background: #bc8cff; }
-.srcdetail { margin: 6px 0; }
-.srcdetail summary { cursor: pointer; }
-.reason { border-left: 3px solid #f85149; padding: 6px 10px; margin: 8px 0 2px; background: #f851490d; }
-.orch-note { border-left: 3px solid #1f6feb; padding: 6px 10px; margin: 8px 0 2px; background: #1f6feb0d; }
-.cov { border: 1px solid #30363d; border-radius: 8px; padding: 8px 12px; margin: 12px 0; background: #0d1117; }
-.cov li { margin: 3px 0; }
-.kids { margin: 6px 0 2px 14px; border-left: 2px solid #30363d; padding-left: 10px; }
-.kids summary { cursor: pointer; color: #58a6ff; font-size: 12px; padding: 4px 0; }
-.obj { display: flex; gap: 10px; align-items: flex-start; }
-.obj .n { font-size: 16px; font-weight: 700; color: #58a6ff; min-width: 22px; }
-.badge.Muse { background: #bc8cff33; border-color: #bc8cff; color: #bc8cff; }
-.badge.agent { background: #1f6feb33; border-color: #1f6feb; color: #58a6ff; }
-.badge.msg { background: #d2992233; border-color: #d29922; color: #e3b341; }
-.badge.gh { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
-.cmt { border-left: 3px solid #30363d; padding: 6px 10px; margin: 6px 0; background: #161b22; border-radius: 0 6px 6px 0; overflow-wrap: anywhere; }
-.cmt.msg { border-left-color: #d29922; }
-.cmt.github { border-left-color: #2ea043; }
-.cform { border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: #0d1117; }
-.cform label { display: block; font-size: 12px; color: #8b949e; margin: 8px 0 3px; }
-.cform textarea, .cform select, .cform input[type="text"] { width: 100%; background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 7px 9px; font: inherit; }
-.raform { border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: #0d1117; }
-.raform label { display: block; font-size: 12px; color: #8b949e; margin: 8px 0 3px; }
-.raform textarea, .raform select, .raform input[type="date"] { width: 100%; background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 7px 9px; font: inherit; }
-.raform button { margin-top: 10px; background: #1f6feb; color: #fff; border: 0; border-radius: 6px; padding: 8px 16px; font: inherit; cursor: pointer; }
-.raform .err { color: #f85149; font-size: 12px; margin-top: 6px; }
-.roadmap-annotation { border-left: 3px solid #bc8cff; padding: 5px 8px; margin: 5px 0; background: #161b22; border-radius: 0 6px 6px 0; overflow-wrap: anywhere; }
-.cform .kinds { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 4px; }
-.cform .kinds label { display: inline-flex; gap: 5px; align-items: center; margin: 0; font-size: 13px; color: #e6edf3; }
-.cform button { margin-top: 10px; background: #1f6feb; color: #fff; border: 0; border-radius: 6px; padding: 8px 16px; font: inherit; cursor: pointer; }
-.cform .err { color: #f85149; font-size: 12px; margin-top: 6px; }
-.actbox { border: 1px dashed #30363d; border-radius: 8px; padding: 8px 10px; margin: 10px 0 2px; background: #0d1117; }
-.actbox fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
-.actbox .ahead { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 6px; }
-.actbox .ahead label { font-size: 12px; color: #8b949e; }
-.actbox select, .aform select, .aform input[type="text"], .aform input[type="datetime-local"] { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 7px 9px; font: inherit; min-height: 44px; }
-.aform { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
-.aform input[type="text"] { flex: 1 1 180px; }
-.aform button { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 8px 14px; font: inherit; cursor: pointer; min-height: 44px; }
-.aform button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
-.aform button.danger { border-color: #f85149; color: #f85149; }
-.aform button:disabled, .actbox fieldset:disabled button { opacity: .45; cursor: not-allowed; }
-.aform .confirm { display: inline-flex; gap: 5px; align-items: center; font-size: 13px; min-height: 44px; }
-.aform .err { color: #f85149; font-size: 12px; flex-basis: 100%; }
-.aform .why { color: #8b949e; font-size: 12px; flex-basis: 100%; }
-.badge.act-pending { background: #d2992233; border-color: #d29922; color: #e3b341; }
-.badge.act-applied { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
-.badge.act-rejected { background: #f8514933; border-color: #f85149; color: #f85149; }
-.badge.act-snoozed { background: #bc8cff33; border-color: #bc8cff; color: #bc8cff; }
-.badge.whyuser { background: #d2992233; border-color: #d29922; color: #e3b341; }
-.badge.whyuser.access, .badge.whyuser.policy { background: #f8514933; border-color: #f85149; color: #f85149; }
-.propbox { border: 1px solid #2ea043; background: #2ea04311; border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
-.propbox.expired { border-color: #8b949e; background: #8b949e11; }
-.unablebox { border: 1px solid #f85149; background: #f8514911; border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
-.qblock { border-top: 1px solid #21262d; padding: 6px 0 2px; margin-top: 6px; }
-.qblock .qopts { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 4px 0; }
-.qblock label { display: inline-flex; gap: 5px; align-items: center; font-size: 13px; min-height: 40px; }
-.optform .effect { color: #8b949e; font-size: 12px; flex-basis: 100%; }
-nav select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 6px 8px; font: inherit; margin-left: auto; max-width: 45vw; }
-.foot { margin-top: 40px; border-top: 1px solid #30363d; padding-top: 10px; color: #8b949e; font-size: 12px; }
-.card.stale { opacity: .55; }
-.card.acked { opacity: .72; }
-.card .sentline { color: #3fb950; font-size: 12.5px; margin: 6px 0 2px; }
-.card.tombstone { opacity: .6; }
-details.carddetail { margin: 8px 0 2px; border-top: 1px solid #21262d; padding-top: 6px; }
-details.carddetail summary { cursor: pointer; color: #58a6ff; font-size: 12.5px; padding: 4px 0; }
-details.carddetail dl { display: grid; grid-template-columns: 110px 1fr; gap: 2px 10px; margin: 6px 0; font-size: 12.5px; }
-details.carddetail dt { color: #8b949e; }
-details.carddetail dd { margin: 0; overflow-wrap: anywhere; }
-.histline { font-size: 12.5px; margin: 3px 0; }
-pre { max-width: 100%; overflow-x: auto; }
-.quickbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
-.quickbar .qlabel { font-size: 12px; color: #8b949e; flex-basis: 100%; }
-.qchip { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 12.5px; cursor: pointer; min-height: 40px; }
-.qchip.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
-.qchip:disabled { opacity: .45; cursor: not-allowed; }
-.aform.qform { display: inline-flex; margin: 0; }
-.cbox { border-top: 1px solid #21262d; margin-top: 8px; padding-top: 6px; }
-.cbox .cform { border: 0; padding: 4px 0 0; margin: 0; background: none; }
-.cbox summary { cursor: pointer; color: #58a6ff; font-size: 12.5px; padding: 4px 0; }
-.qblock .qanswered { color: #3fb950; font-size: 12px; }
-.qblock .qremaining { color: #e3b341; font-size: 12px; }
-.skel { border: 1px dashed #30363d; border-radius: 8px; padding: 14px 12px; margin: 8px 0; color: #8b949e; background: #0d1117; }
-.orderctl { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; font-size: 12.5px; color: #8b949e; }
-.bulkbar { border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: #0d1117; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.bulkbar select, .bulkbar input[type="text"] { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 7px 9px; font: inherit; min-height: 44px; }
-.bulkpickline { margin: 8px 0 -4px; font-size: 12.5px; color: #8b949e; }
-.bulkpickline input { width: 18px; height: 18px; vertical-align: -3px; }
-.bulkreview { flex-basis: 100%; border-top: 1px dashed #30363d; padding-top: 8px; }
-.bulkreview ul { margin: 6px 0; padding-left: 20px; max-height: 240px; overflow: auto; }
-.bulkresults { flex-basis: 100%; font-size: 13px; }
-.orderctl .aform { margin: 0; }
-.stripcard .restore-note { font-size: 12.5px; }
-.badge.stale { background: #d2992233; border-color: #d29922; color: #e3b341; }
-.badge.conflict { background: #bc8cff33; border-color: #bc8cff; color: #bc8cff; }
-.flag { border: 1px solid #f85149; background: #f8514911; border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
-.flag.payg { border-color: #d29922; background: #d2992211; }
-.svcgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; align-items: start; }
-.chart { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 8px; margin: 8px 0; overflow-x: auto; }
-.xtabs { display: flex; gap: 6px; margin: 12px 0 4px; border-bottom: 1px solid #30363d; }
-.xtab { background: none; border: 1px solid transparent; border-bottom: 0; color: #8b949e; font: inherit; font-weight: 600; padding: 8px 14px; border-radius: 8px 8px 0 0; cursor: pointer; }
-.xtab:hover { color: #e6edf3; }
-.xtab.active { color: #e6edf3; background: #161b22; border-color: #30363d; }
-.xpl-filters { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
-.xpl-filters input[type="search"], .xpl-filters select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 6px 8px; font: inherit; }
-.xpl-filters input[type="search"] { min-width: 220px; flex: 1; }
-.xchip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 3px 9px; min-height: 40px; border-radius: 999px; border: 1px solid #30363d; background: #161b22; color: #e6edf3; cursor: pointer; font: inherit; }
-.xchip .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
-.xchip.off { opacity: .38; text-decoration: line-through; }
-.xp-seg { display: inline-flex; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; }
-.xp-seg button { background: #161b22; color: #8b949e; border: 0; font: inherit; font-weight: 600; padding: 6px 12px; cursor: pointer; }
-.xp-seg button.active { background: #1f6feb; color: #fff; }
-.xpl-charts { display: grid; grid-template-columns: 1fr; gap: 4px; }
-.xpl-charts .chart svg { width: 100%; height: auto; display: block; }
-.xpl-charts .chart.primary { border-color: #1f6feb; }
-.chart-tools { display: inline-flex; gap: 4px; margin-left: 10px; }
-.chart-tools button { border: 1px solid #30363d; background: #161b22; color: #e6edf3; border-radius: 6px; padding: 3px 8px; cursor: pointer; font: inherit; font-size: 11.5px; }
-.chart-mini { display: inline-block; max-width: 100%; }
-.chart-zoomable { cursor: grab; touch-action: none; }
-.chart-zoomable:active { cursor: grabbing; }
-.chart-expanded { position: fixed !important; inset: 12px; z-index: 80; background: #0d1117; border: 1px solid #30363d; border-radius: 10px; padding: 14px; overflow: auto; box-shadow: 0 12px 48px rgba(0,0,0,.6); }
-.chart-expanded svg { width: 100% !important; max-width: none !important; height: auto; max-height: calc(100vh - 150px); }
-circle.xpt { cursor: pointer; }
-.xpl-table td.num, .xpl-table th.num { text-align: right; }
-.xpl-table tr { cursor: pointer; }
-.xpl-table tr:hover td { background: #161b22; }
-.xpl-detail { display: none; }
-body.xp-plan .xpl-costcol { display: none; }
-.xpl-ctl { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; font-size: 12px; margin: 2px 0 4px; }
-.xpl-ctl button { border: 1px solid #30363d; background: #161b22; color: #e6edf3; border-radius: 6px; padding: 3px 10px; cursor: pointer; font: inherit; font-size: 11.5px; }
-.xpl-ctl button.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
-.xpl-ctl select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 4px 6px; font: inherit; font-size: 12px; }
-.chart h3 { display: inline-block; margin: 2px 10px 2px 0; font-size: 13.5px; }
-.hchip { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; min-height: 40px; padding: 3px 6px 3px 9px; border-radius: 6px; background: #21262d; border: 1px solid #30363d; margin: 0 5px 5px 0; }
-.hchip button { border: none; background: none; cursor: pointer; font-size: 13px; line-height: 1; color: #e6edf3; padding: 10px 8px; }
-.xpl-ctl-btn { margin-top: 6px; border: 1px solid #30363d; background: #1f6feb; color: #fff; border-radius: 6px; padding: 5px 12px; cursor: pointer; font: inherit; font-size: 12px; }
-/* Non-colour cues (#1215): state badges also differ by icon prefix and
-   status dots by shape, so colour is never the only signal. */
-.badge.walled::before, .badge.blocked::before { content: "\\26d4  "; }
-.badge.drew::before { content: "\\26a0  "; }
-.badge.healthy::before, .badge.moving::before, .badge.merged::before, .badge.acked::before, .badge.act-applied::before { content: "\\2713  "; }
-.badge.near::before, .badge.implementing::before, .badge.stale::before, .badge.act-pending::before { content: "\\25f7  "; }
-.badge.review::before, .badge.conflict::before { content: "\\25c6  "; }
-.badge.act-rejected::before { content: "\\2715  "; }
-.badge.act-snoozed::before { content: "\\263e  "; }
-.badge.open::before { content: "\\25cf  "; }
-.dot.down, .dot.invalid { border-radius: 2px; }
-.dot.stale, .dot.absent { border-radius: 2px; transform: rotate(45deg); }
-.dot.fixtures { background: transparent; border: 2px solid #bc8cff; }
-/* Light theme (#1215): a real light palette under prefers-color-scheme;
-   the dark palette above stays the default for dark scheme. */
-@media (prefers-color-scheme: light) {
-  body { background: #ffffff; color: #1f2328; }
-  nav { background: #f6f8fa; border-bottom-color: #d1d9e0; }
-  .navgroup + .navgroup { border-left-color: #d1d9e0; }
-  .navlabel { color: #59636e; }
-  .navgroup[data-current="true"] .navlabel { color: #0969da; }
-  nav a { color: #0969da; }
-  nav a.active, nav a:hover { background: #eaeef2; }
-  nav a.active { background: #0969da26; color: #0550ae; box-shadow: inset 0 -2px 0 #0969da; }
-  a { color: #0969da; }
-  .card { background: #ffffff; border-color: #d1d9e0; }
-  .col { background: #f6f8fa; border-color: #d1d9e0; }
-  .col h2 { color: #59636e; }
-  .muted, .foot, caption { color: #59636e; }
-  .badge { border-color: #d1d9e0; }
-  .badge.open, .badge.orch, .badge.agent { color: #0969da; }
-  .badge.merged, .badge.healthy, .badge.moving, .badge.gh, .badge.acked, .badge.act-applied { color: #1a7f37; }
-  .badge.closed { color: #59636e; }
-  .badge.implementing, .badge.near, .badge.stalled, .badge.stale, .badge.msg, .badge.act-pending, .badge.whyuser { color: #9a6700; }
-  .badge.walled, .badge.drew, .badge.blocked, .badge.act-rejected { color: #cf222e; }
-  .badge.review, .badge.Muse, .badge.conflict, .badge.act-snoozed { color: #8250df; }
-  .badge.src { background: #eaeef2; color: #1f2328; }
-  th, td { border-color: #d1d9e0; }
-  th { background: #f6f8fa; }
-  .banner { color: #9a6700; }
-  .banner.drew { color: #cf222e; }
-  .chips a, .fchip, .qchip, .hchip, .xchip { background: #f6f8fa; color: #1f2328; border-color: #d1d9e0; }
-  /* The tray chip background lightens above, so its restore (x) button must drop its dark-surface foreground too (Codex P2 on PR #3308). */
-  .hchip button { color: #1f2328; }
-  .chips a.active { color: #0969da; }
-  .fchip.stale, .fchip.absent, .qblock .qremaining { color: #9a6700; }
-  .fchip.invalid, .cform .err, .aform .err { color: #cf222e; }
-  .dot { background: #59636e; }
-  .dot.up, .dot.self { background: #1a7f37; }
-  .dot.down, .dot.invalid { background: #cf222e; }
-  .dot.stale, .dot.absent { background: #9a6700; }
-  .dot.off, .dot.unknown { background: #59636e; }
-  .dot.fixtures { background: transparent; border-color: #8250df; }
-  .cmt { background: #f6f8fa; border-left-color: #d1d9e0; }
-  .cov, .cform, .actbox, .skel { background: #f6f8fa; border-color: #d1d9e0; }
-  /* Charts keep their authored dark surface in light mode: the SVG
-     foregrounds are generated for dark (model labels #c9d1d9, the
-     Pareto frontier #e6edf3), so a light chart background would wash
-     them out — the chart card and its controls stay dark instead. */
-  .chart { background: #0d1117; border-color: #30363d; color: #e6edf3; }
-  .chart .muted { color: #8b949e; }
-  .chart .xpl-ctl button, .chart .xpl-ctl select { background: #161b22; color: #e6edf3; border-color: #30363d; }
-  .chart .xpl-ctl button.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
-  .cform textarea, .cform select, .cform input[type="text"], .raform textarea, .raform select, .raform input[type="date"], .actbox select, .aform select, .aform input[type="text"], .aform input[type="datetime-local"], nav select, .xpl-filters input[type="search"], .xpl-filters select, .xpl-ctl select { background: #ffffff; color: #1f2328; border-color: #d1d9e0; }
-  .cform label, .actbox .ahead label, .aform .why, .optform .effect, .orderctl { color: #59636e; }
-  .cform .kinds label { color: #1f2328; }
-  .aform button { background: #f6f8fa; color: #1f2328; border-color: #d1d9e0; }
-  .aform button.danger { color: #cf222e; border-color: #cf222e; }
-  .xtabs { border-bottom-color: #d1d9e0; }
-  .xtab { color: #59636e; }
-  .xtab:hover, .xtab.active { color: #1f2328; }
-  .xtab.active { background: #f6f8fa; border-color: #d1d9e0; }
-  .xp-seg button { background: #f6f8fa; color: #59636e; }
-  .xpl-table tr:hover td { background: #f6f8fa; }
-  .xpl-ctl button { background: #f6f8fa; color: #1f2328; border-color: #d1d9e0; }
-  .card .sentline, .qblock .qanswered { color: #1a7f37; }
-  details.carddetail { border-top-color: #d1d9e0; }
-  details.carddetail dt { color: #59636e; }
-  details.carddetail summary, .cbox summary, .kids summary { color: #0969da; }
-  .kids { border-left-color: #d1d9e0; }
-  .obj .n { color: #0969da; }
-  .foot { border-top-color: #d1d9e0; }
-  .qblock { border-top-color: #d1d9e0; }
-  .cbox { border-top-color: #d1d9e0; }
-}
-@media (max-width: 720px) {
-  body { font-size: 13.5px; }
-  main { padding: 12px 10px 60px; }
-  nav { padding: 7px 10px; gap: 2px 8px; }
-  .navgroup + .navgroup { padding-left: 8px; }
-  .navlabel { font-size: 10px; margin-right: 2px; }
-  nav a { padding: 5px 7px; }
-  h1 { font-size: 16px; }
-  .board { grid-template-columns: 1fr; }
-  .pool { grid-template-columns: 1fr; }
-  th, td { padding: 5px 6px; }
-  meter { width: 96px; }
-  .card { padding: 8px 10px; }
-}
-`;
+/* The stylesheet lives in src/ui.css (Tailwind v4 + DaisyUI v5 plus the
+   legacy component rules below it) and is built to the committed static
+   asset src/assets/app.css by `bun run build:css` — see the README's
+   "Styling" section. Do not inline page CSS here. */
 
 /** Canonical tailnet URL for this dashboard (MagicDNS — never the raw IP). */
 export const TAILNET_URL = "http://amd-6.raptor-pumpkinseed.ts.net:4870";
@@ -598,6 +320,7 @@ document.addEventListener("submit", async (ev) => {
   if (standingAuto) payload.standingAuto = standingAuto === "true";
   const answersByQuestion = {};
   for (const el of form.querySelectorAll("[name^='answers:']")) {
+    if (el.disabled) continue;
     const qid = el.name.slice("answers:".length);
     if (el.type === "checkbox") { if (el.checked) (answersByQuestion[qid] = answersByQuestion[qid] || []).push(el.value); }
     else if (el.type === "radio") { if (el.checked) answersByQuestion[qid] = el.value; }
@@ -623,7 +346,21 @@ document.addEventListener("submit", async (ev) => {
   if (form.dataset.supersedes) body.supersedes = form.dataset.supersedes;
   try {
     const res = await fetch("/api/actions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ("HTTP " + res.status)); }
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      if (typeof b.duplicateOf === "string") {
+        if (submitBtn) submitBtn.disabled = false;
+        // The rejected attempt is persisted under this form's token; a
+        // corrected resubmit (e.g. dropping the already-answered
+        // question) is a NEW attempt and needs a fresh token, or the
+        // store's client-token dedupe would replay the rejected record
+        // as if it had been sent (Codex P2 on PR #4024).
+        form.dataset.token = "ct-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+        if (err) err.textContent = "Duplicate recorded" + (typeof b.action?.id === "string" ? " as " + b.action.id : "") + "; points to existing answer " + b.duplicateOf + ".";
+        return;
+      }
+      throw new Error(b.error || ("HTTP " + res.status));
+    }
     window.__dashAfter(form, "✓ sent · pending — the fleet applies it on its next pass");
   } catch (e) {
     if (submitBtn) submitBtn.disabled = false;
@@ -715,7 +452,21 @@ export function pageDropdown(active: string): string {
       return `<optgroup label="${esc(group.title)}">${options}</optgroup>`;
     })
     .join("");
-  return `<select aria-label="Go to page" onchange="if(this.value)location.href=this.value"><option value="">Pages ▾</option>${groups}</select>`;
+  return `<select aria-label="Go to page" class="select select-bordered select-sm" data-on:change="if (evt.target.value) { window.location.href = evt.target.value; }"><option value="">Pages ▾</option>${groups}</select>`;
+}
+
+export function themeToggle(): string {
+  // Datastar-first theme toggle (Phase C): the vendored Datastar v1 binds
+  // data-on:<event> (colon form) for handlers — the dash form does not bind
+  // clicks (verified live against the vendored bundle). A $pmTheme signal seeded from
+  // the <html data-theme> the inline bootstrap set (stored choice or the
+  // dark default); the effect is the single writer of data-theme +
+  // localStorage, and the click handler only flips the signal.
+  return `<span class="theme-toggle-wrap" data-signals="{ pmTheme: 'dark' }" data-init="$pmTheme = document.documentElement.getAttribute('data-theme') || 'dark'" data-effect="document.documentElement.setAttribute('data-theme', $pmTheme); try { localStorage.setItem('pm-theme', $pmTheme); } catch (e) {}"><button type="button" class="btn btn-ghost btn-sm theme-toggle" data-on:click="$pmTheme = $pmTheme === 'dark' ? 'light' : 'dark'" aria-label="Toggle between dark and light theme" title="Toggle dark / light theme">◐ <span data-text="$pmTheme === 'dark' ? 'Dark' : 'Light'"></span></button></span>`;
+}
+
+function globalSearch(): string {
+  return `<form class="navsearch" action="/search" method="get" role="search"><input type="search" name="q" aria-label="Search board and roadmap work" placeholder="Search work…" required class="input input-bordered input-sm"><button type="submit" class="btn btn-sm">Search</button></form>`;
 }
 
 function layout(
@@ -735,11 +486,59 @@ function layout(
   const links = navLinks(active);
   const dropdown = pageDropdown(active);
   return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(title)} · aggregator</title><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#161b22"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="PM Stack"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"><style>${CSS}</style><script type="module" src="/assets/datastar.js"></script></head>
-<body><nav>${links}${dropdown}</nav><main>${chipsHtml}${body}
+<html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(title)} · aggregator</title><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#161b22"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="PM Stack"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"><script>try{var __pmTheme=localStorage.getItem('pm-theme');if(__pmTheme==='light'||__pmTheme==='dark')document.documentElement.setAttribute('data-theme',__pmTheme);}catch(e){}</script><link rel="stylesheet" href="/assets/app.css"><script type="module" src="/assets/datastar.js"></script></head>
+<body><nav class="navbar bg-base-200 shadow-md flex-wrap items-center gap-x-3 px-4">${links}${dropdown}${globalSearch()}${themeToggle()}</nav><main class="w-full">${chipsHtml}${body}
 <div class="foot"><details class="srcdetail"><summary>source detail</summary>board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}</details><span class="kbd-hint">${KEY_HINT}</span> · tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
 </main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script>${extra}${paletteHtml()}${KEYBOARD_SCRIPT}</body></html>`;
+}
+
+/** Global search over board/roadmap subjects, linked refs, and the slice-2 sources (#1212): registry sessions, the DNS register, services, and tier items. */
+export function renderSearch(
+  query: string,
+  results: SearchResult[],
+  items: Map<RefKey, GhItem>,
+  provenance: Provenance,
+  detail?: ProvenanceDetail,
+): string {
+  const cards = results
+    .map((result) => {
+      const badges = result.refs
+        .map((ref) => {
+          const item = items.get(ref);
+          // Codex P1 on PR #7331 (defense in depth): a non-GitHub ref
+          // (tracked-goal id, orch: key) must never reach refUrl, which
+          // throws on it — render it as a plain-text badge instead.
+          return item
+            ? itemBadge(item)
+            : isValidRef(ref)
+              ? `<a class="badge closed" href="${esc(refUrl(ref))}" title="Unresolved by the current item source">${esc(ref)} · unresolved</a>`
+              : `<span class="badge closed">${esc(ref)} · unresolved</span>`;
+        })
+        .join(" ");
+      return `<div class="card"><a href="${esc(result.href)}"><strong>${esc(result.title)}</strong></a><br><span class="muted">${result.kind} · ${esc(result.summary)}</span>${badges ? `<div class="strip">${badges}</div>` : ""}</div>`;
+    })
+    .join("");
+  const body = `<h1>Search</h1><p class="muted">Search board items, roadmap rows, registry sessions, DNS domains, services, and tier items by subject, title, or linked issue/PR ref. Every result links to its own detail view. Linked GitHub badges show their current projected state and whether the result is fixture-only.</p><form class="search-page-form" action="/search" method="get" role="search"><label for="search-query">Search work</label><input id="search-query" type="search" name="q" value="${esc(query)}" placeholder="Title or owner/repo#123"><button type="submit" class="btn btn-sm">Search</button></form>${query ? `<h2>${results.length} result${results.length === 1 ? "" : "s"} for “${esc(query)}”</h2>${cards || '<p class="muted">No matching work found.</p>'}` : '<p class="muted">Enter a title or issue/PR reference to search.</p>'}`;
+  // #1212 slice 2: the search page carries the same freshness facets
+  // as the home page of each result kind present (board/roadmap/items
+  // for work, registry for sessions, dns for the register, quota and
+  // usage for services, orchestration/attention/registry for tiers).
+  const chipKeys = new Set<keyof Provenance>(["board", "roadmap", "items"]);
+  for (const result of results) {
+    if (result.kind === "registry") chipKeys.add("registry");
+    if (result.kind === "dns") chipKeys.add("dns");
+    if (result.kind === "service") { chipKeys.add("quota"); chipKeys.add("usage"); }
+    if (result.kind === "tier") { chipKeys.add("orchestration"); chipKeys.add("attention"); chipKeys.add("registry"); }
+  }
+  return layout(
+    "Search",
+    body,
+    provenance,
+    "/search",
+    "",
+    detail ? freshnessChips(detail, [...chipKeys]) : "",
+  );
 }
 
 // --- Dashboard comments (#906 §2) ------------------------------------------
@@ -1235,9 +1034,10 @@ export function whyUserBadge(item: TierItem): string {
   return ` <span class="badge whyuser ${esc(item.whyUser)}" title="Why this needs the user: ${esc(WHY_USER_LABELS[item.whyUser])}">${esc(WHY_USER_LABELS[item.whyUser])}</span>`;
 }
 
-function questionFieldHtml(q: TierItemQuestion, answeredValue?: string | string[]): string {
+function questionFieldHtml(q: TierItemQuestion, answeredValue?: string | string[], answerAction?: DashAction): string {
   const name = `answers:${q.id}`;
   const answered = answeredValue !== undefined;
+  const disabled = answered ? " disabled" : "";
   let field: string;
   if (q.type === "single" || q.type === "yesno") {
     const opts = q.options ?? [
@@ -1247,7 +1047,7 @@ function questionFieldHtml(q: TierItemQuestion, answeredValue?: string | string[
     field = `<span class="qopts">${opts
       .map(
         (o) =>
-          `<label><input type="radio" name="${esc(name)}" value="${esc(o.id)}"${answeredValue === o.id ? " checked" : ""}> ${esc(o.label)}</label>`,
+          `<label><input type="radio" name="${esc(name)}" value="${esc(o.id)}"${answeredValue === o.id ? " checked" : ""}${disabled}> ${esc(o.label)}</label>`,
       )
       .join("")}</span>`;
   } else if (q.type === "multi") {
@@ -1255,16 +1055,16 @@ function questionFieldHtml(q: TierItemQuestion, answeredValue?: string | string[
     field = `<span class="qopts">${(q.options ?? [])
       .map(
         (o) =>
-          `<label><input type="checkbox" name="${esc(name)}" value="${esc(o.id)}"${chosen.includes(o.id) ? " checked" : ""}> ${esc(o.label)}</label>`,
+          `<label><input type="checkbox" name="${esc(name)}" value="${esc(o.id)}"${chosen.includes(o.id) ? " checked" : ""}${disabled}> ${esc(o.label)}</label>`,
       )
       .join("")}</span>`;
   } else {
-    field = `<input type="text" name="${esc(name)}" aria-label="${esc(q.prompt)}" value="${esc(typeof answeredValue === "string" ? answeredValue : "")}">`;
+    field = `<input type="text" name="${esc(name)}" aria-label="${esc(q.prompt)}" value="${esc(typeof answeredValue === "string" ? answeredValue : "")}"${disabled}>`;
   }
   // #1451: answered state rides the card — a partial submit records
   // what it covered and the still-open required questions say so.
   const state = answered
-    ? ` <span class="qanswered">✓ answered: ${esc(Array.isArray(answeredValue) ? answeredValue.join(", ") : (answeredValue ?? ""))}</span>`
+    ? ` <span class="qanswered">✓ answered: ${esc(Array.isArray(answeredValue) ? answeredValue.join(", ") : (answeredValue ?? ""))}${answerAction ? ` · ${answerAction.state === "new" ? "pending" : "applied"} · action ${esc(answerAction.id)}` : ""}</span>`
     : q.required
       ? ` <span class="qremaining">still needed</span>`
       : "";
@@ -1369,28 +1169,45 @@ export function needsUserFormsHtml(
   cs: CardState = cardState(undefined),
 ): string {
   const forms: string[] = [];
+  // Older option actions predate the canonical question pointer. Resolve
+  // them from the currently published item so already-answered cards
+  // cannot reopen the same question after this deploy.
+  const answered = new Map(cs.answered);
+  const answerActionsByQuestion = new Map(cs.answerActionsByQuestion);
+  for (const [optionId, action] of cs.answeredOptionActionsById) {
+    const questionId = questionIdForOption(item, optionId);
+    if (questionId && !answered.has(questionId)) {
+      answered.set(questionId, optionId);
+      answerActionsByQuestion.set(questionId, action);
+    }
+  }
   for (const opt of item.options ?? []) {
-    const picked = cs.answeredOptionId === opt.id;
+    const questionId = questionIdForOption(item, opt.id);
+    const questionValue = questionId ? answered.get(questionId) : undefined;
+    const answerAction = questionId ? answerActionsByQuestion.get(questionId) : cs.answeredOptionAction;
+    const locked = questionId ? questionValue !== undefined : cs.answeredOptionActionsById.size > 0;
+    const picked = cs.answeredOptionId === opt.id || (questionId !== undefined && questionValue === opt.id);
     forms.push(
       aformHtml({
         kind: "triage",
         verb: "answer",
         objectRef,
-        inner: `<input type="hidden" name="optionId" value="${esc(opt.id)}"><button type="submit" class="primary"${picked ? " disabled" : ""}>${esc(opt.label)}${picked ? " ✓ answered · pending" : ""}</button>${
+        inner: `<input type="hidden" name="optionId" value="${esc(opt.id)}"><button type="submit" class="primary"${locked ? " disabled" : ""}>${esc(opt.label)}${locked ? ` ✓ answered${answerAction?.state === "new" ? " · pending" : ""}` : ""}</button>${locked && answerAction ? `<span class="muted">Answer action ${esc(answerAction.id)}</span>` : ""}${
           opt.description ? `<span class="why">${esc(opt.description)}</span>` : ""
         }${opt.effect ? `<span class="effect">Effect: ${esc(opt.effect)}</span>` : ""}`,
       }),
     );
   }
   if (item.questions?.length) {
-    const remaining = item.questions.filter((q) => q.required && !cs.answered.has(q.id));
-    const allDone = remaining.length === 0 && item.questions.some((q) => cs.answered.has(q.id));
+    const remaining = item.questions.filter((q) => q.required && !answered.has(q.id));
+    const allDone = remaining.length === 0 && item.questions.some((q) => answered.has(q.id));
+    const hasUnanswered = item.questions.some((q) => !answered.has(q.id));
     forms.push(
       aformHtml({
         kind: "triage",
         verb: "answer",
         objectRef,
-        inner: `${item.questions.map((q) => questionFieldHtml(q, cs.answered.get(q.id))).join("")}<button type="submit" class="primary">Submit answers</button><span class="why">${
+        inner: `${item.questions.map((q) => questionFieldHtml(q, answered.get(q.id), answerActionsByQuestion.get(q.id))).join("")}<button type="submit" class="primary"${hasUnanswered ? "" : " disabled"}>Submit answers</button><span class="why">${
           allDone
             ? "All required questions are answered — the answers are recorded and pending with the orchestrator."
             : `Answer any subset and submit (#1451): answered questions are recorded, and the card keeps showing what remains${remaining.length ? ` — still needed: ${esc(remaining.map((q) => q.id).join(", "))}` : ""}.`
@@ -1510,13 +1327,6 @@ export function statusRequestHtml(
 export function sessionVerbSupport(source: string): { verb: "poke" | "answer" | "stop"; reason?: string }[] {
   if (source === "opencode-sandbox" || source === "opencode-laptop") {
     return [{ verb: "poke" }, { verb: "answer" }, { verb: "stop" }];
-  }
-  if (source === "jules") {
-    return [
-      { verb: "poke", reason: "Jules sessions are keeper-mediated — answer only" },
-      { verb: "answer" },
-      { verb: "stop", reason: "Jules sessions are keeper-mediated — answer only" },
-    ];
   }
   if (source === "claude-code") {
     const reason = "No live control channel for Muse sessions — launch records only";
@@ -1841,7 +1651,7 @@ function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow): string {
     if (drill.children.length === 0) {
       parts.push(`<p class="muted">No child issues in the Project pool for this epic yet.</p>`);
     } else {
-      const done = drill.children.filter((c) => c.state === "closed" || c.state === "merged").length;
+      const done = drill.children.filter(isEpicChildDone).length;
       const total = drill.children.length;
       const pct = Math.round((done / total) * 100);
       parts.push(
@@ -1910,7 +1720,7 @@ function timelineTable(
       return `<tr><th scope="row">${esc(theme)}</th>${cells}</tr>`;
     })
     .join("");
-  return `<div class="tblwrap"><table><caption>Roadmap timeline by theme</caption>${head}${body}</table></div>`;
+  return `<div class="tblwrap"><table class="table table-zebra"><caption>Roadmap timeline by theme</caption>${head}${body}</table></div>`;
 }
 
 export function renderRoadmap(
@@ -1993,6 +1803,10 @@ export interface ItemExtras {
   epicRollup?: EpicRollup;
   /** Project-pool briefs for linked refs (#1279). */
   briefs?: Map<RefKey, ItemBrief>;
+  /** Real ready-for-agent dispatch state for explicitly labelled linked issues. */
+  dispatchStates?: { ref: RefKey; state: string; provenance: { source: string; observedAt: string } }[];
+  /** The shared audit stream, scoped to the item's canonical refs. */
+  activity?: { events: AuditEvent[]; globalHref: string; gaps: GapRecord[]; coverage?: readonly ActivityCoverage[] };
 }
 
 function roadmapAnnotationFormHtml(objectRef: string, identities: AuthorIdentity[]): string {
@@ -2012,6 +1826,21 @@ function epicRollupHtml(rollup: EpicRollup): string {
     ? `Children: <strong>${rollup.done}/${rollup.total} done</strong>`
     : `Children: <strong>0 resolved</strong> · completion unknown`;
   return `<p class="muted epic-rollup"><strong>Epic rollup</strong> — ${children} · Status mix: ${statusMix} · Blocked: ${rollup.blocked}</p>`;
+}
+
+export function eventTableHtml(events: readonly AuditEvent[]): string {
+  const rows = events
+    .map((event) => {
+      const source = event.source.link
+        ? `<a href="${esc(event.source.link)}" rel="noopener">${esc(event.source.identity)}</a>`
+        : esc(event.source.identity);
+      const delay = Date.parse(event.ingestedAt) - Date.parse(event.at);
+      const ingested =
+        Number.isFinite(delay) && delay > 0 ? `<span class="muted">(+${Math.round(delay / 1000)}s ingest)</span>` : "";
+      return `<tr><td>${esc(event.at)} ${ingested}</td><td>${esc(event.actor)} <span class="muted">(${esc(event.attribution.confidence)})</span></td><td>${esc(event.kind)}</td><td><code>${esc(event.ref)}</code></td><td>${esc(event.summary)}</td><td>${source}</td></tr>`;
+    })
+    .join("\n");
+  return `<div class="tblwrap"><table class="activity-events"><caption>Shared activity events</caption><thead><tr><th scope="col">When</th><th scope="col">Actor</th><th scope="col">Kind</th><th scope="col">Ref</th><th scope="col">Summary</th><th scope="col">Source</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No matching events; this does not establish complete coverage.</td></tr>'}</tbody></table></div>`;
 }
 
 export function renderItem(
@@ -2051,7 +1880,7 @@ export function renderItem(
       : "";
   const sessionSection =
     extras && extras.sessions.length
-      ? `<h2>Sessions that worked this</h2>${extras.sessions.map((r) => sessionRecordLine(r)).join("")}`
+      ? `<h2>Sessions that worked this</h2><div class="item-session-records">${extras.sessions.map((r) => sessionRecordLine(r)).join("")}</div>`
       : "";
   const statusSection =
     extras?.statusRequest && extras.formOpts
@@ -2061,9 +1890,20 @@ export function renderItem(
     ? `<p>Live services: ${extras.serviceLinks.map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>`
     : "";
   const epicRollup = extras?.epicRollup ? epicRollupHtml(extras.epicRollup) : "";
+  const dispatchSection = extras?.dispatchStates?.length
+    ? `<section><h2>ready-for-agent dispatch</h2><ul>${extras.dispatchStates
+        .map(
+          (entry) =>
+            `<li><a href="https://github.com/${esc(entry.ref.replace("#", "/issues/"))}">${esc(entry.ref)}</a>: <strong>${esc(entry.state)}</strong> <span class="muted">· ${esc(entry.provenance.source)} checked ${esc(entry.provenance.observedAt)}</span></li>`,
+        )
+        .join("")}</ul></section>`
+    : "";
+  const activitySection = extras?.activity
+    ? `<h2>Activity stream</h2><p><a href="${esc(extras.activity.globalHref)}">View these events in the global river</a></p><p class="muted"><strong>Freshness: unknown.</strong> The ingestion checkpoint records deliveries, not successful source polls. An empty event list does not establish complete coverage. Known gaps and documented source coverage are shown below.</p>${eventTableHtml(extras.activity.events)}<h3>Known activity gaps</h3><p class="muted">Gap records are source-scoped and do not currently identify affected item refs, so this is the global known-gap list.</p><div class="tblwrap">${gapsHtml(extras.activity.gaps)}</div><h3>Activity source coverage</h3><div class="tblwrap">${activityCoverageHtml(extras.activity.coverage)}</div>`
+    : "";
   return layout(
     title,
-    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${epicRollup}${svcLinks}${stripHtml(items, links)}
+    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${epicRollup}${svcLinks}${dispatchSection}${stripHtml(items, links)}
 ${
   extras?.briefs
     ? briefPanelsForRefs(
@@ -2072,9 +1912,9 @@ ${
       )
     : ""
 }
-<h2>Linked issues / PRs</h2><div class="tblwrap"><table><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
-<h2>Activity stream</h2><div class="tblwrap"><table><caption>Activity stream</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
-${sessionSection}${statusSection}${roadmapAnnotationSection}${dashSection}`,
+<h2>Linked issues / PRs</h2><div class="tblwrap"><table class="table table-zebra"><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
+ <h2>Activity stream comments</h2><div class="tblwrap"><table class="table table-zebra"><caption>Comments</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
+ ${activitySection}${sessionSection}${statusSection}${roadmapAnnotationSection}${dashSection}`,
     provenance,
     "/board",
     extras
@@ -2109,7 +1949,7 @@ export function sessionRecordLine(
   const badges = actionBadgesHtml(act?.actions);
   const controls =
     act?.identities && sessionRecordIsLive(r) ? sessionActionsHtml(r.id, r.source, { identities: act.identities }) : "";
-  return `<div class="card" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span>${badges}<br><span class="muted">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}</span>${controls}</div>`;
+  return `<div class="card session-record-line" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span>${badges}<br><span class="muted session-record-meta">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}</span>${controls}</div>`;
 }
 
 // --- Quota view (#851) + Usage & billing hub (design 2026-10-25) -----------
@@ -2154,7 +1994,7 @@ function metricRow(m: UsageMetric): string {
 
 function attentionStripHtml(usage: UsageView): string {
   if (!usage.attention.length) {
-    return `<div class="card"><strong>Needs attention</strong> — nothing over threshold. <span class="muted">(Bubble rules: any metric over 80% of its limit, or projected unbilled PAYG over $5.)</span></div>`;
+    return `<div class="card"><strong>Needs attention</strong> — no quota or credential alerts. <span class="muted">(Bubble rules: any metric over 80% of its limit, or projected unbilled PAYG over $5.)</span></div>`;
   }
   const rows = usage.attention
     .map(
@@ -2171,7 +2011,7 @@ function attentionStripHtml(usage: UsageView): string {
  * the yuan figure as read, never converted to dollars.
  */
 function paygBalanceHtml(usage: UsageView): string {
-  const recs = (usage.history["deepseek:api"] ?? []).filter((r) => r.unit === "cny" && typeof r.value === "number");
+  const recs = (usage.history["deepseek"] ?? []).filter((r) => r.unit === "cny" && typeof r.value === "number");
   if (!recs.length) return "";
   const last = recs[recs.length - 1];
   return `<div><strong>DeepSeek PAYG reserve balance</strong>: <strong>¥${(last.value as number).toFixed(2)}</strong><br><span class="muted">reserve only — never a routine route · measured ${esc(last.ts.slice(0, 10))} · ${esc(last.observedBy)}</span></div>`;
@@ -2217,6 +2057,17 @@ function serviceCardHtml(svc: SaasService, history: SnapshotRecord[]): string {
   return `<div class="card${f.stale ? " stale" : ""}"><div><strong><a href="/quota/service/${esc(svc.id)}">${esc(svc.name)}</a></strong>${svc.status !== "active" ? ` <span class="badge src">${esc(svc.status)}</span>` : ""}${conflict}<br><span class="muted">${esc(svc.plan)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}${svc.nextDate ? `<br><span class="muted">next: ${esc(svc.nextDate)}</span>` : ""}</div><div>${metrics}${billed}${payg}${pace}<div><a href="/quota/service/${esc(svc.id)}">show all →</a></div></div></div>`;
 }
 
+function uninstrumentedServicesHtml(services: UsageView["uninstrumentedServices"]): string {
+  if (!services.length) return "";
+  const rows = services
+    .map(
+      (svc) =>
+        `<tr><th scope="row">${esc(svc.name)}</th><td>${esc(svc.whatFor)}</td><td>${esc(svc.status)}</td><td>${esc(svc.checkedAt ?? "no check date recorded")}</td><td>${esc(svc.overageBehavior)}</td><td>${esc(svc.guardrailNotes)}</td></tr>`,
+    )
+    .join("");
+  return `<h2>Tracker services without instrumented quotas</h2><details><summary>${services.length} evaluated services — expand for tracker states and guardrails</summary><div class="tblwrap"><table><caption>Services in free-services-to-check.md</caption><tr><th scope="col">Service</th><th scope="col">What for</th><th scope="col">Tracker state</th><th scope="col">Checked</th><th scope="col">Overage behavior</th><th scope="col">Guardrail notes</th></tr>${rows}</table></div></details>`;
+}
+
 /** A one-line pace projection on a card, when the history supports one (§1.5). */
 function paceLineHtml(serviceId: string, history: SnapshotRecord[]): string {
   const metricIds = [...new Set(history.filter((r) => r.unit === "pct").map((r) => r.metricId))];
@@ -2240,7 +2091,91 @@ function chargesStripHtml(usage: UsageView): string {
     )
     .join("");
   const total = usage.charges.reduce((sum, c) => sum + c.amountUsd, 0);
-  return `<h2>Charges this period</h2><p class="muted">Evidence, not accounting — charges observed on cards/receipts in the local records (full balances stay in the finance tooling). Total observed: $${total.toFixed(2)}.</p><div class="tblwrap"><table><caption>Charges this period</caption><tr><th scope="col">Date</th><th scope="col">Charge</th><th scope="col">Amount</th><th scope="col">Method</th><th scope="col">Evidence</th></tr>${rows}</table></div>`;
+  return `<h2>Charges this period</h2><p class="muted">Evidence, not accounting — charges observed on cards/receipts in the local records (full balances stay in the finance tooling). Total observed: $${total.toFixed(2)}.</p><div class="tblwrap"><table class="table table-zebra"><caption>Charges this period</caption><tr><th scope="col">Date</th><th scope="col">Charge</th><th scope="col">Amount</th><th scope="col">Method</th><th scope="col">Evidence</th></tr>${rows}</table></div>`;
+}
+
+/** Lazy-refresh strip (#1171): a visible "refreshing" marker while a
+ *  gatherer run is in flight, plus the manual refresh-now control. Both
+ *  use the same trigger path; neither blocks the page on provider calls. */
+function quotaRefreshHtml(
+  refresh?: import("./quota-refresh.ts").RefreshStatus,
+  generatedAt?: string | null,
+): string {
+  if (!refresh) return "";
+  const marker = refresh.refreshing
+    ? `<span class="badge refreshing" data-quota-refreshing="true">refreshing — the quota gatherer is running; reload for updated data</span>`
+    : refresh.stale
+      ? `<span class="muted">quota data is older than five minutes</span>`
+      : "";
+  // Manual refresh (#6125): the button POSTs the manual trigger route
+  // (POST /api/quota/refresh -> quotaRefresher.manual -> the deployed
+  // quota-gatherer.service, whose read is the single `opencode quota`
+  // source), then polls /api/quota.json until quota-current.json's
+  // generatedAt advances. Success is never faked: an advanced file whose
+  // gatherer reported failure, a failed request, or a poll window with
+  // no advance all surface as a failure message. The form remains the
+  // no-JS path (POST /quota/refresh, same manual trigger, 303 back).
+  return `<div class="card quota-refresh" data-quota-generated-at="${esc(generatedAt ?? "")}"${refresh.refreshing ? ' data-quota-refreshing="true"' : ""}><div><span data-quota-refresh-status aria-live="polite">${marker || '<span class="muted">quota data is fresh</span>'}</span></div><form method="post" action="/quota/refresh"><button type="submit" class="btn btn-primary btn-sm" data-quota-refresh-btn>Refresh quota</button></form></div>
+<script>
+(function () {
+  var strip = document.querySelector(".quota-refresh[data-quota-generated-at]");
+  if (!strip || strip.dataset.wired) return;
+  strip.dataset.wired = "1";
+  var btn = strip.querySelector("[data-quota-refresh-btn]");
+  var status = strip.querySelector("[data-quota-refresh-status]");
+  function say(text) { if (status) status.textContent = text; }
+  var MAX_POLLS = 72; // 72 x 5s = 6 min, the gatherer's MAX_REFRESH_MS bound.
+  function poll(baseline) {
+    var tries = 0;
+    var timer = setInterval(function () {
+      tries++;
+      fetch("/api/quota.json", { cache: "no-store" })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          var gen = data && data.gatherer ? data.gatherer.generatedAt : null;
+          if (gen && gen !== baseline) {
+            clearInterval(timer);
+            if (data.gatherer.ok === false) {
+              say("refresh failed — the quota gatherer ran but reported an error; the previous data is still shown");
+              if (btn) btn.disabled = false;
+            } else {
+              say("quota data updated — reloading…");
+              window.location.reload();
+            }
+          } else if (tries >= MAX_POLLS) {
+            clearInterval(timer);
+            say("refresh did not complete — quota data did not advance, so the gatherer may have failed; the previous data is still shown");
+            if (btn) btn.disabled = false;
+          }
+        })
+        .catch(function () { /* a transient poll error keeps polling until the cap */ });
+    }, 5000);
+  }
+  if (btn) {
+    btn.addEventListener("click", function (ev) {
+      ev.preventDefault();
+      btn.disabled = true;
+      say("refreshing — the quota gatherer is running…");
+      fetch("/api/quota/refresh", { method: "POST" })
+        .then(function (r) {
+          if (!r.ok) throw new Error("the refresh request failed (" + r.status + ")");
+          return r.json();
+        })
+        .then(function (res) {
+          poll((res && res.generatedAt) || strip.getAttribute("data-quota-generated-at") || "");
+        })
+        .catch(function (err) {
+          say("refresh failed — " + err.message);
+          btn.disabled = false;
+        });
+    });
+  }
+  if (strip.getAttribute("data-quota-refreshing") === "true") {
+    if (btn) btn.disabled = true;
+    poll(strip.getAttribute("data-quota-generated-at") || "");
+  }
+})();
+</script>`;
 }
 
 export function renderQuota(
@@ -2248,7 +2183,58 @@ export function renderQuota(
   provenance: Provenance,
   usage?: UsageView,
   detail?: ProvenanceDetail,
+  /** Lazy-refresh state (#1171): renders the "refreshing" marker and the
+   *  manual refresh-now control. Absent means no request was made. */
+  refresh?: import("./quota-refresh.ts").RefreshStatus,
 ): string {
+  // "-direct" display rule (#6125): judged over every provider name/id
+  // this surface renders — pool providers, pool ids, burn rows, the
+  // model-choice pool lists, and credential-lifecycle provider names.
+  // Display only; ids and keys below stay exactly as the view carries
+  // them.
+  const displayNames = providerDisplayNames([
+    ...view.pools.map((p) => p.provider),
+    ...view.pools.map((p) => p.id),
+    ...(view.burn ?? []).map((b) => b.provider),
+    ...(view.burn ?? []).map((b) => b.pool),
+    ...(view.choices
+      ? [...view.choices.hasHeadroom, ...view.choices.burnBeforeReset, ...view.choices.doNotStart]
+      : []),
+    ...(view.credentialLifecycle ?? []).map((c) => c.providerName),
+  ]);
+  const display = (name: string) => displayNames.get(name) ?? name;
+  const credentialLifecycle = view.credentialLifecycle?.length
+    ? `<h2>Credential lifecycle</h2><div class="card">${view.credentialLifecycle
+        .map((credential) => {
+          const expiry = credential.expiresAt ? ` · expires ${fmtDate(credential.expiresAt)}` : " · expiry unknown";
+          const reason = credential.reason ? ` · ${esc(credential.reason)}` : "";
+          const action = credential.userAction
+            ? ` · <strong>user action:</strong> ${esc(credential.userAction.title)}`
+            : "";
+          return `<div><strong>${esc(display(credential.providerName))} · ${esc(credential.label)}</strong> <span class="badge ${esc(credential.state)}">${esc(credential.state)}</span>${expiry}${reason}${action}</div>`;
+        })
+        .join("")}</div>`
+    : "";
+  // #6671: provider-auth keeper problems render as their own card —
+  // a dying provider session (or a keeper that stopped reporting)
+  // must be visible on the board, not only in a state file. All-ok
+  // keepers render nothing here (no alert, no noise).
+  const providerAuthProblems = (view.providerAuth ?? []).filter((a) => a.reporting !== "ok");
+  const providerAuthSection = providerAuthProblems.length
+    ? `<h2>Provider auth</h2><div class="card">${providerAuthProblems
+        .map((a) => {
+          const detail =
+            a.reporting === "attention"
+              ? `${esc(a.alert ?? a.status ?? "attention")}${a.alertSince ? ` · since ${fmtDate(a.alertSince)}` : ""}${a.sessionExpiresAt ? ` · session expires ${fmtDate(a.sessionExpiresAt)}` : ""}${a.lastGoodAt ? ` · last good ${fmtDate(a.lastGoodAt)}` : ""}`
+              : a.reporting === "stale"
+                ? `keeper not reporting · last check ${fmtDate(a.checkedAt)}`
+                : a.reporting === "invalid"
+                  ? "keeper not reporting · state file invalid"
+                  : "keeper not reporting · no state file";
+          return `<div><strong>${esc(a.provider)}</strong> <span class="badge error">${esc(a.reporting)}</span> <span class="muted">${detail}</span></div>`;
+        })
+        .join("")}</div>`
+    : "";
   const pools = view.pools
     .map((p) => {
       const windows = p.windows
@@ -2278,18 +2264,18 @@ export function renderQuota(
       const fresh = p.freshness
         ? `<div class="muted">gatherer · ${esc(p.freshness.state)} · measured ${fmtDate(p.freshness.measuredAt)} · ${esc(p.freshness.source)}${p.freshness.error ? ` · ${esc(p.freshness.error)}` : ""}</div>`
         : "";
-      return `<div class="card pool"><div><strong>${esc(p.provider)}</strong><br><span class="muted">${esc(p.plan)}</span><br><span class="badge ${esc(p.state)}">${esc(p.state)}${p.wallLiftsAt ? ` · lifts ${fmtDate(p.wallLiftsAt)}` : ""}</span>${p.burnTokensPerMin ? ` <span class="muted">${p.burnTokensPerMin} tok/min</span>` : ""}</div><div>${windows}${credRows}${sessions}${fresh}${p.note ? `<div class="muted">${esc(p.note)}</div>` : ""}</div></div>`;
+      return `<div class="card pool"><div><strong>${esc(display(p.provider))}</strong><br><span class="muted">${esc(p.plan)}</span><br><span class="badge ${esc(p.state)}">${esc(p.state)}${p.wallLiftsAt ? ` · lifts ${fmtDate(p.wallLiftsAt)}` : ""}</span>${p.burnTokensPerMin ? ` <span class="muted">${p.burnTokensPerMin} tok/min</span>` : ""}</div><div>${windows}${credRows}${sessions}${fresh}${p.note ? `<div class="muted">${esc(p.note)}</div>` : ""}</div></div>`;
     })
     .join("");
   const burn = view.burn
     .map(
       (b) =>
-        `<tr><td>${esc(b.provider)}</td><td>${esc(b.pool)}</td><td>${fmtDate(b.from)}</td><td>${fmtDate(b.to)}</td><td>${b.tokens.toLocaleString()}</td></tr>`,
+        `<tr><td>${esc(display(b.provider))}</td><td>${esc(display(b.pool))}</td><td>${fmtDate(b.from)}</td><td>${fmtDate(b.to)}</td><td>${b.tokens.toLocaleString()}</td></tr>`,
     )
     .join("");
-  const choices = (list: string[]) => (list.length ? list.map(esc).join(", ") : "—");
-  const burnAndChoices = `<h2>Burn between resets</h2><div class="tblwrap"><table><caption>Burn between resets</caption><tr><th scope="col">Provider</th><th scope="col">Pool</th><th scope="col">From</th><th scope="col">To</th><th scope="col">Tokens</th></tr>${burn || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>
-<h2>Model choice</h2><div class="tblwrap"><table><caption>Model choice rules</caption><tr><th scope="col">Rule</th><th scope="col">Pools</th></tr>
+  const choices = (list: string[]) => (list.length ? list.map((id) => esc(display(id))).join(", ") : "—");
+  const burnAndChoices = `<h2>Burn between resets</h2><div class="tblwrap"><table class="table table-zebra"><caption>Burn between resets</caption><tr><th scope="col">Provider</th><th scope="col">Pool</th><th scope="col">From</th><th scope="col">To</th><th scope="col">Tokens</th></tr>${burn || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>
+<h2>Model choice</h2><div class="tblwrap"><table class="table table-zebra"><caption>Model choice rules</caption><tr><th scope="col">Rule</th><th scope="col">Pools</th></tr>
 <tr><td>Headroom for a new session</td><td>${choices(view.choices.hasHeadroom)}</td></tr>
 <tr><td>Burn-it-before-reset (unused headroom)</td><td>${choices(view.choices.burnBeforeReset)}</td></tr>
 <tr><td>Do not start a second session</td><td>${choices(view.choices.doNotStart)}</td></tr></table></div>`;
@@ -2297,6 +2283,9 @@ export function renderQuota(
     return layout(
       "Quota + throughput",
       `<h1>Quota + throughput</h1><p class="muted">All pooled quotas, resets, and burn rates. Machine-first: the same data is at <a href="/api/quota.json">/api/quota.json</a>.</p>
+${credentialLifecycle}
+${providerAuthSection}
+${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
 <h2>Pools</h2>${pools}
 ${burnAndChoices}`,
       provenance,
@@ -2338,9 +2327,12 @@ ${burnAndChoices}`,
     "Usage & billing",
     `<h1>Usage &amp; billing</h1><p class="muted">Token quotas, PAYG dollars, and SaaS usage vs limits — from dated local records; every card carries its measured-at stamp, and stale cards dim. Machine-first: <a href="/api/quota.json">/api/quota.json</a>.</p>
 ${attentionStripHtml(usage)}
+${credentialLifecycle}
+${providerAuthSection}
+${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
 <h2>Token quotas</h2>${pools}
 ${paygCardHtml(usage)}
-<h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}
+<h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}${uninstrumentedServicesHtml(usage.uninstrumentedServices ?? [])}
 ${chargesStripHtml(usage)}
 <h2>Sources</h2><div class="card"><div>Research records behind the cards on this page that carry provenance — all in <code>~/workspace/ai-subscriptions/</code>:</div><div>· evidence baseline: <code>evidence-and-interpretation-baseline-2026-10-20.md</code> (dated official pricing wording + interpretation notes)</div><div>· master tracker: the tracker behind <code>quota-view.md</code> Part (b) — each card with a tracker row cites its Summary (b) row and service section</div><div>· candidate evaluations: <code>free-services-to-check.md</code></div><div class="muted">Per-service provenance (tracker row or its absence, baseline, quota-view section) is on each service's detail page.</div></div>
 ${burnAndChoices}`,
@@ -2448,7 +2440,7 @@ export function renderServiceDetail(
 <h1>${esc(svc.name)}</h1>
 <div class="card${f.stale ? " stale" : ""}"><strong>${esc(svc.plan)}</strong> <span class="badge src">${esc(svc.status)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}<br><span class="muted">source: ${esc(svc.sourceNote)}${svc.nextDate ? ` · next: ${esc(svc.nextDate)}` : ""}${svc.billedUsd != null ? ` · billed this period: $${svc.billedUsd.toFixed(2)}` : ""}</span>${svc.usageNote ? `<br>${esc(svc.usageNote)}` : ""}</div>
 <h2>Sources</h2><div class="card">${svc.sources ? `<div>quota-view section: <code>${esc(svc.sources.quotaViewSection)}</code> in <code>quota-view.md</code> Part (b)</div><div>tracker row: ${svc.sources.trackerRow ? `<code>Summary (b) — ${esc(svc.sources.trackerRow)}</code>` : (svc.status === "candidate" || svc.status === "no-account") ? "none — no Summary (b) row; candidate / not held (§1.4)" : "none — no Summary (b) row"}</div><div>evidence baseline: <code>${esc(svc.sources.baselineDoc)}</code></div>` : `<div class="muted">source: ${esc(svc.sourceNote)}</div>`}</div>
-<h2>All metrics</h2><div class="tblwrap"><table><caption>All metrics</caption><tr><th scope="col">Metric</th><th scope="col">Used</th><th scope="col">Limit</th><th scope="col">%</th><th scope="col">Note</th></tr>${metricRows}</table></div>
+<h2>All metrics</h2><div class="tblwrap"><table class="table table-zebra"><caption>All metrics</caption><tr><th scope="col">Metric</th><th scope="col">Used</th><th scope="col">Limit</th><th scope="col">%</th><th scope="col">Note</th></tr>${metricRows}</table></div>
 ${payg}
 <h2>Snapshot history</h2>${snapshotFreshnessStamp(history, svc.cadenceDays, now)}${charts || ""}
 ${paces ? `<h2>Pace projections</h2><div class="card">${paces}</div>` : ""}
@@ -2524,7 +2516,7 @@ function sessionCard(
     act?.identities && act.commentOpts
       ? cardCommentHtml(objectRef, undefined, act.commentsByObject?.get(objectRef), act.commentOpts)
       : "";
-  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><strong><a href="/sessions?id=${encodeURIComponent(e.sessionId)}#${encodeURIComponent(e.sessionId)}">${esc(e.title ?? e.sessionId)}</a></strong> <span class="badge src">${esc(src)}</span> <span class="badge ${esc(e.state)}">${esc(STATE_LABELS[e.state])}</span>${tierBadge}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""}${sub}${cmt}${badges}<br><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")}${e.branch ? ` · ${esc(e.branch)}` : ""} · ${esc(e.model ?? "—")}${e.provider ? ` / ${esc(e.provider)}` : ""} · last activity ${fmtDate(e.lastActivityAt)} · ${esc(e.messageCount ?? "—")} msgs${e.outcome ? ` · outcome: ${esc(e.outcome)}` : ""}</span><br>${esc(evidence)}${reason}${orch}${controls}${detail}${commentBox}${kidsHtml}</div>`;
+  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><div class="attention-card-header"><strong><a href="/sessions?id=${encodeURIComponent(e.sessionId)}#${encodeURIComponent(e.sessionId)}">${esc(e.title ?? e.sessionId)}</a></strong> <span class="badge src">${esc(src)}</span> <span class="badge ${esc(e.state)}">${esc(STATE_LABELS[e.state])}</span>${tierBadge}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""}${sub}${cmt}${badges}</div><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")}${e.branch ? ` · ${esc(e.branch)}` : ""} · ${esc(e.model ?? "—")}${e.provider ? ` / ${esc(e.provider)}` : ""} · last activity ${fmtDate(e.lastActivityAt)} · ${esc(e.messageCount ?? "—")} msgs${e.outcome ? ` · outcome: ${esc(e.outcome)}` : ""}</span><br>${esc(evidence)}${reason}${orch}${controls}${detail}${commentBox}${kidsHtml}</div>`;
 }
 
 /** A #899 tier item that is not a live session — a decision, task, or gap. */
@@ -2549,7 +2541,16 @@ function tierItemCard(
   const action = item.recommendedAction
     ? `<br><span class="muted">Recommended: ${esc(item.recommendedAction)}</span>`
     : "";
-  const ref = item.ref ? `<br><a href="${esc(refUrl(item.ref))}">${esc(item.ref)}</a>` : "";
+  // A tier item's ref is only sometimes a GitHub ref: tracked-goal items
+  // carry their goal id (e.g. "goal_…"), and refUrl throws on those — one
+  // such item 500ed the whole Needs-you render (phase-b inventory,
+  // 2026-11-05). Non-GitHub refs render as plain code, never a link.
+  const refLink = item.ref
+    ? isValidRef(item.ref)
+      ? `<a href="${esc(refUrl(item.ref))}">${esc(item.ref)}</a>`
+      : `<code>${esc(item.ref)}</code>`
+    : "";
+  const ref = item.ref ? `<br>${refLink}` : "";
   const cmt = counts ? commentBadge(tierItemObjectRef(item), counts) : "";
   const badges = actionBadgesHtml(act?.actions);
   // #1291: on Needs User cards, the item's own contract renders — the
@@ -2580,7 +2581,7 @@ function tierItemCard(
   // carries a gh: ref, and every card expands inline to its full
   // detail — source, state, since/lastSeenAt, horizon, blockedBy,
   // the question payload, and the recorded action history.
-  const titleHtml = item.ref ? `<a href="${esc(refUrl(item.ref))}">${esc(item.title)}</a>` : esc(item.title);
+  const titleHtml = item.ref && isValidRef(item.ref) ? `<a href="${esc(refUrl(item.ref))}">${esc(item.title)}</a>` : esc(item.title);
   const questionPayload = item.questions?.length
     ? `<dt>Questions</dt><dd>${item.questions
         .map(
@@ -2591,10 +2592,10 @@ function tierItemCard(
     : item.question
       ? `<dt>Question</dt><dd>“${esc(item.question)}”</dd>`
       : "";
-  const detail = `<details class="carddetail"><summary>Details &amp; history</summary><dl><dt>Source</dt><dd>${esc(item.source)} · ${esc(item.kind)}${item.state ? ` · state ${esc(item.state)}` : ""}</dd><dt>Since</dt><dd>${esc(fmtDate(item.since))}</dd><dt>Last seen</dt><dd>${esc(fmtDate(item.lastSeenAt))}</dd>${item.horizon ? `<dt>Horizon</dt><dd>${esc(item.horizon)}</dd>` : ""}<dt>Ref</dt><dd><code>${esc(objectRef)}</code>${item.ref ? ` · <a href="${esc(refUrl(item.ref))}">${esc(item.ref)}</a>` : ""}</dd>${item.blockedBy?.length ? `<dt>Blocked by</dt><dd>${item.blockedBy.map((d) => esc(`${d.task} (${d.status}${d.workerLabel ? `, ${d.workerLabel}` : ""})`)).join("; ")}</dd>` : ""}${questionPayload}</dl>${actionHistoryHtml(act?.actions)}</details>`;
+  const detail = `<details class="carddetail"><summary>Details &amp; history</summary><dl><dt>Source</dt><dd>${esc(item.source)} · ${esc(item.kind)}${item.state ? ` · state ${esc(item.state)}` : ""}</dd><dt>Since</dt><dd>${esc(fmtDate(item.since))}</dd><dt>Last seen</dt><dd>${esc(fmtDate(item.lastSeenAt))}</dd>${item.horizon ? `<dt>Horizon</dt><dd>${esc(item.horizon)}</dd>` : ""}<dt>Ref</dt><dd><code>${esc(objectRef)}</code>${item.ref ? ` · ${refLink}` : ""}</dd>${item.blockedBy?.length ? `<dt>Blocked by</dt><dd>${item.blockedBy.map((d) => esc(`${d.task} (${d.status}${d.workerLabel ? `, ${d.workerLabel}` : ""})`)).join("; ")}</dd>` : ""}${questionPayload}</dl>${actionHistoryHtml(act?.actions)}</details>`;
   const commentBox =
     act?.identities && act.commentOpts ? cardCommentHtml(objectRef, item.ref, act.comments, act.commentOpts) : "";
-  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span>${isUserTier ? whyUserBadge(item) : ""}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""} <strong>${titleHtml}</strong>${cmt}${badges}<br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${extBody}${ref}${controls}${detail}${commentBox}</div>`;
+  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><div class="attention-card-header"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span>${isUserTier ? whyUserBadge(item) : ""}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""} <strong>${titleHtml}</strong>${cmt}${badges}</div><br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${extBody}${ref}${controls}${detail}${commentBox}</div>`;
 }
 
 export interface AttentionAct {
@@ -3002,8 +3003,9 @@ export function renderAttention(
   detail?: ProvenanceDetail,
   act?: AttentionAct,
   briefs?: Map<RefKey, ItemBrief>,
+  census?: NeedsDrewCensus | null,
 ): string {
-  const sections = attentionSections(view, coverage, counts, act, briefs);
+  const sections = attentionSections(view, coverage, counts, act, briefs, census);
   return layout(
     "Needs you",
     `<h1>Needs you</h1><p class="muted">The NEEDS USER queue is an intake the orchestrator works first — it resolves what it can and escalates only what genuinely requires the user, each escalated item with its reason. Everything else the fleet can work is the orchestrator's own queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>. Incident alerts (watchdog push + ack) live on <a href="/alerts">Alerts</a>.</p>
@@ -3013,6 +3015,49 @@ ${sections.header}${sections.queues}${sections.sessions}`,
     act?.identities ? ACTION_SCRIPT + COMMENT_SCRIPT + BULK_SCRIPT : "",
     detail ? freshnessChips(detail, ["orchestration", "attention", "registry"]) : "",
   );
+}
+
+/**
+ * The Needs-Drew label census section (#1226): open user/review +
+ * user/escalated items across the four repos, straight from GitHub —
+ * the labels are the system of record and this view only reads them.
+ * census === null means the source cannot census: the section says
+ * "unavailable" rather than rendering an empty, confident zero.
+ * census === undefined means the caller predates the census (tests,
+ * fragments) and the section is omitted entirely.
+ */
+export function needsDrewCensusHtml(census: NeedsDrewCensus | null | undefined): string {
+  if (census === undefined) return "";
+  if (census === null) {
+    return `<h2 id="needs-drew-census">Needs Drew — GitHub label census</h2><p class="muted">Unavailable — this source cannot census the user/review and user/escalated labels, so this queue cannot be reported here.</p>`;
+  }
+  const failed = census.sources.filter((x) => !x.ok || x.truncated || x.incomplete);
+  const failureNote = failed.length
+    ? `<div class="banner">Label census incomplete — ${failed
+        .map((x) => {
+          if (!x.ok) return `${esc(x.repo)} ${esc(x.label)}: ${esc(x.error ?? "failed")}`;
+          // Truncation and GitHub's partial-search signal are different
+          // failures: say which one it was instead of blurring them.
+          const why = x.incomplete
+            ? "search returned incomplete results, count is a floor"
+            : "page cap reached, count is a floor";
+          return `${esc(x.repo)} ${esc(x.label)}: ${why}`;
+        })
+        .join("; ")}. The list below may be missing items from those sources.</div>`
+    : "";
+  const rows = census.items.length
+    ? `<ul>${census.items
+        .map(
+          (i) =>
+            `<li><a href="${esc(i.url)}">${esc(i.ref)}</a> ${i.kind === "pr" ? "(PR) " : ""}${esc(i.title)} — ${i.needsLabels
+              .map((l) => `<code>${esc(l)}</code>`)
+              .join(
+                " ",
+              )} — ${i.reason ? esc(i.reason) : "no reason recorded on the item — open it for context"} <span class="muted">(updated ${esc(i.updatedAt)})</span></li>`,
+        )
+        .join("")}</ul>`
+    : `<p class="muted">No open items carry user/review or user/escalated right now${census.complete ? "" : " in the sources that answered"}.</p>`;
+  return `<h2 id="needs-drew-census">Needs Drew — GitHub label census (${census.items.length})</h2><p class="muted">Every open issue and PR carrying <code>user/review</code> or <code>user/escalated</code> across the four repos (#1226). The labels are the system of record; this view reads them and never writes them. Census taken ${esc(census.fetchedAt)}${census.complete ? "" : " — incomplete, see below"}. Machine form: <a href="/api/needs-drew.json">/api/needs-drew.json</a>.</p>${failureNote}${rows}`;
 }
 
 /**
@@ -3028,6 +3073,7 @@ export function attentionSections(
   counts?: Map<string, number | CommentKindCounts>,
   act?: AttentionAct,
   briefs?: Map<RefKey, ItemBrief>,
+  census?: NeedsDrewCensus | null,
 ): { header: string; queues: string; sessions: string } {
   const children = sessionChildren(view.all);
   const roots = sessionRoots(view.all);
@@ -3214,7 +3260,7 @@ ${delegationDefault}`;
     ? `<details class="hiddenstrip"><summary><strong>Dismissed / done by you (${hiddenList.length})</strong> — hidden from the queues; restore any of them to re-review or add a note</summary>${hiddenList.map((e) => stripCardHtml(e, act?.identities)).join("")}</details>`
     : "";
   const queues = `${bulkBarHtml(act)}${needsOrderHtml(act)}<h2 id="drew">Needs User (${drewCount})${sectionStamp}</h2>${drewCards}
-${snoozedStrip}${hiddenStrip}<h2 id="orchestrator">Needs Orchestrator (${orchCount})${sectionStamp}</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates to the user queue only what truly needs the user.</p>${orchCards}`;
+${snoozedStrip}${hiddenStrip}<h2 id="orchestrator">Needs Orchestrator (${orchCount})${sectionStamp}</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates to the user queue only what truly needs the user.</p>${orchCards}${needsDrewCensusHtml(census)}`;
   const sessionCards = roots.length
     ? roots.map((e) => sessionCard(e, children, 0, counts, sessionAct)).join("")
     : `<p class="muted">No current sessions.</p>`;
@@ -3338,8 +3384,13 @@ export function renderTodayBody(
   coverage: SourceCoverage[],
   health: HealthView | null = null,
   quotaUnavailable = false,
+  queue?: QueueView,
+  queueStale = false,
 ): string {
   const walled = quota.pools.filter((p) => p.state === "walled");
+  // "-direct" display rule (#6125), judged over this view's pool set.
+  const poolDisplayNames = providerDisplayNames(quota.pools.map((p) => p.provider));
+  const displayPoolProvider = (name: string) => poolDisplayNames.get(name) ?? name;
   const alerts: string[] = [];
   const drewTotal = attention.drew.length + attention.drewExtra.length;
   if (drewTotal) {
@@ -3349,7 +3400,7 @@ export function renderTodayBody(
   }
   if (walled.length) {
     alerts.push(
-      `<div class="banner"><strong>Walled pools:</strong> ${walled.map((p) => esc(`${p.provider} (${p.plan})`)).join(", ")} — <a href="/quota">quota</a></div>`,
+      `<div class="banner"><strong>Walled pools:</strong> ${walled.map((p) => esc(`${displayPoolProvider(p.provider)} (${p.plan})`)).join(", ")} — <a href="/quota">quota</a></div>`,
     );
   }
   // #1139: the derived view's banner names the section's TRUE state —
@@ -3370,11 +3421,16 @@ export function renderTodayBody(
   const actions = today.actions?.length
     ? `<h2>Pushed back into motion</h2>${today.actions.map((a) => `<div class="card"><span class="badge">${esc(a.kind)}</span> <strong>${esc(a.target)}</strong><br>${esc(a.summary)}<br><span class="muted">${esc(fmtDate(a.at))}</span></div>`).join("")}`
     : "";
+  // #6174: an objective ref comes from publisher lined-up data and is
+  // only sometimes a GitHub ref — tracked-goal items carry their goal id,
+  // and refUrl throws on those, which 500ed the whole /today render (the
+  // Today-page sibling of the #6149 Needs-you fix). Mirror tierItemCard:
+  // GitHub refs link, everything else renders as plain code.
   const objectives = today.objectives.length
     ? today.objectives
         .map(
           (o, i) =>
-            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.ref ? `<br><a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : ""}</div></div>`,
+            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.ref ? `<br>${isValidRef(o.ref) ? `<a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : `<code>${esc(o.ref)}</code>`}` : ""}</div></div>`,
         )
         .join("")
     : `<p class="muted">No objectives lined up for today.</p>`;
@@ -3397,10 +3453,13 @@ export function renderTodayBody(
         })
         .join("")
     : `<p class="muted">No projects to measure yet.</p>`;
+  const nextUp = queue
+    ? `<section class="today-next-up"><h2>Next up <span class="badge">${Math.min(queue.nextUp.length, 5)}</span>${queueStale ? ' <span class="badge stale" title="Queue inputs are stale or unavailable; see /health">stale inputs</span>' : ""}</h2><p class="muted">The next queued work, in the published horizon order.</p>${queueRows(queue.nextUp.slice(0, 5), "Nothing is queued for the next pick.")}</section>`
+    : "";
   return `${todayHealthStrip(health, quota, quotaUnavailable)}${provenanceLine}${alerts.join("")}
 <h2>Top objectives</h2>${objectives}
 <h2>Project momentum</h2>${momentum}
-${actions}${coverageHtml(coverage)}`;
+${nextUp}${actions}${coverageHtml(coverage)}`;
 }
 
 /** The today page (#1444): full server render. */
@@ -3413,10 +3472,12 @@ export function renderToday(
   detail?: ProvenanceDetail,
   health: HealthView | null = null,
   quotaUnavailable = false,
+  queue?: QueueView,
+  queueStale = false,
 ): string {
   return layout(
     "Today",
-    `<h1>Today</h1>${renderTodayBody(today, attention, quota, coverage, health, quotaUnavailable)}`,
+    `<h1>Today</h1>${renderTodayBody(today, attention, quota, coverage, health, quotaUnavailable, queue, queueStale)}`,
     provenance,
     "/today",
     "",
@@ -3465,7 +3526,9 @@ function queueRows(rows: QueueRow[], empty: string): string {
         : "";
       const worker = item.worker ? `<br><strong>Worker:</strong> ${esc(item.worker)}` : "";
       const epic = item.epic
-        ? `<br><span class="muted">Epic: <a href="${esc(item.epic.url)}">${esc(item.epic.title)}</a></span>`
+        ? item.epic.url
+          ? `<br><span class="muted">Epic: <a href="${esc(item.epic.url)}">${esc(item.epic.title)}</a></span>`
+          : `<br><span class="muted">Epic: ${esc(item.epic.title)}</span>`
         : "";
       const why = item.why ? `<br><span class="muted">${esc(item.why)}</span>` : "";
       const horizon = item.horizon ? ` · ${esc(item.horizon)}` : "";
@@ -3594,12 +3657,19 @@ function reconciledInProgress(data: OverviewData): OverviewInProgressItem[] {
     for (const task of goal.linedUp) {
       if (task.status !== "in-progress") continue;
       if (task.ref) {
-        signal(task.ref, "active-session", task.title);
+        // #6205: a lined-up ref is feed data, not necessarily a GitHub
+        // ref (goal ids, bare numbers). Signaling an invalid ref makes
+        // ensure() fall back to refUrl(), whose parseRef throws and
+        // kills the whole overview — skip refs the shared rule rejects.
+        if (isValidRef(task.ref)) signal(task.ref, "active-session", task.title);
         continue;
       }
       for (const ref of refsInText(task.title)) signal(ref, "active-session", task.title);
       for (const match of task.title.matchAll(/([\w.-]+\/[\w.-]+)#(\d+)/g)) {
-        signal(`${match[1]}#${match[2]}`, "active-session", task.title);
+        const ref = `${match[1]}#${match[2]}`;
+        // #6205: same guard for title-scraped refs — \d+ admits
+        // numbers parseRef rejects as unsafe integers.
+        if (isValidRef(ref)) signal(ref, "active-session", task.title);
       }
     }
   }
@@ -3668,13 +3738,15 @@ export function deriveOverview(data: OverviewData): OverviewSummary {
     else if (item.status === "Done") row.done += 1;
     byRepo.set(item.repo, row);
   }
+  // "-direct" display rule (#6125), judged over this view's pool set.
+  const quotaDisplayNames = providerDisplayNames(data.quota.pools.map((pool) => pool.provider));
   const quota = data.quota.pools.map((pool) => {
     // #1134 review (Codex P2): derive from used/limit with the shared
     // helper — a window that carries `used` and `limit` but no explicit
     // `percent` must not silently drop out of the tightest-window figure.
     const percents = pool.windows.map((w) => windowPercent(w));
     return {
-      provider: pool.provider,
+      provider: quotaDisplayNames.get(pool.provider) ?? pool.provider,
       plan: pool.plan,
       state: pool.state,
       worstPercent: percents.length ? Math.max(...percents) : null,
@@ -3796,7 +3868,7 @@ function dnsTable(entries: DnsEntry[], renewingSoon: Set<DnsEntry>, nextRenewal?
   const rows = entries
     .map(
       (e) =>
-        `<tr${e === nextRenewal ? ' id="dns-next-renewal"' : ""} data-dns-row data-dns-status="${esc(e.status)}" data-dns-renewing-soon="${renewingSoon.has(e)}"><td><strong>${esc(e.domain)}</strong></td><td>${esc(e.renewal)}</td><td>${e.priceUsd != null ? `$${e.priceUsd.toFixed(2)}` : "—"}</td><td>${esc(e.autoRenew)}</td><td>${esc(e.plan)}</td><td>${esc(e.review)}</td></tr>`,
+        `<tr${e === nextRenewal ? ' id="dns-next-renewal"' : ""} data-dns-row data-dns-status="${esc(e.status)}" data-dns-renewing-soon="${renewingSoon.has(e)}"><td><strong id="${esc(dnsAnchor(e.domain))}">${esc(e.domain)}</strong></td><td>${esc(e.renewal)}</td><td>${e.priceUsd != null ? `$${e.priceUsd.toFixed(2)}` : "—"}</td><td>${esc(e.autoRenew)}</td><td>${esc(e.plan)}</td><td>${esc(e.review)}</td></tr>`,
     )
     .join("");
   return `<div class="tblwrap"><table id="dns-register-table"><caption>Domain register</caption><thead><tr><th scope="col">Domain</th><th scope="col">Next renewal</th><th scope="col">Price (list)</th><th scope="col">Auto-renew</th><th scope="col">Plan / status</th><th scope="col">Review?</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">none</td></tr>'}</tbody></table></div>`;
@@ -3892,7 +3964,8 @@ ${dnsTable(section.entries, renewingSoon, next)}`;
  * src/aa.ts). Dependency-free inline script, like COMMENT_SCRIPT.
  * Written without template literals on purpose — it lives inside one.
  */
-const AA_EXPLORER_SCRIPT = `<script>
+const AA_EXPLORER_SCRIPT = `<script type="module">
+import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, normName, paretoSet, pctRank, projectTask, scoreEdges } from "/assets/aa-explorer-computations.js";
 (function () {
   var dataEl = document.getElementById("xpl-data");
   if (!dataEl) return;
@@ -3937,11 +4010,6 @@ const AA_EXPLORER_SCRIPT = `<script>
   function eord(e) { var v = EORD[String(e || "").toLowerCase()]; return v == null ? 50 : v; }
   var ESHORT = { "medium": "med", "reasoning": "reas", "max (peak)": "max·pk", "max (off-peak, derived)": "max·offpk", "non-reasoning": "base" };
   function shortLabel(p) { var e = String(p.effort || ""); return p.family + " " + (ESHORT[e.toLowerCase()] || e); }
-  function normName(s) {
-    var t = String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-    for (var i = 0; i < 3; i++) t = t.replace(/(\d) (\d)/g, "$1.$2");
-    return t.replace(/\s+/g, " ");
-  }
   var goCapByName = {};
   (CATALOG || []).forEach(function (e) { if (e.goCapUsd != null) goCapByName[normName(e.name)] = e.goCapUsd; });
   function goCapFor(p) { var v = goCapByName[normName(p.family)]; return v == null ? null : v; }
@@ -3984,36 +4052,6 @@ const AA_EXPLORER_SCRIPT = `<script>
   function scoreWord() { return S.persp === "cai" ? "CAI score" : "Intelligence"; }
   function scoreAxis() { return S.persp === "cai" ? "Coding Agent Index" : "Intelligence Index"; }
   function timeWord() { return S.persp === "cai" ? "agent wall time" : "time"; }
-  /** Percentile rank of v within vals (100 = best). higherBetter picks
-   * the direction; ties split. Null when the population is too small. */
-  function pctRank(vals, v, higherBetter) {
-    var xs = vals.filter(function (x) { return x != null; });
-    if (xs.length < 2 || v == null) return null;
-    var worse = 0, ties = 0;
-    xs.forEach(function (x) {
-      if (x === v) ties++;
-      else if (higherBetter ? x < v : x > v) worse++;
-    });
-    return Math.round((100 * (worse + 0.5 * (ties - 1))) / (xs.length - 1));
-  }
-  /** Non-dominated subset: dims are {get, better:"high"|"low"}; a point
-   * is kept unless another is at least as good on every dim and strictly
-   * better on one. Points missing any dim are excluded. */
-  function paretoSet(rows, dims) {
-    var pool = rows.filter(function (p) { return dims.every(function (d) { return d.get(p) != null; }); });
-    return pool.filter(function (p) {
-      return !pool.some(function (q) {
-        if (q === p) return false;
-        var allGe = true, anyGt = false;
-        dims.forEach(function (d) {
-          var a = d.get(q), b = d.get(p);
-          if (d.better === "high") { if (a < b) allGe = false; if (a > b) anyGt = true; }
-          else { if (a > b) allGe = false; if (a < b) anyGt = true; }
-        });
-        return allGe && anyGt;
-      });
-    });
-  }
   var S = {
     tab: location.hash === "#models" ? "models" : "aa",
     persp: "aa",
@@ -4064,55 +4102,9 @@ const AA_EXPLORER_SCRIPT = `<script>
   // (all other filters applied): score gap = best score at or below this
   // cost minus this score; price premium = this cost over the cheapest
   // cost at or above this score; speed gap = score gap against time.
-  function gapMetrics(rows) {
-    var map = {};
-    rows.forEach(function (p) {
-      var g = { score: p.score, cost: p.cost, time: p.time, tps: p.tps, gapScore: null, gapCost: null, gapSpeed: null };
-      if (p.cost != null && p.score != null) {
-        var best = null, minCost = null;
-        rows.forEach(function (q) {
-          if (q.cost == null || q.score == null) return;
-          if (q.cost <= p.cost && (best == null || q.score > best)) best = q.score;
-          if (q.score >= p.score && (minCost == null || q.cost < minCost)) minCost = q.cost;
-        });
-        if (best != null) g.gapScore = best - p.score;
-        if (minCost != null && minCost > 0) g.gapCost = p.cost / minCost;
-      }
-      if (p.time != null && p.score != null) {
-        var bestT = null;
-        rows.forEach(function (q) {
-          if (q.time == null || q.score == null) return;
-          if (q.time <= p.time && (bestT == null || q.score > bestT)) bestT = q.score;
-        });
-        if (bestT != null) g.gapSpeed = bestT - p.score;
-      }
-      map[p.key] = g;
-    });
-    return map;
-  }
-  var INEQ_OPS = {
-    "<": function (a, b) { return a < b; },
-    "<=": function (a, b) { return a <= b; },
-    "=": function (a, b) { return a === b; },
-    ">=": function (a, b) { return a >= b; },
-    ">": function (a, b) { return a > b; },
-  };
   function visPoints() {
     var base = basePoints();
-    if (S.ineq.mode === "off") return base;
-    var active = S.ineq.conds.filter(function (c) { return c.value !== "" && !isNaN(Number(c.value)); });
-    if (!active.length) return base;
-    var gaps = gapMetrics(base);
-    return base.filter(function (p) {
-      var g = gaps[p.key];
-      var results = active.map(function (c) {
-        var v = g ? g[c.metric] : null;
-        if (v == null || !INEQ_OPS[c.op]) return false;
-        return INEQ_OPS[c.op](v, Number(c.value));
-      });
-      var match = S.ineq.combine === "or" ? results.some(function (x) { return x; }) : results.every(function (x) { return x; });
-      return S.ineq.mode === "reject" ? !match : match;
-    });
+    return applyInequalityFilters(base, S.ineq.mode, S.ineq.combine, S.ineq.conds);
   }
   function visCatalog() {
     if (!CATALOG) return [];
@@ -4896,92 +4888,7 @@ const AA_EXPLORER_SCRIPT = `<script>
   // survivors rank by (relative time)^speed-weight x (relative
   // price)^(1-speed-weight); scores inside the window break ties.
   function computeRecs() {
-    var R = S.rec;
-    var rows = visPoints();
-    var scored = rows.filter(function (p) { return p.score != null; });
-    if (!scored.length) return { bands: [], empty: "No scored configurations are visible under the current filters." };
-    var lo = Math.min.apply(null, scored.map(function (p) { return p.score; }));
-    var hi = Math.max.apply(null, scored.map(function (p) { return p.score; }));
-    var n = Math.max(2, Math.min(8, Number(S.bandCount) || 3));
-    var w = (hi - lo) / n || 1;
-    var bands = [];
-    for (var i = 0; i < n; i++) {
-      var bLo = lo + i * w, bHi = i === n - 1 ? hi : lo + (i + 1) * w;
-      var members = scored.filter(function (p) { return p.score >= bLo && (i === n - 1 ? p.score <= bHi : p.score < bHi); });
-      if (!members.length) continue;
-      var best = Math.max.apply(null, members.map(function (p) { return p.score; }));
-      var decision = {};
-      var candidates = [];
-      members.forEach(function (p) {
-        if (p.cost == null || p.time == null) decision[p.key] = "Missing selected cost or speed";
-        else candidates.push(p);
-      });
-      var ref = candidates.slice().sort(function (a, b) { return cmpDesc(a.score, b.score) || cmpAsc(a.cost, b.cost); })[0] || null;
-      var maxCost = R.maxCost === "" || R.maxCost == null ? null : Number(R.maxCost);
-      var maxTime = R.maxSec === "" || R.maxSec == null ? null : Number(R.maxSec);
-      var nearTop = [];
-      candidates.forEach(function (p) {
-        if (p.score < best - Number(R.allow)) decision[p.key] = "Below near-top score floor";
-        else if (maxCost != null && p.cost > maxCost) decision[p.key] = "Above the absolute price limit";
-        else if (maxTime != null && p.time > maxTime) decision[p.key] = "Above the absolute time limit";
-        else nearTop.push(p);
-      });
-      var picks = [];
-      var cheapest = null, fastest = null, priceCeil = null, timeCeil = null;
-      if (nearTop.length) {
-        cheapest = Math.min.apply(null, nearTop.map(function (p) { return p.cost; }));
-        fastest = Math.min.apply(null, nearTop.map(function (p) { return p.time; }));
-        priceCeil = cheapest * (1 + Number(R.priceAllow) / 100);
-        timeCeil = fastest * Number(R.slowAllow);
-        var survivors = [];
-        nearTop.forEach(function (p) {
-          if (p.cost > priceCeil) decision[p.key] = "Above relative price allowance";
-          else if (p.time > timeCeil) decision[p.key] = "Slower than relative speed limit";
-          else survivors.push(p);
-        });
-        var kept = survivors.filter(function (p) {
-          if (R.dominance === "none") return true;
-          var dominated = survivors.some(function (q) {
-            if (q === p) return false;
-            if (R.dominance === "lab" && q.creator !== p.creator) return false;
-            return q.score >= p.score && q.cost <= p.cost && q.time <= p.time && (q.score > p.score || q.cost < p.cost || q.time < p.time);
-          });
-          if (dominated) decision[p.key] = R.dominance === "lab" ? "Dominated within its lab" : "Dominated on score, price and speed";
-          return !dominated;
-        });
-        var sw = Number(R.speedPriority) / 100;
-        var ranked = kept.map(function (p) {
-          return { p: p, factor: Math.pow(p.time / fastest, sw) * Math.pow(p.cost / cheapest, 1 - sw) };
-        }).sort(function (a, b) { return a.factor - b.factor || cmpDesc(a.p.score, b.p.score); });
-        var bestFactor = ranked.length ? ranked[0].factor : null;
-        var pickedLabs = {};
-        var passes = R.diversity === "labsfirst" ? 2 : 1;
-        for (var pass = 0; pass < passes && picks.length < Number(R.perBand); pass++) {
-          ranked.forEach(function (r) {
-            if (picks.length >= Number(R.perBand)) return;
-            if (picks.some(function (x) { return x.p.key === r.p.key; })) return;
-            if (bestFactor != null && r.factor > bestFactor * Number(R.altWindow)) return;
-            if (R.diversity === "lab" && pickedLabs[r.p.creator]) return;
-            if (R.diversity === "labsfirst" && pass === 0 && pickedLabs[r.p.creator]) return;
-            picks.push(r);
-            pickedLabs[r.p.creator] = true;
-          });
-        }
-        ranked.forEach(function (r) {
-          if (picks.some(function (x) { return x.p.key === r.p.key; })) { decision[r.p.key] = "Recommended"; return; }
-          if (decision[r.p.key]) return;
-          if (bestFactor != null && r.factor > bestFactor * Number(R.altWindow)) decision[r.p.key] = "Outside the alternative window";
-          else if (R.diversity === "lab" && pickedLabs[r.p.creator]) decision[r.p.key] = "Not selected — one choice per lab";
-          else decision[r.p.key] = "Not selected — band cap reached";
-        });
-      }
-      bands.push({
-        label: "Score band " + (bands.length + 1) + " · " + scoreWord() + " " + fmtN(bLo, 2) + (i === n - 1 ? " to ≤ " : " to < ") + fmtN(bHi, 2),
-        members: members, best: best, ref: ref, picks: picks, decision: decision,
-        priceCeil: priceCeil, timeCeil: timeCeil, floor: best - Number(R.allow),
-      });
-    }
-    return { bands: bands, empty: null };
+    return computeRecommendations(visPoints(), S.rec, S.bandCount, scoreWord());
   }
   function bandScatter(band) {
     var pts = band.members.filter(function (p) { return p.cost != null && p.time != null; });
@@ -5178,7 +5085,9 @@ const AA_EXPLORER_SCRIPT = `<script>
         var py = cy + ((pi % 5) - 2) * 2.5;
         var color = famColor[p.family] || "#8b949e";
         var desc = shortLabel(p) + " — " + axisLabel + " " + valueLabel(v);
-        svg += '<circle class="xpt" data-pick="' + esc(p.key) + '" cx="' + x(v).toFixed(1) + '" cy="' + py.toFixed(1) + '" r="' + (isLeader ? 5 : 3.8) + '" fill="' + color + '" fill-opacity="' + (isLeader ? 0.95 : 0.65) + '" stroke="' + (isLeader ? "#fff" : color) + '" stroke-width="' + (isLeader ? 1.5 : 0.8) + '" tabindex="0" role="button" aria-label="' + esc("Select " + desc) + '"><title>' + esc(desc + (isLeader ? " — band leader" : " — near-leader")) + "</title></circle>";
+        const pointX = x(v).toFixed(1);
+        const pointY = py.toFixed(1);
+        svg += '<g class="xpt-control" data-pick="' + esc(p.key) + '" tabindex="0" role="button" aria-label="' + esc("Select " + desc) + '"><circle class="xpt-hit" cx="' + pointX + '" cy="' + pointY + '" r="40"/><circle class="xpt" cx="' + pointX + '" cy="' + pointY + '" r="' + (isLeader ? 5 : 3.8) + '" fill="' + color + '" fill-opacity="' + (isLeader ? 0.95 : 0.65) + '" stroke="' + (isLeader ? "#fff" : color) + '" stroke-width="' + (isLeader ? 1.5 : 0.8) + '"/><title>' + esc(desc + (isLeader ? " — band leader" : " — near-leader")) + "</title></g>";
       });
     });
     return '<div class="xpl-band-lane-wrap">' + svg + "</svg></div>";
@@ -5326,49 +5235,8 @@ const AA_EXPLORER_SCRIPT = `<script>
   // (answer + thinking) output]; time = turns x (measured TTFT +
   // answer / measured throughput + tool overhead), borrowing the
   // family timing from either benchmark point set.
-  function pjBand(e) {
-    if (!e.rate || !e.rate.bands.length) return null;
-    var bands = e.rate.bands;
-    var win = bands.filter(function (b) { return b.window === S.pj.window; });
-    var pool = win.length ? win : bands.filter(function (b) { return b.window == null || b.window === "flat"; });
-    if (!pool.length) pool = bands;
-    var input = Number(S.pj.inputTokens) || 0;
-    for (var i = 0; i < pool.length; i++) {
-      var b = pool[i];
-      if ((b.minTokens == null || input >= b.minTokens) && (b.maxTokens == null || input < b.maxTokens)) return b;
-    }
-    return pool[pool.length - 1];
-  }
-  function pjTiming(e) {
-    var norm = normName(e.name);
-    var sets = [AA_POINTS, CAI_POINTS];
-    for (var si = 0; si < sets.length; si++) {
-      var cands = sets[si].filter(function (p) { return normName(p.family) === norm; });
-      for (var i = 0; i < cands.length; i++) if (cands[i].tps != null) return { tps: cands[i].tps, ttft: cands[i].ttft };
-    }
-    return null;
-  }
   function project(e) {
-    var band = pjBand(e);
-    if (!band) return { cost: null, time: null, band: null };
-    var P = S.pj;
-    var input = Number(P.inputTokens) || 0, answer = Number(P.answerTokens) || 0, thinking = Number(P.thinkingTokens) || 0;
-    var turns = Number(P.turns) || 0;
-    var cacheShare = (Number(P.cacheReadPct) || 0) / 100;
-    var writesShare = (Number(P.writesPct) || 0) / 100;
-    var uncached = input * (1 - cacheShare);
-    var reads = input * cacheShare;
-    var writes = uncached * writesShare;
-    var missing = band.input == null || band.output == null || (reads > 0 && band.cacheRead == null) || (writes > 0 && band.cacheWrite == null);
-    var cost = null;
-    if (!missing) {
-      var perTurn = (uncached * band.input + reads * (band.cacheRead || 0) + writes * (band.cacheWrite || 0) + (answer + thinking) * band.output) / 1000000;
-      cost = turns * perTurn;
-    }
-    var timing = pjTiming(e);
-    var time = null;
-    if (timing && timing.tps) time = turns * ((timing.ttft || 0) + answer / timing.tps + (Number(P.overheadSec) || 0));
-    return { cost: cost, time: time, band: band };
+    return projectTask(e, S.pj, AA_POINTS, CAI_POINTS);
   }
   function renderModels() {
     var tb = document.getElementById("xpl-mrows");
@@ -5782,7 +5650,7 @@ function aaTimingsTable(testRuns: AaTestRun[]): string {
         `<tr><td><strong>${esc(variantLabel(r.modelVariantKey))}</strong><br><span class="muted">${esc(r.snapshotDate ?? "no snapshot date")}</span></td><td>${r.intelligence ?? "—"}</td><td>${fmtCost(r.costPerTaskUsd)}</td><td>${fmtTimed(r.ttftSeconds)}</td><td>${fmtTimed(r.firstAnswerSeconds)}</td><td>${fmtTimed(r.e2e500Seconds)}</td><td>${fmtTimed(r.timePerTaskSeconds)}</td><td>${r.outputSpeedTps ?? "—"}</td></tr>`,
     )
     .join("");
-  return `<div class="tblwrap"><table><caption>Model configurations — intelligence and cost</caption><tr><th scope="col">Configuration</th><th scope="col">Intelligence</th><th scope="col">$/task</th><th scope="col">TTFT</th><th scope="col">First answer</th><th scope="col">E2E (500 tok)</th><th scope="col">Time / task</th><th scope="col">Speed (t/s)</th></tr>${rows || '<tr><td colspan="8" class="muted">none</td></tr>'}</table></div>`;
+  return `<div class="tblwrap"><table class="table table-zebra"><caption>Model configurations — intelligence and cost</caption><tr><th scope="col">Configuration</th><th scope="col">Intelligence</th><th scope="col">$/task</th><th scope="col">TTFT</th><th scope="col">First answer</th><th scope="col">E2E (500 tok)</th><th scope="col">Time / task</th><th scope="col">Speed (t/s)</th></tr>${rows || '<tr><td colspan="8" class="muted">none</td></tr>'}</table></div>`;
 }
 
 function aaConfigsTable(configs: AaConfig[]): string {
@@ -5792,7 +5660,7 @@ function aaConfigsTable(configs: AaConfig[]): string {
         `<tr><td><strong>${esc(c.modelName)}</strong></td><td>${esc(c.effort ?? "—")}</td><td>${c.intelligence ?? "—"}</td><td>${fmtCost(c.costPerTaskUsd)}</td><td>${c.speedTps ?? "—"}</td></tr>`,
     )
     .join("");
-  return `<div class="tblwrap"><table><caption>Models — effort, intelligence, cost, and speed</caption><tr><th scope="col">Model</th><th scope="col">Effort (AA label)</th><th scope="col">Intelligence</th><th scope="col">$/task</th><th scope="col">Speed (t/s)</th></tr>${rows || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>`;
+  return `<div class="tblwrap"><table class="table table-zebra"><caption>Models — effort, intelligence, cost, and speed</caption><tr><th scope="col">Model</th><th scope="col">Effort (AA label)</th><th scope="col">Intelligence</th><th scope="col">$/task</th><th scope="col">Speed (t/s)</th></tr>${rows || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>`;
 }
 
 function aaCaiTable(rowsIn: AaCaiRow[]): string {
@@ -5805,7 +5673,7 @@ function aaCaiTable(rowsIn: AaCaiRow[]): string {
     .join("");
   return `<h2>Coding Agent Index observations</h2>
 <p class="muted">The import's Coding Agent Index rows — a model plus its agent harness and settings, checked as published. Kept strictly separate from the AA Intelligence Index rows above: no score is converted between the indexes. "Not published" costs stay blank rather than estimated. These rows power the explorer's Coding agents perspective.</p>
-<div class="tblwrap"><table><caption>Model benchmark scores</caption><tr><th scope="col">Model</th><th scope="col">Effort</th><th scope="col">Harness</th><th scope="col">Version</th><th scope="col">CAI score</th><th scope="col">DeepSWE v1.1</th><th scope="col">Terminal-Bench 4.0</th><th scope="col">SWE-Atlas-QnA</th><th scope="col">$/task</th><th scope="col">Agent wall time / task</th><th scope="col">Tokens / task</th></tr>${rows || '<tr><td colspan="11" class="muted">none</td></tr>'}</table></div>`;
+<div class="tblwrap"><table class="table table-zebra"><caption>Model benchmark scores</caption><tr><th scope="col">Model</th><th scope="col">Effort</th><th scope="col">Harness</th><th scope="col">Version</th><th scope="col">CAI score</th><th scope="col">DeepSWE v1.1</th><th scope="col">Terminal-Bench 4.0</th><th scope="col">SWE-Atlas-QnA</th><th scope="col">$/task</th><th scope="col">Agent wall time / task</th><th scope="col">Tokens / task</th></tr>${rows || '<tr><td colspan="11" class="muted">none</td></tr>'}</table></div>`;
 }
 
 function aaNameList(names: string[]): string {
@@ -6079,7 +5947,7 @@ export function renderSessions(
   }
   const body = `<h1>Sessions — identity registry</h1>
 ${viewHtml}<p class="muted">Every agent/session the fleet can see, with its stable id, the agent identity it ran as, its parent session, and its token total where the source reports one. Task links are loose (from the session's PR, title, or launch record) and improve over time. ${records.length} records shown · ${totalTokens.toLocaleString()} tokens recorded on this page. Machine-first: <a href="/api/registry.json">/api/registry.json</a>.</p>
-<p class="muted">Coverage honesty: OpenCode sessions register from their servers; Jules from the keeper's state; Muse sessions only when a launch record was appended at spawn (<code>scripts/record-claude-launch.ts</code>) — a Muse session that never wrote one is invisible here, and the coverage note on Needs you says which sources are wired.</p>
+<p class="muted">Coverage honesty: OpenCode sessions register from their servers; Muse sessions only when a launch record was appended at spawn (<code>scripts/record-claude-launch.ts</code>) — a Muse session that never wrote one is invisible here, and the coverage note on Needs you says which sources are wired.</p>
 ${groups || '<p class="muted">No sessions recorded yet.</p>'}`;
   return layout(
     "Sessions",
@@ -6092,6 +5960,56 @@ ${groups || '<p class="muted">No sessions recorded yet.</p>'}`;
 }
 
 // --- All pages (the manifest as a page) ---------------------------------------
+
+// --- Source-conflict inbox (#1282, slice 1) -----------------------------------
+
+/**
+ * /conflicts — the read-only source-conflict inbox. Every disagreement the
+ * facets already report, in one queue, grouped by conflict class, each entry
+ * naming the item, both sources, both values and how long the pair has been
+ * on record. It resolves nothing: slice 1 projects only, so this page is the
+ * same list /api/conflicts.json serves, rendered.
+ */
+export function renderConflicts(inbox: ConflictInbox, provenance: Provenance, detail?: ProvenanceDetail): string {
+  const chips = detail ? freshnessChips(detail, ["items", "usage"]) : "";
+  const ageCell = (entry: ConflictEntry): string => {
+    if (entry.ageDays === null) return `<span class="muted">undated</span>`;
+    const days = `<strong>${entry.ageDays}</strong> day${entry.ageDays === 1 ? "" : "s"}`;
+    const floor = entry.ageBasis === "project-item-updated-at" ? " (floor)" : "";
+    return `at least ${days}${floor}<br><span class="muted">${esc(fmtDate(entry.observedAt ?? ""))}${entry.ageBasis === "undated" ? "" : ` · ${esc(entry.ageBasis)}`}</span>`;
+  };
+  const itemCell = (entry: ConflictEntry): string => {
+    const label = esc(entry.item.title);
+    if (!entry.item.url) return `<strong>${label}</strong>`;
+    return `<a href="${esc(entry.item.url)}"><strong>${label}</strong></a>${entry.item.ref ? `<br><span class="muted"><code>${esc(entry.item.ref)}</code></span>` : ""}`;
+  };
+  const groups = inbox.byClass
+    .map((cls) => {
+      const entries = inbox.entries.filter((e) => e.classId === cls.classId);
+      if (!entries.length) return "";
+      const rows = entries
+        .map(
+          (e) =>
+            `<tr><td>${itemCell(e)}</td><td>${esc(e.sources.a)}<br><span class="muted">vs</span><br>${esc(e.sources.b)}</td><td><span class="badge stale">${esc(e.values.a)}</span><br><span class="muted">vs</span><br><span class="badge stale">${esc(e.values.b)}</span></td><td>${ageCell(e)}</td><td>${e.href ? `<a href="${esc(e.href)}">records →</a>` : "—"}</td></tr>`,
+        )
+        .join("");
+      return `<h2 id="class-${esc(cls.classId)}">${esc(cls.label)} (${entries.length})</h2>
+<div class="tblwrap"><table class="table table-zebra"><caption>${esc(cls.label)} — item, sources, both values, age</caption><tr><th scope="col">Item</th><th scope="col">Sources</th><th scope="col">Both values</th><th scope="col">Disagreeing for</th><th scope="col">Records</th></tr>${rows}</table></div>`;
+    })
+    .join("");
+  const oldest =
+    inbox.oldestAgeDays === null ? "—" : `at least ${inbox.oldestAgeDays} day${inbox.oldestAgeDays === 1 ? "" : "s"}`;
+  const body = `<h1>Source conflicts</h1>
+<p class="muted">Every live disagreement the facets already report, in one queue: <strong>${inbox.total}</strong> entr${inbox.total === 1 ? "y" : "ies"} across ${inbox.byClass.filter((c) => c.count > 0).length} class${inbox.byClass.filter((c) => c.count > 0).length === 1 ? "" : "es"} · oldest ${oldest} · assembled ${esc(fmtDate(inbox.generatedAt))}. Machine-first: <a href="/api/conflicts.json">/api/conflicts.json</a>. This page projects; it does not resolve — trust rulings are slice 2 of #1282, so nothing here changes what a render shows.</p>
+<div class="board">
+<div class="card"><strong>Conflicts</strong><br>${inbox.total} live</div>
+${inbox.byClass.map((c) => `<div class="card"><strong>${esc(c.label)}</strong><br>${c.count} live</div>`).join("")}
+<div class="card"><strong>Oldest disagreement</strong><br>${oldest}</div>
+</div>
+<p class="muted">Age is a <strong>floor</strong>, not an exact birthday: it is measured from the newest timestamp the source carries for the pair (a Project item's <code>updatedAt</code>, a service's <code>measuredAt</code>), so the values have disagreed for <em>at least</em> that long — an item edited yesterday for another reason can carry a much older clash.</p>
+${inbox.total ? groups : `<div class="banner">No live source disagreements in this projection — every facet that reports a disagreement agrees with its counterpart right now. An empty inbox here is a real empty, not an unread one: the page and /api/conflicts.json are built from the same projection.</div>`}`;
+  return layout("Source conflicts", body, provenance, "/conflicts", "", chips);
+}
 
 export function renderPages(provenance: Provenance, history: PageHealth[] = []): string {
   const byRoute = new Map(history.map((p) => [p.route, p]));
@@ -6106,7 +6024,7 @@ export function renderPages(provenance: Provenance, history: PageHealth[] = []):
   }).join("");
   return layout(
     "All pages",
-    `<h1>All pages</h1><p class="muted">Every registered page, from the manifest in <code>src/pages.ts</code> — the nav bar renders the primary tier, the page dropdown lists them all (#1497). Last-rendered + status come live from the render registry (#1147), the same one <a href="/health">Health</a> reports — a page this process has not rendered yet says so, never a fake time. Adding a page is one manifest entry + a render function + a route (recipe in the README).</p><div class="tblwrap"><table><caption>All registered pages</caption><tr><th scope="col">Page</th><th scope="col">Route</th><th scope="col">JSON twin</th><th scope="col">Nav tier</th><th scope="col">Last rendered</th><th scope="col">What it is</th></tr>${rows}</table></div>`,
+    `<h1>All pages</h1><p class="muted">Every registered page, from the manifest in <code>src/pages.ts</code> — the nav bar renders the primary tier, the page dropdown lists them all (#1497). Last-rendered + status come live from the render registry (#1147), the same one <a href="/health">Health</a> reports — a page this process has not rendered yet says so, never a fake time. Adding a page is one manifest entry + a render function + a route (recipe in the README).</p><div class="tblwrap"><table class="table table-zebra"><caption>All registered pages</caption><tr><th scope="col">Page</th><th scope="col">Route</th><th scope="col">JSON twin</th><th scope="col">Nav tier</th><th scope="col">Last rendered</th><th scope="col">What it is</th></tr>${rows}</table></div>`,
     provenance,
     "/pages",
   );
@@ -6169,6 +6087,32 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
       return `<tr><td><a href="${esc(p.route)}">${esc(p.title)}</a></td><td><code>${esc(p.route)}</code></td><td>${last}</td></tr>`;
     })
     .join("");
+  // #1203: the ready-for-agent facet — the harness's real dispatch-layer
+  // state, not just whether its UI answers 200. "down" means the GraphQL
+  // read failed (detail names the error) or a backend is not READY; the
+  // repositories table still shows what the harness reports when it can
+  // be read at all.
+  const rfa = view.rfa;
+  const rfaState =
+    rfa.state === "up"
+      ? '<span class="dot up"></span><strong>up</strong>'
+      : rfa.state === "fixtures"
+        ? '<span class="dot fixtures"></span><strong>fixtures</strong>'
+        : '<span class="dot down"></span><strong>down</strong>';
+  const rfaRepoRows = rfa.repositories.length
+    ? rfa.repositories
+        .map(
+          (r) =>
+            `<tr><td><code>${esc(r.projectPath)}</code></td><td>${r.paused ? "paused" : "running"}</td><td><code>${esc(r.mergePolicy ?? "—")}</code></td><td>${r.workItems}</td></tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="4" class="muted">No harness repositories reported — the harness could not be read, or none are registered.</td></tr>`;
+  const rfaBackendLine = rfa.backends.length
+    ? `Backends: ${rfa.backends.map((b) => `<code>${esc(b.id)}</code> ${esc(b.kind)}${b.reason ? ` — ${esc(b.reason)}` : ""}`).join(" · ")}`
+    : "Backends: none reported.";
+  const rfaSection = `<h2 id="ready-for-agent">ready-for-agent harness</h2>
+<div class="card">${rfaState} — ${esc(rfa.detail)}<br>${rfaBackendLine}</div>
+<div class="tblwrap"><table class="table table-zebra"><caption>ready-for-agent repositories — settings and dispatch work items</caption><tr><th scope="col">Repository</th><th scope="col">Paused</th><th scope="col">Merge policy</th><th scope="col">Work items</th></tr>${rfaRepoRows}</table></div>`;
   const cov = view.itemsCoverage;
   const coverageLine =
     cov && cov.total > 0
@@ -6201,21 +6145,33 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
 ${degraded}${modeNote}
 <h2 id="topology">Services &amp; topology</h2>
 <p class="muted">What runs where: the component, its port and bind as actually deployed, what consumes it, and what breaks without it. State is probed, never assumed.</p>
-<div class="tblwrap"><table><caption>Services, ports, and topology</caption><tr><th scope="col">Service</th><th scope="col">Port</th><th scope="col">Bind</th><th scope="col">Runs as</th><th scope="col">State</th><th scope="col">Consumed by</th><th scope="col">If it is down</th></tr>${serviceRows}</table></div>
+<div class="tblwrap"><table class="table table-zebra"><caption>Services, ports, and topology</caption><tr><th scope="col">Service</th><th scope="col">Port</th><th scope="col">Bind</th><th scope="col">Runs as</th><th scope="col">State</th><th scope="col">Consumed by</th><th scope="col">If it is down</th></tr>${serviceRows}</table></div>
+${rfaSection}
 <h2>Feed sections</h2>
-<div class="tblwrap"><table><caption>Feed sections — presence and age</caption><tr><th scope="col">Section</th><th scope="col">Present</th><th scope="col">Age</th><th scope="col">Note</th></tr>${sectionRows}</table></div>
+<div class="tblwrap"><table class="table table-zebra"><caption>Feed sections — presence and age</caption><tr><th scope="col">Section</th><th scope="col">Present</th><th scope="col">Age</th><th scope="col">Note</th></tr>${sectionRows}</table></div>
 <h2>Jobs</h2>
 <div class="card"><strong>Orchestration pass</strong><br>${orchLine}</div>
 <div class="card"><strong>Fleet-feed collector</strong><br>${collLine}</div>
 <h2>Item resolution coverage</h2>
 <div class="card">${coverageLine}</div>
+<h2>Source conflicts</h2>
+<div class="card">${
+    view.conflicts
+      ? `<strong><a href="/conflicts">${view.conflicts.total} live source conflict${view.conflicts.total === 1 ? "" : "s"}</a></strong>${view.conflicts.byClass
+          .filter((c) => c.count > 0)
+          .map((c) => ` · ${esc(c.label)}: ${c.count}`)
+          .join(
+            "",
+          )}${view.conflicts.oldestAgeDays === null ? "" : ` · oldest at least <strong>${view.conflicts.oldestAgeDays}</strong> day${view.conflicts.oldestAgeDays === 1 ? "" : "s"}`} (#1282 slice 1 — a growing count means the sources keep disagreeing and nobody has ruled on the class)`
+      : `<span class="muted">not assembled for this health view</span>`
+  }</div>
 <h2>Dashboard comments</h2>
 <div class="card"><strong>${view.comments.pendingMessages} message${view.comments.pendingMessages === 1 ? "" : "s"} awaiting triage</strong> · <strong>${view.comments.pendingGithub} GitHub comment${view.comments.pendingGithub === 1 ? "" : "s"} awaiting posting</strong> · ${view.comments.total} comment${view.comments.total === 1 ? "" : "s"} in the store (#1145 — a pending count that does not drain means work arrives faster than it is cleared, or the triage/poster loop has stopped; check the loop's last run before acting)</div>
 <h2>Source facets</h2>
 ${facets}
 <h2>Pages</h2>
 <p class="muted">Render history of this process — a page nobody has opened since boot is labelled unrendered, not green.</p>
-<div class="tblwrap"><table><caption>Pages — last rendered</caption><tr><th scope="col">Page</th><th scope="col">Route</th><th scope="col">Last rendered</th></tr>${pageRows}</table></div>`;
+<div class="tblwrap"><table class="table table-zebra"><caption>Pages — last rendered</caption><tr><th scope="col">Page</th><th scope="col">Route</th><th scope="col">Last rendered</th></tr>${pageRows}</table></div>`;
   return layout("Health", body, provenance, "/health");
 }
 
@@ -6304,7 +6260,7 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
     ? `Week-over-week delta vs the ${esc(fmtDate(baseline.generatedAt))} snapshot in parentheses. Snapshot stored ${esc(fmtDate(current.generatedAt))}; it rotates into the baseline after a week.`
     : `First snapshot stored ${esc(fmtDate(current.generatedAt))} — the week-over-week delta appears after the next weekly rotation.`;
   return `<h2>Coverage — pool vs backlog (#1220)</h2>
-<table><caption>Coverage — pool vs backlog by repository</caption><thead><tr><th scope="col">Repo</th><th scope="col">Open issues</th><th scope="col">now gate</th><th scope="col">next gate</th><th scope="col">Pool items</th><th scope="col">Unset Status</th><th scope="col">Unset Area</th></tr></thead><tbody>${rows}</tbody></table>
+ <div class="tblwrap"><table><caption>Coverage — pool vs backlog by repository</caption><thead><tr><th scope="col">Repo</th><th scope="col">Open issues</th><th scope="col">now gate</th><th scope="col">next gate</th><th scope="col">Pool items</th><th scope="col">Unset Status</th><th scope="col">Unset Area</th></tr></thead><tbody>${rows}</tbody></table></div>
 <p class="muted">${note} Open issues and gate labels come from the collector's Search API census in the fleet feed; pool counts from Project #4 (— = that source was unavailable for the repo, never a real zero). The same report is in <a href="/api/projects.json">/api/projects.json</a> as \`coverage\`.</p>`;
 }
 
@@ -6479,7 +6435,7 @@ function trackedTable(tracked: TrackedIssue[]): string {
         : `<tr><td><span class="badge closed">unresolved</span></td><td><code>${esc(ref)}</code></td><td><span class="muted">unresolved — the current source cannot resolve this ref</span></td><td>—</td></tr>`,
     )
     .join("");
-  return `<div class="tblwrap"><table><caption>Tracked issues</caption><tr><th scope="col">Tracked issue</th><th scope="col">Title</th><th scope="col">State</th><th scope="col">Updated</th></tr>${rows}</table></div>`;
+  return `<div class="tblwrap"><table class="table table-zebra"><caption>Tracked issues</caption><tr><th scope="col">Tracked issue</th><th scope="col">Title</th><th scope="col">State</th><th scope="col">Updated</th></tr>${rows}</table></div>`;
 }
 
 function poolSummaryHtml(live: ProgramLive): string {
@@ -6571,6 +6527,12 @@ ${trackedTable(live.tracked)}${poolSectionHtml}`;
 
 const POOL_ITEM_CAP = 24;
 
+/** Render a graph ref as a link only when it satisfies the shared ref rule. */
+function poolRefLink(ref: RefKey): string {
+  const label = esc(ref);
+  return isValidRef(ref) ? `<a href="${esc(refUrl(ref))}">${label}</a>` : label;
+}
+
 /** The #2400 graph section of a project page: blocked weight + longest
  * blocked chain and the depth-graph SVG, from the part-1 edge contract
  * (#2399). Graceful absence is explicit: a pool with no effort labels
@@ -6587,7 +6549,7 @@ function poolGraphHtml(items: ProjectPoolItem[], allW: ReturnType<typeof summari
   const blocked = blockedSummary(items);
   const chainHtml =
     blocked.longestChain.length >= 2
-      ? ` · longest blocked chain: ${blocked.longestChain.map((r) => `<a href="${esc(refUrl(r))}">${esc(r)}</a>`).join(" → ")} (${blocked.longestChain.length - 1} link${blocked.longestChain.length === 2 ? "" : "s"})`
+      ? ` · longest blocked chain: ${blocked.longestChain.map(poolRefLink).join(" → ")} (${blocked.longestChain.length - 1} link${blocked.longestChain.length === 2 ? "" : "s"})`
       : "";
   const blockedHtml = blocked.blockedCount
     ? `<p class="muted"><strong>Blocked weight: ${blocked.blockedWeight}</strong> across ${blocked.blockedCount} open item${blocked.blockedCount === 1 ? "" : "s"} waiting on an unresolved blocker${blocked.blockedUnsizedCount ? ` (${blocked.blockedUnsizedCount} of them unsized — counted, never zero-weighted)` : ""}${chainHtml}.</p>`
@@ -6624,6 +6586,152 @@ function poolGraphHtml(items: ProjectPoolItem[], allW: ReturnType<typeof summari
     ? `<svg viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="Issue depth graph" style="max-width:100%;height:auto">${edgeLines}${nodeShapes}</svg><p class="muted">Depth = sub-issue nesting from the Project pool. Squares are epics; amber = open, grey = closed. Border: thick solid = mode/physical, dashed = mode/hybrid, thin = online or no mode.</p>${truncated}`
     : "";
   return `<h3>Blocked + depth graph</h3>${blockedHtml}${svg}`;
+}
+
+/** The #3973 per-epic dependency graph section of a project page
+ * (design doc/2026-11-01T21-05-00Z_design_aggregator_dependency_graph_1257.md):
+ * an epic selector with item/blocked counts, then per epic a summary +
+ * ranked blocked list beside the graph SVG and a vertical,
+ * keyboard-readable dependency list. The list is the primary surface
+ * on narrow screens (the flex column stacks it full-width; the SVG
+ * may scroll horizontally as a secondary detail). Dependency edges
+ * are dashed amber, hierarchy edges solid grey, and every node's
+ * state is written as text — color is never the only signal. Empty
+ * or unavailable graph data says so; it is never an empty success. */
+/** Section anchor for one epic's graph, derived from the canonical ref
+ * (owner/repo#number), never the bare issue number: two repositories
+ * can hold epics with the same number, and bare-number ids collide. */
+function epicGraphAnchor(ref: RefKey): string {
+  return `epic-graph-${ref.replace(/[^a-zA-Z0-9]+/g, "-")}`;
+}
+
+function epicGraphSectionHtml(items: ProjectPoolItem[], selectorItems: ProjectPoolItem[] = items): string {
+  // Selector entries and rendered sections are scoped to the project's
+  // own pool (selectorItems = detail.poolItems): on a normal project
+  // request the caller passes the entire org pool as `items` for
+  // membership and blocker resolution, and rendering every eligible
+  // epic from every Area would bury this project's section in unrelated
+  // projects (Codex round-2 on #3973). Resolution inside each section
+  // still runs against the full `items` pool.
+  // The selector rollups are computed from the full `items` pool too,
+  // then filtered to this project's epic refs (Codex round-3 on
+  // #3973): computing them from the scoped pool made a member whose
+  // blocker lives in another Area count as blocked in the selector
+  // while its section — resolving against the full pool — correctly
+  // reported it unblocked.
+  const projectEpicRefs = new Set(selectorItems.filter((i) => i.kind === "Epic").map((i) => i.ref));
+  const selector = epicSelector(items).filter((e) => projectEpicRefs.has(e.ref));
+  if (!selector.length) {
+    return `<h3>Per-epic dependency graph</h3><div class="banner">Dependency graph unavailable: no epic in this pool has items yet, so there is no per-epic graph to draw — this is an unavailable state, not an empty graph.</div>`;
+  }
+  const selectorHtml = `<nav class="epic-graph-selector" aria-label="Epic graph selector"><ul class="epic-graph-list">${selector
+    .map(
+      (e) =>
+        `<li><a href="#${epicGraphAnchor(e.ref)}">${esc(e.title)}</a> <span class="muted">${esc(e.ref)} · ${e.itemCount} item${e.itemCount === 1 ? "" : "s"} · ${e.blockedCount} blocked · ${e.doneCount} done</span></li>`,
+    )
+    .join("")}</ul></nav>`;
+  const sections = selector.map((entry) => epicGraphOneHtml(items, entry)).join("");
+  return `<h3>Per-epic dependency graph</h3>${selectorHtml}${sections}`;
+}
+
+function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epicSelector>[number]): string {
+  const g = epicGraph(items, entry.ref);
+  const heading = `<h4 id="${epicGraphAnchor(entry.ref)}">${esc(entry.title)} <span class="muted">(${esc(entry.ref)})</span></h4>`;
+  if (g.status === "unavailable" || !g.epic) {
+    return `<section>${heading}<div class="banner">Dependency graph unavailable: ${esc(g.reason ?? "no graph data for this epic")}.</div></section>`;
+  }
+  const poolByRef = new Map(items.map((p) => [p.ref, p]));
+  const unresolvedOf = (ref: RefKey): boolean => {
+    const held = poolByRef.get(ref);
+    return held === undefined || held.state === "open";
+  };
+  const summary = `<p class="muted"><strong>${g.memberCount} item${g.memberCount === 1 ? "" : "s"} in this epic</strong> · ${g.blockedCount} blocked on an unresolved blocker · ${g.externalCount} one-hop reference${g.externalCount === 1 ? "" : "s"} outside this pool (unresolved — status unknown, never counted as resolved).</p>`;
+  const truncatedHtml = g.truncated
+    ? `<p class="muted">Truncated: this graph shows ${g.nodes.length} of ${g.totalNodes} nodes (cap ${EPIC_GRAPH_DEFAULT_CAP}). The counts above cover the full set; a capped graph is not complete.</p>`
+    : "";
+
+  // Ranked summary: open member items by how many distinct open epic items
+  // are in the transitive blockedBy ancestry of their blockers (the full
+  // transitive downstream ranking is #3974). Never derived from the
+  // capped node list: a member the cap hid is still waiting.
+  const ranked = g.rankedBlocked;
+  const rankedHtml = ranked.length
+    ? `<ul class="epic-graph-list">${ranked
+        .map(
+          (r) => {
+            const blockerItems = r.blockers.map((b) => poolRefLink(b));
+            const contributingItems = r.contributingItems.length > 0
+              ? `<br><span class="muted">Contributing downstream epics: ${r.contributingItems.map((ci) => poolRefLink(ci)).join(", ")}</span>`
+              : "";
+            return `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.downstreamCount} distinct downstream open epic item${r.downstreamCount === 1 ? "" : "s"} via ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${blockerItems.join(", ")}${contributingItems}</li>`;
+          },
+        )
+        .join("")}</ul>`
+    : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
+
+  // SVG: hierarchy edges solid grey, dependency edges dashed amber —
+  // distinct by dash and color, and named in the legend text.
+  const pos = new Map(g.nodes.map((n) => [n.ref, n]));
+  const X = (depth: number) => 16 + depth * 180;
+  const Y = (row: number) => 16 + row * 26;
+  const width = X(g.maxDepth) + 340;
+  const height = g.nodes.length ? Y(g.nodes.length - 1) + 16 : 32;
+  // Dependency edges carry an arrowhead marker pointing at the blocker
+  // (the `to` node): hierarchy depth alone does not show which sibling
+  // blocks which (Codex round-2 on #3973). The marker id is per-epic --
+  // several epic sections share one page, and duplicate ids would make
+  // every edge reference the first section's marker.
+  const depMarkerId = `dep-arrow-${epicGraphAnchor(g.epic.ref)}`;
+  const depDefs = g.edges.some((e) => e.type === "dependency")
+    ? `<defs><marker id="${depMarkerId}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d29922"/></marker></defs>`
+    : "";
+  const edgeLines = g.edges
+    .map((e) => {
+      const a = pos.get(e.from)!;
+      const b = pos.get(e.to)!;
+      return e.type === "dependency"
+        ? `<line x1="${X(a.depth)}" y1="${Y(a.row)}" x2="${X(b.depth)}" y2="${Y(b.row)}" stroke="#d29922" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#${depMarkerId})"/>`
+        : `<line x1="${X(a.depth)}" y1="${Y(a.row)}" x2="${X(b.depth)}" y2="${Y(b.row)}" stroke="#8b949e" stroke-width="1"/>`;
+    })
+    .join("");
+  const nodeShapes = g.nodes
+    .map((n) => {
+      const label = n.title
+        ? `#${n.number} ${n.title.length > 34 ? `${n.title.slice(0, 33)}…` : n.title}`
+        : `${n.ref} (outside this pool)`;
+      const x = X(n.depth);
+      const y = Y(n.row);
+      const shape = n.unresolved
+        ? `<polygon points="${x},${y - 7} ${x + 7},${y} ${x},${y + 7} ${x - 7},${y}" fill="none" stroke="#d29922" stroke-width="1.5" stroke-dasharray="3 2"/>`
+        : n.epic
+          ? `<rect x="${x - 6}" y="${y - 6}" width="12" height="12" fill="${n.state === "open" ? "#8957e5" : "#6e7781"}" stroke="#0d1117" stroke-width="1.5"/>`
+          : `<circle cx="${x}" cy="${y}" r="6" fill="${n.state === "open" ? "#bf8700" : "#6e7781"}" stroke="#0d1117" stroke-width="1.5"/>`;
+      const nodeLabel = `<text x="${x + 11}" y="${y + 4}" font-size="11" fill="currentColor">${esc(label)}</text>`;
+      return `${shape}${isValidRef(n.ref) ? `<a href="${esc(n.issueUrl)}">${nodeLabel}</a>` : nodeLabel}`;
+    })
+    .join("");
+  const svg = g.edges.length
+    ? `<div class="epic-graph-svg"><svg viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="Dependency graph for epic ${esc(g.epic.ref)}" style="max-width:100%;height:auto">${depDefs}${edgeLines}${nodeShapes}</svg><p class="muted">Solid grey lines are sub-issue hierarchy (parent → child); dashed amber lines are dependency edges, with an arrowhead pointing at the blocker (item → blocker). Squares are epics; diamonds are references outside this pool whose status is unknown. Every node's state is also written as text in the list — color is never the only signal.</p></div>`
+    : `<p class="muted">Not yet graphed: this epic's items carry no parent / blocked-by edges yet, so there is no graph to draw. The items are listed below.</p>`;
+
+  const listHtml = `<ul class="epic-graph-list">${g.nodes
+    .map((n) => {
+      const stateText = n.unresolved
+        ? "not in this pool / status unknown — unresolved"
+        : `issue ${esc(n.state ?? "unknown")}`;
+      const blockedBy = n.blockers.length
+        ? `blocked by: ${n.blockers.map((b) => `${poolRefLink(b)}${unresolvedOf(b) ? " (unresolved)" : " (resolved)"}`).join(", ")}`
+        : "blocked by: none observed";
+      const blocks = n.dependents.length
+        ? `blocks: ${n.dependents.map(poolRefLink).join(", ")}`
+        : "blocks: none observed";
+      const name = n.title ? `${esc(n.title)}` : "(outside this pool — no title in this feed)";
+      const nodeRef = isValidRef(n.ref) ? `<a href="${esc(n.issueUrl)}">${esc(n.ref)}</a>` : esc(n.ref);
+      return `<li>${nodeRef} ${name} — ${stateText}; ${blockedBy}; ${blocks}</li>`;
+    })
+    .join("")}</ul>`;
+
+  return `<section>${heading}${summary}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Blocked in this epic</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
 }
 
 export function renderProgramProject(
@@ -6697,7 +6805,7 @@ export function renderProgramProject(
     const epicHtml = epics.length
       ? `<h3>Epics — weighted progress</h3><p class="muted"><strong>${esc(weightedLine(epicW))}</strong></p>${epicRows}`
       : "";
-    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${poolGraphHtml(detail.poolItems, allW)}${cards}${more}`;
+    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${poolGraphHtml(detail.poolItems, allW)}${epicGraphSectionHtml(epicPool, detail.poolItems)}${cards}${more}`;
   }
 
   let roadmapHtml: string;
@@ -6886,7 +6994,7 @@ ${view.subscriptions.length ? view.subscriptions.map(subscriptionRow).join("") :
 ${open.length ? open.map(incidentCard).join("") : `<p class="muted">No open incidents. Silence is golden.</p>`}
 ${closed.length ? `<h2>Closed (recent)</h2>${closed.map(incidentCard).join("")}` : ""}
 <h2>Ledger — recent transitions</h2>
-<table><caption>Recent alert-ledger transitions</caption><tr><th scope="col">at</th><th scope="col">kind</th><th scope="col">incident</th><th scope="col">source · key</th></tr>${events}</table>`;
+ <div class="tblwrap"><table><caption>Recent alert-ledger transitions</caption><tr><th scope="col">at</th><th scope="col">kind</th><th scope="col">incident</th><th scope="col">source · key</th></tr>${events}</table></div>`;
   const script = `<script>
 const VAPID = ${JSON.stringify(vapidPublicKey)};
 const SUBS = ${JSON.stringify(view.subscriptions.map((s) => ({ endpoint: s.endpoint, classes: s.classes, quiet: s.quiet })))};
@@ -7025,4 +7133,114 @@ document.getElementById("push-test").addEventListener("click", async () => {
 });
 </script>`;
   return layout("Alerts", body, provenance, "/alerts", script);
+}
+
+// --- Notifications page (#3319, notification measurement) -------------------
+
+export interface NotificationsPageView {
+  available: boolean;
+  rollup: NotificationRollup | null;
+}
+
+function pct(ratio: number | null): string {
+  return ratio === null ? "—" : `${Math.round(ratio * 100)}%`;
+}
+
+export function renderNotifications(view: NotificationsPageView, provenance: Provenance): string {
+  if (!view.available || !view.rollup) {
+    return layout(
+      "Notifications",
+      `<h1>Notifications</h1><p class="muted">The notification send ledger (Supabase <code>alerts.notification_sends</code>) is unreachable from this process right now — the roll-up is paused with it. The rest of the dashboard is unaffected.</p>`,
+      provenance,
+      "/notifications",
+    );
+  }
+  const rollup = view.rollup;
+  const proposals = rollup.classes.filter((c) => c.proposal);
+  const rows = rollup.classes
+    .map((c) => {
+      const cells = c.weeks.map((w) => `<td>${w.sent} sent · ${w.acted} acted (${pct(w.ratio)})</td>`).join("");
+      return `<tr><td><strong>${esc(c.class)}</strong></td>${cells}<td>${c.sent} sent · ${c.acted} acted (${pct(c.ratio)})</td></tr>`;
+    })
+    .join("");
+  const weekHeads = rollup.classes[0]
+    ? rollup.classes[0].weeks.map((w) => `<th scope="col">week of ${esc(fmtDate(w.start))}</th>`).join("")
+    : "";
+  const proposalHtml = proposals.length
+    ? `<h2>Default-off proposals</h2>${proposals
+        .map(
+          (c) =>
+            `<div class="card"><strong>Proposal: default class <code>${esc(c.class)}</code> off</strong> — acted-on ratio ${pct(c.ratio)} over the rolling window (${c.acted} of ${c.sent} sends acted on within 24h), under the 10% threshold.<br><span class="muted">Proposal only — this page never changes a preference or a default. Turning a class off by default is Drew's call, made on the Alerts page's subscription preferences.</span></div>`,
+        )
+        .join("")}`
+    : `<h2>Default-off proposals</h2><p class="muted">No class is under the 10% acted-on threshold over the rolling window.</p>`;
+  const body = `<h1>Notifications</h1>
+<p class="muted">Weekly sent-vs-acted-on roll-up over the alert throat's send ledger (<code>alerts.notification_sends</code>), rolling four weeks ending ${esc(fmtDate(rollup.asOf))}. Read-only: this page measures; it never changes a notification preference or default. Machine-first: <a href="/api/notifications.json">/api/notifications.json</a>.</p>
+<h2>How acted-on is counted (attribution)</h2>
+<p class="muted">A send counts as acted-on when the incident's Ack lands within 24 hours of the send: Ack is the exactly-once transition that stamps the send's <code>acted_on_at</code>, so it is the durable acted-on signal. Only ledger rows with outcome <code>sent</code> count as sends — suppressed (quiet hours / dedupe), gone, and error attempts never reached a device and never enter the denominator, and no send is inferred from delivered/escalated incident events. What this cannot attribute: reading a notification without acking, acting on the incident through another surface (GitHub, chat, a later dashboard visit that does not ack), and sends to subscriptions that were later removed — those count as sent-but-not-acted even when a human did see them. Test sends (class <code>test</code>) are real ledger rows and are reported as their own class.</p>
+${rollup.undated ? `<p class="muted">${rollup.undated} ledger row(s) carried no usable send timestamp and were excluded from the roll-up.</p>` : ""}
+<h2>Per class, per week</h2>
+${
+  rollup.classes.length
+    ? `<div class="tblwrap"><table class="table table-zebra"><caption>Sent vs acted-on by class and rolling week</caption><tr><th scope="col">class</th>${weekHeads}<th scope="col">rolling 4 weeks</th></tr>${rows}</table></div>`
+    : `<p class="muted">No sends in the rolling four-week window.</p>`
+}
+${proposalHtml}`;
+  return layout("Notifications", body, provenance, "/notifications");
+}
+
+/** The digest page (#1278): renders a Digest verbatim — the archived
+ * JSON is the page's data, so a re-read shows exactly what was
+ * delivered to chat. /digest?date=<date> renders that day's archive;
+ * /digest renders today's live build with the archive index. */
+export function renderDigest(
+  digest: Digest,
+  archives: { kind: DigestKind; date: string; route: string }[],
+  provenance: Provenance,
+  detail?: ProvenanceDetail,
+): string {
+  const freshness = digest.freshness.length
+    ? `<p class="muted">Data freshness: ${digest.freshness
+        .map((f) => `${esc(f.facet)}=${esc(f.state)}${f.ageMs !== null ? ` (${esc(ageTextDigest(f.ageMs))})` : ""}`)
+        .join(" · ")}</p>`
+    : `<p class="muted">Data freshness: not measured by this source — treat every section as unverified.</p>`;
+  const sections = digest.sections
+    .map((s) => {
+      const items = s.items.length
+        ? `<ul>${s.items
+            .map(
+              (i) =>
+                `<li><a href="${esc(i.url)}">${esc(i.title)}</a> <span class="muted">${esc(i.ref)} — ${esc(i.note)}</span></li>`,
+            )
+            .join("")}</ul>${s.truncated ? `<p class="muted">… capped at ${DIGEST_SECTION_LIMIT} items</p>` : ""}`
+        : `<p class="muted">${s.stale ? "(unavailable — see the stale note)" : "(nothing)"}</p>`;
+      return `<h2>${esc(s.title)}${s.stale ? ` — <span class="stale">STALE: ${esc(s.staleNote ?? "source degraded")}</span>` : ""}</h2>${items}`;
+    })
+    .join("\n");
+  const archiveLinks = archives.length
+    ? `<h2>Archive</h2><ul>${archives
+        .map((a) => `<li><a href="${esc(a.route)}">${esc(a.date)}</a> <span class="muted">${esc(a.kind)}</span></li>`)
+        .join("")}</ul>`
+    : `<h2>Archive</h2><p class="muted">No digests archived yet — the generator (scripts/generate-digest.ts) writes one per day.</p>`;
+  const body = `<h1>PM ${esc(digest.kind)} digest — ${esc(digest.date)}</h1>
+<p class="muted">Generated ${esc(digest.generatedAt)} from the canonical projection · window ${digest.windowHours}h from ${esc(digest.windowStart)} · machine twin: <a href="${esc(`/api/digest.json?date=${digest.date}&kind=${digest.kind}`)}">${esc(`/api/digest.json?date=${digest.date}&kind=${digest.kind}`)}</a></p>
+${freshness}
+${sections}
+${archiveLinks}`;
+  return layout(
+    `Digest ${digest.date}`,
+    body,
+    provenance,
+    "/digest",
+    "",
+    detail ? freshnessChips(detail, ["items", "quota"]) : "",
+  );
+}
+
+function ageTextDigest(ageMs: number): string {
+  const mins = Math.max(0, Math.round(ageMs / 60000));
+  if (mins < 60) return `${mins}m old`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) return `${hours}h ${mins % 60}m old`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h old`;
 }

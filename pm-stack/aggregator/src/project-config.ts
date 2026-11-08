@@ -12,9 +12,10 @@
 // config. A project with no Area / roadmap area yet says so honestly
 // (null), and the page renders the gap instead of an empty section.
 import type { GhItem, ProjectPoolItem, RefKey, RoadmapRow } from "./model.ts";
-import { refUrl } from "./model.ts";
+import { parseRef, refUrl } from "./model.ts";
 import { PROGRAM, TRACKED_REFS, type ProgramEntry, type TrackedIssue } from "./program.ts";
 import { summarizeWeights, type WeightSummary } from "./weights.ts";
+import { isIsoDate } from "./validate.ts";
 
 export interface ProjectHomeDoc {
   repo: string;
@@ -86,8 +87,8 @@ export interface ProjectConfig {
 }
 
 const CODE = "developing-today/code";
-const OPENCODE = "developing-today/opencode";
-const OPENCHAMBER = "developing-today/openchamber";
+const OPENCODE = "developing-today-forks/opencode";
+const OPENCHAMBER = "developing-today-forks/openchamber";
 const NIX = "dezren39/nix";
 const blob = (path: string): string => `https://github.com/${CODE}/blob/main/${path}`;
 const tree = (path: string): string => `https://github.com/${CODE}/tree/main/${path}`;
@@ -347,7 +348,7 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
     id: "repo-fleet",
     title: "Repo fleet",
     intro:
-      "The four working repos and the automation that keeps them healthy: developing-today/code, developing-today/opencode, developing-today/openchamber, and dezren39/nix. Issue sweeps, the issue creator, PR shepherding, Jules, and the hourly orchestration job work these queues; this project tracks the fleet-level work — CI, automation, and triage — while each project's own checks live in its own roadmap.",
+      "The four working repos and the automation that keeps them healthy: developing-today/code, developing-today-forks/opencode, developing-today-forks/openchamber, and dezren39/nix. Issue sweeps, the issue creator, PR shepherding and the hourly orchestration job work these queues; this project tracks the fleet-level work — CI, automation, and triage — while each project's own checks live in its own roadmap.",
     poolArea: "fleet-ops",
     roadmapArea: "Repo fleet",
     homeDoc: home("planning/roadmaps/repo-and-ci.md"),
@@ -576,6 +577,12 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
           detail:
             "Services were connected via API keys/OAuth everywhere possible, tokens vaulted in Bitwarden/1Password, no new MFA unless forced. The known remainder is Plaid (below).",
         },
+        {
+          title: "Free-services pass — adoption decisions recorded",
+          detail:
+            "The 2026-10-26 SaaS review list — boats.cloud, quic.cloud, Backblaze B2, OVHcloud, Railway, Render, DigitalOcean, Hetzner, Heroku, GCP, AWS — was evaluated on 2026-10-29 in the workspace tracker (ai-subscriptions/free-services-to-check.md), each service with an overage verdict under the no-surprise-bills guardrail. The adopt/skip dispositions and the dated GCP/AWS guardrail record were published into the repo on 2026-11-03 (doc/2026-11-03T18-30-00Z_record_free_services_adoption.md, #1059): nothing is adopted yet; quic.cloud, Backblaze B2 and the AWS Free Plan are adopt candidates pending Drew, boats.cloud is recorded unverifiable, and neither GCP nor AWS guardrails are configured or console-verified yet.",
+          refs: [code(1059)],
+        },
       ],
       next: [
         {
@@ -588,11 +595,6 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
           title: "OCI signup resolution",
           detail:
             "The Oracle Cloud signup is still pending; the CPCOE-29381 follow-up is scheduled. The target is the Always-Free allocation (a hard allocation, not metered billing) — the account is not to be upgraded to pay-as-you-go.",
-        },
-        {
-          title: "Free-services pass — adoption decisions",
-          detail:
-            "The 2026-10-26 SaaS review list — boats.cloud, quic.cloud, Backblaze B2, OVHcloud, Railway, Render, DigitalOcean, Hetzner, Heroku, GCP, AWS — was evaluated on 2026-10-29 in the workspace tracker (ai-subscriptions/free-services-to-check.md), each service with an overage verdict under the no-surprise-bills guardrail. What remains is the per-service adopt/skip decision; boats.cloud stays unverified and untouched (no official site resolves).",
         },
       ],
       longTerm: [
@@ -638,12 +640,15 @@ export function projectRoute(id: string): string {
 
 // --- Validation (strict in tests, never throws at render) ------------------
 
-const REF_PATTERN = /^[^/\s]+\/[^#\s]+#\d+$/;
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 function checkRefs(refs: RefKey[], errors: string[], where: string): void {
   for (const r of refs) {
-    if (!REF_PATTERN.test(r)) errors.push(`${where}: malformed ref "${r}" (want owner/repo#N)`);
+    try {
+      parseRef(r);
+    } catch {
+      errors.push(`${where}: malformed ref "${r}" (want owner/repo#N)`);
+    }
   }
 }
 
@@ -693,7 +698,7 @@ export function validateProjectConfigs(configs: ProjectConfig[]): string[] {
       if (!card.role.trim()) errors.push(`${where}: repoCard ${card.repo} role is empty`);
       if (!Number.isInteger(card.openIssues) || card.openIssues < 0)
         errors.push(`${where}: repoCard ${card.repo} openIssues is not a non-negative integer`);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(card.openIssuesAsOf))
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(card.openIssuesAsOf) || !isIsoDate(card.openIssuesAsOf))
         errors.push(`${where}: repoCard ${card.repo} openIssuesAsOf "${card.openIssuesAsOf}" is not a YYYY-MM-DD date`);
       checkRefs(card.trackedRefs, errors, where);
     }

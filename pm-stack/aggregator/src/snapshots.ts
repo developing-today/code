@@ -1,8 +1,8 @@
 // The usage snapshot store (hub design §4): append-only history for
 // usage metrics, one JSONL file per month (`usage-YYYY-MM.jsonl`) in a
 // durable directory beside the comments/registry stores. Writers are
-// the owning jobs (fleet-feed collector, stewardship-cycle, the Jules
-// keeper) and the one-shot backfill script; the aggregator only reads.
+// the owning jobs (fleet-feed collector, stewardship-cycle) and the
+// one-shot backfill script; the aggregator only reads.
 //
 // Retention (§6, #1117): raw monthly files are kept for 13 months,
 // then compacted in place into monthly rollup files
@@ -94,7 +94,7 @@ export function isSnapshotRollup(v: unknown): v is SnapshotRollup {
   if (typeof v !== "object" || v === null) return false;
   const r = v as Partial<SnapshotRollup>;
   if (r.kind !== "snapshot-rollup/v1") return false;
-  if (typeof r.month !== "string" || !/^\d{4}-\d{2}$/.test(r.month)) return false;
+  if (typeof r.month !== "string" || !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(r.month)) return false;
   if (typeof r.serviceId !== "string" || r.serviceId === "") return false;
   if (typeof r.metricId !== "string" || r.metricId === "") return false;
   if (typeof r.unit !== "string" || !UNITS.has(r.unit)) return false;
@@ -104,16 +104,32 @@ export function isSnapshotRollup(v: unknown): v is SnapshotRollup {
   if (typeof r.count !== "number" || !Number.isInteger(r.count) || r.count < 1) return false;
   if (typeof r.observedBy !== "string" || r.observedBy === "") return false;
   for (const f of [r.firstTs, r.lastTs, r.minTs, r.maxTs]) {
-    if (typeof f !== "string" || Number.isNaN(Date.parse(f))) return false;
+    if (!isIsoDate(f)) return false;
   }
+  if (r.resetsAt !== undefined && r.resetsAt !== null && !isIsoDate(r.resetsAt)) return false;
+  if (r.resetsAtTs !== undefined && !isIsoDate(r.resetsAtTs)) return false;
+  if (r.limit !== undefined && r.limit !== null && !isNonNegative(r.limit)) return false;
+  if (r.limitTs !== undefined && !isIsoDate(r.limitTs)) return false;
   if (r.keys !== undefined && (!Array.isArray(r.keys) || r.keys.some((k) => typeof k !== "string"))) return false;
-  const val = (x: unknown): boolean =>
-    (typeof x === "number" && Number.isFinite(x)) ||
+  const val = (x: unknown): x is SnapshotRecord["value"] =>
+    isFiniteNumber(x) ||
     (typeof x === "object" &&
       x !== null &&
-      typeof (x as { low?: unknown }).low === "number" &&
-      typeof (x as { high?: unknown }).high === "number");
-  return val(r.valueMin) && val(r.valueMax) && val(r.valueLast);
+      isFiniteNumber((x as { low?: unknown }).low) &&
+      isFiniteNumber((x as { high?: unknown }).high) &&
+      (x as { low: number }).low <= (x as { high: number }).high);
+  if (!val(r.valueMin) || !val(r.valueMax) || !val(r.valueLast)) return false;
+  // Negative scalar pct values are never legitimate (#2346/#4276):
+  // mirror the record boundary's scalar rule at the rollup boundary,
+  // so a corrupt rollup cannot re-seed the reading path. Estimate
+  // pairs (usd-est) are untouched.
+  if (r.unit === "pct" && [r.valueMin, r.valueMax, r.valueLast].some((v) => typeof v === "number" && v < 0))
+    return false;
+  // aggAddRecord only lowers min / raises max, so a rollup whose min
+  // orders after its max is corrupt (#4276). Ordering reuses the
+  // rollupOrderKey/cmpValue domain (scalar and pair forms).
+  if (cmpValue(r.valueMin, r.valueMax) > 0) return false;
+  return true;
 }
 
 interface RollupAgg {

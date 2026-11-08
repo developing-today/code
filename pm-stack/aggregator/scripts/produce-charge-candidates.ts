@@ -1,11 +1,25 @@
 #!/usr/bin/env bun
 // produce-charge-candidates (#1057): the Muse-side producer for the
-// usage-hub charges auto-matcher. Runs on the sandbox, where the
-// Plaid and Gmail connectors live, and writes the period's charge
+// usage-hub charges auto-matcher. Writes the period's charge
 // candidates to the state file the daily collector
 // (scripts/collect-fleet-feed.ts) consumes:
 //
 //   charges-candidates.json  { version, generatedAt, period, candidates }
+//
+// Input modes:
+//   - live (default): shells out to the Plaid and Gmail connector CLIs
+//     (PLAID_CLI / GMAIL_CLI) — only possible where those CLIs live
+//     (the Muse sandbox).
+//   - staged (CHARGE_INPUTS_DIR set; the split of #4641): reads the
+//     raw CLI responses a thin sandbox fetcher stages in that
+//     directory — plaid-transactions.json (raw transactions-get
+//     stdout), gmail-triage.json (the two +triage responses, in query
+//     order), gmail-bodies.json (message id -> raw +read stdout) —
+//     with the period taken from charge-inputs-manifest.json. Bodies
+//     the producer needs but staging lacks are requested via
+//     gmail-body-requests.json and land on a later run once the
+//     fetcher stages them. This is how the producer runs on the
+//     laptop, next to the collector, with no sandbox repo copy.
 //
 // Sources:
 //   - Plaid `transactions-get` for the period (all linked
@@ -30,12 +44,22 @@
 // label (card brand + mask). No balances, no debt, no account
 // numbers, no account-owner names ever enter the file.
 //
+// Admission (#3161, the charges contract's first rule): a
+// candidate exists only where money demonstrably moved.
+// Declined/failed alerts and amounts merely due are excluded by
+// isNotChargeSubject below, and a candidate's amount is the
+// amount PAID: explicit paid/charged labels outrank a bare total,
+// and a bare total counts only as a standalone label, never as a
+// substring of "Subtotal".
+//
 // Usage: bun run scripts/produce-charge-candidates.ts
 //   [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--out <path>] [--skip-gmail]
 // Defaults: start = first of the current month, end = today,
 // out = CHARGE_CANDIDATES_PATH or the collector's hidden-files path.
+// In staged mode the period comes from the staged manifest and
+// --start/--end are ignored.
 import { execFile } from "node:child_process";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -45,13 +69,95 @@ const run = promisify(execFile);
 const PLAID_CLI = process.env.PLAID_CLI ?? "/opt/hatch/bin/plaid";
 const GMAIL_CLI = process.env.GMAIL_CLI ?? "/opt/hatch/bin/hatch_gws_cli";
 const MAX_GMAIL_BODY_READS = 25;
+const INPUTS_DIR = process.env.CHARGE_INPUTS_DIR;
+
+/** Raw staged CLI response text for one staged inputs file, or
+ * undefined in live mode. Throws in staged mode when the file is
+ * missing — a stale or absent staging must fail visibly, never
+ * silently produce an empty batch. */
+async function stagedText(name: string): Promise<string | undefined> {
+  if (!INPUTS_DIR) return undefined;
+  return readFile(join(INPUTS_DIR, name), "utf8");
+}
+
+/** #4663: the staged manifest period, validated. The manifest period
+ * is a date input like every other in this file, so it is held to the
+ * same isRealCalendarDate standard as the Plaid and Gmail dates, plus
+ * end >= start ordering. Staging that does not describe a real period
+ * is absent staging: throw, so the run fails visibly instead of
+ * writing a period-less candidates file under a success exit. */
+export function stagedManifestPeriod(manifest: { start?: unknown; end?: unknown }): {
+  start: string;
+  end: string;
+} {
+  const { start, end } = manifest;
+  if (
+    typeof start !== "string" ||
+    typeof end !== "string" ||
+    !isRealCalendarDate(start) ||
+    !isRealCalendarDate(end) ||
+    end < start
+  ) {
+    throw new Error(
+      `staged manifest period is not a real calendar window: start=${JSON.stringify(start)} end=${JSON.stringify(end)}`,
+    );
+  }
+  return { start, end };
+}
 
 /** Plaid categories that are money movement, not merchant charges. */
 const EXCLUDED_CATEGORIES = new Set(["Transfer", "Payment", "Interest", "Bank Fees"]);
 
+const USAGE = "usage: bun run scripts/produce-charge-candidates.ts [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--out <path>] [--skip-gmail]";
+
+// Reject unknown, misspelled, joined, duplicated, or positional
+// arguments BEFORE any connector call, staged-file read, or file
+// write (#7302): argv used to be probed token-by-token only
+// (argValue indexOf, the --skip-gmail includes check in main), so a
+// typo --skip-gmial silently ran the Gmail read the operator meant
+// to skip, and a typo or joined (--start=...) --start silently fell
+// back to the default current-month period. Mirrors rejectUnknownArgs
+// in generate-digest.ts (#7097) / collect-github-billing.ts (#7254).
+// Called at the top of main() rather than at module scope because
+// unit tests import this module pure helpers; main() only runs as
+// the entry point, and its first action is still this check, before
+// any I/O. Value validation itself stays in argValue/main (#3333).
+function rejectUnknownArgs(): void {
+  const args = process.argv.slice(2);
+  const seen = new Set<string>();
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i] as string;
+    if (token === "--start" || token === "--end" || token === "--out") {
+      if (seen.has(token)) {
+        console.error("producer: duplicate " + token + " (" + USAGE + ")");
+        process.exit(2);
+      }
+      seen.add(token);
+      i++; // skip the value; argValue validates it
+      continue;
+    }
+    if (token === "--skip-gmail") {
+      if (seen.has(token)) {
+        console.error("producer: duplicate " + token + " (" + USAGE + ")");
+        process.exit(2);
+      }
+      seen.add(token);
+      continue;
+    }
+    console.error("producer: unknown argument " + JSON.stringify(token) + " (" + USAGE + ")");
+    process.exit(2);
+  }
+}
+
 function argValue(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
-  return i >= 0 ? process.argv[i + 1] : undefined;
+  if (i < 0) return undefined;
+  const value = process.argv[i + 1];
+  if (value === undefined || value.startsWith("--")) {
+    console.error(`producer: ${flag} requires a value${value === undefined ? "" : ` (got ${value})`}`);
+    process.exit(2);
+  }
+  return value;
 }
 
 function isoDay(d: Date): string {
@@ -86,9 +192,13 @@ function methodLabel(account: PlaidAccount | undefined): string | undefined {
 }
 
 async function plaidCandidates(start: string, end: string): Promise<ChargeCandidate[]> {
-  const { stdout } = await run(PLAID_CLI, ["transactions-get", "--start-date", start, "--end-date", end], {
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  const stdout =
+    (await stagedText("plaid-transactions.json")) ??
+    (
+      await run(PLAID_CLI, ["transactions-get", "--start-date", start, "--end-date", end], {
+        maxBuffer: 64 * 1024 * 1024,
+      })
+    ).stdout;
   const wrapper = JSON.parse(stdout) as {
     ok?: boolean;
     body?: { accounts?: PlaidAccount[]; transactions?: PlaidTransaction[] };
@@ -236,7 +346,7 @@ export function amountFromBody(text: string): string | undefined {
 async function gmailCandidates(
   start: string,
   end: string,
-): Promise<{ candidates: ChargeCandidate[]; skipped: number }> {
+): Promise<{ candidates: ChargeCandidate[]; skipped: number; bodyRequests: string[] }> {
   const gmailDate = (d: string) => d.replaceAll("-", "/");
   const after = gmailDate(start);
   // before: is exclusive in Gmail search; step one day past the end.
@@ -253,12 +363,45 @@ async function gmailCandidates(
     `${range} (subject:("card alert" OR charged OR purchase)) -from:googlealerts-noreply@google.com -from:notifications@github.com`,
   ];
   const byId = new Map<string, TriageMessage>();
-  for (const query of queries) {
-    const { stdout } = await run(GMAIL_CLI, ["gmail", "+triage", "--query", query, "--max", "50", "--format", "json"], {
-      maxBuffer: 16 * 1024 * 1024,
-    });
+  const stagedTriage = await stagedText("gmail-triage.json");
+  const stagedResponses: string[] =
+    stagedTriage === undefined
+      ? []
+      : (JSON.parse(stagedTriage) as unknown[]).map((el) => (typeof el === "string" ? el : JSON.stringify(el)));
+  // Staged mode never falls back to the live CLI (#4660): a staging with
+  // fewer responses than queries is a broken staging, and silently
+  // substituting a live read (or dropping the source) would produce a
+  // partial batch that looks complete. Fail visibly instead.
+  if (INPUTS_DIR && stagedResponses.length !== queries.length) {
+    throw new Error(
+      `staged gmail-triage.json holds ${stagedResponses.length} response(s) for ${queries.length} gmail queries — staging is short; refusing to fall back to the live gmail CLI in staged mode`,
+    );
+  }
+  for (const [i, query] of queries.entries()) {
+    const stdout =
+      stagedResponses[i] ??
+      (
+        await run(GMAIL_CLI, ["gmail", "+triage", "--query", query, "--max", "50", "--format", "json"], {
+          maxBuffer: 16 * 1024 * 1024,
+        })
+      ).stdout;
     for (const m of (JSON.parse(stdout) as { messages?: TriageMessage[] }).messages ?? []) byId.set(m.id, m);
   }
+  // Staged gmail bodies (staged mode only): message id -> raw +read
+  // stdout. Bodies the producer still needs are collected in
+  // bodyRequests; the fetcher stages them for a later run.
+  const stagedBodies = new Map<string, string>();
+  if (INPUTS_DIR) {
+    try {
+      const raw = await readFile(join(INPUTS_DIR, "gmail-bodies.json"), "utf8");
+      for (const [id, text] of Object.entries(JSON.parse(raw) as Record<string, string>)) {
+        stagedBodies.set(id, text);
+      }
+    } catch {
+      /* no bodies staged yet */
+    }
+  }
+  const bodyRequests: string[] = [];
   const candidates: ChargeCandidate[] = [];
   let skipped = 0;
   let bodyReads = 0;
@@ -278,12 +421,22 @@ async function gmailCandidates(
     if ((!amount || !merchant) && bodyReads < MAX_GMAIL_BODY_READS) {
       bodyReads++;
       try {
-        const { stdout: body } = await run(GMAIL_CLI, ["gmail", "+read", "--id", m.id, "--format", "json"], {
-          maxBuffer: 16 * 1024 * 1024,
-        });
-        const text = (JSON.parse(body) as { body_text?: string }).body_text ?? "";
-        amount ??= amountFromBody(text);
-        merchant ??= cleanMerchant(/\bmerchant[:\s]+([A-Za-z0-9][A-Za-z0-9 .&'*+-]{1,40})/i.exec(text)?.[1]);
+        let body: string | undefined;
+        if (INPUTS_DIR) {
+          body = stagedBodies.get(m.id);
+          if (body === undefined) bodyRequests.push(m.id);
+        } else {
+          body = (
+            await run(GMAIL_CLI, ["gmail", "+read", "--id", m.id, "--format", "json"], {
+              maxBuffer: 16 * 1024 * 1024,
+            })
+          ).stdout;
+        }
+        if (body !== undefined) {
+          const text = (JSON.parse(body) as { body_text?: string }).body_text ?? "";
+          amount ??= amountFromBody(text);
+          merchant ??= cleanMerchant(/\bmerchant[:\s]+([A-Za-z0-9][A-Za-z0-9 .&'*+-]{1,40})/i.exec(text)?.[1]);
+        }
       } catch {
         /* unreadable body: counted as skipped below */
       }
@@ -294,15 +447,46 @@ async function gmailCandidates(
     }
     candidates.push({ source: "gmail", at, merchant, amountUsd: Number(amount.replaceAll(",", "")) });
   }
-  return { candidates, skipped };
+  return { candidates, skipped, bodyRequests };
 }
 
 async function main(): Promise<void> {
+  rejectUnknownArgs();
+  // Parse values before any connector call or file write. Staged periods
+  // come from their manifest, so --start/--end remain ignored there.
+  const outArg = argValue("--out");
+  const explicitStart = INPUTS_DIR ? undefined : argValue("--start");
+  const explicitEnd = INPUTS_DIR ? undefined : argValue("--end");
   const now = new Date();
-  const start = argValue("--start") ?? isoDay(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)));
-  const end = argValue("--end") ?? isoDay(now);
+  let start = explicitStart ?? isoDay(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)));
+  let end = explicitEnd ?? isoDay(now);
+  if (INPUTS_DIR) {
+    // Staged mode: the fetcher's manifest period governs — the staged
+    // payloads were fetched for exactly that window.
+    const manifest = JSON.parse(await readFile(join(INPUTS_DIR, "charge-inputs-manifest.json"), "utf8")) as {
+      start?: unknown;
+      end?: unknown;
+    };
+    // #4663: validate before any candidate work — a field-less or
+    // otherwise unreal manifest period must fail the run here, not
+    // surface as a written candidates file with period {}.
+    ({ start, end } = stagedManifestPeriod(manifest));
+  } else {
+    if (explicitStart !== undefined && !isRealCalendarDate(explicitStart)) {
+      console.error(`producer: --start value ${JSON.stringify(explicitStart)} is not a real calendar date (expected YYYY-MM-DD)`);
+      process.exit(2);
+    }
+    if (explicitEnd !== undefined && !isRealCalendarDate(explicitEnd)) {
+      console.error(`producer: --end value ${JSON.stringify(explicitEnd)} is not a real calendar date (expected YYYY-MM-DD)`);
+      process.exit(2);
+    }
+    if (end < start) {
+      console.error(`producer: --start ${start} must be on or before --end ${end}`);
+      process.exit(2);
+    }
+  }
   const outPath =
-    argValue("--out") ??
+    outArg ??
     process.env.CHARGE_CANDIDATES_PATH ??
     join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/charges-candidates.json");
 
@@ -314,7 +498,20 @@ async function main(): Promise<void> {
       const g = await gmailCandidates(start, end);
       gmail = g.candidates;
       gmailSkipped = g.skipped;
+      if (INPUTS_DIR && g.bodyRequests.length > 0) {
+        await writeFile(
+          join(INPUTS_DIR, "gmail-body-requests.json"),
+          JSON.stringify({ ids: g.bodyRequests, at: now.toISOString() }, null, 2),
+        );
+        console.error(
+          `producer: ${g.bodyRequests.length} gmail bodies not yet staged; requested from the fetcher, those candidates land on a later run`,
+        );
+      }
     } catch (err) {
+      // Staged mode (#4660): any gmail failure means the batch would be
+      // silently partial, so the run fails visibly — non-zero exit, no
+      // candidates file. Live mode keeps the plaid-only fallback.
+      if (INPUTS_DIR) throw err;
       console.error(
         `producer: gmail read failed (${err instanceof Error ? err.message : "error"}); plaid candidates only`,
       );
