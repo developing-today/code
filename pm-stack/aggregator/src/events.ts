@@ -626,6 +626,14 @@ export class EventsStore {
    *  or rechaining can touch the chain (#3322 Codex re-review,
    *  PR #7665): preserved for health()'s history-gap report. */
   private missingAnchorDetail: string | null = null;
+  /** Loss evidence for never-chained records dropped by retention
+   *  (#3322 Codex re-review, PR #7665): unstamped rows (e.g. v1
+   *  migration rows pruned on their first load) carry no hash and a
+   *  genesis predecessor, so the anchor check in archiveHealth()
+   *  cannot see their loss — it is recorded here at the moment the
+   *  records are actually dropped, and health() reports it as a
+   *  history gap. */
+  private droppedUnstampedDetail: string | null = null;
 
   constructor(private readonly file: string) {}
 
@@ -1046,6 +1054,17 @@ export class EventsStore {
       }
     }
     this.archiveError = null;
+    if (unstamped > 0) {
+      // The unstamped records are dropped by the assignment below
+      // (they are not in `retained`): record the loss as sticky gap
+      // evidence now, because after rechaining the retained chain
+      // starts at genesis and the anchor check alone would report
+      // complete history.
+      this.droppedUnstampedDetail =
+        `${unstamped} never-chained record(s) in ${this.file} fell outside retention ` +
+        `before being persisted into the hash chain and were dropped unarchived \u2014 ` +
+        `history they carried is outside the retained+archived set`;
+    }
     // A timestamp-based retention decision can remove a record from
     // the middle of append/stored order when events were backfilled.
     // We verified the complete old chain before reaching this gate
@@ -1101,11 +1120,14 @@ export class EventsStore {
               ok: true,
               detail: `${archived.length} archived record(s) verify (${verification?.linksVerified ?? 0} inter-record link(s) verified)`,
             };
-    if (this.missingAnchorDetail) {
+    const stickyGap = [this.missingAnchorDetail, this.droppedUnstampedDetail]
+      .filter((d): d is string => d !== null)
+      .join("; ");
+    if (stickyGap) {
       return {
         archivedRecords: archived.length,
         archive,
-        historyGap: { present: true, detail: this.missingAnchorDetail },
+        historyGap: { present: true, detail: stickyGap },
       };
     }
     const first = this.events[0];

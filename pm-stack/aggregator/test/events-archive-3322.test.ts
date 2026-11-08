@@ -120,6 +120,30 @@ describe("audit archive retention (#3322)", () => {
     expect(partitions.some((n) => n.startsWith("events-archive-") && n.endsWith(".json"))).toBe(true);
   });
 
+  test("load dropping never-chained v1 rows records a visible history gap", async () => {
+    const dir = tmpDir("agg-events-archive-v1-gap-");
+    const file = join(dir, "events.json");
+    // A v1 store: every row migrates with hash "" and a genesis
+    // predecessor, so the two past-retention rows are pruned
+    // unstamped — they cannot be archived, and their loss must not
+    // read as complete history just because the retained chain
+    // starts at genesis.
+    const rows = [
+      { ...base, at: iso(40 * DAY_MS), summary: "legacy old one" },
+      { ...base, at: iso(35 * DAY_MS), summary: "legacy old two" },
+      { ...base, at: iso(60 * 60 * 1000), summary: "legacy recent" },
+    ];
+    await mkdir(dir, { recursive: true });
+    await writeFile(file, JSON.stringify({ version: 1, events: rows }, null, 2));
+
+    const store = new EventsStore(file);
+    expect((await store.list()).map((e) => e.summary)).toEqual(["legacy recent"]);
+    expect(await store.listArchived()).toEqual([]);
+    const health = await store.health();
+    expect(health.historyGap.present).toBe(true);
+    expect(health.historyGap.detail).toContain("never-chained");
+  });
+
   test("an append past the retention bound is archived, not dropped", async () => {
     const dir = tmpDir("agg-events-archive-append-");
     const store = new EventsStore(join(dir, "events.json"));
