@@ -107,6 +107,7 @@ with `go test ./internal/settings -run TestThePluginReadmeListsEveryOption -upda
 | `annotate` | `MCPX_PLUGIN_ANNOTATE` | `true` | add mcpx's own notes to a tool result. |
 | `headless` | `MCPX_PLUGIN_HEADLESS` | `auto` | suppress toasts, because nobody is looking at a screen. |
 | `daemonTools` | `MCPX_PLUGIN_DAEMON_TOOLS` | `auto` | offer the tools that list and choose between daemons. |
+| `disabledTools` | `MCPX_PLUGIN_DISABLED_TOOLS` | — | model-facing mcpx tools hidden from every session. |
 
 <!-- END GENERATED -->
 

@@ -26,9 +26,20 @@ class TestWorkerPreflight(unittest.TestCase):
 
             subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
             subprocess.run(
-                ["git", "-C", str(repo), "-c", "user.name=Worker preflight test",
-                 "-c", "user.email=worker-preflight@example.invalid",
-                 "commit", "--quiet", "--allow-empty", "-m", "fixture"],
+                [
+                    "git",
+                    "-C",
+                    str(repo),
+                    "-c",
+                    "user.name=Worker preflight test",
+                    "-c",
+                    "user.email=worker-preflight@example.invalid",
+                    "commit",
+                    "--quiet",
+                    "--allow-empty",
+                    "-m",
+                    "fixture",
+                ],
                 check=True,
                 env=env,
             )

@@ -59,6 +59,16 @@ describe("normalizeResetAt", () => {
     expect(normalizeResetAt(null)).toBeNull();
     expect(normalizeResetAt(0)).toBeNull();
   });
+  test("impossible and non-ISO date strings are null (#4968)", () => {
+    expect(normalizeResetAt("2026-02-30")).toBeNull();
+    expect(normalizeResetAt("2026-04-31")).toBeNull();
+    expect(normalizeResetAt("2026-02-29")).toBeNull(); // 2026 is not a leap year
+    expect(normalizeResetAt("March 2, 2026")).toBeNull();
+  });
+  test("valid date-only and leap-day strings pass (#4968)", () => {
+    expect(normalizeResetAt("2026-03-02")).toBe("2026-03-02T00:00:00.000Z");
+    expect(normalizeResetAt("2024-02-29")).toBe("2024-02-29T00:00:00.000Z");
+  });
 });
 
 describe("entryFromResult", () => {
@@ -86,6 +96,27 @@ describe("entryFromResult", () => {
     const absent = entryFromResult({ ...OK_RESULT, configured: false, ok: false }, "2026-10-27T05:00:00.000Z");
     expect(absent.state).toBe("unconfigured");
     expect(absent.credentialWatch).toBe(true);
+  });
+  test.each([
+    ["impossible timestamp", "2026-02-30T00:00:00.000Z"],
+    ["impossible date-only value", "2026-04-31"],
+    ["non-ISO string", "March 2, 2026"],
+  ])("rejects %s credential expiry strings", (_kind, credentialExpiresAt) => {
+    const tick = "2026-10-27T05:00:00.000Z";
+    const entry = entryFromResult({ ...OK_RESULT, credentialExpiresAt }, tick);
+    expect(entry.credentialExpiresAt).toBeUndefined();
+  });
+
+  test("maps a valid ISO credential expiry string", () => {
+    const tick = "2026-10-27T05:00:00.000Z";
+    const validIso = entryFromResult({ ...OK_RESULT, credentialExpiresAt: "2027-01-15T00:00:00.000Z" }, tick);
+    expect(validIso.credentialExpiresAt).toBe("2027-01-15T00:00:00.000Z");
+  });
+
+  test("maps numeric epoch-ms credential expiry", () => {
+    const tick = "2026-10-27T05:00:00.000Z";
+    const validEpoch = entryFromResult({ ...OK_RESULT, credentialExpiresAt: 1793438427299 }, tick);
+    expect(validEpoch.credentialExpiresAt).toBe("2026-10-31T09:20:27.299Z");
   });
   test("falls back for invalid fetchedAt values without dropping a mixed batch", () => {
     const tickIso = "2026-11-02T03:00:00.000Z";
@@ -165,6 +196,40 @@ describe("entryFromResult", () => {
       ["full", 100],
       ["valid", 42],
       ["zero", 0],
+    ]);
+  });
+  test("turso windows keep over-limit percentages; other providers keep the [0,100] gate (#6227)", () => {
+    // The live path: the opencode quota subcommand's turso result
+    // reaches the gatherer through entryFromResult. Its storage and
+    // rows-read windows are usage-vs-limit ratios that legitimately
+    // exceed 100 over the Starter limits (see the entryFromTurso
+    // fixture above); negative and non-finite values still drop.
+    const entry = entryFromResult(
+      {
+        providerId: "turso",
+        providerName: "Turso",
+        ok: true,
+        configured: true,
+        usage: {
+          windows: {
+            databases: { usedPercent: 44 },
+            storage: { usedPercent: 147.16 },
+            "rows-read": { usedPercent: 164.287 },
+            "rows-written": { usedPercent: 16.721 },
+            sync: { usedPercent: 0 },
+            negative: { usedPercent: -1 },
+          },
+        },
+      },
+      "2026-11-05T13:00:00.000Z",
+    );
+    expect(entry.serviceId).toBe("turso");
+    expect(entry.windows.map((w) => [w.name, w.pctOfLimit])).toEqual([
+      ["databases", 44],
+      ["storage", 147.16],
+      ["rows-read", 164.287],
+      ["rows-written", 16.721],
+      ["sync", 0],
     ]);
   });
   test("error and unconfigured states stay distinct", () => {
@@ -619,6 +684,39 @@ describe("entryFromTurso (#1049)", () => {
     expect(empty.state).toBe("error");
     expect(empty.windows).toEqual([]);
   });
+  test("over-limit usage is kept with its native value and >100 pct (#6227)", () => {
+    // The 2026-11-05 live shape from issue #6227: storage and
+    // rows-read over their Starter limits — the exact windows the
+    // [0,100] percent gate used to drop, leaving a fresh-looking
+    // partial row that read as recovery.
+    const entry = entryFromTurso(
+      {
+        organization: {
+          usage: {
+            databases: 44,
+            storage_bytes: 7_358_009_000,
+            rows_read: 821_437_321,
+            rows_written: 1_672_071,
+            bytes_synced: 0,
+          },
+        },
+      },
+      subDoc,
+      { measuredAt: at },
+    );
+    expect(entry.state).toBe("ok");
+    const byName = new Map(entry.windows.map((w) => [w.name, w]));
+    expect(byName.get("storage")?.value).toBe(7.358009);
+    expect(byName.get("storage")?.pctOfLimit).toBe(147.16);
+    expect(byName.get("rows-read")?.value).toBe(821_437_321);
+    expect(byName.get("rows-read")?.pctOfLimit).toBe(164.287);
+    expect(byName.get("databases")?.pctOfLimit).toBe(44);
+    expect(byName.get("sync")?.pctOfLimit).toBe(0);
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    const byMetric = new Map(records.map((r) => [r.metricId, r]));
+    expect(byMetric.get("storage")).toMatchObject({ value: 7.358009, unit: "gb", limit: 5 });
+    expect(byMetric.get("rows-read")).toMatchObject({ value: 164.287, unit: "pct" });
+  });
 });
 
 describe("entryFromTurso period stamps (#5091)", () => {
@@ -801,7 +899,7 @@ describe("pool splits (#1331)", () => {
   });
 
   const antigravityResult = (models: Record<string, Record<string, number>>): QuotaProviderResult => ({
-    providerId: "antigravity",
+    providerId: "_antigravity",
     providerName: "Antigravity",
     ok: true,
     configured: true,
@@ -833,11 +931,11 @@ describe("pool splits (#1331)", () => {
       }),
       TICK,
     );
-    expect(entry.serviceId).toBe("antigravity");
+    expect(entry.serviceId).toBe("_antigravity");
     expect(entry.windows).toHaveLength(6);
     const split = entriesWithPoolSplits([entry]);
     expect(split).toHaveLength(3);
-    expect(split[0].serviceId).toBe("antigravity");
+    expect(split[0].serviceId).toBe("_antigravity");
     const gemini = split.find((e) => e.serviceId === ANTIGRAVITY_GEMINI_SERVICE_ID)!;
     expect(gemini.windows.map((w) => [w.name, w.pctOfLimit])).toEqual([
       ["5h", 70],
@@ -869,13 +967,13 @@ describe("pool splits (#1331)", () => {
     const geminiOnly = entriesWithPoolSplits([
       entryFromResult(antigravityResult({ "gemini-flash": { weekly: 55 } }), TICK),
     ]);
-    expect(geminiOnly.map((e) => e.serviceId).sort()).toEqual(["antigravity", ANTIGRAVITY_GEMINI_SERVICE_ID]);
+    expect(geminiOnly.map((e) => e.serviceId).sort()).toEqual(["_antigravity", ANTIGRAVITY_GEMINI_SERVICE_ID]);
   });
 
   test("Antigravity error lapses both pools; unconfigured splits nothing", () => {
     const err = entryFromResult(
       {
-        providerId: "antigravity",
+        providerId: "_antigravity",
         ok: false,
         configured: true,
         error: "Failed to refresh Antigravity token",
@@ -885,7 +983,7 @@ describe("pool splits (#1331)", () => {
     );
     const split = entriesWithPoolSplits([err]);
     expect(split.map((e) => e.serviceId).sort()).toEqual([
-      "antigravity",
+      "_antigravity",
       ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID,
       ANTIGRAVITY_GEMINI_SERVICE_ID,
     ]);
@@ -895,11 +993,11 @@ describe("pool splits (#1331)", () => {
     }
     const unconfigured = entriesWithPoolSplits([
       entryFromResult(
-        { providerId: "antigravity", ok: false, configured: false, error: "Not configured", usage: null },
+        { providerId: "_antigravity", ok: false, configured: false, error: "Not configured", usage: null },
         TICK,
       ),
     ]);
-    expect(unconfigured.map((e) => e.serviceId)).toEqual(["antigravity"]);
+    expect(unconfigured.map((e) => e.serviceId)).toEqual(["_antigravity"]);
   });
 });
 

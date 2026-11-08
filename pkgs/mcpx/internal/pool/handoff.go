@@ -374,6 +374,17 @@ func (p *Pool) resumeInstance(a *Adopted) *Instance {
 		in.subscribed[uri] = true
 	}
 	ref.set(in)
+	// A session adopted in a takeover gets the same cold-restart
+	// persistence a started one does (#1415): without it, a session id
+	// rotated after adoption never reaches the store, and a session
+	// adopted from a pre-persistence daemon has no record at all. The
+	// fingerprint is over the effective config for the adopted scope;
+	// if it cannot be resolved, persistence is skipped, not fatal --
+	// the adoption itself is unaffected.
+	if eff, err := p.cfg.Effective(h.Root, h.Cwd); err == nil {
+		p.installSessionPersistence(eff, h.Key, h.LegacyLane, ref, cl, a.tr)
+		p.saveUpstreamSession(eff, h.Key, h.LegacyLane, ref)
+	}
 	return in
 }
 

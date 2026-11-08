@@ -15,8 +15,18 @@ let port = 0;
 let doc: Record<string, any>;
 
 const USAGE_UNITS = [
-  "pct", "usd", "count", "gb", "tokens", "minutes",
-  "hours", "ms", "rows", "ops", "neurons", "other",
+  "pct",
+  "usd",
+  "count",
+  "gb",
+  "tokens",
+  "minutes",
+  "hours",
+  "ms",
+  "rows",
+  "ops",
+  "neurons",
+  "other",
 ];
 const SAAS_GROUPS = ["database", "object-storage", "compute", "dev-platform", "domains", "account-tooling"];
 const SAAS_STATUSES = ["active", "candidate", "no-account", "unknown"];

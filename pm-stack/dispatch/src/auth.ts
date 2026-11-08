@@ -208,8 +208,6 @@ export function assertCallerRepo(caller: CallerIdentity, repo: string, allowlist
     throw new AuthError(`repo ${repo} is not in the dispatch allowlist`);
   }
   if (caller.type === "oidc" && !allowlist.includes(caller.repository)) {
-    throw new AuthError(
-      `oidc: token repository ${caller.repository} is not in the dispatch allowlist`,
-    );
+    throw new AuthError(`oidc: token repository ${caller.repository} is not in the dispatch allowlist`);
   }
 }

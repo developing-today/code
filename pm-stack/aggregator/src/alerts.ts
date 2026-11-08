@@ -70,6 +70,21 @@ export interface PushSubscriptionRow {
   gone_count: number;
 }
 
+/** One alerts.notification_sends ledger row (#3319): one per send
+ * attempt, written by logSend; acted_on_at is stamped by the
+ * exactly-once Ack transition. The insert names no timestamp column,
+ * so the send time is the row's defaulted created_at; sent_at is
+ * read first when a row carries one. */
+export interface NotificationSendRow {
+  class: string;
+  object_ref: string;
+  incident_id: string | null;
+  outcome: string;
+  sent_at?: string | null;
+  created_at?: string | null;
+  acted_on_at: string | null;
+}
+
 export interface QuietPrefs {
   start: string;
   end: string;
@@ -165,16 +180,30 @@ export function classEnabled(sub: { classes: Record<string, boolean> }, cls: str
 /** Is `now` inside the quiet window (evaluated in the prefs' timezone)?
  * The incident class never consults this (breakthrough class, #3676);
  * it exists for the dashboard classes of #3317. */
+// ⚡ Bolt: inQuietHours is evaluated per subscription on every digest /
+// alert pass, and Intl.DateTimeFormat construction dominates it (~29µs).
+// The formatter depends only on the timezone, so cache one per tz; the
+// map is bounded by the set of tz names users actually store (a handful).
+const QUIET_HOURS_FORMATTERS = new Map<string, Intl.DateTimeFormat>();
+function quietHoursFormatter(tz: string): Intl.DateTimeFormat {
+  let fmt = QUIET_HOURS_FORMATTERS.get(tz);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    });
+    QUIET_HOURS_FORMATTERS.set(tz, fmt);
+  }
+  return fmt;
+}
+
 export function inQuietHours(quiet: QuietPrefs, now: Date): boolean {
   if (quiet.enabled === false) return false; // quiet hours off — no time-of-day limit
   let mins: number;
   try {
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: quiet.tz,
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23",
-    }).formatToParts(now);
+    const parts = quietHoursFormatter(quiet.tz).formatToParts(now);
     const h = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
     const m = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
     mins = h * 60 + m;
@@ -374,7 +403,13 @@ export class AlertsStore {
   }
 
   async listSubscriptions(): Promise<PushSubscriptionRow[]> {
-    return this.db.query<PushSubscriptionRow>(`select * from alerts.push_subscriptions order by created_at`);
+    const rows = await this.db.query<PushSubscriptionRow>(
+      `select * from alerts.push_subscriptions order by created_at`,
+    );
+    // #3702 decision 3: old stored prefs are not rewritten, but must not
+    // be reinterpreted on read. Apply the same per-field fallbacks used at
+    // intake so delivery and the prefs page see safe values.
+    return rows.map((row) => ({ ...row, quiet: mergeQuiet(row.quiet) }));
   }
 
   /** Design §4: a 404/410 marks the subscription gone; two consecutive
@@ -528,6 +563,13 @@ export class AlertsStore {
        }, ${sqlStr(entry.outcome)})`,
     );
   }
+
+  /** Every send-ledger row (#3319 roll-up input). The ledger is one
+   * row per attempt, so a full read stays small; the rolling window
+   * is applied by the pure roll-up in src/notifications.ts. */
+  async listSends(): Promise<NotificationSendRow[]> {
+    return this.db.query<NotificationSendRow>(`select * from alerts.notification_sends`);
+  }
 }
 
 /** The test alert (#3676 follow-up, Drew 2026-11-01): the /alerts
@@ -586,15 +628,35 @@ export async function sendTestPush(
   return summary;
 }
 
-let storePromise: Promise<AlertsStore | null> | null = null;
+/**
+ * Create the shared store resolver. Keep the in-flight attempt and successful
+ * store cached, but clear null/rejected attempts so a later call can recover.
+ * Lazy-init contract (success-only memoization): README "Lazy-initialization contract" (#3879).
+ */
+export function createAlertsStoreGetter(
+  getClient: typeof getSupabaseClient = getSupabaseClient,
+): () => Promise<AlertsStore | null> {
+  let storePromise: Promise<AlertsStore | null> | null = null;
+
+  return function getAlertsStore(): Promise<AlertsStore | null> {
+    if (!storePromise) {
+      const pending = getClient().then((db) => (db ? new AlertsStore(db) : null));
+      storePromise = pending;
+      void pending.then(
+        (store) => {
+          if (store === null && storePromise === pending) storePromise = null;
+        },
+        () => {
+          if (storePromise === pending) storePromise = null;
+        },
+      );
+    }
+    return storePromise;
+  }
+}
 
 /** The shared store; null when the Supabase path is unavailable. */
-export function getAlertsStore(): Promise<AlertsStore | null> {
-  if (!storePromise) {
-    storePromise = getSupabaseClient().then((db) => (db ? new AlertsStore(db) : null));
-  }
-  return storePromise;
-}
+export const getAlertsStore = createAlertsStoreGetter();
 
 // --- The engine ---------------------------------------------------------------
 

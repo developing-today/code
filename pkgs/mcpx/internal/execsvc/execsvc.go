@@ -152,12 +152,16 @@ type Options struct {
 	// Phase lines and the launcher arrive as source: a path would name the
 	// daemon's filesystem, and the caller meant theirs.
 
-	// TypeCheck is off, on or strict; empty takes the daemon's default.
+	// TypeCheck is off, syntax, types or strict; on remains an alias for types.
+	// Empty takes the daemon's default.
 	TypeCheck string `json:"typecheck,omitempty"`
-	// Imports is off or report; empty takes the daemon's default.
+	// Imports is off, report or prepare; empty takes the daemon's default.
 	Imports string `json:"imports,omitempty"`
 	// ImportsOnDynamic is warn, fail or ignore; empty takes the daemon's.
-	ImportsOnDynamic string `json:"importsOnDynamic,omitempty"`
+	ImportsOnDynamic    string `json:"importsOnDynamic,omitempty"`
+	ImportsOnMissing    string `json:"importsOnMissing,omitempty"`
+	ImportsCrossProject string `json:"importsCrossProject,omitempty"`
+	ImportsNetwork      string `json:"importsNetwork,omitempty"`
 	// Launcher replaces the generated launcher with this template text;
 	// "none" runs the script with no launcher at all.
 	Launcher     string `json:"launcher,omitempty"`
@@ -532,15 +536,18 @@ type Limits struct {
 	// Setup holds declared runtimes, the auto order and user profiles.
 	Setup runner.Setup
 	// SetupErr is why Setup could not be read; every run reports it.
-	SetupErr         error
-	CaptureConsole   bool
-	Typecheck        string
-	Imports          string
-	ImportsOnDynamic string
-	Delivery         string
-	InlineMaxBytes   int64
-	ChunkBytes       int64
-	InterceptImages  bool
+	SetupErr            error
+	CaptureConsole      bool
+	Typecheck           string
+	Imports             string
+	ImportsOnDynamic    string
+	ImportsOnMissing    string
+	ImportsCrossProject string
+	ImportsNetwork      string
+	Delivery            string
+	InlineMaxBytes      int64
+	ChunkBytes          int64
+	InterceptImages     bool
 	// StdoutLimit caps the stdout a Result returns (bytes); <= 0 is no cap.
 	StdoutLimit int64
 }
@@ -697,30 +704,33 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 		capture = *opts.CaptureConsole
 	}
 	ropts := runner.Options{
-		Source:           req.Source,
-		File:             req.File,
-		ClientSource:     clientSrc,
-		GlobalsSource:    globals,
-		Clients:          clients,
-		WorkDir:          s.WorkDir,
-		WorkRoot:         s.WorkRoot,
-		Runtime:          firstNonEmpty(opts.Runtime, s.Limits.Runtime),
-		Interpreter:      firstNonEmpty(opts.Interpreter, s.Limits.Interpreter),
-		CwdPolicy:        firstNonEmpty(opts.CwdPolicy, s.Limits.CwdPolicy),
-		ConfigDir:        s.ConfigDir,
-		Setup:            s.Limits.Setup,
-		Timeout:          timeout,
-		Permissions:      firstNonEmpty(opts.Permissions, s.Limits.Permissions),
-		CaptureConsole:   capture,
-		TypeCheck:        firstNonEmpty(opts.TypeCheck, s.Limits.Typecheck),
-		Imports:          firstNonEmpty(opts.Imports, s.Limits.Imports),
-		ImportsOnDynamic: firstNonEmpty(opts.ImportsOnDynamic, s.Limits.ImportsOnDynamic),
-		Launcher:         opts.Launcher,
-		LauncherName:     opts.LauncherName,
-		AllowRepeat:      opts.AllowRepeat,
-		Export:           opts.Export,
-		Args:             opts.Args,
-		Dir:              opts.Cwd,
+		Source:              req.Source,
+		File:                req.File,
+		ClientSource:        clientSrc,
+		GlobalsSource:       globals,
+		Clients:             clients,
+		WorkDir:             s.WorkDir,
+		WorkRoot:            s.WorkRoot,
+		Runtime:             firstNonEmpty(opts.Runtime, s.Limits.Runtime),
+		Interpreter:         firstNonEmpty(opts.Interpreter, s.Limits.Interpreter),
+		CwdPolicy:           firstNonEmpty(opts.CwdPolicy, s.Limits.CwdPolicy),
+		ConfigDir:           s.ConfigDir,
+		Setup:               s.Limits.Setup,
+		Timeout:             timeout,
+		Permissions:         firstNonEmpty(opts.Permissions, s.Limits.Permissions),
+		CaptureConsole:      capture,
+		TypeCheck:           firstNonEmpty(opts.TypeCheck, s.Limits.Typecheck),
+		Imports:             firstNonEmpty(opts.Imports, s.Limits.Imports),
+		ImportsOnDynamic:    firstNonEmpty(opts.ImportsOnDynamic, s.Limits.ImportsOnDynamic),
+		ImportsOnMissing:    firstNonEmpty(opts.ImportsOnMissing, s.Limits.ImportsOnMissing),
+		ImportsCrossProject: firstNonEmpty(opts.ImportsCrossProject, s.Limits.ImportsCrossProject),
+		ImportsNetwork:      firstNonEmpty(opts.ImportsNetwork, s.Limits.ImportsNetwork),
+		Launcher:            opts.Launcher,
+		LauncherName:        opts.LauncherName,
+		AllowRepeat:         opts.AllowRepeat,
+		Export:              opts.Export,
+		Args:                opts.Args,
+		Dir:                 opts.Cwd,
 		// Explicitly not the daemon's standard input. A script run on
 		// somebody else's behalf reading the daemon's stdin would be reading
 		// whatever started the daemon.

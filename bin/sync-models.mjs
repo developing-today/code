@@ -459,7 +459,7 @@ async function run() {
   // file keeps its comments and formatting.
   const edits = [];
 
-  // 1. Sync antigravity-direct (the CLI-wire door; antigravity-agy &
+  // 1. Sync _antigravity (the CLI-wire door; antigravity-agy &
   // antigravity-ls retired 2026-10-30 — see home/common/default.nix)
   if (agyModels.length > 0) {
     // Write local cache for proxies
@@ -507,7 +507,7 @@ async function run() {
       return { context: 1048576, output: 65536 };
     };
 
-    for (const targetProvider of ['antigravity-direct']) {
+    for (const targetProvider of ['_antigravity']) {
       if (!config.provider[targetProvider]) continue;
       const prov = config.provider[targetProvider];
       prov.models = prov.models || {};

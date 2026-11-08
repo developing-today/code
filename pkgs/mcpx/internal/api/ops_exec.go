@@ -135,7 +135,7 @@ const execOptionsSchema = `{"type":"object","properties":{
 "ns":{"type":"array","items":{"type":"string"},"description":"restrict the generated client to these namespaces"},
 "args":{"type":"array","items":{"type":"string"},"description":"arguments handed to the script"},
 "export":{"type":"string","description":"call this exported function instead of the default one"},
-"typecheck":{"type":"string","enum":["off","on","strict"],"description":"check the program before running it; default from settings"},
+"typecheck":{"type":"string","enum":["off","types","strict","on"],"description":"check the program before running it; on is a legacy alias for types; default from settings"},
 "launcher":{"type":"string","description":"launcher template text replacing the generated one, or none for no launcher"},
 "launcherName":{"type":"string","description":"what to call the launcher in messages"},
 "allowRepeat":{"type":"array","items":{"type":"string"},"description":"launcher placeholders permitted to resolve more than once"},

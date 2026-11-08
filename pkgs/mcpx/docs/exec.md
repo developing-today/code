@@ -110,7 +110,7 @@ type ExecOptions = {
   ns?: string[];
   args?: string[];
   export?: string;
-  typecheck?: "off" | "on" | "strict";
+  typecheck?: "off" | "types" | "strict" | "on"; // on is a legacy alias for types
   launcher?: string;
   launcherName?: string; // template text, or "none"
   allowRepeat?: string[];
