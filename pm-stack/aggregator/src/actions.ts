@@ -136,7 +136,7 @@ export const VERBS_BY_KIND: Record<DashActionKind, readonly DashActionVerb[]> = 
 };
 
 const ACTION_KINDS = new Set<DashActionKind>(["triage", "status-request", "session", "preference"]);
-const ACTION_STATES = new Set(["new", "applied", "rejected", "superseded"]);
+export const ACTION_STATES = new Set(["new", "applied", "rejected", "superseded"]);
 
 function actionRecordProblem(value: unknown): string | null {
   if (!isRecord(value)) return "record must be an object";
