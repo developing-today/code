@@ -175,7 +175,7 @@ pub fn parse(text: &str) -> Result<WorldManifest> {
 /// fields and MUST gain a line for every field that struct gains:
 /// #5268 was exactly the drift where `total_memory_bytes` (#557) never
 /// got its line and every manifest naming it failed as "unknown field".
-/// The `profile_probe_covers_every_profile_field` test below pins the
+/// The `test_profile_probe_covers_every_profile_field` test below pins the
 /// mirror to the struct so the drift cannot recur silently.
 ///
 /// The probe deserializes through the typed TOML deserializer, never
@@ -612,7 +612,7 @@ wasm_fuel = 5_000_000
     }
 
     #[test]
-    fn total_memory_bytes_profile_key_parses_and_round_trips() {
+    fn test_total_memory_bytes_profile_key_parses_and_round_trips() {
         // #5268: total_memory_bytes is a real WorldExecutionProfile
         // field (#557) that the #2876 probe never learned, so any
         // manifest naming it failed parse as an unknown field.
@@ -622,14 +622,14 @@ wasm_fuel = 5_000_000
     }
 
     #[test]
-    fn total_memory_bytes_zero_is_rejected() {
+    fn test_total_memory_bytes_zero_is_rejected() {
         // The value the probe now admits still goes through
         // WorldExecutionProfile::validate: a zero budget is refused.
         assert!(parse("[profile]\ntotal_memory_bytes = 0").is_err());
     }
 
     #[test]
-    fn profile_probe_covers_every_profile_field() {
+    fn test_profile_probe_covers_every_profile_field() {
         // #5268 drift guard: this literal names EVERY field of
         // WorldExecutionProfile with no `..` rest pattern, so adding a
         // field to that struct breaks this test's compilation until
