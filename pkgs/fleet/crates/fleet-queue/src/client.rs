@@ -1102,7 +1102,11 @@ fn find_task_row(rows: &[Value], task_id: i64) -> Option<&Value> {
 }
 
 fn cmd_list(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["queue", "status", "limit", "not-before"], &[]);
+    let args = parse_args(
+        rest,
+        &["queue", "status", "limit", "not-before", "lane", "worker"],
+        &[],
+    );
     reject_extra_pos("list", &args, 0);
     let limit = match list_limit_or_default(args.get_i64("limit")) {
         Ok(limit) => limit,
@@ -1115,6 +1119,8 @@ fn cmd_list(rest: &[String]) -> i32 {
             "status": args.get("status"),
             "limit": limit,
             "not_before": args.get("not-before"),
+            "lane": args.get("lane"),
+            "worker": args.get("worker"),
         }),
     );
     let resp = unwrap_ok(resp);
@@ -1287,10 +1293,25 @@ const NO_CLAIM_EXIT: i32 = 5;
 fn claim_output(resp: &Value) -> (Value, i32) {
     let row = resp.get("row").cloned().unwrap_or(Value::Null);
     if row.is_null() {
-        (json!({"task": Value::Null}), NO_CLAIM_EXIT)
-    } else {
-        (row, 0)
+        return (json!({"task": Value::Null}), NO_CLAIM_EXIT);
     }
+    // Defense in depth (#5444): the broker's claim path validates
+    // packets before handing them out, but a row that still arrives
+    // carrying a payload field that is null or an empty object is a
+    // payload-less packet — never print it as a claimed task. Rows
+    // without a payload field keep the #5486 verbatim contract.
+    if let Some(payload) = row.get("payload") {
+        let missing = payload.is_null()
+            || payload.as_object().is_some_and(|o| o.is_empty());
+        if missing {
+            eprint(&format!(
+                "repo-queue: claim skipped: task {} arrived payload-less (#5444); treating as no claim",
+                row.get("id").cloned().unwrap_or(Value::Null)
+            ));
+            return (json!({"task": Value::Null}), NO_CLAIM_EXIT);
+        }
+    }
+    (row, 0)
 }
 
 fn cmd_lane(rest: &[String]) -> i32 {
@@ -2202,6 +2223,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn claim_payload_less_row_is_a_no_claim_not_a_task() {
+        // #5444 defense in depth: a claimed row that CARRIES a
+        // payload field which is null or an empty object is the
+        // 2026-11-04 payload-less incident shape — it must degrade
+        // to the distinguishable no-claim marker with a nonzero
+        // exit, never print as a task a worker would try to route.
+        for payload in [Value::Null, json!({})] {
+            let mut row = claimed_row_fixture();
+            row["payload"] = payload;
+            let (out, code) = claim_output(&json!({"ok": true, "row": row}));
+            assert_eq!(code, NO_CLAIM_EXIT);
+            assert_eq!(out, json!({"task": Value::Null}));
+        }
+        // A row carrying a real payload object passes through.
+        let mut row = claimed_row_fixture();
+        row["payload"] = json!({"schema": "repo-task/v1", "kind": "small_fix"});
+        let (out, code) = claim_output(&json!({"ok": true, "row": row.clone()}));
+        assert_eq!(code, 0);
+        assert_eq!(out, row);
     }
 
     #[test]

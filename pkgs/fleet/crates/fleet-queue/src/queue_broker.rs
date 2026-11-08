@@ -706,6 +706,14 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             if let Some(nb) = req.get("not_before").and_then(|s| s.as_str()) {
                 path += &format!("&or=(not_before.is.null,not_before.lte.{})", quote(nb, ":"));
             }
+            // #5444: --lane/--worker list filters, PostgREST side
+            // (the Turso verb_list applies the same filters).
+            if let Some(l) = req.get("lane").and_then(|s| s.as_str()) {
+                path += &format!("&lane_id=eq.{}", quote(l, ""));
+            }
+            if let Some(w) = req.get("worker").and_then(|s| s.as_str()) {
+                path += &format!("&worker_id=eq.{}", quote(w, ""));
+            }
             match st.postgrest("GET", &path, None, false) {
                 Ok((rows, _)) => ok(json!({"rows": rows})),
                 Err(e) => fail(e.exit, e.msg),
