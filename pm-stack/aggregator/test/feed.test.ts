@@ -16,6 +16,7 @@ import {
   sanitizeFeedMetadata,
   sanitizeRegistry,
   sanitizeSubscriptions,
+  sanitizeUninstrumentedServices,
 } from "../src/feed.ts";
 import { buildAttentionFlags } from "../src/derive.ts";
 import { renderQuota } from "../src/render.ts";
@@ -726,6 +727,47 @@ describe("feed subscriptions sanitization (#2446)", () => {
     const clean = await loadWithSubs([SUB, SUB_NULL_RENEW]);
     expect(clean?.subscriptions).toEqual([SUB, SUB_NULL_RENEW]);
     expect(clean?.subscriptionsDropped).toBeUndefined();
+  });
+});
+
+describe("uninstrumented tracker feed sanitization (#1172)", () => {
+  const SERVICE = {
+    name: "Render",
+    whatFor: "PaaS",
+    status: "checked",
+    checkedAt: "2026-10-29",
+    overageBehavior: "wall",
+    guardrailNotes: "Keep no payment method on free workspaces",
+  };
+  const UNDATED_SERVICE = { ...SERVICE, status: "unchecked", checkedAt: null };
+  const feedWithServices = (uninstrumentedServices: unknown) => ({
+    version: 1,
+    generatedAt: "2026-10-01T00:00:00Z",
+    quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+    attention: [],
+    uninstrumentedServices,
+  });
+  const loadWithServices = async (uninstrumentedServices: unknown) => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-feed-tracker-"));
+    const file = join(dir, "feed.json");
+    writeFileSync(file, JSON.stringify(feedWithServices(uninstrumentedServices)));
+    return loadFeed(file);
+  };
+
+  test("valid tracker rows survive; malformed rows drop and are counted", async () => {
+    const out = sanitizeUninstrumentedServices([SERVICE, UNDATED_SERVICE, null, { ...SERVICE, checkedAt: "yesterday" }]);
+    expect(out.rows).toEqual([SERVICE, UNDATED_SERVICE]);
+    expect(out.dropped).toBe(2);
+    const loaded = await loadWithServices([SERVICE, UNDATED_SERVICE, null]);
+    expect(loaded?.uninstrumentedServices).toEqual([SERVICE, UNDATED_SERVICE]);
+    expect(loaded?.uninstrumentedServicesDropped).toBe(1);
+  });
+
+  test("an absent tracker section remains absent for older feeds", async () => {
+    expect(sanitizeUninstrumentedServices(undefined)).toEqual({ dropped: 0 });
+    const loaded = await loadWithServices(undefined);
+    expect(loaded?.uninstrumentedServices).toBeUndefined();
+    expect(loaded?.uninstrumentedServicesDropped).toBeUndefined();
   });
 });
 
