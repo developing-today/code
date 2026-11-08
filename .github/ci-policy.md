@@ -45,22 +45,25 @@ ever require checks by name, require the `basic`-prefixed names
 (plus `nix flake check` for `id`) — full main-tier jobs must
 never become merge requirements.
 
-## Merge queue (pilot, 2026-10-29)
+## No merge queue (Drew ruling, 2026-11-08)
 
-`main` runs a merge queue (ruleset `main: merge queue pilot`):
-merge method MERGE (merge commits only), grouping HEADGREEN
-(only the group's combined head must pass the required checks),
-min entries to merge 1 with a 1-minute wait (a lone PR is never
-held for a batch), max entries to merge 100, max entries to build
-100, check response timeout 30 minutes. The queue enforces the
-same required check as branch protection — `basic: proxy port
-fallbacks` — which is why the dedicated
-`.github/workflows/proxy-port-fallbacks.yml` runs on both
-`pull_request` and `merge_group` events. The queue validates the
-combined merge-group head, never the PR head alone. Operationally:
-`gh pr merge` now ENQUEUES a
-PR instead of merging it; "in the merge queue" is merge-pending,
-not a failure.
+`main` has **no merge queue**: merges land as direct merge commits,
+and no workflow declares a `merge_group` trigger. A "merge queue
+pilot" section stood here from 2026-10-29 describing a ruleset
+(`main: merge queue pilot`) that was never actually configured on
+the repo — verified 2026-11-07 on #5149: no ruleset on `main`, no
+merge-queue configuration in branch protection, and zero
+`merge_group` runs had ever occurred. Drew ruled it closed on
+2026-11-08 ("no merge queue"): rather than leave the triggers
+configured-but-unexercised, the `merge_group` triggers were removed
+from every workflow (`proxy-port-fallbacks`, `workflow-lint`,
+`opencode-config-guard`, `fleet-search-parity-guard`) — the two
+guards that ran *only* on `merge_group` now run on `pull_request`
+instead — and this policy was updated to match. The PR-tier required
+check stays `basic: proxy port fallbacks`, which the dedicated
+`.github/workflows/proxy-port-fallbacks.yml` runs on `pull_request`
+events. `gh pr merge` merges a PR directly; there is no
+merge-pending queue state.
 
 ## mcpx fix-test guard (#1969)
 
@@ -155,9 +158,9 @@ main-breakage rate (issues labelled `main-broken`) proves out.
 
 | workflow                                                       | PR tier                                                                                             | main tier                                                                                           | nightly                                                          |
 | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| nix ci                                                         | — (PR and merge-group proxy check is in the dedicated workflow below)                               | proxy port fallbacks + full flake-check (formatting auto-fixed on main by the auto-format workflow) | schedule in nix-ci.yml                                           |
-| proxy-port-fallbacks                                           | `basic: proxy port fallbacks` on `pull_request` and `merge_group`                                   | — (main copy remains in nix-ci.yml)                                                                 | —                                                                |
-| workflow-lint | `basic: workflow lint` on `pull_request` (paths `.github/workflows/**`, `.github/actions/**`) and `merge_group` | — | — |
+| nix ci                                                         | — (PR proxy check is in the dedicated workflow below)                               | proxy port fallbacks + full flake-check (formatting auto-fixed on main by the auto-format workflow) | schedule in nix-ci.yml                                           |
+| proxy-port-fallbacks                                           | `basic: proxy port fallbacks` on `pull_request`                                                          | — (main copy remains in nix-ci.yml)                                                                 | —                                                                |
+| workflow-lint | `basic: workflow lint` on `pull_request` (paths `.github/workflows/**`, `.github/actions/**`) | — | — |
 | id                                                             | guard + affected-crate matrix (`id-pr-checks.txt`)                                                  | + full `nix flake check ./pkgs/id` job                                                              | schedule in id-check.yml + id-e2e-nightly.yml (full flake check) |
 | mcpx conformance                                               | spec-parity leg only (measured 28s exec, run 40801660942, 2026-10-29 — under the 5m fast-leg limit) | all conformance legs + records + spec-parity                                                        | — (main covers it)                                               |
 | id bench                                                       | — (removed)                                                                                         | yes                                                                                                 | —                                                                |
