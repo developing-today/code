@@ -312,6 +312,22 @@ EOF
 code=$?
 assert_exit "escaped char literal does not desync the lexer" 1 "$code"
 assert_contains "test after char literal and multiline string is named" "$out" "uncovered_after_char_literal_gate"
+# --- Codex round 3 on PR #4272: code after a multiline string closes ---
+out="$(
+  cat <<'EOF' | run_guard
+const TEXT: &str = "hello
+world"; #[test] #[ignore = "gate"]
+fn uncovered_after_string_close_gate() {}
+
+#[test]
+#[ignore = "gate"]
+fn covered_full_sweep_has_no_failures_gate() {}
+EOF
+)"
+code=$?
+assert_exit "code after a multiline string closes is processed" 1 "$code"
+assert_contains "test after string close named" "$out" "uncovered_after_string_close_gate"
+
 if [ "$failures" -ne 0 ]; then
   echo "$failures check-crash-gate-coverage test(s) FAILED" >&2
   exit 1

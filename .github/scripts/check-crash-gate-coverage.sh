@@ -164,10 +164,10 @@ if ! ignored_raw="$(
     {
       prev_file = FILENAME
       scan($0)
-      if (began_str) next
       t = code_text
       sub(/^[[:space:]]*/, "", t)
-      if (began_blk && t == "") next
+      if ((began_str || began_blk) && t == "") next
+      if (began_str && pending) next
       if (pending) {
         if (t == "") next
         if (t ~ /^#\[/) next
