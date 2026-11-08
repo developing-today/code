@@ -7490,6 +7490,241 @@ mod audit_tests {
             "participant-readable queries must not be audited as admin: {captured:?}"
         );
     }
+
+    #[test]
+    fn revocation_on_a_read_only_replica_is_audited_once_as_refused() {
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
+        let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
+        actor.read_only = true;
+
+        futures_lite::future::block_on(async {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::Revoke {
+                    participant_id: 41,
+                    by: None,
+                    reply,
+                })
+                .await;
+            assert!(
+                !response.await.unwrap(),
+                "a replica revocation reports nothing revoked"
+            );
+        });
+
+        let captured = records.lock().unwrap().clone();
+        let revoke_records: Vec<_> = captured
+            .iter()
+            .filter(|record| record["action"] == "Revoke")
+            .collect();
+        assert_eq!(
+            revoke_records.len(),
+            1,
+            "one replica revocation refusal must emit exactly one audit record: {captured:?}"
+        );
+        assert_eq!(revoke_records[0]["outcome"], "refused");
+        assert_eq!(revoke_records[0]["parameters"]["participant_id"], 41);
+        assert_eq!(revoke_records[0]["parameters"]["changed"], false);
+    }
+
+    /// Deterministic command generator (xorshift64*) for the replay
+    /// invariant below: a failure names its seed and replays exactly.
+    struct Gen(u64);
+
+    impl Gen {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            self.0 = x;
+            x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+
+        fn below(&mut self, bound: u64) -> u64 {
+            self.next() % bound
+        }
+
+        fn subset(&mut self, caps: &[&str]) -> Vec<String> {
+            caps.iter()
+                .filter(|_| self.below(2) == 0)
+                .map(|cap| (*cap).to_owned())
+                .collect()
+        }
+    }
+
+    #[test]
+    fn admin_audit_replay_matches_live_state_for_generated_sequences() {
+        // Oracle: the audit records themselves (model-based replay).
+        // Folding the accepted records — plus first-use grants — over
+        // the initial state must reproduce the live ledger grants and
+        // the live ceiling after every generated sequence, and every
+        // generated admin command must leave exactly one record. The
+        // fixed example above samples this state-machine invariant;
+        // this test hammers it with generated sequences covering
+        // grants, revocations (capability and participant), ceiling
+        // changes, refusals, and first-use grants (Codex P1 finding
+        // on PR #4017; testing doctrine: PBT/MBT where invariants fit).
+        const CAPS: [&str; 4] = ["time.now", "random.u64", "schedule.at", "chat.say"];
+        for seed in 1..=16_u64 {
+            let records = Arc::new(Mutex::new(Vec::new()));
+            let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
+            let _guard = tracing::subscriber::set_default(subscriber);
+
+            let core = WorldCore::new(
+                "audit-test",
+                WorldLimits {
+                    grant_on_use: true,
+                    ..WorldLimits::default()
+                },
+            )
+            .unwrap();
+            let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
+            let initial_grants: BTreeSet<String> = actor.core.ledger.granted().clone();
+            let initial_ceiling: BTreeSet<String> = actor.core.caps_ceiling.clone();
+            let mut rng = Gen(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+            let mut issued: Vec<u64> = Vec::new();
+            let mut admin_commands = 0_usize;
+
+            futures_lite::future::block_on(async {
+                for step in 0..24 {
+                    match rng.below(10) {
+                        0..=3 => {
+                            let (reply, response) = tokio::sync::oneshot::channel();
+                            actor
+                                .handle(WorldCommand::UpdateCaps {
+                                    grant: rng.subset(&CAPS),
+                                    revoke: rng.subset(&CAPS),
+                                    reply,
+                                })
+                                .await;
+                            let _ = response.await.unwrap();
+                        }
+                        4..=5 => {
+                            let mut ceiling = rng.subset(&CAPS);
+                            if rng.below(4) == 0 {
+                                ceiling.push("not-a-capability".to_owned());
+                            }
+                            let (reply, response) = tokio::sync::oneshot::channel();
+                            actor
+                                .handle(WorldCommand::SetCapsCeiling { ceiling, reply })
+                                .await;
+                            let _ = response.await.unwrap();
+                        }
+                        6 => {
+                            let (reply, response) = tokio::sync::oneshot::channel();
+                            actor
+                                .handle(WorldCommand::Issue {
+                                    name: format!("P{step}"),
+                                    scopes: WorldScopes::JOIN,
+                                    bounds: CapabilityBounds::default(),
+                                    reply,
+                                })
+                                .await;
+                            let (participant, _token) = response.await.unwrap().unwrap();
+                            issued.push(participant.id);
+                        }
+                        7 => {
+                            let participant_id = if issued.is_empty() || rng.below(3) == 0 {
+                                999_999
+                            } else {
+                                issued[rng.below(issued.len() as u64) as usize]
+                            };
+                            let (reply, response) = tokio::sync::oneshot::channel();
+                            actor
+                                .handle(WorldCommand::Revoke {
+                                    participant_id,
+                                    by: None,
+                                    reply,
+                                })
+                                .await;
+                            let _ = response.await.unwrap();
+                        }
+                        _ => {
+                            let (reply, response) = tokio::sync::oneshot::channel();
+                            actor
+                                .handle(WorldCommand::UpdateCaps {
+                                    grant: vec!["not-a-capability".to_owned()],
+                                    revoke: vec![],
+                                    reply,
+                                })
+                                .await;
+                            assert!(
+                                response.await.unwrap().is_err(),
+                                "an unknown capability must be refused"
+                            );
+                        }
+                    }
+                    admin_commands += 1;
+                }
+                actor.after_change().await;
+            });
+
+            let captured = records.lock().unwrap().clone();
+            let admin_records = captured
+                .iter()
+                .filter(|record| {
+                    matches!(
+                        record["action"].as_str().unwrap(),
+                        "UpdateCaps" | "SetCapsCeiling" | "Issue" | "Revoke"
+                    )
+                })
+                .count();
+            assert_eq!(
+                admin_records, admin_commands,
+                "seed {seed}: exactly one audit record per admin command"
+            );
+
+            let mut replayed_grants = initial_grants;
+            let mut replayed_ceiling = initial_ceiling;
+            for record in &captured {
+                if record["outcome"] != "accepted" {
+                    if record["action"] == "provider_use" && record["outcome"] == "first_use_grant"
+                    {
+                        replayed_grants.insert(
+                            record["parameters"]["capability"]
+                                .as_str()
+                                .unwrap()
+                                .to_owned(),
+                        );
+                    }
+                    continue;
+                }
+                match record["action"].as_str().unwrap() {
+                    "UpdateCaps" => {
+                        for name in record["parameters"]["revoke"].as_array().unwrap() {
+                            replayed_grants.remove(name.as_str().unwrap());
+                        }
+                        for name in record["parameters"]["grant"].as_array().unwrap() {
+                            replayed_grants.insert(name.as_str().unwrap().to_owned());
+                        }
+                    }
+                    "SetCapsCeiling" => {
+                        replayed_ceiling = record["parameters"]["ceiling"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|name| name.as_str().unwrap().to_owned())
+                            .collect();
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(
+                replayed_grants,
+                *actor.core.ledger.granted(),
+                "seed {seed}: replayed grants must equal the live ledger"
+            );
+            assert_eq!(
+                replayed_ceiling, actor.core.caps_ceiling,
+                "seed {seed}: replayed ceiling must equal the live ceiling"
+            );
+        }
+    }
 }
 
 /// Structural guard for the one client projection (F11.11, #543).

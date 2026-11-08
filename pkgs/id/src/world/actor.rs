@@ -1365,6 +1365,16 @@ impl WorldActor {
                 // the verified journal, never as local commands. Report
                 // nothing revoked, like an unknown participant.
                 if self.read_only {
+                    // The replica refusal is a processed administrative
+                    // outcome and belongs in the audit trail, like the
+                    // writability refusals: emit exactly one refused
+                    // record before returning (Codex finding on PR #4017).
+                    self.audit_admin_result(
+                        by.map_or_else(|| "admin".to_owned(), |id| format!("participant:{id}")),
+                        "Revoke",
+                        serde_json::json!({"participant_id": participant_id, "changed": false}),
+                        false,
+                    );
                     let _ = reply.send(false);
                     return;
                 }
