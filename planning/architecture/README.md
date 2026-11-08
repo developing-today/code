@@ -66,6 +66,7 @@ records.
 - [ID shader asset format — v1 design](../../doc/2026-11-08T00-57-08Z_design_shader_asset_format/2026-11-08T00-57-08Z_design_shader_asset_format.md)
 - [Knowledge-layer sharing and permissions](../../doc/2026-11-08T08-19-40Z_design_id_knowledge_sharing_permissions/2026-11-08T08-19-40Z_design_id_knowledge_sharing_permissions.md)
 - [Permission UX for worlds: pre-connect disclosure, grant modes, and memory](../../doc/2026-11-08T09-06-08Z_design_id_permission_ux/2026-11-08T09-06-08Z_design_id_permission_ux.md)
+- [Pure-package imports and package classes across capability tiers](../../doc/2026-11-08T17-12-39Z_design_id_package_import_policy/2026-11-08T17-12-39Z_design_id_package_import_policy.md)
 - [Explicit platform contexts for pure libraries](../../doc/2026-11-08T17-23-00Z_design_id5963_programming_model/2026-11-08T17-23-00Z_design_id5963_programming_model.md)
 - [Capability observability: who can see which capability facts, where](../../doc/2026-11-08T10-40-00Z_design_id_capability_observability/2026-11-08T10-40-00Z_design_id_capability_observability.md)
 - [ID relay and proxy protocol (#5813)](../../doc/2026-11-08T11-08-53Z_design_id5813_relay_proxy_protocol/2026-11-08T11-08-53Z_design_id5813_relay_proxy_protocol.md)
