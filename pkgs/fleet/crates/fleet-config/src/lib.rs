@@ -315,16 +315,65 @@ fn env_xdg_base(var: &str) -> Option<PathBuf> {
 /// so a `fleet.toml` planted under the working directory at
 /// `./<relative-home>/.config/fleet/fleet.toml` would load — the
 /// planted-config hazard of issue #5473 in its relative-HOME
-/// spelling. Falling back to "." here means the unset/empty case
-/// and the relative case share one behaviour, governed by the
-/// fallback decision tracked in issue #5737. Scoped to the HOME
-/// anchor only: relative XDG bases are issue #6396, and relative
-/// values from explicit overrides (FLEET_CONFIG, socket paths) keep
-/// their documented resolve-under-home meaning.
+/// spelling. Scoped to the HOME anchor only: relative XDG bases are
+/// issue #6396, and relative values from explicit overrides
+/// (FLEET_CONFIG, socket paths) keep their documented
+/// resolve-under-home meaning.
+///
+/// The fallback decision (issue #5737): when `HOME` is
+/// unset/empty/relative, the anchor is the account's real home
+/// from the passwd database (the home OpenSSH and other tools
+/// resolve `~` from) — never ".". Anchoring on "." resolved the
+/// config file, the state dir, and every broker socket
+/// CWD-relative, so a `fleet.toml` planted in the working
+/// directory loaded for any fleet process started without `HOME`.
+/// If no passwd entry with an absolute home exists for the
+/// process uid, resolution fails loudly: the panic names `HOME`
+/// and the fix, rather than silently anchoring on the CWD.
 fn home_anchor(value: Option<PathBuf>) -> PathBuf {
     non_empty_path(value)
         .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| PathBuf::from("."))
+        .or_else(passwd_home)
+        .expect(
+            "fleet-config: HOME is unset, empty, or relative and no passwd              entry with an absolute home directory exists for this process's              uid; set HOME to an absolute path (issue #5737)",
+        )
+}
+
+/// The process's real uid (the first `Uid:` field of
+/// `/proc/self/status`). Linux-only by construction; elsewhere
+/// there is no uid to look up and the passwd fallback is absent.
+fn process_uid() -> Option<u32> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    status.lines().find_map(|line| {
+        let rest = line.strip_prefix("Uid:")?;
+        rest.split_whitespace().next()?.parse().ok()
+    })
+}
+
+/// The home directory recorded in passwd-database text for `uid`,
+/// when that home is absolute. Pure over the database text so the
+/// parsing is pinnable in tests.
+fn passwd_home_for_uid(passwd: &str, uid: u32) -> Option<PathBuf> {
+    passwd.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        let _name = fields.next()?;
+        let _passwd = fields.next()?;
+        let entry_uid: u32 = fields.next()?.parse().ok()?;
+        if entry_uid != uid {
+            return None;
+        }
+        let _gid = fields.next()?;
+        let _gecos = fields.next()?;
+        let home = PathBuf::from(fields.next()?);
+        home.is_absolute().then_some(home)
+    })
+}
+
+/// This process account's real home directory from the passwd
+/// database (`/etc/passwd`, matched by the process uid).
+fn passwd_home() -> Option<PathBuf> {
+    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+    passwd_home_for_uid(&passwd, process_uid()?)
 }
 
 fn home_dir() -> PathBuf {
@@ -346,7 +395,9 @@ fn resolve_under_home(path: &str) -> PathBuf {
 impl Config {
     /// The config file path: `$FLEET_CONFIG`, else
     /// `${XDG_CONFIG_HOME:-~/.config}/fleet/fleet.toml`.
-    /// Fleet's home directory: `$HOME`, or `.` when unset/empty.
+    /// Fleet's home directory: `$HOME` when it is absolute and
+    /// non-empty, else the passwd database's home for the process
+    /// uid — never `.` (issue #5737).
     /// This is the home every Fleet path resolution uses; callers
     /// that hand paths to external tools (e.g. OpenSSH, which
     /// expands `~` from the passwd database instead) must build
@@ -880,19 +931,11 @@ mod tests {
             Some(PathBuf::from("/cfg"))
         );
         assert_eq!(
-            Config::file_path_from(
-                None,
-                absolute_path(Some(PathBuf::from("relcfg"))),
-                &home
-            ),
+            Config::file_path_from(None, absolute_path(Some(PathBuf::from("relcfg"))), &home),
             home.join(".config").join("fleet").join("fleet.toml")
         );
         assert_eq!(
-            Config::file_path_from(
-                None,
-                absolute_path(Some(PathBuf::from("/cfg"))),
-                &home
-            ),
+            Config::file_path_from(None, absolute_path(Some(PathBuf::from("/cfg"))), &home),
             PathBuf::from("/cfg").join("fleet").join("fleet.toml")
         );
         assert_eq!(
@@ -918,31 +961,73 @@ mod tests {
         // they do for an unset/empty HOME, so a fleet.toml planted at
         // ./<relative-home>/.config/fleet/fleet.toml is never loaded.
         let anchor = home_anchor(Some(PathBuf::from("relhome")));
-        assert_eq!(anchor, PathBuf::from("."));
-        assert_eq!(home_anchor(None), PathBuf::from("."));
-        assert_eq!(home_anchor(Some(PathBuf::new())), PathBuf::from("."));
+        // #5737: the unset/empty/relative spellings share the
+        // passwd-home fallback — an absolute anchor, never ".".
+        assert_eq!(anchor, home_anchor(None));
+        assert_eq!(anchor, home_anchor(Some(PathBuf::new())));
+        assert!(anchor.is_absolute());
+        assert_ne!(anchor, PathBuf::from("."));
         assert_eq!(
             home_anchor(Some(PathBuf::from("/home/tester"))),
             PathBuf::from("/home/tester")
         );
         assert_eq!(
             Config::file_path_from(None, None, &anchor),
-            PathBuf::from(".")
-                .join(".config")
-                .join("fleet")
-                .join("fleet.toml")
+            anchor.join(".config").join("fleet").join("fleet.toml")
         );
         assert_eq!(
             Config::state_dir_from(None, &anchor),
-            PathBuf::from(".")
-                .join(".local")
-                .join("state")
-                .join("fleet")
+            anchor.join(".local").join("state").join("fleet")
         );
         assert_eq!(
             Config::broker_socket_from(None, None, &anchor),
-            PathBuf::from(".").join(DEFAULT_BROKER_SOCKET)
+            anchor.join(DEFAULT_BROKER_SOCKET)
         );
+    }
+
+    #[test]
+    fn passwd_home_for_uid_reads_the_matching_entry() {
+        let passwd = "root:x:0:0:root:/root:/bin/sh\n\
+                      tester:x:1000:1000:Tester:/home/tester:/bin/sh\n\
+                      other:x:1001:1001:Other:relhome:/bin/sh\n";
+        assert_eq!(
+            passwd_home_for_uid(passwd, 1000),
+            Some(PathBuf::from("/home/tester"))
+        );
+        assert_eq!(passwd_home_for_uid(passwd, 0), Some(PathBuf::from("/root")));
+        // Unknown uid, and a uid whose recorded home is relative,
+        // both yield no passwd home (the loud-failure path).
+        assert_eq!(passwd_home_for_uid(passwd, 4242), None);
+        assert_eq!(passwd_home_for_uid(passwd, 1001), None);
+        assert_eq!(passwd_home_for_uid("", 1000), None);
+    }
+
+    #[test]
+    fn unset_or_empty_home_never_anchors_on_the_cwd() {
+        // #5737 pinning: for HOME unset and HOME empty, file_path,
+        // state_dir, and broker_socket all resolve under the
+        // passwd-home anchor — absolute paths that a planted
+        // ./.config/fleet/fleet.toml in the working directory can
+        // never shadow.
+        for anchor in [home_anchor(None), home_anchor(Some(PathBuf::new()))] {
+            assert!(anchor.is_absolute());
+            let file_path = Config::file_path_from(None, None, &anchor);
+            assert!(file_path.is_absolute());
+            assert_eq!(
+                file_path,
+                anchor.join(".config").join("fleet").join("fleet.toml")
+            );
+            assert_ne!(
+                file_path,
+                PathBuf::from(".config").join("fleet").join("fleet.toml")
+            );
+            let state_dir = Config::state_dir_from(None, &anchor);
+            assert!(state_dir.is_absolute());
+            assert_eq!(state_dir, anchor.join(".local").join("state").join("fleet"));
+            let socket = Config::broker_socket_from(None, None, &anchor);
+            assert!(socket.is_absolute());
+            assert_eq!(socket, anchor.join(DEFAULT_BROKER_SOCKET));
+        }
     }
 
     #[test]
