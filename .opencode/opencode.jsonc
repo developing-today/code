@@ -2810,8 +2810,13 @@
         // via gemini-flash-plan — antigravity-ls serves
         // gemini-3.8-flash live (AA v5: II 31 at high,
         // ~311 t/s decode), which clears this pool's bar.
+        // 2026-11-07 (Drew, direct order): the Spark seat leaves
+        // spark-plan and addresses the Meta door directly —
+        // _muse/muse-spark-1.3-contributor#xhigh at the same weight 3.
+        // spark-plan keeps its seats in the deliberate tiers
+        // (workhorse-weighted, specialist) unchanged.
         "targets": [
-          "opencode-route/spark-plan#xhigh",
+          "_muse/muse-spark-1.3-contributor#xhigh",
           "opencode-route/deepseek-flash-plan#high",
           "opencode-route/haiku-plan#high",
           "opencode-route/gemini-flash-plan#high"
@@ -2819,7 +2824,7 @@
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-route/spark-plan": 3,
+          "_muse/muse-spark-1.3-contributor": 3,
           "opencode-route/deepseek-flash-plan": 2,
           "opencode-route/haiku-plan": 2,
           "opencode-route/gemini-flash-plan": 1
