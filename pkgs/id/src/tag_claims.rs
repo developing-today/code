@@ -124,7 +124,8 @@ pub fn is_tag_kind(kind: &str) -> bool {
 ///
 /// Returns [`TagError::KindMismatch`] when the operation is not the one `kind` names. Returns
 /// [`TagError::Field`] for a name or value that breaks its limit or the NFC rule, and for a clear
-/// that names more than [`MAX_CLEAR_CLAIMS`] claims or names the same claim twice.
+/// that names no claims, names more than [`MAX_CLEAR_CLAIMS`] claims, or names the same claim
+/// twice.
 pub fn check_op(kind: &str, op: &TagOp) -> Result<(), TagError> {
     match (kind, op) {
         (SET_KIND, TagOp::Set { name, value, .. }) => {
@@ -135,6 +136,11 @@ pub fn check_op(kind: &str, op: &TagOp) -> Result<(), TagError> {
             Ok(())
         }
         (CLEAR_KIND, TagOp::Clear { claims }) => {
+            if claims.is_empty() {
+                return Err(TagError::Field(
+                    "a clear names at least one claim".to_owned(),
+                ));
+            }
             if claims.len() > MAX_CLEAR_CLAIMS {
                 return Err(TagError::Field(format!(
                     "{} claims, the most is {MAX_CLEAR_CLAIMS}",
@@ -419,7 +425,9 @@ mod tests {
             name: "city".to_owned(),
             value: Some(String::new()),
         };
-        let clear_op = TagOp::Clear { claims: vec![] };
+        let clear_op = TagOp::Clear {
+            claims: vec![hash(1)],
+        };
         assert!(check_op(SET_KIND, &set_op).is_ok());
         assert!(check_op(CLEAR_KIND, &clear_op).is_ok());
         assert!(check_op(CLEAR_KIND, &set_op).is_err());
@@ -444,6 +452,16 @@ mod tests {
         assert!(check("a", Some("v".repeat(MAX_VALUE_BYTES))).is_ok());
         assert!(check("a", Some("v".repeat(MAX_VALUE_BYTES + 1))).is_err());
         assert!(check("a", Some("e\u{301}".to_owned())).is_err());
+    }
+
+    #[test]
+    fn test_a_clear_naming_no_claims_is_refused() {
+        let op = TagOp::Clear { claims: vec![] };
+        assert!(matches!(
+            check_op(CLEAR_KIND, &op),
+            Err(TagError::Field(message))
+                if message == "a clear names at least one claim"
+        ));
     }
 
     #[test]
