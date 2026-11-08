@@ -1331,6 +1331,15 @@ let
               python3 ${../pkgs/deploy/test_dupkeys_property.py} ${../pkgs/deploy/deploy.py}
               mkdir -p $out
             '';
+        deploy-target-shape-property =
+          pkgs.runCommandLocal "check-deploy-target-shape-property"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_target_shape_property.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
         deploy-slice2-tests =
           pkgs.runCommandLocal "check-deploy-slice2-tests"
             {
