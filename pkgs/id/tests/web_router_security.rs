@@ -158,6 +158,7 @@ async fn every_public_router_constructor_enforces_its_security_policy() {
         policy.clone(),
         None,
         false,
+        None,
     )
     .await
     .unwrap();
@@ -178,6 +179,7 @@ async fn every_public_router_constructor_enforces_its_security_policy() {
         policy.clone(),
         None,
         false,
+        None,
         local_events,
     )
     .await

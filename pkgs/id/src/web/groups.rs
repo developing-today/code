@@ -121,7 +121,7 @@ pub fn render_groups(projection: &Projection) -> String {
             for grant in group_grants {
                 html.push_str(&format!(
                     "<tr><td>{}</td><td>{}</td><td>{:?}</td><td>{}</td><td>{}</td></tr>",
-                    key_hex(&grant.from),
+                    grant.from.as_ref().map(key_hex).unwrap_or_else(|| "(group)".to_owned()),
                     key_hex(&grant.to),
                     grant.scope,
                     if grant.redelegate { "yes" } else { "no" },
@@ -170,7 +170,7 @@ pub async fn groups_page_handler(State(state): State<AppState>) -> Response {
 mod tests {
     use super::*;
     use crate::groups::log::GroupLog;
-    use crate::groups::policy::{Delegation, Policy, Template};
+    use crate::groups::policy::{Delegation, Policy, RemoveMode, Template};
     use crate::groups::{Body, Create, Delegate, MemberOp, Role};
     use tempfile::TempDir;
 
@@ -214,7 +214,7 @@ mod tests {
             Some(group),
             Body::Member(MemberOp::Remove {
                 member: OWNER,
-                successor: None,
+                mode: RemoveMode::KeepPrior,
             }),
         )
         .unwrap();
@@ -228,7 +228,7 @@ mod tests {
         let projection = read_projection(&path).unwrap();
         let grants: Vec<_> = projection.grants_in_force().collect();
         assert_eq!(grants.len(), 1);
-        assert_eq!(grants[0].from, OWNER);
+        assert_eq!(grants[0].from, Some(OWNER));
         assert_eq!(grants[0].to, ANN);
         assert_eq!(grants[0].scope, Role::Read);
         assert!(grants[0].redelegate);
