@@ -38,10 +38,10 @@ def iso_age(seconds):
 class Harness:
     """One drain run against a stub Worker + stub fetch."""
 
-    def __init__(self, events, planned, fetch_results, initial_state=None):
+    def __init__(self, events, planned, fetch_results, initial_state=None, plan_raw=None):
         self.root = tempfile.mkdtemp(prefix="ghb-drain-test-")
         with open(os.path.join(self.root, "plan.json"), "w") as f:
-            json.dump([{"repo": r} for r in planned], f)
+            json.dump(plan_raw if plan_raw is not None else [{"repo": r} for r in planned], f)
         if initial_state is not None:
             with open(os.path.join(self.root, "state.json"), "w") as f:
                 json.dump(initial_state, f)
@@ -529,5 +529,68 @@ check(
     "page bound: completion at the bound returns every event",
     len(got) == drain_queue.MAX_QUEUE_PAGES,
 )
+
+
+# 20. poison plan entries (#6835): string/int entries are named + skipped,
+# the valid planned repo still drains
+h = Harness(
+    [ev("e1", "owner/repo")],
+    [],
+    {"owner/repo": "ok"},
+    plan_raw=["o/r1", 123, {"repo": "owner/repo"}],
+)
+check("poison plan entries: exit 0", h.run() == 0)
+check("poison plan entries: fetched + acked", h.fetch_calls == ["owner/repo"] and h.acked_ids() == ["e1"])
+check("poison plan entries: coalesce stamp set", "drain_last::owner/repo" in h.state())
+
+# 21. plan top level is a dict (#6835): whole file treated as empty,
+# the repo drains as unplanned instead of crashing the tick
+h = Harness(
+    [ev("e1", "owner/repo")],
+    [],
+    {},
+    plan_raw={"repo": "owner/repo"},
+)
+check("dict plan: exit 0", h.run() == 0)
+check("dict plan: event acked as unplanned", h.acked_ids() == ["e1"] and h.fetch_calls == [])
+check("dict plan: fetch.log note", "unplanned repo" in h.fetch_log())
+
+# 22. state top level is a list (#6835): whole file treated as empty,
+# state.json is rewritten as a clean object
+h = Harness(
+    [ev("e1", "owner/repo")],
+    ["owner/repo"],
+    {"owner/repo": "ok"},
+    initial_state=[],
+)
+check("list state: exit 0", h.run() == 0)
+check("list state: fetched + acked", h.fetch_calls == ["owner/repo"] and h.acked_ids() == ["e1"])
+check("list state: rewritten as object with stamp", isinstance(h.state(), dict) and "drain_last::owner/repo" in h.state())
+
+# 23. drain_last wrong shape (#6835): string/dict stamps are dropped and
+# treated as absent — the coalesce window does not apply, fetch runs
+for bad_stamp in ("soon", {"t": 1}):
+    h = Harness(
+        [ev("e1", "owner/repo")],
+        ["owner/repo"],
+        {"owner/repo": "ok"},
+        initial_state={"drain_last::owner/repo": bad_stamp},
+    )
+    check(f"drain_last {type(bad_stamp).__name__}: exit 0", h.run() == 0)
+    check(f"drain_last {type(bad_stamp).__name__}: fetched + acked", h.fetch_calls == ["owner/repo"] and h.acked_ids() == ["e1"])
+    check(f"drain_last {type(bad_stamp).__name__}: stamp rewritten numeric", isinstance(h.state()["drain_last::owner/repo"], float))
+
+# 24. drain_fail wrong shape (#6835): int/string counters are dropped and
+# the failure count starts fresh instead of crashing the tick
+for bad_counter in (3, "many"):
+    h = Harness(
+        [ev("e1", "owner/repo")],
+        ["owner/repo"],
+        {"owner/repo": "fail"},
+        initial_state={"drain_fail::owner/repo": bad_counter},
+    )
+    check(f"drain_fail {type(bad_counter).__name__}: exit 0", h.run() == 0)
+    check(f"drain_fail {type(bad_counter).__name__}: event NOT acked", h.acked_ids() == [])
+    check(f"drain_fail {type(bad_counter).__name__}: count starts fresh", h.state()["drain_fail::owner/repo"]["count"] == 1)
 
 print(f"\n{sum(1 for _, ok in PASS if ok)}/{len(PASS)} checks passed")

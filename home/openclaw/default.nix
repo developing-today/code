@@ -255,7 +255,14 @@ in
     runtimePlugins = [
       "acpx" # ACP backend: opencode / claude / codex / gemini / copilot harnesses
       "slack" # Slack channel (channel inert until app tokens are wired; see CHANNELS.md)
-      "telegram" # Telegram channel (bot @shed_openclaw_bot, created 2026-11-07; token via env SecretRef)
+      # NOTE: no "telegram" entry here — in the pinned build (2026.10.7)
+      # Telegram is a bundled core channel: extensions/telegram ships
+      # inside the openclaw-gateway package itself, so it is absent from
+      # the external runtime-plugin catalog (report.json) and listing it
+      # here fails evaluation (#7042). It activates from the
+      # channels.telegram config + plugins.entries.telegram below
+      # (bot @shed_openclaw_bot, created 2026-11-07; token via env
+      # SecretRef).
       "discord"
       "whatsapp"
       "matrix"

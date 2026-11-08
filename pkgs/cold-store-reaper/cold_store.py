@@ -664,12 +664,18 @@ class ColdStore:
         )
         if status != 200:
             raise ColdStoreError(f"token exchange failed (HTTP {status})")
-        payload = json.loads(resp)
+        payload = _d1_parse_payload(resp, "token exchange response")
         refresh = payload.get("refresh_token")
         if not refresh:
             raise ColdStoreError(
                 "token response contained no refresh_token — re-run the grant "
                 "from `cold-store auth-url` (prompt=consent is required)"
+            )
+        if not isinstance(refresh, str):
+            raise ColdStoreError(
+                "token response refresh_token is not a string "
+                f"({type(refresh).__name__}) — refusing to store it; re-run "
+                "the grant from `cold-store auth-url`"
             )
         creds["refresh_token"] = refresh
         self._write_private_json(self.credentials_path, creds)
@@ -705,10 +711,21 @@ class ColdStore:
         )
         if status != 200:
             raise ColdStoreError(f"token refresh failed (HTTP {status})")
-        payload = json.loads(resp)
-        token = payload["access_token"]
+        payload = _d1_parse_payload(resp, "token refresh response")
+        token = payload.get("access_token")
+        if not isinstance(token, str) or not token:
+            raise ColdStoreError(
+                "token refresh response contained no usable access_token "
+                f"(got {type(token).__name__})"
+            )
+        expires_in = payload.get("expires_in", 3600)
+        if isinstance(expires_in, bool) or not isinstance(expires_in, (int, float)):
+            raise ColdStoreError(
+                "token refresh response expires_in is not a number "
+                f"({type(expires_in).__name__})"
+            )
         self._access_token = token
-        self._access_token_expires_at = now + payload.get("expires_in", 3600)
+        self._access_token_expires_at = now + expires_in
         return token
 
     def _auth_headers(self, extra=None) -> dict:
