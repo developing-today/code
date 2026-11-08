@@ -213,8 +213,18 @@ function allowedModelIds(policy, providerPolicy, ids) {
       if (!match) continue;
       if (match[1] === undefined) continue;
       const version = match[1].replace(/-/g, '.').split('.').map(Number);
+      // #6893: a capture with a non-numeric component (e.g. "2-beta")
+      // maps that component to NaN, and every comparison against NaN
+      // is false — the "newest" pick would silently be whichever id
+      // was enumerated first. Such an id is deterministically
+      // excluded from selection: it can never be a family's newest
+      // model, in any input order.
+      if (version.some(component => Number.isNaN(component))) break;
       const current = newest.get(family);
-      if (!current || compareVersions(version, current.version) > 0) {
+      // Equal versions tie-break on the id itself, so the pick is
+      // the same set for every permutation of the same id list.
+      if (!current || compareVersions(version, current.version) > 0 ||
+          (compareVersions(version, current.version) === 0 && id > current.id)) {
         newest.set(family, { id, version });
       }
       break;
