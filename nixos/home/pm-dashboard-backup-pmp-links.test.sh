@@ -37,9 +37,14 @@
 #     failure names pmp_links and does not leak the DSN).
 #   * env-relative — DATABASE_URL names a relative path and
 #     PM_PROJECTOR_DIR is set: the DB resolves under that directory.
-#   * projector-dir — no DATABASE_URL, PM_PROJECTOR_DIR names a dir
-#     holding projector.db while the state-dir default also exists:
-#     the PM_PROJECTOR_DIR DB wins.
+#   * projector-dir — no DATABASE_URL, PM_PROJECTOR_DIR names the
+#     projector working dir: the active DB is data/projector.db under
+#     it (the projector own default), and it wins over a stale
+#     projector.db at the dir root and over the state-dir default.
+#   * env-encoded-q — DATABASE_URL is file:...projector%3Fprod.db:
+#     the decoded path names a real file with a literal ? in its name,
+#     and that exact file is exported (the decoded ? must not turn
+#     into SQLite URI query syntax).
 #   * no-db — no projector DB anywhere: run completes, manifest
 #     records the member optional + missing.
 #   * corrupt-db — the configured DB file is garbage: run fails,
@@ -345,17 +350,32 @@ fi
 
 # --- projector-dir: PM_PROJECTOR_DIR default wins over the state-dir fallback --
 setup_home projector-dir
-mkdir -p "$RUN_HOME/projector" "$RUN_HOME/.local/state/pm-projector"
-make_fixture_db "$RUN_HOME/projector/projector.db" 'projector-dir-link-note'
+mkdir -p "$RUN_HOME/projector/data" "$RUN_HOME/.local/state/pm-projector"
+make_fixture_db "$RUN_HOME/projector/data/projector.db" 'projector-dir-link-note'
+make_fixture_db "$RUN_HOME/projector/projector.db" 'stale-root-link-note'
 make_fixture_db "$RUN_HOME/.local/state/pm-projector/projector.db" 'state-dir-fallback-link-note'
 run_backup projector-dir PM_PROJECTOR_DIR="$RUN_HOME/projector"
 D="$(archive_dir projector-dir)"
 if [[ "$RC" -eq 0 ]] \
   && grep -q 'projector-dir-link-note' "$D/projector/pmp_links.sql" 2>/dev/null \
-  && ! grep -q 'state-dir-fallback-link-note' "$D/projector/pmp_links.sql" 2>/dev/null; then
-  ok "projector-dir: PM_PROJECTOR_DIR DB chosen before the state-dir fallback"
+  && ! grep -q 'stale-root-link-note' "$D/projector/pmp_links.sql" 2>/dev/null   && ! grep -q 'state-dir-fallback-link-note' "$D/projector/pmp_links.sql" 2>/dev/null; then
+  ok "projector-dir: PM_PROJECTOR_DIR/data DB chosen before stale-root and state-dir DBs"
 else
-  fail "projector-dir: PM_PROJECTOR_DIR DB not chosen (rc=$RC); log: $(cat "$TMP_ROOT/projector-dir.log")"
+  fail "projector-dir: PM_PROJECTOR_DIR/data DB not chosen (rc=$RC); log: $(cat "$TMP_ROOT/projector-dir.log")"
+fi
+
+# --- env-encoded-q: decoded ? in the filename stays a filename character -----
+setup_home env-encoded-q
+mkdir -p "$RUN_HOME/elsewhere" "$RUN_HOME/.local/state/pm-projector"
+make_fixture_db "$RUN_HOME/elsewhere/projector?prod.db" 'encoded-q-link-note'
+printf '%s=file:%s
+' 'DATABASE_URL' "$RUN_HOME/elsewhere/projector%3Fprod.db"   >"$RUN_HOME/.local/state/pm-projector/.env"
+run_backup env-encoded-q
+D="$(archive_dir env-encoded-q)"
+if [[ "$RC" -eq 0 ]] && grep -q 'encoded-q-link-note' "$D/projector/pmp_links.sql" 2>/dev/null; then
+  ok "env-encoded-q: percent-decoded ? filename exported as-is"
+else
+  fail "env-encoded-q: decoded ? filename not exported (rc=$RC); log: $(cat "$TMP_ROOT/env-encoded-q.log")"
 fi
 
 # --- no-db: not applicable, recorded optional + missing ------------------------

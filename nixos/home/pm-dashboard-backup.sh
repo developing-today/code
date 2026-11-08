@@ -381,7 +381,7 @@ if [ -d "$DUMP_DIR" ]; then cp -a "$DUMP_DIR" "$STAGE/db-dumps" ||
 # --- pmp_links export (code#1744 P0) ----------------------------------
 # Source: the ACTUAL configured projector database — the LAST DATABASE_URL
 # assignment in the pm-projector env file when it names a file: URL
-# (percent-decoded) or a local path, else <PM_PROJECTOR_DIR>/projector.db
+# (percent-decoded) or a local path, else <PM_PROJECTOR_DIR>/data/projector.db
 # when that directory is named, else the deployed default
 # ~/.local/state/pm-projector/projector.db (a relative value resolves
 # against PM_PROJECTOR_DIR). A remote (non-file) DATABASE_URL fails the
@@ -463,10 +463,14 @@ if [ -z "$PMP_DB" ]; then
     esac
   fi
   if [ -z "$PMP_DB" ]; then
-    # Nothing configured: the active DB is <PM_PROJECTOR_DIR>/projector.db
-    # when that dir is named, else the deployed state-directory default.
-    if [ -n "$PMP_DIR" ] && [ -f "$PMP_DIR/projector.db" ]; then
-      PMP_DB="$PMP_DIR/projector.db"
+    # Nothing configured: the projector's own default is
+    # file:data/projector.db relative to its working directory
+    # (pm-stack/projector/src/store.ts), so the active DB is
+    # <PM_PROJECTOR_DIR>/data/projector.db when that dir is named,
+    # else the deployed state-directory default. A projector.db at
+    # the directory root is NOT the active DB and is never picked.
+    if [ -n "$PMP_DIR" ] && [ -f "$PMP_DIR/data/projector.db" ]; then
+      PMP_DB="$PMP_DIR/data/projector.db"
     else
       PMP_DB="$HOME/.local/state/pm-projector/projector.db"
     fi
@@ -480,14 +484,14 @@ fi
 if [ -f "$PMP_DB" ]; then
   command -v sqlite3 >/dev/null 2>&1 ||
     fail "sqlite3 not found — cannot export pmp_links from $PMP_DB"
-  PMP_ROWS="$(sqlite3 "file:$PMP_DB?mode=ro" 'SELECT COUNT(*) FROM pmp_links;' 2>/dev/null)" ||
+  PMP_ROWS="$(sqlite3 -readonly "$PMP_DB" 'SELECT COUNT(*) FROM pmp_links;' 2>/dev/null)" ||
     fail "pmp_links export failed: cannot read pmp_links in $PMP_DB"
   mkdir -p "$STAGE/projector"
-  sqlite3 "file:$PMP_DB?mode=ro" '.dump pmp_links' >"$STAGE/projector/pmp_links.sql" ||
+  sqlite3 -readonly "$PMP_DB" '.dump pmp_links' >"$STAGE/projector/pmp_links.sql" ||
     fail "pmp_links export failed: .dump of $PMP_DB"
   # .dump omits the table's indexes on this sqlite build — append them
   # from sqlite_master so a restore reproduces the full table shape.
-  sqlite3 "file:$PMP_DB?mode=ro" \
+  sqlite3 -readonly "$PMP_DB" \
     "SELECT sql || ';' FROM sqlite_master WHERE type = 'index' AND tbl_name = 'pmp_links' AND sql IS NOT NULL;" \
     >>"$STAGE/projector/pmp_links.sql" ||
     fail "pmp_links export failed: index definitions of $PMP_DB"
