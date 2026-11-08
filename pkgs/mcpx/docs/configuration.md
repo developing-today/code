@@ -568,6 +568,42 @@ annotation-trust rules unchanged -- and the floor never weakens a
 `deny`. Under `ask` the policy has already asked once, so no call is
 asked about twice.
 
+### Operator-declared read-only tools (`readOnlyTools`)
+
+The gate reads a tool's classification from its annotations, and many
+real servers publish none -- fff, whose tools are all searches, is
+one. The specification's defaults then make every call a possibly
+destructive write, so under `ask` a headless caller (an API session,
+a script -- the normal fleet mode) can never run them at all: the
+confirmation question has no answerer, and every call comes back as
+the gate's error (#6116).
+
+The operator can declare specific tools read-only in a server's
+`mcpx` block, by exact name:
+
+```json
+{ "mcpServers": { "fff": { "command": "...", "mcpx": { "readOnlyTools": ["find_files", "grep", "multi_grep"] } } } }
+```
+
+A declared tool is classified read-only whatever its annotations say
+(or do not say): the write policy does not gate it in any mode, and
+the destructive floor does not ask about it. The declaration is the
+operator's own word in their own configuration, which is why it is
+trusted -- a server cannot declare its own tools read-only this way,
+and a remote server's annotations still clear nothing (#2191). Names
+are exact, never patterns, and the declaration covers only the tools
+listed: a tool the server adds later, under a new name, is gated by
+the defaults until the operator lists it too. Listing a tool that
+actually writes is the operator's mistake to make -- and theirs
+alone; nothing infers the list.
+
+When the gate does refuse a call -- an unanswered confirmation, a
+denied write -- the refusal is typed, not a generic execution
+failure: HTTP 403 with a `code` in the error body
+(`confirmation_required` for an unconfirmed call,
+`write_policy_denied` for a policy denial), so a caller can tell
+"the gate refused this" apart from "the tool ran and failed".
+
 This gate is an operator consent gate, not the autonomy dial
 (`docs/decisions/0002-autonomy-dial.md`): the dial bounds what mcpx
 does on its own, the write policy bounds what a caller may do to the
@@ -865,6 +901,7 @@ skipped launcher phases).
 | `plugin.bin` | string | `mcpx` | plugin | no | `--plugin-bin` | `MCPX_PLUGIN_BIN` | the executable the plugin invokes |
 | `plugin.binArgs` | list | *(empty)* | plugin | no | `--plugin-bin-args` | `MCPX_PLUGIN_BIN_ARGS` | arguments put in front of every plugin invocation of mcpx |
 | `plugin.daemonTools` | enum | `auto` | plugin | no | `--plugin-daemon-tools` | `MCPX_PLUGIN_DAEMON_TOOLS` | offer the tools that list and choose between daemons |
+| `plugin.disabledTools` | list | *(empty)* | plugin | no | `--plugin-disabled-tools` | `MCPX_PLUGIN_DISABLED_TOOLS` | model-facing mcpx tools hidden from every session |
 | `plugin.discoveryRetry` | duration | `1m0s` | plugin | no | `--plugin-discovery-retry` | `MCPX_PLUGIN_DISCOVERY_RETRY` | how long the plugin waits before looking for mcpx again |
 | `plugin.env` | enum | `full` | plugin | no | `--plugin-env` | `MCPX_PLUGIN_ENV` | how much session context is put into each command's environment |
 | `plugin.headless` | enum | `auto` | plugin | no | `--plugin-headless` | `MCPX_PLUGIN_HEADLESS` | suppress toasts, because nobody is looking at a screen |
@@ -1011,10 +1048,14 @@ skipped launcher phases).
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `script.before` | source | *(empty)* | client | no | `--script-before` | `MCPX_SCRIPT_BEFORE` | runs first, ahead of the globals being installed |
 | `script.captureConsole` | bool | `true` | client | no | `--script-capture-console` | `MCPX_SCRIPT_CAPTURE_CONSOLE` | route console calls into the log |
+| `script.check` | enum | `off` | client | no | `--script-check`, `--script-typecheck`, `--typecheck` | `MCPX_SCRIPT_CHECK`, `MCPX_SCRIPT_TYPECHECK` | check the generated program before running it; path alias: script.typecheck; one of off, types (also on), strict |
 | `script.cwd` | enum | `caller` | client | no | `--script-cwd` | `MCPX_SCRIPT_CWD` | where a script runs: caller, script, config or workdir |
 | `script.env` | list | *(empty)* | client | no | `--script-env`, `--env` | `MCPX_SCRIPT_ENV` | KEY=VALUE pairs added to the script's environment |
 | `script.imports` | enum | `report` | client | no | `--script-imports` | `MCPX_SCRIPT_IMPORTS` | resolve the script's import graph before running it |
+| `script.importsCrossProject` | enum | `isolate` | client | no | `--script-imports-cross-project` | `MCPX_SCRIPT_IMPORTS_CROSS_PROJECT` | how to handle a file edge into another project's manifest |
+| `script.importsNetwork` | enum | `on` | client | no | `--script-imports-network` | `MCPX_SCRIPT_IMPORTS_NETWORK` | allow registry lookups when a package has no declared version |
 | `script.importsOnDynamic` | enum | `warn` | client | no | `--script-imports-on-dynamic` | `MCPX_SCRIPT_IMPORTS_ON_DYNAMIC` | what to do about an import() whose specifier is computed |
+| `script.importsOnMissing` | enum | `fail` | client | no | `--script-imports-on-missing` | `MCPX_SCRIPT_IMPORTS_ON_MISSING` | how to handle a package absent from the dependency set |
 | `script.interpreter` | string | *(empty)* | client | no | `--script-interpreter`, `--interpreter`, `--shell` | `MCPX_SCRIPT_INTERPRETER` | command line that runs scripts instead of a JavaScript runtime |
 | `script.launcher` | source | *(empty)* | client | no | `--script-launcher` | `MCPX_SCRIPT_LAUNCHER` | replace the generated launcher entirely |
 | `script.onError` | source | *(empty)* | client | no | `--script-on-error` | `MCPX_SCRIPT_ON_ERROR` | runs when the script throws; the error still propagates |
@@ -1026,7 +1067,6 @@ skipped launcher phases).
 | `script.runtimeOrder` | list | `deno,bun,node` | client | no | `--script-runtime-order` | `MCPX_SCRIPT_RUNTIME_ORDER` | the runtimes auto tries, in order |
 | `script.runtimes` | string | *(empty)* | client | no | `--script-runtimes` | `MCPX_SCRIPT_RUNTIMES` | named runtime binaries: {name: {kind, bin, args}} |
 | `script.suffix` | source | *(empty)* | client | no | `--script-suffix` | `MCPX_SCRIPT_SUFFIX` | runs last on both paths, like a finally |
-| `script.typecheck` | enum | `off` | client | no | `--script-typecheck` | `MCPX_SCRIPT_TYPECHECK` | check the generated program before running it |
 
 ### search
 
@@ -1065,6 +1105,7 @@ skipped launcher phases).
 
 | setting | kind | default | scope | hot | flag | variable | governs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| `tasks.maxAge` | duration | `1h0m0s` | daemon | yes | `--tasks-max-age` | `MCPX_TASKS_MAX_AGE` | the maximum retention period for a terminal task result, even when repeatedly read |
 | `tasks.resultWait` | duration | `2m0s` | call | yes | `--tasks-result-wait` | `MCPX_TASKS_RESULT_WAIT` | how long collecting a task result blocks before giving up |
 | `tasks.ttl` | duration | `10m0s` | daemon | yes | `--tasks-ttl` | `MCPX_TASKS_TTL` | how long a finished task's result is kept |
 

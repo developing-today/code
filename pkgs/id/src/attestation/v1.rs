@@ -154,6 +154,7 @@ fn sign_body(
             note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
         },
     )?)
 }

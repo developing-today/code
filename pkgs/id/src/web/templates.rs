@@ -185,9 +185,7 @@ pub fn render_file_list(page: &FileListPage) -> String {
         );
     }
     if page.show_deleted {
-        html.push_str(
-            "<input type=\"hidden\" name=\"show_deleted\" value=\"true\" />",
-        );
+        html.push_str("<input type=\"hidden\" name=\"show_deleted\" value=\"true\" />");
     }
     html.push_str("<select id=\"file-sort\" name=\"sort\" aria-label=\"Sort files\" class=\"select select-bordered select-xs bg-base-100\">");
     for (value, label) in [
@@ -954,6 +952,143 @@ pub fn render_world_page(assets: &AssetUrls, world_socket: Option<&str>) -> Stri
     render_page("World", &content, "", assets)
 }
 
+/// Render the program-only surface for one hosted world (#2146
+/// phase 2): the world program frontend at a program binding's root.
+///
+/// Unlike the Explorer world page ([`render_world_page`]), this page
+/// is a guest surface for exactly one world: the world name is pinned
+/// by the server (`data-world-program` on the root element, and the
+/// world input is rendered read-only with that name), there is no
+/// link into the Explorer file browser, and the host controls (admin
+/// token, invite minting, module install) are absent -- a program
+/// visitor is a guest, authorized by a guest capability alone. The
+/// presentation hooks are the same `data-world-*` contract the
+/// trusted presenter in `world.ts` drives, so guest output is
+/// rendered as inert text/screen data exactly as on the Explorer
+/// page.
+pub fn render_program_page(
+    assets: &AssetUrls,
+    world_name: &str,
+    world_socket: Option<&str>,
+) -> String {
+    let content = r#"
+<section data-world-app data-world-program="__WORLD__" class="space-y-5" aria-labelledby="world-title">
+  <header class="flex flex-wrap items-end justify-between gap-3">
+    <div>
+      <p class="font-mono text-xs uppercase tracking-widest text-primary">p2p / live session</p>
+      <h1 id="world-title" class="text-2xl font-bold">__WORLD__</h1>
+      <p class="text-sm opacity-70">The host is authoritative. Chat and game inputs share one sequenced world.</p>
+    </div>
+    <output data-world-status role="status" aria-live="polite" class="badge badge-outline">Not connected</output>
+  </header>
+
+  <section class="card border border-base-300 bg-base-100 p-4 space-y-3" aria-label="Join world">
+    <h2 class="font-bold">Join</h2>
+    <label class="form-control max-w-xl">
+      <span class="label-text">Display name</span>
+      <input data-world-name class="input input-bordered" maxlength="48" autocomplete="nickname" value="guest" aria-label="Display name">
+    </label>
+    <label class="form-control max-w-xl">
+      <span class="label-text">World</span>
+      <input data-world-world class="input input-bordered font-mono" maxlength="64" autocomplete="off" value="__WORLD__" readonly aria-label="World name">
+    </label>
+    <label class="form-control max-w-xl">
+      <span class="label-text">Guest capability</span>
+      <input data-world-capability class="input input-bordered font-mono" type="password" autocomplete="off" placeholder="Paste an invite capability" aria-label="Guest capability">
+    </label>
+    <div class="flex flex-wrap gap-2">
+      <button data-world-join class="btn btn-primary" type="button">Join world</button>
+      <button data-world-copy class="btn btn-ghost" type="button">Copy capability</button>
+    </div>
+    <div data-world-invite-output hidden>
+      <p class="text-sm">This bearer capability grants guest access. Share it privately.</p>
+    </div>
+  </section>
+
+  <section class="grid gap-4 md:grid-cols-2">
+    <div class="card border border-base-300 bg-base-100 p-4 space-y-3">
+      <h2 class="font-bold">World view</h2>
+      <div data-world-view tabindex="0" aria-label="World screen. Focus here to send keyboard input." class="min-h-32 max-h-[70vh] overflow-auto whitespace-pre-wrap rounded bg-base-200 p-4 font-mono text-lg leading-none" aria-live="polite">Waiting for a world view…</div>
+      <p class="text-xs opacity-60">Rendered by the host's world program; clients do not decide authoritative state.</p>
+      <div class="flex items-center justify-between">
+        <h2 class="font-bold">Records</h2>
+        <button data-world-records-refresh class="btn btn-ghost btn-xs" type="button">Refresh</button>
+      </div>
+      <pre data-world-records class="h-40 overflow-auto rounded bg-base-200 p-3 font-mono text-xs" aria-live="polite">{}</pre>
+      <p class="text-xs opacity-60">Structured data the program publishes. Mirrors peer-to-peer with
+        <code>id world mirror</code>.</p>
+    </div>
+    <div class="card border border-base-300 bg-base-100 p-4 space-y-3">
+      <h2 class="font-bold">Participants</h2>
+      <div data-world-participants class="min-h-8" aria-live="polite"></div>
+      <h2 class="font-bold">Chat &amp; events</h2>
+      <ol data-world-log class="h-48 overflow-auto rounded bg-base-200 p-3 font-mono text-sm" aria-live="polite"></ol>
+      <form data-world-chat-form class="flex gap-2">
+        <input data-world-chat class="input input-bordered min-w-0 flex-1" maxlength="2048" aria-label="Chat message" placeholder="Say something…">
+        <button class="btn btn-primary" type="submit">Chat</button>
+      </form>
+      <form data-world-input-form class="flex gap-2">
+        <input data-world-input class="input input-bordered min-w-0 flex-1 font-mono" maxlength="4096" value="inc" aria-label="Game input">
+        <button class="btn btn-secondary" type="submit">Send input</button>
+      </form>
+    </div>
+  </section>
+</section>
+"#;
+    // The pinned world travels in the markup in three places (root
+    // attribute, heading, world input value); the name is escaped
+    // once and substituted everywhere, like the socket below.
+    let content = content.replace("__WORLD__", &html_escape(world_name));
+    // Same socket contract as the Explorer world page: the frontend
+    // reads data-world-socket instead of a hardcoded path.
+    let content = match world_socket {
+        Some(socket) => content.replacen(
+            "data-world-app",
+            &format!(
+                "data-world-app data-world-socket=\"{}\"",
+                html_escape(socket)
+            ),
+            1,
+        ),
+        None => content,
+    };
+    render_program_shell(&format!("Program: {world_name}"), &content, assets)
+}
+
+/// The program surface's page shell: the same head (assets, theme)
+/// as [`render_page`] but WITHOUT the Explorer chrome -- the shared
+/// wrapper's header links to /files, /peers and /settings, which do
+/// not exist on a program-only listener and must not be offered to
+/// a program visitor.
+fn render_program_shell(title: &str, content: &str, assets: &AssetUrls) -> String {
+    let title_escaped = html_escape(title);
+    let mut html = String::with_capacity(4096);
+    html.push_str("<!DOCTYPE html>\n<html lang=\"en\" data-theme=\"sneak\">\n<head>\n");
+    html.push_str("    <meta charset=\"UTF-8\">\n");
+    html.push_str(
+        "    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n",
+    );
+    let _ = write!(html, "    <title>{} - id</title>\n", title_escaped);
+    let _ = write!(
+        html,
+        "    <link rel=\"stylesheet\" href=\"{}\">\n",
+        assets.styles_css
+    );
+    let _ = write!(
+        html,
+        "    <script type=\"module\" src=\"{}\"></script>\n",
+        assets.main_js
+    );
+    html.push_str("\n</head>\n<body class=\"crt-scanlines crt-flicker\">\n");
+    html.push_str("    <main class=\"min-h-screen\" id=\"main\">\n");
+    html.push_str("        <div class=\"max-w-4xl mx-auto px-4 py-4\">\n");
+    html.push_str(content);
+    html.push_str("\n        </div>\n");
+    html.push_str("    </main>\n");
+    html.push_str("</body>\n</html>");
+    html
+}
+
 /// Render the peers page showing discovered peers.
 ///
 /// # Arguments
@@ -1166,6 +1301,35 @@ mod tests {
         let html = render_page("Test", "<p>Content</p>", "", &assets);
         assert!(html.contains("/assets/main.abc12345.js"));
         assert!(html.contains("/assets/styles.def67890.css"));
+    }
+
+    #[test]
+    #[test]
+    fn test_render_program_page_pins_the_world_and_omits_host_controls() {
+        let html = render_program_page(&AssetUrls::default(), "arena", Some("/ws/world"));
+        // Pinned to the one world this surface serves.
+        assert!(html.contains("data-world-program=\"arena\""));
+        assert!(html.contains("data-world-socket=\"/ws/world\""));
+        assert!(html.contains("value=\"arena\" readonly"));
+        // The guest presenter contract is present.
+        assert!(html.contains("data-world-join"));
+        assert!(html.contains("data-world-capability"));
+        assert!(html.contains("data-world-view"));
+        assert!(html.contains("data-world-chat-form"));
+        assert!(html.contains("data-world-input-form"));
+        // No Explorer link and no host controls on a guest surface.
+        assert!(!html.contains("href=\"/files\""));
+        assert!(!html.contains("data-world-admin"));
+        assert!(!html.contains("data-world-invite class"));
+        assert!(!html.contains("data-world-install"));
+        assert!(!html.contains("data-world-host-view"));
+    }
+
+    #[test]
+    fn test_render_program_page_escapes_the_world_name() {
+        let html = render_program_page(&AssetUrls::default(), "a\"<b>", None);
+        assert!(!html.contains("data-world-program=\"a\"<b>\""));
+        assert!(html.contains("data-world-program=\"a&quot;&lt;b&gt;\""));
     }
 
     #[test]

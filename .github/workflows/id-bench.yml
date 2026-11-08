@@ -21,13 +21,6 @@ name: id bench
 # CI tier policy: see .github/ci-policy.md
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/id/**"
-      - ".github/workflows/id-bench.yml"
-      - ".github/scripts/id-bench-compare.sh"
-      - ".github/scripts/id-bench-compare.test.sh"
   workflow_dispatch:
 
 permissions:

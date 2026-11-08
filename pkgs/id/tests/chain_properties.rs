@@ -64,6 +64,7 @@ fn chain_ext() -> impl Strategy<Value = ChainExt> {
             note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
         }
     })
 }
@@ -126,6 +127,7 @@ proptest! {
             after: after.clone(), tag: None, document: None, removes: None, note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
         };
         prop_assert!(sign(&key(), 0, None, None, ext.clone()).is_err());
         prop_assert!(ext.validate().is_err());
@@ -195,6 +197,7 @@ proptest! {
                     after: Vec::new(), tag: None, document: None, removes: None, note: None,
                     link: None,
                     checkpoint: None,
+                    rotation: None,
                 },
             )
             .encode();

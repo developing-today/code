@@ -14,7 +14,15 @@
 // its raw usage on the entry and yields no windows (never zeros).
 import type { QuotaCurrentEntry, QuotaCurrentWindow, SnapshotRecord } from "./model.ts";
 import { safeProviderReason } from "./credential-lifecycle.ts";
-import { isIsoDate } from "./validate.ts";
+import {
+  isFiniteNumber,
+  isIsoDate,
+  isNonEmptyString,
+  isNonNegative,
+  isPercentOf,
+  isRecord,
+  parseIsoDate,
+} from "./validate.ts";
 
 /** The subset of a quota-module result the mapper reads. */
 export interface QuotaProviderResult {
@@ -30,6 +38,14 @@ export interface QuotaProviderResult {
   credentialLabel?: string;
   credentialExpiresAt?: number | string | null;
   credentialSource?: "claude-code" | "opencode" | "environment";
+  /** Provider-side failure classification (OpenChamber quota module:
+   *  e.g. meta's "no-data" / "unauthorized" / "exhausted"). Preserved
+   *  so an ok-but-null read can be told apart from a measurement. */
+  failureClass?: string;
+  /** Epoch ms of the provider's last successful read in-process, when
+   *  the module carries one (meta does); null = never succeeded. */
+  lastSuccessAt?: number | null;
+  quotaExhausted?: boolean;
 }
 
 interface RawWindow {
@@ -39,18 +55,20 @@ interface RawWindow {
   valueLabel?: unknown;
 }
 
-const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+const num = (v: unknown): number | null => (isFiniteNumber(v) ? v : null);
 
 /** Provider reset stamps arrive as epoch ms (or s); normalize to ISO. */
 export function normalizeResetAt(v: unknown): string | null {
-  if (typeof v === "number" && Number.isFinite(v) && v > 0) {
+  if (isFiniteNumber(v) && v > 0) {
     const ms = v < 1e12 ? v * 1000 : v;
     const d = new Date(ms);
-    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+    return Number.isFinite(d.getTime()) ? d.toISOString() : null;
   }
   if (typeof v === "string" && v !== "") {
-    const t = Date.parse(v);
-    return Number.isNaN(t) ? null : new Date(t).toISOString();
+    // Shared epoch/calendar primitive: an impossible date (2026-02-30)
+    // is not silently rolled into the next month (#2383/#2470).
+    const d = parseIsoDate(v);
+    return d === null ? null : d.toISOString();
   }
   return null;
 }
@@ -71,6 +89,7 @@ export function normalizeResetAt(v: unknown): string | null {
 export function serviceIdFor(providerId: string): string {
   switch (providerId) {
     case "claude":
+    case "_claude":
       return "anthropic:claude-pro";
     case "codex":
       return "openai.main";
@@ -78,9 +97,12 @@ export function serviceIdFor(providerId: string): string {
       return "cline-pass";
     case "command-code":
       return "commandcode";
+    case "_commandcode":
+      return "_commandcode";
     case "deepseek":
       return "deepseek";
     case "meta":
+    case "_muse":
       return "meta";
     case "opendesign":
       return "opendesign";
@@ -89,7 +111,34 @@ export function serviceIdFor(providerId: string): string {
   }
 }
 
-export const GATHERER_SOURCE = "openchamber-quota";
+/**
+ * Canonical provider ids for snapshot entries. The quota module answers
+ * in its own spellings; the snapshot contract speaks the OpenCode config
+ * provider ids — the router matches quota readings by exact provider id
+ * (quota-driven skip re-admission), so an entry published under a module
+ * spelling never reaches the provider it describes. The fleet-built
+ * providers were renamed to leading-underscore config ids in the fork
+ * (#1823, 2026-11-07): antigravity -> _antigravity, the claude-code door
+ * (module: "claude") -> _claude, commandcode (module: "command-code")
+ * -> _commandcode, and the muse-direct door (module: "meta", the Muse
+ * Code High Usage reading) -> _muse. Normalize here, at the one mapping
+ * point every gathered result passes through. Pool/service ids are a
+ * separate contract and stay put: serviceIdFor carries the dual-spelling
+ * cases (both "claude" and "_claude" land on anthropic:claude-pro, and
+ * "_muse" keeps the "meta" pool).
+ */
+const CANONICAL_PROVIDER_IDS: Readonly<Record<string, string>> = {
+  antigravity: "_antigravity",
+  claude: "_claude",
+  "command-code": "_commandcode",
+  meta: "_muse",
+};
+
+export function canonicalProviderId(providerId: string): string {
+  return CANONICAL_PROVIDER_IDS[providerId] ?? providerId;
+}
+
+export const GATHERER_SOURCE = "opencode-quota";
 
 /**
  * Split pool service ids the gatherer emits alongside the combined rows
@@ -104,8 +153,13 @@ export const GATHERER_SOURCE = "openchamber-quota";
  */
 export const GO_DREWRYPOPE_SERVICE_ID = "opencode-go.drewrypope";
 export const GO_POPESDREW_SERVICE_ID = "opencode-go.popesdrew";
-export const ANTIGRAVITY_GEMINI_SERVICE_ID = "antigravity-direct.gemini";
-export const ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID = "antigravity-direct.claude-gpt";
+export const ANTIGRAVITY_GEMINI_SERVICE_ID = "_antigravity.gemini";
+export const ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID = "_antigravity.claude-gpt";
+// Pre-rename (#1823) split ids: a gatherer still paired with the old
+// fork binary reports providerId "antigravity" and its rows keep the
+// historical series; the renamed provider starts the new series.
+export const ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID = "antigravity-direct.gemini";
+export const ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID = "antigravity-direct.claude-gpt";
 
 /**
  * Which split Go pool a per-workspace entry belongs to, from the
@@ -130,7 +184,8 @@ export function goPoolServiceId(entry: QuotaCurrentEntry): string | null {
  * Claude+GPT pool. Quota grouping must use the same rule, or burn and
  * quota would disagree about which pool a model draws from.
  */
-function antigravityPoolForModel(model: string): string {
+function antigravityPoolForModel(model: string, legacy = false): string {
+  if (legacy) return model.startsWith("gemini") ? ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID : ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID;
   return model.startsWith("gemini") ? ANTIGRAVITY_GEMINI_SERVICE_ID : ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID;
 }
 
@@ -151,7 +206,11 @@ function antigravityPoolRows(entry: QuotaCurrentEntry): QuotaCurrentEntry[] {
     // A failed provider read lapses both pools loudly — history
     // retained, no stale % presented as current — instead of leaving
     // the pools on their dated reads with no signal the source died.
-    return [ANTIGRAVITY_GEMINI_SERVICE_ID, ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID].map((serviceId) => ({
+    const ids =
+      entry.providerId === "antigravity"
+        ? [ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID, ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID]
+        : [ANTIGRAVITY_GEMINI_SERVICE_ID, ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID];
+    return ids.map((serviceId) => ({
       ...entry,
       serviceId,
     }));
@@ -163,7 +222,7 @@ function antigravityPoolRows(entry: QuotaCurrentEntry): QuotaCurrentEntry[] {
     const sep = w.name.lastIndexOf(":");
     if (sep <= 0 || sep === w.name.length - 1) continue;
     if (w.pctOfLimit == null) continue;
-    const pool = antigravityPoolForModel(w.name.slice(0, sep));
+    const pool = antigravityPoolForModel(w.name.slice(0, sep), entry.providerId === "antigravity");
     const winName = w.name.slice(sep + 1);
     let group = best.get(pool);
     if (!group) {
@@ -206,7 +265,7 @@ export function entriesWithPoolSplits(entries: readonly QuotaCurrentEntry[]): Qu
       // their dated reads until a real read (ok or error) arrives.
       const serviceId = goPoolServiceId(entry);
       if (serviceId && entry.state !== "unconfigured") out.push({ ...entry, serviceId });
-    } else if (entry.providerId === "antigravity") {
+    } else if (entry.providerId === "antigravity" || entry.providerId === "_antigravity") {
       out.push(...antigravityPoolRows(entry));
     }
   }
@@ -251,7 +310,7 @@ export function entryFromFileExport(
   opts: { fileMtimeIso: string | null; stale: boolean },
 ): QuotaCurrentEntry {
   const entry: QuotaCurrentEntry = {
-    providerId: "meta",
+    providerId: canonicalProviderId("meta"),
     providerName: "Meta",
     serviceId: "meta",
     state: "error",
@@ -268,19 +327,35 @@ export function entryFromFileExport(
     entry.error = "file-export stale (latest.json older than the staleness bound — producer unreachable)";
     return entry;
   }
-  const measuredMs = doc.measuredAt ? Date.parse(doc.measuredAt) : Number.NaN;
-  if (doc.status !== "ok" || Number.isNaN(measuredMs)) {
+  const measured = parseIsoDate(doc.measuredAt);
+  if (doc.status !== "ok" || measured === null) {
     entry.error = `file-export status: ${doc.status ?? "unknown"}`;
     return entry;
   }
-  const measuredAt = new Date(measuredMs).toISOString();
-  entry.state = "ok";
-  entry.measuredAt = measuredAt;
-  for (const w of doc.windows ?? []) {
-    const pct = num(w.usedPct);
-    if (!w.name || pct == null || pct < 0 || pct > 100) continue;
-    entry.windows.push({
-      name: w.name,
+  // Fail-closed shape check (#2551): a window container or element that
+  // is not what the document promises is an unparseable document, so the
+  // caller retains the previous read. A null element used to throw out of
+  // the mapper; a non-string name was accepted into the entry.
+  if (!Array.isArray(doc.windows)) {
+    entry.error = "file-export unparseable: windows missing or not an array";
+    return entry;
+  }
+  for (const w of doc.windows) {
+    if (!isRecord(w) || !isNonEmptyString(w.name)) {
+      entry.error = "file-export unparseable: malformed window element";
+      return entry;
+    }
+  }
+  const measuredAt = measured.toISOString();
+  const mapped: QuotaCurrentEntry["windows"] = [];
+  for (const w of doc.windows) {
+    const name = w.name as string;
+    const pct = isFiniteNumber(w.usedPct) ? w.usedPct : null;
+    // A percent outside [0, its limit] is not data (#2571): drop the
+    // window rather than publish it as a live reading.
+    if (pct === null || !isPercentOf(100)(pct)) continue;
+    mapped.push({
+      name,
       value: pct,
       pctOfLimit: pct,
       valueLabel: null,
@@ -288,15 +363,18 @@ export function entryFromFileExport(
       // own key — including prototype spellings (constructor/__proto__/
       // toString) — is an unknown window and gets null, never a prototype
       // member as its windowSeconds.
-      windowSeconds: Object.hasOwn(FILE_EXPORT_WINDOW_SECONDS, w.name) ? FILE_EXPORT_WINDOW_SECONDS[w.name] : null,
+      windowSeconds: Object.hasOwn(FILE_EXPORT_WINDOW_SECONDS, name) ? FILE_EXPORT_WINDOW_SECONDS[name] : null,
       resetsAt: normalizeResetAt(w.resetAt),
       measuredAt,
       source: entry.source,
       state: "ok",
     });
   }
+  entry.state = "ok";
+  entry.measuredAt = measuredAt;
+  entry.windows = mapped;
   const labelWindow = (name: string, usd: number | null | undefined): void => {
-    if (typeof usd !== "number" || !Number.isFinite(usd) || usd < 0) return;
+    if (!isNonNegative(usd)) return;
     entry.windows.push({
       name,
       value: null,
@@ -322,10 +400,11 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
     if (Number.isFinite(fetchedDate.getTime())) measuredAt = fetchedDate.toISOString();
   }
   const state: QuotaCurrentEntry["state"] = result.ok ? "ok" : result.configured ? "error" : "unconfigured";
+  const providerId = canonicalProviderId(result.providerId);
   const entry: QuotaCurrentEntry = {
-    providerId: result.providerId,
-    providerName: result.providerName ?? result.providerId,
-    serviceId: serviceIdFor(result.providerId),
+    providerId,
+    providerName: result.providerName ?? providerId,
+    serviceId: serviceIdFor(providerId),
     state,
     measuredAt,
     source: GATHERER_SOURCE,
@@ -338,17 +417,30 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
   if (typeof expiry === "number" && Number.isFinite(expiry)) {
     const date = new Date(expiry);
     if (Number.isFinite(date.getTime())) entry.credentialExpiresAt = date.toISOString();
-  } else if (typeof expiry === "string" && Number.isFinite(Date.parse(expiry))) {
+  } else if (isIsoDate(expiry)) {
     entry.credentialExpiresAt = new Date(expiry).toISOString();
   }
   if (result.credentialSource) entry.credentialSource = result.credentialSource;
   if (result.planLabel) entry.planLabel = result.planLabel;
   if (result.error) entry.error = safeProviderReason(result.error);
+  if (typeof result.failureClass === "string" && result.failureClass !== "") entry.failureClass = result.failureClass;
+  if (typeof result.lastSuccessAt === "number" && Number.isFinite(result.lastSuccessAt) && result.lastSuccessAt > 0) {
+    entry.lastSuccessAt = new Date(result.lastSuccessAt).toISOString();
+  }
   if (result.usage != null) entry.usage = result.usage;
 
   const pushWindow = (name: string, raw: RawWindow | null | undefined): void => {
-    const pct = num(raw?.usedPercent);
-    if (pct != null && (pct < 0 || pct > 100)) return;
+    const pct = isFiniteNumber(raw?.usedPercent) ? raw.usedPercent : null;
+    // Percent is bounded by the window's own 100-point limit (#2571);
+    // out-of-range values are dropped, not republished as live data.
+    // Turso is the exception (#6227): its windows are usage-vs-limit
+    // ratios over counts (storage bytes, rows read), which legitimately
+    // exceed 100 when the org is over its Starter limits — dropping
+    // them erased exactly the over-limit state the card exists to
+    // show (2026-11-05: storage ~147% and rows-read ~165% vanished
+    // from the live row while the under-limit windows survived).
+    const overLimitOk = result.providerId === "turso";
+    if (pct !== null && !(overLimitOk ? isNonNegative(pct) : isPercentOf(100)(pct))) return;
     entry.windows.push({
       name,
       value: pct,
@@ -361,8 +453,8 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
       state: result.ok ? "ok" : "error",
     });
   };
-  const usageObj = result.usage as { windows?: unknown; models?: unknown } | null | undefined;
-  if (typeof usageObj?.windows === "object" && usageObj.windows !== null) {
+  const usageObj = result.usage;
+  if (isRecord(usageObj) && isRecord(usageObj.windows)) {
     for (const [name, raw] of Object.entries(usageObj.windows as Record<string, RawWindow>)) {
       pushWindow(name, raw);
     }
@@ -371,15 +463,44 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
   // whole shape): flatten to "<model>:<window>" so the data lands in
   // the same contract. Pool attribution across models is the hub's
   // modeling step, not the gatherer's.
-  if (typeof usageObj?.models === "object" && usageObj.models !== null) {
-    for (const [model, mu] of Object.entries(usageObj.models as Record<string, { windows?: unknown }>)) {
-      if (typeof mu?.windows !== "object" || mu.windows === null) continue;
+  if (isRecord(usageObj) && isRecord(usageObj.models)) {
+    for (const [model, mu] of Object.entries(usageObj.models as Record<string, unknown>)) {
+      if (!isRecord(mu) || !isRecord(mu.windows)) continue;
       for (const [name, raw] of Object.entries(mu.windows as Record<string, RawWindow>)) {
         pushWindow(`${model}:${name}`, raw);
       }
     }
   }
+  // Ok-but-null is NOT a measurement. A provider can answer ok:true
+  // with every window's percentage unknown — Meta's plan endpoint
+  // does exactly this on a 200 / is_subs_active:true response with no
+  // subs_usage (the provider's "post-roll empty state", meta.js in
+  // the OpenChamber quota module) — and since 2026-11-03 that shape
+  // has replaced Meta's last good percentage read (100% weekly,
+  // 2026-11-03T21:00Z) with fresh-looking null rows on every tick.
+  // Name it on the entry so the gatherer can degrade the run to an
+  // error and #1268 retention can keep the last-known rows, stale
+  // with this reason, instead of publishing null as current data.
+  if (result.ok && !entryHasMeasuredWindow(entry) && !entry.error) {
+    entry.error = `no-data: provider reported ok but no window carried a percentage${
+      entry.failureClass ? ` (failureClass=${entry.failureClass})` : ""
+    }${entry.lastSuccessAt ? ` (provider lastSuccessAt=${entry.lastSuccessAt})` : ""}`;
+  }
   return entry;
+}
+
+/**
+ * Whether an entry carries at least one measured window: a
+ * percentage window, or the CNY balance label that recordsFromEntries
+ * treats as a measurement in its own unit (#1052, the DeepSeek
+ * reserve — a label-only provider must not degrade on this rule).
+ * Plain USD/credit balance labels do NOT count: a balance is not a
+ * plan reading.
+ */
+export function entryHasMeasuredWindow(entry: QuotaCurrentEntry): boolean {
+  return entry.windows.some(
+    (w) => w.pctOfLimit != null || (w.valueLabel != null && /^¥\s*[\d,]+(?:\.\d+)?/.test(w.valueLabel.trim())),
+  );
 }
 
 /**
@@ -582,10 +703,7 @@ const pct3 = (used: number, limit: number): number => Math.round((used / limit) 
  * treated exactly like a metric the response does not carry (#2553) — the
  * window is omitted, never published negative. Local to entryFromTurso:
  * the shared num() keeps its semantics for the other mappers. */
-const numNonNegative = (v: unknown): number | null => {
-  const n = num(v);
-  return n !== null && n < 0 ? null : n;
-};
+const numNonNegative = (v: unknown): number | null => (isNonNegative(v) ? v : null);
 
 /**
  * Map one Turso usage + subscription read onto a quota-current
@@ -621,7 +739,7 @@ export function entryFromTurso(
     return entry;
   }
   const usage = usageDoc?.organization?.usage ?? usageDoc?.usage;
-  if (!usage || typeof usage !== "object") {
+  if (!isRecord(usage)) {
     entry.error = "turso usage response missing organization.usage";
     return entry;
   }
@@ -629,21 +747,31 @@ export function entryFromTurso(
   const periodStart =
     sub?.current_billing_period_start ?? sub?.current_period_start ?? sub?.period_start ?? sub?.starts_at;
   const resetsAt = normalizeResetAt(periodEnd);
-  // Gate both stamps with isIsoDate before Date.parse (#5091): Date.parse
-  // rolls impossible dates (2026-02-30 -> Mar 2) and parses non-ISO strings
-  // timezone-dependently, so a malformed period would silently publish a
-  // window length days off. A present-but-invalid stamp yields null.
-  const startMs = isIsoDate(periodStart) ? Date.parse(periodStart) : Number.NaN;
-  const endMs = isIsoDate(periodEnd) ? Date.parse(periodEnd) : Number.NaN;
+  // Gate both stamps with parseIsoDate (#5091): Date.parse rolls impossible
+  // dates (2026-02-30 -> Mar 2) and parses non-ISO strings timezone-
+  // dependently, so a malformed period would silently publish a window
+  // length days off. A present-but-invalid stamp yields null.
+  const startMs = parseIsoDate(periodStart)?.getTime() ?? Number.NaN;
+  const endMs = parseIsoDate(periodEnd)?.getTime() ?? Number.NaN;
   const windowSeconds =
     Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs ? Math.round((endMs - startMs) / 1000) : null;
 
   const push = (name: string, rawUsed: number | null, limit: number, value: number, valueLabel: string): void => {
     if (rawUsed == null) return;
+    const rawPctOfLimit = (rawUsed / limit) * 100;
+    const pctOfLimit = pct3(rawUsed, limit);
+    // The raw count can be finite while scaling it to a percentage
+    // overflows; a non-finite ratio is not a usable live window
+    // (#2579). A ratio ABOVE 100 is different (#6227): these windows
+    // are usage-vs-limit ratios over counts, and an org over its
+    // Starter limits is a real, reportable state (2026-11-05 live:
+    // storage ~147%, rows-read ~165%) — the window is kept with its
+    // native value and its >100 pctOfLimit, never dropped.
+    if (!isNonNegative(rawPctOfLimit) || !isNonNegative(pctOfLimit)) return;
     entry.windows.push({
       name,
       value,
-      pctOfLimit: pct3(rawUsed, limit),
+      pctOfLimit,
       valueLabel,
       windowSeconds,
       resetsAt,
@@ -735,7 +863,8 @@ export async function mapWithConcurrency<T, R>(
  * never retained.
  */
 export function lastKnownEntries(prev: readonly QuotaCurrentEntry[], providerId: string): QuotaCurrentEntry[] {
-  return prev.filter((e) => e.providerId === providerId && e.state === "ok");
+  const wanted = canonicalProviderId(providerId);
+  return prev.filter((e) => canonicalProviderId(e.providerId) === wanted && e.state === "ok");
 }
 
 /**
@@ -746,5 +875,9 @@ export function lastKnownEntries(prev: readonly QuotaCurrentEntry[], providerId:
  * instead of it reading as fresh until the freshness bound lapses.
  */
 export function markRetained(entries: readonly QuotaCurrentEntry[], failedTickIso: string): QuotaCurrentEntry[] {
-  return entries.map((e) => ({ ...e, retainedFromFailedTick: failedTickIso }));
+  return entries.map((e) => ({
+    ...e,
+    providerId: canonicalProviderId(e.providerId),
+    retainedFromFailedTick: failedTickIso,
+  }));
 }

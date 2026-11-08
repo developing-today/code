@@ -361,7 +361,7 @@ func (s *Server) Listen(tcpPort int) error {
 	}
 	tcpLn, err := tcpTransport{address: net.JoinHostPort(host, strconv.Itoa(tcpPort))}.Listen()
 	if err != nil {
-		unixLn.Close()
+		_ = unixLn.Close()
 		return err
 	}
 	s.unixLn = newConnListener(unixLn, &s.conns, nil)
@@ -372,8 +372,8 @@ func (s *Server) Listen(tcpPort int) error {
 	// tsnet route and silently does not have one would be found out by
 	// the first remote caller, not by its operator.
 	if err := s.listenTSNet(); err != nil {
-		unixLn.Close()
-		tcpLn.Close()
+		_ = unixLn.Close()
+		_ = tcpLn.Close()
 		return err
 	}
 	s.endpoint = "http://" + tcpLn.Addr().String()
@@ -477,19 +477,28 @@ func (s *Server) startHTTP() {
 }
 
 func (s *Server) clearStaleSocket() error {
-	if _, err := os.Stat(s.paths.Socket); err != nil {
+	info, err := os.Lstat(s.paths.Socket)
+	if err != nil {
 		return nil
+	}
+	// Only a socket file is stale-daemon state this cleanup may remove.
+	// Anything else at the path -- a regular file, a symlink, a
+	// directory -- is somebody else's data, not a crashed daemon's
+	// leavings: preserve it and fail startup with the collision named
+	// (#5742). Lstat, not Stat: a symlink is preserved as a symlink,
+	// never followed into a remove decision about its target.
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("socket path %s is occupied by a non-socket entry (%s); refusing to remove it", s.paths.Socket, info.Mode())
 	}
 	c, err := net.DialTimeout("unix", s.paths.Socket, s.set.Duration("daemon.socketProbeTimeout"))
 	if err == nil {
-		c.Close()
+		_ = c.Close()
 		return fmt.Errorf("a daemon is already listening on %s", s.paths.Socket)
 	}
 	s.logger.Printf("removing stale socket %s", s.paths.Socket)
 	return os.Remove(s.paths.Socket)
 }
 
-// Serve runs until the context is cancelled or a signal arrives.
 // ServeInline runs the daemon's API inside the calling process, on a private
 // socket, until the context ends.
 //
@@ -502,6 +511,7 @@ func (s *Server) clearStaleSocket() error {
 // calling process exits, so nothing is pooled across invocations and a
 // stateful server -- a browser -- cannot outlive one command. That is the
 // price of not having a daemon, and it is paid on every run.
+// Serve runs until the context is cancelled or a signal arrives.
 func (s *Server) ServeInline(ctx context.Context, socket string) error {
 	_ = os.Remove(socket)
 	ln, err := net.Listen("unix", socket)
@@ -902,11 +912,12 @@ func writeText(w http.ResponseWriter, code int, s string) {
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{
-		"status":   "ok",
-		"version":  s.version,
-		"pid":      os.Getpid(),
-		"uptime":   time.Since(s.started).Truncate(time.Second).String(),
-		"endpoint": s.endpoint,
+		"status":               "ok",
+		"version":              s.version,
+		"pid":                  os.Getpid(),
+		"uptime":               time.Since(s.started).Truncate(time.Second).String(),
+		"endpoint":             s.endpoint,
+		"operationFingerprint": api.OperationFingerprint(),
 	})
 }
 
@@ -916,7 +927,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		cfgPath = cfg.Path
 	}
 	writeJSON(w, 200, map[string]any{
-		"version": s.version,
+		"version":              s.version,
+		"operationFingerprint": api.OperationFingerprint(),
 		// #1877: this daemon's instance identity, so an `mcpx serve`
 		// shim backed by this daemon can report the DAEMON's identity
 		// (not the shim process's) to its host.
@@ -1519,13 +1531,25 @@ func (s *Server) handleShutdown(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{"status": "stopping"})
 	go func() {
 		time.Sleep(defaults.DaemonRestartSettle)
-		p, _ := os.FindProcess(os.Getpid())
-		_ = p.Signal(syscall.SIGTERM)
+		_ = signalSelf(syscall.SIGTERM)
 	}()
 }
 
 // execSelf is replaced in tests: a real exec re-runs the test binary.
 var execSelf = syscall.Exec
+
+// signalSelf delivers a signal to this process. It is replaced in tests:
+// a real self-SIGTERM kills the test binary whenever the delayed signal
+// lands while no signal.Notify interception is active (#5262). The
+// production value is the real signal — the daemon's shutdown and
+// restart-fallback exits depend on it.
+var signalSelf = func(sig os.Signal) error {
+	p, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		return err
+	}
+	return p.Signal(sig)
+}
 
 func (s *Server) handleDaemonRestart(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{"status": "restarting"})
@@ -1557,8 +1581,7 @@ func (s *Server) handleDaemonRestart(w http.ResponseWriter, _ *http.Request) {
 				s.logger.Printf("re-exec failed: %v", execErr)
 			}
 		}
-		p, _ := os.FindProcess(os.Getpid())
-		_ = p.Signal(syscall.SIGTERM)
+		_ = signalSelf(syscall.SIGTERM)
 	}()
 }
 
@@ -1641,11 +1664,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	fmt.Fprintf(w, "retry: %d\n", s.set.Duration("http.sseRetry").Milliseconds())
+	_, _ = fmt.Fprintf(w, "retry: %d\n", s.set.Duration("http.sseRetry").Milliseconds())
 	if gap {
 		// Said in-band, so a subscriber can resynchronise instead of
 		// trusting a stream with a hole in it.
-		fmt.Fprintf(w, "event: gap\ndata: {\"since\":%d,\"latest\":%d}\n\n", since, s.Events.Latest())
+		_, _ = fmt.Fprintf(w, "event: gap\ndata: {\"since\":%d,\"latest\":%d}\n\n", since, s.Events.Latest())
 	}
 	if len(f.URIs) > 0 {
 		watch.announce(w)
@@ -1672,7 +1695,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		toldDrops = dropped
-		fmt.Fprintf(w, "event: gap\ndata: {\"since\":%d,\"latest\":%d,\"dropped\":%d}\n\n",
+		_, _ = fmt.Fprintf(w, "event: gap\ndata: {\"since\":%d,\"latest\":%d,\"dropped\":%d}\n\n",
 			lastSeq, s.Events.Latest(), dropped)
 		flusher.Flush()
 	}
@@ -1687,7 +1710,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			// waiting for the next event to report the loss could wait
 			// forever.
 			tellGap()
-			fmt.Fprintf(w, ": ping\n\n")
+			_, _ = fmt.Fprintf(w, ": ping\n\n")
 			flusher.Flush()
 		case e, open := <-sub.C:
 			if !open {
@@ -1698,7 +1721,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
-			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", e.Seq, e.Kind, b)
+			_, _ = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", e.Seq, e.Kind, b)
 			lastSeq = e.Seq
 			flusher.Flush()
 		}

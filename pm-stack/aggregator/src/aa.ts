@@ -624,6 +624,11 @@ export const AA_PLAN_FACTS: Record<string, AaPlanFact> = {
     multiplier: 6,
     note: "$10/mo buys a $60/mo list-rate meter (6×); Flash promo cap $80 (≈8×).",
   },
+  "_commandcode": {
+    plan: "Command Code GOAT",
+    multiplier: 7,
+    note: "0/mo → 0 credits (7×); the entry Go tier is  → 0 credits (10×). Tier on the account is unconfirmed.",
+  },
   commandcode: {
     plan: "Command Code GOAT",
     multiplier: 7,
@@ -643,6 +648,11 @@ export const AA_PLAN_FACTS: Record<string, AaPlanFact> = {
     plan: "ChatGPT plan (student)",
     multiplier: null,
     note: "Second ChatGPT account door; resolves through the fork's built-in catalog.",
+  },
+  "_claude": {
+    plan: "Claude plan",
+    multiplier: null,
+    note: "Claude Code door — the fork's fleet-built _claude provider (renamed from claude-code 2026-11-07, #1823).",
   },
   "claude-code": {
     plan: "Claude plan",
@@ -1167,7 +1177,11 @@ export function isAaSection(v: unknown): v is AaFeedSection {
       (r) =>
         typeof r === "object" &&
         r !== null &&
-        (typeof (r as { snapshotDate?: unknown }).snapshotDate === "string" ||
+        // #5289: snapshotDate is a date, not just a string — summarizeAa
+        // publishes these values verbatim as the batch's snapshot vintage,
+        // so gate them with isIsoDate like generatedAt above (date-only
+        // forms pass; impossible/non-ISO strings degrade the section).
+        (isIsoDate((r as { snapshotDate?: unknown }).snapshotDate) ||
           (r as { snapshotDate?: unknown }).snapshotDate === null),
     ) &&
     // #2415: summarizeAa iterates thresholds and the /aa renderer maps
