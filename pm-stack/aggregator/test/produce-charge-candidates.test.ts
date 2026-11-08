@@ -356,6 +356,33 @@ describe("live mode CLI validation (#3333)", () => {
     );
   });
 
+  test("an unknown flag is a usage error before any side effect (#7302)", () => {
+    expectCliUsageError(() => ["--bogus-flag"], "unknown argument");
+  });
+
+  test("a misspelled --skip-gmial is a usage error, not a Gmail run (#7302)", () => {
+    expectCliUsageError(() => ["--skip-gmial"], "unknown argument");
+  });
+
+  test("a joined --start=... is a usage error, not the default period (#7302)", () => {
+    expectCliUsageError(() => ["--start=2026-10-01"], "unknown argument");
+  });
+
+  test("a duplicate --start is a usage error, not first-wins (#7302)", () => {
+    expectCliUsageError(
+      (h) => ["--start", "2026-10-01", "--start", "2026-09-01", "--out", h.out, "--skip-gmail"],
+      "duplicate --start",
+    );
+  });
+
+  test("a duplicate --skip-gmail is a usage error (#7302)", () => {
+    expectCliUsageError(() => ["--skip-gmail", "--skip-gmail"], "duplicate --skip-gmail");
+  });
+
+  test("a positional argument is a usage error (#7302)", () => {
+    expectCliUsageError(() => ["candidates.json"], "unknown argument");
+  });
+
   test("valid explicit flags keep the period, output path, and summary", () => {
     const h = liveHarness();
     writeFileSync(h.defaultOut, "preserve existing candidates");
