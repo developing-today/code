@@ -15,13 +15,23 @@ let port = 0;
 let doc: Record<string, any>;
 
 const USAGE_UNITS = [
-  "pct", "usd", "count", "gb", "tokens", "minutes",
-  "hours", "ms", "rows", "ops", "neurons", "other",
+  "pct",
+  "usd",
+  "count",
+  "gb",
+  "tokens",
+  "minutes",
+  "hours",
+  "ms",
+  "rows",
+  "ops",
+  "neurons",
+  "other",
 ];
 const SAAS_GROUPS = ["database", "object-storage", "compute", "dev-platform", "domains", "account-tooling"];
 const SAAS_STATUSES = ["active", "candidate", "no-account", "unknown"];
 const SOURCE_CLASSES = ["api", "console", "manual", "estimate", "invoice"];
-const ATTENTION_KINDS = ["over-limit", "payg-unbilled", "unmatched-charge"];
+const ATTENTION_KINDS = ["credential-lifecycle", "over-limit", "payg-unbilled", "unmatched-charge"];
 
 const isNumOrNull = (v: unknown) => v === null || (typeof v === "number" && Number.isFinite(v));
 const isStrOrNull = (v: unknown) => v === null || typeof v === "string";
@@ -67,6 +77,18 @@ describe("/api/quota.json hub contract (#1119)", () => {
     for (const pool of doc.pools) {
       expect(typeof pool.id).toBe("string");
       expect(Array.isArray(pool.windows)).toBe(true);
+    }
+  });
+
+  test("uninstrumentedServices: tracker registry rides the JSON twin (#1172)", () => {
+    expect(Array.isArray(doc.uninstrumentedServices)).toBe(true);
+    for (const svc of doc.uninstrumentedServices) {
+      expect(typeof svc.name).toBe("string");
+      expect(typeof svc.whatFor).toBe("string");
+      expect(typeof svc.status).toBe("string");
+      expect(isStrOrNull(svc.checkedAt)).toBe(true);
+      expect(typeof svc.overageBehavior).toBe("string");
+      expect(typeof svc.guardrailNotes).toBe("string");
     }
   });
 

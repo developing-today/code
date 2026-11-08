@@ -81,6 +81,16 @@ describe("consistent not-found semantics over HTTP (#1211)", () => {
     expect(await svc.text()).toContain("Not found");
   });
 
+  test("unknown /item subjects with HTML metacharacters are returned as inert text", async () => {
+    const subject = `<img src=x onerror="alert(document.domain)">&`;
+    const item = await fetch(`http://127.0.0.1:${port}/item/${encodeURIComponent(subject)}`);
+    const body = await item.text();
+
+    expect(item.status).toBe(404);
+    expect(body).toContain(`<code>&lt;img src=x onerror=&quot;alert(document.domain)&quot;&gt;&amp;</code>`);
+    expect(body).not.toContain("<img");
+  });
+
   test("unknown page routes are styled HTML 404; unknown APIs are JSON 404", async () => {
     const page = await fetch(`http://127.0.0.1:${port}/no-such-page`);
     expect(page.status).toBe(404);

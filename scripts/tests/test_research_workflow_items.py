@@ -371,6 +371,34 @@ class ItemsTests(unittest.TestCase):
         self.assertEqual(result["segments"], [])
         self.assertEqual(result["reserved"], ["G"])
 
+    def test_ids_validates_the_package_manifest_shape(self):
+        package = self.rendered()
+        manifest = package / "package.json"
+        # Controls: a well-formed manifest lists its segment ids, and a
+        # manifest without segments behaves exactly as no manifest does.
+        manifest.write_text(
+            json.dumps({"segments": [{"id": "S1"}, {"id": "S2"}]}) + "\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(self.cli("ids", "--package", package)["segments"], ["S1", "S2"])
+        manifest.write_text("{}\n", encoding="utf-8")
+        self.assertEqual(self.cli("ids", "--package", package)["segments"], [])
+        # Wrong shapes fail via the tool's single-line error contract,
+        # naming package.json — never a bare Attribute/Key/Type message.
+        for content in (
+            "[]",
+            '"segments"',
+            '{"segments": "S1"}',
+            '{"segments": {"id": "S1"}}',
+            '{"segments": ["S1"]}',
+            '{"segments": [{"name": "S1"}]}',
+            '{"segments": [{"id": 3}]}',
+            "not json",
+        ):
+            manifest.write_text(content + "\n", encoding="utf-8")
+            error = self.cli("ids", "--package", package, ok=False)
+            self.assertIn("package.json", error, content)
+
     # ------------------------------------------------------------- render
 
     def test_render_is_idempotent_and_replaces_init_placeholders(self):
@@ -400,6 +428,58 @@ class ItemsTests(unittest.TestCase):
             "- **C002** [Parallel ownership](main.md#c002): S0 `validated` · S1 `blocked` (requires C001) · S2–S8 `not-started`",
             design,
         )
+        self.check()
+
+    def test_template_generated_views_render_and_check(self):
+        repo = Path(__file__).resolve().parents[2]
+        main_template = (repo / "planning/workflow/templates/main.md").read_text(
+            encoding="utf-8"
+        )
+        design_template = (repo / "planning/workflow/templates/design.md").read_text(
+            encoding="utf-8"
+        )
+
+        def template_views(text):
+            pattern = re.compile(
+                r"<!-- workflow:view (?P<name>[A-Za-z0-9._-]+) -->.*?"
+                r"<!-- /workflow:view (?P=name) -->",
+                re.DOTALL,
+            )
+            return {match["name"]: match[0] for match in pattern.finditer(text)}
+
+        main_views = template_views(main_template)
+        design_views = template_views(design_template)
+        self.assertEqual(set(main_views), {"concept-C001", "issues-and-prs"})
+        self.assertEqual(set(design_views), {"waves", "run-status"})
+        self.assertIn("## C001: <title>", main_template)
+        self.assertIn("- **State:**", main_template)
+        self.assertIn("Issue [#<n>]", main_template)
+        self.assertIn("PR [#<n>]", main_template)
+        self.assertNotIn("- None yet.", main_template)
+        self.assertIn(
+            "## Review status\n\n<!-- workflow:view run-status -->", design_template
+        )
+        self.assertNotIn("run-table", design_template)
+
+        package = self.rendered()
+
+        def install_template_views(path, replacements):
+            text = path.read_text(encoding="utf-8")
+            for name, block in replacements.items():
+                pattern = re.compile(
+                    rf"<!-- workflow:view {re.escape(name)} -->.*?"
+                    rf"<!-- /workflow:view {re.escape(name)} -->",
+                    re.DOTALL,
+                )
+                text, count = pattern.subn(
+                    lambda _, replacement=block: replacement, text, count=1
+                )
+                self.assertEqual(count, 1, name)
+            path.write_text(text, encoding="utf-8")
+
+        install_template_views(package / "main.md", main_views)
+        install_template_views(package / "design.md", design_views)
+        self.cli("render", "--package", package)
         self.check()
 
     def test_check_fails_when_a_view_is_stale_missing_or_unknown(self):

@@ -166,3 +166,55 @@ func TestVisibleToolAppliesDenyOverAllow(t *testing.T) {
 		t.Error("a tool outside the allowlist should be hidden")
 	}
 }
+
+func TestToolViewsResolveAndVisibility(t *testing.T) {
+	// #1933 slice 1, the tailscale shape: an alias view exposing two
+	// renamed tools, one with a pinned + hidden property.
+	c := &config.Config{MCPServers: map[string]*config.Server{
+		"tailscale": {Name: "tailscale", Command: "x"},
+		"tailscale-peek": {Name: "tailscale-peek", AliasOf: "tailscale", Mcpx: &config.Extras{
+			ToolViews: map[string]config.ToolView{
+				"listTailnet":   {From: "list_tailnets"},
+				"listHostnames": {From: "list_devices", Pin: map[string]any{"tailnet": "-"}, Hide: []string{"tailnet"}, Description: "hostnames only"},
+			}}},
+	}}
+	v := res(t, c, "tailscale-peek")
+	if !v.VisibleTool("listTailnet") || !v.VisibleTool("listHostnames") {
+		t.Error("declared views should be visible under their view names")
+	}
+	if v.VisibleTool("list_devices") || v.VisibleTool("list_tailnets") {
+		t.Error("target names are not callable through the view")
+	}
+	if v.VisibleTool("anything_else") {
+		t.Error("a toolViews map is the whole allowlist")
+	}
+}
+
+func TestToolViewsValidation(t *testing.T) {
+	base := func(mcpx *config.Extras, alias bool) *config.Config {
+		view := &config.Server{Name: "view", Mcpx: mcpx}
+		if alias {
+			view.AliasOf = "base"
+		} else {
+			view.Command = "x"
+		}
+		return &config.Config{MCPServers: map[string]*config.Server{
+			"base": {Name: "base", Command: "x"},
+			"view": view,
+		}}
+	}
+	if _, err := base(&config.Extras{ToolViews: map[string]config.ToolView{"v": {From: "t"}}}, false).Resolve("view"); err == nil {
+		t.Error("toolViews without aliasOf should be rejected")
+	}
+	if _, err := base(&config.Extras{ToolViews: map[string]config.ToolView{"v": {}}}, true).Resolve("view"); err == nil {
+		t.Error("a toolView without from should be rejected")
+	}
+	if _, err := base(&config.Extras{ToolViews: map[string]config.ToolView{
+		"v": {From: "t", Hide: []string{"a"}}}}, true).Resolve("view"); err == nil {
+		t.Error("hide of an unpinned property should be rejected")
+	}
+	if _, err := base(&config.Extras{ToolViews: map[string]config.ToolView{
+		"": {From: "t"}}}, true).Resolve("view"); err == nil {
+		t.Error("an empty toolView name should be rejected")
+	}
+}

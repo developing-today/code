@@ -106,7 +106,7 @@ func Confirmation(a Ask) Request {
 	}
 }
 
-// Form builds a question asking for a set of values against a given schema,
+// FormAsk builds a question asking for a set of values against a given schema,
 // which is how a recipe's missing placeholders are collected.
 func FormAsk(a Ask, schema json.RawMessage) Request {
 	return Request{

@@ -22,19 +22,12 @@ import (
 // letters survive; every other rune is a boundary.
 func Normalize(s string) string {
 	var b strings.Builder
-	prevLower := false
 	for _, r := range s {
-		switch {
-		case unicode.IsLetter(r) || unicode.IsDigit(r):
-			if unicode.IsUpper(r) && prevLower {
-				// A camel boundary: the split is recorded by dropping
-				// nothing -- the letters join -- because the boundary
-				// carries no more meaning than a separator does.
-			}
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			// A camel boundary is recorded by dropping nothing -- the
+			// letters join -- because the boundary carries no more
+			// meaning than a separator does.
 			b.WriteRune(unicode.ToLower(r))
-			prevLower = unicode.IsLower(r) || unicode.IsDigit(r)
-		default:
-			prevLower = false
 		}
 	}
 	return b.String()

@@ -53,7 +53,7 @@ func (a *App) openStore(override string) (*logstore.Store, error) {
 	// querying a very large log repeatedly wants.
 	if a.Settings().Bool("plumbing.indexOnQuery") {
 		if _, err := st.Ingest(); err != nil {
-			st.Close()
+			_ = st.Close()
 			return nil, err
 		}
 	}
@@ -116,7 +116,7 @@ func (a *App) CmdLog(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	p := newRecordPrinter(f, splitFields(*fields))
 
@@ -321,9 +321,7 @@ func fieldValue(r logstore.Record, name string) string {
 
 func splitFields(s string) []string {
 	var out []string
-	for _, f := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' }) {
-		out = append(out, f)
-	}
+	out = append(out, strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' })...)
 	return out
 }
 
@@ -352,7 +350,7 @@ func (a *App) cmdLogSQL(_ context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	table, err := st.RunSQL(query)
 	if err != nil {
 		return err
@@ -361,9 +359,9 @@ func (a *App) cmdLogSQL(_ context.Context, args []string) error {
 		return a.out(table)
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, strings.Join(table.Columns, "\t"))
+	_, _ = fmt.Fprintln(tw, strings.Join(table.Columns, "\t"))
 	for _, row := range table.Rows {
-		fmt.Fprintln(tw, strings.Join(row, "\t"))
+		_, _ = fmt.Fprintln(tw, strings.Join(row, "\t"))
 	}
 	return tw.Flush()
 }
@@ -418,7 +416,7 @@ func (a *App) CmdLogRecord(_ context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer sink.Close()
+	defer func() { _ = sink.Close() }()
 	sink.Write(rec, nil)
 	return nil
 }
@@ -474,7 +472,7 @@ func (a *App) CmdStats(_ context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	switch dim {
 	case "calls":
@@ -498,7 +496,7 @@ func (a *App) CmdStats(_ context.Context, args []string) error {
 
 func table(header string) *tabwriter.Writer {
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, header)
+	_, _ = fmt.Fprintln(tw, header)
 	return tw
 }
 
@@ -517,7 +515,7 @@ func (a *App) statsCalls(st *logstore.Store, q logstore.Query) error {
 	}
 	tw := table("SERVER\tTOOL\tCALLS\tERRORS\tERR%\tP50\tP95\tP99\tMAX\tTOTAL")
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%.1f\t%s\t%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%.1f\t%s\t%s\t%s\t%s\t%s\n",
 			r.Server, r.Tool, r.Calls, r.Errors, r.ErrRate*100,
 			ms(r.P50), ms(r.P95), ms(r.P99), ms(r.Max), ms(r.TotalMs))
 	}
@@ -537,7 +535,7 @@ func (a *App) statsServers(st *logstore.Store, q logstore.Query) error {
 	}
 	tw := table("SERVER\tSTARTS\tSTOPS\tRESTARTS\tUNCLEAN\tRUNNING\tUPTIME\tREADY P50\tREADY MAX\tCALLS")
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%d\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%d\n",
 			r.Server, r.Starts, r.Stops, r.Restarts, r.Unclean, r.Running,
 			(time.Duration(r.UptimeSec) * time.Second).String(),
 			ms(r.ReadyP50), ms(r.ReadyMax), r.Calls)
@@ -562,7 +560,7 @@ func (a *App) statsInstances(st *logstore.Store, q logstore.Query) error {
 		if !r.Stopped.IsZero() {
 			stopped = r.Stopped.Local().Format("15:04:05")
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%d\t%s\t%s\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%d\t%s\t%s\n",
 			r.Instance, r.PID, r.Started.Local().Format("2006-01-02 15:04:05"), ms(r.ReadyMs),
 			(time.Duration(r.UptimeSec) * time.Second).String(), r.Calls, stopped,
 			firstSet(r.Reason, "-"))
@@ -586,7 +584,7 @@ func (a *App) statsErrors(st *logstore.Store, q logstore.Query, top int) error {
 	}
 	tw := table("COUNT\tLAST SEEN\tSERVERS\tMESSAGE")
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\n", r.Count,
+		_, _ = fmt.Fprintf(tw, "%d\t%s\t%s\t%s\n", r.Count,
 			r.LastSeen.Local().Format("2006-01-02 15:04:05"), firstSet(r.Servers, "-"),
 			truncate(oneLine(r.Message), 80))
 	}
@@ -609,7 +607,7 @@ func (a *App) statsSessions(st *logstore.Store, q logstore.Query, top int) error
 	}
 	tw := table("SESSION\tRECORDS\tCALLS\tERRORS\tSPAN\tBUSY\tSERVERS")
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%s\t%s\t%s\n", r.Session, r.Records,
+		_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%s\t%s\t%s\n", r.Session, r.Records,
 			r.Calls, r.Errors,
 			(time.Duration(r.SpanSec) * time.Second).Round(time.Second).String(),
 			ms(r.BusyMs), firstSet(r.Servers, "-"))
@@ -633,10 +631,10 @@ func (a *App) statsVolume(st *logstore.Store, q logstore.Query) error {
 	}
 	tw := table("HOUR\tDEBUG\tINFO\tWARN\tERROR\tTOTAL")
 	for _, b := range buckets {
-		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\n", b.Hour, b.Debug, b.Info,
+		_, _ = fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\n", b.Hour, b.Debug, b.Info,
 			b.Warn, b.Error, b.Total)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 	if len(files) == 0 {
 		return nil
 	}
@@ -644,7 +642,7 @@ func (a *App) statsVolume(st *logstore.Store, q logstore.Query) error {
 	ft := table("FILE\tBYTES\tRECORDS\tSKIPPED")
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	for _, f := range files {
-		fmt.Fprintf(ft, "%s\t%d\t%d\t%d\n", filepath.Base(f.Path), f.Bytes,
+		_, _ = fmt.Fprintf(ft, "%s\t%d\t%d\t%d\n", filepath.Base(f.Path), f.Bytes,
 			f.Records, f.Skipped)
 	}
 	return ft.Flush()
@@ -663,11 +661,11 @@ func (a *App) statsSlowest(st *logstore.Store, q logstore.Query, top int) error 
 	}
 	tw := table("MS\tWHEN\tSERVER\tTOOL\tOK\tSESSION\tTRACE")
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%t\t%s\t%s\n", ms(r.Duration),
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%t\t%s\t%s\n", ms(r.Duration),
 			r.Time.Local().Format("2006-01-02 15:04:05"), r.Server, r.Tool, r.OK,
 			firstSet(r.Session, "-"), r.Trace)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 	fmt.Println("\nNext: `mcpx log --chain <trace>` for the call and everything that led to it.")
 	return nil
 }

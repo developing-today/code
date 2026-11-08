@@ -21,7 +21,7 @@ func endpointOf(t *testing.T, e *env) string {
 		if gerr != nil {
 			t.Fatal(gerr)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if derr := json.NewDecoder(resp.Body).Decode(&h); derr != nil || h.Endpoint == "" {
 			t.Fatalf("no endpoint: %v %v", err, derr)
 		}
@@ -46,7 +46,7 @@ func postWith(t *testing.T, url, body string, headers map[string]string) (int, s
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(b)
 }
@@ -76,7 +76,7 @@ func TestAWebPageCannotRunCodeThroughTheDaemon(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("a request naming a foreign host was answered: %d", resp.StatusCode)
 	}

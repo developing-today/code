@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ProjectPoolItem, RoadmapRow } from "../src/model.ts";
 import { buildRoadmapDrill, renderRoadmap } from "../src/render.ts";
+import { buildEpicRollups } from "../src/epics.ts";
 import { reconcileRoadmap, unavailableRoadmapReconciliation } from "../src/roadmap-reconcile.ts";
 
 // #1168: /roadmap drill-down — a roadmap row expands via <details> to
@@ -22,7 +23,7 @@ const row = (id: number, title: string, refs: string[] = [], notes = ""): Roadma
 const poolItem = (
   ref: string,
   title: string,
-  opts: { kind?: string | null; state?: ProjectPoolItem["state"]; epicRef?: string } = {},
+  opts: { kind?: string | null; state?: ProjectPoolItem["state"]; epicRef?: string; status?: string } = {},
 ): ProjectPoolItem => ({
   id: `PVTI_${ref}`,
   url: "https://github.com/orgs/developing-today/projects/4",
@@ -34,7 +35,7 @@ const poolItem = (
   title,
   state: opts.state ?? "open",
   contentKind: "issue",
-  status: "Todo",
+  status: opts.status ?? "Todo",
   area: "id",
   horizon: "Quarter",
   kind: opts.kind === undefined ? "Task" : opts.kind,
@@ -114,5 +115,20 @@ describe("roadmap drill-down (#1168)", () => {
     expect(drill.get("grist:doc/roadmap/5")?.epic?.ref).toBe("a/b#30");
     expect(drill.get("grist:doc/roadmap/6")?.epic).toBeUndefined();
     expect(drill.get("grist:doc/roadmap/6")?.children).toEqual([]);
+  });
+  test("status-Done/open child counts as done, matching the epic rollup rule (#3954)", () => {
+    const rows = [row(7, "Identity epic", ["a/b#40"])];
+    const pool = [
+      poolItem("a/b#40", "Identity epic", { kind: "Epic" }),
+      poolItem("a/b#41", "Closed child", { state: "closed", epicRef: "a/b#40" }),
+      poolItem("a/b#42", "Status-done but still open", { state: "open", status: "Done", epicRef: "a/b#40" }),
+      poolItem("a/b#43", "Merged child", { state: "merged", epicRef: "a/b#40" }),
+      poolItem("a/b#44", "Open child", { state: "open", epicRef: "a/b#40" }),
+    ];
+    const html = render(rows, pool);
+    expect(html).toContain("3/4 child issues done");
+    expect(html).toContain('<progress value="3" max="4">');
+    // Cross-surface: the shared rollup rule counts the same pool identically.
+    expect(buildEpicRollups(pool).get("a/b#40" as ProjectPoolItem["ref"])).toMatchObject({ total: 4, done: 3 });
   });
 });

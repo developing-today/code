@@ -24,11 +24,20 @@ describe("world screen presenter", () => {
       width: 4,
       height: 1,
       runs: [
-        { start: 0, cells: [{ symbol: "界", fg: 0, bg: 0, bold: false, columns: 2 }, { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 }] },
+        {
+          start: 0,
+          cells: [
+            { symbol: "界", fg: 0, bg: 0, bold: false, columns: 2 },
+            { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+          ],
+        },
         { start: 3, cells: [{ symbol: "x", fg: 4, bg: 0, bold: true, columns: 1 }] },
       ],
     };
-    const full: ScreenSurface = { ...previous, cells: [...patch.runs[0].cells, previous.cells[2], ...patch.runs[1].cells] };
+    const full: ScreenSurface = {
+      ...previous,
+      cells: [...patch.runs[0].cells, previous.cells[2], ...patch.runs[1].cells],
+    };
     const applied = applyScreenPatch(previous, patch);
     expect(applied).toEqual(full);
     const root = document.createElement("div");
@@ -47,7 +56,15 @@ describe("world screen presenter", () => {
       height: 1,
       runs,
     });
-    expect(applyScreenPatch(previous, patch([{ start: 1, cells: [previous.cells[1]] }, { start: 1, cells: [previous.cells[0]] }]))).toBeNull();
+    expect(
+      applyScreenPatch(
+        previous,
+        patch([
+          { start: 1, cells: [previous.cells[1]] },
+          { start: 1, cells: [previous.cells[0]] },
+        ]),
+      ),
+    ).toBeNull();
     expect(applyScreenPatch(previous, patch([{ start: 2, cells: [previous.cells[0]] }]))).toBeNull();
     expect(
       applyScreenPatch(
@@ -117,6 +134,26 @@ describe("world screen presenter", () => {
     );
     expect(renderWorldSurface(root, makeScreen([{ symbol: "界", fg: 0, bg: 0, bold: false, columns: 2 }]))).toBe(false);
     expect(root.textContent).toBe("safe legacy view");
+  });
+
+  it("treats printable ASCII as one column and still refuses control bytes (fast path)", () => {
+    const root = document.createElement("div");
+    // Every printable ASCII code point is one grapheme and one column wide.
+    for (let code = 0x20; code <= 0x7e; code++) {
+      const symbol = String.fromCharCode(code);
+      const screen = makeScreen([{ symbol, fg: 0, bg: 0, bold: false, columns: 1 }]);
+      expect(renderWorldSurface(root, screen), `U+${code.toString(16)} at width 1`).toBe(true);
+      const wide = makeScreen([
+        { symbol, fg: 0, bg: 0, bold: false, columns: 2 },
+        { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+      ]);
+      expect(renderWorldSurface(root, wide), `U+${code.toString(16)} at width 2`).toBe(false);
+    }
+    // DEL and the C1 range remain rejected, as do C0 controls.
+    for (const code of [0x00, 0x1f, 0x7f, 0x9f]) {
+      const screen = makeScreen([{ symbol: String.fromCharCode(code), fg: 0, bg: 0, bold: false, columns: 1 }]);
+      expect(renderWorldSurface(root, screen), `U+${code.toString(16)} is a control`).toBe(false);
+    }
   });
 
   it("refuses grapheme count violations and mismatched symbol widths", () => {
@@ -247,9 +284,9 @@ describe("world screen presenter", () => {
     // validator.
     const longGrapheme = `e${"\u0301".repeat(17)}`;
     expect(longGrapheme.length).toBe(18);
-    expect(renderWorldSurface(root, makeScreen([{ symbol: longGrapheme, fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(
-      true,
-    );
+    expect(
+      renderWorldSurface(root, makeScreen([{ symbol: longGrapheme, fg: 0, bg: 0, bold: false, columns: 1 }])),
+    ).toBe(true);
   });
 
   it("measures U+FE0E text-presentation sequences as width 1, like Rust unicode-width 0.2.2 (#1581)", () => {
@@ -356,6 +393,115 @@ describe("world screen presenter", () => {
       expect(renderWorldSurface(root, screen)).toBe(true);
       // …and the same glyph squeezed into 1 column must be refused.
       expect(renderWorldSurface(root, makeScreen([{ symbol, fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(false);
+    }
+  });
+
+  it("matches Rust unicode-width 0.2.2 on the residual reachable classes (#2962)", () => {
+    const root = document.createElement("div");
+    // rust=2 / ts=1 before the fix: trigrams U+2630, Khmer U+17A4, Yi U+A000
+    // must measure 2, so a two-column placement is accepted and 1 refused.
+    for (const symbol of ["\u2630", "\u17A4", "\uA000"]) {
+      const screen: ScreenSurface = {
+        kind: "screen",
+        version: 1,
+        width: 2,
+        height: 1,
+        cells: [
+          { symbol, fg: 0, bg: 0, bold: false, columns: 2 },
+          { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+        ],
+      };
+      expect(renderWorldSurface(root, screen)).toBe(true);
+      expect(renderWorldSurface(root, makeScreen([{ symbol, fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(false);
+    }
+    // rust=1 / ts=2 before the fix: CJK radicals carved out of the broad
+    // wide ranges (U+2E9A, U+2EF4, U+3040) and U+2D7F (rust=1 / ts=0)
+    // must measure 1, so a one-column placement is accepted and 2 refused.
+    for (const symbol of ["\u2E9A", "\u2EF4", "\u3040", "\u2D7F"]) {
+      expect(renderWorldSurface(root, makeScreen([{ symbol, fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(true);
+      const screen: ScreenSurface = {
+        kind: "screen",
+        version: 1,
+        width: 2,
+        height: 1,
+        cells: [
+          { symbol, fg: 0, bg: 0, bold: false, columns: 2 },
+          { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+        ],
+      };
+      expect(renderWorldSurface(root, screen)).toBe(false);
+    }
+  });
+
+  it("measures U+FE0F clusters by the base's emoji-presentability, like Rust unicode-width 0.2.2 (#3265)", () => {
+    const root = document.createElement("div");
+    const screenWith = (symbol: string, columns: 1 | 2): ScreenSurface =>
+      columns === 1
+        ? makeScreen([{ symbol, fg: 0, bg: 0, bold: false, columns: 1 }])
+        : {
+            kind: "screen",
+            version: 1,
+            width: 2,
+            height: 1,
+            cells: [
+              { symbol, fg: 0, bg: 0, bold: false, columns: 2 },
+              { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+            ],
+          };
+    // Bases unicode-width 0.2.2 does NOT widen with U+FE0F — letters,
+    // punctuation, U+2192 and space measure 1, so the Rust-valid
+    // columns:1 cell renders and a columns:2 claim is refused. A
+    // combining mark between the base and U+FE0F also breaks the
+    // widening (© + U+0301 + U+FE0F measures 1).
+    const narrowGlyphs = [
+      "\u0061\uFE0F",
+      "\u0078\uFE0F",
+      "\u005A\uFE0F",
+      "\u00E9\uFE0F",
+      "\u03A9\uFE0F",
+      "\u2192\uFE0F",
+      "\u0021\uFE0F",
+      "\u003F\uFE0F",
+      "\u0025\uFE0F",
+      "\u0020\uFE0F",
+      "\u00A9\u0301\uFE0F",
+    ];
+    for (const symbol of narrowGlyphs) {
+      expect(renderWorldSurface(root, screenWith(symbol, 1))).toBe(true);
+      expect(renderWorldSurface(root, screenWith(symbol, 2))).toBe(false);
+    }
+    // A lone U+FE0F measures 0 in Rust: no columns value can carry it.
+    expect(renderWorldSurface(root, screenWith("\uFE0F", 1))).toBe(false);
+    expect(renderWorldSurface(root, screenWith("\uFE0F", 2))).toBe(false);
+    // Emoji-presentable bases still widen to 2: ⚠ ☝ ❤ © ® ™ ♠ ♥ ♦ ▶ ◀
+    // ↔ ↩ ⤴ 〰 〽 ㊗ ㊙, digits / # / * with U+FE0F, and keycap sequences.
+    const wideGlyphs = [
+      "\u26A0\uFE0F",
+      "\u261D\uFE0F",
+      "\u2764\uFE0F",
+      "\u00A9\uFE0F",
+      "\u00AE\uFE0F",
+      "\u2122\uFE0F",
+      "\u2660\uFE0F",
+      "\u2665\uFE0F",
+      "\u2666\uFE0F",
+      "\u25B6\uFE0F",
+      "\u25C0\uFE0F",
+      "\u2194\uFE0F",
+      "\u21A9\uFE0F",
+      "\u2934\uFE0F",
+      "\u3030\uFE0F",
+      "\u303D\uFE0F",
+      "\u3297\uFE0F",
+      "\u3299\uFE0F",
+      "\u0031\uFE0F",
+      "\u0023\uFE0F",
+      "\u002A\uFE0F",
+      "\u0039\uFE0F\u20E3",
+    ];
+    for (const symbol of wideGlyphs) {
+      expect(renderWorldSurface(root, screenWith(symbol, 2))).toBe(true);
+      expect(renderWorldSurface(root, screenWith(symbol, 1))).toBe(false);
     }
   });
 });

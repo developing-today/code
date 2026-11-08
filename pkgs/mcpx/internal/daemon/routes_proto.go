@@ -298,14 +298,18 @@ func (r *Registry) CallAsk(ctx context.Context, id, server, tool string, cc conf
 	// the table before the upstream request goes out, so it is registered
 	// between the two. The guard's own questions are mcpx's, not the
 	// server's, and are never attributed through the table.
-	rs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+
+	rs, effTool, effArgs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+
 	if err != nil {
 		return nil, err
 	}
 	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)
 	ctx = withRequestedCallTimeout(withAskCall(ctx, id))
-	return p.Call(ctx, rs, tool, args)
+
+	return r.callWithLedger(ctx, p, server, effTool, effArgs, rs, "ask")
+
 }
 
 // ReadResourceAsk is resources/read, interruptibly.
@@ -874,7 +878,12 @@ func (s *Server) handleCallPath(w http.ResponseWriter, r *http.Request) {
 	cc := callContext(r, config.CallContext{}, r.URL.Query().Get("session"))
 	start := time.Now()
 	callCtx := withRun(withCallSettings(r.Context(), s.callSettings(r)), r.Header.Get("X-Mcpx-Run"))
-	res, err := s.reg.Call(callCtx, r.PathValue("server"), r.PathValue("tool"), cc, args)
+	var res json.RawMessage
+	if syn, ok := s.dryRunResult(callCtx, r.PathValue("server"), r.PathValue("tool")); ok {
+		res = syn
+	} else {
+		res, err = s.reg.Call(callCtx, r.PathValue("server"), r.PathValue("tool"), cc, args)
+	}
 	s.reportCallFrame(callCtx, r.PathValue("server"), r.PathValue("tool"), args, start, res, err)
 	if err != nil {
 		writeJSON(w, failureStatus(err), map[string]any{"ok": false, "error": err.Error()})
@@ -937,6 +946,9 @@ func (r *Registry) upstreamHooks(h *pool.Hooks) {
 	if cache && r.paths.State != "" {
 		h.Eras = pool.OpenEraFile(filepath.Join(r.paths.State, defaults.UpstreamEraFile))
 	}
+	if r.paths.State != "" {
+		h.Sessions = pool.OpenSessionFile(filepath.Join(r.paths.State, pool.UpstreamSessionsFile))
+	}
 }
 
 // ---- resource subscriptions ----
@@ -970,7 +982,7 @@ func (w *resourceWatch) release() {
 func (w *resourceWatch) announce(out io.Writer) {
 	data, _ := json.Marshal(w)
 	b, _ := json.Marshal(events.Event{Kind: events.ResourceWatching, At: time.Now(), Data: data})
-	fmt.Fprintf(out, "event: %s\ndata: %s\n\n", events.ResourceWatching, b)
+	_, _ = fmt.Fprintf(out, "event: %s\ndata: %s\n\n", events.ResourceWatching, b)
 }
 
 // watchResources subscribes upstream to the resources a stream names and

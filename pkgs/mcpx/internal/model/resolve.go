@@ -1,6 +1,8 @@
 package model
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -32,6 +34,24 @@ type Config struct {
 	// LookupEnv reads the environment; nil means os.Getenv. A seam for
 	// tests, which must not depend on the machine's real variables.
 	LookupEnv func(string) string
+	// These are the JSON object values of model.providers and model.profiles.
+	// The model layer owns decoding and, importantly, only reads explicitly
+	// named environment variables from provider settings.
+	ProviderSettingsJSON string
+	ProfilesJSON         string
+}
+
+type providerSettings struct {
+	BaseURL   string `json:"baseURL"`
+	APIKeyEnv string `json:"apiKeyEnv"`
+}
+
+// Profile is an ordered model chain with optional per-profile bounds.
+// Timeout is a Go duration string, for example "30s".
+type Profile struct {
+	Models  []string `json:"models"`
+	Budget  int      `json:"budget,omitempty"`
+	Timeout string   `json:"timeout,omitempty"`
 }
 
 // Default base URLs for the named configured providers. anthropic and
@@ -62,6 +82,21 @@ func Resolve(cfg Config) (Provider, error) {
 	if lookup == nil {
 		lookup = os.Getenv
 	}
+	var keyed map[string]providerSettings
+	if cfg.ProviderSettingsJSON != "" {
+		if err := json.Unmarshal([]byte(cfg.ProviderSettingsJSON), &keyed); err != nil {
+			return nil, fmt.Errorf("model: invalid model.providers: %w", err)
+		}
+	}
+	var profiles map[string]Profile
+	if cfg.ProfilesJSON != "" {
+		if err := json.Unmarshal([]byte(cfg.ProfilesJSON), &profiles); err != nil {
+			return nil, fmt.Errorf("model: invalid model.profiles: %w", err)
+		}
+	}
+	if len(profiles) > 0 || len(keyed) > 0 {
+		return &profileRouter{cfg: cfg, keyed: keyed, profiles: profiles, lookup: lookup}, nil
+	}
 	switch strings.ToLower(strings.TrimSpace(cfg.Provider)) {
 	case "", "none":
 		return nil, nil
@@ -84,6 +119,157 @@ func Resolve(cfg Config) (Provider, error) {
 	default:
 		return nil, fmt.Errorf("model: unknown provider %q (want one of %s)", cfg.Provider, strings.Join(Providers, ", "))
 	}
+}
+
+// profileRouter routes a call after seeing the selected model reference. A
+// profile may be selected by model.default or by an operation override.
+type profileRouter struct {
+	cfg      Config
+	keyed    map[string]providerSettings
+	profiles map[string]Profile
+	lookup   func(string) string
+}
+
+func (r *profileRouter) Name() string { return "profiles" }
+
+func (r *profileRouter) Generate(ctx context.Context, req Request) (Response, error) {
+	selection := strings.TrimSpace(req.Model)
+	if selection == "" {
+		selection = strings.TrimSpace(r.cfg.DefaultModel)
+	}
+	if profile, ok := r.profile(selection); ok {
+		return r.generateProfile(ctx, selection, profile, req)
+	}
+	provider, modelID := SplitModelID(selection)
+	if provider == "" {
+		provider = strings.ToLower(strings.TrimSpace(r.cfg.Provider))
+	}
+	p, err := r.provider(provider)
+	if err != nil {
+		return Response{}, err
+	}
+	req.Model = modelID
+	resp, err := p.Generate(ctx, req)
+	if err == nil && strings.TrimSpace(resp.Text) != "" {
+		if resp.Model == "" {
+			resp.Model = modelID
+		}
+		if resp.Provider == "" {
+			resp.Provider = p.Name()
+		}
+	}
+	return resp, err
+}
+
+func (r *profileRouter) profile(name string) (Profile, bool) {
+	if p, ok := r.profiles[name]; ok {
+		return p, true
+	}
+	for key, p := range r.profiles {
+		if strings.EqualFold(key, name) {
+			return p, true
+		}
+	}
+	return Profile{}, false
+}
+
+func (r *profileRouter) generateProfile(ctx context.Context, name string, profile Profile, req Request) (Response, error) {
+	if len(profile.Models) == 0 {
+		return Response{}, fmt.Errorf("model: profile %q has no models: %w", name, ErrUnavailable)
+	}
+	if profile.Budget < 0 {
+		return Response{}, fmt.Errorf("model: profile %q has negative token budget %d", name, profile.Budget)
+	}
+	var timeout time.Duration
+	if profile.Timeout != "" {
+		var err error
+		timeout, err = time.ParseDuration(profile.Timeout)
+		if err != nil || timeout <= 0 {
+			return Response{}, fmt.Errorf("model: profile %q has invalid timeout %q", name, profile.Timeout)
+		}
+	}
+	var failures []string
+	for _, entry := range profile.Models {
+		provider, modelID := SplitModelID(strings.TrimSpace(entry))
+		if provider == "" || modelID == "" {
+			failures = append(failures, fmt.Sprintf("invalid model id %q", entry))
+			continue
+		}
+		p, err := r.provider(provider)
+		if err != nil {
+			failures = append(failures, err.Error())
+			continue
+		}
+		callCtx := ctx
+		cancel := func() {}
+		if timeout > 0 {
+			callCtx, cancel = context.WithTimeout(ctx, timeout)
+		}
+		call := req
+		call.Model = modelID
+		if profile.Budget > 0 && (call.MaxTokens <= 0 || call.MaxTokens > profile.Budget) {
+			call.MaxTokens = profile.Budget
+		}
+		resp, callErr := p.Generate(callCtx, call)
+		cancel()
+		if callErr == nil && strings.TrimSpace(resp.Text) != "" {
+			if resp.Model == "" {
+				resp.Model = modelID
+			}
+			if resp.Provider == "" {
+				resp.Provider = p.Name()
+			}
+			return resp, nil
+		}
+		if callErr == nil {
+			callErr = fmt.Errorf("provider returned empty output")
+		}
+		failures = append(failures, fmt.Sprintf("%s: %v", entry, callErr))
+	}
+	return Response{}, fmt.Errorf("model: profile %q exhausted (%s): %w", name, strings.Join(failures, "; "), ErrUnavailable)
+}
+
+func (r *profileRouter) provider(name string) (Provider, error) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "sampling" {
+		if r.cfg.Sampler == nil {
+			return nil, fmt.Errorf("model: provider sampling: %w", ErrUnavailable)
+		}
+		return NewSamplingProvider(r.cfg.Sampler), nil
+	}
+	if name == "plugin" {
+		return nil, fmt.Errorf("model: provider plugin: %w", ErrUnavailable)
+	}
+	var settings providerSettings
+	configured := false
+	for key, value := range r.keyed {
+		if strings.EqualFold(key, name) {
+			settings, configured = value, true
+			break
+		}
+	}
+	if !configured && name == strings.ToLower(strings.TrimSpace(r.cfg.Provider)) {
+		settings = providerSettings{BaseURL: r.cfg.BaseURL, APIKeyEnv: r.cfg.APIKeyEnv}
+		configured = true
+	}
+	if !configured {
+		return nil, fmt.Errorf("model: provider %s is not configured: %w", name, ErrUnavailable)
+	}
+	base := settings.BaseURL
+	if base == "" {
+		base = defaultBaseURLs[name]
+	}
+	if base == "" {
+		return nil, fmt.Errorf("model: provider %s has no baseURL: %w", name, ErrUnavailable)
+	}
+	key := ""
+	if settings.APIKeyEnv != "" {
+		key = r.lookup(settings.APIKeyEnv)
+		if key == "" {
+			return nil, fmt.Errorf("model: provider %s API key variable %q is unset: %w", name, settings.APIKeyEnv, ErrUnavailable)
+		}
+	}
+	return NewOpenAIProvider(name, base, key, r.cfg.Timeout), nil
 }
 
 func resolveAuto(cfg Config, lookup func(string) string) (Provider, error) {

@@ -49,9 +49,22 @@ pub fn verify_pinned_version(binary: &PathBuf) -> Result<()> {
         .output()
         .with_context(|| format!("running {} version", binary.display()))?;
     let text = String::from_utf8_lossy(&output.stdout);
-    if !output.status.success() || !text.contains(TIGERBEETLE_PINNED_VERSION) {
+    let reported_version = text
+        .lines()
+        .next()
+        .and_then(|line| line.trim().strip_prefix("TigerBeetle version "));
+    // The pinned release binary reports its version with a build
+    // suffix (e.g. "0.17.9+cc1c06a"); accept the exact pin or the pin
+    // plus build metadata, nothing else.
+    let version_matches = reported_version.is_some_and(|reported| {
+        reported == TIGERBEETLE_PINNED_VERSION
+            || reported
+                .strip_prefix(TIGERBEETLE_PINNED_VERSION)
+                .is_some_and(|suffix| suffix.starts_with('+'))
+    });
+    if !output.status.success() || !version_matches {
         bail!(
-            "tigerbeetle binary at {} reports {:?}, expected pinned version {} \
+            "tigerbeetle binary at {} reports {:?}, expected exact pinned version {} \
              (acquire it from {})",
             binary.display(),
             text.trim(),
@@ -151,6 +164,70 @@ impl Drop for TestCluster {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn stub_binary(version_output: &str, exit_code: i32) -> (tempfile::TempDir, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temporary directory");
+        fs::write(dir.path().join("version-output"), version_output).expect("write output");
+        let binary = dir.path().join("tigerbeetle");
+        fs::write(
+            &binary,
+            format!(
+                "#!/bin/sh\n[ \"$1\" = version ] || exit 2\ncat \"$(dirname \"$0\")/version-output\"\nexit {exit_code}\n"
+            ),
+        )
+        .expect("write stub executable");
+        let mut permissions = fs::metadata(&binary).expect("stub metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&binary, permissions).expect("make stub executable");
+        (dir, binary)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn accepts_exact_reported_version() {
+        let (_dir, binary) = stub_binary("TigerBeetle version 0.17.9\n", 0);
+
+        assert!(verify_pinned_version(&binary).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn accepts_pinned_version_with_build_suffix() {
+        // The real 0.17.9 release binary reports "0.17.9+cc1c06a".
+        let (_dir, binary) = stub_binary("TigerBeetle version 0.17.9+cc1c06a\n", 0);
+
+        assert!(verify_pinned_version(&binary).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_nonexact_reported_versions() {
+        for output in [
+            "TigerBeetle version 0.17.99\n",
+            "TigerBeetle version 0.17.90\n",
+            "TigerBeetle version 0.17.9x\n",
+            "TigerBeetle version 0.16.0\n",
+            "TigerBeetle build deadbee0.17.9custom\n",
+        ] {
+            let (_dir, binary) = stub_binary(output, 0);
+
+            assert!(
+                verify_pinned_version(&binary).is_err(),
+                "should reject version output {output:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_nonzero_version_command_even_when_version_matches() {
+        let (_dir, binary) = stub_binary("TigerBeetle version 0.17.9\n", 1);
+
+        assert!(verify_pinned_version(&binary).is_err());
+    }
 
     /// Step-0 smoke test: the pinned binary formats and starts a
     /// single-replica cluster and stops cleanly. Ignored by default —

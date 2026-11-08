@@ -1651,9 +1651,7 @@ fn parse_single_term(s: &str) -> Result<SearchTerm, SearchQueryError> {
         // silently widening the search (unquoted `name:` / `:value`
         // keep their key-only / value-only meaning).
         if left == "\"\"" || right == "\"\"" {
-            return Err(SearchQueryError::EmptyQuotedComponent {
-                term: s.to_owned(),
-            });
+            return Err(SearchQueryError::EmptyQuotedComponent { term: s.to_owned() });
         }
         let key = strip_quotes(&left);
         let value = strip_quotes(&right);
@@ -2738,7 +2736,11 @@ mod tests {
         ];
         for sep in [" ", "\t", "\n", "\r\n", "\u{00A0}"] {
             let query = format!("name:foo{sep}bar{sep}baz:");
-            assert_eq!(parse_search_query(&query).unwrap(), expected, "separator {sep:?}");
+            assert_eq!(
+                parse_search_query(&query).unwrap(),
+                expected,
+                "separator {sep:?}"
+            );
         }
     }
 

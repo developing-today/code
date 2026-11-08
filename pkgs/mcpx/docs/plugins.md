@@ -301,8 +301,15 @@ On opencode v2 today:
    servers are isolated per call rather than per session.
 2. **Or add mcpx as an MCP server**: `mcpx serve --transport stdio` in
    v2's `mcp` config. One caveat: v2 defaults MCP servers to code mode, so
-   mcpx's own tools end up wrapped inside v2's code mode; whether v2's
-   code-mode defaults recognise mcpx and turn that off for it is unknown.
+   mcpx's own tools end up wrapped inside v2's code mode, and v2 does
+   not recognise mcpx and turn that off for it automatically. For a
+   remote mcpx server it instead appends `?codemode=false` to the URL
+   (mcpx answers that request with every upstream tool, flat — see
+   [mcp.md](mcp.md)), so v2's own code mode can orchestrate the
+   pooled servers directly. To opt mcpx out of v2 code mode instead
+   — the model calls mcpx's gateway tools directly, and no
+   parameter is appended — set `codemode: false` on the server in
+   v2's `mcp` config; [mcp.md](mcp.md) shows the concrete example.
 
 What the rewrite changes, when it happens:
 

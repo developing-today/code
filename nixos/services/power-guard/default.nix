@@ -34,6 +34,7 @@ in
         ExecStart = "${pkgs.python3}/bin/python3 ${./power-guard.py}";
         Restart = "always";
         RestartSec = "10s";
+        RestartPreventExitStatus = 2;
       };
     };
   };

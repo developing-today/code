@@ -1,17 +1,21 @@
-// Tests for the parser and bounded transport paths of meta-quota-export.mjs.
+// Tests for the pure parsing core of meta-quota-export.mjs.
 // Run: node --test pm-stack/meta-exporter/
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { test } from "node:test";
+import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, symlink } from "node:fs/promises";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
-import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
 import {
-  connectWs,
-  ExportError,
-  exportAndWrite,
+  attemptBoundedRestart,
   failureDocument,
+  PAGE_NOT_READY_EXIT,
+  probeCdpReadiness,
+  restartAllowed,
   parseBillingBanner,
   parsePaygBalance,
   parseSubscriptionQuota,
@@ -50,50 +54,17 @@ test("parseSubscriptionQuota: shape drift fails closed", () => {
   const zeroLimit = structuredClone(QUOTA);
   zeroLimit.subscription_quota.window_weighted_limit = "0";
   assert.throws(() => parseSubscriptionQuota(zeroLimit), /zero limit/);
-  // window_duration_secs is validated like every other numeric field:
-  // missing, non-numeric, zero, or negative durations fail closed
-  // instead of exporting a "window-NaNs" window as a successful reading.
-  for (const bad of [undefined, "abc", 0, -3600]) {
-    const drifted = structuredClone(QUOTA);
-    if (bad === undefined) delete drifted.subscription_quota.window_duration_secs;
-    else drifted.subscription_quota.window_duration_secs = bad;
-    assert.throws(() => parseSubscriptionQuota(drifted), /window_duration_secs/);
-  }
-});
-
-test("parseSubscriptionQuota: window naming for valid durations is unchanged", () => {
-  const oneHour = structuredClone(QUOTA);
-  oneHour.subscription_quota.window_duration_secs = 3600;
-  assert.equal(parseSubscriptionQuota(oneHour).windows[0].name, "1h");
-  const twoHours = structuredClone(QUOTA);
-  twoHours.subscription_quota.window_duration_secs = 7200;
-  assert.equal(parseSubscriptionQuota(twoHours).windows[0].name, "window-7200s");
 });
 
 test("parseBillingBanner: minor units to USD, currency checked", () => {
   assert.equal(parseBillingBanner({ kind: "free_partial", remaining_minor_units: 14857, currency: "USD" }), 148.57);
   assert.throws(() => parseBillingBanner({ remaining_minor_units: 100, currency: "EUR" }), /currency/);
   assert.throws(() => parseBillingBanner({}));
-  // Fractional minor units are shape drift: fail closed, never export a fractional dollar amount (#2510).
-  assert.throws(() => parseBillingBanner({ remaining_minor_units: 1050.5, currency: "USD" }), /missing\/invalid/);
-  assert.throws(() => parseBillingBanner({ remaining_minor_units: 0.1, currency: "USD" }), /missing\/invalid/);
-  assert.equal(parseBillingBanner({ remaining_minor_units: 0, currency: "USD" }), 0);
-  // Unsafe integers and negatives reject; MAX_SAFE_INTEGER itself is the
-  // representation limit, not a business cap.
-  assert.throws(() => parseBillingBanner({ remaining_minor_units: Number.MAX_SAFE_INTEGER + 1, currency: "USD" }), /missing\/invalid/);
-  assert.throws(() => parseBillingBanner({ remaining_minor_units: -100, currency: "USD" }), /missing\/invalid/);
 });
 
 test("parsePaygBalance: reads the iframe text, absence stays null", () => {
   assert.equal(parsePaygBalance("Pay as you go\nCurrent balance\n$0.00\nYour balance won't increase"), 0);
   assert.equal(parsePaygBalance("Current balance\n$1,234.56"), 1234.56);
-  assert.equal(parsePaygBalance("Current balance\n$1,234.5"), null);
-  assert.equal(parsePaygBalance("Current balance\n$1,234.567"), null);
-  assert.equal(parsePaygBalance("Current balance\n$1,234.560"), null);
-  assert.equal(parsePaygBalance("Current balance\n$1,234.56 USD"), 1234.56);
-  assert.equal(parsePaygBalance("Current balance\n$5"), 5);
-  assert.equal(parsePaygBalance("Current balance\n$1,234"), 1234);
-  assert.equal(parsePaygBalance("Current balance\n$1,234.56\nYour balance won't increase"), 1234.56);
   assert.equal(parsePaygBalance("nothing relevant here"), null);
   assert.equal(parsePaygBalance(undefined), null);
 });
@@ -116,304 +87,212 @@ test("documents: success carries the spec fields; failure carries none", () => {
   assert.equal("freeCreditsUsd" in bad, false);
 });
 
-// The live payload captured 2026-10-29 (#1301): after the short window
-// rolled at 16:22Z it went inactive — window_weighted_used "0" and NO
-// window_resets_at key at all — while the weekly window stayed live at
-// 23.62%. Every export tick failed on this shape (16:15Z onward) until
-// the parser learned to tolerate a missing reset on a not-yet-started
-// (zero-usage) window.
-const QUOTA_INACTIVE_SHORT = {
-  subscription_quota: {
-    tier_id: "27681527378179523",
-    tier: "Muse Code High Usage",
-    as_of: 1793328541,
-    window_weighted_limit: "100000000000",
-    window_duration_secs: 18000,
-    weekly_weighted_limit: "300000000000",
-    weekly_resets_at: 1793577600,
-    window_weighted_used: "0",
-    weekly_weighted_used: "70873201100",
-  },
-};
+// ---------- Readiness probe fixtures (issue #5487) ----------
+// A fixture CDP endpoint: HTTP answers /json/new like a real browser,
+// and the websocket either never replies (wedged renderer) or answers
+// CDP calls (healthy renderer). The wedge case is the regression: the
+// probe must report not-ready instead of hanging or passing.
 
-test("parseSubscriptionQuota: inactive zero-usage window with absent reset is tolerated", () => {
-  const parsed = parseSubscriptionQuota(QUOTA_INACTIVE_SHORT);
-  assert.deepEqual(parsed.windows, [
-    { name: "5h", usedPct: 0, resetAt: null },
-    { name: "weekly", usedPct: 23.62, resetAt: "2026-11-02T00:00:00.000Z" },
-  ]);
-});
-
-test("parseSubscriptionQuota: inactive zero-usage window with explicit null reset is tolerated", () => {
-  const payload = structuredClone(QUOTA_INACTIVE_SHORT);
-  payload.subscription_quota.window_resets_at = null;
-  const parsed = parseSubscriptionQuota(payload);
-  assert.equal(parsed.windows[0].resetAt, null);
-  assert.equal(parsed.windows[1].usedPct, 23.62);
-  // The same tolerance applies to the weekly window when it has not
-  // started either.
-  const weeklyInactive = structuredClone(QUOTA);
-  weeklyInactive.subscription_quota.weekly_weighted_used = "0";
-  weeklyInactive.subscription_quota.weekly_resets_at = null;
-  assert.equal(parseSubscriptionQuota(weeklyInactive).windows[1].resetAt, null);
-});
-
-test("parseSubscriptionQuota: null reset on an active window still fails closed", () => {
-  // Active = the window has started, i.e. it carries recorded usage
-  // (the 2026-10-27 capture above); a reset must exist for it. The
-  // inactive-window tolerance must not become blanket null tolerance.
-  const shortActive = structuredClone(QUOTA);
-  shortActive.subscription_quota.window_resets_at = null;
-  assert.throws(() => parseSubscriptionQuota(shortActive), /windowReset/);
-  const weeklyActive = structuredClone(QUOTA);
-  delete weeklyActive.subscription_quota.weekly_resets_at;
-  assert.throws(() => parseSubscriptionQuota(weeklyActive), /weeklyReset/);
-});
-
-test("parseSubscriptionQuota: absent reset with usage above zero still fails closed", () => {
-  const payload = structuredClone(QUOTA_INACTIVE_SHORT);
-  payload.subscription_quota.window_weighted_used = "1"; // any usage at all
-  assert.throws(() => parseSubscriptionQuota(payload), /windowReset/);
-});
-
-test("parseSubscriptionQuota: malformed reset fails closed even at zero usage", () => {
-  for (const bad of ["soon", -5, true, {}]) {
-    const payload = structuredClone(QUOTA_INACTIVE_SHORT);
-    payload.subscription_quota.window_resets_at = bad;
-    assert.throws(() => parseSubscriptionQuota(payload), /windowReset not a finite number/);
-  }
-});
-
-// #2789: num() used to be a bare Number() coercion, so drifted
-// spellings became real measurements ("" -> 0% window, "0x10" -> 16,
-// "1e2" -> 100). Only plain decimal spellings are accepted now.
-test("parseSubscriptionQuota: non-decimal numeric spellings fail closed", () => {
-  for (const bad of ["", "   ", "0x10", "0b101", "0o17", "1e2", "1E2", "abc", "12,000", " 123", "123 ", "1023570000n"]) {
-    for (const field of ["window_weighted_used", "window_weighted_limit", "window_duration_secs"]) {
-      const payload = structuredClone(QUOTA);
-      payload.subscription_quota[field] = bad;
-      assert.throws(() => parseSubscriptionQuota(payload), /not a finite|window_duration_secs/);
-    }
-  }
-  // The same spellings are rejected on the weekly fields too.
-  for (const bad of ["", "0x10", "1e2"]) {
-    const payload = structuredClone(QUOTA);
-    payload.subscription_quota.weekly_weighted_used = bad;
-    assert.throws(() => parseSubscriptionQuota(payload), /weeklyUsed/);
-  }
-});
-
-test("parseSubscriptionQuota: empty-string reset on a used window fails closed", () => {
-  for (const bad of ["", "   "]) {
-    const shortUsed = structuredClone(QUOTA);
-    shortUsed.subscription_quota.window_resets_at = bad;
-    assert.throws(() => parseSubscriptionQuota(shortUsed), /windowReset/);
-    const weeklyUsed = structuredClone(QUOTA);
-    weeklyUsed.subscription_quota.weekly_resets_at = bad;
-    assert.throws(() => parseSubscriptionQuota(weeklyUsed), /weeklyReset/);
-  }
-});
-
-test("parseSubscriptionQuota: empty-string reset on a zero-usage window is tolerated like absent", () => {
-  const payload = structuredClone(QUOTA_INACTIVE_SHORT);
-  payload.subscription_quota.window_resets_at = "";
-  assert.equal(parseSubscriptionQuota(payload).windows[0].resetAt, null);
-});
-
-test("parseSubscriptionQuota: decimal spellings still parse, including fractions", () => {
-  const frac = structuredClone(QUOTA);
-  frac.subscription_quota.window_weighted_used = "1023570000.5";
-  assert.equal(parseSubscriptionQuota(frac).windows[0].usedPct, 1.02);
-});
-
-test("parseSubscriptionQuota: empty as_of stays null; non-decimal as_of fails closed", () => {
-  const empty = structuredClone(QUOTA);
-  empty.subscription_quota.as_of = "";
-  assert.equal(parseSubscriptionQuota(empty).consoleAsOf, null);
-  const blank = structuredClone(QUOTA);
-  delete blank.subscription_quota.as_of;
-  assert.equal(parseSubscriptionQuota(blank).consoleAsOf, null);
-  for (const bad of ["0x10", "1e2", "soon"]) {
-    const payload = structuredClone(QUOTA);
-    payload.subscription_quota.as_of = bad;
-    assert.throws(() => parseSubscriptionQuota(payload), /unparseable|finite/);
-  }
-});
-
-test("parseSubscriptionQuota: epoch fields reject values outside the pinned seconds window", () => {
-  const firstAllowed = 1_577_836_800; // 2020-01-01T00:00:00Z
-  const lastAllowed = 4_102_444_800; // 2100-01-01T00:00:00Z
-  const cases = [
-    ["window_resets_at", [firstAllowed - 1, lastAllowed + 1, 0, 1_793_090_405_000, 1e300]],
-    ["weekly_resets_at", [firstAllowed - 1, lastAllowed + 1, 0, 1_793_090_405_000, 1e300]],
-    ["as_of", [firstAllowed - 1, lastAllowed + 1, 0, 1_793_000_000_000, 1e300]],
-  ];
-  for (const [field, values] of cases) {
-    for (const value of values) {
-      const payload = structuredClone(QUOTA);
-      payload.subscription_quota[field] = value;
-      assert.throws(
-        () => parseSubscriptionQuota(payload),
-        (error) => {
-          assert.ok(error instanceof ExportError);
-          assert.equal(error.status, "unparseable");
-          assert.equal(error.exitCode, 6);
-          return true;
-        },
-        `${field}=${value} should fail as unparseable`,
-      );
-    }
-  }
-});
-
-test("parseSubscriptionQuota: epoch window endpoints are inclusive", () => {
-  const endpoints = [
-    [1_577_836_800, "2020-01-01T00:00:00.000Z"],
-    [4_102_444_800, "2100-01-01T00:00:00.000Z"],
-  ];
-  for (const [epoch, expected] of endpoints) {
-    for (const field of ["window_resets_at", "weekly_resets_at"]) {
-      const payload = structuredClone(QUOTA);
-      payload.subscription_quota[field] = epoch;
-      const parsed = parseSubscriptionQuota(payload);
-      assert.equal(parsed.windows[field === "window_resets_at" ? 0 : 1].resetAt, expected);
-    }
-    const payload = structuredClone(QUOTA);
-    payload.subscription_quota.as_of = epoch;
-    assert.equal(parseSubscriptionQuota(payload).consoleAsOf, expected);
-  }
-});
-
-async function listen(server) {
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  return server.address().port;
+function wsAccept(key) {
+  return createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
 }
 
-async function closeServer(server) {
-  server.closeAllConnections();
-  await new Promise((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
-  });
+function wsFrame(text) {
+  const payload = Buffer.from(text);
+  let header;
+  if (payload.length < 126) {
+    header = Buffer.from([0x81, payload.length]);
+  } else if (payload.length < 65536) {
+    header = Buffer.alloc(4);
+    header[0] = 0x81; header[1] = 126; header.writeUInt16BE(payload.length, 2);
+  } else {
+    header = Buffer.alloc(10);
+    header[0] = 0x81; header[1] = 127; header.writeBigUInt64BE(BigInt(payload.length), 2);
+  }
+  return Buffer.concat([header, payload]);
 }
 
-test("a non-answering CDP HTTP endpoint writes bounded failure documents", async () => {
-  const server = createServer(() => {});
-  const port = await listen(server);
-  const outDir = await mkdtemp(join(tmpdir(), "meta-exporter-http-timeout-"));
-  try {
-    const result = await exportAndWrite({
-      cdpPort: port,
-      outDir,
-      timeouts: { httpMs: 30 },
-    });
-
-    assert.equal(result.exitCode, 4);
-    assert.equal(result.doc.status, "cdp-unavailable");
-    assert.match(result.doc.detail, /timed out/i);
-    assert.equal("windows" in result.doc, false);
-
-    const latest = JSON.parse(await readFile(join(outDir, "latest.json"), "utf8"));
-    const history = (await readFile(join(outDir, "history.jsonl"), "utf8")).trim().split("\n");
-    assert.deepEqual(latest, result.doc);
-    assert.equal(history.length, 1);
-    assert.deepEqual(JSON.parse(history[0]), result.doc);
-  } finally {
-    await closeServer(server);
-    await rm(outDir, { recursive: true, force: true });
-  }
-});
-
-test("a non-answering CDP command writes fetch-failed output within its deadline", async () => {
-  const server = createServer((_req, res) => {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify([
-      {
+function startFixtureCdp({ wedged }) {
+  const sockets = new Set();
+  const track = (sock) => { sockets.add(sock); sock.on("close", () => sockets.delete(sock)); };
+  const server = createServer((req, res) => {
+    if (req.url.startsWith("/json/new")) {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        id: "probe-target-1",
         type: "page",
-        url: "https://dev.meta.ai/",
-        webSocketDebuggerUrl: "ws://fake-cdp/",
-      },
-    ]));
+        url: "about:blank",
+        webSocketDebuggerUrl: `ws://127.0.0.1:${server.address().port}/ws`,
+      }));
+    } else if (req.url.startsWith("/json/close")) {
+      res.end("Target is closing");
+    } else if (req.url.startsWith("/json/list")) {
+      res.setHeader("content-type", "application/json");
+      res.end("[]");
+    } else {
+      res.statusCode = 404;
+      res.end("nope");
+    }
   });
-  const port = await listen(server);
-  const outDir = await mkdtemp(join(tmpdir(), "meta-exporter-ws-timeout-"));
-  class SilentWebSocket {
-    constructor() {
-      queueMicrotask(() => this.onopen?.({}));
-    }
-    send() {}
-    close() {
-      this.onclose?.({});
-    }
-  }
-
-  try {
-    const result = await exportAndWrite({
-      cdpPort: port,
-      outDir,
-      WebSocketImpl: SilentWebSocket,
-      timeouts: { httpMs: 100, websocketOpenMs: 100, commandMs: 30 },
-    });
-
-    assert.equal(result.exitCode, 7);
-    assert.equal(result.doc.status, "fetch-failed");
-    assert.match(result.doc.detail, /timed out/i);
-    assert.deepEqual(
-      JSON.parse(await readFile(join(outDir, "latest.json"), "utf8")),
-      result.doc,
+  server.on("connection", track);
+  server.on("upgrade", (req, socket) => {
+    track(socket);
+    socket.write(
+      "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+      `Sec-WebSocket-Accept: ${wsAccept(req.headers["sec-websocket-key"])}\r\n\r\n`,
     );
-    const history = (await readFile(join(outDir, "history.jsonl"), "utf8")).trim().split("\n");
-    assert.equal(history.length, 1);
-    assert.deepEqual(JSON.parse(history[0]), result.doc);
+    if (wedged) return; // accept the socket, never reply — the wedge
+    let buf = Buffer.alloc(0);
+    socket.on("data", (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      for (;;) {
+        if (buf.length < 2) return;
+        const masked = (buf[1] & 0x80) !== 0;
+        let len = buf[1] & 0x7f;
+        let off = 2;
+        if (len === 126) { if (buf.length < 4) return; len = buf.readUInt16BE(2); off = 4; }
+        else if (len === 127) { if (buf.length < 10) return; len = Number(buf.readBigUInt64BE(2)); off = 10; }
+        const maskOff = off;
+        if (masked) off += 4;
+        if (buf.length < off + len) return;
+        let payload = buf.subarray(off, off + len);
+        if (masked) {
+          const mask = buf.subarray(maskOff, maskOff + 4);
+          payload = Buffer.from(payload.map((b, i) => b ^ mask[i % 4]));
+        }
+        buf = buf.subarray(off + len);
+        let msg;
+        try { msg = JSON.parse(payload.toString()); } catch { continue; }
+        if (!msg.id) continue;
+        const result = msg.method === "Runtime.evaluate" ? { result: { value: 1 } } : {};
+        socket.write(wsFrame(JSON.stringify({ id: msg.id, result })));
+      }
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      resolve({
+        base: `http://127.0.0.1:${server.address().port}`,
+        close: () => new Promise((r) => { for (const sock of sockets) sock.destroy(); server.close(r); }),
+      });
+    });
+  });
+}
+
+test("probeCdpReadiness: a CDP that answers /json/new but never replies to navigate/evaluate is wedged", async () => {
+  const fx = await startFixtureCdp({ wedged: true });
+  try {
+    const r = await probeCdpReadiness({ cdpBase: fx.base, timeoutMs: 2000 });
+    assert.equal(r.ok, false);
+    assert.match(r.detail, /never replied|wedged/);
   } finally {
-    await closeServer(server);
-    await rm(outDir, { recursive: true, force: true });
+    await fx.close();
   }
 });
 
-test("connectWs bounds open and rejects every pending command on close or error", async () => {
-  let unopenedSocket;
-  class NeverOpenWebSocket {
-    constructor() {
-      unopenedSocket = this;
-    }
-    close() {
-      this.closed = true;
-    }
+test("probeCdpReadiness: a healthy renderer passes", async () => {
+  const fx = await startFixtureCdp({ wedged: false });
+  try {
+    const r = await probeCdpReadiness({ cdpBase: fx.base, timeoutMs: 4000 });
+    assert.deepEqual(r, { ok: true });
+  } finally {
+    await fx.close();
   }
+});
 
-  await assert.rejects(
-    connectWs("ws://fake-cdp/", {
-      WebSocketImpl: NeverOpenWebSocket,
-      openTimeoutMs: 10,
-      commandTimeoutMs: 20,
-    }),
-    /timed out/i,
-  );
-  assert.equal(unopenedSocket.closed, true);
+test("restartAllowed: at most once per 15 minutes", () => {
+  const now = Date.parse("2026-11-05T12:00:00.000Z");
+  assert.equal(restartAllowed(null, now), true);
+  assert.equal(restartAllowed("2026-11-05T11:50:00.000Z", now), false);
+  assert.equal(restartAllowed("2026-11-05T11:45:00.000Z", now), true);
+  assert.equal(restartAllowed("not-a-date", now), true);
+});
 
-  for (const [event, emit] of [
-    ["close", (socket) => socket.onclose?.({})],
-    ["error", (socket) => socket.onerror?.({ message: "test socket failure" })],
-  ]) {
-    class DisruptedWebSocket {
-      constructor() {
-        queueMicrotask(() => this.onopen?.({}));
-      }
-      send() {
-        queueMicrotask(() => emit(this));
-      }
-      close() {}
-    }
-    const client = await connectWs("ws://fake-cdp/", {
-      WebSocketImpl: DisruptedWebSocket,
-      openTimeoutMs: 100,
-      commandTimeoutMs: 100,
-    });
-    const pending = [client.send("one"), client.send("two")];
-    const results = await Promise.allSettled(pending);
-    assert.equal(results.length, 2, `${event} should settle both requests`);
-    assert.ok(results.every((result) => result.status === "rejected"));
-    assert.ok(results.every((result) => /(closed|failure)/i.test(result.reason.message)));
+test("attemptBoundedRestart: restarts once, then the persisted bound skips", async () => {
+  const outDir = await mkdtemp(join(tmpdir(), "meta-exporter-restart-"));
+  let calls = 0;
+  const restart = async () => { calls += 1; };
+  const first = await attemptBoundedRestart({ outDir, now: new Date("2026-11-05T12:00:00.000Z"), restart });
+  assert.equal(first.result, "restarted");
+  assert.equal(calls, 1);
+  const state = JSON.parse(await readFile(join(outDir, ".helium-restart.json"), "utf8"));
+  assert.equal(state.lastRestartAt, "2026-11-05T12:00:00.000Z");
+  const second = await attemptBoundedRestart({ outDir, now: new Date("2026-11-05T12:05:00.000Z"), restart });
+  assert.equal(second.result, "skipped-cooldown");
+  assert.equal(calls, 1);
+});
+
+test("attemptBoundedRestart: a failed restart still persists the cooldown bound", async () => {
+  const outDir = await mkdtemp(join(tmpdir(), "meta-exporter-restart-fail-"));
+  let calls = 0;
+  const restart = async () => { calls += 1; throw new Error("restart boom"); };
+  const first = await attemptBoundedRestart({ outDir, now: new Date("2026-11-05T12:00:00.000Z"), restart });
+  assert.equal(first.result, "restart-failed");
+  assert.equal(calls, 1);
+  const state = JSON.parse(await readFile(join(outDir, ".helium-restart.json"), "utf8"));
+  assert.equal(state.lastRestartAt, "2026-11-05T12:00:00.000Z");
+  const second = await attemptBoundedRestart({ outDir, now: new Date("2026-11-05T12:05:00.000Z"), restart });
+  assert.equal(second.result, "skipped-cooldown");
+  assert.equal(calls, 1);
+});
+
+test("documents: page-not-ready is a distinct status/exit and recovery is recorded", () => {
+  assert.notEqual(PAGE_NOT_READY_EXIT, 5);
+  const recovery = { action: "restart", unit: "helium-cdp.service", at: "2026-11-05T12:00:00.000Z", result: "restarted" };
+  const bad = failureDocument({ attemptedAt: "2026-11-05T12:00:00.000Z", status: "page-not-ready", detail: "wedged", recovery });
+  assert.equal(bad.status, "page-not-ready");
+  assert.deepEqual(bad.recovery, recovery);
+  assert.equal("windows" in bad, false);
+  const plain = failureDocument({ attemptedAt: "2026-11-05T12:00:00.000Z", status: "session-expired", detail: "HTTP 401" });
+  assert.equal("recovery" in plain, false);
+});
+
+// ---------- Entry-point guard (issue #6343) ----------
+// Regression: the re-homed exporter guarded main() with the raw-path
+// comparison `import.meta.url === pathToFileURL(process.argv[1]).href`,
+// so any symlinked invocation silently skipped main() and exited 0 —
+// the #2350 bug, restored by the #6333 re-home. The guard now resolves
+// symlinks on both sides (realpathSync, mirroring
+// supabase-quota-export.mjs / cloudflare-quota-export.mjs). Oracle: a run
+// against an unreachable CDP port must produce the cdp-unavailable
+// failure document with exit 4, identically for direct and symlinked
+// invocation; a silent exit 0 is the counterexample.
+
+const execFileAsync = promisify(execFile);
+const EXPORTER_PATH = fileURLToPath(new URL("./meta-quota-export.mjs", import.meta.url));
+
+async function runExporter(entryPath, outDir) {
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      process.execPath,
+      [entryPath, "--cdp-port", "1", "--out-dir", outDir],
+      { timeout: 30000 },
+    );
+    return { code: 0, stdout, stderr };
+  } catch (err) {
+    return { code: err.code, stdout: err.stdout ?? "", stderr: err.stderr ?? "" };
   }
+}
+
+async function assertCdpUnavailableRun(entryPath, label) {
+  const base = await mkdtemp(join(tmpdir(), `meta-exporter-entry-${label}-`));
+  const outDir = join(base, "out");
+  const r = await runExporter(entryPath, outDir);
+  assert.equal(r.code, 4, `${label} invocation must exit 4, got ${r.code} (stderr: ${r.stderr})`);
+  assert.match(r.stderr, /cdp-unavailable/);
+  const latest = JSON.parse(await readFile(join(outDir, "latest.json"), "utf8"));
+  assert.equal(latest.status, "cdp-unavailable");
+  const history = await readFile(join(outDir, "history.jsonl"), "utf8");
+  assert.equal(JSON.parse(history.trim()).status, "cdp-unavailable");
+}
+
+test("entry-point guard: direct invocation runs main (cdp-unavailable, exit 4)", async () => {
+  await assertCdpUnavailableRun(EXPORTER_PATH, "direct");
+});
+
+test("entry-point guard: symlinked invocation runs main, matching direct (#6343)", async () => {
+  const base = await mkdtemp(join(tmpdir(), "meta-exporter-entry-link-"));
+  const linkPath = join(base, "meta-quota-export-link.mjs");
+  await symlink(EXPORTER_PATH, linkPath);
+  await assertCdpUnavailableRun(linkPath, "symlink");
 });

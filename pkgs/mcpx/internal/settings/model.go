@@ -63,6 +63,31 @@ func modelSettings() []Setting {
 				"value: settings are printable, keys are not.",
 		},
 		{
+			Path: "model.providers", Scope: ScopeDaemon, Kind: KindString, Default: "{}",
+			Name:  "Provider-keyed model settings",
+			Short: "JSON object mapping provider names to baseURL and apiKeyEnv",
+			Long: "Optional provider-keyed OpenAI-compatible endpoints and " +
+				"explicit environment-variable names, for example {\"openai\": " +
+				"{\"apiKeyEnv\":\"OPENAI_API_KEY\"}, \"ollama\": " +
+				"{\"baseURL\":\"http://localhost:11434/v1\"}}. A key is read " +
+				"only from the variable named for that provider. Empty baseURL uses " +
+				"the provider's built-in endpoint when one exists. The singular " +
+				"model.baseURL/model.apiKeyEnv remain the fallback for the " +
+				"provider named by model.provider.",
+		},
+		{
+			Path: "model.profiles", Scope: ScopeDaemon, Kind: KindString, Default: "{}",
+			Name:  "Model profiles",
+			Short: "JSON object of named ordered provider/model fallback chains",
+			Long: "Each profile maps a name to {\"models\":[\"openai/gpt-5\", " +
+				"\"anthropic/claude-sonnet\"], \"budget\":2048, " +
+				"\"timeout\":\"30s\"}. Models are tried in order; an " +
+				"unconfigured or failed provider is skipped. An operation's model " +
+				"selection and model.default may name either a profile or a " +
+				"provider/model id. A profile budget caps the per-call token ask; " +
+				"timeout bounds each provider attempt.",
+		},
+		{
 			Path: "model.default", Scope: ScopeDaemon, Kind: KindString, Default: "",
 			Name:  "Default model",
 			Short: "the model id used when an operation names none, as provider/model",
@@ -94,6 +119,24 @@ func modelSettings() []Setting {
 				"treated as unavailable and the caller falls back to its " +
 				"deterministic result, with a note that the model did not " +
 				"answer.",
+		},
+		{
+			Path: "sampling.answerLocally", Scope: ScopeDaemon, Kind: KindBool, Default: "false",
+			Name:  "Answer sampling locally",
+			Short: "answer upstream sampling requests with mcpx's configured model provider instead of relaying them to the caller",
+			Long: "Slice 3 of #1925. Upstream servers send sampling/" +
+				"createMessage requests to mcpx, and mcpx has always " +
+				"relayed them through the broker to whatever drives it -- " +
+				"but the primary consumer never declares the sampling " +
+				"capability, so the relay goes unanswered. With this set, " +
+				"a sampling request is instead answered by the configured " +
+				"model layer (model.provider / model.profiles through " +
+				"internal/model Resolve), with model.budget and " +
+				"model.timeout as its bounds. The model.* settings stay " +
+				"the source of truth: enabling this with no provider " +
+				"configured fails the request cleanly rather than hanging " +
+				"or silently succeeding. Default false -- the relay " +
+				"behaviour mcpx has always had is unchanged.",
 		},
 	}
 }

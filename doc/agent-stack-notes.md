@@ -6,42 +6,48 @@ Everything here was verified on this machine rather than taken from docs.
 
 ---
 
-## 1. opencode: `plugin` vs `plugins` — the one that silently breaks things
+## 1. opencode: `plugin` vs `plugins` — canonical spelling is v2
 
-opencode v1 and v2 disagree about the config key, and OpenChamber rewrites it.
+opencode v1 and v2 disagreed about the config key, and OpenChamber rewrites
+it. That used to force the v1 spelling; it no longer does.
 
-Verified with `opencode debug config` against both builds:
+History: with both builds in play, `plugin` was the only spelling that
+worked everywhere — 1.18.19 **ignored** `plugins` outright, while 2.x loads
+`plugin` by normalising it to `plugins`. The same applied to `agent` vs
+`agents`.
 
-| config key  | opencode 1.18.19 | opencode 2.0.23                 |
-| ----------- | ---------------- | ------------------------------- |
-| `"plugin"`  | loads            | loads (normalises to `plugins`) |
-| `"plugins"` | **ignored**      | loads                           |
+Current state (verified 2026-11-02): the 1.x CLI is retired. Every opencode
+on this machine is the 2.x fork (v2.0.30+6fb3bac, in both the per-user and
+the system profile). The fork treats `plugins` / `agents` as canonical: its
+config normalizer (`packages/core/src/config/normalize.ts`) decodes `plugin`
+/ `agent` as LEGACY v1 and migrates them into the v2 keys, and
+`opencode debug config` presents the resolved document with `plugins` /
+`agents`. So the v2 spellings are the canonical ones, the tracked config
+uses them, and the normalize unit converts any v1 spelling that lands in
+the file to v2.
 
-So `plugin` is the only spelling that works on both. The same applies to
-`agent` vs `agents`.
-
-The trap: **OpenChamber rewrites `plugin` → `plugins` on startup.** Its own
-source says so (`server/lib/opencode/plugins.js`):
-
-> OpenCode 2 reads `plugins` ... and still decodes the v1 `plugin` array.
-> OpenChamber reads both and always writes `plugins` with v2 entries.
-
-That is correct for OpenChamber, which runs opencode 2.x. It silently stops all
-plugins loading for a v1 CLI. There is no error; `/models` and plugin features
-just quietly do nothing.
+OpenChamber's side never changed: it reads both spellings and only ever
+writes native v2 (its `server/lib/opencode/config-v2.js`: "Everything
+OpenChamber writes is native v2"; its managed-plugin writer folds a legacy
+`plugin` key into `plugins` and deletes it). While the normalize unit
+converted the file back to v1, the two writers flapped the keys on every
+OpenChamber launch — net-zero churn in the tracked config. With the unit
+flipped to emit v2, both writers agree and the file is stable.
 
 Mitigation in this repo: `systemd.user.paths.opencode-config-normalize` watches
-the config and converts it back. See `pkgs/opencode-config-normalize/`.
+the config and converts any v1 `plugin` / `agent` spelling to the canonical
+v2 `plugins` / `agents`. See `pkgs/opencode-config-normalize/`.
 
 Check with:
 
 ```sh
-opencode debug config | jq '.plugin | length'
+opencode debug config | jq '.[0].info.plugins | length'
 ```
 
-Also note the canonical schema at <https://opencode.ai/config.json> lists
-`plugin` and `agent` but **not** `plugins`, `agents` or `warming` — OpenChamber
-writes keys that are not in opencode's published schema.
+Note the published schema at <https://opencode.ai/config.json> is upstream's
+and lags the fork: it lists `plugin` and `agent` but not `plugins`, `agents`
+or `warming`. The fork's own normalizer is the authority for what this
+machine's opencode treats as canonical.
 
 ## 2. opencode config: scope and precedence
 

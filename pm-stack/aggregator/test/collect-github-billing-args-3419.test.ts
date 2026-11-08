@@ -1,4 +1,4 @@
-// Pinning test for #3419: collect-github-billing must validate explicit
+// Pinning test for #3419 (and #6922 for --by): collect-github-billing must validate explicit
 // --year/--month/--user values BEFORE any gh call. Malformed values used
 // to flow straight into the billing API URL (month=NaN, month=13,
 // users/--print) and the failure was then misreported as a gh
@@ -18,10 +18,7 @@ async function setupStubGh(dir: string): Promise<string> {
   const { mkdir } = await import("node:fs/promises");
   await mkdir(binDir, { recursive: true });
   const stub = join(binDir, "gh");
-  await writeFile(
-    stub,
-    '#!/bin/sh\necho "$@" >> "$GH_STUB_LOG"\nprintf \'{"usageItems":[]}\'\n',
-  );
+  await writeFile(stub, '#!/bin/sh\necho "$@" >> "$GH_STUB_LOG"\nprintf \'{"usageItems":[]}\'\n');
   await chmod(stub, 0o755);
   return logPath;
 }
@@ -42,10 +39,7 @@ async function runScript(
     stdout: "pipe",
     stderr: "pipe",
   });
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
+  const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
   return { code: await proc.exited, stdout, stderr };
 }
 
@@ -75,6 +69,10 @@ describe("collect-github-billing argument validation (#3419)", () => {
         ["--month"],
         ["--year", "1999"],
         ["--user", "   "],
+        ["--by"],
+        ["--by", ""],
+        ["--by", "   "],
+        ["--by", "--print"],
       ];
       for (const args of badArgSets) {
         const { code, stderr } = await runScript(dir, logPath, args);
@@ -93,13 +91,45 @@ describe("collect-github-billing argument validation (#3419)", () => {
     try {
       const logPath = await setupStubGh(dir);
       const { code, stdout } = await runScript(dir, logPath, [
-        "--year", "2026", "--month", "10", "--user", "octocat", "--print",
+        "--year",
+        "2026",
+        "--month",
+        "10",
+        "--user",
+        "octocat",
+        "--print",
       ]);
       expect(code).toBe(0);
-      expect(await ghCalls(logPath)).toContain(
-        "api users/octocat/settings/billing/usage?year=2026&month=10",
-      );
+      expect(await ghCalls(logPath)).toContain("api users/octocat/settings/billing/usage?year=2026&month=10");
       expect(stdout).toContain("0 record(s) (dry run, outbox untouched)");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  test("a valid --by is recorded verbatim as observedBy (#6922)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "billing-args-6922-by-"));
+    try {
+      const binDir = join(dir, "bin");
+      const { mkdir } = await import("node:fs/promises");
+      await mkdir(binDir, { recursive: true });
+      const stub = join(binDir, "gh");
+      await writeFile(
+        stub,
+        "#!/bin/sh\nprintf '{\"usageItems\":[{\"date\":\"2026-10-15\",\"product\":\"actions\",\"unitType\":\"minutes\",\"quantity\":10,\"grossAmount\":1,\"netAmount\":1}]}\n'",
+      );
+      await chmod(stub, 0o755);
+      const env = { ...process.env };
+      delete env.GH_BILLING_USER;
+      const proc = Bun.spawn([process.execPath, script, "--by", "stewardship-cycle", "--print"], {
+        env: { ...env, PATH: `${binDir}:${process.env.PATH}` },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+      expect(await proc.exited).toBe(0);
+      expect(stdout).toContain('\"observedBy\":\"stewardship-cycle\"');
+      expect(stdout).not.toContain('\"observedBy\":\"collect-github-billing\"');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -113,8 +143,7 @@ describe("collect-github-billing argument validation (#3419)", () => {
       expect(code).toBe(0);
       const now = new Date();
       const expected =
-        `api users/dezren39/settings/billing/usage?year=${now.getUTCFullYear()}` +
-        `&month=${now.getUTCMonth() + 1}`;
+        `api users/dezren39/settings/billing/usage?year=${now.getUTCFullYear()}` + `&month=${now.getUTCMonth() + 1}`;
       expect(await ghCalls(logPath)).toContain(expected);
     } finally {
       await rm(dir, { recursive: true, force: true });

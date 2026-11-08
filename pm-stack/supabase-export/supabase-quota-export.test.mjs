@@ -13,7 +13,7 @@ import {
   run,
 } from "./supabase-quota-export.mjs";
 
-const REF = "nltgxorqwxhgfzseiirt";
+const REF = "keihfchslgjetkmnmzra";
 
 function response(status, body) {
   return {
@@ -22,7 +22,7 @@ function response(status, body) {
   };
 }
 
-/** Fake Management API: muse-dev answers like the live probe of 2026-10-29. */
+/** Fake Management API: the project answers like the live probe of 2026-10-29. */
 function fakeFetch({ dbBytes = 1_153_939_123, bucketCount = 0, addonsStatus = 200, addons = [] } = {}) {
   const calls = [];
   const impl = async (url, init) => {
@@ -34,7 +34,7 @@ function fakeFetch({ dbBytes = 1_153_939_123, bucketCount = 0, addonsStatus = 20
     if (path === `/projects/${REF}`) {
       return response(200, {
         ref: REF,
-        name: "muse-dev",
+        name: "muse-dev2",
         organization_slug: "crwkmndylaagtbprrljn",
         status: "ACTIVE_HEALTHY",
       });

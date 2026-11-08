@@ -64,9 +64,9 @@ func (a *App) CmdHook(ctx context.Context, args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tON\tEXECUTOR\tSOURCE\tTIMEOUT\tFAILURE\tREADY")
+	_, _ = fmt.Fprintln(tw, "NAME\tON\tEXECUTOR\tSOURCE\tTIMEOUT\tFAILURE\tREADY")
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			r.Name, r.On, r.Executor, r.Source, r.Timeout, r.Failure, r.Ready)
 	}
 	return tw.Flush()

@@ -34,6 +34,17 @@ describe("hasGraphEdges", () => {
     expect(hasGraphEdges([item({ number: 1, blockedBy: [R(9)] })])).toBe(true);
     expect(hasGraphEdges([item({ number: 1, epicRef: R(9) })])).toBe(true);
   });
+  test("invalid-only edge fields do not make the graph available", () => {
+    const unsafe = "developing-today/code#99999999999999999999";
+    const malformed = [
+      item({ number: 1, parentRef: "812" }),
+      item({ number: 2, epicRef: unsafe }),
+      item({ number: 3, blockedBy: ["812"] }),
+      item({ number: 4, blocks: [unsafe] }),
+    ];
+    expect(hasGraphEdges(malformed)).toBe(false);
+    expect(hasGraphEdges([...malformed, item({ number: 5, blockedBy: [R(6)] })])).toBe(true);
+  });
 });
 
 describe("blockedSummary", () => {
@@ -64,6 +75,20 @@ describe("blockedSummary", () => {
     const s = blockedSummary([item({ number: 1, labels: ["effort/s"], blockedBy: [R(99)] })]);
     expect(s.blockedCount).toBe(1);
     expect(s.longestChain).toEqual([R(1), R(99)]);
+  });
+
+  test("unsafe blocker refs are omitted while valid blocker chains remain", () => {
+    const unsafe = "developing-today/code#99999999999999999999";
+    const onlyBad = blockedSummary([item({ number: 1, blockedBy: [unsafe] })]);
+    expect(onlyBad.blockedCount).toBe(0);
+    expect(onlyBad.longestChain).toEqual([]);
+
+    const withControl = blockedSummary([
+      item({ number: 1, blockedBy: [unsafe, R(3)] }),
+      item({ number: 3 }),
+    ]);
+    expect(withControl.blockedCount).toBe(1);
+    expect(withControl.longestChain).toEqual([R(1), R(3)]);
   });
 
   test("a blocked-by cycle terminates instead of looping", () => {
@@ -162,6 +187,23 @@ describe("renderProgramProject graph section (#2400)", () => {
     expect(html).toContain("<svg");
     expect(html).toContain("Depth = sub-issue nesting");
     expect(html).not.toContain("Not yet sized/graphed");
+  });
+
+  test("a raw pool with an unsafe blocker edge renders its valid chain link", () => {
+    const unsafe = "developing-today/code#99999999999999999999";
+    const html = renderWith([
+      item({ number: 1, blockedBy: [unsafe, R(3)] }),
+      item({ number: 3 }),
+    ]);
+    expect(html).toContain('href="https://github.com/developing-today/code/issues/3"');
+    expect(html).not.toContain('href="https://github.com/developing-today/code/issues/99999999999999999999"');
+  });
+
+  test("a raw pool with only invalid edges says it is not yet graphed", () => {
+    const html = renderWith([item({ number: 1, blockedBy: ["812"] })]);
+    expect(html).toContain("Not yet sized/graphed");
+    expect(html).not.toContain("Blocked weight");
+    expect(html).not.toContain("longest blocked chain");
   });
 
   test("an unsized, edgeless project renders the explicit note and no fake percentage", () => {

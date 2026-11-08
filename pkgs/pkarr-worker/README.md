@@ -26,7 +26,9 @@ not a traffic relay. Storage is one SQLite-backed Durable Object per
 public key (named by the key's z-base-32 form), which gives strongly
 consistent newest-wins semantics per key. Records expire after
 `RETENTION_SECONDS` (default 7 days) without a refresh, via the object's
-alarm. Per-IP rate limits guard all three routes. Clients verify
+alarm. Configured values must be positive whole base-10 seconds (digits
+only); missing, malformed, non-positive, or unsupported values fall back
+to seven days. Per-IP rate limits guard all three routes. Clients verify
 signatures themselves; the Worker also verifies before storing, but it
 is trusted for availability, not integrity.
 

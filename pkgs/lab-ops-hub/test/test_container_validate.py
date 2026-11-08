@@ -1,10 +1,12 @@
 # Tests for the container crawler's validate_crawl_url (container/app.py).
 # The TypeScript validator has its own suite (lib.test.ts); the Python copy
 # is the component that actually fetches, so its policy is pinned here.
-# Run with plain Python: `python3 -m unittest discover -s test -p "test_*.py"`
-# from pkgs/lab-ops-hub (stdlib only).
+# Run with the configured Python environment (including the pinned `idna`
+# dependency): `python3 -m unittest discover -s test -p "test_*.py"` from
+# pkgs/lab-ops-hub.
 import importlib.util
 import pathlib
+import time
 import unittest
 
 _APP_PATH = pathlib.Path(__file__).resolve().parent.parent / "container" / "app.py"
@@ -817,6 +819,37 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertRefused("http://\u05d0\u06611.com/")
         self.assertRefused("http://\u0661\u0627.com/")
 
+    def test_fallback_return_applies_uts46_mapping_before_nfkc(self):
+        # Codex review of PR #5231: a label python-idna refuses
+        # (here over the underscore) fell back to raw NFKC, which
+        # maps U+03F2 (lunate sigma) to U+03C2 (final sigma) where
+        # UTS-46 — and the Worker — map it to U+03C3, so ϲ_.com
+        # returned the final-sigma host xn--_-xmb instead of the
+        # WHATWG host xn--_-zmb. The fallback now remaps with
+        # UTS-46 before NFKC.
+        self.assertEqual(
+            validate_crawl_url("http://ϲ_.com/"),
+            "http://xn--_-zmb.com/",
+        )
+        # Control: the plain lunate-sigma label takes the primary
+        # codec path and returns the same sigma mapping.
+        self.assertEqual(
+            validate_crawl_url("http://ϲ.com/"),
+            "http://xn--4xa.com/",
+        )
+
+    def test_fallback_return_ascii_remapping_has_no_punycode_prefix(self):
+        # Codex review of PR #5231 (round 2): UTS-46 deletes the
+        # U+FE0F variation selector, so the label a_ + U+FE0F remaps
+        # to pure-ASCII a_. The fallback punycode-encoded it anyway,
+        # returning xn--a_- \u2014 a different host than the Worker's
+        # (and the previous codec's) a_. An ASCII remapping returns
+        # directly, with no xn-- prefix.
+        self.assertEqual(
+            validate_crawl_url("http://a_\ufe0f.com/"),
+            "http://a_.com/",
+        )
+
     def test_judges_u0345_by_its_uts46_mapping(self):
         # UTS-46 maps U+0345 (combining Greek ypogegrammeni) to
         # U+03B9 (ι, bidi class L), but NFKC leaves it unchanged, so
@@ -982,15 +1015,31 @@ class TestValidateCrawlUrl(unittest.TestCase):
         # round-trip alone certifies all of these.
         # Mapped-form class (the issue's headline hosts):
         self.assertRefused("http://xn--example-yoa.com/")  # ex\u00c0ample (uppercase)
-        self.assertRefused("http://xn--example-rla.com/")  # ex\u00b2ample (compatibility digit)
-        self.assertRefused("http://xn--ab-cja0631x.com/")  # a\uff0fb\u00e9 (fullwidth solidus)
-        self.assertRefused("http://xn--mnchen-3ya5364d.com/")  # m\u00fcn\u2000chen (space class)
+        self.assertRefused(
+            "http://xn--example-rla.com/"
+        )  # ex\u00b2ample (compatibility digit)
+        self.assertRefused(
+            "http://xn--ab-cja0631x.com/"
+        )  # a\uff0fb\u00e9 (fullwidth solidus)
+        self.assertRefused(
+            "http://xn--mnchen-3ya5364d.com/"
+        )  # m\u00fcn\u2000chen (space class)
         # DISALLOWED class (survive NFKC, assigned, not format chars):
-        self.assertRefused("http://xn--example-hja.com/")  # ex\u00a8ample (diaeresis, Sk)
-        self.assertRefused("http://xn--example-7la.com/")  # ex\u00b4ample (acute accent, Sk)
-        self.assertRefused("http://xn--example-f9e.com/")  # ex\u037eample (Greek question mark, Po)
-        self.assertRefused("http://xn--example-3ha.com/")  # ex\u00a2ample (cent sign, Sc)
-        self.assertRefused("http://xn--example-u17c.com/")  # ex\u20acample (euro sign, Sc)
+        self.assertRefused(
+            "http://xn--example-hja.com/"
+        )  # ex\u00a8ample (diaeresis, Sk)
+        self.assertRefused(
+            "http://xn--example-7la.com/"
+        )  # ex\u00b4ample (acute accent, Sk)
+        self.assertRefused(
+            "http://xn--example-f9e.com/"
+        )  # ex\u037eample (Greek question mark, Po)
+        self.assertRefused(
+            "http://xn--example-3ha.com/"
+        )  # ex\u00a2ample (cent sign, Sc)
+        self.assertRefused(
+            "http://xn--example-u17c.com/"
+        )  # ex\u20acample (euro sign, Sc)
         # The raw spellings of the DISALLOWED class are refused too
         # (the check sits in the shared label judge):
         self.assertRefused("http://ex\u00a8ample.com/")
@@ -1438,6 +1487,23 @@ class TestValidateCrawlUrl(unittest.TestCase):
         for raw, expected in cases.items():
             self.assertEqual(validate_crawl_url(raw), expected, raw)
 
+    def test_returns_uts46_nontransitional_alabels_matching_whatwg(self):
+        # These are new URL(raw).hostname values from the Worker runtime.
+        # Keep the Python copy aligned for nontransitional sharp S,
+        # final/ordinary/lunate sigma, and post-Unicode-3.2 mappings.
+        cases = {
+            "http://ß.com/": "http://xn--zca.com/",
+            "http://a.ß.com/": "http://a.xn--zca.com/",
+            "http://ẞ.com/": "http://xn--zca.com/",
+            "http://ς.com/": "http://xn--3xa.com/",
+            "http://σ.com/": "http://xn--4xa.com/",
+            "http://ϲ.com/": "http://xn--4xa.com/",
+            "http://ꭰ.com/": "http://xn--58d.com/",
+            "http://Ა.com/": "http://xn--lod.com/",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+
     def test_returns_alabel_fallback_applies_compatibility_mappings(self):
         # Codex review round 2 on PR #3781: an accepted RTL label
         # containing a compatibility character can be refused by the
@@ -1790,6 +1856,18 @@ class TestFetchCrawl(unittest.TestCase):
 
             def do_GET(self):
                 seen.append((self.path, self.headers.get("Authorization")))
+                if self.path == "/drip":
+                    self.send_response(200)
+                    self.send_header("content-length", "8")
+                    self.end_headers()
+                    for _ in range(8):
+                        time.sleep(0.1)
+                        try:
+                            self.wfile.write(b"x")
+                            self.wfile.flush()
+                        except OSError:
+                            break
+                    return
                 if self.path == "/to-userinfo":
                     port = self.server.server_address[1]
                     self.send_response(302)
@@ -1858,6 +1936,15 @@ class TestFetchCrawl(unittest.TestCase):
         status, raw = self.fetch("/ok")
         self.assertEqual(status, 200)
         self.assertIn(b"Missing Thing", raw)
+
+    def test_slow_drip_body_obeys_total_deadline(self):
+        from unittest import mock
+
+        # Patch to a short deadline; a per-read timeout would allow these
+        # regularly spaced bytes to complete the entire response.
+        with mock.patch.object(app, "_CRAWL_TIMEOUT_SECONDS", 0.25, create=True):
+            with self.assertRaises(TimeoutError):
+                self.fetch("/drip")
 
     def test_redirect_failures_raise_not_a_302_result(self):
         # #576: urllib raises HTTPError carrying the 3xx code for

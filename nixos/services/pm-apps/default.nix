@@ -70,7 +70,7 @@ in
     tailnetAddress = lib.mkOption {
       type = lib.types.str;
       default = "100.99.113.103";
-      description = "The host's tailnet address; Grist and Pad bind it alongside loopback, as the compose files did.";
+      description = "The host's tailnet address; Grist and Pad bind it alongside loopback, as the compose files did, and the ready-for-agent tailnet socket forwards it to the loopback-only app (#1181).";
     };
   };
 
@@ -127,14 +127,44 @@ in
           ];
           # The binary is installed by pm-stack/ready-for-agent/install.sh;
           # state (SQLite) lives in ~/.local/share/ready-for-agent/ by
-          # upstream default. Bare --host binds all interfaces — Drew's
-          # 2026-10-25 call (LAN/tailnet fine; no public route exists).
-          ExecStart = "${home}/.local/bin/ready-for-agent start --no-open --host";
+          # upstream default. No --host flag: upstream's default bind is
+          # loopback only. The all-interfaces bind (bare --host) was
+          # retired by #1181 — it also claimed any future WAN-facing
+          # interface, broader than the stack's access model (loopback +
+          # tailnet; public only behind a password). Tailnet access is
+          # restored by the ready-for-agent-tailnet socket below, which
+          # forwards the tailnet address to the loopback listener.
+          ExecStart = "${home}/.local/bin/ready-for-agent start --no-open";
           Restart = "on-failure";
           RestartSec = 10;
         };
 
         Install.WantedBy = [ "default.target" ];
+      };
+
+      # Tailnet entry point for ready-for-agent (#1181): the app itself
+      # binds loopback only (single-address --host upstream), so the
+      # tailnet address is served by a socket-activated systemd proxy
+      # forwarding to 127.0.0.1:6056 — the same loopback + tailnet scope
+      # Grist and Pad get from their dual port publishes.
+      systemd.user.sockets.ready-for-agent-tailnet = {
+        Socket = {
+          ListenStream = "${cfg.tailnetAddress}:6056";
+        };
+
+        Install.WantedBy = [ "sockets.target" ];
+      };
+
+      systemd.user.services.ready-for-agent-tailnet = {
+        Unit = {
+          Description = "ready-for-agent tailnet forward (socket-activated proxy to loopback)";
+          Requires = [ "ready-for-agent.service" ];
+          After = [ "ready-for-agent.service" ];
+        };
+
+        Service = {
+          ExecStart = "${config.systemd.package}/lib/systemd/systemd-socket-proxyd 127.0.0.1:6056";
+        };
       };
     };
   };

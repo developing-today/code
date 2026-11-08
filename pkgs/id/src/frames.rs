@@ -166,6 +166,39 @@ pub fn charge_frame(
         .map_err(RefusalError::from)
 }
 
+/// Like [`charge_frame`], additionally charging the frame against
+/// the evaluator's #2247 rolling-window budgets for `direction`
+/// (see [`AbuseEvaluator::check_frame_and_bytes_budgeted`]). The
+/// frame seam observes no peer IP — transports are relay-capable
+/// and a relayed peer's IP is never inferred — so the per-IP budget
+/// scope is not charged here; it is charged only by callers that
+/// directly observe an IP. An evaluator with no budget policy
+/// configured behaves exactly as [`charge_frame`].
+///
+/// # Errors
+///
+/// Returns the structured [`RefusalError`] when the buckets or any
+/// budget scope refuse the frame.
+pub fn charge_frame_budgeted(
+    abuse: &mut AbuseEvaluator,
+    endpoint: EndpointId,
+    authorized: bool,
+    payload_len: usize,
+    direction: crate::abuse::Direction,
+    now_ms: u64,
+) -> Result<(), RefusalError> {
+    abuse
+        .check_frame_and_bytes_budgeted(
+            endpoint,
+            authorized,
+            payload_len as u64,
+            direction,
+            None,
+            now_ms,
+        )
+        .map_err(RefusalError::from)
+}
+
 /// Read the length prefix of one frame from an Iroh stream.
 /// `Ok(None)` means the peer finished cleanly between frames. Split
 /// from [`read_frame_body`] so a charged reader can charge the frame

@@ -1,0 +1,24 @@
+# atlas-search Worker (#6788). Deployed to the fleet Cloudflare
+# account's workers.dev subdomain; the inbound gate is the
+# GATE_TOKEN secret checked in src/index.ts (not public-open).
+#
+# Secrets (wrangler secret put; values never in this file):
+#   GATE_TOKEN          inbound bearer gate for /v1/*
+#   SERVICE_TOKEN       the `cf-worker` client token of the fleet
+#                       search service (ceiling_cap: personal)
+#   ACCESS_CLIENT_ID    Cloudflare Access service token for
+#   ACCESS_CLIENT_SECRET  atlas-search.security.cab
+name = "atlas-search"
+main = "src/index.ts"
+compatibility_date = "2025-09-15"
+workers_dev = true
+
+[vars]
+SERVICE_BASE = "https://atlas-search.security.cab"
+
+[durable_objects]
+bindings = [{ name = "QUERY_CACHE", class_name = "QueryCache" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["QueryCache"]

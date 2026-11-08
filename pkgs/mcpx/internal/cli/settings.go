@@ -137,7 +137,7 @@ func (a *App) ApplyGlobalSettingFlags(args []string) (rest []string, err error) 
 		mine = append(mine, args[0])
 		args = args[1:]
 		bf, isBool := f.Value.(interface{ IsBoolFlag() bool })
-		if !strings.Contains(mine[len(mine)-1], "=") && !(isBool && bf.IsBoolFlag()) && len(args) > 0 {
+		if !strings.Contains(mine[len(mine)-1], "=") && (!isBool || !bf.IsBoolFlag()) && len(args) > 0 {
 			mine = append(mine, args[0])
 			args = args[1:]
 		}
@@ -329,6 +329,7 @@ var handFlagsMeaningOther = map[string]map[string]bool{
 	"exec":   {"keep": true},    // likewise
 	"api":    {"include": true}, // operations to include, not logging.include
 	"schema": {"format": true},  // output schema format, not logging.format
+	"man":    {"format": true},  // output document format, not logging.format
 	"config": {"format": true},  // --schema output format, not logging.format
 }
 

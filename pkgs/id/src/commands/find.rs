@@ -78,8 +78,8 @@ use iroh_base::EndpointId;
 
 use crate::{
     CLIENT_KEY_FILE, FindMatch, META_ALPN, MetaRequest, MetaResponse, TaggedMatch, cmd_get_one,
-    cmd_get_one_remote, load_or_create_keypair, match_kind, open_store, print_match_cli,
-    print_matches_cli,
+    cmd_get_one_remote, helpers::download_output_path, load_or_create_keypair, match_kind,
+    open_store, print_match_cli, print_matches_cli,
 };
 
 /// Options for filtering and limiting search results.
@@ -147,39 +147,6 @@ impl SearchOptions {
             filtered
         }
     }
-}
-
-/// Build the local write path for a downloaded find/search match.
-///
-/// A match name is untrusted input: in remote mode both the name and the
-/// blob content come from the queried node, so the name must never be used
-/// as a filesystem path verbatim (`../` and absolute names would overwrite
-/// arbitrary local files — issue #1614). The write path is derived from the
-/// name's final path component only (`Path::file_name` ruling), optionally
-/// under `dir`. A name with no final component (`..`, `/`, a trailing
-/// separator, empty) is refused and nothing is written. Ordinary
-/// single-segment names produce byte-identical paths to the previous
-/// verbatim behaviour.
-fn download_output_path(dir: Option<&str>, name: &str) -> Result<String> {
-    if name.is_empty() || name.ends_with('/') {
-        bail!(
-            "refusing download of match with unsafe name {:?}: no final path component",
-            name
-        );
-    }
-    let Some(file_name) = std::path::Path::new(name)
-        .file_name()
-        .and_then(|c| c.to_str())
-    else {
-        bail!(
-            "refusing download of match with unsafe name {:?}: no final path component",
-            name
-        );
-    };
-    Ok(match dir {
-        Some(dir) => format!("{}/{}", dir, file_name),
-        None => file_name.to_owned(),
-    })
 }
 
 /// Plan all bulk-download destinations before creating directories or writing files.
@@ -969,7 +936,7 @@ pub async fn cmd_find_matches(
         send.write_all(&req).await?;
         send.finish()?;
         let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
         let result = match resp {
@@ -1084,6 +1051,19 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn test_download_output_path_dash_name_is_not_the_stdout_sentinel() {
+        // A match-derived "-" must name a file, not the stdout sentinel;
+        // only an explicit user-supplied "-" means stdout.
+        assert_eq!(download_output_path(None, "-").unwrap(), "./-");
+        assert_eq!(download_output_path(None, "nested/-").unwrap(), "./-");
+        assert_eq!(
+            download_output_path(Some("out"), "nested/-").unwrap(),
+            "out/-"
+        );
+    }
+
+    #[test]
     fn test_download_output_path_refuses_names_without_final_component() {
         for name in ["..", "/", "", "foo/", "../", "."] {
             assert!(
@@ -1113,7 +1093,9 @@ mod tests {
             },
         ];
 
-        let error = plan_download_paths("out", &matches).unwrap_err().to_string();
+        let error = plan_download_paths("out", &matches)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("destination collision"), "{error}");
         assert!(error.contains("one/report.txt"), "{error}");
         assert!(error.contains("two/report.txt"), "{error}");
@@ -1436,7 +1418,6 @@ mod tests {
         assert!(result.contains("abcdef123456")); // Header should include hash prefix
         assert!(result.contains("lines:")); // Header should show line count
     }
-
 
     // Regression (#1787): lines = usize::MAX/2 + 1 must not overflow the
     // printers' doubling — saturating arithmetic prints short content once,

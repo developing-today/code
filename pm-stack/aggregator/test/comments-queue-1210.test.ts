@@ -102,7 +102,9 @@ describe("dashCommentHtml failed state (#1210)", () => {
   });
 
   test("a failed comment without a stored error still drops the retry promise", () => {
-    const html = dashCommentHtml(comment({ kind: "github", githubState: "failed", githubRef: "developing-today/code#1210" }));
+    const html = dashCommentHtml(
+      comment({ kind: "github", githubState: "failed", githubRef: "developing-today/code#1210" }),
+    );
     expect(html).toContain("no automatic retry exists");
     expect(html).not.toContain("last error");
     expect(html).not.toContain("will retry");
@@ -159,7 +161,9 @@ describe("CommentsStore githubError persistence (#1210)", () => {
       const reloaded = new CommentsStore(file);
       const stored = (await reloaded.all()).find((x) => x.id === c.id);
       expect(stored?.githubError).toBe("second failure");
-      const posted = await store.markGithubResult(c.id, { url: "https://github.com/developing-today/code/issues/1210#issuecomment-9" });
+      const posted = await store.markGithubResult(c.id, {
+        url: "https://github.com/developing-today/code/issues/1210#issuecomment-9",
+      });
       expect(posted?.githubState).toBe("posted");
       expect(posted?.githubError).toBeUndefined();
       // countsDetailed groups the posted comment as non-actionable.

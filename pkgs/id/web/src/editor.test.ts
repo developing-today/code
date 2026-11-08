@@ -3,6 +3,7 @@
  * Tests the content mode types, schema selection, and editor initialization.
  */
 
+import { redo, undo } from "prosemirror-history";
 import type { EditorView } from "prosemirror-view";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -17,7 +18,9 @@ import {
   parseOrderedListStart,
   rawSchema,
   richSchema,
+  splitOversizedTextInsertion,
 } from "./editor";
+import { MAX_STEPS_MESSAGE_BYTES, stepWireSize } from "./collab-step-budget";
 
 // ============================================================================
 // Content Mode Type Tests
@@ -245,8 +248,58 @@ describe("richSchema list tight attrs (#1469)", () => {
       content: [{ type: "ordered_list", attrs: { order: 3, tight }, content: [item("a"), item("b")] }],
     };
     const out = richSchema.nodeFromJSON(json).toJSON();
-    expect(out.content[0].attrs).toEqual({ order: 3, tight });
+    // #1380: the schema fills the delimiter default ("period") when the
+    // input omits it, so the round-tripped attrs carry it explicitly.
+    expect(out.content[0].attrs).toEqual({ order: 3, tight, delimiter: "period" });
     expect(out.content[0].content).toEqual([item("a"), item("b")]);
+  });
+});
+
+// ============================================================================
+// #1347: footnote_reference / footnote_definition round-trip (codec mirror)
+// ============================================================================
+
+describe("richSchema footnote nodes (#1347)", () => {
+  it("declares footnote_reference as an inline atom with a label attr", () => {
+    const spec = richSchema.nodes.footnote_reference.spec;
+    expect(spec.inline).toBe(true);
+    expect(spec.atom).toBe(true);
+    expect(spec.attrs?.label).toEqual({ default: "" });
+  });
+
+  it("declares footnote_definition as a block with a label attr and block content", () => {
+    const spec = richSchema.nodes.footnote_definition.spec;
+    expect(spec.group).toBe("block");
+    expect(spec.content).toBe("block+");
+    expect(spec.attrs?.label).toEqual({ default: "" });
+  });
+
+  it("parses a codec footnote doc through Node.fromJSON without throwing", () => {
+    const json = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "Text." },
+            { type: "footnote_reference", attrs: { label: "1" } },
+          ],
+        },
+        {
+          type: "footnote_definition",
+          attrs: { label: "1" },
+          content: [{ type: "paragraph", content: [{ type: "text", text: "Body." }] }],
+        },
+      ],
+    };
+    const doc = richSchema.nodeFromJSON(json);
+    const out = doc.toJSON();
+    expect(out.content[1].type).toBe("footnote_definition");
+    expect(out.content[1].attrs).toEqual({ label: "1" });
+    expect(out.content[1].content).toEqual([{ type: "paragraph", content: [{ type: "text", text: "Body." }] }]);
+    const paragraph = out.content[0];
+    const reference = paragraph.content.find((n: { type: string }) => n.type === "footnote_reference");
+    expect(reference?.attrs).toEqual({ label: "1" });
   });
 });
 
@@ -657,6 +710,48 @@ describe("getSendableSteps", () => {
     expect(result).toHaveProperty("clientID");
     expect(Array.isArray(result!.steps)).toBe(true);
     expect(result!.steps.length).toBeGreaterThan(0);
+  });
+});
+
+describe("oversized text insertion dispatch (#4119)", () => {
+  const views: EditorView[] = [];
+
+  afterEach(() => {
+    for (const view of views) view.destroy();
+    views.length = 0;
+  });
+
+  it("leaves an under-budget insertion on the original transaction path", () => {
+    const container = document.createElement("div");
+    const { view } = initEditor(container, undefined, 0, "raw");
+    views.push(view);
+    const transaction = view.state.tr.insertText("small paste", 1);
+
+    expect(stepWireSize(transaction.steps[0])).toBeLessThanOrEqual(MAX_STEPS_MESSAGE_BYTES);
+    expect(splitOversizedTextInsertion(view.state, transaction)).toBe(transaction);
+  });
+
+  it("splits a large text insertion into bounded steps in one undoable transaction", () => {
+    const container = document.createElement("div");
+    const { view } = initEditor(container, undefined, 0, "raw");
+    views.push(view);
+    const text = "a😀".repeat(250_000);
+    const transaction = view.state.tr.insertText(text, 1);
+    const rewritten = splitOversizedTextInsertion(view.state, transaction);
+
+    expect(rewritten).not.toBe(transaction);
+    expect(rewritten.steps.length).toBeGreaterThan(1);
+    expect(rewritten.steps.every((step) => stepWireSize(step) <= MAX_STEPS_MESSAGE_BYTES)).toBe(true);
+    expect(rewritten.doc.eq(transaction.doc)).toBe(true);
+
+    view.dispatch(transaction);
+    expect(view.state.doc.textContent).toBe(text);
+    expect(view.state.selection.head).toBe(text.length + 1);
+
+    expect(undo(view.state, (tr) => view.dispatch(tr))).toBe(true);
+    expect(view.state.doc.textContent).toBe("");
+    expect(redo(view.state, (tr) => view.dispatch(tr))).toBe(true);
+    expect(view.state.doc.textContent).toBe(text);
   });
 });
 

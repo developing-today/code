@@ -11,11 +11,14 @@ WorkingDirectory=%h/pm-stack/dispatch
 # Cloudflare tunnel (amd-6-pm-stack) once Drew adds it. Listens on 4879.
 ExecStart=/run/current-system/sw/bin/bun run src/server.ts
 # Rendered by install.sh from ~/secrets/pm-stack.sops.yaml (mode 600,
-# never committed): build version, bind hosts, GitHub App material.
+# never committed): build version, bind hosts, GitHub App material,
+# and the fleet Supabase config (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY).
 EnvironmentFile=%h/pm-stack/dispatch/.env
 # Operator secrets that are NOT in the sops file (mode 600, laptop-only):
-# SUPABASE_SERVICE_ROLE_KEY, DISPATCH_API_TOKEN. Optional-file syntax so
-# a missing file degrades to "queue/bearer unavailable", not a crash loop.
+# DISPATCH_API_TOKEN only. Optional-file syntax so a missing file
+# degrades to bearer-auth-off, not a crash loop. This file is read
+# AFTER the rendered file, so it must never carry SUPABASE_* lines —
+# they would override the sops-managed Supabase config above.
 EnvironmentFile=-%h/secrets/dispatch.env
 Restart=on-failure
 RestartSec=5

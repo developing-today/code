@@ -282,7 +282,7 @@ func (w *Writer) Write(r Record) {
 	}
 	line := w.render(r)
 	w.mu.Lock()
-	fmt.Fprintln(w.out, line)
+	_, _ = fmt.Fprintln(w.out, line)
 	w.mu.Unlock()
 }
 

@@ -1,3 +1,4 @@
+// Package defaults defines every default value the program ships, parsed from the embedded defaults.json.
 package defaults
 
 import (
@@ -76,6 +77,7 @@ type Defaults struct {
 		EventSubscriberBuf   int    `json:"eventSubscriberBuffer"`
 		StreamReconnect      string `json:"streamReconnect"`
 		TaskTTL              string `json:"taskTTL"`
+		TaskMaxAge           string `json:"taskMaxAge"`
 		TaskResultWait       string `json:"taskResultWait"`
 		StatsTop             int    `json:"statsTop"`
 		RegistryLimit        int    `json:"registryLimit"`
@@ -86,6 +88,11 @@ type Defaults struct {
 	Resolve struct {
 		DialTimeout string `json:"dialTimeout"`
 	} `json:"resolve"`
+	// Preflight governs the resolver's own outbound lookups while it
+	// walks an import graph.
+	Preflight struct {
+		NPMTimeout string `json:"npmTimeout"`
+	} `json:"preflight"`
 	// Elicit governs questions a server asks back.
 	Elicit struct {
 		TTL            string `json:"ttl"`
@@ -184,15 +191,20 @@ type Defaults struct {
 	// Exec governs running a script, whether the CLI does it or the daemon
 	// does it on a caller's behalf.
 	Exec struct {
-		Timeout      string `json:"timeout"`
-		WorkDirs     int    `json:"workDirs"`
-		Programs     int    `json:"programs"`
-		Entries      int    `json:"entries"`
-		StderrLimit  int    `json:"stderrLimit"`
-		StdoutLimit  int    `json:"stdoutLimit"`
-		Output       string `json:"output"`
-		RemoteOutput string `json:"remoteOutput"`
-		Delivery     string `json:"delivery"`
+		Timeout     string `json:"timeout"`
+		HookTimeout string `json:"hookTimeout"`
+		// ResolveTimeout bounds one nix resolution in progspec; a first
+		// build of a large flake can legitimately take minutes.
+		ResolveTimeout   string `json:"resolveTimeout"`
+		ResolveWaitDelay string `json:"resolveWaitDelay"`
+		WorkDirs         int    `json:"workDirs"`
+		Programs         int    `json:"programs"`
+		Entries          int    `json:"entries"`
+		StderrLimit      int    `json:"stderrLimit"`
+		StdoutLimit      int    `json:"stdoutLimit"`
+		Output           string `json:"output"`
+		RemoteOutput     string `json:"remoteOutput"`
+		Delivery         string `json:"delivery"`
 	} `json:"exec"`
 	// Cache governs the one content-addressed cache mechanism (#1908):
 	// the byte and age bounds every kind is evicted against, and how old
@@ -328,7 +340,12 @@ type Defaults struct {
 	// ProtoTasks governs the tasks mcpx hands out, on MCP and on /v1.
 	ProtoTasks struct {
 		PollInterval string `json:"pollInterval"`
+		CancelGrace  string `json:"cancelGrace"`
 	} `json:"protoTasks"`
+	// Wasm governs the in-process WASM tool host (internal/wasmtools).
+	Wasm struct {
+		LogLineSize string `json:"logLineSize"`
+	} `json:"wasm"`
 	// StdioShutdown is how mcpx ends a stdio server, per every revision's
 	// stdio shutdown SHOULD: close stdin and wait StdinGrace for it to exit
 	// by itself, then SIGTERM and wait TermGrace, then SIGKILL and wait at
@@ -348,6 +365,7 @@ type Defaults struct {
 		EraFile        string `json:"eraFile"`
 		EraFileVersion int    `json:"eraFileVersion"`
 		ErrorBodyLimit string `json:"errorBodyLimit"`
+		ResponseBodyLimit string `json:"responseBodyLimit"`
 		// SSEReconnectDelay is the wait before resuming a Streamable HTTP
 		// stream the server closed without saying how long to wait (no
 		// retry field).
@@ -375,12 +393,16 @@ type Defaults struct {
 		RemoteTimeout string `json:"remoteTimeout"`
 		SearchTimeout string `json:"searchTimeout"`
 	} `json:"embeddings"`
+	Proxy struct {
+		Timeout string `json:"timeout"`
+	} `json:"proxy"`
 }
 
 // Embeddings defaults.
 var (
 	EmbeddingsRemoteTimeout = mustDur(builtin.Embeddings.RemoteTimeout, "embeddings.remoteTimeout")
 	EmbeddingsSearchTimeout = mustDur(builtin.Embeddings.SearchTimeout, "embeddings.searchTimeout")
+	ProxyUpstreamTimeout    = mustDur(builtin.Proxy.Timeout, "proxy.timeout")
 )
 
 // Upstream connection defaults.
@@ -400,6 +422,11 @@ var (
 	// HTTPErrorBodyLimit bounds how much of a non-2xx body is read: enough
 	// for a JSON-RPC error, not enough for an HTML error page to matter.
 	HTTPErrorBodyLimit = mustBytes(builtin.Upstream.ErrorBodyLimit, "upstream.errorBodyLimit")
+	// ProviderResponseBodyLimit bounds how much of a model provider's
+	// response body is read on the success path: a chat-completion
+	// JSON has no business being larger, and an unbounded read lets a
+	// bad endpoint make the daemon allocate arbitrarily much (#4354).
+	ProviderResponseBodyLimit = mustBytes(builtin.Upstream.ResponseBodyLimit, "upstream.responseBodyLimit")
 	// UpstreamSSEReconnectDelay is the resume wait when a server sent no
 	// retry field.
 	UpstreamSSEReconnectDelay = mustDur(builtin.Upstream.SSEReconnectDelay, "upstream.sseReconnectDelay")
@@ -537,9 +564,14 @@ var (
 	EventSubscriberBuf = builtin.Plumbing.EventSubscriberBuf
 	StreamReconnect    = mustDur(builtin.Plumbing.StreamReconnect, "plumbing.streamReconnect")
 	TaskTTL            = mustDur(builtin.Plumbing.TaskTTL, "plumbing.taskTTL")
-	TaskResultWait     = mustDur(builtin.Plumbing.TaskResultWait, "plumbing.taskResultWait")
-	StatsTop           = builtin.Plumbing.StatsTop
-	RegistryLimit      = builtin.Plumbing.RegistryLimit
+	// TaskMaxAge is the absolute ceiling on terminal-result retention under
+	// the touch-on-read convention (docs/decisions/0006-ttl-touch-on-read.md):
+	// renewal by use can never push retention past the terminal transition
+	// plus this duration.
+	TaskMaxAge     = mustDur(builtin.Plumbing.TaskMaxAge, "plumbing.taskMaxAge")
+	TaskResultWait = mustDur(builtin.Plumbing.TaskResultWait, "plumbing.taskResultWait")
+	StatsTop       = builtin.Plumbing.StatsTop
+	RegistryLimit  = builtin.Plumbing.RegistryLimit
 	// HandoffRetryInterval is how often a takeover re-checks pools that were
 	// busy with in-flight calls.
 	HandoffRetryInterval = mustDur(builtin.Plumbing.HandoffRetryInterval, "plumbing.handoffRetryInterval")
@@ -549,6 +581,12 @@ var (
 	// socket, so it either succeeds immediately or the daemon is gone;
 	// waiting longer only makes a dead daemon slower to report.
 	ResolveDialTimeout = mustDur(builtin.Resolve.DialTimeout, "resolve.dialTimeout")
+
+	// PreflightNPMTimeout bounds the npm registry lookup preflight makes
+	// for a package's latest version. Like ResolveDialTimeout it is an
+	// internal bound, so it lives in defaults.json only and is
+	// deliberately absent from the settings registry.
+	PreflightNPMTimeout = mustDur(builtin.Preflight.NPMTimeout, "preflight.npmTimeout")
 
 	ElicitTTL = mustDur(builtin.Elicit.TTL, "elicit.ttl")
 	// ElicitMaxAge is the absolute ceiling on a question's life under the
@@ -611,6 +649,12 @@ var (
 	// TaskPollInterval is the pollInterval every task carries: how often a
 	// client is told it may usefully ask after one.
 	TaskPollInterval = mustDur(builtin.ProtoTasks.PollInterval, "protoTasks.pollInterval")
+	// TaskCancelGrace is how long a task store waits for a cancelled
+	// task's worker to stop before it stops waiting.
+	TaskCancelGrace = mustDur(builtin.ProtoTasks.CancelGrace, "protoTasks.cancelGrace")
+
+	// WasmLogLineSize bounds one log line a WASM tool may hand the host.
+	WasmLogLineSize = mustBytes(builtin.Wasm.LogLineSize, "wasm.logLineSize")
 
 	StdioStdinGrace = mustDur(builtin.StdioShutdown.StdinGrace, "stdioShutdown.stdinGrace")
 	StdioTermGrace  = mustDur(builtin.StdioShutdown.TermGrace, "stdioShutdown.termGrace")
@@ -677,7 +721,15 @@ var (
 	RunTimeout          = mustDur(builtin.Consumer.RunTimeout, "consumer.runTimeout")
 	ModelTimeout        = mustDur(builtin.Model.Timeout, "model.timeout")
 	ExecTimeout         = mustDur(builtin.Exec.Timeout, "exec.timeout")
-	ExecOutput          = builtin.Exec.Output
+	// ExecHookTimeout is a hook's own budget in execsvc: a slow hook must
+	// not eat the budget of the script it wraps.
+	ExecHookTimeout = mustDur(builtin.Exec.HookTimeout, "exec.hookTimeout")
+	// ExecResolveTimeout bounds one nix resolution (progspec).
+	ExecResolveTimeout = mustDur(builtin.Exec.ResolveTimeout, "exec.resolveTimeout")
+	// ExecResolveWaitDelay bounds how long a timed-out resolution's Run
+	// waits for the child's output pipes to close (progspec cmd.WaitDelay).
+	ExecResolveWaitDelay = mustDur(builtin.Exec.ResolveWaitDelay, "exec.resolveWaitDelay")
+	ExecOutput           = builtin.Exec.Output
 	// ExecStderrLimit bounds how much of a failed script's stderr is kept to
 	// explain the failure. Unbounded, a script looping on stderr would be
 	// held in memory in full, by the daemon, on someone else's behalf.

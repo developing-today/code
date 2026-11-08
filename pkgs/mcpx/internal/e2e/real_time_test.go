@@ -35,13 +35,13 @@ func realConfig(serverPath, namespace, description string, args ...string) strin
 }`, namespace, serverPath, argsJSON, description)
 }
 
-// realConfirmedCall runs one mcpx call that mcpx's destructive-action
-// gate will stop for confirmation, and confirms it the way a person at
-// the terminal would: by answering the elicitation question. Real
-// servers annotate their mutating tools destructiveHint=true (memory's
-// create_entities, filesystem's write_file); the fake's tools mostly do
-// not, so this path is precisely what the per-PR suite cannot see —
-// unconfirmed, the call is cancelled and nothing is written.
+// realConfirmedCall runs one mcpx call that the active write policy stops
+// for confirmation, and confirms it the way a person at the terminal would:
+// by answering the elicitation question. The real filesystem test exercises
+// destructiveHint=true via the destructive-confirmation floor; the memory
+// server marks create_entities destructiveHint=false, so its round-trip test
+// selects policy.write=ask instead. This real-server path is precisely what
+// the per-PR suite cannot see — unconfirmed, the call is cancelled.
 func realConfirmedCall(t *testing.T, e *env, args ...string) string {
 	t.Helper()
 	done := make(chan string, 1)

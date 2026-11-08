@@ -11,7 +11,13 @@
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-NFT=${NFT:-/nix/store/66dl0246qv0avvzid7xkj85xqdlrx78a-nftables-1.1.7/bin/nft}
+NFT=${NFT:-$(command -v nft || true)}
+if [ -z "$NFT" ] || ! command -v "$NFT" >/dev/null 2>&1; then
+	echo "nft was not found; set NFT or use the documented nix c2-lab entry point" >&2
+	exit 127
+fi
+NFT=$(command -v "$NFT")
+export NFT
 export NFT
 
 if [ "${1:-}" != "--inner" ]; then

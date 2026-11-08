@@ -1,3 +1,4 @@
+// Package catalog holds the embedding vectors used for semantic tool search, and the retention policy that bounds them.
 package catalog
 
 import (
@@ -95,7 +96,7 @@ func (r *RemoteEmbedder) Embed(ctx context.Context, text string) (Vector, error)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -184,7 +185,7 @@ func (w *WasmEmbedder) Embed(ctx context.Context, text string) (Vector, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer inst.Close(ctx)
+	defer func() { _ = inst.Close(ctx) }()
 
 	// Invoke exported embed function if present
 	embedFn := inst.ExportedFunction("embed")

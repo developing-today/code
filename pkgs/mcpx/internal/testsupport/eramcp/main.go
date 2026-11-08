@@ -87,8 +87,8 @@ func record(method string) {
 	if err != nil {
 		return
 	}
-	defer fh.Close()
-	fmt.Fprintln(fh, method)
+	defer func() { _ = fh.Close() }()
+	_, _ = fmt.Fprintln(fh, method)
 }
 
 func send(v map[string]any) {
@@ -96,9 +96,9 @@ func send(v map[string]any) {
 	b, _ := json.Marshal(v)
 	writeMu.Lock()
 	defer writeMu.Unlock()
-	out.Write(b)
-	out.WriteByte('\n')
-	out.Flush()
+	_, _ = out.Write(b)
+	_ = out.WriteByte('\n')
+	_ = out.Flush()
 }
 
 func ok(id json.RawMessage, result any) { send(map[string]any{"id": id, "result": result}) }

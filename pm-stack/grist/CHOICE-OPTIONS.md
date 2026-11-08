@@ -25,15 +25,15 @@ and the result is verified by read-back before the script exits 0.
 
 ## What was probed (disposable doc, pinned image)
 
-| Call | Caller / rules | Result |
-| --- | --- | --- |
-| `GET …/tables/Roadmap/columns` | doc owner key | 200; `widgetOptions` is a JSON **string** |
-| `PATCH …/tables/Roadmap/columns/{colId}` | owner | **404** — this per-column route does not exist in v1.7.21 (checked against the image's own `DocApi.js`) |
-| `PATCH …/tables/Roadmap/columns` with `{"columns":[{"id":"Area","fields":{"widgetOptions":"{…}"}}]}` | owner | 200; choices extended, `choiceOptions` preserved, read-back matches |
-| `POST …/apply` `[["UpdateColumn",…]]` | same key, doc rule set to `+CRUD` (data access, **no** `S`/schemaEdit — the roadmap doc's shape) | **500 `Blocked by access rules: 'UpdateColumn' actions are not controlled`** — the exact production error from #1287, reproduced |
-| records `POST` (data write) | same key, `+CRUD` | 200 — data access is unaffected, as in production |
-| `PATCH …/tables/Roadmap/columns` (collection route) | same key, `+CRUD` | **200 — applied and read back** under the same rules that block `/apply` |
-| `update-choice-options.py --add ops` ×2, then `--dry-run` | same key, `+CRUD` | add + read-back verified; second run a no-op; dry run sends nothing |
+| Call                                                                                                 | Caller / rules                                                                                   | Result                                                                                                                           |
+| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `GET …/tables/Roadmap/columns`                                                                       | doc owner key                                                                                    | 200; `widgetOptions` is a JSON **string**                                                                                        |
+| `PATCH …/tables/Roadmap/columns/{colId}`                                                             | owner                                                                                            | **404** — this per-column route does not exist in v1.7.21 (checked against the image's own `DocApi.js`)                          |
+| `PATCH …/tables/Roadmap/columns` with `{"columns":[{"id":"Area","fields":{"widgetOptions":"{…}"}}]}` | owner                                                                                            | 200; choices extended, `choiceOptions` preserved, read-back matches                                                              |
+| `POST …/apply` `[["UpdateColumn",…]]`                                                                | same key, doc rule set to `+CRUD` (data access, **no** `S`/schemaEdit — the roadmap doc's shape) | **500 `Blocked by access rules: 'UpdateColumn' actions are not controlled`** — the exact production error from #1287, reproduced |
+| records `POST` (data write)                                                                          | same key, `+CRUD`                                                                                | 200 — data access is unaffected, as in production                                                                                |
+| `PATCH …/tables/Roadmap/columns` (collection route)                                                  | same key, `+CRUD`                                                                                | **200 — applied and read back** under the same rules that block `/apply`                                                         |
+| `update-choice-options.py --add ops` ×2, then `--dry-run`                                            | same key, `+CRUD`                                                                                | add + read-back verified; second run a no-op; dry run sends nothing                                                              |
 
 So the REST columns route is a supported, authenticated, non-SQLite
 path that works under the roadmap ACL — issue #1287 end state (a).

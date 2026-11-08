@@ -6,7 +6,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::{future::IntoFuture, sync::Arc, time::Duration};
+use std::sync::Arc;
+
+mod common;
+
+use common::within;
 
 use futures_lite::StreamExt;
 use id::{
@@ -27,9 +31,6 @@ use iroh_blobs::{
     protocol::{GetManyRequest, ObserveRequest},
     store::mem::MemStore,
 };
-
-/// Every network step must finish within this, so a stuck request fails the test.
-const TIMEOUT: Duration = Duration::from_secs(20);
 
 /// iroh-blobs' reset code for a refused request (`AbortReason::Permission`).
 const DENIED: u64 = 1;
@@ -103,13 +104,6 @@ async fn provider(store: &Store, graph: Graph, policy: BlobPolicy) -> (Router, E
         .accept(iroh_blobs::ALPN, BlobsProtocol::new(store, Some(events)))
         .spawn();
     (router, addr)
-}
-
-/// Waits for `fut`, failing the test if it takes longer than [`TIMEOUT`].
-async fn within<T>(fut: impl IntoFuture<Output = T>) -> T {
-    tokio::time::timeout(TIMEOUT, fut.into_future())
-        .await
-        .expect("the request must finish within the timeout")
 }
 
 /// Fetches `hash` from `server`: the bytes, or the error text.

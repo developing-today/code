@@ -20,18 +20,34 @@
 # protects against accidental deletion and bad edits, not against disk theft.
 
 set -euo pipefail
+export LC_ALL=C
 
 ROOT="${AGENT_BACKUP_DIR:-$HOME/.local/share/agent-backups}"
 mkdir -p "$ROOT"
 chmod 700 "$ROOT"
 
-STAMP="$(date -u +%Y-%m-%dT%H-%M-%S)"
+BASE_STAMP="$(date -u +%Y-%m-%dT%H-%M-%S)"
+STAMP="$BASE_STAMP"
 DEST="$ROOT/$STAMP"
+
+# Reserve the destination atomically before copying. Two invocations can
+# receive the same second-resolution timestamp; only one may own the bare
+# timestamp, and later invocations get deterministic suffixes. The no-change
+# cleanup below is then limited to a directory this invocation created.
+suffix=0
+while ! mkdir -m 700 -- "$DEST" 2>/dev/null; do
+  if [[ ! -e ${DEST} ]] && [[ ! -L ${DEST} ]]; then
+    echo "agent-backup: cannot create snapshot directory ${DEST}" >&2
+    exit 1
+  fi
+  suffix=$((suffix + 1))
+  STAMP="${BASE_STAMP}-$(printf '%010d' "${suffix}")"
+  DEST="$ROOT/$STAMP"
+done
 
 # Small, irreplaceable things only. Missing paths are skipped silently -- not
 # every agent is signed in on every machine.
 CANDIDATES=(
-  "$HOME/.config/jules/api-key"
   "$HOME/.local/share/opencode/auth.json"
   "$HOME/.config/opencode/auth.json"
   "$HOME/.config/opencode/opencode.jsonc"
@@ -67,15 +83,42 @@ if [ "$copied" -eq 0 ]; then
 fi
 
 # Drop the snapshot if it is identical to the previous one. `latest` is a
-# symlink, so exclude it when looking for the prior directory.
-PREV="$(find "$ROOT" -mindepth 1 -maxdepth 1 -type d -not -name "$STAMP" -printf '%f\n' |
-  sort | tail -n1 || true)"
+# symlink, so -type d already excludes it when looking for prior directories.
+# PREV is the newest snapshot strictly before this run's STAMP: a future-dated
+# directory (clock skew, manual copy) must not stand in for the true previous
+# snapshot (#4602). Names are fixed-width timestamps, so byte order (LC_ALL=C)
+# is chronological, same-second suffixed names (#3340) included: a bare stamp
+# sorts before its suffixed siblings. The sentinel trick keeps this to
+# findutils + coreutils + bash builtins only: the systemd service PATH has no
+# awk/grep/sed, so no filter pipeline may assume them.
+PREV=""
+while IFS= read -r name; do
+  if [[ $name == "$STAMP" ]]; then
+    break
+  fi
+  PREV="$name"
+done < <({
+  find "$ROOT" -mindepth 1 -maxdepth 1 -type d -not -name "$STAMP" -printf '%f\n'
+  printf '%s\n' "$STAMP"
+} | LC_ALL=C sort -u)
 
-if [ -n "$PREV" ] && diff -rq "$ROOT/$PREV" "$DEST" >/dev/null 2>&1; then
+if [ -n "$PREV" ] &&
+  diff -rq "$ROOT/$PREV" "$DEST" >/dev/null 2>&1 &&
+  diff -q \
+    <(find "$ROOT/$PREV" -type f -printf '%m %P\n' | LC_ALL=C sort) \
+    <(find "$DEST" -type f -printf '%m %P\n' | LC_ALL=C sort) \
+    >/dev/null 2>&1; then
   rm -rf "$DEST"
   echo "agent-backup: no change since $PREV" >&2
   exit 0
 fi
 
-ln -sfn "$STAMP" "$ROOT/latest"
+# Only move `latest` forward. A newer snapshot already on disk (future-dated
+# or concurrent) keeps the pointer; this run must never regress it (#4602).
+NEWEST="$(find "$ROOT" -mindepth 1 -maxdepth 1 -type d -not -name "$STAMP" -printf '%f\n' |
+  LC_ALL=C sort | tail -n1 || true)"
+
+if [ -z "$NEWEST" ] || [[ $STAMP > $NEWEST ]]; then
+  ln -sfn "$STAMP" "$ROOT/latest"
+fi
 echo "agent-backup: snapshot $STAMP ($copied files)" >&2

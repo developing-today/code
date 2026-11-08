@@ -12,7 +12,8 @@
 // Both runs must produce identical lines — the cold start is part of the
 // #2271 pass condition. `runIsolateSequences()` returns the uninterrupted
 // lines for comparison against the native reference.
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { PlazaGuest } from "../src/guest.ts";
 
 const enc = new TextEncoder();
@@ -83,6 +84,21 @@ export async function runIsolateSequences() {
   return all;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Entry-point check: compare realpaths, not the raw strings.
+// process.argv[1] keeps the path exactly as invoked (e.g. through a
+// symlinked file or the ~/code -> ~/git/code symlink) while
+// import.meta.url is the resolved module URL, so a raw string compare
+// silently never matches and the standalone body never runs (#6358;
+// the house pattern from #2083, cf. bin/proxy-supervise.mjs).
+const isMain = (() => {
+  try {
+    if (!process.argv[1]) return false;
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+
+if (isMain) {
   for (const line of await runIsolateSequences()) console.log(JSON.stringify(line));
 }

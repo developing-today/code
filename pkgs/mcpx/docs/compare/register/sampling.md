@@ -2,7 +2,7 @@
 
 ```
 created:      2026-09-30T08:00:00-05:00
-last-updated: 2026-09-30T08:00:00-05:00
+last-updated: 2026-11-01T16:20:00-06:00
 increment:    1
 status:       standard
 tags:         area:compare
@@ -12,26 +12,25 @@ description:  sampling/createMessage fields and capabilities per revision, tool 
 Sampling lets a server ask the client's model for a completion: nearly unchanged from 2024-11-05 to 2025-06-18, given tool
 use and sub-capabilities in 2025-11-25, and deprecated in 2026-07-28, where it survives only as an embedded input request
 ([mrtr.md](mrtr.md)); sampling as a client-hosted task (2025-11-25 only) is in [tasks.md](tasks.md). mcpx has no model of
-its own, so sampling is a relay: upstream requests become broker rows for an agent to answer, and host-bound requests are
-forwarded after checking only that the host declared `sampling` at all; neither opencode version nor lootbox declares it.
-What matters is that mcpx tells every upstream it can sample although an answer needs an agent watching the broker
-(SMP-09), and that it would forward 2025-11-25 tool-use fields to hosts that never declared them (SMP-11).
+its own, so sampling is a relay: upstream requests become broker rows for an agent to answer. The client declares
+sampling only when a request handler exists (SMP-09); host-bound relays check `sampling.tools` and
+`sampling.context` (SMP-11).
 
-Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.md](../README.md).
+Status column: SMP-03/09/11 are current (audited at `2a93f3f64`); other rows retain the **mcpx @ 05c78b2** snapshot. Legend and citation conventions: [../README.md](../README.md).
 
-| ID | Difference | Labels | Where it exists | mcpx @ 05c78b2 | Value | Effort | Risk |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| SMP-01 | `sampling/createMessage` request, result and baseline fields | `2024-11-05 has` `2026-07-28 deprecates` `mcpx has, others don't` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 dep.`; opencode v1/v2 ✗, lootbox ✗ | ✓ — relayed both directions through the broker | + low | S | low |
-| SMP-02 | `includeContext` other than `none` soft-deprecated, then deprecated | `2025-11-25 deprecates` `2026-07-28 deprecates` | values in all five; gated by `sampling.context` from 25-11 | ✓ — never declares `sampling.context` upstream | − deprecated | S | low |
-| SMP-03 | `tools` and `toolChoice` in sampling requests | `2025-11-25 has` `2026-07-28 deprecates` | `25-11 ✓ · 26-07 dep.` | partial — not declared upstream; forwarded to hosts ungated | + low | M | low |
-| SMP-04 | `stopReason: "toolUse"` | `2025-11-25 has` | `25-11 ✓ · 26-07 ✓`; open string in all | n/a — never inspected | − moot | S | low |
-| SMP-05 | `SamplingMessage.content` may be an array | `2025-11-25 has` | `24-11..25-06 single · 25-11 single or array · 26-07 same` | n/a — relayed raw; broker decoding not examined | + low | S | low |
-| SMP-06 | Tool-result messages hold only `tool_result` blocks, paired by id | `2025-11-25 has` | `25-11 ✓ · 26-07 ✓ (dep.)` | n/a — mcpx runs no tool loop | − moot | S | low |
-| SMP-07 | Sampling feature deprecated (SEP-2577) | `2026-07-28 deprecates` | `26-07 dep.; removable from 2027-07-28` | ✓ — relay exists; nothing new to build | − deprecated | S | low |
-| SMP-08 | 2026 `CreateMessageRequest` embedded; no `_meta`; result not a `Result` | `2026-07-28 has` | `26-07 only` | ✓ — decoded per `inputRequests` key | + low | S | low |
-| SMP-09 | Client declares `sampling` only when something can answer | `mcpx missing` `2026-07-28 deprecates` | spec: declare what you support; mcpx: always | ✗ — declared to every upstream; doc says otherwise (#210) | + med | S | med |
-| SMP-10 | Upstream sampling answered by an agent through the broker | `mcpx has, others don't` `2026-07-28 deprecates` | mcpx only | partial — decline becomes an error; `role`/`model` filled in | + low | S | med |
-| SMP-11 | Relaying sampling to a host checks sub-capabilities and revision | `2025-11-25 has` `mcpx missing` | `25-11 ✓ · 26-07 ✓` | ✗ — only `sampling` presence checked (#210) | + low | S | low |
+| ID     | Difference                                                              | Labels                                                            | Where it exists                                                                   | mcpx @ 05c78b2                                                                                                                            | Value        | Effort | Risk |
+| ------ | ----------------------------------------------------------------------- | ----------------------------------------------------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------ | ------ | ---- |
+| SMP-01 | `sampling/createMessage` request, result and baseline fields            | `2024-11-05 has` `2026-07-28 deprecates` `mcpx has, others don't` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 dep.`; opencode v1/v2 ✗, lootbox ✗ | ✓ — relayed both directions through the broker                                                                                            | + low        | S      | low  |
+| SMP-02 | `includeContext` other than `none` soft-deprecated, then deprecated     | `2025-11-25 deprecates` `2026-07-28 deprecates`                   | values in all five; gated by `sampling.context` from 25-11                        | ✓ — never declares `sampling.context` upstream                                                                                            | − deprecated | S      | low  |
+| SMP-03 | `tools` and `toolChoice` in sampling requests                           | `2025-11-25 has` `2026-07-28 deprecates`                          | `25-11 ✓ · 26-07 dep.`                                                            | ✓ — not declared upstream; undeclared requests are refused, and host relay requires `sampling.tools` (modern.go:142-179; conn.go:572-581) | + low        | M      | low  |
+| SMP-04 | `stopReason: "toolUse"`                                                 | `2025-11-25 has`                                                  | `25-11 ✓ · 26-07 ✓`; open string in all                                           | n/a — never inspected                                                                                                                     | − moot       | S      | low  |
+| SMP-05 | `SamplingMessage.content` may be an array                               | `2025-11-25 has`                                                  | `24-11..25-06 single · 25-11 single or array · 26-07 same`                        | n/a — relayed raw; broker decoding not examined                                                                                           | + low        | S      | low  |
+| SMP-06 | Tool-result messages hold only `tool_result` blocks, paired by id       | `2025-11-25 has`                                                  | `25-11 ✓ · 26-07 ✓ (dep.)`                                                        | n/a — mcpx runs no tool loop                                                                                                              | − moot       | S      | low  |
+| SMP-07 | Sampling feature deprecated (SEP-2577)                                  | `2026-07-28 deprecates`                                           | `26-07 dep.; removable from 2027-07-28`                                           | ✓ — relay exists; nothing new to build                                                                                                    | − deprecated | S      | low  |
+| SMP-08 | 2026 `CreateMessageRequest` embedded; no `_meta`; result not a `Result` | `2026-07-28 has`                                                  | `26-07 only`                                                                      | ✓ — decoded per `inputRequests` key                                                                                                       | + low        | S      | low  |
+| SMP-09 | Client declares `sampling` only when something can answer               | `2026-07-28 deprecates`                                           | spec: declare what you support; mcpx: handler-gated                               | ✓ — declared iff a request handler is configured (modern.go:120-123; daemon/hooks.go:82)                                                  | + med        | S      | med  |
+| SMP-10 | Upstream sampling answered by an agent through the broker               | `mcpx has, others don't` `2026-07-28 deprecates`                  | mcpx only                                                                         | partial — decline becomes an error; `role`/`model` filled in                                                                              | + low        | S      | med  |
+| SMP-11 | Relaying sampling to a host checks declared sub-capabilities            | `2025-11-25 has`                                                  | `25-11 ✓ · 26-07 ✓`                                                               | ✓ — tools require `sampling.tools`; context is dropped without `sampling.context` (conn.go:561-581,696-703)                               | + low        | S      | low  |
 
 ## SMP-01 `sampling/createMessage` request, result and baseline fields
 
@@ -74,7 +73,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   `schema/2025-11-25/schema.ts:1592` "Values \"thisServer\" and \"allServers\" are soft-deprecated.";
   `schema/2025-11-25/schema.ts:332` "context?: object;";
   `2025-11-25/client/sampling.mdx:69` "With context inclusion support (soft-deprecated):";
-  `2026-07-28/deprecated.mdx:30`; `internal/mcpclient/modern.go:55`.
+  `2026-07-28/deprecated.mdx:30`; `internal/mcpclient/modern.go:120-123`.
 
 ## SMP-03 `tools` and `toolChoice` in sampling requests
 
@@ -82,8 +81,10 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   `toolChoice{mode: "auto" | "required" | "none"}`. Clients MUST declare `sampling.tools` to receive them, and MUST
   return an error if they arrive anyway; servers MUST NOT send them to clients lacking it.
 - **Where.** 2025-11-25; deprecated with Sampling in 2026-07-28.
-- **mcpx @ 05c78b2.** Not declared upstream (`internal/mcpclient/modern.go:55`), so conforming upstreams do not send tools
-  to mcpx. Toward hosts, a tool-enabled request from a non-conforming upstream would be forwarded without checking (SMP-11).
+- **mcpx @ 2a93f3f64.** Not declared upstream (`internal/mcpclient/modern.go:120-123`), so conforming upstreams do not
+  send tools to mcpx. If a non-conforming upstream does, mcpx refuses tools/toolChoice with `-32602`
+  (`internal/mcpclient/modern.go:142-179`). Toward hosts, a tool-enabled request is offered only to a host that declared
+  `sampling.tools` (`internal/mcpserver/conn.go:572-581`).
 - **Value to mcpx.** + low: only matters for an agentic-sampling relay, of a deprecated feature.
 - **Effort.** M — tool-loop semantics (SMP-05, SMP-06).
 - **Risk.** low while undeclared.
@@ -93,7 +94,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   `schema/2025-11-25/schema.ts:1636` "mode?: \"auto\" | \"required\" | \"none\";";
   `schema/2025-11-25/schema.ts:336` "tools?: object;";
   `2025-11-25/client/sampling.mdx:40` "Clients **MUST** declare support for tool use via the";
-  `2025-11-25/changelog.mdx:18` "Add tool calling support to sampling via".
+  `2025-11-25/changelog.mdx:18` "Add tool calling support to sampling via";
+  `internal/mcpclient/modern.go:142-179`; `internal/mcpserver/conn.go:572-581`.
 
 ## SMP-04 `stopReason: "toolUse"`
 
@@ -171,21 +173,19 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 
 ## SMP-09 Client declares `sampling` only when something can answer
 
-- **What.** A client should declare only what it supports. mcpx tells every upstream it supports `sampling`, though the only
-  answerer is an agent watching `/v1/elicit` with a model behind it.
-- **Where.** Spec rule in every revision; mcpx declares it always.
-- **mcpx @ 05c78b2.** `capabilities()` adds `sampling` when a handler is installed (`internal/mcpclient/modern.go:46-58`);
-  the pool always installs one when hooks exist (`internal/pool/pool.go:393-399`); the daemon always installs
-  `Elicit: r.answerServer` (`internal/daemon/hooks.go:69`). Wire: askmcp's `declared` tool echoed
-  `{"elicitation":{},"roots":{"listChanged":false},"sampling":{}}`. `docs/protocol.md:271` says sampling is declared "only
-  when a handler exists", which is literally true and practically always.
-- **Value to mcpx.** + med: servers that fall back when sampling is absent would do so instead of waiting.
-- **Effort.** S — declare only when an agent answerer is configured.
+- **What.** A client should declare only what it supports. mcpx declares `sampling` only when its server-request handler
+  exists.
+- **Where.** Spec rule in every revision; mcpx's `capabilities()` gates the field on a configured handler.
+- **mcpx @ 2a93f3f64.** `capabilities()` adds `sampling` iff `OnServerRequest` is non-nil
+  (`internal/mcpclient/modern.go:94-123`); the daemon installs its broker-backed handler
+  (`internal/daemon/hooks.go:82,155-174`). The handler turns requests into broker work; an unanswered request may still
+  expire. Thus declaration reflects configured support, not whether an agent is connected at that instant.
+- **Value to mcpx.** − done: the declaration follows handler availability.
+- **Effort.** S — done.
 - **Risk.** med: a sampling server waits `elicit.ttl` (120 s) per call and gets an error when nobody answers.
-- **Detail.** A send-conservatively conflict. Without a broker, `answerServer` errors for sampling
-  (`internal/daemon/hooks.go:104-111`).
-- **Sources.** `docs/protocol.md:271` "only when a handler exists to answer it"; `internal/daemon/hooks.go:69`
-  "Elicit: r.answerServer,"; `internal/pool/pool.go:393-399`; `internal/mcpclient/modern.go:46-58`.
+- **Detail.** The capability check reports configured support. A broker request can remain open until a handler answers
+  or the request expires; lack of an immediately connected agent does not remove the configured handler.
+- **Sources.** `internal/mcpclient/modern.go:94-123`; `internal/daemon/hooks.go:82,155-174,280-328`.
 
 ## SMP-10 Upstream sampling answered by an agent through the broker
 
@@ -202,19 +202,22 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   the schema makes it optional.
 - **Sources.** `internal/daemon/hooks.go:215-217` "the sampling request was"; `internal/daemon/hooks.go:180-232`.
 
-## SMP-11 Relaying sampling to a host checks sub-capabilities and revision
+## SMP-11 Relaying sampling to a host checks declared sub-capabilities
 
-- **What.** A 2025-11-25 upstream's `tools`/`toolChoice`, or a non-`none` `includeContext`, must not reach a host that did
-  not declare `sampling.tools` / `sampling.context`, or that speaks 2025-06-18, where `tools` does not exist.
+- **What.** A `tools`/`toolChoice` request must not reach a host that did not declare `sampling.tools`; non-`none`
+  `includeContext` must not be relayed unless the host declared `sampling.context`. The 2025-06-18 schema has no
+  `sampling.tools` sub-capability; a conforming client from that revision cannot declare it.
 - **Where.** The sub-capabilities are 2025-11-25 and later.
-- **mcpx @ 05c78b2.** `CanSample` checks only that `sampling` was declared (`internal/mcpserver/conn.go:211`); `paramsFor`
-  rewrites only `elicitation/create` (`internal/mcpserver/conn.go:382-407`); the 2026 path copies params verbatim
-  (`internal/mcpserver/ask.go:256-266`).
-- **Value to mcpx.** + low: hosts are never sent shapes they cannot parse.
+- **mcpx @ 2a93f3f64.** A tool-bearing question is sendable only when the host declared `sampling.tools`
+  (`internal/mcpserver/conn.go:561-581`); `paramsFor` drops `includeContext` unless the host declared
+  `sampling.context` (`internal/mcpserver/conn.go:652-704`). The host-facing gate is declaration-based, not a second
+  explicit version predicate; a conforming pre-2025-11-25 peer cannot declare these sub-keys. In the reverse direction,
+  sampling payload/result validation uses the negotiated revision (`internal/daemon/hooks.go:295-303,362-368`).
+- **Value to mcpx.** − done: no sampling fields beyond the host's declared sub-capabilities are relayed.
 - **Effort.** S.
-- **Risk.** low: a strict host rejects the whole sampling request.
-- **Detail.** A send-conservatively conflict. In practice it needs a non-conforming upstream, because mcpx declares
-  `sampling: {}` without `tools` or `context` and a conforming upstream would not send them (CAP-04). Not driven on the
-  wire.
-- **Sources.** `internal/mcpserver/conn.go:211` "func (p Peer) CanSample() bool { return p.Declared(\"sampling\") }";
-  `schema/2025-11-25/schema.ts:327-336`; `internal/mcpserver/ask.go:256-266`.
+- **Risk.** low: tools questions that are not sendable remain on the broker path; unsupported context is omitted.
+- **Detail.** It needs a non-conforming upstream to send tools to mcpx because its upstream declaration is bare
+  `sampling: {}`; mcpx refuses those requests. The host-side sub-capability checks protect the other end of the relay.
+- **Sources.** `internal/mcpserver/conn.go:313-319,561-581,652-704`;
+  `internal/mcpclient/modern.go:142-179`; `internal/daemon/hooks.go:295-303,362-368`;
+  `schema/2025-11-25/schema.ts:327-336`.

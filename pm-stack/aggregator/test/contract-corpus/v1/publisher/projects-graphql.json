@@ -1,0 +1,75 @@
+{
+  "data": {
+    "node": {
+      "title": "Developing Today",
+      "number": 4,
+      "url": "https://github.com/orgs/developing-today/projects/4",
+      "items": {
+        "totalCount": 2,
+        "pageInfo": { "hasNextPage": false, "endCursor": null },
+        "nodes": [
+          {
+            "id": "PVTI_contract_1",
+            "databaseId": 901,
+            "type": "ISSUE",
+            "content": {
+              "number": 2401,
+              "title": "Contract corpus epic",
+              "state": "OPEN",
+              "url": "https://github.com/developing-today/code/issues/2401",
+              "repository": { "nameWithOwner": "developing-today/code" },
+              "updatedAt": "2026-10-20T12:05:58Z",
+              "author": { "login": "example-user" },
+              "labels": { "nodes": [{ "name": "epic" }] }
+            },
+            "fieldValues": {
+              "nodes": [
+                {},
+                { "name": "In Progress", "field": { "name": "Status" } },
+                { "name": "pm-stack", "field": { "name": "Area" } },
+                { "name": "Quarter", "field": { "name": "Horizon" } },
+                { "name": "Epic", "field": { "name": "Kind" } }
+              ]
+            }
+          },
+          {
+            "id": "PVTI_contract_2",
+            "databaseId": 902,
+            "type": "ISSUE",
+            "content": {
+              "number": 2403,
+              "title": "Contract corpus task under the epic",
+              "state": "OPEN",
+              "url": "https://github.com/developing-today/code/issues/2403",
+              "repository": { "nameWithOwner": "developing-today/code" },
+              "updatedAt": "2026-10-25T00:00:00Z",
+              "author": { "login": "example-user" },
+              "labels": { "nodes": [] },
+              "parent": {
+                "number": 2401,
+                "repository": { "nameWithOwner": "developing-today/code" }
+              },
+              "blockedBy": {
+                "nodes": [
+                  {
+                    "number": 1176,
+                    "repository": { "nameWithOwner": "developing-today/code" }
+                  }
+                ]
+              },
+              "blocking": { "nodes": [] }
+            },
+            "fieldValues": {
+              "nodes": [
+                { "name": "Todo", "field": { "name": "Status" } },
+                { "name": "pm-stack", "field": { "name": "Area" } },
+                { "name": "Quarter", "field": { "name": "Horizon" } },
+                { "name": "Task", "field": { "name": "Kind" } }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

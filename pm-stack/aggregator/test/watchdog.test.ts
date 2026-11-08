@@ -3,9 +3,11 @@ import { buildAttention } from "../src/derive.ts";
 import { attentionSections, tierItemObjectRef } from "../src/render.ts";
 import type { SectionDiagnosis } from "../src/feed.ts";
 import type { OrchestrationSection, TierItem } from "../src/model.ts";
+import type { ProjectAudit } from "../src/model.ts";
 import {
   watchdogTierItems,
   WATCHDOG_FEED_STALE_MS,
+  WATCHDOG_PROJECT_AUDIT_STALE_MS,
   WATCHDOG_REGISTRY_STALE_MS,
   type WatchdogInputs,
 } from "../src/watchdog.ts";
@@ -18,14 +20,25 @@ import {
 
 const NOW = Date.parse("2026-10-29T12:00:00Z");
 const iso = (ms: number) => new Date(ms).toISOString();
+const freshProjectAudit: ProjectAudit = {
+  title: "Developing Today",
+  number: 4,
+  url: "https://github.com/orgs/developing-today/projects/4",
+  generatedAt: iso(NOW),
+  totalItems: 1,
+  fields: [],
+  views: [],
+  counts: { status: { Todo: 1 }, area: { "(unset)": 1 }, repo: { "developing-today/code": 1 } },
+};
 
 function healthy(over: Partial<WatchdogInputs> = {}): WatchdogInputs {
   return {
     now: NOW,
-    feedAgeMs: 5 * 60_000,
-    feedGeneratedAt: iso(NOW - 5 * 60_000),
+    feedAgeMs: 4 * 60_000,
+    feedGeneratedAt: iso(NOW - 4 * 60_000),
     orchestration: { state: "live", generatedAt: iso(NOW - 30 * 60_000), ageMs: 30 * 60_000, runId: "orch-1" },
     registryAgeMs: 5 * 60_000,
+    projectAudit: freshProjectAudit,
     probes: [
       { id: "kaneo", name: "Kaneo", ok: true, detail: "HTTP 200", probedAt: iso(NOW) },
       { id: "grist", name: "Grist", ok: true, detail: "HTTP 200", probedAt: iso(NOW) },
@@ -41,7 +54,10 @@ describe("watchdog derivation (#1148)", () => {
   });
 
   test("a stale feed produces exactly one item, stable across repeated derivations", () => {
-    const inputs = healthy({ feedAgeMs: WATCHDOG_FEED_STALE_MS + 5 * 60_000, feedGeneratedAt: iso(NOW - (WATCHDOG_FEED_STALE_MS + 5 * 60_000)) });
+    const inputs = healthy({
+      feedAgeMs: WATCHDOG_FEED_STALE_MS + 5 * 60_000,
+      feedGeneratedAt: iso(NOW - (WATCHDOG_FEED_STALE_MS + 5 * 60_000)),
+    });
     const first = watchdogTierItems(inputs);
     expect(first).toHaveLength(1);
     expect(first[0]!.id).toBe("watchdog:fleet-feed");
@@ -62,7 +78,13 @@ describe("watchdog derivation (#1148)", () => {
     const items = watchdogTierItems(
       healthy({
         probes: [
-          { id: "kaneo", name: "Kaneo", ok: false, detail: "probe failed: connection refused", probedAt: iso(NOW - 30_000) },
+          {
+            id: "kaneo",
+            name: "Kaneo",
+            ok: false,
+            detail: "probe failed: connection refused",
+            probedAt: iso(NOW - 30_000),
+          },
           { id: "grist", name: "Grist", ok: true, detail: "HTTP 200", probedAt: iso(NOW) },
           { id: "pad", name: "Pad", ok: null, detail: "off by config", probedAt: iso(NOW) },
           { id: "ready-for-agent", name: "ready-for-agent", ok: false, detail: "HTTP 500", probedAt: iso(NOW) },
@@ -74,7 +96,12 @@ describe("watchdog derivation (#1148)", () => {
   });
 
   test("orchestration stale / invalid / absent each produce exactly one item; live produces none", () => {
-    const stale: SectionDiagnosis = { state: "stale", generatedAt: iso(NOW - 120 * 60_000), ageMs: 120 * 60_000, runId: "orch-0" };
+    const stale: SectionDiagnosis = {
+      state: "stale",
+      generatedAt: iso(NOW - 120 * 60_000),
+      ageMs: 120 * 60_000,
+      runId: "orch-0",
+    };
     expect(watchdogTierItems(healthy({ orchestration: stale })).map((i) => i.id)).toEqual(["watchdog:orchestration"]);
     const invalid: SectionDiagnosis = { state: "invalid", failedChecks: ["tiers"] };
     const inv = watchdogTierItems(healthy({ orchestration: invalid }));
@@ -136,7 +163,13 @@ describe("watchdog derivation (#1148)", () => {
     expect(view.watchdog.map((i) => i.id)).toEqual(items.map((i) => i.id));
     // Merging is idempotent by id: passing the same items twice over
     // (two derivations concatenated) still yields one card per input.
-    const view2 = buildAttention([], null, NOW, undefined, [...items, ...items].filter((v, idx, a) => a.indexOf(v) === idx || true));
+    const view2 = buildAttention(
+      [],
+      null,
+      NOW,
+      undefined,
+      [...items, ...items].filter((v, idx, a) => a.indexOf(v) === idx || true),
+    );
     expect(new Set(view2.orchestratorExtra.map((i) => i.id)).size).toBe(view2.orchestratorExtra.length);
   });
 
@@ -173,5 +206,35 @@ describe("watchdog derivation (#1148)", () => {
     // observation — does not.
     expect(queues.slice(pubAt, wdAt)).toContain("<fieldset disabled>");
     expect(queues.slice(wdAt)).not.toContain("<fieldset disabled>");
+  });
+});
+
+describe("Project #4 audit watchdog (#1218)", () => {
+  test("a fresh populated audit is healthy; absent and empty audits produce visible items", () => {
+    expect(watchdogTierItems(healthy()).map((item) => item.id)).toEqual([]);
+
+    const absent = watchdogTierItems(healthy({ projectAudit: null }));
+    expect(absent.map((item) => item.id)).toEqual(["watchdog:projects"]);
+    expect(absent[0]!.state).toBe("watchdog: projects absent");
+
+    const empty = watchdogTierItems(
+      healthy({ projectAudit: { ...freshProjectAudit, totalItems: 0, counts: { status: {}, area: {}, repo: {} } } }),
+    );
+    expect(empty.map((item) => item.id)).toEqual(["watchdog:projects"]);
+    expect(empty[0]!.state).toBe("watchdog: projects empty");
+  });
+
+  test("stale and malformed audit snapshots produce visible diagnoses", () => {
+    const stale = watchdogTierItems(
+      healthy({ projectAudit: { ...freshProjectAudit, generatedAt: iso(NOW - WATCHDOG_PROJECT_AUDIT_STALE_MS - 1) } }),
+    );
+    expect(stale.map((item) => item.id)).toEqual(["watchdog:projects"]);
+    expect(stale[0]!.state).toBe("watchdog: projects stale");
+
+    const invalid = watchdogTierItems(
+      healthy({ projectAudit: { ...freshProjectAudit, generatedAt: "not-a-date" } as ProjectAudit }),
+    );
+    expect(invalid.map((item) => item.id)).toEqual(["watchdog:projects"]);
+    expect(invalid[0]!.state).toBe("watchdog: projects invalid");
   });
 });

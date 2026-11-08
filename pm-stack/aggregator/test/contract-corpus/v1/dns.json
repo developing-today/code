@@ -1,0 +1,46 @@
+{
+  "generatedAt": "2026-10-27T03:10:00Z",
+  "source": "register file (#902 pipeline) via fleet feed collector",
+  "totalAnnualListUsd": 15.5,
+  "entries": [
+    {
+      "domain": "alpha.example",
+      "registrar": "Example Registrar",
+      "dnsHost": "Example DNS",
+      "renewal": "2027-02-09",
+      "autoRenew": "ON",
+      "priceUsd": 4.07,
+      "priorYearCost": "unknown",
+      "used": "Example service",
+      "plan": "Active — example service",
+      "review": "REVIEW",
+      "status": "active"
+    },
+    {
+      "domain": "bravo.example",
+      "registrar": "Example Registrar",
+      "dnsHost": "Example DNS",
+      "renewal": "2027-05-01",
+      "autoRenew": "ON",
+      "priceUsd": 11.43,
+      "priorYearCost": "unknown",
+      "used": "Parked for example project",
+      "plan": "Example project — earmark inferred",
+      "review": "REVIEW",
+      "status": "earmarked"
+    },
+    {
+      "domain": "charlie.example",
+      "registrar": "Example Registrar",
+      "dnsHost": "Example DNS",
+      "renewal": "2028-01-01",
+      "autoRenew": "unknown",
+      "priceUsd": null,
+      "priorYearCost": "unknown",
+      "used": "Parked for example project",
+      "plan": "Unused — purpose unknown",
+      "review": "REVIEW",
+      "status": "unused"
+    }
+  ]
+}

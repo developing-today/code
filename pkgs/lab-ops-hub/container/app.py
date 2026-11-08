@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Lab Ops Hub crawler container.
 
-Tiny stdlib-only HTTP service. POST /crawl {"url": "..."} -> fetches the page
-with a real HTTP client, extracts title / link count / readable text, returns
-JSON in the same shape the Worker's fallback produces. Runs only on demand
-(Worker starts it via getContainer, sleepAfter=2m kills it when idle), so it
-burns container minutes only while crawling.
+Tiny HTTP service with one IDNA dependency. POST /crawl {"url": "..."} ->
+fetches the page with a real HTTP client, extracts title / link count / readable
+text, returns JSON in the same shape the Worker's fallback produces. Runs only
+on demand (Worker starts it via getContainer, sleepAfter=2m kills it when idle),
+so it burns container minutes only while crawling.
 """
 
 import base64
@@ -15,12 +15,15 @@ import json
 import re
 import socket
 import ssl
+import time
 import unicodedata
 import urllib.error
 import urllib.request
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import unquote, urlparse, urlsplit
+
+import idna
 
 # Crawl-target policy (#441): the Worker validates before dispatching,
 # and this service re-validates independently (defence in depth — it is
@@ -520,18 +523,47 @@ def validate_crawl_url(raw):
                 if candidate.isascii():
                     return judged_label
                 try:
-                    return candidate.encode("idna").decode("ascii")
+                    # Match the Worker's WHATWG URL hostname conversion:
+                    # UTS-46 nontransitional, not Python's IDNA2003
+                    # stdlib codec (Unicode 3.2 nameprep).
+                    return idna.encode(
+                        candidate,
+                        uts46=True,
+                        transitional=False,
+                        std3_rules=False,
+                    ).decode("ascii")
                 except (UnicodeError, ValueError):
-                    # The fallback still owes the Worker the UTS-46
-                    # compatibility mappings NFC does not perform:
-                    # NFKC maps e.g. the fullwidth digit in an RTL
-                    # label the codec's Unicode 3.2 bidi rules refuse
-                    # (the alef + fullwidth-1 label returns the
-                    # Worker's xn--1-zhc, not the unmapped
-                    # xn--4db2378j) - Codex round 2 on PR #3781.
-                    return "xn--" + unicodedata.normalize(
-                        "NFKC", candidate
-                    ).encode("punycode").decode("ascii")
+                    # Preserve the permissive fallback for labels
+                    # python-idna declines — but apply the UTS-46
+                    # mapping FIRST, independently of the strict
+                    # IDNA2008 validation that just failed, and only
+                    # then let NFKC supply any remaining compatibility
+                    # mappings before punycode. NFKC alone maps
+                    # U+03F2 (lunate sigma) to U+03C2 (final sigma)
+                    # where UTS-46 maps it to U+03C3, so a label the
+                    # codec refuses over an underscore (ϲ_.com) came
+                    # back as the final-sigma host xn--_-xmb instead
+                    # of the WHATWG xn--_-zmb — a different hostname
+                    # than the Worker certified (Codex review of
+                    # PR #5231). uts46_remap is mapping only (no
+                    # validity checks), so the permissive reach of
+                    # the fallback is unchanged.
+                    try:
+                        candidate = idna.core.uts46_remap(
+                            candidate, std3_rules=False, transitional=False
+                        )
+                    except (UnicodeError, ValueError):
+                        pass
+                    normalized = unicodedata.normalize("NFKC", candidate)
+                    if normalized.isascii():
+                        # The remapping can leave a pure-ASCII label
+                        # (UTS-46 deletes U+FE0F, so a_ + U+FE0F
+                        # remaps to a_): return it directly. An xn--
+                        # prefix on an ASCII label names a different
+                        # host than the Worker returns (Codex review
+                        # of PR #5231).
+                        return normalized
+                    return "xn--" + normalized.encode("punycode").decode("ascii")
 
             return_host = (
                 ".".join(
@@ -1322,9 +1354,24 @@ _OPENER = urllib.request.build_opener(
     _ValidatingRedirectHandler, urllib.request.HTTPSHandler(context=CTX)
 )
 
+_CRAWL_TIMEOUT_SECONDS = 20
+_CRAWL_MAX_BODY_BYTES = 2_000_000
+_CRAWL_READ_CHUNK_BYTES = 65_536
+
 
 def _fetch_crawl(url):
-    # Fetch a validated URL and return (status, body capped at 2 MB).
+    # Fetch a validated URL and return (status, body capped at 2 MB). One
+    # absolute deadline covers opening the response and reading its body;
+    # unlike the Worker fallback's per-hop timeout, redirects share this
+    # container fetch's budget.
+    deadline = time.monotonic() + _CRAWL_TIMEOUT_SECONDS
+
+    def remaining_seconds():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("crawl exceeded its total deadline")
+        return remaining
+
     # urllib raises HTTPError for 4xx/5xx, but an HTTPError is also the
     # response: an error-status page is still a crawl result (the
     # Worker fallback extracts it and reports its real status_code),
@@ -1346,14 +1393,36 @@ def _fetch_crawl(url):
     # hostname and fail before any request is sent (#622).
     _apply_userinfo_auth(req)
     try:
-        response = _OPENER.open(req, timeout=20)
+        response = _OPENER.open(req, timeout=remaining_seconds())
     except urllib.error.HTTPError as e:
         if not 400 <= e.code < 600:
             raise
         response = e
     with response as res:
         status = getattr(res, "status", None) or res.getcode()
-        return status, res.read(2_000_000)
+        body = bytearray()
+        while len(body) < _CRAWL_MAX_BODY_BYTES:
+            remaining = remaining_seconds()
+            # urllib's HTTPResponse uses a buffered reader over the socket.
+            # Tighten the socket timeout before every bounded read so a
+            # peer that keeps dribbling bytes cannot renew the 20s budget.
+            fp = getattr(res, "fp", None)
+            raw = getattr(fp, "raw", None)
+            sock = getattr(raw, "_sock", None)
+            if sock is not None:
+                sock.settimeout(remaining)
+            chunk = res.read1(
+                min(
+                    _CRAWL_READ_CHUNK_BYTES,
+                    _CRAWL_MAX_BODY_BYTES - len(body),
+                )
+            )
+            if time.monotonic() >= deadline:
+                raise TimeoutError("crawl exceeded its total deadline")
+            if not chunk:
+                break
+            body.extend(chunk)
+        return status, bytes(body)
 
 
 class Extractor(HTMLParser):

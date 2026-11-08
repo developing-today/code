@@ -89,6 +89,22 @@ command = "gofmt"
 options = ["-w"]
 includes = ["*.go"]
 
+# Regenerates pkgs/mcpx/plugin/opencode/mcpx/ops.gen.ts from the /v1
+# route table whenever the API package changes (#4814): generated
+# files refresh with formatting, like just-recipes.json in `just fix`.
+# The command ignores the file list treefmt passes it — the generator
+# rewrites the one output file. The nix build independently
+# regenerates in preCheck (#4807); this keeps the TREE fresh for
+# raw-source consumers of the plugin. Idempotent.
+[formatter.mcpx-ops]
+command = "bash"
+options = [
+  "-c",
+  "cd pkgs/mcpx && go test ./internal/api -run '^TestPluginOpsAreGenerated$' -update",
+  "_",
+]
+includes = ["pkgs/mcpx/internal/api/*.go"]
+
 [formatter.haskell]
 command = "ormolu"
 options = [

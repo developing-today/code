@@ -18,12 +18,12 @@ func TestExpireHandsOverAnAnswerThatLandedFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 	b, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	r, err := a.OpenRequest(Request{Message: "which one?"})
 	if err != nil {
@@ -51,7 +51,7 @@ func TestExpireCancelsAnUnclaimedQuestion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 
 	r, err := a.OpenRequest(Request{Message: "which one?"})
 	if err != nil {

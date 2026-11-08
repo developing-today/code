@@ -3,7 +3,7 @@
 # (developing-today/code#1050). Copies the producer beside its output
 # directory and enables the 15-minute timer beside the #1151 gatherer tick.
 # The management token is resolved BY NAME from Bitwarden at runtime
-# (SUPABASE_TOKEN_SECRET_NAME, default supabase.access-token-muse-cli);
+# (SUPABASE_TOKEN_SECRET_NAME, default supabase.muse-dev2.access-token-muse-cli);
 # this script never reads, prints, or stores its value.
 set -euo pipefail
 
@@ -26,7 +26,7 @@ if [[ -z $bun_bin ]]; then
   echo "install-laptop: bun not found on PATH or at ~/.bun/bin/bun" >&2
   exit 1
 fi
-sed -e "s|@EXPORT_DIR@|$target|g" -e "s|@BUN@|$bun_bin|g" -e "s|@BASH@|$bash_bin|g" "$here/supabase-quota-export.service" > "$units/supabase-quota-export.service"
+sed -e "s|@EXPORT_DIR@|$target|g" -e "s|@BUN@|$bun_bin|g" -e "s|@BASH@|$bash_bin|g" "$here/supabase-quota-export.service" >"$units/supabase-quota-export.service"
 chmod 0644 "$units/supabase-quota-export.service"
 if grep -q '@EXPORT_DIR@\|@BUN@\|@BASH@' "$units/supabase-quota-export.service"; then
   echo "install-laptop: service unit still contains an unrendered placeholder after rendering" >&2

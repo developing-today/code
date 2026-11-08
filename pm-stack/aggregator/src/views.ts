@@ -28,6 +28,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { DashAuthor } from "./model.ts";
+import { isIsoDate } from "./validate.ts";
 
 /** The cross-cutting filter dimensions a saved view pins (#1276). */
 export interface ViewFilters {
@@ -96,10 +97,8 @@ function isSavedView(value: unknown): value is SavedView {
     view.owner.length > 0 &&
     validateViewFilters(view.filters).ok &&
     typeof view.isDefault === "boolean" &&
-    typeof view.createdAt === "string" &&
-    Number.isFinite(Date.parse(view.createdAt)) &&
-    typeof view.updatedAt === "string" &&
-    Number.isFinite(Date.parse(view.updatedAt))
+    isIsoDate(view.createdAt) &&
+    isIsoDate(view.updatedAt)
   );
 }
 

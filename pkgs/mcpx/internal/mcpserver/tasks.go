@@ -45,7 +45,22 @@ func (s *Server) tasks() *taskStore {
 			s.taskStore.MaxPerRequestor = tm.TaskMaxPerRequestor
 			s.taskStore.PerMinute = tm.TaskWindowPerMinute
 			s.taskStore.CancelGrace = tm.TaskCancelGrace
+			// A private store still audits: without a seam the
+			// store's nil-Audit guard drops every record, and a
+			// standalone server's tasks leave no trace (#2500).
+			if s.TaskAudit != nil {
+				s.taskStore.Audit = s.TaskAudit
+			}
 		}
+	}
+	// Retention settings are hot (#6247): refresh them on every access,
+	// exactly as the daemon's taskStore() accessor does for /v1, so MCP
+	// traffic alone keeps the shared store's retention current after a
+	// /v1/settings change. Configure ignores nonpositive values, so a
+	// provider returning zeros leaves the current configuration alone.
+	if s.TaskRetention != nil {
+		ttl, maxAge := s.TaskRetention()
+		s.taskStore.Configure(ttl, maxAge)
 	}
 	return s.taskStore
 }
@@ -62,9 +77,6 @@ func wantsTask(params json.RawMessage) (bool, int64) {
 		return false, 0
 	}
 	ttl := p.Task.TTL
-	if ttl <= 0 {
-		ttl = tasks.DefaultTTL()
-	}
 	return true, ttl
 }
 
@@ -400,7 +412,7 @@ func (s *Server) askTask(ctx context.Context, req request, peer Peer) (*response
 	// so one client's slow calls could refuse another's first call
 	// (Codex on #2869, round 4). An anonymous request's empty key
 	// falls into the store's unbound bucket, capped like any other.
-	t, terr := s.tasks().Start(tasks.Caller(IdentityFrom(ctx).Key), tasks.DefaultTTL(), func(tctx context.Context) (any, *tasks.Fault) {
+	t, terr := s.tasks().Start(tasks.Caller(IdentityFrom(ctx).Key), 0, func(tctx context.Context) (any, *tasks.Fault) {
 		return s.driveAsked(tctx, req, peer, callID)
 	})
 	if terr != nil {
@@ -505,6 +517,9 @@ func modernTask(t Task) map[string]any {
 		"status":         t.Status,
 		"createdAt":      t.CreatedAt,
 		"lastUpdatedAt":  t.LastUpdatedAt,
+		"expiresAt":      t.ExpiresAt,
+		"lastTouched":    t.LastTouched,
+		"ttlRemainingMs": t.TTLRemainingMs,
 		"ttlMs":          t.TTL,
 		"pollIntervalMs": t.PollInterval,
 	}
@@ -528,8 +543,22 @@ func detailedTask(t Task) map[string]any {
 // tasks/get answers and what notifications/tasks carries, which the SEP says
 // are identical. A terminal task inlines its result or error.
 func (s *Server) detailedNow(ctx context.Context, id string) (map[string]any, bool) {
+	return s.detailed(ctx, id, false)
+}
+
+func (s *Server) detailedReadNow(ctx context.Context, id string) (map[string]any, bool) {
+	return s.detailed(ctx, id, true)
+}
+
+func (s *Server) detailed(ctx context.Context, id string, touch bool) (map[string]any, bool) {
 	st := s.tasks()
-	snap, ok := st.Get(id)
+	var snap Task
+	var ok bool
+	if touch {
+		snap, ok = st.Read(id)
+	} else {
+		snap, ok = st.Get(id)
+	}
 	if !ok {
 		return nil, false
 	}
@@ -633,14 +662,16 @@ func (s *Server) handleTask(ctx context.Context, c *Conn, req request, peer Peer
 		return reply(out)
 
 	case "tasks/get":
-		snap, ok := st.Get(p.TaskID)
+		st.RecordRetrieval("mcp", "tasks/get", p.TaskID)
+		snap, ok := st.Read(p.TaskID)
 		if !ok {
 			return missing()
 		}
 		return reply(snap)
 
 	case "tasks/result":
-		result, fault, err := st.Result(ctx, p.TaskID)
+		st.RecordRetrieval("mcp", "tasks/result", p.TaskID)
+		result, fault, err := st.ReadResult(ctx, p.TaskID)
 		switch {
 		case err != nil:
 			var gone tasks.ErrNoTask
@@ -697,7 +728,8 @@ func (s *Server) handleModernTask(ctx context.Context, req request, id string, m
 	st := s.tasks()
 	switch req.Method {
 	case "tasks/get":
-		out, ok := s.detailedNow(ctx, id)
+		st.RecordRetrieval("mcp", "tasks/get", id)
+		out, ok := s.detailedReadNow(ctx, id)
 		if !ok {
 			return missing()
 		}

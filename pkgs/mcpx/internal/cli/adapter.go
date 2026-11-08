@@ -280,13 +280,13 @@ func writeFileAtomic(path string, doc []byte, perm os.FileMode) error {
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if _, err := tmp.Write(doc); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {

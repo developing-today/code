@@ -29,7 +29,7 @@ func TestAHungServerDoesNotOutliveTheCallTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tr.Close()
+	defer func() { _ = tr.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()

@@ -16,14 +16,54 @@ export interface ServerEnv extends Record<string, string | undefined> {
   GITHUB_APP_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
   GITHUB_TOKEN?: string;
+  /** Loopback-only pm-aggregator freshness publisher; absent in isolated tests. */
+  PM_AGG_FRESHNESS_URL?: string;
+}
+
+interface FreshnessNoticeInput {
+  eventId: string;
+  source: "github";
+  scope: string[];
+  occurredAt: string | null;
+  reason: "source-event";
+}
+
+function githubOccurredAt(payload: Record<string, any>): string | null {
+  const candidates = [
+    payload?.issue?.updated_at,
+    payload?.pull_request?.updated_at,
+    payload?.comment?.updated_at,
+    payload?.review?.submitted_at,
+    payload?.created_at,
+  ];
+  for (const value of candidates) {
+    if (typeof value === "string" && Number.isFinite(Date.parse(value))) return new Date(value).toISOString();
+  }
+  return null;
+}
+
+async function publishFreshness(env: ServerEnv, input: FreshnessNoticeInput): Promise<void> {
+  const url = env.PM_AGG_FRESHNESS_URL;
+  // Tests and standalone projector deployments can omit the local sink.
+  // The laptop unit configures it explicitly; no external route is enabled.
+  if (!url) return;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) throw new Error(`freshness publisher returned ${response.status}`);
 }
 
 function libsqlStore(db: Client): ProjectorStore {
   return {
     upsertItem: (i) => store.upsertItem(db, i),
     upsertComment: (c) => store.upsertComment(db, c),
-    markCommentDeleted: (id) => store.markCommentDeleted(db, id),
+    markCommentDeleted: (c) => store.markCommentDeleted(db, c),
+    deleteItem: (ref, sourceUpdatedAt) => store.deleteItem(db, ref, sourceUpdatedAt),
+    itemDeletion: (ref) => store.getItemDeletion(db, ref),
     recordPush: (p) => store.recordPush(db, p),
+    appendHotEvents: (events) => store.appendHotEvents(db, events),
   };
 }
 
@@ -58,6 +98,26 @@ export function parseLimit(raw: string | null, defaultLimit: number, maxLimit: n
   return Math.min(n, maxLimit);
 }
 
+/** Parse a hot-list cursor parameter: decimal digits only, else null. */
+export function parseCursor(raw: string | null): number | null {
+  if (raw === null || !/^[0-9]+$/.test(raw)) return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+/** A link ref is storable only if it is owner/repo#N with a safe-integer
+ *  N - the same rule the aggregator's parseRef enforces (#4952, #6211).
+ *  The shape regex alone admits numbers parseRef (and refUrl) throw on
+ *  (e.g. a 20-digit issue number), and one such stored row 500s the
+ *  aggregator's /search and project pages at render, so the write gate
+ *  checks the number itself, not just the shape. */
+export function isStorableLinkRef(ref: unknown): ref is string {
+  if (typeof ref !== "string") return false;
+  const m = /^[\w.-]+\/[\w.-]+#(\d+)$/.exec(ref);
+  if (!m) return false;
+  return Number.isSafeInteger(Number(m[1]));
+}
+
 function bearerAuthorized(req: Request, env: ServerEnv): boolean {
   const token = env.PM_PROJECTOR_API_TOKEN;
   if (!token) return false; // fail closed when no token configured
@@ -88,6 +148,9 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
     const signature = req.headers.get("x-hub-signature-256");
     const event = req.headers.get("x-github-event") ?? "unknown";
     const deliveryId = req.headers.get("x-github-delivery") ?? "";
+    if (!deliveryId) {
+      return jsonResponse(400, { error: "missing_delivery_id" });
+    }
     let body: Uint8Array;
     try {
       body = await readBoundedBody(req.body, 10_000_000);
@@ -110,6 +173,19 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
     }
     try {
       const result = await applyEvent(libsqlStore(db), event, payload, repos(env), deliveryId);
+      if (result.wrote && result.refs.length > 0) {
+        // Append before recording this delivery as applied. If the
+        // aggregator is unavailable, GitHub's retry re-applies the
+        // projection and retries the same stable delivery id; an
+        // already-applied row must never hide a missing invalidation.
+        await publishFreshness(env, {
+          eventId: `github:${deliveryId}`,
+          source: "github",
+          scope: [...new Set(result.refs)].slice(0, 100),
+          occurredAt: githubOccurredAt(payload),
+          reason: "source-event",
+        });
+      }
       await store.recordDelivery(db, {
         deliveryId,
         event,
@@ -182,7 +258,7 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
         typeof subject !== "string" ||
         subject.length === 0 ||
         typeof ref !== "string" ||
-        !/^[\w.-]+\/[\w.-]+#\d+$/.test(ref)
+        !isStorableLinkRef(ref)
       ) {
         return jsonResponse(400, { error: "subject (non-empty string) and ref (owner/repo#N) required" });
       }
@@ -233,6 +309,57 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
     const view = await store.getSubject(db, subject);
     if (!view) return jsonResponse(404, { error: "subject_not_found" });
     return jsonResponse(200, view);
+  }
+
+  // -- hot list (#5204): append-only change ledger + consumer checkpoints --
+  if (path === "/hot" && method === "GET") {
+    const after = parseCursor(url.searchParams.get("after") ?? url.searchParams.get("cursor")) ?? 0;
+    const limit = parseLimit(url.searchParams.get("limit"), DEFAULT_ITEMS_LIMIT, MAX_ITEMS_LIMIT);
+    // A sweep pins the high-water the server issues at its start; pages
+    // requested with that high-water never see events past it, so a sweep
+    // is a fixed window and its checkpoint can ack up to it exactly.
+    const pinned = parseCursor(url.searchParams.get("high_water"));
+    // The issued high-water is always server-controlled: a caller-supplied
+    // pin is clamped to the ledger's actual high-water, never echoed past
+    // it, so the value a sweep acks against is one the server truly issued.
+    const serverHighWater = await store.hotHighWater(db);
+    const highWater = pinned === null ? serverHighWater : Math.min(pinned, serverHighWater);
+    const events = await store.listHotEvents(db, { after, limit, highWater });
+    return jsonResponse(200, {
+      events,
+      high_water: highWater,
+      next_cursor: events.length ? events[events.length - 1].seq : after,
+    });
+  }
+
+  if (path === "/hot/checkpoints" && method === "GET") {
+    const consumer = url.searchParams.get("consumer");
+    if (!consumer) return jsonResponse(400, { error: "consumer required" });
+    const cursor = await store.getConsumerCheckpoint(db, consumer);
+    return jsonResponse(200, { consumer, cursor });
+  }
+
+  if (path === "/hot/checkpoints" && method === "POST") {
+    if (!bearerAuthorized(req, env)) return jsonResponse(401, { error: "unauthorized" });
+    let body: any;
+    try {
+      body = await req.json();
+    } catch {
+      return jsonResponse(400, { error: "invalid_json" });
+    }
+    const { consumer, cursor, highWater } = body ?? {};
+    if (typeof consumer !== "string" || consumer.length === 0) {
+      return jsonResponse(400, { error: "consumer (non-empty string) required" });
+    }
+    if (!Number.isInteger(cursor) || !Number.isInteger(highWater)) {
+      return jsonResponse(400, { error: "cursor and highWater (integers) required" });
+    }
+    try {
+      const stored = await store.ackConsumerCheckpoint(db, consumer, cursor, highWater);
+      return jsonResponse(200, { consumer, cursor: stored });
+    } catch (e) {
+      return jsonResponse(400, { error: String((e as Error).message) });
+    }
   }
 
   // -- reconcile trigger ------------------------------------------------------

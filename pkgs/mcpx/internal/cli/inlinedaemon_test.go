@@ -241,7 +241,7 @@ func TestInProcessTransportRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusTeapot {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusTeapot)
 	}

@@ -29,7 +29,7 @@
 //! # Protocol Identifier
 //!
 //! The meta protocol uses the ALPN identifier defined in [`crate::META_ALPN`]:
-//! `b"/iroh-meta/2"`. This allows nodes to negotiate the correct protocol handler.
+//! `b"/iroh-meta/3"`. This allows nodes to negotiate the correct protocol handler.
 //!
 //! # Usage Example
 //!
@@ -58,18 +58,44 @@
 //! - [`MatchKind::Prefix`]: Name/hash starts with query (good)
 //! - [`MatchKind::Contains`]: Name/hash contains query anywhere (okay)
 
+use std::{sync::Arc, time::Duration};
+
 use futures_lite::StreamExt;
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh_base::EndpointId;
 use iroh_blobs::{Hash, api::Store};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use tokio::{sync::Semaphore, task::JoinSet};
 
 use crate::access::AccessPolicy;
 use crate::discovery::{PeerAnnouncement, PeerDiscovery};
 use crate::fileops::{FileOpError, FileOps};
 use crate::tags::TagStore;
+
+/// Decode exactly one meta-protocol value, rejecting any trailing bytes.
+///
+/// Meta requests and responses are one-message-per-stream. Accepting a valid
+/// postcard prefix would let a padded or concatenated stream be interpreted as
+/// a different, complete message.
+pub fn decode_meta_exact<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> anyhow::Result<T> {
+    let (value, rest) = postcard::take_from_bytes(bytes)?;
+    anyhow::ensure!(
+        rest.is_empty(),
+        "trailing bytes after meta-protocol value ({} bytes)",
+        rest.len()
+    );
+    Ok(value)
+}
+
+/// Maximum time for one network phase (request read or response write) of a
+/// meta stream. The phases are bounded separately on purpose: once a request
+/// has been fully read, its handler runs to completion, so the deadline can
+/// never cancel a non-transactional mutation (e.g. a rename) midway through.
+const META_STREAM_DEADLINE: Duration = Duration::from_secs(60);
+
+/// Concurrent meta requests allowed on one connection.
+const MAX_META_STREAMS_PER_CONNECTION: usize = 16;
 
 /// Match quality for find/search operations.
 ///
@@ -241,7 +267,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 /// `Put` naming it is refused.
 pub const DEFAULT_BLOB_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Requests to a remote node via the meta protocol (`/iroh-meta/2`).
+/// Requests to a remote node via the meta protocol (`/iroh-meta/3`).
 ///
 /// **Compatibility rule:** postcard encodes enum variants by position. Within
 /// a protocol version, new variants may only be *appended*; reordering,
@@ -365,6 +391,25 @@ impl MetaRequest {
 /// Each variant corresponds to a [`MetaRequest`] variant. Any request may also
 /// be answered with [`MetaResponse::Error`]. The same append-only rule as
 /// [`MetaRequest`] applies.
+/// One entry of a [`MetaResponse::List`] response (#4973).
+///
+/// `origin` is the node that first wrote the file, recorded by the
+/// `origin` metadata tag at write time; `uploaded_at` is the file's
+/// upload time (unix seconds) from its `created` tag. Files written
+/// before those tags existed carry `None` for both and list with
+/// origin unknown — the values are never guessed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListEntry {
+    /// The content hash.
+    pub hash: Hash,
+    /// The tag name.
+    pub name: String,
+    /// Node id of the file's origin node, if recorded.
+    pub origin: Option<String>,
+    /// Upload time (unix seconds), if recorded.
+    pub uploaded_at: Option<u64>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub enum MetaResponse {
     /// Response to [`MetaRequest::Put`].
@@ -379,8 +424,8 @@ pub enum MetaResponse {
     },
     /// Response to [`MetaRequest::List`].
     List {
-        /// All names as (hash, name) pairs.
-        items: Vec<(Hash, String)>,
+        /// All names with their origin node and upload time (#4973).
+        items: Vec<ListEntry>,
     },
     /// Response to [`MetaRequest::Delete`].
     Delete {
@@ -530,7 +575,9 @@ impl MetaProtocol {
                 ),
             };
         }
-        let ops = FileOps::new(&self.store, &self.tag_store).with_blob_wait(self.blob_wait);
+        let ops = FileOps::new(&self.store, &self.tag_store)
+            .with_blob_wait(self.blob_wait)
+            .with_origin(remote.to_string());
         let ts = &self.tag_store;
         let ns = &ts.global;
         match req {
@@ -556,7 +603,41 @@ impl MetaProtocol {
                 if let Ok(mut list) = self.store.tags().list().await {
                     while let Some(Ok(item)) = list.next().await {
                         let name = String::from_utf8_lossy(item.name.as_ref()).into_owned();
-                        items.push((item.hash, name));
+                        items.push(ListEntry {
+                            hash: item.hash,
+                            name,
+                            origin: None,
+                            uploaded_at: None,
+                        });
+                    }
+                }
+                // Enrich with origin + upload time from the metadata tags
+                // (#4973): `origin` is stamped at write time by FileOps,
+                // `created` is the upload time. Files written before the
+                // tags existed keep `None` and list as origin unknown.
+                if let Ok(tags) = self.tag_store.list_all(ns).await {
+                    let mut origins: std::collections::HashMap<String, String> =
+                        std::collections::HashMap::new();
+                    let mut created: std::collections::HashMap<String, u64> =
+                        std::collections::HashMap::new();
+                    for tag in &tags {
+                        if tag.key == "origin" {
+                            if let Some(value) = tag.value.as_ref().and_then(|v| v.as_str()) {
+                                origins.insert(tag.subject.display_lossy(), value.to_owned());
+                            }
+                        } else if tag.key == "created"
+                            && let Some(ts) = tag
+                                .value
+                                .as_ref()
+                                .and_then(|v| v.as_str())
+                                .and_then(|v| v.parse::<u64>().ok())
+                        {
+                            created.insert(tag.subject.display_lossy(), ts);
+                        }
+                    }
+                    for item in &mut items {
+                        item.origin = origins.get(&item.name).cloned();
+                        item.uploaded_at = created.get(&item.name).copied();
                     }
                 }
                 MetaResponse::List { items }
@@ -694,35 +775,124 @@ impl MetaProtocol {
         });
         matches
     }
-}
 
-impl ProtocolHandler for MetaProtocol {
-    /// Serves requests on a connection until the peer closes it.
-    ///
-    /// # Errors
-    ///
-    /// Returns `AcceptError` if a response cannot be serialized or written.
-    async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+    async fn accept_connection(
+        &self,
+        conn: Connection,
+        stream_deadline: Duration,
+    ) -> Result<(), AcceptError> {
         let remote = conn.remote_id();
-        while let Ok((mut send, mut recv)) = conn.accept_bi().await {
-            let resp = match recv.read_to_end(MAX_REQUEST_BYTES).await {
-                Ok(buf) => match postcard::from_bytes::<MetaRequest>(&buf) {
-                    Ok(req) => self.handle(&remote, req).await,
-                    Err(e) => MetaResponse::Error {
-                        message: format!("malformed request: {e}"),
-                    },
-                },
-                Err(e) => MetaResponse::Error {
-                    message: format!("could not read request: {e}"),
-                },
-            };
+        let permits = Arc::new(Semaphore::new(MAX_META_STREAMS_PER_CONNECTION));
+        let mut streams = JoinSet::new();
+
+        loop {
+            tokio::select! {
+                incoming = conn.accept_bi() => {
+                    let Ok((mut send, recv)) = incoming else {
+                        break;
+                    };
+                    let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else {
+                        // Refuse only this stream; the connection remains usable.
+                        let _ = send.reset(1_u32.into());
+                        continue;
+                    };
+                    let protocol = self.clone();
+                    streams.spawn(async move {
+                        let _permit = permit;
+                        protocol
+                            .handle_stream(remote, send, recv, stream_deadline)
+                            .await;
+                    });
+                }
+                Some(result) = streams.join_next(), if !streams.is_empty() => {
+                    if let Err(error) = result {
+                        tracing::warn!(%error, "meta stream handler task failed");
+                    }
+                }
+            }
+        }
+
+        // The peer closed the connection. Drain admitted handlers instead
+        // of aborting them: shutdown() would cancel a handler at its next
+        // suspension point, and a mutating handler cancelled mid-flight
+        // (e.g. FileOps::rename, which deletes the source before awaiting
+        // the metadata transfer) can leave partial state behind. Each
+        // handler's network phases stay bounded by the stream deadline,
+        // so this drain terminates.
+        while let Some(result) = streams.join_next().await {
+            if let Err(error) = result {
+                tracing::warn!(%error, "meta stream handler task failed");
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_stream(
+        &self,
+        remote: EndpointId,
+        mut send: iroh::endpoint::SendStream,
+        mut recv: iroh::endpoint::RecvStream,
+        stream_deadline: Duration,
+    ) {
+        // Phase 1: read the request under the deadline. A stalled or
+        // trickling peer is cut off here, without affecting other streams.
+        let buf = match tokio::time::timeout(stream_deadline, recv.read_to_end(MAX_REQUEST_BYTES))
+            .await
+        {
+            Ok(Ok(buf)) => buf,
+            Ok(Err(error)) => {
+                tracing::debug!(%remote, %error, "meta stream read failed");
+                return;
+            }
+            Err(_) => {
+                tracing::debug!(%remote, ?stream_deadline, "meta stream read deadline exceeded");
+                let _ = send.reset(1_u32.into());
+                return;
+            }
+        };
+
+        // Phase 2: handle the admitted request to completion. This is
+        // deliberately NOT wrapped in the deadline: handlers perform
+        // non-transactional mutations (e.g. FileOps::rename moves a blob and
+        // then transfers metadata), and cancelling one midway would corrupt
+        // state. The handler does no peer-controlled waiting — the network
+        // phases on either side of it carry the deadline.
+        let resp = match decode_meta_exact::<MetaRequest>(&buf) {
+            Ok(req) => self.handle(&remote, req).await,
+            Err(error) => MetaResponse::Error {
+                message: format!("malformed request: {error}"),
+            },
+        };
+
+        // Phase 3: write the response under the deadline; a peer that stops
+        // reading is cut off and its stream reset.
+        let written = tokio::time::timeout(stream_deadline, async {
             let bytes = postcard::to_allocvec(&resp).map_err(AcceptError::from_err)?;
             send.write_all(&bytes)
                 .await
                 .map_err(AcceptError::from_err)?;
             send.finish()?;
+            Ok::<(), AcceptError>(())
+        })
+        .await;
+
+        match written {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::debug!(%remote, %error, "meta stream failed"),
+            Err(_) => {
+                tracing::debug!(%remote, ?stream_deadline, "meta stream write deadline exceeded");
+                let _ = send.reset(1_u32.into());
+            }
         }
-        Ok(())
+    }
+}
+
+impl ProtocolHandler for MetaProtocol {
+    /// Serves requests on a connection until the peer closes it.
+    /// Individual stream failures are isolated; active streams are stopped when
+    /// the peer closes the connection.
+    async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+        self.accept_connection(conn, META_STREAM_DEADLINE).await
     }
 }
 
@@ -730,6 +900,86 @@ impl ProtocolHandler for MetaProtocol {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use iroh::{
+        EndpointAddr,
+        endpoint::{Endpoint, RelayMode, presets},
+        protocol::Router,
+    };
+    use iroh_base::{SecretKey, TransportAddr};
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    use crate::{META_ALPN, local::LocalNode};
+
+    #[derive(Clone, Debug)]
+    struct DeadlineMetaProtocol {
+        protocol: Arc<MetaProtocol>,
+        deadline: Duration,
+    }
+
+    impl ProtocolHandler for DeadlineMetaProtocol {
+        async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+            self.protocol.accept_connection(conn, self.deadline).await
+        }
+    }
+
+    struct MetaTestServer {
+        node: LocalNode,
+        endpoint: Endpoint,
+        router: Router,
+        addr: EndpointAddr,
+    }
+
+    async fn meta_test_server(deadline: Duration) -> MetaTestServer {
+        let node = LocalNode::open(true).await.unwrap();
+        let key = SecretKey::generate();
+        let server_id = key.public();
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .secret_key(key)
+            .bind_addr(std::net::SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+        let protocol = MetaProtocol::new(
+            &node.blobs(),
+            None,
+            Arc::clone(node.tags()),
+            AccessPolicy::open(),
+            server_id,
+        );
+        let handler = DeadlineMetaProtocol { protocol, deadline };
+        let router = Router::builder(endpoint.clone())
+            .accept(META_ALPN, handler)
+            .spawn();
+        let addr = EndpointAddr::from_parts(
+            server_id,
+            endpoint.bound_sockets().into_iter().map(|address| {
+                TransportAddr::Ip(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), address.port()))
+            }),
+        );
+        MetaTestServer {
+            node,
+            endpoint,
+            router,
+            addr,
+        }
+    }
+
+    async fn meta_test_client() -> Endpoint {
+        Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap()
+    }
+
+    async fn shutdown_meta_test(server: MetaTestServer, client: Endpoint) {
+        client.close().await;
+        server.router.shutdown().await.unwrap();
+        server.endpoint.close().await;
+        server.node.shutdown().await.unwrap();
+    }
 
     #[test]
     fn test_find_match_struct() {
@@ -758,6 +1008,44 @@ mod tests {
         assert_eq!(m.query, "test");
         assert_eq!(m.kind, MatchKind::Prefix);
         assert!(m.is_hash_match);
+    }
+
+    #[test]
+    fn meta_decode_requires_full_consumption() {
+        let list = postcard::to_allocvec(&MetaRequest::List).unwrap();
+        assert!(matches!(
+            decode_meta_exact::<MetaRequest>(&list),
+            Ok(MetaRequest::List)
+        ));
+
+        let mut padded_list = list.clone();
+        padded_list.push(0);
+        assert!(decode_meta_exact::<MetaRequest>(&padded_list).is_err());
+
+        let mut garbage_list = list;
+        garbage_list.extend_from_slice(b"GARBAGE");
+        assert!(decode_meta_exact::<MetaRequest>(&garbage_list).is_err());
+
+        let delete = MetaRequest::Delete {
+            filename: "victim.txt".to_owned(),
+        };
+        let mut padded_delete = postcard::to_allocvec(&delete).unwrap();
+        padded_delete.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        assert!(decode_meta_exact::<MetaRequest>(&padded_delete).is_err());
+
+        let mut double_request = postcard::to_allocvec(&delete).unwrap();
+        double_request.extend_from_slice(&postcard::to_allocvec(&MetaRequest::List).unwrap());
+        assert!(decode_meta_exact::<MetaRequest>(&double_request).is_err());
+
+        let response = MetaResponse::Delete { success: true };
+        let mut padded_response = postcard::to_allocvec(&response).unwrap();
+        padded_response.extend_from_slice(b"EXTRA");
+        assert!(decode_meta_exact::<MetaResponse>(&padded_response).is_err());
+
+        assert!(matches!(
+            decode_meta_exact::<MetaResponse>(&postcard::to_allocvec(&response).unwrap()),
+            Ok(MetaResponse::Delete { success: true })
+        ));
     }
 
     #[test]
@@ -903,8 +1191,18 @@ mod tests {
         let hash2 = Hash::from_bytes([2u8; 32]);
         let resp = MetaResponse::List {
             items: vec![
-                (hash1, "file1.txt".to_owned()),
-                (hash2, "file2.txt".to_owned()),
+                ListEntry {
+                    hash: hash1,
+                    name: "file1.txt".to_owned(),
+                    origin: Some("node-a".to_owned()),
+                    uploaded_at: Some(1_700_000_000),
+                },
+                ListEntry {
+                    hash: hash2,
+                    name: "file2.txt".to_owned(),
+                    origin: None,
+                    uploaded_at: None,
+                },
             ],
         };
         let bytes = postcard::to_allocvec(&resp).unwrap();
@@ -912,8 +1210,12 @@ mod tests {
         match decoded {
             MetaResponse::List { items } => {
                 assert_eq!(items.len(), 2);
-                assert_eq!(items[0].1, "file1.txt");
-                assert_eq!(items[1].1, "file2.txt");
+                assert_eq!(items[0].name, "file1.txt");
+                assert_eq!(items[0].origin.as_deref(), Some("node-a"));
+                assert_eq!(items[0].uploaded_at, Some(1_700_000_000));
+                assert_eq!(items[1].name, "file2.txt");
+                assert_eq!(items[1].origin, None);
+                assert_eq!(items[1].uploaded_at, None);
             }
             _ => panic!("Wrong variant"),
         }
@@ -1036,7 +1338,7 @@ mod tests {
     #[test]
     fn wire_format_is_pinned() {
         // postcard encodes the enum variant index as the first byte. These
-        // indices are the wire format of `/iroh-meta/2`: within a version only
+        // indices are the wire format of `/iroh-meta/3`: within a version only
         // append new variants; anything else needs a new ALPN.
         let h = Hash::from_bytes([0u8; 32]);
         let s = String::from("x");
@@ -1213,8 +1515,6 @@ mod tests {
     // Handler behaviour against real iroh-blobs + iroh-docs (in memory)
     // ========================================================================
 
-    use crate::local::LocalNode;
-
     async fn put(node: &LocalNode, name: &str, data: &[u8]) -> Hash {
         // A temp tag protects the blob without leaving an `auto-*` tag behind.
         let guard = node
@@ -1270,9 +1570,82 @@ mod tests {
 
     async fn names(node: &LocalNode) -> Vec<String> {
         match node.request(MetaRequest::List).await {
-            MetaResponse::List { items } => items.into_iter().map(|(_, n)| n).collect(),
+            MetaResponse::List { items } => items.into_iter().map(|e| e.name).collect(),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    async fn list_entries(node: &LocalNode) -> Vec<ListEntry> {
+        match node.request(MetaRequest::List).await {
+            MetaResponse::List { items } => items,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// #4973: a file written through the meta protocol lists with the
+    /// writing node as its origin and its `created` stamp as the upload
+    /// time.
+    #[tokio::test]
+    async fn list_shows_origin_node_and_upload_time_for_new_files() {
+        let node = LocalNode::open(true).await.unwrap();
+        let guard = node
+            .blobs()
+            .add_bytes(b"hello origin".to_vec())
+            .temp_tag()
+            .await
+            .unwrap();
+        let resp = node
+            .request(MetaRequest::Put {
+                filename: "origin.txt".to_owned(),
+                hash: guard.hash(),
+            })
+            .await;
+        assert!(
+            matches!(resp, MetaResponse::Put { success: true }),
+            "{resp:?}"
+        );
+
+        let entries = list_entries(&node).await;
+        let entry = entries
+            .iter()
+            .find(|e| e.name == "origin.txt")
+            .expect("written file must list");
+        assert_eq!(
+            entry.origin.as_deref(),
+            Some(node.node_id().to_string().as_str()),
+            "origin must be the writing node"
+        );
+        assert!(
+            entry.uploaded_at.is_some_and(|ts| ts > 0),
+            "upload time must come from the created stamp: {entry:?}"
+        );
+    }
+
+    /// #4973: a file that predates origin stamping (name tag only, no
+    /// metadata tags) lists cleanly with origin/upload time unknown —
+    /// never guessed.
+    #[tokio::test]
+    async fn list_shows_unknown_origin_for_pre_change_files() {
+        let node = LocalNode::open(true).await.unwrap();
+        let guard = node
+            .blobs()
+            .add_bytes(b"old file".to_vec())
+            .temp_tag()
+            .await
+            .unwrap();
+        node.blobs()
+            .tags()
+            .set("legacy.txt", guard.hash())
+            .await
+            .unwrap();
+
+        let entries = list_entries(&node).await;
+        let entry = entries
+            .iter()
+            .find(|e| e.name == "legacy.txt")
+            .expect("legacy file must list");
+        assert_eq!(entry.origin, None);
+        assert_eq!(entry.uploaded_at, None);
     }
 
     #[tokio::test]
@@ -1382,6 +1755,75 @@ mod tests {
             ));
         }
 
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn fileops_rejects_archive_names_without_overwriting_existing_archives() {
+        let node = LocalNode::open(true).await.unwrap();
+        let archive_hash = put(&node, "report.txt", b"original").await;
+        assert!(matches!(
+            node.request(MetaRequest::Rename {
+                from: "report.txt".to_owned(),
+                to: "renamed.txt".to_owned(),
+            })
+            .await,
+            MetaResponse::Rename { success: true }
+        ));
+        let archive_name = names(&node)
+            .await
+            .into_iter()
+            .find(|name| name.starts_with("report.txt.archive."))
+            .expect("rename should create an archive");
+        let replacement_hash = put(&node, "source.txt", b"replacement").await;
+
+        let put_response = node
+            .request(MetaRequest::Put {
+                filename: archive_name.clone(),
+                hash: replacement_hash,
+            })
+            .await;
+        assert!(
+            put_response
+                .error_message()
+                .is_some_and(|message| message.contains("reserved for archives")),
+            "put accepted archive-shaped name: {put_response:?}"
+        );
+
+        let rename_response = node
+            .request(MetaRequest::Rename {
+                from: "source.txt".to_owned(),
+                to: archive_name.clone(),
+            })
+            .await;
+        assert!(
+            rename_response
+                .error_message()
+                .is_some_and(|message| message.contains("reserved for archives")),
+            "rename accepted archive-shaped name: {rename_response:?}"
+        );
+
+        let copy_response = node
+            .request(MetaRequest::Copy {
+                from: "source.txt".to_owned(),
+                to: archive_name.clone(),
+            })
+            .await;
+        assert!(
+            copy_response
+                .error_message()
+                .is_some_and(|message| message.contains("reserved for archives")),
+            "copy accepted archive-shaped name: {copy_response:?}"
+        );
+
+        assert!(matches!(
+            node.request(MetaRequest::Get {
+                filename: archive_name.clone(),
+            })
+            .await,
+            MetaResponse::Get { hash: Some(hash) } if hash == archive_hash
+        ));
+        assert!(names(&node).await.contains(&archive_name));
         node.shutdown().await.unwrap();
     }
 
@@ -1846,5 +2288,79 @@ mod tests {
         assert_eq!(order[1], "readme.md", "prefix second: {order:?}");
         assert_eq!(order[2], "the-readme", "contains last: {order:?}");
         node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stalled_meta_stream_does_not_block_later_requests_and_times_out() {
+        let server = meta_test_server(Duration::from_millis(200)).await;
+        let client = meta_test_client().await;
+        let conn = client
+            .connect(server.addr.clone(), META_ALPN)
+            .await
+            .unwrap();
+
+        let (mut stalled_send, mut stalled_recv) = conn.open_bi().await.unwrap();
+        stalled_send.write_all(b"\0").await.unwrap();
+
+        let response = tokio::time::timeout(
+            Duration::from_secs(1),
+            crate::meta_client::request_over(&conn, &MetaRequest::Whoami),
+        )
+        .await
+        .expect("a stalled stream must not block another request")
+        .unwrap();
+        assert!(
+            matches!(response, MetaResponse::Whoami { .. }),
+            "{response:?}"
+        );
+
+        let timed_out =
+            tokio::time::timeout(Duration::from_secs(1), stalled_recv.read_to_end(64 * 1024))
+                .await
+                .expect("the stalled stream should be reset at its deadline");
+        assert!(
+            timed_out.is_err(),
+            "timed-out stream unexpectedly completed: {timed_out:?}"
+        );
+
+        drop(stalled_send);
+        drop(conn);
+        shutdown_meta_test(server, client).await;
+    }
+
+    #[tokio::test]
+    async fn excess_meta_streams_are_reset() {
+        let server = meta_test_server(Duration::from_secs(5)).await;
+        let client = meta_test_client().await;
+        let conn = client
+            .connect(server.addr.clone(), META_ALPN)
+            .await
+            .unwrap();
+        let mut streams = Vec::new();
+
+        for _ in 0..=MAX_META_STREAMS_PER_CONNECTION {
+            let (mut send, recv) = conn.open_bi().await.unwrap();
+            // A stream the client never writes to is never observed by the
+            // server's accept loop (noq only surfaces a stream once it
+            // carries data), so write one incomplete-request byte to make
+            // each stream visible — the same trick the stalled-stream test
+            // uses. Without this the excess stream is never reset and the
+            // test times out regardless of the implementation.
+            send.write_all(b" ").await.unwrap();
+            streams.push((send, recv));
+        }
+
+        let excess = streams.last_mut().unwrap();
+        let reset = tokio::time::timeout(Duration::from_secs(1), excess.1.read_to_end(64 * 1024))
+            .await
+            .expect("the excess stream should be reset promptly");
+        assert!(
+            reset.is_err(),
+            "excess stream unexpectedly completed: {reset:?}"
+        );
+
+        drop(streams);
+        drop(conn);
+        shutdown_meta_test(server, client).await;
     }
 }

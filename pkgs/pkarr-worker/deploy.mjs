@@ -30,16 +30,22 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { parseArgs } from "./deploy-args.mjs";
+import { probeWorkerExists } from "./deploy-probe.mjs";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const WORKER = "pkarr";
 const WORKER_URL = "https://pkarr.developing-today.workers.dev";
 
-const args = process.argv.slice(2);
-const dryRun = args.includes("--dry-run");
-const deployVersionAt = args.indexOf("--deploy-version");
-const deployVersion = deployVersionAt >= 0 ? args[deployVersionAt + 1] : null;
-if (deployVersionAt >= 0 && !deployVersion) {
-  throw new Error("--deploy-version needs a version id");
+// Fail closed on anything we do not understand, before any bws/cf call: a
+// typo'd --dry-run or --dry-version must not turn into a live deploy (#3264).
+let dryRun;
+let deployVersion;
+try {
+  ({ dryRun, deployVersion } = parseArgs(process.argv.slice(2)));
+} catch (error) {
+  console.error(`deploy.mjs: ${error.message}`);
+  process.exit(2);
 }
 
 const accountId = requireEnv("CLOUDFLARE_ACCOUNT_ID");
@@ -127,18 +133,22 @@ if (bootstrapping) {
 reportLive();
 console.log(`live: ${WORKER_URL} at version ${version.id} (${tag})`);
 
+// Only the genuine not-found response means "does not exist" (#4865):
+// any other probe failure (auth, network, broken cf) aborts the deploy
+// with the cf error visible, instead of silently rerouting a standard
+// deploy into the bootstrap `cf deploy` path. Classification lives in
+// deploy-probe.mjs so it is tested without running this script.
 function workerExists() {
-  try {
-    execFileSync("cf", ["-q", "workers", "get", WORKER], {
-      cwd: here,
-      env,
-      encoding: "utf8",
-      stdio: ["inherit", "pipe", "pipe"],
-    });
-    return true;
-  } catch {
-    return false;
-  }
+  return probeWorkerExists(
+    () =>
+      execFileSync("cf", ["-q", "workers", "get", WORKER], {
+        cwd: here,
+        env,
+        encoding: "utf8",
+        stdio: ["inherit", "pipe", "pipe"],
+      }),
+    WORKER,
+  );
 }
 
 function createDeployment(versionId) {

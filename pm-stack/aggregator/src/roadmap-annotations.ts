@@ -6,6 +6,7 @@ import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isObjectRef, validateAuthor } from "./comments.ts";
 import type { DashAuthor } from "./model.ts";
+import { quarantineUnreadableStore } from "./store-recovery.ts";
 
 export type RoadmapAnnotationKind = "decision" | "outcome" | "context";
 
@@ -41,6 +42,19 @@ export function validRoadmapDate(value: unknown): value is string {
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
+// Cap the string at max UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7736, mirroring the #7694/#7711 capUnits guard in
+// actions.ts and the #7731 guard in comments.ts): an astral character
+// straddling the cap is dropped whole. Local copy, like the sibling modules.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
+
 export function validateNewRoadmapAnnotation(
   input: unknown,
 ): { ok: true; value: NewRoadmapAnnotation } | { ok: false; error: string } {
@@ -63,7 +77,7 @@ export function validateNewRoadmapAnnotation(
       kind: value.kind,
       date: value.date,
       author,
-      body: value.body.trim().slice(0, 20_000),
+      body: capUnits(value.body.trim(), 20_000),
     },
   };
 }
@@ -102,13 +116,33 @@ export class RoadmapAnnotationsStore {
       raw = await readFile(this.file, "utf8");
     } catch (err) {
       if ((err as { code?: unknown })?.code === "ENOENT") return;
-      throw err;
+      let quarantined: string;
+      try {
+        quarantined = await quarantineUnreadableStore(this.file);
+      } catch (quarantineErr) {
+        throw new Error(
+          `[roadmap-annotations] refusing to continue because ${this.file} could not be read or quarantined: ${quarantineErr instanceof Error ? quarantineErr.message : String(quarantineErr)}`,
+          { cause: err },
+        );
+      }
+      this.annotations = [];
+      this.aliases = {};
+      console.error(
+        `[roadmap-annotations] WARNING: store ${this.file} could not be read (${err instanceof Error ? err.message : String(err)}); ` +
+          `quarantined the original to ${quarantined} and started empty. The quarantined item holds the prior annotations — do not delete it.`,
+      );
+      return;
     }
     try {
       const parsed: unknown = JSON.parse(raw);
       if (typeof parsed !== "object" || parsed === null) throw new Error("not an object");
       const file = parsed as Partial<RoadmapAnnotationsFile>;
-      if (file.version !== 1 || !Array.isArray(file.annotations) || typeof file.aliases !== "object" || file.aliases === null) {
+      if (
+        file.version !== 1 ||
+        !Array.isArray(file.annotations) ||
+        typeof file.aliases !== "object" ||
+        file.aliases === null
+      ) {
         throw new Error("unexpected roadmap annotation store shape");
       }
       this.annotations = file.annotations.filter(isAnnotation);

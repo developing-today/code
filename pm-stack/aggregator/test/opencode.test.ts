@@ -133,9 +133,7 @@ beforeAll(() => {
       const m = /^\/api\/session\/([^/]+)\/message$/.exec(url.pathname);
       if (m) {
         const bySession = overrides.messages as Record<string, unknown> | undefined;
-        const response = bySession && Object.hasOwn(bySession, m[1])
-          ? bySession[m[1]]
-          : { data: messages[m[1]] ?? [] };
+        const response = bySession && Object.hasOwn(bySession, m[1]) ? bySession[m[1]] : { data: messages[m[1]] ?? [] };
         return Response.json(response);
       }
       const f = /^\/api\/session\/([^/]+)\/form$/.exec(url.pathname);
@@ -200,6 +198,69 @@ describe("opencode v2 mapper", () => {
     expect(badCreated.lastActivityAt).toBeTruthy();
   });
 
+  test("in-range future stamps earn no freshness inclusion (#4180)", async () => {
+    const future = NOW + 365 * 24 * 3_600_000;
+    const withinSkew = NOW + 30_000;
+    overrides = {
+      sessions: {
+        data: [
+          { id: "ses_future", title: "from tomorrow", time: { created: recent, updated: future } },
+          { id: "ses_skewed", title: "barely ahead", time: { created: recent, updated: withinSkew } },
+        ],
+      },
+      active: { data: {} },
+      permissions: { data: {} },
+    };
+
+    const mapped = await mapServerSessions({ baseUrl, password: "x" }, NOW);
+    expect(mapped).not.toBeNull();
+    const byId = new Map(mapped!.entries.map((e) => [e.sessionId, e]));
+    // A stamp a year ahead is in Date range but earns no freshness.
+    expect(byId.has("ses_future")).toBe(false);
+    // A stamp within the 60s skew tolerance is freshness-included
+    // and keeps its raw value.
+    const skewed = byId.get("ses_skewed")!;
+    expect(skewed).toBeTruthy();
+    expect(skewed.lastActivityAt).toBe(new Date(withinSkew).toISOString());
+  });
+
+  test("future-stamped sessions cannot crowd out recent ones (#4180)", async () => {
+    const futureSessions = Array.from({ length: 61 }, (_, i) => ({
+      id: `ses_future_${i}`,
+      title: `future ${i}`,
+      time: { created: recent, updated: NOW + (i + 1) * 3_600_000 },
+    }));
+    overrides = {
+      sessions: {
+        data: [...futureSessions, { id: "ses_recent", title: "genuinely recent", time: { created: recent, updated: recent } }],
+      },
+      active: { data: {} },
+      permissions: { data: {} },
+    };
+
+    const mapped = await mapServerSessions({ baseUrl, password: "x" }, NOW);
+    expect(mapped).not.toBeNull();
+    const ids = mapped!.entries.map((e) => e.sessionId);
+    expect(ids).toContain("ses_recent");
+    expect(ids.some((id) => id.startsWith("ses_future_"))).toBe(false);
+  });
+
+  test("active/pending-included future sessions map a null lastActivityAt (#4180)", async () => {
+    const future = NOW + 365 * 24 * 3_600_000;
+    overrides = {
+      sessions: { data: [{ id: "ses_future_active", title: "future but live", time: { created: recent, updated: future } }] },
+      active: { data: { ses_future_active: {} } },
+      permissions: { data: [] },
+    };
+
+    const mapped = await mapServerSessions({ baseUrl, password: "x" }, NOW);
+    expect(mapped).not.toBeNull();
+    const entry = mapped!.entries.find((e) => e.sessionId === "ses_future_active")!;
+    expect(entry).toBeTruthy();
+    // Included via the active set, but the raw future value is withheld.
+    expect(entry.lastActivityAt ?? null).toBeNull();
+  });
+
   test("stamps the entry source when asked", async () => {
     const mapped = await mapServerSessions({ baseUrl, password: "x" }, NOW, { source: "opencode-laptop" });
     expect(mapped!.entries.every((e) => e.source === "opencode-laptop")).toBe(true);
@@ -238,10 +299,13 @@ describe("opencode v2 mapper", () => {
 
     expect(mapped).not.toBeNull();
     expect(mapped!.entries.map((entry) => entry.sessionId).sort()).toEqual(["ses_broken", "ses_valid_sibling"]);
-    expect(
-      mapped!.entries.every((entry) => typeof entry.sessionId === "string" && entry.sessionId.length > 0),
-    ).toBe(true);
+    expect(mapped!.entries.every((entry) => typeof entry.sessionId === "string" && entry.sessionId.length > 0)).toBe(
+      true,
+    );
     expect(mapped!.tokensBySession.has("undefined")).toBe(false);
+    // The null/id-less sessions plus malformed permission/form/message
+    // containers are dropped and counted, never silently swallowed (#2543).
+    expect(mapped!.droppedElements).toBe(5);
     expect(mapped!.entries.find((entry) => entry.sessionId === "ses_broken")?.messageCount).toBe(0);
     expect(mapped!.entries.find((entry) => entry.sessionId === "ses_valid_sibling")?.messageCount).toBe(2);
   });

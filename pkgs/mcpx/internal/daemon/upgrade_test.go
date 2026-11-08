@@ -25,7 +25,7 @@ func startUpgradeServer(t *testing.T) (*Server, *http.Client) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	paths := Paths{State: dir, Cache: dir, Socket: filepath.Join(dir, "d.sock"), Info: filepath.Join(dir, "d.json")}
 	srv, err := NewServer(Options{
 		Config:  &config.Config{MCPServers: map[string]*config.Server{}},
@@ -61,7 +61,7 @@ func postUpgrade(t *testing.T, client *http.Client, binary string) (int, map[str
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var out map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatal(err)
@@ -75,7 +75,7 @@ func assertHealthy(t *testing.T, client *http.Client) {
 	if err != nil {
 		t.Fatalf("the daemon stopped answering: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("health: %s", resp.Status)
 	}

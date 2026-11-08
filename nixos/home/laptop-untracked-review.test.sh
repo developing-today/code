@@ -203,6 +203,26 @@ check "case6: glob-character name committed literally" \
 grep -Fq -- "- hatch-personal: committed 401 newly tracked file(s)" "$TMP_ROOT/case6.log" ||
   fail "case6: report missing 'committed 401 newly tracked file(s)'"
 
+# --- Case 7: openclaw backup exclusions must match its report annotation ---
+H7="$(new_home case7)"
+O7="$H7/.openclaw"
+mkdir -p "$O7"
+git init -q -b main "$O7"
+printf 'tracked\n' >"$O7/tracked.txt"
+git -C "$O7" add -- tracked.txt
+git -C "$O7" commit -q -m "initial"
+mkdir -p "$O7/tmp" "$O7/cache"
+truncate -s 21M "$O7/codedb.snapshot" "$O7/ordinary-large.bin" "$O7/tmp/scratch.bin" "$O7/cache/regenerable.bin"
+run_review "$H7" "$TMP_ROOT/case7.log"
+grep -Fq -- "- .openclaw: TOO BIG for git (21 MiB), route to backup: codedb.snapshot — NOT covered by openclaw-backup (excluded file)" "$TMP_ROOT/case7.log" ||
+  fail "case7: codedb.snapshot should be reported NOT covered"
+grep -Fq -- "- .openclaw: TOO BIG for git (21 MiB), route to backup: ordinary-large.bin — covered by openclaw-backup" "$TMP_ROOT/case7.log" ||
+  fail "case7: ordinary large file should remain covered"
+grep -Fq -- "- .openclaw: TOO BIG for git (21 MiB), route to backup: tmp/scratch.bin — NOT covered by openclaw-backup (excluded dir)" "$TMP_ROOT/case7.log" ||
+  fail "case7: tmp file should remain NOT covered"
+grep -Fq -- "- .openclaw: TOO BIG for git (21 MiB), route to backup: cache/regenerable.bin — NOT covered by openclaw-backup (excluded dir)" "$TMP_ROOT/case7.log" ||
+  fail "case7: cache file should remain NOT covered"
+
 if [ "$failures" -gt 0 ]; then
   echo "$failures failure(s)" >&2
   exit 1

@@ -198,7 +198,7 @@ func (idx *VectorIndex) loadFromDB() {
 		log.Printf("catalog: vector index: query persisted vectors: %v", err)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var key string

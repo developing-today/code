@@ -96,7 +96,7 @@ func TestSupervisedReattachDoesNotResolveNixSpec(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	defer tr2.Close()
+	defer func() { _ = tr2.Close() }()
 	if tr2.PID() != pid {
 		t.Fatalf("child pid changed across reattach: %d -> %d", pid, tr2.PID())
 	}
@@ -112,7 +112,7 @@ func TestSupervisedResolvesNixSpecForItsChild(t *testing.T) {
 		t.Fatalf("NewSupervised with a nix: spec: %v", err)
 	}
 	defer killChild(t, tr)
-	defer tr.Close()
+	defer func() { _ = tr.Close() }()
 	ctx := context.Background()
 	frame := []byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)
 	if err := tr.Send(ctx, frame); err != nil {
@@ -163,7 +163,7 @@ func TestSupervisedNixSpecWithServerPathExcludingNix(t *testing.T) {
 		t.Fatalf("NewSupervised with a nix: spec and a nix-less server PATH: %v", err)
 	}
 	defer killChild(t, tr)
-	defer tr.Close()
+	defer func() { _ = tr.Close() }()
 	ctx := context.Background()
 	frame := []byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)
 	if err := tr.Send(ctx, frame); err != nil {

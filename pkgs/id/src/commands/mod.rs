@@ -62,7 +62,10 @@ pub mod find;
 pub mod get;
 pub mod group;
 pub mod id;
+pub mod key;
 pub mod list;
+#[cfg(feature = "sandbox")]
+pub mod match_audit;
 pub mod peers;
 pub mod put;
 pub mod repl;
@@ -81,7 +84,10 @@ pub use find::{
 pub use get::{cmd_get_local, cmd_get_multi, cmd_get_one, cmd_get_one_remote, cmd_gethash};
 pub use group::{cmd_delegate, cmd_group, cmd_revoke};
 pub use id::cmd_id;
+pub use key::cmd_key;
 pub use list::{cmd_list, cmd_list_remote};
+#[cfg(feature = "sandbox")]
+pub use match_audit::cmd_match_audit;
 pub use peers::{PeersOptions, cmd_peers};
 pub use put::{
     cmd_put_hash, cmd_put_local_file, cmd_put_local_stdin, cmd_put_multi, cmd_put_one,

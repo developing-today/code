@@ -4,7 +4,12 @@
 // bogus target). These tests stub the GitHub lookup/client — no network.
 import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
-import { verifyAttachTarget, type AttachTargetInfo } from "../src/server.ts";
+import type { AttachTargetInfo } from "../src/server.ts";
+
+// src/server.ts loads config at import; loadConfig requires SUPABASE_URL
+// (#5120), so pin a fixture project before the dynamic import below.
+process.env.SUPABASE_URL ??= "https://fixture.supabase.co";
+const { verifyAttachTarget } = await import("../src/server.ts");
 import { GitHubClient, isNotFoundError } from "../src/github.ts";
 
 const REPO = "developing-today/code";

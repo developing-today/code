@@ -86,10 +86,7 @@ export async function recallDaemon(
   return undefined;
 }
 
-export async function forgetDaemon(
-  storage: StorageLike,
-  directory: string,
-): Promise<void> {
+export async function forgetDaemon(storage: StorageLike, directory: string): Promise<void> {
   await storage.remove(keyFor(directory));
 }
 

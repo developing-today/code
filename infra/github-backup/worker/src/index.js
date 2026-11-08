@@ -3,7 +3,7 @@
 // POST /github        GitHub webhook. Verifies X-Hub-Signature-256 (HMAC
 //                     SHA-256 with GITHUB_WEBHOOK_SECRET), stores
 //                     {id, repo, event, action, ts} in KV (TTL 7 days).
-// GET  /queue         Bearer DRAIN_BEARER. Returns pending events.
+// GET  /queue         Bearer DRAIN_BEARER. Returns a page; ?cursor follows.
 // POST /queue/ack     Bearer DRAIN_BEARER. Body {"ids":[...]} deletes them.
 // GET  /health        Liveness.
 //
@@ -12,6 +12,11 @@
 // lost data. Source of truth: developing-today/code infra/github-backup.
 
 const enc = new TextEncoder();
+
+// KV bulk chunk width (#5496): the binding's get(keys[]) accepts at
+// most 100 keys per call; the ack path reuses the same width for its
+// parallel delete fan-out.
+const KV_BULK_CHUNK = 100;
 
 async function hmacHex(secret, body) {
   const key = await crypto.subtle.importKey(
@@ -30,6 +35,12 @@ export default {
     const url = new URL(req.url);
     if (url.pathname === "/health") return new Response("ok");
     if (url.pathname === "/github" && req.method === "POST") {
+      // Fail closed on a misconfigured deployment (#6951): without a
+      // secret the HMAC key is zero-length and importKey throws for
+      // every delivery, leaving an opaque 500 that names nothing.
+      if (!env.GITHUB_WEBHOOK_SECRET) {
+        return new Response("webhook secret not configured", { status: 500 });
+      }
       const body = await req.text();
       const given = (req.headers.get("X-Hub-Signature-256") || "").replace("sha256=", "");
       const expect = await hmacHex(env.GITHUB_WEBHOOK_SECRET, body);
@@ -41,7 +52,9 @@ export default {
       try { payload = JSON.parse(body); } catch { /* ping has form encoding sometimes */ }
       const event = req.headers.get("X-GitHub-Event") || "unknown";
       if (event === "ping") return new Response("pong");
-      const repo = payload.repository && payload.repository.full_name;
+      // A JSON null body parses to null (#6951): every other
+      // non-object shape already lands on the 202 below.
+      const repo = payload?.repository && payload.repository.full_name;
       if (!repo) return new Response("no repository in payload", { status: 202 });
       const id = `${Date.now()}-${crypto.randomUUID()}`;
       await env.GHB_EVENTS.put("ev:" + id, JSON.stringify({
@@ -52,19 +65,63 @@ export default {
     }
     if (url.pathname === "/queue" && req.method === "GET") {
       if (!authed(req, env)) return new Response("unauthorized", { status: 401 });
-      const list = await env.GHB_EVENTS.list({ prefix: "ev:", limit: 500 });
+      const cursor = url.searchParams.get("cursor");
+      const options = { prefix: "ev:", limit: 500 };
+      if (cursor) options.cursor = cursor;
+      const list = await env.GHB_EVENTS.list(options);
+      // Bulk reads (#5496): get() with an array of keys counts as ONE
+      // KV operation and returns as a unit. The per-key loop it
+      // replaces made a 500-event page take ~50s — at the drainer's
+      // 60s per-request timeout — so polls timed out or were reset
+      // mid-page and no drain run could complete.
+      const names = list.keys.map((k) => k.name);
       const events = [];
-      for (const k of list.keys) {
-        const v = await env.GHB_EVENTS.get(k.name);
-        if (v) events.push(JSON.parse(v));
+      for (let i = 0; i < names.length; i += KV_BULK_CHUNK) {
+        const chunk = names.slice(i, i + KV_BULK_CHUNK);
+        const values = await env.GHB_EVENTS.get(chunk);
+        for (const name of chunk) {
+          const v = values.get(name);
+          if (v !== null && v !== undefined) {
+            try {
+              events.push(JSON.parse(v));
+            } catch {
+              return new Response(`invalid JSON stored for queue key ${name}`, { status: 500 });
+            }
+          }
+        }
       }
-      return Response.json({ events });
+      return Response.json({
+        events,
+        cursor: list.cursor || null,
+        list_complete: list.list_complete,
+      });
     }
     if (url.pathname === "/queue/ack" && req.method === "POST") {
       if (!authed(req, env)) return new Response("unauthorized", { status: 401 });
-      const { ids } = await req.json();
-      for (const id of ids || []) await env.GHB_EVENTS.delete("ev:" + id);
-      return Response.json({ acked: (ids || []).length });
+      let body;
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ error: "request body must be valid JSON" }, { status: 400 });
+      }
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return Response.json({ error: "request body must be an object with an ids array" }, { status: 400 });
+      }
+      const { ids } = body;
+      if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string" || id.trim().length === 0)) {
+        return Response.json({ error: "ids must be an array of non-empty strings" }, { status: 400 });
+      }
+      const keys = ids.map((id) => "ev:" + id);
+      // The binding has no bulk delete, so fan the per-key deletes
+      // out in parallel chunks (#5496): sequential awaits needed
+      // ~50s for the drainer's 500-id ack batches and timed it out
+      // mid-ack. Deletes are idempotent, so a chunk that fails
+      // partway is safe — the drainer retries what remains.
+      for (let i = 0; i < keys.length; i += KV_BULK_CHUNK) {
+        const chunk = keys.slice(i, i + KV_BULK_CHUNK);
+        await Promise.all(chunk.map((k) => env.GHB_EVENTS.delete(k)));
+      }
+      return Response.json({ acked: keys.length });
     }
     return new Response("not found", { status: 404 });
   },

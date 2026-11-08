@@ -97,7 +97,7 @@ func callThrough(t *testing.T, s *scripted) error {
 	if err != nil {
 		t.Fatalf("handshake: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	_, err = c.CallTool(ctx, "create_issue", map[string]any{"title": "x"})
 	if err == nil {
 		t.Fatal("the scripted server should have refused the call")
@@ -250,7 +250,7 @@ func TestAFailedCallsBodyCarriesTheServersError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	_, rerr := c.ReadResource(ctx, "file:///nope")
 	var missing *mcpclient.ResourceNotFoundError
 	if !errors.As(rerr, &missing) {

@@ -75,6 +75,24 @@ function cleanup() {
 }
 trap cleanup EXIT
 
+# Refuse to plan against a void or mismatched state (code#1943): the state
+# at the backend path must be the state load.sh decrypted from
+# terraform.tfstate.enc. init.sh restores + verifies it; check once more
+# here so a SKIP_INIT run cannot plan against an empty state either.
+if [ ! -s "$dir/terraform.tfstate" ]; then
+  echo "Error: terraform.tfstate is missing or empty; refusing to plan against a void state" >&2
+  export SKIP_SAVE=1 # do not let the EXIT trap save a state we just refused
+  exit 1
+fi
+enc_lineage="$(sops -d "$dir/terraform.tfstate.enc" | grep -o '"lineage": *"[^"]*"' | head -1)"
+state_lineage="$(grep -o '"lineage": *"[^"]*"' "$dir/terraform.tfstate" | head -1)"
+if [ -z "$state_lineage" ] || [ "$state_lineage" != "$enc_lineage" ]; then
+  echo "Error: terraform.tfstate lineage ($state_lineage) does not match terraform.tfstate.enc ($enc_lineage); refusing to plan against a mismatched state" >&2
+  export SKIP_SAVE=1 # do not let the EXIT trap save a state we just refused
+  exit 1
+fi
+echo "tfstate lineage verified against terraform.tfstate.enc: $state_lineage"
+
 echo "running terraform plan"
 if [ "$REFRESH_STATE" == "true" ]; then
   echo "also refreshing state"

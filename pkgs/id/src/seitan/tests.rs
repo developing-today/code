@@ -16,6 +16,8 @@ use super::derive;
 use super::freshness::{DEFAULT_WINDOW, Freshness};
 use super::token::{ALPHABET, Token, TokenError};
 
+use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
+
 const VECTOR_TOKEN: &str = "4uywza+b3cga7rd6yc";
 const VECTOR_INVITE_ID: &str = "6303ec43bd61d21edb95a433faf06227";
 const VECTOR_SIKEY_B64: &str = "Il9ZFgI1yP2b6Hvt53jWIoo8sDre3puyNH8b2es9TTQ=";
@@ -278,6 +280,38 @@ fn a_proof_from_another_token_fails_under_this_key() {
 }
 
 #[test]
+fn the_identity_forgery_fails_under_the_identity_key() {
+    // #1386: the identity point is a small-order key, and the shared
+    // forgery (R = identity, S = 0) passes plain verify for any message
+    // under it — only verify_strict keeps it out.
+    let proof = Proof {
+        message: b"any accept message".to_vec(),
+        signature: identity_forgery(),
+    };
+    assert_eq!(
+        accept::verify(&IDENTITY_KEY, &proof),
+        Err(ProofError::BadSignature)
+    );
+}
+
+#[test]
+fn a_non_canonical_s_fails() {
+    // #1386: a genuine proof mutated to S + L must be refused, while
+    // the original verifies.
+    let invite = vector_invite();
+    let proof = accept_from(&vector_token(), "alice", 3, CREATED);
+    assert_eq!(accept::verify(&invite.public_key(), &proof), Ok(()));
+    let malleated = Proof {
+        signature: with_non_canonical_s(proof.signature),
+        ..proof
+    };
+    assert_eq!(
+        accept::verify(&invite.public_key(), &malleated),
+        Err(ProofError::BadSignature)
+    );
+}
+
+#[test]
 fn changing_any_byte_of_the_signed_message_fails() {
     let invite = vector_invite();
     let proof = accept_from(&vector_token(), "alice", 3, CREATED);
@@ -330,6 +364,43 @@ fn parse_accepts_the_well_formed_message_and_rejects_the_rest() {
         Err(ProofError::Malformed)
     );
     assert_eq!(accept::parse(b"\xc1"), Err(ProofError::Malformed));
+}
+
+#[test]
+fn parse_rejects_trailing_bytes_after_the_accept_map() {
+    let bare = raw("accept", VECTOR_INVITE_ID, 2);
+    assert!(accept::parse(&bare).is_ok());
+
+    // A single stray byte.
+    let mut trailing_byte = bare.clone();
+    trailing_byte.push(0x00);
+    assert_eq!(accept::parse(&trailing_byte), Err(ProofError::Malformed));
+
+    // A trailing scalar value (msgpack positive fixint 42).
+    let mut trailing_scalar = bare.clone();
+    trailing_scalar.push(0x2a);
+    assert_eq!(accept::parse(&trailing_scalar), Err(ProofError::Malformed));
+
+    // A trailing string value ("hello" as a fixstr).
+    let mut trailing_string = bare.clone();
+    trailing_string.extend_from_slice(b"\xa5hello");
+    assert_eq!(accept::parse(&trailing_string), Err(ProofError::Malformed));
+
+    // A whole second accept map concatenated after the first.
+    let mut duplicated = bare.clone();
+    duplicated.extend_from_slice(&bare);
+    assert_eq!(accept::parse(&duplicated), Err(ProofError::Malformed));
+}
+
+#[test]
+fn parse_accepts_a_wider_than_minimal_integer_encoding() {
+    // The full-consumption check compares consumed length, it does not re-encode and
+    // compare: an honest encoding that spells the version as a uint8 (0xcc) instead of
+    // the minimal positive fixint stays accepted, as Keybase clients may emit it.
+    let mut widened = raw("accept", VECTOR_INVITE_ID, 2);
+    assert_eq!(widened.pop(), Some(2), "version is the final byte");
+    widened.extend_from_slice(&[0xcc, 2]);
+    assert!(accept::parse(&widened).is_ok());
 }
 
 // ---------------------------------------------------------------------------

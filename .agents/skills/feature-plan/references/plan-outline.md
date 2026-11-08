@@ -1,10 +1,10 @@
 # Plan outline: sections, steps, edges, waves, tiers, deferred decisions
 
-Read in steps 4 to 10. The [plan template](/planning/templates/plan.md) owns the base sections. [ordering.md](/planning/workflow/ordering.md#plans) owns the step fields and what they mean, and [DEPENDENCIES.md](/planning/DEPENDENCIES.md) owns the relation kinds and tiers. This file says how to fill them in for one sub-feature of a settled design.
+Read in steps 4 to 10. The [plan template](../../../../planning/templates/plan.md) owns the base sections. [ordering.md](/planning/workflow/ordering.md#plans) owns the step fields and what they mean, and [DEPENDENCIES.md](../../../../planning/DEPENDENCIES.md) owns the relation kinds and tiers. This file says how to fill them in for one sub-feature of a settled design.
 
 ## 1. File, header, goal and scope (step 4)
 
-- **Path.** `planning/plans/<slug>.md`, where `<slug>` is the sub-feature's short name, or `<UTC>_<slug>.md` when order matters ([plans README](/planning/plans/README.md)). One plan per plan issue.
+- **Path.** `planning/plans/<slug>.md`, where `<slug>` is the sub-feature's short name, or `<UTC>_<slug>.md` when order matters ([plans README](../../../../planning/plans/README.md)). One plan per plan issue.
 - **Header.** The template's four lines, plus two:
   - `Status: draft`. The S8 orchestrator moves it to `in-progress` and `done`.
   - `Roadmap item:` the row in `planning/roadmaps/<area>.md`, or `none: <why>`.

@@ -139,7 +139,7 @@ func Discover(dirs []string, pathEnv string) ([]Plugin, error) {
 	var out []Plugin
 	seen := map[string]string{}
 	add := func(p Plugin) error {
-		if err := p.Manifest.Validate(); err != nil {
+		if err := p.Validate(); err != nil {
 			return fmt.Errorf("%s: %w", p.Source, err)
 		}
 		if prev, dup := seen[p.Name]; dup {

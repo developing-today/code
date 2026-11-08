@@ -57,8 +57,8 @@ func subLog(line string) {
 	if err != nil {
 		return
 	}
-	fmt.Fprintf(f, "%d %s\n", pid, line)
-	f.Close()
+	_, _ = fmt.Fprintf(f, "%d %s\n", pid, line)
+	_ = f.Close()
 }
 
 func emitUpdates() {
@@ -103,9 +103,9 @@ func main() {
 	send := func(resp map[string]any) {
 		b, _ := json.Marshal(resp)
 		writeMu.Lock()
-		out.Write(b)
-		out.WriteByte('\n')
-		out.Flush()
+		_, _ = out.Write(b)
+		_ = out.WriteByte('\n')
+		_ = out.Flush()
 		writeMu.Unlock()
 	}
 	notify = send
