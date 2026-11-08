@@ -921,8 +921,38 @@ fn cmd_validate(rest: &[String]) -> i32 {
     0
 }
 
+/// Enqueue queue resolution (#7016, the shadow-default trap): the
+/// --queue flag wins, then the packet's own declared queue, then
+/// the REPO_QUEUE_DEFAULT_QUEUE env. There is deliberately NO
+/// built-in default for enqueue: with none of the three the enqueue
+/// fails loudly instead of silently landing in the shadow queue —
+/// the failure that misrouted ~291 tasks on 2026-11-07. Pure, so
+/// the resolution order is unit-testable.
+fn resolve_enqueue_queue(
+    flag: Option<&str>,
+    packet: &Value,
+    env_default: Option<&str>,
+) -> Result<String, String> {
+    let packet_queue = packet
+        .get("queue")
+        .and_then(|q| q.as_str())
+        .map(str::trim)
+        .filter(|q| !q.is_empty());
+    for candidate in [flag, packet_queue, env_default] {
+        if let Some(q) = candidate.map(str::trim).filter(|q| !q.is_empty()) {
+            return Ok(q.to_string());
+        }
+    }
+    Err(
+        "enqueue: no queue resolved — pass --queue, declare \"queue\" in the \
+         packet, or set REPO_QUEUE_DEFAULT_QUEUE (enqueue has no default queue; \
+         the old shadow default silently misrouted work)"
+            .to_string(),
+    )
+}
+
 fn cmd_enqueue(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["queue"], &["dry-run"]);
+    let args = parse_args(rest, &["queue"], &["dry-run", "shadow-intent"]);
     reject_extra_pos("enqueue", &args, 1);
     let path = args
         .pos
@@ -932,11 +962,32 @@ fn cmd_enqueue(rest: &[String]) -> i32 {
     let packet = load_packet(&path);
     let dry_run = args.has("dry-run");
     validate_via_broker(&packet, dry_run);
-    let queue = opt_queue(&args);
+    let env_default = std::env::var("REPO_QUEUE_DEFAULT_QUEUE").ok();
+    let queue = match resolve_enqueue_queue(
+        args.get("queue").as_deref(),
+        &packet,
+        env_default.as_deref(),
+    ) {
+        Ok(q) => q,
+        Err(e) => die(2, &e),
+    };
+    let shadow_intent = args.has("shadow-intent");
+    if queue.ends_with("-shadow") && !shadow_intent {
+        die(
+            2,
+            &format!(
+                "enqueue: queue {queue} is a shadow queue — pass --shadow-intent \
+                 to enqueue there deliberately"
+            ),
+        );
+    }
     let call_started = now_micros();
     let resp = call(
         "/enqueue",
-        &json!({"packet": packet, "queue": queue, "dry_run": dry_run}),
+        &json!({
+            "packet": packet, "queue": queue, "dry_run": dry_run,
+            "shadow_intent": shadow_intent,
+        }),
     );
     let resp = unwrap_ok(resp);
     if dry_run {
@@ -1778,6 +1829,30 @@ mod tests {
     #[test]
     fn default_queue_empty_env_values_use_default() {
         assert_env_resolution(default_queue_from_env, DEFAULT_QUEUE);
+    }
+
+    #[test]
+    fn enqueue_queue_resolution_never_falls_back_to_shadow() {
+        // #7016: the flag wins over the packet, the packet wins over
+        // the env, and with none of the three the enqueue fails
+        // loudly — it never resolves to the shadow default.
+        let packet = json!({"queue": "repo-health-code-pilot"});
+        assert_eq!(
+            resolve_enqueue_queue(Some("repo-health-nix-pilot"), &packet, Some("env-q"))
+                .unwrap(),
+            "repo-health-nix-pilot"
+        );
+        assert_eq!(
+            resolve_enqueue_queue(None, &packet, Some("env-q")).unwrap(),
+            "repo-health-code-pilot"
+        );
+        assert_eq!(
+            resolve_enqueue_queue(None, &json!({}), Some("env-q")).unwrap(),
+            "env-q"
+        );
+        assert!(resolve_enqueue_queue(None, &json!({}), None).is_err());
+        assert!(resolve_enqueue_queue(None, &json!({"queue": "  "}), Some("")).is_err());
+        assert!(resolve_enqueue_queue(Some(""), &json!({}), None).is_err());
     }
 
     #[test]

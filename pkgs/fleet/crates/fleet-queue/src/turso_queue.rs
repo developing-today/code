@@ -1154,6 +1154,22 @@ fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
         });
     }
     let queue = req_str(req, "queue").unwrap_or("").to_string();
+    if queue.is_empty() {
+        return fail(2, "enqueue: queue is required".to_string());
+    }
+    // Shadow queues are for deliberate shadow runs only (#7016): an
+    // enqueue may land in one only when the caller declares shadow
+    // intent, so a forgotten --queue can never silently misroute
+    // real work there again.
+    if queue.ends_with("-shadow") && !req_bool(req, "shadow_intent").unwrap_or(false) {
+        return fail(
+            2,
+            format!(
+                "enqueue: queue {queue} is a shadow queue; pass shadow_intent \
+                 (CLI: --shadow-intent) to enqueue there deliberately"
+            ),
+        );
+    }
     let task = task_from_packet(&packet, &queue);
     if req.get("dry_run").and_then(|d| d.as_bool()).unwrap_or(false) {
         return ok(json!({"dry_run": true, "task": task, "warnings": warnings}));
