@@ -69,6 +69,12 @@ type Options struct {
 	// Runtime is "auto", a kind (deno, bun, node), a name declared in
 	// Setup.Runtimes, or a path or binary name whose basename is a kind.
 	Runtime string
+	// Language is the explicit script-language selection for this run
+	// (script.language / --language / ExecOptions.language): auto,
+	// typescript, javascript or python. Empty means auto. It decides the
+	// language -- and so which generated client is installed -- when no
+	// shebang or configured interpreter dispatch decides first (#1917).
+	Language string
 	// Setup carries the configured runtimes, auto-detection order and
 	// permission profiles. The zero value means the built-ins.
 	Setup Setup
@@ -351,6 +357,9 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	if opts.Source == "" && opts.File == "" {
 		return nil, errors.New("runner: need Source or File")
 	}
+	if _, lerr := NormalizeLanguage(opts.Language); lerr != nil {
+		return nil, lerr
+	}
 	// Dispatch ranks 1-2 (#2167): a shebang or a configured interpreter
 	// runs the script under that interpreter, before any JavaScript
 	// runtime is considered. Rank 3 (the script's language, #1917 Phase 2)
@@ -373,7 +382,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// harness path honours what the raw path preserves.
 		opts.Runtime = js.runtime
 		jsEnv = js
-	} else if ScriptLanguage(opts.File, opts.Source) == codegen.Python.Name {
+	} else if EffectiveScriptLanguage(opts.File, opts.Source, opts.Language) == codegen.Python.Name {
 		// Rank 3: nothing named an interpreter and the script is Python
 		// by extension, so the run is a Python harness run rather than a
 		// TypeScript one. Installing the client is the difference from a

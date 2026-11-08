@@ -107,6 +107,11 @@ type TaskOptions struct {
 // identical everywhere.
 type Options struct {
 	Runtime string `json:"runtime,omitempty"`
+	// Language is the caller's explicit script-language selection for
+	// this run (auto, typescript, javascript, python); empty takes the
+	// service's detection (shebang, then extension), as before. It is
+	// the /v1/exec spelling of script.language / --language (#1917).
+	Language string `json:"language,omitempty"`
 	// Interpreter is the script.interpreter command line for this run;
 	// empty takes the service's configured one. A shebang in the source
 	// or file beats it, as it beats every configuration surface.
@@ -693,7 +698,7 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 	// runner will treat as Python is exactly the request that fetches the
 	// Python client.
 	clients := map[string]runner.Client{}
-	if runner.ScriptLanguage(req.File, req.Source) == codegen.Python.Name {
+	if runner.EffectiveScriptLanguage(req.File, req.Source, opts.Language) == codegen.Python.Name {
 		if module, pyGlobals, cerr := s.Src.ClientModuleFor(ctx, codegen.Python.Name, opts.NS); cerr == nil {
 			clients[codegen.Python.Name] = runner.Client{Module: module, Globals: pyGlobals}
 		}
@@ -712,6 +717,7 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 		WorkDir:             s.WorkDir,
 		WorkRoot:            s.WorkRoot,
 		Runtime:             firstNonEmpty(opts.Runtime, s.Limits.Runtime),
+		Language:            opts.Language,
 		Interpreter:         firstNonEmpty(opts.Interpreter, s.Limits.Interpreter),
 		CwdPolicy:           firstNonEmpty(opts.CwdPolicy, s.Limits.CwdPolicy),
 		ConfigDir:           s.ConfigDir,
