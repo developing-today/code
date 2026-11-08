@@ -38,6 +38,10 @@ use crate::chain::{self, ChainExt, Event};
 /// Graph-native currency definitions and value-event contracts.
 pub mod graph;
 
+/// The currency gateway's signed request envelope (#2319).
+#[cfg(feature = "world")]
+pub mod gateway;
+
 /// The event kind carrying a rate authorisation body.
 pub const RATE_AUTHORISATION_KIND: &str = "currency.rate_authorisation";
 
