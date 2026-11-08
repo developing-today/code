@@ -334,6 +334,9 @@ required file aggregator/registry.json
 required file aggregator/quota-gatherer-state.json
 required file aggregator/quota-gatherer-heartbeat.json
 required file aggregator/events.json
+optional file aggregator/events.json.outbox.jsonl
+optional tree aggregator/events.json.archive
+optional file aggregator/activity-ingestion.json
 required file aggregator/coverage-snapshot.json
 required file aggregator/aa-last-good.json
 optional file aggregator/views.json
@@ -358,7 +361,8 @@ optional file journals/quota-gatherer.log"
 # before: absent and present-but-unreadable are different events.
 for f in actions.json comments.json fleet-feed.json quota-current.json \
   registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json \
-  events.json views.json coverage-snapshot.json aa-last-good.json; do
+  events.json events.json.outbox.jsonl activity-ingestion.json \
+  views.json coverage-snapshot.json aa-last-good.json; do
   if [ -f "$AGG/$f" ]; then
     cp -a "$AGG/$f" "$STAGE/aggregator/$f" ||
       fail "dataset copy failed: $AGG/$f"
@@ -368,6 +372,12 @@ if [ -d "$AGG/snapshots" ]; then cp -a "$AGG/snapshots" "$STAGE/aggregator/snaps
   fail "dataset copy failed: $AGG/snapshots"; fi
 if [ -d "$AGG/charge-inputs" ]; then cp -a "$AGG/charge-inputs" "$STAGE/aggregator/charge-inputs" ||
   fail "dataset copy failed: $AGG/charge-inputs"; fi
+# Audit archive partitions (#3322 retention contract): the pruned
+# history of the event stream lives beside events.json, not in it —
+# a backup generation without the partitions cannot restore the
+# retained+archived chain.
+if [ -d "$AGG/events.json.archive" ]; then cp -a "$AGG/events.json.archive" "$STAGE/aggregator/events.json.archive" ||
+  fail "dataset copy failed: $AGG/events.json.archive"; fi
 for f in latest.json history.jsonl; do
   if [ -f "$META/$f" ]; then
     cp -a "$META/$f" "$STAGE/meta-quota-export/$f" ||
