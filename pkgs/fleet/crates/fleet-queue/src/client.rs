@@ -410,10 +410,24 @@ fn require_row(resp: &Value, fn_name: &str) -> Value {
 
 fn row_or_ledger(resp: &Value, fn_name: &str) {
     let row = require_row(resp, fn_name);
-    if let Some(ledger) = resp.get("lane_ledger") {
-        print_json(&json!({"task": row, "lane_ledger": ledger}));
-    } else {
-        print_json(&row);
+    // Broker envelope extras a caller must not lose: the triage
+    // completion follow-on (#7016) rides alongside the row.
+    let follow_on = resp.get("follow_on_task_id");
+    match (resp.get("lane_ledger"), follow_on) {
+        (Some(ledger), None) => {
+            print_json(&json!({"task": row, "lane_ledger": ledger}));
+        }
+        (Some(ledger), Some(fid)) => {
+            print_json(&json!({
+                "task": row, "lane_ledger": ledger, "follow_on_task_id": fid
+            }));
+        }
+        (None, Some(fid)) => {
+            print_json(&json!({"task": row, "follow_on_task_id": fid}));
+        }
+        (None, None) => {
+            print_json(&row);
+        }
     }
 }
 
