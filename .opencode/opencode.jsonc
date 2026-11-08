@@ -2686,7 +2686,7 @@
         "autonomy": "rules"
       },
       "workhorse-weighted": {
-        "name": "Workhorse relief - weighted pool behind the Flash primary",
+        "name": "Workhorse weighted - EMPTIED 2026-11-07 (Drew): no legs; chain stage kept, contributes nothing",
         // The weighted half of workhorse's incremental structure: sessions
         // that fail over (or are demoted off) the Flash primary draw here
         // by weight. Not addressed by any agent directly.
@@ -2712,18 +2712,18 @@
         // 2026-11-03 (Drew): deepseek-flash-plan#high rejoins this
         // pool at weight 2 (it also keeps its workhorse-primary seat
         // and its new workhorse-ordered seat - additions only).
-        "targets": [
-          "opencode-route/haiku-plan#high",
-          "opencode-route/spark-plan#xhigh",
-          "opencode-route/deepseek-flash-plan#high"
-        ],
+        // 2026-11-07 (Drew, direct order): workhorse-weighted is
+        // EMPTIED - targets [] and no weights map, same as
+        // workhorse-primary earlier tonight. The route definition
+        // stays as the third stage of the workhorse chain
+        // (workhorse-ordered -> workhorse-primary ->
+        // workhorse-weighted) but contributes no legs. Workhorse is
+        // now exactly deepseek-flash-plan#high via workhorse-ordered.
+        // Former members: haiku-plan#high w2, spark-plan#xhigh w1,
+        // deepseek-flash-plan#high w2 (history in comments above).
+        "targets": [],
         "selection": "weighted",
-        "autonomy": "rules",
-        "weights": {
-          "opencode-route/haiku-plan": 2,
-          "opencode-route/spark-plan": 1,
-          "opencode-route/deepseek-flash-plan": 2
-        }
+        "autonomy": "rules"
       },
       "specialist": {
         "name": "Specialist - hard work: quality first, Claude then Argon then Meta Spark then OpenAI",
