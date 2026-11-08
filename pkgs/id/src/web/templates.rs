@@ -1101,6 +1101,19 @@ fn render_program_shell(title: &str, content: &str, assets: &AssetUrls) -> Strin
 pub fn render_peers(peers: &[(String, String, u64, u64)]) -> String {
     let mut html = String::with_capacity(2048);
     html.push_str("<div id=\"peers-content\" data-auto-refresh=\"10\">\n");
+    html.push_str(&render_peers_content(peers));
+    html.push_str("</div>");
+    html
+}
+
+/// Render just the peers content (card) without the `#peers-content` wrapper.
+///
+/// This is the replaceable inner content of the peers page.
+/// Used by `/api/peers` for auto-refresh partial updates: the client's
+/// `fetchPartial` assigns the response as `innerHTML` of `#peers-content`,
+/// so the partial must not carry the wrapper itself (issue #6956).
+pub fn render_peers_content(peers: &[(String, String, u64, u64)]) -> String {
+    let mut html = String::with_capacity(2048);
     html.push_str("<div class=\"card bg-base-200 border border-base-300\">\n");
     html.push_str("    <div class=\"px-3 py-2 border-b border-base-300 text-sm font-bold\">Discovered Peers</div>\n");
     html.push_str("    <div class=\"p-4\">\n");
@@ -1134,7 +1147,6 @@ pub fn render_peers(peers: &[(String, String, u64, u64)]) -> String {
 
     html.push_str("    </div>\n");
     html.push_str("</div>\n");
-    html.push_str("</div>");
 
     html
 }
@@ -1537,6 +1549,33 @@ mod tests {
         assert!(html.contains("test-node"));
         assert!(html.contains("42"));
         assert!(html.contains("30s ago"));
+    }
+
+    #[test]
+    fn test_render_peers_content_has_no_wrapper() {
+        // Regression for #6956: the /api/peers partial is assigned as
+        // innerHTML of #peers-content, so the inner renderer must not
+        // carry the wrapper (duplicate id + data-auto-refresh nesting).
+        let peers = vec![(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+            "test-node".to_owned(),
+            42,
+            30,
+        )];
+        for html in [render_peers_content(&[]), render_peers_content(&peers)] {
+            assert!(!html.contains("peers-content"), "inner partial must not contain #peers-content wrapper: {html}");
+            assert!(!html.contains("data-auto-refresh"), "inner partial must not contain data-auto-refresh: {html}");
+            assert!(html.contains("Discovered Peers"));
+        }
+        assert!(render_peers_content(&peers).contains("test-node"));
+        assert!(render_peers_content(&[]).contains("No peers discovered yet"));
+    }
+
+    #[test]
+    fn test_render_peers_wrapper_exactly_once() {
+        let html = render_peers(&[]);
+        assert_eq!(html.matches("id=\"peers-content\"").count(), 1);
+        assert_eq!(html.matches("data-auto-refresh").count(), 1);
     }
 
     #[test]

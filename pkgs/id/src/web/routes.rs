@@ -20,7 +20,7 @@ use super::markdown::prosemirror_to_markdown;
 use super::templates::{
     render_binary_viewer, render_editor, render_editor_page, render_file_list,
     render_file_list_content, render_main_page_wrapper, render_media_viewer, render_page,
-    render_peers, render_settings,
+    render_peers, render_peers_content, render_settings,
 };
 use crate::fileops::{FileOpError, FileOps, claim_archive_name, snapshot_provenance_tags};
 use crate::tags::TagStore;
@@ -1055,7 +1055,10 @@ async fn peers_partial_handler(State(state): State<AppState>) -> impl IntoRespon
         Vec::new()
     };
 
-    Html(render_peers(&peers_data))
+    // Return only the inner content: fetchPartial assigns this as
+    // innerHTML of #peers-content, so the wrapper must not be included
+    // (issue #6956).
+    Html(render_peers_content(&peers_data))
 }
 
 /// Static assets handler.
