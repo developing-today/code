@@ -24,6 +24,7 @@ in
       "services/flatpak"
       "services/id-mail"
       "services/pm-stack"
+      "services/lab-tunnel"
       "services/pm-apps"
       "services/power-guard"
       "services/openai-cred-watchdog"
@@ -62,6 +63,11 @@ in
         # PM dashboard stack (aggregator + projector, git-sync and
         # quota-gatherer timers) as NixOS-managed user services.
         services.pm-stack.enable = true;
+      }
+      {
+        # Lab cluster Cloudflare Tunnel (code#6455): connector +
+        # edge status service for lab.security.cab.
+        services.lab-tunnel.enable = true;
       }
       {
         # PM app servers (code#1752): Kaneo + PostgreSQL, Grist, and
@@ -141,16 +147,16 @@ in
         };
       }
       {
-        # Quota exporters (code#1048, code#1301): Cloudflare + Meta
-        # quota snapshots every 15 min for the quota gatherer.
-        # Folded into the flake 2026-11-01 (code#3720).
+        # Quota exporter (code#1048): Cloudflare quota snapshots
+        # every 15 min for the quota gatherer. Folded into the
+        # flake 2026-11-01 (code#3720). (The Meta exporter was
+        # retired 2026-11-03: quota is gathered by asking OpenCode,
+        # PR #5040.)
         home-manager.users.user = {
           imports = [
             ../home/cloudflare-quota-export.nix
-            ../home/meta-quota-export.nix
           ];
           services.cloudflare-quota-export.enable = true;
-          services.meta-quota-export.enable = true;
         };
       }
       {
@@ -172,9 +178,62 @@ in
           services.oc-password-sync.enable = true;
         };
       }
+      (
+        { config, ... }:
+        let
+          loginKeyringRules = config.security.pam.services.login.rules;
+        in
+        {
+          # GNOME Keyring unlock at graphical login (code#5477):
+          # the login password must reach pam_gnome_keyring in
+          # SDDM's own PAM stack, or the login keyring collection
+          # stays locked for the whole session and non-desktop
+          # contexts (SSH, agents, user services) stall reading
+          # keyring-held secrets (the gh token) on a prompter they
+          # can never answer. enableGnomeKeyring states the intent,
+          # but in this tree sddm's rule set is a custom delegation
+          # set (every phase includes/substacks login), into which
+          # the flag injects nothing - verified at eval: the
+          # generated pam.d/sddm is byte-identical with the flag on
+          # or off. So the keyring rules are added to sddm's stack
+          # explicitly, mirroring the login service's own keyring
+          # rules; module path and order are referenced from the
+          # login service, not copied, so they track nixpkgs.
+          security.pam.services.sddm.enableGnomeKeyring = true;
+          security.pam.services.sddm.rules = {
+            auth.gnome_keyring = {
+              enable = true;
+              control = "optional";
+              modulePath = loginKeyringRules.auth.gnome_keyring.modulePath;
+              order = loginKeyringRules.auth.gnome_keyring.order;
+            };
+            password.gnome_keyring = {
+              enable = true;
+              control = "optional";
+              modulePath = loginKeyringRules.password.gnome_keyring.modulePath;
+              order = loginKeyringRules.password.gnome_keyring.order;
+              settings.use_authtok = true;
+            };
+            session.gnome_keyring = {
+              enable = true;
+              control = "optional";
+              modulePath = loginKeyringRules.session.gnome_keyring.modulePath;
+              order = loginKeyringRules.session.gnome_keyring.order;
+              settings.auto_start = true;
+            };
+          };
+        }
+      )
       # KRdp remote desktop for this laptop (user service + package);
       # see the file for the one-time on-machine credential setup.
       ./amd-krdp.nix
+      # Sunshine + Moonlight primary remote desktop (code#5924):
+      # VAAPI-pinned streaming host, Moonlight client, encoder
+      # watchdog. KRdp above remains the Plasma-side option.
+      ./amd-sunshine.nix
+      # RustDesk permanent-password re-assertion from the vault
+      # (code#5694); RustDesk itself stays imperative, see the file.
+      ./amd-rustdesk.nix
       ./amd-ipv4-preference.nix
       ./amd-openclaw-secrets.nix
     ];

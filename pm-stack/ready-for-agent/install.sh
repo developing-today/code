@@ -3,9 +3,11 @@
 # on this host.
 #
 #   ./install.sh            install pinned package + unit, restart on
-#                           change (or start when inactive), wait for the UI
-#   ./install.sh clone      additionally clone (or fetch) the
-#                           repositories the harness serves into
+#                           change (or start when inactive), wait for the
+#                           UI, apply config.json (./apply-config.sh,
+#                           #1203), print status
+#   ./install.sh clone      additionally clone (or fetch) every
+#                           repository config.json serves into
 #                           ./repos/
 #
 # Registration note (learned 2026-10-24, first deployment): register
@@ -29,6 +31,18 @@ PINNED_VERSION="1.1.0"
 cd "$(dirname "$0")"
 DEPLOY_DIR="${PWD}"
 
+# Pending-restart marker (#4839): a package upgrade that never reached
+# its restart (e.g. the clone step fails under `set -e` after npm
+# replaced the binary) must not be forgotten — the next run would see
+# matching on-disk versions and report the pinned version running while
+# the old process serves. Written when the package changes, cleared
+# only after a verified restart/start.
+PENDING_RESTART_FILE="${XDG_STATE_HOME:-${HOME}/.local/state}/ready-for-agent.pending-restart"
+restart_pending=false
+if [[ -f ${PENDING_RESTART_FILE} ]]; then
+  restart_pending=true
+fi
+
 # Capture the serving process before changing its executable or unit.
 service_was_active=false
 previous_main_pid=""
@@ -51,6 +65,8 @@ if [[ ${current} != "${PINNED_VERSION}" ]]; then
   package_changed=true
   echo "installing ready-for-agent@${PINNED_VERSION} (found: ${current:-none})"
   npm install -g --prefix "${HOME}/.local" "ready-for-agent@${PINNED_VERSION}"
+  mkdir -p "$(dirname "${PENDING_RESTART_FILE}")"
+  printf '%s\n' "${PINNED_VERSION}" >"${PENDING_RESTART_FILE}"
 else
   echo "ready-for-agent@${PINNED_VERSION} already installed"
 fi
@@ -60,15 +76,25 @@ fi
 #    Only with the explicit `clone` argument — cloning is a one-time,
 #    network-heavy step.
 if [[ ${1:-} == clone ]]; then
-  mkdir -p "${DEPLOY_DIR}/repos"
-  if [[ -d ${DEPLOY_DIR}/repos/code ]]; then
-    git -C "${DEPLOY_DIR}/repos/code" fetch --all --prune
-    echo "fetched code"
-  else
-    GIT_TERMINAL_PROMPT=0 git clone \
-      https://github.com/developing-today/code.git "${DEPLOY_DIR}/repos/code"
-    echo "cloned code"
-  fi
+  mkdir -p "$DEPLOY_DIR/repos"
+  # Every repository the declarative config serves (#1203) — not
+  # only developing-today/code. Rows are localDir<TAB>cloneUrl.
+  while IFS=$'\t' read -r local_dir clone_url; do
+    [[ -n $local_dir ]] || continue
+    if [[ -d $DEPLOY_DIR/repos/$local_dir ]]; then
+      git -C "$DEPLOY_DIR/repos/$local_dir" fetch --all --prune
+      echo "fetched $local_dir"
+    else
+      GIT_TERMINAL_PROMPT=0 git clone "$clone_url" "$DEPLOY_DIR/repos/$local_dir"
+      echo "cloned $local_dir"
+    fi
+  done < <(python3 -c '
+import json
+with open("config.json") as f:
+    cfg = json.load(f)
+for repo in cfg["repositories"]:
+    print(repo["localDir"] + "\t" + repo["cloneUrl"])
+')
 fi
 
 # 3. systemd user unit.
@@ -90,7 +116,7 @@ if ! cmp -s "${source_unit}" "${installed_unit}"; then
 fi
 
 service_changed=false
-if [[ ${package_changed} == true || ${unit_changed} == true ]]; then
+if [[ ${package_changed} == true || ${unit_changed} == true || ${restart_pending} == true ]]; then
   service_changed=true
 fi
 
@@ -103,7 +129,7 @@ if [[ ${service_was_active} == true ]]; then
     systemctl --user restart ready-for-agent.service
     service_action="restarted"
   else
-    echo "no package or unit changes detected; leaving ready-for-agent.service running"
+    echo "no package or unit changes detected and no restart pending; leaving ready-for-agent.service running"
     service_action="unchanged"
   fi
 else
@@ -136,20 +162,34 @@ for ((i = 1; i <= 30; i++)); do
       process_verified=true
     fi
   fi
-  if [[ ${process_verified} == true ]] \
-    && systemctl --user is-active --quiet ready-for-agent.service \
-    && curl --fail --silent http://127.0.0.1:6056/ >/dev/null; then
+  if [[ ${process_verified} == true ]] &&
+    systemctl --user is-active --quiet ready-for-agent.service &&
+    curl --fail --silent http://127.0.0.1:6056/ >/dev/null; then
     running_version="$("${HOME}/.local/bin/ready-for-agent" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
     if [[ ${running_version} != "${PINNED_VERSION}" ]]; then
       echo "ERROR: service restarted, but installed ready-for-agent version is '${running_version:-unknown}', expected '${PINNED_VERSION}'" >&2
       exit 1
     fi
     case "${service_action}" in
-      restarted) echo "ready-for-agent@${running_version} is running after restart: http://127.0.0.1:6056" ;;
-      started) echo "ready-for-agent@${running_version} is running after start: http://127.0.0.1:6056" ;;
-      unchanged) echo "ready-for-agent@${running_version} is already running (no restart): http://127.0.0.1:6056" ;;
-      *) echo "ERROR: unknown service action '${service_action}'" >&2; exit 1 ;;
+    restarted) echo "ready-for-agent@${running_version} is running after restart: http://127.0.0.1:6056" ;;
+    started) echo "ready-for-agent@${running_version} is running after start: http://127.0.0.1:6056" ;;
+    unchanged) echo "ready-for-agent@${running_version} is already running (no restart): http://127.0.0.1:6056" ;;
+    *)
+      echo "ERROR: unknown service action '${service_action}'" >&2
+      exit 1
+      ;;
     esac
+    # The new process is verified serving the installed package: any
+    # pending restart from an earlier interrupted deployment is now
+    # satisfied. The unchanged path never clears — it is only reached
+    # with no marker pending, so a marker always forces a restart first.
+    if [[ ${service_action} == restarted || ${service_action} == started ]]; then
+      rm -f "${PENDING_RESTART_FILE}"
+    fi
+    # Apply the declarative configuration (#1203) once the new process is
+    # verified serving: register the clones and converge the harness
+    # settings on config.json, idempotently.
+    ./apply-config.sh
     systemctl --user --no-pager status ready-for-agent.service | head -5
     exit 0
   fi

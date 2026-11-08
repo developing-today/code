@@ -257,6 +257,39 @@ func TestAFieldNamedOnlyInsideAnotherWordIsNotBlamed(t *testing.T) {
 	}
 }
 
+func TestEqualLengthFieldMatchesUseLexicographicTieBreak(t *testing.T) {
+	cat := diagnose.Catalog{
+		Tools: []diagnose.Tool{{
+			Namespace: "demo", Name: "update_record", Func: "update_record",
+			Shape: diagnose.Shape{Props: map[string]string{
+				"host": "string", "name": "string", "port": "string", "user": "string",
+			}},
+		}},
+	}
+	cases := []struct {
+		name, message, want string
+	}{
+		{"bare ties", "host port user are invalid", "host"},
+		{"quoted ties", `field "user" and 'name' are invalid`, "name"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for i := 0; i < 100; i++ {
+				ds := diagnose.CallError(diagnose.CallErrorInput{
+					Namespace: "demo", Tool: "update_record",
+					Code: diagnose.InvalidParams, Message: tc.message,
+				}, cat)
+				if len(ds) != 1 {
+					t.Fatalf("expected one diagnostic, got %+v", ds)
+				}
+				if ds[0].Field != tc.want {
+					t.Fatalf("iteration %d: field = %q, want %q", i, ds[0].Field, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestAnEmptyPropNameIsIgnoredAndNeverPanics(t *testing.T) {
 	// Codex P2 on PR #3041: a schema declaring an empty property name
 	// made fieldNamed scan forever (strings.Index matches "" at every

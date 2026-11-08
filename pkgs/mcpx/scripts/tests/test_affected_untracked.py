@@ -113,7 +113,9 @@ class SelectorFixture(unittest.TestCase):
             % MODULE,
         )
         base = self.commit()
-        self.write("internal/aaa/newapi.go", "package aaa\n\nfunc BrandNewExport() {}\n")
+        self.write(
+            "internal/aaa/newapi.go", "package aaa\n\nfunc BrandNewExport() {}\n"
+        )
         self.stage("internal/aaa/newapi.go")
         staged_out = self.run_selector(base)
         self.unstage("internal/aaa/newapi.go")
@@ -125,7 +127,9 @@ class SelectorFixture(unittest.TestCase):
         self.assertEqual(staged_out, untracked_out)
 
     def test_t2_registry_name_untracked_parity_with_staged(self):
-        self.write("internal/settings/wire.go", 'package settings\n\nvar wire = "seed"\n')
+        self.write(
+            "internal/settings/wire.go", 'package settings\n\nvar wire = "seed"\n'
+        )
         self.write(
             "internal/e2e/alpha_test.go",
             'package e2e\n\nimport "testing"\n\n'

@@ -55,8 +55,8 @@ that now refuses new ones.
   skeleton output keeps the pipeline idempotent in case/format handling.
 - **Rejected: blanket rejection of non-Latin names.** Petnames legitimately
   exist in other scripts; a single-script Cyrillic name (e.g. `Иван`) must
-  stay accepted. The skeleton only makes cross-script *look-alikes of an
-  existing name* collide; unrelated names in any script are unaffected.
+  stay accepted. The skeleton only makes cross-script _look-alikes of an
+  existing name_ collide; unrelated names in any script are unaffected.
 - **Rejected: mixed-script rejection alone.** It misses same-name spoofs
   written with homoglyphs and rejects legitimate mixed-script names that
   mimic nothing when used as the sole test.

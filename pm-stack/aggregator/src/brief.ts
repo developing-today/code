@@ -8,7 +8,7 @@
 // as unknown.
 
 import type { Comment, GhState, OrchestrationSection, ProjectPoolItem, RefKey } from "./model.ts";
-import { refUrl } from "./model.ts";
+import { isValidRef, refUrl } from "./model.ts";
 import { derivedProjectState, projectDisagreement, type DerivedProjectState } from "./projects.ts";
 
 export interface BriefEvidence {
@@ -89,7 +89,8 @@ function buildItemBriefWithIndexes(
   // as blocking while it is open — or while its state is unknown (absent
   // from the pool): an unknown blocker is stated as unknown, not assumed
   // resolved.
-  const blockers = (item.blockedBy ?? []).map((ref) => {
+  const rawBlockers = item.blockedBy ?? [];
+  const blockers = rawBlockers.filter(isValidRef).map((ref) => {
     const target = byRef.get(ref);
     return {
       ref,
@@ -99,13 +100,18 @@ function buildItemBriefWithIndexes(
   });
   const activeBlockers = blockers.filter((b) => b.state === "open" || b.state === "unknown");
   const blocked = activeBlockers.length > 0;
+  const invalidBlockerCount = rawBlockers.length - blockers.length;
   const blockerText = !blockers.length
-    ? "Not blocked — no “blocked by” edges in the projection."
+    ? invalidBlockerCount
+      ? `Unknown — ${invalidBlockerCount} malformed “blocked by” edge${invalidBlockerCount === 1 ? " was" : "s were"} omitted from the projection.`
+      : "Not blocked — no “blocked by” edges in the projection."
     : blocked
       ? `Blocked by ${activeBlockers
           .map((b) => `${b.ref}${b.state === "unknown" ? " (state unknown — not in the current pool)" : ""}`)
-          .join(", ")}.`
-      : `Not blocked — every recorded blocker (${blockers.map((b) => b.ref).join(", ")}) is closed or merged.`;
+          .join(", ")}.${invalidBlockerCount ? ` ${invalidBlockerCount} malformed edge${invalidBlockerCount === 1 ? " was" : "s were"} omitted.` : ""}`
+      : invalidBlockerCount
+        ? `Unknown — valid blockers (${blockers.map((b) => b.ref).join(", ")}) are closed or merged, but ${invalidBlockerCount} malformed edge${invalidBlockerCount === 1 ? " was" : "s were"} omitted.`
+        : `Not blocked — every recorded blocker (${blockers.map((b) => b.ref).join(", ")}) is closed or merged.`;
   const blockerEvidence: BriefEvidence = blocked
     ? { text: activeBlockers[0].ref, url: activeBlockers[0].url }
     : itemEvidence;
@@ -134,14 +140,15 @@ function buildItemBriefWithIndexes(
         };
 
   // --- Disagreement --------------------------------------------------------
-  const disagreement: ItemBrief["disagreement"] = clash && derived !== "Unknown"
-    ? {
-        project: clash.project,
-        derived: clash.derived,
-        text: `Sources disagree: the Project Status says “${clash.project}” while the rest of the dashboard derives “${clash.derived}”. Both are shown; neither is preferred.`,
-        evidence: { text: `${item.repo}#${item.number} in the Project`, url: item.url },
-      }
-    : null;
+  const disagreement: ItemBrief["disagreement"] =
+    clash && derived !== "Unknown"
+      ? {
+          project: clash.project,
+          derived: clash.derived,
+          text: `Sources disagree: the Project Status says “${clash.project}” while the rest of the dashboard derives “${clash.derived}”. Both are shown; neither is preferred.`,
+          evidence: { text: `${item.repo}#${item.number} in the Project`, url: item.url },
+        }
+      : null;
 
   // --- Suggested next action (deterministic rules, first match wins) -------
   let nextAction: ItemBrief["nextAction"];
@@ -151,6 +158,11 @@ function buildItemBriefWithIndexes(
     nextAction = {
       text: `Resolve the blocker first: ${activeBlockers[0].ref}.`,
       evidence: { text: activeBlockers[0].ref, url: activeBlockers[0].url },
+    };
+  } else if (invalidBlockerCount) {
+    nextAction = {
+      text: `Validate ${invalidBlockerCount} malformed “blocked by” edge${invalidBlockerCount === 1 ? "" : "s"} before treating this item as unblocked.`,
+      evidence: itemEvidence,
     };
   } else if (disagreement) {
     nextAction = {
@@ -201,10 +213,7 @@ export function buildItemBrief(item: ProjectPoolItem, inputs: BriefInputs = {}):
 }
 
 /** Briefs for a whole pool, keyed by ref — the JSON twin's shape. */
-export function buildBriefs(
-  pool: ProjectPoolItem[],
-  inputs: Omit<BriefInputs, "pool"> = {},
-): Map<RefKey, ItemBrief> {
+export function buildBriefs(pool: ProjectPoolItem[], inputs: Omit<BriefInputs, "pool"> = {}): Map<RefKey, ItemBrief> {
   const byRef = new Map(pool.map((item) => [item.ref, item]));
   const commentsByRef = new Map<RefKey, Comment[]>();
   for (const comment of inputs.comments ?? []) {

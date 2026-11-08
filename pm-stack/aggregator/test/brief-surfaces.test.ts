@@ -93,7 +93,19 @@ describe("derived briefs on attention cards", () => {
       notes: "",
       links: [{ ref, relation: "tracks" }],
     };
-    const roadmapHtml = renderRoadmap([roadmapRow], new Map(), provenance, "quarter", undefined, undefined, undefined, undefined, undefined, "", briefMap);
+    const roadmapHtml = renderRoadmap(
+      [roadmapRow],
+      new Map(),
+      provenance,
+      "quarter",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "",
+      briefMap,
+    );
 
     const extras: ItemExtras = {
       dashComments: [],
@@ -102,7 +114,15 @@ describe("derived briefs on attention cards", () => {
       sessions: [],
       briefs: briefMap,
     };
-    const itemHtml = renderItem("Roadmap task", roadmapRow.subject, roadmapRow.links, [], new Map(), [], provenance, extras);
+    const itemHtml = renderItem(
+      "Roadmap task",
+      roadmapRow.subject,
+      roadmapRow.links,
+      new Map(),
+      [],
+      provenance,
+      extras,
+    );
 
     for (const html of [boardHtml, roadmapHtml, itemHtml]) {
       expect(html).toContain("Derived brief");

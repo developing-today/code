@@ -180,7 +180,9 @@ def untracked_added_text(mcpx, rel_paths, untracked):
         except OSError:
             continue
         chunks.append(
-            "+++ untracked pkgs/mcpx/" + p + "\n"
+            "+++ untracked pkgs/mcpx/"
+            + p
+            + "\n"
             + "".join("+" + line + "\n" for line in text.splitlines())
         )
     return "".join(chunks)

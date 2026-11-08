@@ -4,6 +4,15 @@
 //! returning the versioned `kind: screen` JSON document parsed here. Guests
 //! never supply terminal escapes, HTML, or CSS: adapters render this value
 //! using their own trusted presentation code.
+//!
+//! Text is the main presentation mode (`text/1`): a program may instead
+//! return a versioned `kind: text` JSON document — UTF-8 lines with no
+//! escapes, no cursor addressing, and no redraw. Text is append-only: a
+//! presenter renders the lines in order and later documents append further
+//! lines. Every [`WorldSurface`] variant must provide a deterministic,
+//! escape-free text projection via [`WorldSurface::text_projection`]; the
+//! match there is exhaustive, so adding a variant without a projection is a
+//! compile-time error.
 
 use std::fmt::Write as _;
 
@@ -21,6 +30,10 @@ pub const MAX_SCREEN_HEIGHT: usize = 50;
 pub const MAX_SCREEN_CELLS: usize = MAX_SCREEN_WIDTH * MAX_SCREEN_HEIGHT;
 /// Maximum coalesced style ranges accepted from one world screen.
 pub const MAX_SCREEN_STYLE_SPANS: usize = 4096;
+/// Default wrap width for a `text/1` document that names no width.
+pub const DEFAULT_TEXT_WIDTH: usize = 80;
+/// Maximum lines accepted from one world text document, after wrapping.
+pub const MAX_TEXT_LINES: usize = 1000;
 
 /// A validated view understood by more than one transport presenter.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -28,6 +41,157 @@ pub const MAX_SCREEN_STYLE_SPANS: usize = 4096;
 pub enum WorldSurface {
     /// A fixed-size terminal cell buffer, suitable for an SSH terminal or web DOM.
     Screen(ScreenSurface),
+    /// Plain UTF-8 lines (`text/1`): the main mode for agents and scripts.
+    Text(TextSurface),
+}
+
+impl WorldSurface {
+    /// The deterministic, escape-free, line-oriented text projection every
+    /// surface must provide. This match is deliberately exhaustive with no
+    /// wildcard arm: adding a `WorldSurface` variant fails compilation here
+    /// until that variant supplies its own projection.
+    #[must_use]
+    pub fn text_projection(&self) -> String {
+        match self {
+            Self::Screen(screen) => screen.text_projection(),
+            Self::Text(text) => text.render_text(),
+        }
+    }
+}
+
+/// A validated `text/1` document: UTF-8 lines, wrapped to `width` columns
+/// except for the one-grapheme overhang documented on [`TextSurface::with_width`]
+/// (a single grapheme can be wider than `width` and is never split).
+/// Serializes in exactly the guest document shape
+/// (`kind: text, version, width, lines`), so a parsed text surface
+/// round-trips through [`parse_surface`].
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextSurface {
+    /// Text format version. `text/1` defines version 1.
+    pub version: u8,
+    /// Wrap width in terminal columns: the requested width capped at
+    /// [`MAX_SCREEN_WIDTH`], defaulting to [`DEFAULT_TEXT_WIDTH`].
+    pub width: u16,
+    /// The wrapped UTF-8 lines, in append order. No line contains a control
+    /// character, so the lines are escape-free by construction.
+    pub lines: Vec<String>,
+}
+
+impl TextSurface {
+    /// Build a validated text surface at the default width.
+    ///
+    /// # Errors
+    ///
+    /// Rejects control characters (escapes included) in any line and
+    /// documents that exceed [`MAX_TEXT_LINES`] after wrapping.
+    pub fn new(lines: Vec<String>) -> Result<Self> {
+        Self::with_width(DEFAULT_TEXT_WIDTH, lines)
+    }
+
+    /// Build a validated text surface, wrapping each line to `width`
+    /// columns (capped at [`MAX_SCREEN_WIDTH`]) on grapheme boundaries.
+    ///
+    /// Wrapping keeps every stored line within `width` columns with one
+    /// documented exception: a single grapheme that is itself wider than
+    /// `width` is placed whole on its own line, because splitting it would
+    /// corrupt the character. Such a line exceeds `width` by at most the
+    /// width of that one grapheme (one column for a CJK or emoji grapheme at
+    /// `width` 1). Presenters that must hard-fit a viewport of `width` 1-2
+    /// should therefore clamp or blank the overhanging grapheme themselves
+    /// ([`ScreenSurface`] is the cell-precise alternative), rather than
+    /// assuming the stored lines are never wider than `width`.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a zero width, control characters in any line, and documents
+    /// that exceed [`MAX_TEXT_LINES`] after wrapping.
+    pub fn with_width(width: usize, lines: Vec<String>) -> Result<Self> {
+        ensure!(width >= 1, "world text width must be at least 1");
+        let width = width.min(MAX_SCREEN_WIDTH);
+        let mut wrapped = Vec::with_capacity(lines.len());
+        for line in &lines {
+            ensure!(
+                !line.chars().any(char::is_control),
+                "world text line contains a control character"
+            );
+            wrapped.extend(wrap_text_line(line, width));
+        }
+        ensure!(
+            wrapped.len() <= MAX_TEXT_LINES,
+            "world text has too many lines"
+        );
+        Ok(Self {
+            version: 1,
+            width: u16::try_from(width).context("text width is not representable")?,
+            lines: wrapped,
+        })
+    }
+
+    /// Render the document as plain text: its lines joined by `\n`, with no
+    /// trailing newline and no escape sequences.
+    #[must_use]
+    pub fn render_text(&self) -> String {
+        self.lines.join("\n")
+    }
+}
+
+/// Wrap one logical line to `width` display columns. Breaks prefer the last
+/// space that fits; a word longer than `width` is hard-wrapped on grapheme
+/// boundaries, so no output line exceeds `width` columns except when a single
+/// grapheme is itself wider than `width`: that grapheme is never split, so it
+/// occupies a line of its own that is wider than `width` by the grapheme's
+/// width (zero-width graphemes attach to the preceding column). A line that
+/// already fits is returned unchanged, so conforming documents round-trip
+/// exactly.
+fn wrap_text_line(line: &str, width: usize) -> Vec<String> {
+    if UnicodeWidthStr::width(line) <= width {
+        return vec![line.to_owned()];
+    }
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0_usize;
+    // Byte index and width of the last space placed in `current`, so a soft
+    // break can end the line there instead of splitting a word.
+    let mut last_space: Option<(usize, usize)> = None;
+    for grapheme in line.graphemes(true) {
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if grapheme == " " && current.is_empty() {
+            continue; // a break consumes the space it breaks on
+        }
+        if current_width + grapheme_width > width && !current.is_empty() {
+            if grapheme != " " {
+                if let Some((space_at, width_at_space)) = last_space.take() {
+                    let tail = current[space_at + 1..].to_owned();
+                    let tail_width = current_width - width_at_space - 1;
+                    current.truncate(space_at);
+                    out.push(std::mem::take(&mut current));
+                    current = tail;
+                    current_width = tail_width;
+                } else {
+                    out.push(std::mem::take(&mut current));
+                    current_width = 0;
+                }
+            } else {
+                out.push(std::mem::take(&mut current));
+                current_width = 0;
+                last_space = None;
+                continue;
+            }
+            last_space = None;
+            if current_width + grapheme_width > width && !current.is_empty() {
+                out.push(std::mem::take(&mut current));
+                current_width = 0;
+            }
+        }
+        if grapheme == " " {
+            last_space = Some((current.len(), current_width));
+        }
+        current.push_str(grapheme);
+        current_width += grapheme_width;
+    }
+    out.push(current);
+    out
 }
 
 /// Normalized screen buffer. `cells` is row-major and has exactly width × height entries.
@@ -82,9 +246,12 @@ impl ScreenSurface {
     /// Crop a screen to a connection-local viewport without changing world state.
     /// Cropping through the second column of a wide glyph replaces that partial
     /// glyph with a blank cell so the returned grid remains valid.
+    /// A zero viewport dimension is treated as 1, so the returned grid
+    /// always satisfies the same 1..=MAX dimension invariant as
+    /// `from_cells` (a detached or resizing terminal can report 0).
     pub fn fit(&self, width: usize, height: usize) -> Self {
-        let width = width.min(usize::from(self.width));
-        let height = height.min(usize::from(self.height));
+        let width = width.min(usize::from(self.width)).max(1);
+        let height = height.min(usize::from(self.height)).max(1);
         let mut cells = Vec::with_capacity(width * height);
         for y in 0..height {
             let start = y * usize::from(self.width);
@@ -230,6 +397,16 @@ pub struct ScreenCell {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct TextPayload {
+    kind: String,
+    version: u8,
+    #[serde(default)]
+    width: Option<usize>,
+    lines: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ScreenPayload {
     kind: String,
     version: u8,
@@ -259,8 +436,24 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
         Ok(value) => value,
         Err(_) => return Ok(None),
     };
-    if value.get("kind").and_then(Value::as_str) != Some("screen") {
-        return Ok(None);
+    match value.get("kind").and_then(Value::as_str) {
+        Some("screen") => {}
+        Some("text") => {
+            let payload: TextPayload =
+                serde_json::from_value(value).context("decode world text presentation")?;
+            ensure!(payload.kind == "text", "invalid world text kind");
+            ensure!(
+                payload.version == 1,
+                "unsupported world text version {}",
+                payload.version
+            );
+            let text = TextSurface::with_width(
+                payload.width.unwrap_or(DEFAULT_TEXT_WIDTH),
+                payload.lines,
+            )?;
+            return Ok(Some(WorldSurface::Text(text)));
+        }
+        _ => return Ok(None),
     }
 
     let payload: ScreenPayload =
@@ -418,6 +611,29 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
 }
 
 impl ScreenSurface {
+    /// The screen's text projection: one line per row, cell symbols in
+    /// order (wide-glyph continuation cells contribute nothing), trailing
+    /// blanks trimmed, rows joined by `\n`. Styles are dropped, so the
+    /// projection is escape-free and line-oriented.
+    #[must_use]
+    pub fn text_projection(&self) -> String {
+        let width = usize::from(self.width);
+        if width == 0 {
+            return String::new();
+        }
+        let mut rows = Vec::with_capacity(usize::from(self.height));
+        for row in self.cells.chunks(width) {
+            let mut line = String::new();
+            for cell in row {
+                if cell.columns != 0 {
+                    line.push_str(&cell.symbol);
+                }
+            }
+            rows.push(line.trim_end().to_owned());
+        }
+        rows.join("\n")
+    }
+
     /// Render a safe terminal frame. Escape sequences are generated only from
     /// validated numeric style fields; guest-provided glyphs contain no controls.
     #[must_use]
@@ -454,7 +670,7 @@ impl ScreenSurface {
     /// leave a stale continuation cell behind. `None` means the caller must
     /// use a full repaint (invalid screen or changed dimensions/version).
     #[must_use]
-    pub(crate) fn render_ansi_diff(&self, previous: &Self) -> Option<String> {
+    pub fn render_ansi_diff(&self, previous: &Self) -> Option<String> {
         if !self.is_valid()
             || !previous.is_valid()
             || self.version != previous.version
@@ -589,7 +805,7 @@ mod tests {
     fn parsed_screen(value: Value) -> ScreenSurface {
         match screen(value).unwrap() {
             Some(WorldSurface::Screen(screen)) => screen,
-            None => panic!("expected a screen surface"),
+            _ => panic!("expected a screen surface"),
         }
     }
 
@@ -837,6 +1053,118 @@ mod tests {
     }
 
     #[test]
+    fn text_parses_and_round_trips() {
+        let parsed =
+            parse_surface(r#"{"kind":"text","version":1,"lines":["hello","wide 界 line"]}"#)
+                .unwrap()
+                .unwrap();
+        let WorldSurface::Text(text) = &parsed else {
+            panic!("expected a text surface");
+        };
+        assert_eq!(text.version, 1);
+        assert_eq!(usize::from(text.width), DEFAULT_TEXT_WIDTH);
+        assert_eq!(text.lines, ["hello", "wide 界 line"]);
+
+        // The serialized form is the guest document shape, so it re-parses
+        // to the identical surface.
+        let serialized = serde_json::to_string(&parsed).unwrap();
+        assert_eq!(parse_surface(&serialized).unwrap(), Some(parsed));
+    }
+
+    #[test]
+    fn text_wrapping_is_width_aware_bounded_and_grapheme_safe() {
+        let text = TextSurface::with_width(10, vec!["hello world again".to_owned()]).unwrap();
+        assert_eq!(text.lines, ["hello", "world", "again"]);
+
+        // A single over-long word hard-wraps on grapheme boundaries, and a
+        // wide grapheme is never split across lines.
+        let text = TextSurface::with_width(4, vec!["abcdefghij".to_owned()]).unwrap();
+        assert_eq!(text.lines, ["abcd", "efgh", "ij"]);
+        let text = TextSurface::with_width(3, vec!["ab界cd".to_owned()]).unwrap();
+        assert!(
+            text.lines
+                .iter()
+                .all(|line| UnicodeWidthStr::width(line.as_str()) <= 3)
+        );
+        assert_eq!(text.lines.concat(), "ab界cd");
+
+        // The default is 80 and any requested width is capped like a screen.
+        let text = TextSurface::with_width(10_000, vec!["x".repeat(200)]).unwrap();
+        assert_eq!(usize::from(text.width), MAX_SCREEN_WIDTH);
+        assert!(
+            text.lines
+                .iter()
+                .all(|line| UnicodeWidthStr::width(line.as_str()) <= MAX_SCREEN_WIDTH)
+        );
+        assert!(TextSurface::with_width(0, vec!["x".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn text_wrapping_keeps_an_unsplittable_grapheme_whole() {
+        // A grapheme wider than the requested width is never split: it takes
+        // its own line, and that line is wider than the width by exactly the
+        // grapheme's width (the documented one-grapheme exception).
+        let text = TextSurface::with_width(1, vec!["界".to_owned()]).unwrap();
+        assert_eq!(usize::from(text.width), 1);
+        assert_eq!(text.lines, ["界"]);
+        assert_eq!(UnicodeWidthStr::width(text.lines[0].as_str()), 2);
+
+        // The same grapheme at the width it needs fits exactly, with no
+        // exception: the line is within the width.
+        let text = TextSurface::with_width(2, vec!["界".to_owned()]).unwrap();
+        assert_eq!(text.lines, ["界"]);
+        let widths: Vec<usize> = text
+            .lines
+            .iter()
+            .map(|line| UnicodeWidthStr::width(line.as_str()))
+            .collect();
+        assert!(widths.iter().all(|width| *width <= 2));
+
+        // Text around the wide grapheme still wraps normally, and only the
+        // lone over-wide grapheme may exceed the width.
+        let text = TextSurface::with_width(1, vec!["a界b".to_owned()]).unwrap();
+        assert_eq!(text.lines, ["a", "界", "b"]);
+        let widths: Vec<usize> = text
+            .lines
+            .iter()
+            .map(|line| UnicodeWidthStr::width(line.as_str()))
+            .collect();
+        assert_eq!(widths, [1, 2, 1]);
+    }
+
+    #[test]
+    fn text_rejects_escapes_controls_and_bad_versions() {
+        let escape = json!({"kind": "text", "version": 1, "lines": ["\u{001b}[2J"]});
+        assert!(parse_surface(&escape.to_string()).is_err());
+        let tab = json!({"kind": "text", "version": 1, "lines": ["a\tb"]});
+        assert!(parse_surface(&tab.to_string()).is_err());
+        let unsupported = json!({"kind": "text", "version": 2, "lines": ["x"]});
+        assert!(parse_surface(&unsupported.to_string()).is_err());
+    }
+
+    #[test]
+    fn screen_and_text_projections_are_line_oriented_and_escape_free() {
+        // One program, two documents: its screen and its text.
+        let screen = parse_surface(
+            r#"{"kind":"screen","version":1,"width":4,"height":2,"rows":["界ab","wxyz"]}"#,
+        )
+        .unwrap()
+        .unwrap();
+        let text = parse_surface(r#"{"kind":"text","version":1,"lines":["界ab","wxyz"]}"#)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(screen.text_projection(), "界ab\nwxyz");
+        assert_eq!(text.text_projection(), "界ab\nwxyz");
+        for surface in [screen, text] {
+            let projection = surface.text_projection();
+            assert!(!projection.contains('\u{001b}'));
+            assert!(!projection.chars().any(|c| c.is_control() && c != '\n'));
+            assert_eq!(projection.lines().count(), 2);
+        }
+    }
+
+    #[test]
     fn plain_text_stays_on_the_legacy_path() {
         assert_eq!(parse_surface("hello\nworld").unwrap(), None);
         assert_eq!(
@@ -852,7 +1180,9 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        let WorldSurface::Screen(screen) = parsed;
+        let WorldSurface::Screen(screen) = parsed else {
+            panic!("expected a screen surface");
+        };
 
         let cropped = screen.fit(1, 1);
         assert_eq!(cropped.width, 1);
@@ -860,6 +1190,27 @@ mod tests {
         assert_eq!(cropped.cells[0].symbol, " ");
         assert_eq!(cropped.cells[0].columns, 1);
         assert!(cropped.render_ansi().is_some());
+    }
+
+    #[test]
+    fn test_fit_treats_a_zero_viewport_dimension_as_one() {
+        let screen = grid(4, 2, " ");
+        for (requested, expected) in [((0, 2), (1, 2)), ((4, 0), (4, 1)), ((0, 0), (1, 1))] {
+            let fitted = screen.fit(requested.0, requested.1);
+            assert_eq!(
+                (usize::from(fitted.width), usize::from(fitted.height)),
+                expected,
+                "fit{requested:?}"
+            );
+            assert_eq!(fitted.cells.len(), expected.0 * expected.1);
+            assert!(fitted.render_ansi().is_some(), "fit{requested:?}");
+        }
+    }
+
+    #[test]
+    fn test_fit_to_the_source_dimensions_is_the_identity() {
+        let screen = grid(4, 2, "x");
+        assert_eq!(screen.fit(4, 2), screen);
     }
 
     #[test]
@@ -917,7 +1268,9 @@ mod tests {
         }))
         .unwrap()
         .unwrap();
-        let WorldSurface::Screen(buffer) = parsed;
+        let WorldSurface::Screen(buffer) = parsed else {
+            panic!("expected a screen surface");
+        };
         assert_eq!(buffer.cells.len(), 4);
         assert_eq!(buffer.cells[0].symbol, "界");
         assert_eq!(buffer.cells[0].columns, 2);
@@ -940,7 +1293,9 @@ mod tests {
         }))
         .unwrap()
         .unwrap();
-        let WorldSurface::Screen(buffer) = parsed;
+        let WorldSurface::Screen(buffer) = parsed else {
+            panic!("expected a screen surface");
+        };
         assert_eq!(
             buffer.render_ansi().unwrap(),
             "\x1b[H\x1b[2J\x1b[0;1;38;5;196mok\x1b[0m"
@@ -1013,5 +1368,81 @@ mod tests {
             "height": 1, "rows": ["x"], "styles": [[]],
         });
         assert!(screen(too_large).is_err());
+    }
+
+    #[test]
+    fn enforces_screen_height_and_zero_dimension_caps() {
+        // Height one past the cap is rejected, exactly like width.
+        let too_tall = json!({
+            "kind": "screen", "version": 1, "width": 1,
+            "height": MAX_SCREEN_HEIGHT + 1, "rows": ["x"], "styles": [[]],
+        });
+        assert!(screen(too_tall).is_err());
+
+        // Zero is below the 1..=MAX range on both axes.
+        let zero_width = json!({
+            "kind": "screen", "version": 1, "width": 0,
+            "height": 1, "rows": ["x"], "styles": [[]],
+        });
+        assert!(screen(zero_width).is_err());
+        let zero_height = json!({
+            "kind": "screen", "version": 1, "width": 1,
+            "height": 0, "rows": [], "styles": [],
+        });
+        assert!(screen(zero_height).is_err());
+    }
+
+    #[test]
+    fn rejects_style_rows_that_do_not_match_height_and_empty_spans() {
+        // A non-empty styles array carries exactly one row per screen row.
+        let mismatched = json!({
+            "kind": "screen", "version": 1, "width": 2, "height": 2,
+            "rows": ["ab", "cd"], "styles": [[]],
+        });
+        assert!(screen(mismatched).is_err());
+
+        // A span must cover at least one column.
+        let empty_span = json!({
+            "kind": "screen", "version": 1, "width": 2, "height": 1,
+            "rows": ["ab"],
+            "styles": [[{"x": 0, "length": 0, "fg": 1, "bg": 0, "bold": false}]],
+        });
+        assert!(screen(empty_span).is_err());
+    }
+
+    #[test]
+    fn rejects_style_span_totals_past_the_cap() {
+        // Every row filled with single-column spans crosses
+        // MAX_SCREEN_STYLE_SPANS in total (120 x 50 = 6000 > 4096).
+        let rows: Vec<String> = (0..MAX_SCREEN_HEIGHT)
+            .map(|_| "x".repeat(MAX_SCREEN_WIDTH))
+            .collect();
+        let span_row: Vec<Value> = (0..MAX_SCREEN_WIDTH)
+            .map(|x| json!({"x": x, "length": 1, "fg": 1, "bg": 0, "bold": false}))
+            .collect();
+        let styles: Vec<Value> = (0..MAX_SCREEN_HEIGHT)
+            .map(|_| Value::Array(span_row.clone()))
+            .collect();
+        let flooded = json!({
+            "kind": "screen", "version": 1,
+            "width": MAX_SCREEN_WIDTH, "height": MAX_SCREEN_HEIGHT,
+            "rows": rows, "styles": styles,
+        });
+        assert!(screen(flooded).is_err());
+    }
+
+    #[test]
+    fn screen_serialization_is_deterministic() {
+        let payload = json!({
+            "kind": "screen", "version": 1, "width": 4, "height": 2,
+            "rows": ["abcd", "wxyz"],
+            "styles": [[{"x": 0, "length": 2, "fg": 3, "bg": 1, "bold": true}], []],
+        });
+        let first = screen(payload.clone()).unwrap().unwrap();
+        let second = screen(payload).unwrap().unwrap();
+        assert_eq!(first, second);
+        let once = serde_json::to_string(&first).unwrap();
+        assert_eq!(serde_json::to_string(&second).unwrap(), once);
+        assert_eq!(serde_json::to_string(&first).unwrap(), once);
     }
 }

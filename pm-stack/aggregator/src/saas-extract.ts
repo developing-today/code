@@ -12,9 +12,18 @@
 // renewal date, but they render as explicit candidate cards — never
 // silently absent, never presented as held.
 
-import type { ChargeRow, DatedRead, PaygEstimate, PaygLine, SaasGroup, SaasService, UsageMetric } from "./model.ts";
+import type {
+  ChargeRow,
+  DatedRead,
+  PaygEstimate,
+  PaygLine,
+  SaasGroup,
+  SaasService,
+  UninstrumentedSaasService,
+  UsageMetric,
+} from "./model.ts";
 import { sectionOf } from "./quota-extract.ts";
-import { parseIsoDate } from "./validate.ts";
+import { isFiniteNumber, isNonEmptyString, isNonNegative, isRecord, parseIsoDate } from "./validate.ts";
 
 const DATE_RE = /\d{4}-\d{2}-\d{2}/g;
 
@@ -314,7 +323,12 @@ const cloudflareMetrics: MetricExtractor = (section) => {
   const counts = /([\d,]+) Workers, ([\d,]+) R2 buckets[^;]*; ([\d,]+) D1, ([\d,]+) KV, ([\d,]+) Queues/.exec(usage);
   if (counts) {
     out.push(
-      metric({ id: "workers-count", label: "Workers deployed", unit: "count", used: Number(counts[1].replace(/,/g, "")) }),
+      metric({
+        id: "workers-count",
+        label: "Workers deployed",
+        unit: "count",
+        used: Number(counts[1].replace(/,/g, "")),
+      }),
       metric({ id: "r2-buckets", label: "R2 buckets", unit: "count", used: Number(counts[2].replace(/,/g, "")) }),
       metric({ id: "d1-count", label: "D1 databases", unit: "count", used: Number(counts[3].replace(/,/g, "")) }),
       metric({ id: "kv-count", label: "KV namespaces", unit: "count", used: Number(counts[4].replace(/,/g, "")) }),
@@ -747,6 +761,75 @@ export function extractSaasServices(doc: string): SaasService[] {
   return services;
 }
 
+/** Extract the evaluated services table from free-services-to-check.md.
+ * Names, states, dates and guardrails remain source data: this function
+ * does not maintain a second code-defined registry. */
+export function extractUninstrumentedServices(doc: string): UninstrumentedSaasService[] {
+  const rows: UninstrumentedSaasService[] = [];
+  let columns: Record<string, number> | null = null;
+
+  const cellsOf = (line: string): string[] => {
+    // Split only on UNescaped pipes: a `\|` is cell content, not a
+    // delimiter — splitting on every `|` first shifts all later columns
+    // and the unescape afterwards cannot repair them (Codex P2, PR
+    // #3939). Backslash pairs are consumed while scanning so a `\\|`
+    // (escaped backslash, then a real delimiter) still splits.
+    const parts: string[] = [];
+    let current = "";
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === "\\" && i + 1 < line.length) {
+        current += ch + line[i + 1];
+        i++;
+      } else if (ch === "|") {
+        parts.push(current);
+        current = "";
+      } else {
+        current += ch;
+      }
+    }
+    parts.push(current);
+    return parts.slice(1, -1).map((cell) => cell.replace(/\\\|/g, "|").replace(/\*\*/g, "").trim());
+  };
+
+  for (const line of doc.split(/\r?\n/)) {
+    if (!line.trimStart().startsWith("|")) {
+      columns = null;
+      continue;
+    }
+    const cells = cellsOf(line);
+    const header = cells.map((cell) => cell.toLowerCase());
+    const required = ["service", "what for", "status", "overage behavior", "guardrail notes"];
+    if (required.every((name) => header.includes(name))) {
+      columns = Object.fromEntries(required.map((name) => [name, header.indexOf(name)]));
+      continue;
+    }
+    if (!columns || cells.every((cell) => /^:?-{3,}:?$/.test(cell))) continue;
+
+    const name = cells[columns.service] ?? "";
+    const rawStatus = cells[columns.status] ?? "";
+    if (!name || !rawStatus) continue;
+
+    const checkedAt = [...rawStatus.matchAll(DATE_RE)]
+      .map((match) => match[0])
+      .find((date) => parseIsoDate(date) !== null) ?? null;
+    const status = (checkedAt ? rawStatus.replace(checkedAt, "") : rawStatus)
+      .replace(/^\s*[—–-]\s*/, "")
+      .replace(/\s+/g, " ")
+      .trim() || (checkedAt ? "checked" : "unknown");
+
+    rows.push({
+      name,
+      whatFor: cells[columns["what for"]] ?? "",
+      status,
+      checkedAt,
+      overageBehavior: cells[columns["overage behavior"]] ?? "",
+      guardrailNotes: cells[columns["guardrail notes"]] ?? "",
+    });
+  }
+  return rows;
+}
+
 // --- Cloudflare live export overlay (#1048) ----------------------------------
 
 /** One metric row of a cloudflare-quota-export document. */
@@ -803,17 +886,22 @@ export function applyCloudflareExport(
   nowMs: number = Date.now(),
 ): SaasService[] {
   if (!doc || doc.status !== "ok" || !doc.measuredAt || !Array.isArray(doc.metrics)) return services;
-  const measuredMs = Date.parse(doc.measuredAt);
-  if (!Number.isFinite(measuredMs)) return services;
+  // Real-calendar ISO only (#5018): Date.parse rolls impossible dates
+  // over (2026-02-30 -> Mar 2) and accepts non-ISO strings, so the
+  // freshness window must be computed from parseIsoDate's verdict.
+  const measured = parseIsoDate(doc.measuredAt);
+  if (!measured) return services;
+  const measuredMs = measured.getTime();
   if (nowMs - measuredMs > CLOUDFLARE_EXPORT_STALE_MS || measuredMs > nowMs + 5 * 60 * 1000) return services;
   // A tick that ran just before a UTC month rollover carries the
   // previous cycle's totals; overlaying them would compare a full month
   // against a fresh one's limits. Documents without cycleStart (older
   // producers) stay backwards compatible.
   if (doc.cycleStart) {
-    const cycleMs = Date.parse(doc.cycleStart);
-    if (!Number.isFinite(cycleMs)) return services;
-    const cycle = new Date(cycleMs);
+    // Same real-calendar rule (#5018): an impossible cycleStart must not
+    // roll into a neighbouring month and evade the same-month check.
+    const cycle = parseIsoDate(doc.cycleStart);
+    if (!cycle) return services;
     const current = new Date(nowMs);
     if (cycle.getUTCFullYear() !== current.getUTCFullYear() || cycle.getUTCMonth() !== current.getUTCMonth()) {
       return services;
@@ -822,8 +910,13 @@ export function applyCloudflareExport(
   const cf = services.find((s) => s.id === "cloudflare");
   if (!cf) return services;
   const byId = new Map(
+    // A negative measurement is a broken export, not live data: drop it
+    // here as applySupabaseExport does, so the metric keeps its prose or
+    // null fallback instead of stamping a negative used/percent.
     doc.metrics
-      .filter((m) => m && typeof m.id === "string" && typeof m.used === "number" && Number.isFinite(m.used))
+      .filter(
+        (m) => m && typeof m.id === "string" && typeof m.used === "number" && Number.isFinite(m.used) && m.used >= 0,
+      )
       .map((m) => [m.id, m]),
   );
   if (!byId.size) return services;
@@ -924,35 +1017,38 @@ export function applySupabaseExport(
   nowMs: number = Date.now(),
 ): SaasService[] {
   if (!doc || (doc.status !== "ok" && doc.status !== "partial")) return services;
+  // The freshness anchor must be a real calendar date, not merely a
+  // string Date.parse accepts (#2508, #5018): a non-string or impossible
+  // timestamp cannot pass the gate and corrupt the card.
   if (typeof doc.measuredAt !== "string" || !doc.measuredAt || !Array.isArray(doc.metrics)) return services;
-  const measuredMs = Date.parse(doc.measuredAt);
-  if (!Number.isFinite(measuredMs)) return services;
+  const measured = parseIsoDate(doc.measuredAt);
+  if (measured === null) return services;
+  const measuredMs = measured.getTime();
+  const measuredAt = doc.measuredAt;
   if (nowMs - measuredMs > SUPABASE_EXPORT_STALE_MS || measuredMs > nowMs + 5 * 60 * 1000) return services;
   const supabase = services.find((s) => s.id === "supabase");
   if (!supabase) return services;
-  const byId = new Map(
-    doc.metrics
-      .filter(
-        (m) =>
-          m &&
-          typeof m.id === "string" &&
-          !(typeof m.used === "number" && m.used < 0) &&
-          !(typeof m.limit === "number" && m.limit < 0),
-      )
-      .map((m) => [m.id, m]),
-  );
+  // Element-wise contract check (#2508): a metric needs a non-empty id,
+  // and a present used/limit must be finite and non-negative. A metric
+  // with a null used is a documented gap, not bad data.
+  const isLiveMetric = (m: unknown): m is SupabaseExportMetric =>
+    isRecord(m) &&
+    isNonEmptyString(m.id) &&
+    (m.used == null || isNonNegative(m.used)) &&
+    (m.limit == null || isNonNegative(m.limit));
+  const byId = new Map(doc.metrics.filter(isLiveMetric).map((m) => [m.id, m]));
   if (!byId.size) return services;
   supabase.metrics = supabase.metrics.map((m) => {
     const live = byId.get(m.id);
     if (!live) return m;
     const unit = live.unit === "gb" || live.unit === "pct" || live.unit === "count" ? live.unit : m.unit;
-    const used = typeof live.used === "number" && Number.isFinite(live.used) ? live.used : null;
-    const limit = typeof live.limit === "number" && Number.isFinite(live.limit) ? live.limit : m.limit;
+    const used = isFiniteNumber(live.used) ? live.used : null;
+    const limit = isFiniteNumber(live.limit) ? live.limit : m.limit;
     const parts: string[] = [];
     if (used == null) {
       parts.push(`Not measured this tick${live.detail ? ` — ${live.detail}` : ""}`);
     } else {
-      parts.push(`Live via ${live.source ?? doc.source ?? "file-export/supabase"}, measured ${doc.measuredAt}.`);
+      parts.push(`Live via ${live.source ?? doc.source ?? "file-export/supabase"}, measured ${measuredAt}.`);
       if (live.detail) parts.push(live.detail);
       if (live.flag === "approaching-paid-trigger") {
         parts.push(
@@ -969,13 +1065,7 @@ export function applySupabaseExport(
       note: parts.join(" ").slice(0, 600),
     };
   });
-  if (
-    doc.billing &&
-    doc.billing.measured !== false &&
-    typeof doc.billing.billedUsd === "number" &&
-    Number.isFinite(doc.billing.billedUsd) &&
-    doc.billing.billedUsd >= 0
-  ) {
+  if (doc.billing && doc.billing.measured !== false && isNonNegative(doc.billing.billedUsd)) {
     supabase.billedUsd = doc.billing.billedUsd;
   } else {
     // Codex P2 (PR #2369 re-review, 2026-10-29): an accepted export with no
@@ -986,12 +1076,12 @@ export function applySupabaseExport(
     supabase.billedUsd = null;
   }
   supabase.plan = doc.billing?.plan
-    ? `Free plan (${doc.project ?? "supabase"}); measured ${doc.measuredAt}`
+    ? `Free plan (${doc.project ?? "supabase"}); measured ${measuredAt}`
     : supabase.plan;
-  supabase.measuredAt = doc.measuredAt.slice(0, 10);
+  supabase.measuredAt = measuredAt.slice(0, 10);
   supabase.sourceClass = "api";
   const gapCount = (doc.scope ?? []).filter((s) => typeof s.status === "number" && s.status >= 400).length;
-  supabase.sourceNote = `Supabase usage collector (#1050): ${doc.source ?? "file-export/supabase"}, measured ${doc.measuredAt}; ${
+  supabase.sourceNote = `Supabase usage collector (#1050): ${doc.source ?? "file-export/supabase"}, measured ${measuredAt}; ${
     gapCount ? `${gapCount} documented scope gap(s) — see the export's scope array` : "every probed endpoint answered"
   }; limits from the Free-plan record.`;
   return services;

@@ -357,22 +357,38 @@ func (q Question) carriesMultiSelect() bool {
 		return false
 	}
 	var schema struct {
-		Properties map[string]struct {
-			Type  string                     `json:"type"`
-			Items map[string]json.RawMessage `json:"items"`
-		} `json:"properties"`
+		Properties map[string]json.RawMessage `json:"properties"`
 	}
 	if json.Unmarshal(m["requestedSchema"], &schema) != nil {
 		return false
 	}
-	for _, prop := range schema.Properties {
-		if prop.Type != "array" {
+	for _, raw := range schema.Properties {
+		var prop map[string]json.RawMessage
+		if json.Unmarshal(raw, &prop) != nil {
 			continue
 		}
-		if _, ok := prop.Items["enum"]; ok {
+		var typ string
+		var types []string
+		array := json.Unmarshal(prop["type"], &typ) == nil && typ == "array"
+		if !array && json.Unmarshal(prop["type"], &types) == nil {
+			for _, t := range types {
+				if t == "array" {
+					array = true
+					break
+				}
+			}
+		}
+		if !array {
+			continue
+		}
+		var items map[string]json.RawMessage
+		if json.Unmarshal(prop["items"], &items) != nil {
+			continue
+		}
+		if _, ok := items["enum"]; ok {
 			return true
 		}
-		if _, ok := prop.Items["anyOf"]; ok {
+		if _, ok := items["anyOf"]; ok {
 			return true
 		}
 	}
@@ -462,13 +478,6 @@ func (c *Conn) deliver(id int64, result json.RawMessage, rerr *rpcError) bool {
 	}
 	ch <- &clientReply{Result: result, Error: rerr}
 	return true
-}
-
-// isReply reports whether a frame is a response rather than a request: an id
-// and no method. The client's own recvLoop had this bug in reverse, and it
-// cost a release of silent elicitation failures.
-func isReply(req request) bool {
-	return len(req.ID) > 0 && req.Method == ""
 }
 
 // replyOf reads the result or error from a response frame.
@@ -582,14 +591,14 @@ func (q Question) Sendable(p Peer) bool {
 		// (string[] to string) and the upstream would reject the
 		// elicited answer. Unsendable questions stay with the broker
 		// via sendableTo (#2078).
-		return p.CanElicit(q.Mode) && !(q.carriesMultiSelect() && !AtLeast(p.Version, "2025-11-25"))
+		return p.CanElicit(q.Mode) && (!q.carriesMultiSelect() || AtLeast(p.Version, "2025-11-25"))
 	case "sampling/createMessage":
 		// A tools-carrying question goes only to a client that declared
 		// sampling.tools. It is refused whole, never stripped and
 		// degraded: the upstream asked for a tool loop, and a plain
 		// completion is not the answer to that question. Unsendable
 		// questions stay with the broker via sendableTo.
-		return p.CanSample() && !(q.carriesSamplingTools() && !p.CanSampleTools())
+		return p.CanSample() && (!q.carriesSamplingTools() || p.CanSampleTools())
 	case "roots/list":
 		return p.Declared("roots")
 	}

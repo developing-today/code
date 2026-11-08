@@ -46,6 +46,34 @@ describe("appJwt key formats", () => {
   });
 });
 
+describe("appJwt GITHUB_APP_ID validation", () => {
+  test("rejects app ids that are not positive decimal integers", async () => {
+    for (const raw of ["abc", "0", "-1", "12.5", " 123 ", "9007199254740992", "123456789012345678901234"]) {
+      const result = await appJwt({ GITHUB_APP_ID: raw, GITHUB_APP_PRIVATE_KEY: testKeyB64("pkcs8") }).catch(
+        (error: unknown) => error,
+      );
+      expect(result).toBeInstanceOf(Error);
+      expect((result as Error).message).toContain("GITHUB_APP_ID");
+      expect((result as Error).message).toContain(JSON.stringify(raw));
+    }
+  });
+
+  test("a valid app id keeps issuing a JWT with the identical iss claim", async () => {
+    const jwt = await appJwt({ GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: testKeyB64("pkcs8") });
+    const payload = JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString("utf8")) as { iss?: string };
+    expect(payload.iss).toBe("123");
+  });
+
+  test("missing or empty credentials keep github_app_credentials_missing", async () => {
+    const key = testKeyB64("pkcs8");
+    for (const env of [{}, { GITHUB_APP_ID: "", GITHUB_APP_PRIVATE_KEY: key }, { GITHUB_APP_ID: "123" }]) {
+      const result = await appJwt(env).catch((error: unknown) => error);
+      expect(result).toBeInstanceOf(Error);
+      expect((result as Error).message).toBe("github_app_credentials_missing");
+    }
+  });
+});
+
 describe("listResource pagination", () => {
   test("follows the Link header's absolute next URL as-is", async () => {
     const calls: string[] = [];
@@ -109,10 +137,7 @@ describe("apiTokenFor installation resolution", () => {
 
   test("keeps the plain-token fallback for absent or empty static IDs", async () => {
     for (const raw of [undefined, ""]) {
-      const auth = await apiTokenFor(
-        { GITHUB_APP_INSTALL_ID: raw, GITHUB_TOKEN: "plain-token" },
-        "acme/no-app",
-      );
+      const auth = await apiTokenFor({ GITHUB_APP_INSTALL_ID: raw, GITHUB_TOKEN: "plain-token" }, "acme/no-app");
       expect(auth).toEqual({ kind: "token", token: "plain-token" });
     }
   });
@@ -127,11 +152,67 @@ describe("apiTokenFor installation resolution", () => {
     const fetchFn = async (url: string) => {
       calls.push(url);
       if (url === "https://api.github.com/repos/acme/static/installation") return new Response("{}", { status: 404 });
-      if (url === "https://api.github.com/app/installations/42/access_tokens") return Response.json({ token: "static-token" });
+      if (url === "https://api.github.com/app/installations/42/access_tokens")
+        return Response.json({ token: "static-token" });
       return new Response("{}", { status: 404 });
     };
     const auth = await apiTokenFor(env, "acme/static", fetchFn as unknown as typeof fetch);
     expect(auth).toEqual({ kind: "app", token: "static-token" });
     expect(calls).toContain("https://api.github.com/app/installations/42/access_tokens");
+  });
+});
+
+describe("GitHub API response shape validation (#6954)", () => {
+  const auth = { kind: "token", token: "t" } as const;
+
+  test("listResource rejects non-array 200 pages in the module vocabulary, never spreads a string", async () => {
+    for (const bodyText of ["null", JSON.stringify({ message: "oops" }), JSON.stringify("hello"), "42"]) {
+      const fetchFn = async () => new Response(bodyText, { status: 200 });
+      const result = await listResource(auth, "repos/o/r/issues", fetchFn as unknown as typeof fetch).catch(
+        (error: unknown) => error,
+      );
+      expect(result).toBeInstanceOf(Error);
+      expect((result as Error).message).toContain("github_api_unexpected_shape");
+    }
+  });
+
+  test("discovery with a null 200 body falls back to the plain token", async () => {
+    const env = {
+      GITHUB_APP_ID: "123",
+      GITHUB_APP_PRIVATE_KEY: testKeyB64("pkcs8"),
+      GITHUB_TOKEN: "plain-token",
+    };
+    const fetchFn = async (url: string) => {
+      if (url === "https://api.github.com/repos/acme/null-discovery/installation") {
+        return new Response("null", { status: 200 });
+      }
+      return new Response("{}", { status: 404 });
+    };
+    const resolved = await apiTokenFor(env, "acme/null-discovery", fetchFn as unknown as typeof fetch);
+    expect(resolved).toEqual({ kind: "token", token: "plain-token" });
+  });
+
+  test("access-token replies without a non-empty string token fail in the module vocabulary", async () => {
+    const env = {
+      GITHUB_APP_ID: "123",
+      GITHUB_APP_PRIVATE_KEY: testKeyB64("pkcs8"),
+      GITHUB_APP_INSTALL_ID: "42",
+    };
+    for (const [repo, bodyText] of [
+      ["acme/tok-empty-object", "{}"],
+      ["acme/tok-null", "null"],
+      ["acme/tok-number", JSON.stringify({ token: 123 })],
+      ["acme/tok-blank", JSON.stringify({ token: "" })],
+    ] as const) {
+      const fetchFn = async (url: string) => {
+        if (url.includes("/access_tokens")) return new Response(bodyText, { status: 200 });
+        return new Response("{}", { status: 404 });
+      };
+      const result = await apiTokenFor(env, repo, fetchFn as unknown as typeof fetch).catch(
+        (error: unknown) => error,
+      );
+      expect(result).toBeInstanceOf(Error);
+      expect((result as Error).message).toContain("installation_token_failed_shape");
+    }
   });
 });

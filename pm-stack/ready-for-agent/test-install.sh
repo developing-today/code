@@ -14,6 +14,7 @@ fail() {
 
 run_case() {
   local name="$1" initial_version="$2" active="$3" unit_matches="$4"
+  local extra_args="${5:-}" git_fail_once="${6:-0}"
   local case_root="${TEST_ROOT}/${name}"
   local home="${case_root}/home" deploy="${case_root}/deploy"
   local stub_bin="${case_root}/bin" state="${case_root}/state"
@@ -21,35 +22,44 @@ run_case() {
 
   mkdir -p "${home}/.local/bin" "${home}/.config/systemd/user" "${deploy}/systemd" "${stub_bin}" "${state}"
   cp "${REPO_ROOT}/pm-stack/ready-for-agent/install.sh" "${deploy}/install.sh"
+  cat >"${deploy}/apply-config.sh" <<'APPLY_CONFIG'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'apply-config\n' >>"${STUB_LOG}"
+APPLY_CONFIG
+  cat >"${deploy}/config.json" <<'JSON'
+{"repositories":[{"projectPath":"developing-today/code","localDir":"code","cloneUrl":"https://github.com/developing-today/code.git"}]}
+JSON
   cp "${REPO_ROOT}/pm-stack/ready-for-agent/systemd/ready-for-agent.service" \
     "${deploy}/systemd/ready-for-agent.service"
-  if [[ "${unit_matches}" == true ]]; then
+  if [[ ${unit_matches} == true ]]; then
     cp "${deploy}/systemd/ready-for-agent.service" "${home}/.config/systemd/user/ready-for-agent.service"
-  elif [[ "${unit_matches}" == false ]]; then
-    echo 'stale unit' > "${home}/.config/systemd/user/ready-for-agent.service"
+  elif [[ ${unit_matches} == false ]]; then
+    echo 'stale unit' >"${home}/.config/systemd/user/ready-for-agent.service"
   fi
 
-  if [[ "${initial_version}" != missing ]]; then
-    printf '%s\n' "${initial_version}" > "${home}/.ready-agent-version"
-    cat > "${home}/.local/bin/ready-for-agent" <<'LAUNCHER'
+  if [[ ${initial_version} != missing ]]; then
+    printf '%s\n' "${initial_version}" >"${home}/.ready-agent-version"
+    cat >"${home}/.local/bin/ready-for-agent" <<'LAUNCHER'
 #!/usr/bin/env bash
-printf 'ready-for-agent %s\n' "$(cat "${HOME}/.ready-agent-version")"
+  printf 'ready-for-agent %s\n' "$(cat "${HOME}/.ready-agent-version")"
 LAUNCHER
     chmod +x "${home}/.local/bin/ready-for-agent"
   fi
 
-  if [[ "${active}" == active ]]; then
-    printf 'active\n' > "${state}/active"
-    printf '100\n' > "${state}/pid"
-    printf '1000\n' > "${state}/start"
+  if [[ ${active} == active ]]; then
+    printf 'active\n' >"${state}/active"
+    printf '100\n' >"${state}/pid"
+    printf '1000\n' >"${state}/start"
   else
-    printf 'inactive\n' > "${state}/active"
-    printf '0\n' > "${state}/pid"
-    printf '0\n' > "${state}/start"
+    printf 'inactive\n' >"${state}/active"
+    printf '0\n' >"${state}/pid"
+    printf '0\n' >"${state}/start"
   fi
-  : > "${log}"
+  printf '%s\n' "${git_fail_once}" >"${state}/git_fail_once"
+  : >"${log}"
 
-  cat > "${stub_bin}/systemctl" <<'SYSTEMCTL'
+  cat >"${stub_bin}/systemctl" <<'SYSTEMCTL'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ ${1:-} == --user ]] || exit 2
@@ -90,7 +100,7 @@ case "${command}" in
 esac
 SYSTEMCTL
 
-  cat > "${stub_bin}/npm" <<'NPM'
+  cat >"${stub_bin}/npm" <<'NPM'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'npm install\n' >> "${STUB_LOG}"
@@ -101,48 +111,91 @@ printf 'ready-for-agent %s\n' "$(cat "${HOME}/.ready-agent-version")"
 LAUNCHER
 chmod +x "${HOME}/.local/bin/ready-for-agent"
 NPM
-  cat > "${stub_bin}/curl" <<'CURL'
+  cat >"${stub_bin}/git" <<'GIT'
+#!/usr/bin/env bash
+set -euo pipefail
+# Fail once when the case arms it (npm-ok / git-fail sequence), then
+# succeed; clone creates its target dir like the real thing.
+if [[ $(cat "${STUB_STATE}/git_fail_once") == 1 ]]; then
+  printf '0\n' > "${STUB_STATE}/git_fail_once"
+  exit 1
+fi
+if [[ ${1:-} == clone ]]; then
+  mkdir -p "${@: -1}"
+fi
+exit 0
+GIT
+  cat >"${stub_bin}/curl" <<'CURL'
 #!/usr/bin/env bash
 exit 0
 CURL
-  cat > "${stub_bin}/sleep" <<'SLEEP'
+  cat >"${stub_bin}/sleep" <<'SLEEP'
 #!/usr/bin/env bash
 exit 0
 SLEEP
-  chmod +x "${stub_bin}/systemctl" "${stub_bin}/npm" "${stub_bin}/curl" "${stub_bin}/sleep"
+  chmod +x "${stub_bin}/systemctl" "${stub_bin}/npm" "${stub_bin}/git" "${stub_bin}/curl" "${stub_bin}/sleep"
+  chmod +x "${deploy}/apply-config.sh"
 
-  if ! output="$(HOME="${home}" PATH="${stub_bin}:${ORIGINAL_PATH}" STUB_STATE="${state}" STUB_LOG="${log}" \
-    bash "${deploy}/install.sh" 2>&1)"; then
+  if [[ ${name} == clone-fail-retry ]]; then
+    # #4839: npm upgrades the package, then the clone step fails; the
+    # retry must restart (pending marker), not report the pinned
+    # version already running, and must clear the marker on success.
+    local marker="${home}/.local/state/ready-for-agent.pending-restart" retry_output
+    if output="$(HOME="${home}" XDG_STATE_HOME="${home}/.local/state" PATH="${stub_bin}:${ORIGINAL_PATH}" STUB_STATE="${state}" STUB_LOG="${log}" \
+      bash "${deploy}/install.sh" ${extra_args} 2>&1)"; then
+      printf '%s\n' "${output}" >&2
+      fail "${name}: first run (failing clone) unexpectedly succeeded"
+    fi
+    [[ -f ${marker} ]] || fail "${name}: pending-restart marker missing after failed run"
+    ! grep -Fxq restart "${log}" || fail "${name}: restarted before the clone failure"
+    : >"${log}"
+    if ! retry_output="$(HOME="${home}" XDG_STATE_HOME="${home}/.local/state" PATH="${stub_bin}:${ORIGINAL_PATH}" STUB_STATE="${state}" STUB_LOG="${log}" \
+      bash "${deploy}/install.sh" ${extra_args} 2>&1)"; then
+      printf '%s\n' "${retry_output}" >&2
+      fail "${name}: retry exited unsuccessfully"
+    fi
+    grep -Fxq restart "${log}" || fail "${name}: retry did not restart"
+    grep -Fxq apply-config "${log}" || fail "${name}: config helper was not invoked after retry"
+    printf '%s\n' "${retry_output}" | grep -Fq 'after restart' || fail "${name}: retry missing after-restart report"
+    printf '%s\n' "${retry_output}" | grep -Fq 'already running' && fail "${name}: retry falsely reported no-op"
+    [[ ! -f ${marker} ]] || fail "${name}: marker not cleared after verified restart"
+    echo "PASS: ${name}"
+    return 0
+  fi
+
+  if ! output="$(HOME="${home}" XDG_STATE_HOME="${home}/.local/state" PATH="${stub_bin}:${ORIGINAL_PATH}" STUB_STATE="${state}" STUB_LOG="${log}" \
+    bash "${deploy}/install.sh" ${extra_args} 2>&1)"; then
     printf '%s\n' "${output}" >&2
     fail "${name}: installer exited unsuccessfully"
   fi
 
   printf '%s\n' "${output}" | grep -Fq 'ready-for-agent@1.1.0'
+  grep -Fxq apply-config "${log}" || fail "${name}: config helper was not invoked"
   case "${name}" in
-    package-change-active)
-      grep -Fxq restart "${log}" || fail "${name}: expected restart"
-      grep -Fxq 'npm install' "${log}" || fail "${name}: expected package install"
-      ;;
-    unit-change-active)
-      grep -Fxq restart "${log}" || fail "${name}: expected restart"
-      grep -Fxq daemon-reload "${log}" || fail "${name}: expected daemon-reload"
-      ;;
-    unchanged-active)
-      ! grep -Fxq restart "${log}" || fail "${name}: unexpectedly restarted"
-      ! grep -Fxq start "${log}" || fail "${name}: unexpectedly started"
-      printf '%s\n' "${output}" | grep -Fq 'no restart' || fail "${name}: missing no-op report"
-      ;;
-    inactive)
-      grep -Fxq start "${log}" || fail "${name}: expected start"
-      ! grep -Fxq restart "${log}" || fail "${name}: unexpectedly restarted"
-      ;;
-    first-install)
-      grep -Fxq start "${log}" || fail "${name}: expected start"
-      grep -Fxq daemon-reload "${log}" || fail "${name}: expected daemon-reload"
-      grep -Fxq 'npm install' "${log}" || fail "${name}: expected package install"
-      ! grep -Fxq restart "${log}" || fail "${name}: unexpectedly restarted"
-      ;;
-    *) fail "unknown test case: ${name}" ;;
+  package-change-active)
+    grep -Fxq restart "${log}" || fail "${name}: expected restart"
+    grep -Fxq 'npm install' "${log}" || fail "${name}: expected package install"
+    ;;
+  unit-change-active)
+    grep -Fxq restart "${log}" || fail "${name}: expected restart"
+    grep -Fxq daemon-reload "${log}" || fail "${name}: expected daemon-reload"
+    ;;
+  unchanged-active)
+    ! grep -Fxq restart "${log}" || fail "${name}: unexpectedly restarted"
+    ! grep -Fxq start "${log}" || fail "${name}: unexpectedly started"
+    printf '%s\n' "${output}" | grep -Fq 'no restart' || fail "${name}: missing no-op report"
+    ;;
+  inactive)
+    grep -Fxq start "${log}" || fail "${name}: expected start"
+    ! grep -Fxq restart "${log}" || fail "${name}: unexpectedly restarted"
+    ;;
+  first-install)
+    grep -Fxq start "${log}" || fail "${name}: expected start"
+    grep -Fxq daemon-reload "${log}" || fail "${name}: expected daemon-reload"
+    grep -Fxq 'npm install' "${log}" || fail "${name}: expected package install"
+    ! grep -Fxq restart "${log}" || fail "${name}: unexpectedly restarted"
+    ;;
+  *) fail "unknown test case: ${name}" ;;
   esac
   echo "PASS: ${name}"
 }
@@ -152,3 +205,4 @@ run_case unit-change-active 1.1.0 active false
 run_case unchanged-active 1.1.0 active true
 run_case inactive 1.1.0 inactive true
 run_case first-install missing inactive missing
+run_case clone-fail-retry 1.0.0 active true clone 1

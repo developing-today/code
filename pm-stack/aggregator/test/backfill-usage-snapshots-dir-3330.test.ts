@@ -8,10 +8,7 @@ import { join } from "node:path";
 
 const script = join(import.meta.dir, "../scripts/backfill-usage-snapshots.ts");
 
-async function runScript(
-  cwd: string,
-  args: string[],
-): Promise<{ code: number; stderr: string; stdout: string }> {
+async function runScript(cwd: string, args: string[]): Promise<{ code: number; stderr: string; stdout: string }> {
   const proc = Bun.spawn([process.execPath, script, ...args], {
     cwd,
     env: {
@@ -23,10 +20,7 @@ async function runScript(
     stdout: "pipe",
     stderr: "pipe",
   });
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
+  const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
   return { code: await proc.exited, stdout, stderr };
 }
 

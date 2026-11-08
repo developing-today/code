@@ -10,6 +10,10 @@ import {
   fetchFollowingValidatedRedirects,
   MAX_CRAWL_BODY_BYTES,
   parseJsonObjectBody,
+  parseFormDataBody,
+  parseUploadFile,
+  parseCrawlResult,
+  parseAiSummaryResult,
   readResponseTextCapped,
   uploadKey,
   validateCrawlUrl,
@@ -712,7 +716,11 @@ test("fetchFollowingValidatedRedirects follows only urllib redirect statuses", a
       "https://example.com/start": { status, location: "/final" },
       "https://example.com/final": { status: 200 },
     });
-    assert.equal((await fetchFollowingValidatedRedirects("https://example.com/start", fetchFn)).status, 200, `${status}`);
+    assert.equal(
+      (await fetchFollowingValidatedRedirects("https://example.com/start", fetchFn)).status,
+      200,
+      `${status}`,
+    );
   }
 
   for (const status of [300, 304]) {
@@ -980,6 +988,72 @@ test("crawlArchiveKey: same-millisecond derivations with distinct uniques never 
   }
 });
 
+test("parseCrawlResult passes a well-formed container result through unchanged (#7018)", () => {
+  const result = { title: "T", excerpt: "E", links: 3, status_code: 200, text: "hello" };
+  const parsed = parseCrawlResult(result);
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) assert.deepEqual(parsed.values, result);
+  // Absent optional fields are fine: the route binds ?? null for them.
+  assert.equal(parseCrawlResult({}).ok, true);
+  assert.equal(parseCrawlResult({ title: "only a title" }).ok, true);
+});
+
+test("parseCrawlResult rejects non-object container bodies (#7018)", () => {
+  // A JSON null used to 500 the route on result.title (after the R2
+  // archive write); a JSON string was archived spread by character index
+  // and stored as an all-null crawls row reported as success.
+  for (const body of [null, "hello", 42, true, [1, 2, 3]]) {
+    const parsed = parseCrawlResult(body);
+    assert.equal(parsed.ok, false, JSON.stringify(body));
+  }
+});
+
+test("parseCrawlResult rejects wrong-typed container fields (#7018)", () => {
+  // Object values used to throw the raw D1 bind TypeError as a 500;
+  // wrong-typed scalars (numeric title, string links/status_code) bound
+  // as-is into the crawls row.
+  for (const body of [
+    { links: { bad: 1 } },
+    { title: ["T"] },
+    { title: 123 },
+    { excerpt: null },
+    { text: 42 },
+    { links: "3" },
+    { status_code: "200" },
+    { links: Number.NaN },
+  ]) {
+    const parsed = parseCrawlResult(body);
+    assert.equal(parsed.ok, false, JSON.stringify(body));
+    if (!parsed.ok) assert.match(parsed.error, /crawl result/);
+  }
+});
+
+test("parseAiSummaryResult returns the trimmed summary of a well-formed AI result (#7037)", () => {
+  const parsed = parseAiSummaryResult({ response: "  a tidy summary  " });
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) assert.equal(parsed.values.summary, "a tidy summary");
+});
+
+test("parseAiSummaryResult rejects non-object AI results (#7037)", () => {
+  // A null result used to crash the summarize route with a raw TypeError;
+  // a bare string result was read as a missing response and silently
+  // stored an empty summary reported as success.
+  for (const body of [null, "just a string", 42, true, [1, 2, 3]]) {
+    const parsed = parseAiSummaryResult(body);
+    assert.equal(parsed.ok, false, JSON.stringify(body));
+  }
+});
+
+test("parseAiSummaryResult rejects a missing, non-string, or empty response (#7037)", () => {
+  // {} used to store summary="" with a 200 ok:true, erasing any previous
+  // summary; a numeric/object/array response crashed on .trim.
+  for (const body of [{}, { response: 123 }, { response: { text: "x" } }, { response: ["x"] }, { response: null }, { response: "" }, { response: "   " }]) {
+    const parsed = parseAiSummaryResult(body);
+    assert.equal(parsed.ok, false, JSON.stringify(body));
+    if (!parsed.ok) assert.match(parsed.error, /AI summary result/);
+  }
+});
+
 test("isMachineNameConflict recognises only the machines.name UNIQUE violation (#2631)", () => {
   assert.equal(isMachineNameConflict(new Error("UNIQUE constraint failed: machines.name")), true);
   assert.equal(isMachineNameConflict(new Error("D1_ERROR: UNIQUE constraint failed: machines.name")), true);
@@ -989,4 +1063,46 @@ test("isMachineNameConflict recognises only the machines.name UNIQUE violation (
   assert.equal(isMachineNameConflict(new Error("UNIQUE constraint failed")), false);
   assert.equal(isMachineNameConflict("UNIQUE constraint failed: machines.name"), true);
   assert.equal(isMachineNameConflict(null), false);
+});
+
+test("parseFormDataBody rejects a non-multipart body (#7087)", async () => {
+  // A JSON, plain-text, or empty body used to make req.formData() throw a
+  // raw TypeError out of POST /api/files, answered 500 with internal text.
+  for (const init of [
+    { body: JSON.stringify({ file: "x" }), headers: { "content-type": "application/json" } },
+    { body: "hello", headers: { "content-type": "text/plain" } },
+    {},
+  ]) {
+    const r = await parseFormDataBody(new Request("https://probe/api/files", { method: "POST", ...init }));
+    assert.equal(r.ok, false, JSON.stringify(init));
+    if (!r.ok) assert.match(r.error, /multipart form body required/);
+  }
+});
+
+test("parseFormDataBody accepts a multipart body (#7087)", async () => {
+  const fd = new FormData();
+  fd.append("file", new File(["hello"], "note.txt", { type: "text/plain" }));
+  const r = await parseFormDataBody(new Request("https://probe/api/files", { method: "POST", body: fd }));
+  assert.equal(r.ok, true);
+});
+
+test("parseUploadFile rejects a missing or non-file 'file' field (#7087)", () => {
+  // A text field named 'file' comes back from FormData.get as a string;
+  // the route's bare cast used to hide that until file.arrayBuffer()
+  // crashed with a raw TypeError (500).
+  for (const value of [null, undefined, "just a string", 42, {}, { name: "x" }, { name: 7, arrayBuffer: async () => new ArrayBuffer(0) }]) {
+    const parsed = parseUploadFile(value);
+    assert.equal(parsed.ok, false, String(value));
+    if (!parsed.ok) assert.match(parsed.error, /multipart field 'file'/);
+  }
+});
+
+test("parseUploadFile passes a real File through with its name and type (#7087)", async () => {
+  const parsed = parseUploadFile(new File(["hello world"], "note.txt", { type: "text/plain" }));
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) {
+    assert.equal(parsed.values.name, "note.txt");
+    assert.equal(parsed.values.type, "text/plain");
+    assert.equal(new TextDecoder().decode(await parsed.values.arrayBuffer()), "hello world");
+  }
 });

@@ -175,6 +175,40 @@ describe("world page records fetch (#1458)", () => {
     expect(socket.sent("records")).toHaveLength(7);
   });
 
+  it("define semantics (#2953): prototype-spelled record keys from a peer frame are stored, not set", () => {
+    // The frame is built by JSON.parse so "__proto__" is a genuine own
+    // key of the records object, exactly as a peer-supplied frame
+    // delivers it. With assignment semantics (Object.assign) the object
+    // value would move the records object's prototype and the string
+    // value would be silently dropped; neither would render.
+    q<HTMLButtonElement>("[data-world-records-refresh]").click();
+    const objectFrame = JSON.parse(
+      '{"type":"records","records":{"__proto__":{"polluted":"no"},"constructor":"c-value","toString":"t-value","ordinary":1},"next_after":null}',
+    ) as Record<string, unknown>;
+    socket.deliver(objectFrame);
+    const rendered = renderedRecords();
+    expect(Object.hasOwn(rendered, "__proto__")).toBe(true);
+    expect(rendered["__proto__"]).toEqual({ polluted: "no" });
+    expect(rendered["constructor"]).toBe("c-value");
+    expect(rendered["toString"]).toBe("t-value");
+    expect(rendered["ordinary"]).toBe(1);
+    // JSON round-trip preserved every key, and nothing polluted the
+    // shared prototype.
+    expect(JSON.parse(JSON.stringify(rendered))).toEqual(rendered);
+    expect(Object.hasOwn(Object.prototype, "polluted")).toBe(false);
+    expect(({} as Record<string, unknown>)["polluted"]).toBeUndefined();
+
+    q<HTMLButtonElement>("[data-world-records-refresh]").click();
+    const stringFrame = JSON.parse(
+      '{"type":"records","records":{"__proto__":"string-value"},"next_after":null}',
+    ) as Record<string, unknown>;
+    socket.deliver(stringFrame);
+    const renderedString = renderedRecords();
+    expect(Object.hasOwn(renderedString, "__proto__")).toBe(true);
+    expect(renderedString["__proto__"]).toBe("string-value");
+    expect(Object.getPrototypeOf(renderedString)).toBe(Object.prototype);
+  });
+
   it("rejects malformed snapshots without partial state changes and accepts the next valid snapshot", () => {
     const status = q<HTMLOutputElement>("[data-world-status]");
     const participantList = q<HTMLElement>("[data-world-participants]");
@@ -237,7 +271,10 @@ describe("world page records fetch (#1458)", () => {
       },
       { type: "event", event: { sequence: 106, participant_id: "2", kind: { kind: "input", data: [27] } } },
       { type: "event", event: { participant_id: 2, kind: { kind: "chat", data: "bad sequence" } } },
-      { type: "event", event: { sequence: Number.NaN, participant_id: 2, kind: { kind: "chat", data: "bad sequence" } } },
+      {
+        type: "event",
+        event: { sequence: Number.NaN, participant_id: 2, kind: { kind: "chat", data: "bad sequence" } },
+      },
     ];
 
     for (const frame of malformedEvents) {

@@ -21,6 +21,7 @@ import {
   effectiveStandingAuto,
   proposalExpired,
   proposalIdentity,
+  questionIdForOption,
   sanitizeTierItemExtensions,
   withUserFallbacks,
 } from "../src/tier-items.ts";
@@ -315,10 +316,28 @@ describe("POST-boundary checks against the published item (#1291/#1293)", () => 
 
   test("answers do not shield a present optionId from membership checking", () => {
     const answers = [{ questionId: "notes", value: "hi" }];
-    expect(
-      checkActionAgainstItem(actionInput({ payload: { answers, optionId: "yaml" } }), item, NOW),
-    ).toContain("not one of this item's published options");
+    expect(checkActionAgainstItem(actionInput({ payload: { answers, optionId: "yaml" } }), item, NOW)).toContain(
+      "not one of this item's published options",
+    );
     expect(checkActionAgainstItem(actionInput({ payload: { answers, optionId: "csv" } }), item, NOW)).toBeNull();
+  });
+
+  test("standalone options do not map onto the sole survey question without evidence", () => {
+    // extendedRaw(): csv/json format options beside an independent
+    // audience question (internal/public) — picking csv must not read as
+    // answering audience (Codex P2 on PR #4024).
+    expect(questionIdForOption(item, "csv")).toBeUndefined();
+    expect(questionIdForOption(item, "json")).toBeUndefined();
+  });
+
+  test("option shortcuts resolve to a shared question id", () => {
+    const mapped = sanitizeTierItemExtensions({
+      ...BASE,
+      options: [{ id: "yes", label: "Yes", questionId: "confirm" }],
+      questions: [{ id: "confirm", prompt: "Is it ready?", type: "yesno", required: true, covers: "readiness" }],
+    });
+    expect(questionIdForOption(mapped, "yes")).toBe("confirm");
+    expect(checkActionAgainstItem(actionInput({ payload: { optionId: "yes" } }), mapped, NOW)).toBeNull(); // the shortcut can answer one question without closing the rest of a survey
   });
 
   test("survey answers: unknown ids and bad values are legible 400s; partial submits are accepted (#1451)", () => {
@@ -346,6 +365,64 @@ describe("POST-boundary checks against the published item (#1291/#1293)", () => 
         NOW,
       ),
     ).toBeNull();
+  });
+
+  test("duplicate questionId in one submit is rejected, same-value or contradictory (#4291)", () => {
+    const dup = (answers: { questionId: string; value: string }[]) =>
+      checkActionAgainstItem(actionInput({ payload: { answers } }), item, NOW);
+    expect(
+      dup([
+        { questionId: "audience", value: "internal" },
+        { questionId: "audience", value: "internal" },
+      ]),
+    ).toContain('question "audience" is answered more than once');
+    expect(
+      dup([
+        { questionId: "audience", value: "internal" },
+        { questionId: "audience", value: "public" },
+      ]),
+    ).toContain('question "audience" is answered more than once');
+    // Distinct questions in one submit are still accepted.
+    expect(
+      dup([
+        { questionId: "audience", value: "internal" },
+        { questionId: "notes", value: "hi" },
+      ]),
+    ).toBeNull();
+  });
+
+  test("yes/no answers are limited to yes or no; text answers must be strings", () => {
+    const raw = extendedRaw();
+    raw.questions = [
+      ...(raw.questions as unknown[]),
+      { id: "go", prompt: "Proceed?", type: "yesno", required: true, covers: "go/no-go" },
+      {
+        id: "tags",
+        prompt: "Which tags?",
+        type: "multi",
+        options: [
+          { id: "one", label: "One" },
+          { id: "two", label: "Two" },
+        ],
+        required: true,
+        covers: "selected tags",
+      },
+    ];
+    const surveyItem = sanitizeTierItemExtensions(raw as unknown as TierItem);
+    const answer = (questionId: string, value: string | string[]) =>
+      checkActionAgainstItem(actionInput({ payload: { answers: [{ questionId, value }] } }), surveyItem, NOW);
+
+    expect(answer("go", "banana")).toBe('answer for "go" must be "yes" or "no"');
+    expect(answer("go", ["yes", "no"])).toBe('answer for "go" must be "yes" or "no"');
+    expect(answer("notes", ["not", "text"])).toBe('answer for "notes" must be text');
+    expect(answer("audience", ["internal"])).toBe('answer for "audience" must be one of its options');
+    expect(answer("tags", "one")).toBe('answers for "tags" must be chosen from its options');
+    expect(answer("tags", ["unknown"])).toBe('answers for "tags" must be chosen from its options');
+    expect(answer("go", "yes")).toBeNull();
+    expect(answer("go", "no")).toBeNull();
+    expect(answer("audience", "internal")).toBeNull();
+    expect(answer("notes", "more detail")).toBeNull();
+    expect(answer("tags", ["one", "two"])).toBeNull();
   });
 
   test("a bare text answer cannot bypass required survey questions", () => {
@@ -496,6 +573,38 @@ describe("actions boundary additions (#1290)", () => {
     expect(badStamp.ok).toBe(false);
   });
 
+  test("an answers array naming one question twice is rejected at validation (#4291)", () => {
+    const dup = validateNewAction({
+      clientToken: "ct-ans-00002",
+      kind: "triage",
+      verb: "answer",
+      objectRef: "orch:x",
+      payload: {
+        answers: [
+          { questionId: "audience", value: "internal" },
+          { questionId: "audience", value: "public" },
+        ],
+      },
+      author,
+    });
+    expect(dup.ok).toBe(false);
+    if (!dup.ok) expect(dup.error).toContain('answers question "audience" more than once');
+    const distinct = validateNewAction({
+      clientToken: "ct-ans-00003",
+      kind: "triage",
+      verb: "answer",
+      objectRef: "orch:x",
+      payload: {
+        answers: [
+          { questionId: "audience", value: "internal" },
+          { questionId: "notes", value: "hi" },
+        ],
+      },
+      author,
+    });
+    expect(distinct.ok).toBe(true);
+  });
+
   test("multi-choice answers carry an array value; dismiss/reject still require reasons", () => {
     const multi = validateNewAction({
       clientToken: "ct-ans-00001",
@@ -608,6 +717,58 @@ describe("needs-user card rendering (#1291/#1293)", () => {
     expect(html).toContain('data-verb="dismiss"');
     // no free-text answer box when the item offers options/survey
     expect(html).not.toContain("Your answer / decision");
+  });
+
+  test("option and survey controls share answered state without blocking other partial-survey questions", async () => {
+    const item = sanitizeTierItemExtensions({
+      ...BASE,
+      options: [
+        { id: "yes", label: "Yes", questionId: "confirm" },
+        { id: "no", label: "No", questionId: "confirm" },
+        { id: "later-yes", label: "Later: Yes", questionId: "follow-up" },
+        { id: "later-no", label: "Later: No", questionId: "follow-up" },
+      ],
+      questions: [
+        { id: "confirm", prompt: "Is it ready?", type: "yesno", required: true, covers: "readiness" },
+        { id: "follow-up", prompt: "Continue?", type: "yesno", required: true, covers: "next step" },
+        { id: "details", prompt: "Anything else?", type: "text", required: false, covers: "details" },
+      ],
+    });
+    const objectRef = "gh:developing-today/code#2001";
+    const baseAction: DashAction = {
+      id: "da-answer-confirm",
+      clientToken: "ct-answer-confirm-0001",
+      kind: "triage",
+      verb: "answer",
+      objectRef,
+      payload: { answers: [{ questionId: "confirm", value: "no" }] },
+      author: { kind: "drew", id: "drew", label: "Drew" },
+      createdAt: "2026-10-27T12:00:00.000Z",
+      state: "new",
+    };
+    const surveyHtml = await page([item], new Map([[objectRef, [baseAction]]]));
+    expect(surveyHtml).toContain('name="optionId" value="yes"><button type="submit" class="primary" disabled>');
+    expect(surveyHtml).toContain('name="optionId" value="no"><button type="submit" class="primary" disabled>');
+    expect(surveyHtml).toContain('name="optionId" value="later-yes"><button type="submit" class="primary">');
+    expect(surveyHtml).toContain('name="answers:confirm" value="yes" disabled');
+    expect(surveyHtml).toContain('name="answers:follow-up" value="yes"');
+    expect(surveyHtml).not.toContain('name="answers:follow-up" value="yes" disabled');
+    expect(surveyHtml).toContain('name="answers:details"');
+    expect(surveyHtml).toContain("action da-answer-confirm");
+    expect(surveyHtml).toContain("if (el.disabled) continue;");
+
+    const optionAction: DashAction = {
+      ...baseAction,
+      id: "da-option-confirm",
+      clientToken: "ct-option-confirm-0001",
+      // Existing records have no canonical question pointer; the renderer
+      // resolves this answer against the current published option mapping.
+      payload: { optionId: "yes" },
+    };
+    const optionHtml = await page([item], new Map([[objectRef, [optionAction]]]));
+    expect(optionHtml).toContain('name="answers:confirm" value="yes" checked disabled');
+    expect(optionHtml).toContain("action da-option-confirm");
+    expect(optionHtml).toContain('name="answers:details"');
   });
 
   test("an access item's Auto control is disabled with the reason", async () => {

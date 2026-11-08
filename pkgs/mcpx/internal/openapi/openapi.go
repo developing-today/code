@@ -61,15 +61,14 @@ type Spec struct {
 
 // PathItem is the operations available at one path.
 type PathItem struct {
-	Parameters []Parameter          `json:"parameters" yaml:"parameters"`
-	Get        *Operation           `json:"get" yaml:"get"`
-	Put        *Operation           `json:"put" yaml:"put"`
-	Post       *Operation           `json:"post" yaml:"post"`
-	Delete     *Operation           `json:"delete" yaml:"delete"`
-	Patch      *Operation           `json:"patch" yaml:"patch"`
-	Head       *Operation           `json:"head" yaml:"head"`
-	Options    *Operation           `json:"options" yaml:"options"`
-	rest       map[string]Operation `json:"-" yaml:"-"`
+	Parameters []Parameter `json:"parameters" yaml:"parameters"`
+	Get        *Operation  `json:"get" yaml:"get"`
+	Put        *Operation  `json:"put" yaml:"put"`
+	Post       *Operation  `json:"post" yaml:"post"`
+	Delete     *Operation  `json:"delete" yaml:"delete"`
+	Patch      *Operation  `json:"patch" yaml:"patch"`
+	Head       *Operation  `json:"head" yaml:"head"`
+	Options    *Operation  `json:"options" yaml:"options"`
 }
 
 func (p PathItem) operations() map[string]*Operation {
@@ -151,7 +150,7 @@ func Load(ctx context.Context, source string, timeout time.Duration) (*Spec, err
 		if derr != nil {
 			return nil, fmt.Errorf("fetching %s: %w", source, derr)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("%s returned %s", source, resp.Status)
 		}
@@ -288,7 +287,14 @@ func Build(spec *Spec, opt Options) (*API, error) {
 	seen := map[string]bool{}
 	for _, path := range paths {
 		item := spec.Paths[path]
-		for method, op := range item.operations() {
+		operations := item.operations()
+		operationMethods := make([]string, 0, len(operations))
+		for method := range operations {
+			operationMethods = append(operationMethods, method)
+		}
+		sort.Strings(operationMethods)
+		for _, method := range operationMethods {
+			op := operations[method]
 			if !allowed[method] {
 				continue
 			}
@@ -338,7 +344,7 @@ func resolveBase(base, source string) (string, error) {
 	if strings.HasPrefix(base, "http://") || strings.HasPrefix(base, "https://") {
 		return base, nil
 	}
-	if source == "" || !(strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")) {
+	if source == "" || (!strings.HasPrefix(source, "http://") && !strings.HasPrefix(source, "https://")) {
 		return "", fmt.Errorf("the document declares the relative server URL %q, and it "+
 			"was not loaded over HTTP so there is nothing to resolve it against; "+
 			"give one with --base-url", base)
@@ -537,10 +543,26 @@ func buildSchema(params []Parameter, op *Operation) json.RawMessage {
 	}
 
 	if op.RequestBody != nil {
-		for media, c := range op.RequestBody.Content {
+		mediaTypes := make([]string, 0, len(op.RequestBody.Content))
+		for media := range op.RequestBody.Content {
 			if !strings.Contains(media, "json") {
 				continue
 			}
+			mediaTypes = append(mediaTypes, media)
+		}
+		sort.Strings(mediaTypes)
+		selectedMedia := ""
+		for _, media := range mediaTypes {
+			if media == "application/json" {
+				selectedMedia = media
+				break
+			}
+		}
+		if selectedMedia == "" && len(mediaTypes) > 0 {
+			selectedMedia = mediaTypes[0]
+		}
+		if selectedMedia != "" {
+			c := op.RequestBody.Content[selectedMedia]
 			entry := map[string]any{"description": "the request body"}
 			for k, v := range c.Schema {
 				entry[k] = v
@@ -549,7 +571,6 @@ func buildSchema(params []Parameter, op *Operation) json.RawMessage {
 			if op.RequestBody.Required {
 				required = append(required, "body")
 			}
-			break
 		}
 	}
 
@@ -665,7 +686,7 @@ func (a *API) Call(ctx context.Context, tool string, args map[string]any) (*Resu
 	if err != nil {
 		return nil, fmt.Errorf("%s %s: %w", spec.Method, target, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
 		return nil, err

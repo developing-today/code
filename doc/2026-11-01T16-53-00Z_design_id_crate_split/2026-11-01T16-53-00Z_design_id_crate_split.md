@@ -26,25 +26,25 @@ deps work under the Nix builds.
 
 Where the lines are (top-level module, files, lines):
 
-| module | files | lines | | module | files | lines |
-|---|---|---|---|---|---|---|
-| web | 13 | 19,363 | | world_store | 1 | 1,824 |
-| commands | 16 | 10,716 | | log_sync | 1 | 1,733 |
-| world | 8 | 9,096 | | protocol | 1 | 1,731 |
-| event_store | 8 | 8,685 | | server_config | 3 | 1,648 |
-| groups | 10 | 5,953 | | world_compile | 1 | 1,559 |
-| world_session | 4 | 5,271 | | world_fixture | 1 | 1,463 |
-| encryption | 8 | 4,901 | | world_hub | 1 | 1,257 |
-| cli | 1 | 4,549 | | tuple | 1 | 1,245 |
-| repl | 3 | 3,339 | | seitan | 7 | 1,220 |
-| world_ssh | 1 | 3,225 | | store_traits | 1 | 1,168 |
-| directory | 1 | 2,954 | | discovery | 1 | 1,122 |
-| directory_view | 1 | 2,762 | | shell_contract | 2 | 1,108 |
-| tags | 1 | 2,698 | | chain | 1 | 1,014 |
-| sandbox | 1 | 2,290 | | world_native | 1 | 1,001 |
-| membership | 5 | 2,059 | | world_caps | 1 | 974 |
-| artifact | 1 | 1,987 | | world_presentation | 1 | 912 |
-| world_net | 1 | 1,981 | | world_manifest | 1 | 876 |
+| module         | files | lines  |     | module             | files | lines |
+| -------------- | ----- | ------ | --- | ------------------ | ----- | ----- |
+| web            | 13    | 19,363 |     | world_store        | 1     | 1,824 |
+| commands       | 16    | 10,716 |     | log_sync           | 1     | 1,733 |
+| world          | 8     | 9,096  |     | protocol           | 1     | 1,731 |
+| event_store    | 8     | 8,685  |     | server_config      | 3     | 1,648 |
+| groups         | 10    | 5,953  |     | world_compile      | 1     | 1,559 |
+| world_session  | 4     | 5,271  |     | world_fixture      | 1     | 1,463 |
+| encryption     | 8     | 4,901  |     | world_hub          | 1     | 1,257 |
+| cli            | 1     | 4,549  |     | tuple              | 1     | 1,245 |
+| repl           | 3     | 3,339  |     | seitan             | 7     | 1,220 |
+| world_ssh      | 1     | 3,225  |     | store_traits       | 1     | 1,168 |
+| directory      | 1     | 2,954  |     | discovery          | 1     | 1,122 |
+| directory_view | 1     | 2,762  |     | shell_contract     | 2     | 1,108 |
+| tags           | 1     | 2,698  |     | chain              | 1     | 1,014 |
+| sandbox        | 1     | 2,290  |     | world_native       | 1     | 1,001 |
+| membership     | 5     | 2,059  |     | world_caps         | 1     | 974   |
+| artifact       | 1     | 1,987  |     | world_presentation | 1     | 912   |
+| world_net      | 1     | 1,981  |     | world_manifest     | 1     | 876   |
 
 Families: the world family (`world`, `world_session`, `world_ssh`,
 `sandbox`, `world_net`, `world_store`, `world_compile`, `world_fixture`,
@@ -59,7 +59,7 @@ Groups/membership/encryption ≈13,900. Directory/identity ≈10,300.
 The hubs (inbound file references): `world` 31, `groups` 20,
 `world_session` 19, `directory` 18, `connectivity` 15, `world_caps` 14,
 `world_limits` 14, `waiting` 14, `world_hub` 14, `directory_auth` 13,
-`tags` 12, `chain` 12. The layering the codebase *wants* is already
+`tags` 12, `chain` 12. The layering the codebase _wants_ is already
 visible — a store/event core, a groups layer, a sync layer, the worlds
 runtime, then directory/web/CLI on top. The split follows that layering;
 it does not invent a new one.
@@ -131,19 +131,19 @@ defined in the events crate and implemented by the groups crate.
 in `[workspace.dependencies]` from step 1 on, so member crates cannot
 drift onto different iroh/wasmtime versions.
 
-| crate | contents (today's modules) | ≈lines | depends on | importable by |
-|---|---|---|---|---|
-| `id-kernel` | `time`, `rejection`, `frames`, `tuple`, pure parts of `helpers` | 2,100 | — | anyone; the stable vocabulary |
-| `id-caps` | `world_caps`, `world_limits`, `world_manifest` | 2,300 | kernel | anyone; capability/limit data model |
-| `id-store` | `store_traits`, `store`, `chain`, `waiting`, `documents`, `tag_claims`, `tag_index`, `tags`, `search` | 8,300 | kernel | tools that read/write the store (the bridge/hosted work already builds against these traits) |
-| `id-events` | `event_store`, `local_events`, `event_sync`, `attestation` | 10,100 | kernel, store, caps | services hosting the event graph |
-| `id-groups` | `groups`, `membership`, `access`, `blob_gate`, `pull_policy`, `encryption` | 13,900 | kernel, store, events | services enforcing group policy |
-| `id-sync` | `log_sync`, `sync_method`, `protocol`, `meta_client`, `discovery`, `connectivity`, `dht`, `envelope_net`, `envelope_outbox`, `artifact`, `fileops`, `local` handlers' wire half | 9,600 | kernel, store, events, groups | embedders running the sync protocols |
-| `id-worlds` | the world family incl. `sandbox`, `world_session`, `world_ssh`, `world_native`, `shell_contract` | 34,700 | kernel, caps, store, events, groups, sync | embedders running worlds; the runtime |
-| `id-directory` | `directory`, `directory_view`, `directory_auth`, `directory_log`, `directory_mail`, `petname`, `invite`, `invites`, `seitan` | 10,300 | kernel, store, events, groups | apps presenting identity/naming |
-| `id-web` | `web` | 19,400 | all below | application crate — surface is the server, not the API |
-| `id-cli` | `cli`, `commands`, `repl`, `server_config` | 20,300 | all below | application crate — surface is the CLI |
-| `id` (facade) | `lib.rs` re-exports, `main.rs`, feature definitions | 1,200 | all | the shipped product; the compatibility surface |
+| crate          | contents (today's modules)                                                                                                                                                      | ≈lines | depends on                                | importable by                                                                                |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ----------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `id-kernel`    | `time`, `rejection`, `frames`, `tuple`, pure parts of `helpers`                                                                                                                 | 2,100  | —                                         | anyone; the stable vocabulary                                                                |
+| `id-caps`      | `world_caps`, `world_limits`, `world_manifest`                                                                                                                                  | 2,300  | kernel                                    | anyone; capability/limit data model                                                          |
+| `id-store`     | `store_traits`, `store`, `chain`, `waiting`, `documents`, `tag_claims`, `tag_index`, `tags`, `search`                                                                           | 8,300  | kernel                                    | tools that read/write the store (the bridge/hosted work already builds against these traits) |
+| `id-events`    | `event_store`, `local_events`, `event_sync`, `attestation`                                                                                                                      | 10,100 | kernel, store, caps                       | services hosting the event graph                                                             |
+| `id-groups`    | `groups`, `membership`, `access`, `blob_gate`, `pull_policy`, `encryption`                                                                                                      | 13,900 | kernel, store, events                     | services enforcing group policy                                                              |
+| `id-sync`      | `log_sync`, `sync_method`, `protocol`, `meta_client`, `discovery`, `connectivity`, `dht`, `envelope_net`, `envelope_outbox`, `artifact`, `fileops`, `local` handlers' wire half | 9,600  | kernel, store, events, groups             | embedders running the sync protocols                                                         |
+| `id-worlds`    | the world family incl. `sandbox`, `world_session`, `world_ssh`, `world_native`, `shell_contract`                                                                                | 34,700 | kernel, caps, store, events, groups, sync | embedders running worlds; the runtime                                                        |
+| `id-directory` | `directory`, `directory_view`, `directory_auth`, `directory_log`, `directory_mail`, `petname`, `invite`, `invites`, `seitan`                                                    | 10,300 | kernel, store, events, groups             | apps presenting identity/naming                                                              |
+| `id-web`       | `web`                                                                                                                                                                           | 19,400 | all below                                 | application crate — surface is the server, not the API                                       |
+| `id-cli`       | `cli`, `commands`, `repl`, `server_config`                                                                                                                                      | 20,300 | all below                                 | application crate — surface is the CLI                                                       |
+| `id` (facade)  | `lib.rs` re-exports, `main.rs`, feature definitions                                                                                                                             | 1,200  | all                                       | the shipped product; the compatibility surface                                               |
 
 Dependency rules (enforced by review and, where cheap, by a
 `cargo metadata` DAG check in the step PRs):
@@ -154,7 +154,7 @@ Dependency rules (enforced by review and, where cheap, by a
 - The facade re-exports the pre-split public paths (`id::world_caps`,
   `id::sandbox`, …) for the whole migration, so `main.rs`, the 40
   integration tests in `tests/`, and `benches/` do not churn per step.
-  A step is only complete when the moved implementation exists *only*
+  A step is only complete when the moved implementation exists _only_
   in its new crate and the old location holds nothing but the
   re-export — re-exports must not be allowed to mask a failed move.
 - Feature mapping is preserved at the facade: `world` pulls the
@@ -177,7 +177,7 @@ Priority 1 is protected by construction, then verified per step.
   operates on LLVM bitcode for the whole dependency graph — a function
   in `id-store` inlines into `id-worlds` exactly as an intra-crate
   function does, provided it is inline-eligible (small, or marked
-  `#[inline]`, or generic). The split changes *dev/test* inlining
+  `#[inline]`, or generic). The split changes _dev/test_ inlining
   (where LTO is off); it does not change release inlining. The one
   real risk is a hot function that is large, non-generic, and
   unmarked becoming a cross-crate call — the mitigation is a rule, not
@@ -291,7 +291,7 @@ Nix wiring per step: the workspace root keeps the single
 (the sub-flake's `id-web` and `id-lib`, and `default.nix`) therefore
 does not move, and the p2panda `outputHashes` are keyed by package
 name/version and are unaffected by workspace membership (the two
-vendored p2panda crates stay path dependencies, *not* workspace
+vendored p2panda crates stay path dependencies, _not_ workspace
 members). Each step's PR verifies all three entry points build the
 same `id` binary, and the root flake's NixOS module
 (`pkgs/id/nix/id-module.nix`) is untouched throughout. One standing

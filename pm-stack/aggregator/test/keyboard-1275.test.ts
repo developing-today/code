@@ -39,7 +39,13 @@ describe("palette entries from the manifest", () => {
 describe("flattenItems over the served twins", () => {
   test("attention items (title + ref, no URL) link to the GitHub issue", () => {
     const twin = [
-      { id: "developing-today/code#1275", kind: "task", title: "Palette work", ref: "developing-today/code#1275", tier: "needs-drew" },
+      {
+        id: "developing-today/code#1275",
+        kind: "task",
+        title: "Palette work",
+        ref: "developing-today/code#1275",
+        tier: "needs-drew",
+      },
       { id: "session:abc", kind: "session", title: "A session", tier: "needs-drew" },
     ];
     const entries = flattenItems(twin, "attention");

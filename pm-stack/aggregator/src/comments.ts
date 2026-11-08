@@ -25,8 +25,14 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { DashAuthor, DashComment, DashCommentKind, RefKey } from "./model.ts";
-import { refUrl } from "./model.ts";
-import { archiveStoreBytes, quarantineUnreadableStore, quarantineWholeStore, type InvalidStoreRecord, type StoreArchive } from "./store-recovery.ts";
+import { isValidRef, refUrl } from "./model.ts";
+import {
+  archiveStoreBytes,
+  quarantineUnreadableStore,
+  quarantineWholeStore,
+  type InvalidStoreRecord,
+  type StoreArchive,
+} from "./store-recovery.ts";
 import { isNonEmptyString, isRecord, parseIsoDate } from "./validate.ts";
 
 export interface CommentsFile {
@@ -34,7 +40,10 @@ export interface CommentsFile {
   comments: DashComment[];
 }
 
-const GH_REF = /^[\w.-]+\/[\w.-]+#\d+$/;
+// Result URLs are rendered as link hrefs on the dashboard (#950):
+// only https://github.com/ result links are storable — a stored
+// javascript:/data: URL would render as a clickable script link.
+const GH_RESULT_URL = /^https:\/\/github\.com\//;
 const COMMENT_KINDS = new Set<DashCommentKind>(["message", "note", "github"]);
 
 function commentRecordProblem(value: unknown): string | null {
@@ -56,7 +65,7 @@ function commentRecordProblem(value: unknown): string | null {
     return "message triageState must be new or triaged";
   }
   if (value.kind === "github") {
-    if (value.githubRef !== undefined && (typeof value.githubRef !== "string" || !GH_REF.test(value.githubRef))) {
+    if (value.githubRef !== undefined && !isValidRef(value.githubRef)) {
       return "githubRef must be owner/repo#N";
     }
     if (
@@ -67,7 +76,8 @@ function commentRecordProblem(value: unknown): string | null {
     ) {
       return "githubState must be pending, posted, or failed";
     }
-    if (value.githubState === "pending" && value.githubRef === undefined) return "pending github comments require githubRef";
+    if (value.githubState === "pending" && value.githubRef === undefined)
+      return "pending github comments require githubRef";
   }
   return null;
 }
@@ -109,7 +119,7 @@ export function validateNewComment(body: unknown): { ok: true; value: NewComment
   if (!author) return { ok: false, error: "author must be {kind: drew|muse|agent, id, label}" };
   if (typeof b.body !== "string" || b.body.trim() === "") return { ok: false, error: "body must be non-empty text" };
   if (b.kind === "github") {
-    if (typeof b.githubRef !== "string" || !GH_REF.test(b.githubRef)) {
+    if (!isValidRef(b.githubRef)) {
       return { ok: false, error: "kind github requires githubRef as owner/repo#N" };
     }
   }
@@ -200,18 +210,24 @@ export class CommentsStore {
       const quarantined = await quarantineWholeStore(this.file, raw, this.archive);
       this.comments = [];
       this.fileExtras = {};
-      console.error(`[comments] WARNING: comments store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}); quarantined original bytes to ${quarantined} and started empty.`);
+      console.error(
+        `[comments] WARNING: comments store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}); quarantined original bytes to ${quarantined} and started empty.`,
+      );
       return;
     }
     if (!isRecord(parsed) || !Array.isArray(parsed.comments)) {
       const quarantined = await quarantineWholeStore(this.file, raw, this.archive);
       this.comments = [];
       this.fileExtras = {};
-      console.error(`[comments] WARNING: comments store ${this.file} has the wrong envelope shape; quarantined original bytes to ${quarantined} and started empty.`);
+      console.error(
+        `[comments] WARNING: comments store ${this.file} has the wrong envelope shape; quarantined original bytes to ${quarantined} and started empty.`,
+      );
       return;
     }
 
-    this.fileExtras = Object.fromEntries(Object.entries(parsed).filter(([key]) => key !== "version" && key !== "comments"));
+    this.fileExtras = Object.fromEntries(
+      Object.entries(parsed).filter(([key]) => key !== "version" && key !== "comments"),
+    );
     const valid: DashComment[] = [];
     const invalid: InvalidStoreRecord[] = [];
     parsed.comments.forEach((comment, index) => {
@@ -339,6 +355,13 @@ export class CommentsStore {
       throw new Error("github result cannot carry both a url and an error");
     }
     if (result.url) {
+      // #950: the stored githubUrl is rendered as a link href, so only
+      // https://github.com/ result URLs are accepted — anything else
+      // (javascript:, data:, http:, other hosts) is refused with the
+      // state unchanged (the endpoint maps the throw to a 400).
+      if (!GH_RESULT_URL.test(result.url)) {
+        throw new Error("github result url must start with https://github.com/");
+      }
       if (c.githubState === "posted") {
         // Posted is terminal. A repeat of the same url is an
         // idempotent no-op; a different url is a conflicting

@@ -4,7 +4,7 @@
 // render + HTTP routes. Follows test/slice3.test.ts / program.test.ts.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type Subprocess } from "bun";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -14,6 +14,7 @@ import {
   aaCatalogFromConfig,
   aaPoints,
   caiFamily,
+  num,
   aaSectionFromSupabase,
   computeAaCoverage,
   effortRank,
@@ -28,7 +29,7 @@ import {
 import { PAGES } from "../src/pages.ts";
 import { renderAa } from "../src/render.ts";
 import { FIXTURE_AA, fixtureSource } from "../src/sources/fixtures.ts";
-import type { AaCaiRow, AaPrice, AaRanking, AaSection, AaTestRun, Provenance } from "../src/model.ts";
+import type { AaCaiRow, AaPrice, AaRanking, AaSection, AaTestRun, Provenance, ProvenanceDetail } from "../src/model.ts";
 
 const PROV: Provenance = {
   board: "x",
@@ -43,6 +44,23 @@ const PROV: Provenance = {
   registry: "x",
   aa: "fixtures",
 };
+
+function aaProvenanceDetail(ageMs?: number, state: ProvenanceDetail["aa"]["state"] = "live"): ProvenanceDetail {
+  const fixtures = { text: "fixtures", state: "fixtures" as const };
+  return {
+    board: fixtures,
+    roadmap: fixtures,
+    items: fixtures,
+    comments: fixtures,
+    quota: fixtures,
+    usage: fixtures,
+    attention: fixtures,
+    orchestration: fixtures,
+    dns: fixtures,
+    registry: fixtures,
+    aa: { text: "live (fleet feed)", state, ...(ageMs === undefined ? {} : { ageMs }) },
+  };
+}
 
 describe("stripJsonComments", () => {
   test("removes // and /* */ comments but keeps URLs inside strings", () => {
@@ -63,7 +81,7 @@ const CONFIG_SNIPPET = `{
   "provider": {
     "openai": { "models": { "gpt-6-luna": {}, "gpt-6.1-sol": {} } },
     "commandcode": { "models": { "reflection/beam:free": {}, "deepseek/deepseek-v4-pro": {} } },
-    "opencode-go.personal": { "instanceOf": "opencode-go" },
+    "opencode-go.drewrypope": { "instanceOf": "opencode-go" },
   },
   "experimental": {
     "model_routes": {
@@ -79,7 +97,7 @@ describe("opencode coverage inputs", () => {
     expect(inputs).not.toBeNull();
     expect(inputs!.catalog).toContain("openai/gpt-6-luna");
     expect(inputs!.catalog).toContain("commandcode/reflection/beam:free");
-    expect(inputs!.catalog.some((id) => id.startsWith("opencode-go.personal"))).toBe(false);
+    expect(inputs!.catalog.some((id) => id.startsWith("opencode-go.drewrypope"))).toBe(false);
     expect(inputs!.pooled).toContain("openai/gpt-6-luna");
     expect(inputs!.pooled).toContain("deepseek/deepseek-v4-flash");
     expect(inputs!.pooled.some((id) => id.includes("#"))).toBe(false);
@@ -300,6 +318,13 @@ describe("payload assembly + section shape", () => {
     expect(isAaSection({ generatedAt: "x", batch: "y", rankings: [] })).toBe(false);
   });
 
+  test("isAaSection rejects the absent form with impossible generatedAt dates (#3441)", () => {
+    expect(isAaSection(aaAbsent("Supabase unreachable", "2026-10-26T18:05:00Z"))).toBe(true);
+    for (const generatedAt of ["2026-02-30T00:00:00Z", "2026-02-29T00:00:00Z", "2026-04-31T00:00:00Z"]) {
+      expect(isAaSection(aaAbsent("Supabase unreachable", generatedAt))).toBe(false);
+    }
+  });
+
   test("summarizeAa: usable-up-to + snapshot vintage", () => {
     const summary = summarizeAa(FIXTURE_AA);
     const lunaKey = FIXTURE_AA.testRuns[0].testRunKey;
@@ -421,8 +446,8 @@ describe("fleet catalog (Model Explorer)", () => {
       "claude-code": { "name": "Claude Code (CLI proxy)", "models": {
         "claude-haiku-5-5": { "name": "Haiku 5.5 (Claude Code)" },
       } },
-      "opencode-go.personal": { "instanceOf": "opencode-go" },
-      "opencode-go.lab": { "name": "OpenCode Go — Lab", "models": {
+      "opencode-go.drewrypope": { "instanceOf": "opencode-go" },
+      "opencode-go.popesdrew": { "name": "OpenCode Go — popesdrew", "models": {
         "deepseek-v4.1-flash": { "name": "DeepSeek V4.1 Flash" },
         "muse-spark-1.3-contributor": { "name": "Muse Spark 1.3 Contributor" },
         "gemini-4-argon-contributor": { "name": "Gemini 4 Argon Contributor" },
@@ -463,12 +488,12 @@ describe("fleet catalog (Model Explorer)", () => {
     expect(haiku.disabled).toBe(true);
     expect(haiku.routes).toEqual(["outer"]);
     expect(haiku.aaScore).toBeNull();
-    const dsFlash = catalog!.find((e) => e.id === "opencode-go.lab/deepseek-v4.1-flash")!;
+    const dsFlash = catalog!.find((e) => e.id === "opencode-go.popesdrew/deepseek-v4.1-flash")!;
     expect(dsFlash.goCapUsd).toBe(80); // published Go cap (docs reading)
-    expect(dsFlash.plan).toBe("OpenCode Go — Lab");
-    const muse = catalog!.find((e) => e.id === "opencode-go.lab/muse-spark-1.3-contributor")!;
+    expect(dsFlash.plan).toBe("OpenCode Go — popesdrew");
+    const muse = catalog!.find((e) => e.id === "opencode-go.popesdrew/muse-spark-1.3-contributor")!;
     expect(muse.goCapUsd).toBe(12);
-    const gemini = catalog!.find((e) => e.id === "opencode-go.lab/gemini-4-argon-contributor")!;
+    const gemini = catalog!.find((e) => e.id === "opencode-go.popesdrew/gemini-4-argon-contributor")!;
     expect(gemini.goCapUsd).toBe(12);
   });
 
@@ -629,6 +654,18 @@ describe("aa-explorer manifest + render", () => {
     expect(html).toContain('data-recpreset="fast"');
     expect(html).toContain('id="xpl-bandgroups"'); // band comparisons
     expect(html).toContain('id="xf-bandscale"');
+    expect(html).toContain("function bandLaneChart"); // lane chart renderer is part of the emitted explorer
+    expect(html).toContain("const pointY = py.toFixed(1)"); // do not shadow the lane's cy before computing py
+    expect(html).not.toContain("const cy = py.toFixed(1)");
+    expect(html).toContain('class="xpl-band-lanes"');
+    expect(html).toContain('bandGroup("Fastest within each score band"');
+    expect(html).toContain('g3, "time", "Time / task (lower is faster)"');
+    expect(html).toContain('bandGroup("Smartest within each speed band"');
+    expect(html).toContain('g4, "score", scoreWord()');
+    expect(html).toContain('bandGroup("Fastest within each task-cost band"');
+    expect(html).toContain('g5, "time", "Time / task (lower is faster)"');
+    expect(html).toContain('bandLaneChart("Lowest price within each speed target", "cost"');
+    expect(html).toContain("g6Lanes.push"); // group 6 charts reuse the table's same qualifying choices
     expect(html).toContain('data-pj="inputTokens"'); // task-assumptions projection
     expect(html).toContain('data-pjpreset="repo"');
     expect(html).toContain("Proj. $/task");
@@ -647,6 +684,33 @@ describe("aa-explorer manifest + render", () => {
     const absent = renderAa(aaAbsent("Supabase query failed (HTTP 500)", "2026-10-26T18:05:00Z"), PROV);
     expect(absent).toContain("Supabase query failed (HTTP 500)");
     expect(absent).not.toContain("Rankings");
+  });
+
+  test("freshness chips and both tab ages use labelled fleet-feed provenance", () => {
+    const html = renderAa(FIXTURE_AA, PROV, aaProvenanceDetail(2 * 60_000));
+
+    expect(html).toContain('class="fchip live" title="live (fleet feed)"');
+    expect(html).toContain("aa · live · 2m old");
+    expect(html).toContain("AA data age: 2m old (fleet-feed age)");
+    expect(html).toContain(
+      "Model catalog age: 2m old (fleet-feed age; catalog and AA are read in the same collector run; no separate catalog timestamp is carried)",
+    );
+  });
+
+  test("an AA facet older than one collector cycle is stale, as is a retained stale section", () => {
+    const oldFeed = renderAa(FIXTURE_AA, PROV, aaProvenanceDetail(6 * 60_000));
+    expect(oldFeed).toContain('class="fchip stale" title="live (fleet feed)"');
+    expect(oldFeed).toContain("aa · stale · 6m old");
+
+    const retained = renderAa({ ...FIXTURE_AA, stale: true }, PROV, aaProvenanceDetail(2 * 60_000));
+    expect(retained).toContain('class="fchip stale" title="live (fleet feed)"');
+  });
+
+  test("legacy callers without provenance detail keep rendering without chips or tab-age claims", () => {
+    const html = renderAa(FIXTURE_AA, PROV);
+    expect(html).not.toContain('class="fchip');
+    expect(html).not.toContain("AA data age:");
+    expect(html).not.toContain("Model catalog age:");
   });
 
   test("fixtureSource().aa() returns the fixture section", async () => {
@@ -715,6 +779,18 @@ describe("aa routes (HTTP, fixtures)", () => {
     expect(section.catalog?.some((e) => e.id === "commandcode/reflection/beam:free")).toBe(true);
     expect(section.catalog?.find((e) => e.id === "claude-code/claude-haiku-5-5")?.disabled).toBe(true);
   });
+
+  test("/aa loads the same browser computation module imported by Bun tests", async () => {
+    const page = await (await fetch(`http://127.0.0.1:${port}/aa`)).text();
+    expect(page).toContain('<script type="module">');
+    expect(page).toContain('from "/assets/aa-explorer-computations.js"');
+    const response = await fetch(`http://127.0.0.1:${port}/assets/aa-explorer-computations.js`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/javascript");
+    const asset = await response.text();
+    expect(asset).toContain("export function computeRecommendations");
+    expect(asset).toContain("export function projectTask");
+  });
 });
 
 describe("aa chart expand + zoom/pan (#3298)", () => {
@@ -742,7 +818,13 @@ describe("aa chart expand + zoom/pan (#3298)", () => {
     expect(html).toContain("setPointerCapture(drag.id)");
     expect(html).toContain("Recommendation inputs redraw #xpl-recs directly");
     expect(html).toContain("data-zbound");
-    expect(html).toContain(".chart-expanded { position: fixed");
+    // Phase C (#6153): page CSS is the external /assets/app.css build; the
+    // expanded-chart rule lives in its source (src/ui.css), not in page HTML
+    // (same pattern as render.test.ts / epic-graph.test.ts).
+    expect(html).toContain('href="/assets/app.css"');
+    expect(readFileSync(join(import.meta.dir, "..", "src", "ui.css"), "utf8")).toContain(
+      ".chart-expanded { position: fixed",
+    );
     // the emitted script still parses (same check as #1215)
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
     expect(scripts.length).toBeGreaterThan(0);
@@ -794,7 +876,7 @@ describe("prototype-key lookups in aa maps (#3056)", () => {
   test("catalog: prototype-named provider gets no plan facts; prototype-named Go model gets no cap", () => {
     const cfg = `{ "provider": {
       "constructor": { "name": "Constructor Provider", "models": { "some-model": { "name": "Some Model" } } },
-      "opencode-go.lab": { "name": "OpenCode Go \u2014 Lab", "models": {
+      "opencode-go.popesdrew": { "name": "OpenCode Go \u2014 Lab", "models": {
         "constructor": { "name": "Constructor" },
         "deepseek-v4.1-flash": { "name": "DeepSeek V4.1 Flash" },
       } },
@@ -805,9 +887,9 @@ describe("prototype-key lookups in aa maps (#3056)", () => {
     expect(proto.plan).toBeNull();
     expect(proto.multiplier).toBeNull();
     expect(proto.planNote).toBeNull();
-    const ctor = catalog!.find((e) => e.id === "opencode-go.lab/constructor")!;
+    const ctor = catalog!.find((e) => e.id === "opencode-go.popesdrew/constructor")!;
     expect(ctor.goCapUsd).toBeNull();
-    const ds = catalog!.find((e) => e.id === "opencode-go.lab/deepseek-v4.1-flash")!;
+    const ds = catalog!.find((e) => e.id === "opencode-go.popesdrew/deepseek-v4.1-flash")!;
     expect(ds.goCapUsd).toBe(80); // known Go cap unchanged
   });
 
@@ -828,5 +910,51 @@ describe("prototype-key lookups in aa maps (#3056)", () => {
     );
     expect(section).not.toBeNull();
     expect(section!.cai!.map((r) => r.creator)).toEqual(["constructor", "__proto__", "DeepSeek", "acme"]);
+  });
+});
+
+describe("num() strict decimal contract (#2985)", () => {
+  test("plain decimal spellings parse", () => {
+    expect(num("12")).toBe(12);
+    expect(num("12.5")).toBe(12.5);
+    expect(num("-3")).toBe(-3);
+    expect(num("+3")).toBe(3);
+    expect(num(".5")).toBe(0.5);
+    expect(num("5.")).toBe(5);
+    expect(num("0")).toBe(0);
+  });
+
+  test("radix-prefixed spellings return null (any case)", () => {
+    for (const s of ["0x10", "0X10", "0b101", "0B101", "0o17", "0O17"]) {
+      expect(num(s)).toBeNull();
+    }
+  });
+
+  test("scientific spellings return null (PIN 1: no AA source emits e-notation)", () => {
+    for (const s of ["1e2", "1E2", "1e-3", "1E+2"]) {
+      expect(num(s)).toBeNull();
+    }
+  });
+
+  test("whitespace-padded spellings return null (PIN 2: padding is drift, no trim)", () => {
+    for (const s of ["  12  ", " 12", "12 ", "\t12\n"]) {
+      expect(num(s)).toBeNull();
+    }
+  });
+
+  test("other unparseable strings return null", () => {
+    for (const s of ["", "abc", "12abc", "Infinity", "1,200", "1_000", "-", ".", "+"]) {
+      expect(num(s)).toBeNull();
+    }
+  });
+
+  test("finite numbers pass through; non-finite and non-numeric inputs return null", () => {
+    expect(num(42)).toBe(42);
+    expect(num(12.5)).toBe(12.5);
+    expect(num(NaN)).toBeNull();
+    expect(num(Infinity)).toBeNull();
+    expect(num(null)).toBeNull();
+    expect(num(undefined)).toBeNull();
+    expect(num(true)).toBeNull();
   });
 });

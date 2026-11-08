@@ -26,9 +26,18 @@ type HTTPTransport struct {
 	url     string
 	headers map[string]string
 	hc      *http.Client
+	// streamHC serves the standalone GET stream. It is a second client so
+	// the stream's long-lived connection is never the one a request
+	// queues on (see newHTTPClients).
+	streamHC *http.Client
 
 	sessionMu sync.RWMutex
 	sessionID string
+	// onSessionAdopted, when set, runs after a response installs a
+	// session id this transport did not already hold. The pool uses it
+	// to persist the session for a cold restart (#1415). Set before the
+	// transport serves calls; read and written under sessionMu.
+	onSessionAdopted func(string)
 	// negotiated is the legacy version initialize settled on; it is what
 	// MCP-Protocol-Version carries on every later legacy request.
 	negotiated string
@@ -36,7 +45,6 @@ type HTTPTransport struct {
 	getStream bool
 
 	incoming chan inbound
-	errOnce  sync.Once
 	errCh    chan error
 	err      error
 
@@ -52,6 +60,27 @@ type HTTPOptions struct {
 	Timeout time.Duration
 }
 
+// newHTTPClients builds the two clients one transport owns. Each gets its
+// own connection pool, cloned from http.DefaultTransport's settings.
+//
+// A transport must never share http.DefaultTransport: Abandon closes its
+// idle connections, and on a shared pool that reaches every other transport
+// in the process, including one whose session termination is in flight.
+// http.DefaultTransport is also a single per-host pool for every mcpx
+// upstream and stream, so a connection canceled by one transport's request
+// (a pool call canceled on release, the abandoned GET stream) could be
+// handed to another transport's request, which net/http then fails with
+// context.Canceled before writing anything -- the #290 flake.
+func newHTTPClients(timeout time.Duration) (hc, streamHC *http.Client) {
+	clone := func() http.RoundTripper {
+		if base, ok := http.DefaultTransport.(*http.Transport); ok {
+			return base.Clone()
+		}
+		return http.DefaultTransport
+	}
+	return &http.Client{Timeout: timeout, Transport: clone()}, &http.Client{Transport: clone()}
+}
+
 // NewHTTP creates a Streamable HTTP transport.
 func NewHTTP(opts HTTPOptions) (*HTTPTransport, error) {
 	if opts.URL == "" {
@@ -61,10 +90,12 @@ func NewHTTP(opts HTTPOptions) (*HTTPTransport, error) {
 	if timeout == 0 {
 		timeout = defaults.HTTPRequestTimeout
 	}
+	hc, streamHC := newHTTPClients(timeout)
 	return &HTTPTransport{
 		url:      opts.URL,
 		headers:  opts.Headers,
-		hc:       &http.Client{Timeout: timeout},
+		hc:       hc,
+		streamHC: streamHC,
 		incoming: make(chan inbound, 64),
 		errCh:    make(chan error, 1),
 		closed:   make(chan struct{}),
@@ -146,6 +177,7 @@ func (t *HTTPTransport) Send(ctx context.Context, msg []byte) error {
 	if err != nil {
 		return err
 	}
+	req = req.WithContext(httpDispatchContext(req.Context(), msg))
 	t.setHeadersFor(req, msg)
 
 	resp, err := t.hc.Do(req)
@@ -155,17 +187,22 @@ func (t *HTTPTransport) Send(ctx context.Context, msg []byte) error {
 
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
 		t.sessionMu.Lock()
+		adopted := sid != t.sessionID
 		t.sessionID = sid
+		hook := t.onSessionAdopted
 		t.sessionMu.Unlock()
+		if adopted && hook != nil {
+			hook(sid)
+		}
 	}
 
 	if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusNoContent {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil // notification acknowledged, no body
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, defaults.HTTPErrorBodyLimit))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		he := &HTTPStatusError{URL: t.url, Status: resp.StatusCode, Body: bytes.TrimSpace(b)}
 		he.rpc, he.id = parseRPCError(he.Body)
 		// A modern server answers a bad request with 400 and a JSON-RPC
@@ -189,7 +226,7 @@ func (t *HTTPTransport) Send(ctx context.Context, msg []byte) error {
 		go func() {
 			defer t.wg.Done()
 			st := t.readSSE(ctx, resp.Body, reqID)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if reqID == nil || st.answered || ctx.Err() != nil {
 				return
 			}
@@ -216,7 +253,7 @@ func (t *HTTPTransport) Send(ctx context.Context, msg []byte) error {
 			// Empty, or not JSON: handed on whole as before, for push to
 			// judge.
 			rest, readErr := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if readErr != nil {
 				return readErr
 			}
@@ -231,7 +268,7 @@ func (t *HTTPTransport) Send(ctx context.Context, msg []byte) error {
 		t.wg.Add(1)
 		go func() {
 			defer t.wg.Done()
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			for {
 				var next json.RawMessage
 				if dec.Decode(&next) != nil {
@@ -382,7 +419,7 @@ func (t *HTTPTransport) resume(ctx context.Context, reqID json.RawMessage, st ss
 			break
 		}
 		next := t.readSSE(ctx, body, reqID)
-		body.Close()
+		_ = body.Close()
 		if next.answered {
 			return
 		}
@@ -433,13 +470,15 @@ func (t *HTTPTransport) get(ctx context.Context, lastID string) (io.ReadCloser, 
 		req.Header.Set("Last-Event-ID", lastID)
 	}
 	// Not t.hc: its timeout bounds a whole exchange, and a stream is open
-	// for as long as the server keeps it.
-	resp, err := streamClient.Do(req)
+	// for as long as the server keeps it. t.streamHC is this transport's
+	// own pool, so the stream's connection can never be one a request
+	// (or another transport) queues on.
+	resp, err := t.streamHC.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, &HTTPStatusError{URL: t.url, Status: resp.StatusCode}
 	}
 	return resp.Body, nil
@@ -485,8 +524,8 @@ func (t *HTTPTransport) listen() {
 				failures++
 			} else {
 				failures = 0
-				next := t.readSSE(nil, body, nil)
-				body.Close()
+				next := t.readSSE(context.TODO(), body, nil)
+				_ = body.Close()
 				if next.lastID != "" {
 					st.lastID = next.lastID
 				}
@@ -549,7 +588,7 @@ type inbound struct {
 	origin context.Context
 }
 
-func (t *HTTPTransport) push(b []byte) { t.pushFrom(nil, b) }
+func (t *HTTPTransport) push(b []byte) { t.pushFrom(context.TODO(), b) }
 
 func (t *HTTPTransport) pushFrom(origin context.Context, b []byte) {
 	// A frame may be a single object or a batch array.
@@ -607,6 +646,15 @@ func (t *HTTPTransport) Close() error {
 // closeSession ends the upstream session with a DELETE and reports whether
 // that succeeded. A 404 means the upstream has already forgotten the
 // session, which is the state the DELETE was for, so it is not a failure.
+//
+// The DELETE is retried once when the transport cancels it before it is
+// written. http.Do reports such a cancellation as context.Canceled even
+// though this request's own context is alive: the connection it was queued
+// on was torn down by another request's cancellation (the stream a closing
+// transport abandons, a pool call canceled on release). Nothing reached the
+// upstream, and DELETE is idempotent, so one reissue on a fresh connection
+// is both safe and the difference between ending the session and leaving it
+// to expire (#290).
 func (t *HTTPTransport) closeSession() error {
 	var out error
 	t.closeOnce.Do(func() {
@@ -619,23 +667,36 @@ func (t *HTTPTransport) closeSession() error {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), defaults.UpstreamSessionDeleteTimeout)
 		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, t.url, nil)
-		if err != nil {
-			out = err
-			return
-		}
-		t.setHeaders(req)
-		resp, err := t.hc.Do(req)
-		if err != nil {
-			out = err
-			return
-		}
-		resp.Body.Close()
-		if resp.StatusCode >= http.StatusBadRequest && resp.StatusCode != http.StatusNotFound {
-			out = fmt.Errorf("delete %s: http %d", t.url, resp.StatusCode)
+		for attempt := 0; attempt < deleteSessionAttempts; attempt++ {
+			out = t.deleteSession(ctx)
+			if out == nil || ctx.Err() != nil || !errors.Is(out, context.Canceled) {
+				return
+			}
 		}
 	})
 	return out
+}
+
+// deleteSessionAttempts is one DELETE plus one reissue after a transport
+// cancellation. A second reissue would only spend the caller's deadline.
+const deleteSessionAttempts = 2
+
+// deleteSession issues the DELETE once.
+func (t *HTTPTransport) deleteSession(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, t.url, nil)
+	if err != nil {
+		return err
+	}
+	t.setHeaders(req)
+	resp, err := t.hc.Do(req)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest && resp.StatusCode != http.StatusNotFound {
+		return fmt.Errorf("delete %s: http %d", t.url, resp.StatusCode)
+	}
+	return nil
 }
 
 // TerminateHTTPSession ends the session a handoff describes, for a successor
@@ -684,6 +745,16 @@ func (t *HTTPTransport) Handoff() HTTPHandoff {
 	return HTTPHandoff{SessionID: t.sessionID, Negotiated: t.negotiated, URL: t.url, Headers: headers}
 }
 
+// SetSessionAdoptedHook registers fn to run whenever a response installs
+// a session id this transport did not already hold: a session established
+// by initialize, or one an upstream rotates in mid-flight. It is the seam
+// the pool's cold-restart persistence (#1415) saves through.
+func (t *HTTPTransport) SetSessionAdoptedHook(fn func(string)) {
+	t.sessionMu.Lock()
+	t.onSessionAdopted = fn
+	t.sessionMu.Unlock()
+}
+
 // Resume continues a session a predecessor process established. Nothing is
 // sent until the next request.
 func (t *HTTPTransport) Resume(h HTTPHandoff) {
@@ -714,6 +785,7 @@ func (t *HTTPTransport) forgetSession() bool {
 func (t *HTTPTransport) Abandon() {
 	t.closeOnce.Do(func() { close(t.closed) })
 	t.hc.CloseIdleConnections()
+	t.streamHC.CloseIdleConnections()
 }
 
 // Info describes the endpoint.

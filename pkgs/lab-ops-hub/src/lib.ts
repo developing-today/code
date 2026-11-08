@@ -1,3 +1,5 @@
+import { HTML5_ENTITIES, MAX_HTML5_ENTITY_KEY_LENGTH } from "./html5-entities.ts";
+
 // Pure helpers for Lab Ops Hub: crawl-target validation (#441), the
 // /api/budget computation (#442), and upload R2 key derivation (#2478).
 // Kept free of Worker bindings so they can be unit-tested with plain
@@ -212,6 +214,73 @@ export function crawlArchiveKey(nowMs: number, unique: string): string {
   return `crawls/${nowMs}-${unique}.json`;
 }
 
+// --- Container crawl result validation (#7018) ------------------------------
+// The container crawler is a separate service with its own release cadence
+// (CrawlerContainerV2 exists because the original container application
+// broke), so its 200 response is a cross-service boundary, not a trusted
+// internal value. crawlWithContainer used to return res.json() under a
+// type cast, and the route archived and bound the result unvalidated: a
+// JSON null body 500'd on the first field read (after the R2 archive was
+// already written), a JSON string was archived spread by character index
+// and stored as an all-null crawls row, and wrong-typed fields bound
+// as-is. A malformed result must instead read as a container failure, so
+// the route's existing catch falls back to the Worker crawler.
+
+export interface CrawlResult {
+  title?: string;
+  excerpt?: string;
+  links?: number;
+  status_code?: number;
+  text?: string;
+}
+
+const CRAWL_RESULT_STRING_FIELDS = ["title", "excerpt", "text"] as const;
+const CRAWL_RESULT_NUMBER_FIELDS = ["links", "status_code"] as const;
+
+export function parseCrawlResult(value: unknown): Validated<CrawlResult> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, error: "crawl result must be a JSON object" };
+  }
+  const body = value as Record<string, unknown>;
+  for (const field of CRAWL_RESULT_STRING_FIELDS) {
+    if (body[field] !== undefined && typeof body[field] !== "string") {
+      return { ok: false, error: `crawl result field ${field} must be a string` };
+    }
+  }
+  for (const field of CRAWL_RESULT_NUMBER_FIELDS) {
+    if (body[field] !== undefined && (typeof body[field] !== "number" || !Number.isFinite(body[field]))) {
+      return { ok: false, error: `crawl result field ${field} must be a number` };
+    }
+  }
+  return { ok: true, values: body as CrawlResult };
+}
+
+// --- Workers AI summary result validation (#7037) ---------------------------
+// The Workers AI result is a cross-service response with its own release
+// cadence, so it is validated before use like the container crawl result
+// above (#7018). The summarize route used to consume it under a bare cast
+// (`as { response?: string }`) and trim whatever it found: a result with
+// no usable response ({} or a bare string) silently stored an EMPTY
+// summary and reported success, erasing any previous summary, and a null
+// result or a non-string response crashed the route with a raw TypeError.
+// A malformed result must read as an upstream failure instead, so the
+// route can answer 502 and write nothing.
+
+export function parseAiSummaryResult(value: unknown): Validated<{ summary: string }> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, error: "AI summary result must be a JSON object" };
+  }
+  const response = (value as Record<string, unknown>).response;
+  if (typeof response !== "string") {
+    return { ok: false, error: "AI summary result field response must be a string" };
+  }
+  const summary = response.trim();
+  if (summary === "") {
+    return { ok: false, error: "AI summary result field response must not be empty" };
+  }
+  return { ok: true, values: { summary } };
+}
+
 export type ManualFetcher = (url: string) => Promise<Response>;
 
 // Keep this policy in sync with container/app.py's _ValidatingRedirectHandler:
@@ -408,6 +477,58 @@ export async function parseJsonObjectBody(req: Request): Promise<JsonObjectBody>
   return { ok: true, body: parsed as Record<string, unknown> };
 }
 
+// --- Multipart file-upload body validation (#7087) ------------------------
+// POST /api/files is the one POST route #2480's JSON helpers could not
+// cover: it consumes multipart form data, and it consumed it unguarded —
+// req.formData() threw a raw TypeError for any non-multipart body (a JSON
+// or plain-text body, an empty body), and form.get("file") returns a
+// string for a text field, which the route's bare `as File` cast hid until
+// file.arrayBuffer() crashed on it. Both escaped as a 500 carrying the
+// runtime's internal error text. These helpers give the route the same
+// 400 vocabulary as the JSON routes: an unparseable form body and a
+// missing or non-file 'file' field are client errors, named as such,
+// before any R2/D1/Queue side effect.
+
+export type FormDataBody = { ok: true; form: FormData } | { ok: false; error: string };
+
+export async function parseFormDataBody(req: Request): Promise<FormDataBody> {
+  let form: FormData;
+  try {
+    form = await req.formData();
+  } catch {
+    return { ok: false, error: "multipart form body required" };
+  }
+  return { ok: true, form };
+}
+
+export interface UploadFileLike {
+  name: string;
+  type: string;
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+export function parseUploadFile(value: unknown): Validated<UploadFileLike> {
+  if (value === null || value === undefined) {
+    return { ok: false, error: "multipart field 'file' required" };
+  }
+  if (
+    typeof value !== "object" ||
+    typeof (value as { name?: unknown }).name !== "string" ||
+    typeof (value as { arrayBuffer?: unknown }).arrayBuffer !== "function"
+  ) {
+    return { ok: false, error: "multipart field 'file' must be a file upload" };
+  }
+  const file = value as { name: string; type?: unknown; arrayBuffer(): Promise<ArrayBuffer> };
+  return {
+    ok: true,
+    values: {
+      name: file.name,
+      type: typeof file.type === "string" ? file.type : "",
+      arrayBuffer: () => file.arrayBuffer(),
+    },
+  };
+}
+
 export type RequiredString = { ok: true; value: string } | { ok: false; error: string };
 
 // A required field is satisfied only by a string with non-whitespace
@@ -515,58 +636,116 @@ export async function fileResponseForKey(
 //   whitespace collapsed — the same `" ".join` + `\s+` collapse app.py
 //   applies. Paired fixtures: test/extractor-fixtures.json, exercised by
 //   both test/extractor.test.ts and test/test_extractor_parity.py.
-const NAMED_ENTITIES: Record<string, string> = {
-  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
-  copy: "©", reg: "®", trade: "™", hellip: "…", mdash: "—", ndash: "–",
-  lsquo: "‘", rsquo: "’", ldquo: "“", rdquo: "”", laquo: "«", raquo: "»",
-  times: "×", divide: "÷", plusmn: "±", deg: "°", middot: "·",
-  bull: "•", dagger: "†", permil: "‰", euro: "€", pound: "£", yen: "¥",
-  cent: "¢", curren: "¤", sect: "§", para: "¶", micro: "µ", sup1: "¹",
-  sup2: "²", sup3: "³", frac12: "½", frac14: "¼", frac34: "¾",
-  iexcl: "¡", iquest: "¿", szlig: "ß", agrave: "à", aacute: "á",
-  acirc: "â", atilde: "ã", auml: "ä", aring: "å", aelig: "æ",
-  ccedil: "ç", egrave: "è", eacute: "é", ecirc: "ê", euml: "ë",
-  igrave: "ì", iacute: "í", icirc: "î", iuml: "ï", ntilde: "ñ",
-  ograve: "ò", oacute: "ó", ocirc: "ô", otilde: "õ", ouml: "ö",
-  ugrave: "ù", uacute: "ú", ucirc: "û", uuml: "ü", yacute: "ý",
-  yuml: "ÿ", Agrave: "À", Aacute: "Á", Auml: "Ä", Ccedil: "Ç",
-  Egrave: "È", Eacute: "É", Euml: "Ë", Ntilde: "Ñ", Ograve: "Ò",
-  Oacute: "Ó", Ouml: "Ö", Ugrave: "Ù", Uacute: "Ú", Uuml: "Ü",
-};
+// - <title> and <textarea> are RCDATA elements (#4008): content is
+//   character data (entities decoded, markup literal) up to the matching
+//   close tag — title data goes to title, textarea data to text.
+// - <iframe>, <xmp>, <noembed>, and <noframes> are raw-text elements
+//   (#4008): content is likewise literal up to the matching close tag
+//   (anchors inside never count), and HTMLParser reports it verbatim —
+//   no entity decoding — as ordinary character data.
 
 // HTML numeric character-reference normalization: the same remapping
 // html.unescape applies for the container's HTMLParser. C1 controls
 // 0x80-0x9F map to their Windows-1252 characters; NUL, surrogates, and
-// out-of-range values become U+FFFD.
+// out-of-range values become U+FFFD. Other invalid controls and Unicode
+// noncharacters are dropped, matching html.unescape.
 const NUMERIC_REF_REMAP: Record<number, number> = {
-  0x80: 0x20ac, 0x81: 0x0081, 0x82: 0x201a, 0x83: 0x0192, 0x84: 0x201e,
-  0x85: 0x2026, 0x86: 0x2020, 0x87: 0x2021, 0x88: 0x02c6, 0x89: 0x2030,
-  0x8a: 0x0160, 0x8b: 0x2039, 0x8c: 0x0152, 0x8d: 0x008d, 0x8e: 0x017d,
-  0x8f: 0x008f, 0x90: 0x0090, 0x91: 0x2018, 0x92: 0x2019, 0x93: 0x201c,
-  0x94: 0x201d, 0x95: 0x2022, 0x96: 0x2013, 0x97: 0x2014, 0x98: 0x02dc,
-  0x99: 0x2122, 0x9a: 0x0161, 0x9b: 0x203a, 0x9c: 0x0153, 0x9d: 0x009d,
-  0x9e: 0x017e, 0x9f: 0x0178,
+  0x80: 0x20ac,
+  0x81: 0x0081,
+  0x82: 0x201a,
+  0x83: 0x0192,
+  0x84: 0x201e,
+  0x85: 0x2026,
+  0x86: 0x2020,
+  0x87: 0x2021,
+  0x88: 0x02c6,
+  0x89: 0x2030,
+  0x8a: 0x0160,
+  0x8b: 0x2039,
+  0x8c: 0x0152,
+  0x8d: 0x008d,
+  0x8e: 0x017d,
+  0x8f: 0x008f,
+  0x90: 0x0090,
+  0x91: 0x2018,
+  0x92: 0x2019,
+  0x93: 0x201c,
+  0x94: 0x201d,
+  0x95: 0x2022,
+  0x96: 0x2013,
+  0x97: 0x2014,
+  0x98: 0x02dc,
+  0x99: 0x2122,
+  0x9a: 0x0161,
+  0x9b: 0x203a,
+  0x9c: 0x0153,
+  0x9d: 0x009d,
+  0x9e: 0x017e,
+  0x9f: 0x0178,
 };
 
-function normalizeNumericRef(code: number): number {
+function normalizeNumericRef(code: number): number | null {
   if (code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return 0xfffd;
+  if (
+    (code >= 0x1 && code <= 0x8) ||
+    code === 0xb ||
+    (code >= 0xe && code <= 0x1f) ||
+    code === 0x7f ||
+    (code >= 0xfdd0 && code <= 0xfdef) ||
+    (code & 0xffff) === 0xfffe ||
+    (code & 0xffff) === 0xffff
+  ) {
+    return null;
+  }
   return NUMERIC_REF_REMAP[code] ?? code;
 }
 
 export function decodeHtmlEntities(data: string): string {
-  return data.replace(/&(#(?:[xX][0-9a-fA-F]+|\d+)|[a-zA-Z][a-zA-Z0-9]*);/g, (whole, body: string) => {
-    if (body.startsWith("#")) {
-      const hex = body[1] === "x" || body[1] === "X";
-      const code = Number.parseInt(body.slice(hex ? 2 : 1), hex ? 16 : 10);
-      return String.fromCodePoint(normalizeNumericRef(code));
+  const decoded: string[] = [];
+  let copyFrom = 0;
+  let i = 0;
+  const numericReference = /&#([xX][0-9a-fA-F]+|\d+);?/y;
+  while (i < data.length) {
+    if (data[i] !== "&") {
+      i += 1;
+      continue;
     }
-    // Own-property lookup only: a plain index would resolve inherited
-    // Object properties (&constructor;, &toString;) to JavaScript
-    // functions, where HTMLParser leaves unknown names literal.
-    return Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, body)
-      ? NAMED_ENTITIES[body]
-      : whole;
-  });
+
+    if (data[i + 1] === "#") {
+      numericReference.lastIndex = i;
+      const numeric = numericReference.exec(data);
+      if (numeric) {
+        const body = numeric[1];
+        const hex = body[0] === "x" || body[0] === "X";
+        const code = Number.parseInt(body.slice(hex ? 1 : 0), hex ? 16 : 10);
+        const normalized = normalizeNumericRef(code);
+        decoded.push(data.slice(copyFrom, i), normalized === null ? "" : String.fromCodePoint(normalized));
+        i += numeric[0].length;
+        copyFrom = i;
+        continue;
+      }
+    } else {
+      let end = i + 1;
+      while (end < data.length && end - (i + 1) < MAX_HTML5_ENTITY_KEY_LENGTH && /[A-Za-z0-9;]/.test(data[end])) {
+        end += 1;
+      }
+      let matched = false;
+      for (let matchEnd = end; matchEnd > i + 1; matchEnd -= 1) {
+        const entity = HTML5_ENTITIES.get(data.slice(i + 1, matchEnd));
+        if (entity !== undefined) {
+          decoded.push(data.slice(copyFrom, i), entity);
+          i = matchEnd;
+          copyFrom = i;
+          matched = true;
+          break;
+        }
+      }
+      if (matched) continue;
+    }
+    i += 1;
+  }
+  decoded.push(data.slice(copyFrom));
+  return decoded.join("");
 }
 
 // A '/' marks a start tag self-closing only where a new attribute could
@@ -608,10 +787,12 @@ export function extractHtml(html: string): { title: string; links: number; text:
   let links = 0;
   const textChunks: string[] = [];
   let skipDepth = 0;
-  // Raw-text mode: script/style are HTMLParser CDATA elements, and
-  // HTMLParser likewise reports <title> content as raw character data
-  // (markup inside a title is literal and never counts as links).
-  let cdataTag: "script" | "style" | "title" | null = null;
+  // Raw-text modes: script/style are HTMLParser CDATA elements;
+  // <title>/<textarea> are RCDATA (character data, entities decoded,
+  // markup literal); <iframe>/<xmp>/<noembed>/<noframes> are raw text
+  // (character data verbatim). In every mode only the matching close
+  // tag is markup, so anchors inside never count as links (#4008).
+  let cdataTag: string | null = null;
 
   const handleData = (raw: string) => {
     if (raw === "") return;
@@ -619,9 +800,28 @@ export function extractHtml(html: string): { title: string; links: number; text:
     if (cdataTag === "title") title += data;
     else if (skipDepth === 0) textChunks.push(data);
   };
+  // Raw-text element data: HTMLParser reports it verbatim — no entity
+  // decoding — and the container Extractor appends it to text like any
+  // other character data.
+  const handleRawData = (raw: string) => {
+    if (raw === "") return;
+    if (skipDepth === 0) textChunks.push(raw);
+  };
+  const handleCdataData = (raw: string) => {
+    if (cdataTag === "iframe" || cdataTag === "xmp" || cdataTag === "noembed" || cdataTag === "noframes")
+      handleRawData(raw);
+    else handleData(raw);
+  };
   const handleStartTag = (tag: string, selfClosing: boolean) => {
-    if (tag === "title") {
-      if (!selfClosing) cdataTag = "title";
+    if (
+      tag === "title" ||
+      tag === "textarea" ||
+      tag === "iframe" ||
+      tag === "xmp" ||
+      tag === "noembed" ||
+      tag === "noframes"
+    ) {
+      if (!selfClosing) cdataTag = tag;
     } else if (tag === "a") links += 1;
     else if (tag === "script" || tag === "style") {
       skipDepth += 1;
@@ -640,11 +840,24 @@ export function extractHtml(html: string): { title: string; links: number; text:
       // HTMLParser CDATA mode: only the matching close tag is markup.
       const close = new RegExp(`</${cdataTag}(?=[\\s/>])`, "i").exec(html.slice(i));
       if (close === null) {
-        handleData(html.slice(i));
+        // EOF inside the element. For the #4008 elements (textarea and
+        // the raw-text four) the container never sees the tail:
+        // HTMLParser fed without close() — app.py only calls feed() —
+        // leaves an unterminated raw-text/RCDATA region unflushed, so
+        // its content is dropped, not delivered.
+        if (
+          cdataTag !== "textarea" &&
+          cdataTag !== "iframe" &&
+          cdataTag !== "xmp" &&
+          cdataTag !== "noembed" &&
+          cdataTag !== "noframes"
+        ) {
+          handleCdataData(html.slice(i));
+        }
         i = n;
         break;
       }
-      handleData(html.slice(i, i + close.index));
+      handleCdataData(html.slice(i, i + close.index));
       i += close.index;
       // Consume the close tag here, tolerantly: HTMLParser accepts
       // recoverable end tags carrying trailing attributes
@@ -696,8 +909,7 @@ export function extractHtml(html: string): { title: string; links: number; text:
       // backtracks quadratically on an incomplete end tag at EOF
       // (</p followed by a long letter run and no '>').
       const gt = html.indexOf(">", i);
-      const m =
-        gt === -1 ? null : /^<\/([a-zA-Z][^\s/>]*)/.exec(html.slice(i, gt + 1));
+      const m = gt === -1 ? null : /^<\/([a-zA-Z][^\s/>]*)/.exec(html.slice(i, gt + 1));
       if (m === null) {
         if (gt === -1 && /^<\/[a-zA-Z]/.test(html.slice(i))) {
           // Incomplete end tag at EOF: HTMLParser drops it.

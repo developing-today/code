@@ -34,7 +34,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { parseProxyPort } from './proxy-port.mjs';
+import { parseProxyPort, parseProxyPortList } from './proxy-port.mjs';
 
 const LISTEN_PORT = parseProxyPort('RELAY_LISTEN_PORT', 0);
 if (!LISTEN_PORT) {
@@ -43,14 +43,7 @@ if (!LISTEN_PORT) {
 }
 const LISTEN_HOST = process.env.RELAY_LISTEN_HOST || '127.0.0.1';
 const TARGET_HOST = process.env.RELAY_TARGET_HOST || '100.99.113.103';
-const TARGET_PORTS = (process.env.RELAY_TARGET_PORTS || '')
-  .split(',')
-  .map((s) => Number(s.trim()))
-  .filter((n) => Number.isInteger(n) && n >= 1 && n <= 65535);
-if (TARGET_PORTS.length === 0) {
-  console.error('RELAY_TARGET_PORTS is required (comma list)');
-  process.exit(1);
-}
+const TARGET_PORTS = parseProxyPortList('RELAY_TARGET_PORTS');
 const PROXY_HOST = process.env.RELAY_PROXY_HOST || 'hatch-egress-proxy';
 const PROXY_PORT = parseProxyPort('RELAY_PROXY_PORT', 3130);
 const NAME = process.env.RELAY_NAME || `relay-${LISTEN_PORT}`;
@@ -125,7 +118,14 @@ const tryTargets = async (ports) => {
   for (const p of ports) {
     try {
       const sock = await connectViaTunnel(p);
-      preferred = p;
+      if (p !== preferred) {
+        // Failover: the discovery file must follow the live target,
+        // otherwise endpoint.json names a dead target indefinitely
+        // while /health reports the new preferred (#4224). Republish
+        // on change only, not on every connection.
+        preferred = p;
+        publishEndpoint();
+      }
       return sock;
     } catch (e) {
       lastErr = e;
@@ -172,6 +172,14 @@ const server = net.createServer((client) => {
       );
       return;
     }
+    // Pause the client across the async target selection / tunnel
+    // CONNECT window (#2847): the peek listener is already removed, so a
+    // socket left flowing here silently drops every byte that arrives
+    // before the pipe below is set up. pipe() resumes the client once
+    // the peeked buffer has been handed to the upstream, so buffered
+    // bytes follow it in order; if every target fails, the catch below
+    // destroys the still-paused client.
+    client.pause();
     const order = [preferred, ...TARGET_PORTS.filter((p) => p !== preferred)];
     tryTargets(order)
       .then((upstream) => {

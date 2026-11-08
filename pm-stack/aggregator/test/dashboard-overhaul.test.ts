@@ -195,7 +195,12 @@ describe("card-state derivation (#1443/#1450)", () => {
   });
   test("depth-2 chain with a NEW first restore and an APPLIED second restore also revives the dismissal (#4310)", () => {
     const dismiss = mkAction({ id: "da-dismiss", verb: "dismiss", state: "applied", payload: { reason: "x" } });
-    const restore1 = mkAction({ id: "da-restore-1", verb: "restore", supersedes: "da-dismiss", createdAt: iso(NOW - 60_000) });
+    const restore1 = mkAction({
+      id: "da-restore-1",
+      verb: "restore",
+      supersedes: "da-dismiss",
+      createdAt: iso(NOW - 60_000),
+    });
     const restore2 = mkAction({
       id: "da-restore-2",
       verb: "restore",
@@ -480,5 +485,18 @@ describe("attention sections (#1444)", () => {
     expect(sections.queues).toContain("Link the Citi accounts in Plaid");
     expect(sections.header).toContain("Needs User (1)");
     expect(sections.sessions).toContain('id="sessions"');
+  });
+});
+
+describe("tier item with a non-GitHub ref (phase-b regression, 2026-11-05)", () => {
+  test("a goal-id ref renders as text, not a GitHub link, and does not throw", async () => {
+    const html = await page([{ ...BASE, ref: "goal_b647ff5c92f5" }]);
+    expect(html).toContain("Link the Citi accounts in Plaid");
+    expect(html).toContain("<code>goal_b647ff5c92f5</code>");
+    expect(html).not.toContain("github.com/goal_b647ff5c92f5");
+  });
+  test("a GitHub ref still links the card title", async () => {
+    const html = await page([{ ...BASE, ref: "developing-today/code#812" }]);
+    expect(html).toContain('href="https://github.com/developing-today/code/issues/812"');
   });
 });

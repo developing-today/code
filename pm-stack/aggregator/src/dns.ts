@@ -11,6 +11,7 @@
 // prose section elsewhere in the file cannot corrupt it.
 import { addDaysYmd, chicagoYmd } from "./derive.ts";
 import type { DnsEntry, DnsSection } from "./model.ts";
+import { isIsoDate } from "./validate.ts";
 
 /** Classification from the register's "Plan / status" cell. */
 export function classifyDnsStatus(plan: string): DnsEntry["status"] {
@@ -47,7 +48,12 @@ export function parseDnsRegister(md: string): DnsEntry[] {
     const cells = line.split("|").slice(1, -1).map(cleanCell);
     if (cells.length < 10) continue;
     const [domain, registrar, dnsHost, renewal, autoRenew, price, priorYearCost, used, plan, review] = cells;
-    if (!domain || !/^\d{4}-\d{2}-\d{2}$/.test(renewal)) continue;
+    // Shape alone is not enough: an impossible calendar date (2026-02-30,
+    // 2026-13-01) must be refused like a malformed row, or it string-sorts
+    // into the register, counts toward the annual total, and poisons
+    // nextRenewal / renewingSoon (#2199). isIsoDate re-checks the
+    // components, so leap dates (2024-02-29) still parse.
+    if (!domain || !/^\d{4}-\d{2}-\d{2}$/.test(renewal) || !isIsoDate(renewal)) continue;
     out.push({
       domain,
       registrar,
@@ -116,11 +122,29 @@ export function dnsSectionFromRegisterJson(
   const entries: DnsEntry[] = [];
   for (const raw of domains as Partial<DnsRegisterJsonDomain>[]) {
     if (typeof raw !== "object" || raw === null) return null;
-    const { domain, registrar, dns_hosted_at: dnsHost, next_renewal: renewal, auto_renew: autoRenew, renewal_price_usd: price } = raw;
+    const {
+      domain,
+      registrar,
+      dns_hosted_at: dnsHost,
+      next_renewal: renewal,
+      auto_renew: autoRenew,
+      renewal_price_usd: price,
+    } = raw;
     if (typeof domain !== "string" || domain.length === 0 || seen.has(domain)) return null;
     if (typeof registrar !== "string" || typeof dnsHost !== "string") return null;
-    if (typeof renewal !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(renewal)) return null;
-    if (price !== null && price !== undefined && (typeof price !== "number" || !Number.isFinite(price))) return null;
+    // Shape alone is not enough: an impossible calendar date
+    // (2027-02-30, 2026-13-01) must return null like any other
+    // malformation, so the caller falls back to the Markdown parse
+    // instead of serving a poisoned register (#4858, cf. #2199).
+    // isIsoDate re-checks the components, so leap dates
+    // (2024-02-29) still parse.
+    if (typeof renewal !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(renewal) || !isIsoDate(renewal)) return null;
+    // Money is non-negative: the shared gate isDnsSection refuses
+    // negative prices (#4226), so a finite negative price here is a
+    // malformation like any other — return null and let the caller
+    // fall back to the Markdown parse instead of minting a section
+    // the gate will discard whole (#4883). Zero stays valid.
+    if (price !== null && price !== undefined && (typeof price !== "number" || !Number.isFinite(price) || price < 0)) return null;
     if (autoRenew !== null && autoRenew !== undefined && typeof autoRenew !== "boolean") return null;
     seen.add(domain);
     const md = mdByDomain.get(domain);
@@ -149,14 +173,17 @@ export function isDnsSection(v: unknown): v is DnsSection {
   if (typeof v !== "object" || v === null) return false;
   const s = v as Partial<DnsSection>;
   return (
-    typeof s.generatedAt === "string" &&
-    Number.isFinite(Date.parse(s.generatedAt)) &&
+    isIsoDate(s.generatedAt) &&
     // totalAnnualListUsd is dereferenced with .toFixed on the /dns and
     // usage render paths, so the gate must guarantee a finite number
     // (#2412) — a missing/string/null/NaN total certifies a section the
     // renderers cannot render.
     typeof s.totalAnnualListUsd === "number" &&
     Number.isFinite(s.totalAnnualListUsd) &&
+    // Money is bounded below as well as finite (#4226): a negative
+    // total renders as negative spend and records a negative
+    // snapshot value downstream.
+    s.totalAnnualListUsd >= 0 &&
     Array.isArray(s.entries) &&
     s.entries.length > 0 &&
     s.entries.every(
@@ -164,12 +191,28 @@ export function isDnsSection(v: unknown): v is DnsSection {
         typeof e === "object" &&
         e !== null &&
         typeof (e as DnsEntry).domain === "string" &&
-        typeof (e as DnsEntry).renewal === "string" &&
+        // renewal must be a real calendar date, not merely a string:
+        // an impossible date (2027-02-30, 2026-13-01) string-sorts
+        // into summarizeDns and poisons nextRenewal (#4858, cf. #2199
+        // for the builder paths). isIsoDate also rejects non-strings
+        // and shape-invalid strings, so this subsumes the typeof check.
+        isIsoDate((e as DnsEntry).renewal) &&
         // priceUsd is number|null in the model: null/absent stays valid,
         // but a present value must be a finite number (#2412).
-        ((e as DnsEntry).priceUsd === null ||
-          (e as DnsEntry).priceUsd === undefined ||
-          (typeof (e as DnsEntry).priceUsd === "number" && Number.isFinite((e as DnsEntry).priceUsd))) &&
+        (() => {
+          // Bind once so the typeof guard narrows the same expression the
+          // comparison uses; re-reading (e as DnsEntry).priceUsd each time
+          // does not narrow and trips TS2531 (#4226).
+          const priceUsd = (e as DnsEntry).priceUsd;
+          return (
+            priceUsd === null ||
+            priceUsd === undefined ||
+            (typeof priceUsd === "number" &&
+              Number.isFinite(priceUsd) &&
+              // A present price must also be non-negative (#4226).
+              priceUsd >= 0)
+          );
+        })() &&
         // status feeds summarizeDns buckets; an unknown/missing status
         // under-counts silently, so the gate owns the enum (#2412).
         ((e as DnsEntry).status === "active" ||
