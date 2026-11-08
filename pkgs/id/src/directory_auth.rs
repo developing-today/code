@@ -536,7 +536,8 @@ mod tests {
             b"",
             now(),
             "n1",
-        ).unwrap();
+        )
+        .unwrap();
         let mut replays = ReplayGuard::default();
         let who = verify_signed(
             &mut replays,
@@ -598,7 +599,8 @@ mod tests {
     #[test]
     fn a_signed_request_is_bound_to_its_method_target_body_and_time() {
         let key = SigningKey::from_bytes(&[7; 32]);
-        let signed = sign_request(&key, "POST", "/api/world/directory", b"{}", now(), "n2").unwrap();
+        let signed =
+            sign_request(&key, "POST", "/api/world/directory", b"{}", now(), "n2").unwrap();
         for (method, target, body, at) in [
             ("GET", "/api/world/directory", b"{}".as_slice(), now()),
             ("POST", "/api/world/other", b"{}".as_slice(), now()),
@@ -684,6 +686,34 @@ mod tests {
                 verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_ok(),
                 "{good:?}"
             );
+        }
+    }
+
+    // Property coverage for the nonce-domain invariant (Codex finding on
+    // PR #6539): for every generated nonce, `sign_request` succeeds exactly
+    // when an independent oracle — written from the `verify_signed` contract,
+    // not from `nonce_in_domain` — accepts the nonce, and every accepted
+    // nonce round-trips through `verify_signed`.
+    proptest::proptest! {
+        #[test]
+        fn sign_request_accepts_exactly_the_verify_signed_nonce_domain(
+            nonce in proptest::string::string_regex(".{0,70}").unwrap()
+        ) {
+            // Independent oracle: 1-64 chars, each an ASCII letter, digit
+            // or '-', measured in bytes to mirror the wire contract.
+            let oracle = !nonce.is_empty()
+                && nonce.len() <= 64
+                && nonce.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+            let key = SigningKey::from_bytes(&[7; 32]);
+            let result = sign_request(&key, "GET", "/x", b"", now(), &nonce);
+            proptest::prop_assert_eq!(result.is_ok(), oracle, "nonce {:?}", nonce);
+            if let Ok(signed) = result {
+                let mut replays = ReplayGuard::default();
+                proptest::prop_assert!(
+                    verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_ok(),
+                    "oracle-accepted nonce {:?} must verify", nonce
+                );
+            }
         }
     }
 
