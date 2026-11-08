@@ -34,24 +34,75 @@ import {
 const HOME = homedir();
 const outboxPath =
   process.env.USAGE_SNAPSHOT_OUTBOX_PATH ??
-  join(
-    HOME,
-    "workspace/goals/keep-the-four-repos-healthy/hidden_files/usage-snapshot-outbox.jsonl",
-  );
+  join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files/usage-snapshot-outbox.jsonl");
 
-function argValue(flag: string): string | undefined {
-  const i = process.argv.indexOf(flag);
-  return i >= 0 ? process.argv[i + 1] : undefined;
+// Validate explicit --year/--month/--user values BEFORE any gh call
+// (#3419). Malformed values used to flow straight into the billing API
+// URL (month=NaN, month=13, users/--print) and the failure was then
+// misreported as a gh token-scope problem. A missing, flag-like, or
+// out-of-range value is a usage error (exit 2); omitted flags keep
+// their defaults, and the token-scope hint in fetchUsageItems is only
+// reachable with validated values.
+function usageError(message: string): never {
+  console.error(`collect-github-billing: ${message}; refusing to run, no gh call made`);
+  process.exit(2);
+}
+
+function explicitArg(flag: string): string {
+  const value: string | undefined = process.argv[process.argv.indexOf(flag) + 1];
+  if (value === undefined || value.startsWith("--"))
+    usageError(`${flag} requires a value (got ${value === undefined ? "no value" : JSON.stringify(value)})`);
+  return value;
+}
+
+// Resolve the --by value BEFORE any gh call (#6922). It is the last
+// unguarded flag value in this script: an empty/whitespace value used
+// to flow into every derived record, fail isSnapshotRecord for all of
+// them, and throw AFTER the gh call — discarding the whole month's
+// collection with a data-validation error for a usage mistake; a flag
+// token (e.g. --by --print) was recorded verbatim as the observer (and
+// consumed a second time as the flag itself); a trailing --by silently
+// fell back to the default. Same guard as append-usage-snapshots'
+// resolveObservedBy (#3295), built on this file's explicitArg (#3419).
+function resolveObservedBy(): string {
+  if (!process.argv.includes("--by")) return "collect-github-billing";
+  const raw = explicitArg("--by");
+  if (raw.trim() === "") usageError(`--by requires a non-empty name (got ${JSON.stringify(raw)})`);
+  return raw;
+}
+
+function resolveYear(now: Date): number {
+  if (!process.argv.includes("--year")) return now.getUTCFullYear();
+  const raw = explicitArg("--year");
+  const year = /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : NaN;
+  if (!Number.isInteger(year) || year < 2000 || year > now.getUTCFullYear())
+    usageError(`--year must be an integer from 2000 through ${now.getUTCFullYear()} (got ${JSON.stringify(raw)})`);
+  return year;
+}
+
+function resolveMonth(now: Date): number {
+  if (!process.argv.includes("--month")) return now.getUTCMonth() + 1;
+  const raw = explicitArg("--month");
+  const month = /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : NaN;
+  if (!Number.isInteger(month) || month < 1 || month > 12)
+    usageError(`--month must be an integer from 1 through 12 (got ${JSON.stringify(raw)})`);
+  return month;
+}
+
+function resolveUser(): string {
+  if (!process.argv.includes("--user")) return process.env.GH_BILLING_USER ?? "dezren39";
+  const raw = explicitArg("--user");
+  if (raw.trim() === "") usageError(`--user requires a non-empty name (got ${JSON.stringify(raw)})`);
+  return raw;
 }
 
 function fetchUsageItems(user: string, year: number, month: number): BillingUsageItem[] {
   let out: string;
   try {
-    out = execFileSync(
-      "gh",
-      ["api", `users/${user}/settings/billing/usage?year=${year}&month=${month}`],
-      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
-    );
+    out = execFileSync("gh", ["api", `users/${user}/settings/billing/usage?year=${year}&month=${month}`], {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    });
   } catch (e) {
     throw new Error(
       `gh api billing usage failed — the endpoint needs a gh token with the "user" scope ` +
@@ -64,12 +115,46 @@ function fetchUsageItems(user: string, year: number, month: number): BillingUsag
   return items as BillingUsageItem[];
 }
 
+// Reject unknown, duplicated, or positional arguments BEFORE any gh
+// call or outbox write (#7254). The flag values were validated in
+// #3419/#6922, but argv itself was only probed token-by-token
+// (includes/indexOf), so an unrecognized token was silently ignored:
+// a typo'd --yer fell back to the current year, a typo'd --prnit made
+// the includes("--print") check false and turned a dry run into a
+// real outbox append, and a duplicated flag silently took the first
+// value. Mirrors rejectUnknownArgs in generate-digest.ts (#7097) /
+// append-usage-snapshots.ts (#6961).
+const VALUE_FLAGS = ["--year", "--month", "--user", "--by"];
+const STANDALONE_FLAGS = ["--print"];
+const USAGE = "collect-github-billing [--year YYYY] [--month M] [--user <name>] [--by <name>] [--print]";
+
+function rejectUnknownArgs(): void {
+  const args = process.argv.slice(2);
+  const seen = new Set<string>();
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i] as string;
+    if (VALUE_FLAGS.includes(token)) {
+      if (seen.has(token)) usageError(`duplicate ${token} (usage: ${USAGE})`);
+      seen.add(token);
+      i++; // skip the value; the resolvers validate it
+      continue;
+    }
+    if (STANDALONE_FLAGS.includes(token)) {
+      if (seen.has(token)) usageError(`duplicate ${token} (usage: ${USAGE})`);
+      seen.add(token);
+      continue;
+    }
+    usageError(`unknown argument ${JSON.stringify(token)} (usage: ${USAGE})`);
+  }
+}
+rejectUnknownArgs();
+
 async function main(): Promise<void> {
   const now = new Date();
-  const year = Number(argValue("--year") ?? now.getUTCFullYear());
-  const month = Number(argValue("--month") ?? now.getUTCMonth() + 1);
-  const user = argValue("--user") ?? process.env.GH_BILLING_USER ?? "dezren39";
-  const observedBy = argValue("--by") ?? "collect-github-billing";
+  const year = resolveYear(now);
+  const month = resolveMonth(now);
+  const user = resolveUser();
+  const observedBy = resolveObservedBy();
   const items = fetchUsageItems(user, year, month);
   const totals = summarizeBillingDays(aggregateBillingUsage(items));
   console.log(

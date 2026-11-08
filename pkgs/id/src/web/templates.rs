@@ -165,6 +165,55 @@ pub fn render_file_list(page: &FileListPage) -> String {
         search_value
     );
     html.push_str("<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-auto\" class=\"checkbox checkbox-xs\" aria-label=\"Show auto and archive files\" /> show auto/archive</label>");
+    // Sort + origin filter (#4973): a plain GET form to /files so sorting
+    // and filtering by origin node and upload time work without JS.
+    let sort_current = page.sort.as_deref().unwrap_or("");
+    let origin_value = page
+        .origin_filter
+        .as_deref()
+        .map(html_escape)
+        .unwrap_or_default();
+    html.push_str("<form method=\"get\" action=\"/files\" class=\"flex items-center gap-1\">");
+    // Preserve the current search + show-deleted state across this GET
+    // submit (Codex review, PR #5191): without these hidden fields,
+    // applying a sort/origin silently cleared the other constraints.
+    if !search_value.is_empty() {
+        let _ = write!(
+            html,
+            "<input type=\"hidden\" name=\"search\" value=\"{}\" />",
+            search_value
+        );
+    }
+    if page.show_deleted {
+        html.push_str("<input type=\"hidden\" name=\"show_deleted\" value=\"true\" />");
+    }
+    html.push_str("<select id=\"file-sort\" name=\"sort\" aria-label=\"Sort files\" class=\"select select-bordered select-xs bg-base-100\">");
+    for (value, label) in [
+        ("", "sort: default"),
+        ("uploaded", "sort: upload time"),
+        ("origin", "sort: origin node"),
+    ] {
+        let selected = if value == sort_current {
+            " selected"
+        } else {
+            ""
+        };
+        let _ = write!(
+            html,
+            "<option value=\"{}\"{}>{}</option>",
+            value, selected, label
+        );
+    }
+    html.push_str("</select>");
+    let _ = write!(
+        html,
+        "<input type=\"text\" id=\"file-origin\" name=\"origin\" aria-label=\"Filter by origin node\" class=\"input input-bordered input-xs w-28 bg-base-100\" placeholder=\"origin / unknown\" value=\"{}\" />",
+        origin_value
+    );
+    html.push_str(
+        "<button type=\"submit\" class=\"btn btn-ghost btn-xs font-mono\">apply</button>",
+    );
+    html.push_str("</form>");
     let _ = write!(
         html,
         "<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-deleted\" name=\"show_deleted\" value=\"true\"          class=\"checkbox checkbox-xs\"{} /> show deleted</label>",
@@ -291,6 +340,21 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 format!("<span class=\"flex gap-1 flex-wrap\">{}</span>", tag_pills)
             };
 
+            // Origin + upload time (#4973): origin is the node that first
+            // wrote the file (`unknown` when unrecorded); uploaded is the
+            // `created` stamp. Refs only — bytes never travel in a surface.
+            let origin_str = file.origin_node.as_deref().unwrap_or("unknown");
+            let uploaded_str = file
+                .created_at
+                .map(format_unix_timestamp)
+                .filter(|d| !d.is_empty())
+                .unwrap_or_else(|| "unknown".to_owned());
+            let origin_html = format!(
+                "<span class=\"text-base-content/40 whitespace-nowrap text-xs\">origin {} \u{00b7} uploaded {}</span>",
+                html_escape(origin_str),
+                uploaded_str
+            );
+
             // Timestamp display — prefer modified_at, fall back to created_at, then tag-parsed
             let display_ts = file.modified_at.or(file.created_at).or(file.timestamp);
             let date_str = display_ts.map(format_unix_timestamp).unwrap_or_default();
@@ -315,7 +379,7 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                     <input type=\"checkbox\" class=\"file-select checkbox checkbox-xs\" aria-label=\"Select file {}\" data-name=\"{}\" />\
                     <span class=\"text-primary/50\">[F]</span>\
                     <a class=\"font-bold hover:text-primary truncate\" href=\"{}\" data-nav>{}</a>\
-                    {}{}{}{}\
+                    {}{}{}{}{}\
                     <code class=\"font-mono text-base-content/40\">{}</code>\
                 </li>",
                 deleted_class,
@@ -329,6 +393,7 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 deleted_badge,
                 tags_html,
                 date_html,
+                origin_html,
                 short_hash,
             );
         }
@@ -344,6 +409,17 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
             .as_deref()
             .map(|s| format!("&search={}", urlencoding::encode(s)))
             .unwrap_or_default();
+        let sort_param = page
+            .sort
+            .as_deref()
+            .map(|s| format!("&sort={}", urlencoding::encode(s)))
+            .unwrap_or_default();
+        let origin_param = page
+            .origin_filter
+            .as_deref()
+            .map(|s| format!("&origin={}", urlencoding::encode(s)))
+            .unwrap_or_default();
+        let search_param = format!("{search_param}{sort_param}{origin_param}");
 
         html.push_str("<div class=\"flex items-center justify-between px-3 py-2 border-t border-base-300 text-xs\">");
 
@@ -767,7 +843,7 @@ pub fn render_settings(node_id: &str) -> String {
 }
 
 /// Render a browser presentation for the optional multiplayer world.
-pub fn render_world_page(assets: &AssetUrls) -> String {
+pub fn render_world_page(assets: &AssetUrls, world_socket: Option<&str>) -> String {
     let content = r#"
 <section data-world-app class="space-y-5" aria-labelledby="world-title">
   <nav aria-label="World documents" class="text-sm">
@@ -798,29 +874,33 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
     </label>
     <div class="flex flex-wrap gap-2">
       <button data-world-join class="btn btn-primary" type="button">Join world</button>
+      <button data-world-host-view class="btn btn-secondary" type="button">View as host (read-only)</button>
       <button data-world-copy class="btn btn-ghost" type="button">Copy capability</button>
     </div>
     <div data-world-invite-output hidden>
       <p class="text-sm">This bearer capability grants guest access. Share it privately.</p>
     </div>
-    <details>
-      <summary class="cursor-pointer text-sm">Host: create a guest invite</summary>
-      <div class="mt-3 flex flex-wrap gap-2">
+    <section class="rounded border border-base-300 p-3 space-y-3">
+      <h2 class="font-bold">Host controls</h2>
+      <div class="flex flex-wrap gap-2">
         <input data-world-admin class="input input-bordered font-mono" type="password" autocomplete="off" aria-label="World admin token" placeholder="World admin token">
-        <button data-world-invite class="btn btn-secondary" type="button">Create invite</button>
+        <button data-world-invite class="btn btn-secondary" type="button">Create guest invite</button>
       </div>
-      <div class="mt-3 flex flex-wrap items-center gap-2">
+    </section>
+    <section class="rounded border border-base-300 p-3 space-y-3">
+      <h2 class="font-bold">Install or update program</h2>
+      <div class="flex flex-wrap items-center gap-2">
         <input data-world-module class="file-input file-input-bordered" type="file" accept=".wasm,application/wasm" aria-label="Wasm world module">
         <input data-world-seed class="input input-bordered w-24" type="number" value="1" aria-label="World seed">
         <button data-world-install class="btn btn-warning" type="button">Install Wasm module</button>
       </div>
-      <div class="mt-3 flex flex-wrap items-center gap-2">
+      <div class="flex flex-wrap items-center gap-2">
         <input data-world-source class="file-input file-input-bordered" type="file" accept=".roc,text/plain" multiple aria-label="Roc world sources">
         <button data-world-compile class="btn btn-warning" type="button">Compile &amp; install Roc sources</button>
       </div>
       <p class="text-xs opacity-60">Choose main.roc and up to 7 additional .roc files. Each file is limited to 128 KiB and all sources together to 256 KiB. Compilation runs on the host (up to 120 seconds).</p>
       <p class="text-xs opacity-60">Uploads run in the host's import-free Wasmtime sandbox. The current world restarts at its module seed.</p>
-    </details>
+    </section>
   </section>
 
   <section class="grid gap-4 md:grid-cols-2">
@@ -853,7 +933,160 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
   </section>
 </section>
 "#;
-    render_page("World", content, "", assets)
+    // The frontend connects to the app's configured live channel:
+    // the socket travels on the root element as a data attribute
+    // (data-world-socket), which world.ts reads instead of a
+    // hardcoded path (Codex P1 on #3894). No socket declared: no
+    // attribute, and the frontend keeps its historical default.
+    let content = match world_socket {
+        Some(socket) => content.replacen(
+            "data-world-app",
+            &format!(
+                "data-world-app data-world-socket=\"{}\"",
+                html_escape(socket)
+            ),
+            1,
+        ),
+        None => content.to_owned(),
+    };
+    render_page("World", &content, "", assets)
+}
+
+/// Render the program-only surface for one hosted world (#2146
+/// phase 2): the world program frontend at a program binding's root.
+///
+/// Unlike the Explorer world page ([`render_world_page`]), this page
+/// is a guest surface for exactly one world: the world name is pinned
+/// by the server (`data-world-program` on the root element, and the
+/// world input is rendered read-only with that name), there is no
+/// link into the Explorer file browser, and the host controls (admin
+/// token, invite minting, module install) are absent -- a program
+/// visitor is a guest, authorized by a guest capability alone. The
+/// presentation hooks are the same `data-world-*` contract the
+/// trusted presenter in `world.ts` drives, so guest output is
+/// rendered as inert text/screen data exactly as on the Explorer
+/// page.
+pub fn render_program_page(
+    assets: &AssetUrls,
+    world_name: &str,
+    world_socket: Option<&str>,
+) -> String {
+    let content = r#"
+<section data-world-app data-world-program="__WORLD__" class="space-y-5" aria-labelledby="world-title">
+  <header class="flex flex-wrap items-end justify-between gap-3">
+    <div>
+      <p class="font-mono text-xs uppercase tracking-widest text-primary">p2p / live session</p>
+      <h1 id="world-title" class="text-2xl font-bold">__WORLD__</h1>
+      <p class="text-sm opacity-70">The host is authoritative. Chat and game inputs share one sequenced world.</p>
+    </div>
+    <output data-world-status role="status" aria-live="polite" class="badge badge-outline">Not connected</output>
+  </header>
+
+  <section class="card border border-base-300 bg-base-100 p-4 space-y-3" aria-label="Join world">
+    <h2 class="font-bold">Join</h2>
+    <label class="form-control max-w-xl">
+      <span class="label-text">Display name</span>
+      <input data-world-name class="input input-bordered" maxlength="48" autocomplete="nickname" value="guest" aria-label="Display name">
+    </label>
+    <label class="form-control max-w-xl">
+      <span class="label-text">World</span>
+      <input data-world-world class="input input-bordered font-mono" maxlength="64" autocomplete="off" value="__WORLD__" readonly aria-label="World name">
+    </label>
+    <label class="form-control max-w-xl">
+      <span class="label-text">Guest capability</span>
+      <input data-world-capability class="input input-bordered font-mono" type="password" autocomplete="off" placeholder="Paste an invite capability" aria-label="Guest capability">
+    </label>
+    <div class="flex flex-wrap gap-2">
+      <button data-world-join class="btn btn-primary" type="button">Join world</button>
+      <button data-world-copy class="btn btn-ghost" type="button">Copy capability</button>
+    </div>
+    <div data-world-invite-output hidden>
+      <p class="text-sm">This bearer capability grants guest access. Share it privately.</p>
+    </div>
+  </section>
+
+  <section class="grid gap-4 md:grid-cols-2">
+    <div class="card border border-base-300 bg-base-100 p-4 space-y-3">
+      <h2 class="font-bold">World view</h2>
+      <div data-world-view tabindex="0" aria-label="World screen. Focus here to send keyboard input." class="min-h-32 max-h-[70vh] overflow-auto whitespace-pre-wrap rounded bg-base-200 p-4 font-mono text-lg leading-none" aria-live="polite">Waiting for a world view…</div>
+      <p class="text-xs opacity-60">Rendered by the host's world program; clients do not decide authoritative state.</p>
+      <div class="flex items-center justify-between">
+        <h2 class="font-bold">Records</h2>
+        <button data-world-records-refresh class="btn btn-ghost btn-xs" type="button">Refresh</button>
+      </div>
+      <pre data-world-records class="h-40 overflow-auto rounded bg-base-200 p-3 font-mono text-xs" aria-live="polite">{}</pre>
+      <p class="text-xs opacity-60">Structured data the program publishes. Mirrors peer-to-peer with
+        <code>id world mirror</code>.</p>
+    </div>
+    <div class="card border border-base-300 bg-base-100 p-4 space-y-3">
+      <h2 class="font-bold">Participants</h2>
+      <div data-world-participants class="min-h-8" aria-live="polite"></div>
+      <h2 class="font-bold">Chat &amp; events</h2>
+      <ol data-world-log class="h-48 overflow-auto rounded bg-base-200 p-3 font-mono text-sm" aria-live="polite"></ol>
+      <form data-world-chat-form class="flex gap-2">
+        <input data-world-chat class="input input-bordered min-w-0 flex-1" maxlength="2048" aria-label="Chat message" placeholder="Say something…">
+        <button class="btn btn-primary" type="submit">Chat</button>
+      </form>
+      <form data-world-input-form class="flex gap-2">
+        <input data-world-input class="input input-bordered min-w-0 flex-1 font-mono" maxlength="4096" value="inc" aria-label="Game input">
+        <button class="btn btn-secondary" type="submit">Send input</button>
+      </form>
+    </div>
+  </section>
+</section>
+"#;
+    // The pinned world travels in the markup in three places (root
+    // attribute, heading, world input value); the name is escaped
+    // once and substituted everywhere, like the socket below.
+    let content = content.replace("__WORLD__", &html_escape(world_name));
+    // Same socket contract as the Explorer world page: the frontend
+    // reads data-world-socket instead of a hardcoded path.
+    let content = match world_socket {
+        Some(socket) => content.replacen(
+            "data-world-app",
+            &format!(
+                "data-world-app data-world-socket=\"{}\"",
+                html_escape(socket)
+            ),
+            1,
+        ),
+        None => content,
+    };
+    render_program_shell(&format!("Program: {world_name}"), &content, assets)
+}
+
+/// The program surface's page shell: the same head (assets, theme)
+/// as [`render_page`] but WITHOUT the Explorer chrome -- the shared
+/// wrapper's header links to /files, /peers and /settings, which do
+/// not exist on a program-only listener and must not be offered to
+/// a program visitor.
+fn render_program_shell(title: &str, content: &str, assets: &AssetUrls) -> String {
+    let title_escaped = html_escape(title);
+    let mut html = String::with_capacity(4096);
+    html.push_str("<!DOCTYPE html>\n<html lang=\"en\" data-theme=\"sneak\">\n<head>\n");
+    html.push_str("    <meta charset=\"UTF-8\">\n");
+    html.push_str(
+        "    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n",
+    );
+    let _ = write!(html, "    <title>{} - id</title>\n", title_escaped);
+    let _ = write!(
+        html,
+        "    <link rel=\"stylesheet\" href=\"{}\">\n",
+        assets.styles_css
+    );
+    let _ = write!(
+        html,
+        "    <script type=\"module\" src=\"{}\"></script>\n",
+        assets.main_js
+    );
+    html.push_str("\n</head>\n<body class=\"crt-scanlines crt-flicker\">\n");
+    html.push_str("    <main class=\"min-h-screen\" id=\"main\">\n");
+    html.push_str("        <div class=\"max-w-4xl mx-auto px-4 py-4\">\n");
+    html.push_str(content);
+    html.push_str("\n        </div>\n");
+    html.push_str("    </main>\n");
+    html.push_str("</body>\n</html>");
+    html
 }
 
 /// Render the peers page showing discovered peers.
@@ -1071,11 +1304,42 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn test_render_program_page_pins_the_world_and_omits_host_controls() {
+        let html = render_program_page(&AssetUrls::default(), "arena", Some("/ws/world"));
+        // Pinned to the one world this surface serves.
+        assert!(html.contains("data-world-program=\"arena\""));
+        assert!(html.contains("data-world-socket=\"/ws/world\""));
+        assert!(html.contains("value=\"arena\" readonly"));
+        // The guest presenter contract is present.
+        assert!(html.contains("data-world-join"));
+        assert!(html.contains("data-world-capability"));
+        assert!(html.contains("data-world-view"));
+        assert!(html.contains("data-world-chat-form"));
+        assert!(html.contains("data-world-input-form"));
+        // No Explorer link and no host controls on a guest surface.
+        assert!(!html.contains("href=\"/files\""));
+        assert!(!html.contains("data-world-admin"));
+        assert!(!html.contains("data-world-invite class"));
+        assert!(!html.contains("data-world-install"));
+        assert!(!html.contains("data-world-host-view"));
+    }
+
+    #[test]
+    fn test_render_program_page_escapes_the_world_name() {
+        let html = render_program_page(&AssetUrls::default(), "a\"<b>", None);
+        assert!(!html.contains("data-world-program=\"a\"<b>\""));
+        assert!(html.contains("data-world-program=\"a&quot;&lt;b&gt;\""));
+    }
+
     fn test_render_world_page_exposes_presentation_controls() {
-        let html = render_world_page(&AssetUrls::default());
+        let html = render_world_page(&AssetUrls::default(), Some("/ws/arena"));
+        assert!(html.contains("data-world-socket=\"/ws/arena\""));
         assert!(html.contains("data-world-app"));
         assert!(html.contains("data-world-invite"));
         assert!(html.contains("data-world-join"));
+        assert!(html.contains("data-world-host-view"));
+        assert!(html.contains("Install or update program"));
         assert!(html.contains("data-world-world"));
         assert!(html.contains("data-world-chat-form"));
         assert!(html.contains("data-world-input-form"));
@@ -1109,6 +1373,8 @@ mod tests {
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list(&page);
         assert!(html.contains("No files stored yet"));
@@ -1127,6 +1393,7 @@ mod tests {
             created_at: None,
             modified_at: None,
             tags: vec![],
+            origin_node: None,
             is_deleted: false,
         }];
         let page = FileListPage {
@@ -1136,6 +1403,8 @@ mod tests {
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list(&page);
         assert!(html.contains("test.txt"));
@@ -1159,6 +1428,7 @@ mod tests {
                 created_at: None,
                 modified_at: None,
                 tags: vec![],
+                origin_node: None,
                 is_deleted: false,
             })
             .collect();
@@ -1169,6 +1439,8 @@ mod tests {
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list_content(&page);
         assert!(html.contains("51-100 of 300"), "html: {html}");
@@ -1185,6 +1457,8 @@ mod tests {
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list_content(&page);
         assert!(html.contains("0-0 of 300"), "html: {html}");
@@ -1199,6 +1473,8 @@ mod tests {
             per_page: 200,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list_content(&page);
         assert!(html.contains("0-0 of 300"), "html: {html}");
@@ -1222,6 +1498,7 @@ mod tests {
             created_at: None,
             modified_at: None,
             tags: vec![("note".to_owned(), Some(value))],
+            origin_node: None,
             is_deleted: false,
         }];
         let page = FileListPage {
@@ -1231,6 +1508,8 @@ mod tests {
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list(&page);
         // Truncated on the char boundary before 'é', with the ellipsis.
@@ -1304,12 +1583,15 @@ mod tests {
                 created_at: None,
                 modified_at: None,
                 tags: vec![],
+                origin_node: None,
                 is_deleted: false,
             }],
             page: 1,
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list_content(&page);
         assert!(

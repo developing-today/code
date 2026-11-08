@@ -3,8 +3,11 @@ import { DurableObject } from "cloudflare:workers";
 import {
   computeBudget,
   crawlFetcher,
+  extractHtml,
   fetchFollowingValidatedRedirects,
   parseJsonObjectBody,
+  parseFormDataBody,
+  parseUploadFile,
   readResponseTextCapped,
   crawlArchiveKey,
   uploadKey,
@@ -13,6 +16,9 @@ import {
   validateMachineBody,
   validateNoteBody,
   validateTaskBody,
+  parseCrawlResult,
+  parseAiSummaryResult,
+  fileResponseForKey,
 } from "./lib";
 
 // ---------------------------------------------------------------------------
@@ -181,13 +187,13 @@ async function crawlWithContainer(env: Env, url: string) {
     }),
   );
   if (!res.ok) throw new Error(`container returned ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  return res.json() as Promise<{
-    title?: string;
-    excerpt?: string;
-    links?: number;
-    status_code?: number;
-    text?: string;
-  }>;
+  // The response crosses a service boundary, so validate its shape before
+  // anything is archived or bound (#7018): a malformed result throws here
+  // and the route falls back to the Worker crawler, like any other
+  // container failure.
+  const parsed = parseCrawlResult(await res.json());
+  if (!parsed.ok) throw new Error(`container returned a malformed crawl result: ${parsed.error}`);
+  return parsed.values;
 }
 
 async function crawlFallback(url: string) {
@@ -206,13 +212,10 @@ async function crawlFallback(url: string) {
   // Cap the body read at the container's 2,000,000 bytes (#481): res.text()
   // would buffer a huge page whole in the Worker's memory.
   const html = await readResponseTextCapped(res);
-  const title = html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() ?? "";
-  const links = (html.match(/<a\s/gi) ?? []).length;
-  const text = html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  // Extraction matches the container Extractor exactly (#569):
+  // extractHtml in lib.ts mirrors its HTMLParser semantics and both
+  // doors are pinned by the paired fixtures in test/.
+  const { title, links, text } = extractHtml(html);
   return { title, excerpt: text.slice(0, 500), links, status_code: res.status, text: text.slice(0, 20000) };
 }
 
@@ -333,13 +336,19 @@ export default {
           .first<{ body: string }>();
         if (!note) return json({ error: "note not found" }, 404);
         ctx.waitUntil(logUsage(env, "ai_request", "summarize"));
-        const ai = (await env.AI.run("@cf/meta/llama-3.2-3b-instruct", {
+        const ai: unknown = await env.AI.run("@cf/meta/llama-3.2-3b-instruct", {
           messages: [
             { role: "system", content: "Summarise in one or two sentences. Plain text only." },
             { role: "user", content: note.body.slice(0, 4000) },
           ],
-        })) as { response?: string };
-        const summary = (ai.response ?? "").trim();
+        });
+        // The AI result crosses a service boundary, so validate its
+        // shape before anything is stored (#7037): a malformed result
+        // is an upstream failure (502), never a silently stored empty
+        // summary and never a raw TypeError.
+        const parsed = parseAiSummaryResult(ai);
+        if (!parsed.ok) return json({ error: `AI returned a malformed summary result: ${parsed.error}` }, 502);
+        const summary = parsed.values.summary;
         await env.DB.prepare("UPDATE notes SET summary=?1 WHERE id=?2").bind(summary, sumMatch[1]).run();
         ctx.waitUntil(logUsage(env, "d1_write", "note-summary"));
         return json({ ok: true, summary });
@@ -369,14 +378,15 @@ export default {
         return json({ files: results });
       }
       if (p === "/api/files" && req.method === "POST") {
-        const form = await req.formData();
-        const file = form.get("file") as File | null;
-        if (!file) return json({ error: "multipart field 'file' required" }, 400);
-        const buf = await file.arrayBuffer();
-        const key = uploadKey(file.name, Date.now(), crypto.randomUUID());
-        await env.FILES.put(key, buf, { httpMetadata: { contentType: file.type || "application/octet-stream" } });
+        const form = await parseFormDataBody(req);
+        if (!form.ok) return json({ error: form.error }, 400);
+        const file = parseUploadFile(form.form.get("file"));
+        if (!file.ok) return json({ error: file.error }, 400);
+        const buf = await file.values.arrayBuffer();
+        const key = uploadKey(file.values.name, Date.now(), crypto.randomUUID());
+        await env.FILES.put(key, buf, { httpMetadata: { contentType: file.values.type || "application/octet-stream" } });
         const r = await env.DB.prepare("INSERT INTO files (r2_key, filename, content_type, size) VALUES (?1,?2,?3,?4)")
-          .bind(key, file.name, file.type || null, buf.byteLength)
+          .bind(key, file.values.name, file.values.type || null, buf.byteLength)
           .run();
         await env.JOBS.send({ type: "index-file", r2Key: key });
         ctx.waitUntil(
@@ -390,11 +400,7 @@ export default {
       }
       const fileMatch = p.match(/^\/api\/files\/(.+)$/);
       if (fileMatch && req.method === "GET") {
-        const obj = await env.FILES.get(decodeURIComponent(fileMatch[1]));
-        if (!obj) return json({ error: "not found in R2" }, 404);
-        return new Response(obj.body, {
-          headers: { "content-type": obj.httpMetadata?.contentType ?? "application/octet-stream" },
-        });
+        return fileResponseForKey(fileMatch[1], (key) => env.FILES.get(key));
       }
 
       // Live board (Durable Object, one global room)

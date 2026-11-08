@@ -118,13 +118,18 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req CompletionR
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, defaults.HTTPErrorBodyLimit))
+		return "", fmt.Errorf("provider %s returned HTTP %d: %s", p.name, resp.StatusCode, string(errBody))
+	}
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, defaults.ProviderResponseBodyLimit+1))
 	if err != nil {
 		return "", err
 	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("provider %s returned HTTP %d: %s", p.name, resp.StatusCode, string(respBody))
+	if int64(len(respBody)) > defaults.ProviderResponseBodyLimit {
+		return "", fmt.Errorf("provider %s response body exceeds the %d-byte limit",
+			p.name, defaults.ProviderResponseBodyLimit)
 	}
 
 	var parsed struct {

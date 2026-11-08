@@ -26,6 +26,7 @@ package recipes
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -51,8 +52,8 @@ type Placeholder struct {
 	Name        string `json:"name"`
 	Type        Type   `json:"type"`
 	Description string `json:"description,omitempty"`
-	// Default is the literal as written in the declaration, already valid
-	// for the type. Absent means there is none.
+	// Default is the literal as written in the declaration. It is validated
+	// against the type when the recipe is rendered. Absent means there is none.
 	Default *string `json:"default,omitempty"`
 	// Required is false when a default was given or the name was marked
 	// optional with a trailing question mark.
@@ -93,6 +94,11 @@ var paramDecl = regexp.MustCompile(
 // scanner can skip one. Without it the `@param` of the declaration itself
 // reads as a placeholder called "param".
 var declLine = regexp.MustCompile(`^\s*(?://|#|\*)\s*@param\b`)
+
+// jsonNumberLiteral recognizes the complete JSON number grammar. ParseFloat
+// accepts additional Go spellings (such as Inf and hexadecimal floats) that
+// are not valid JavaScript/JSON numeric literals.
+var jsonNumberLiteral = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$`)
 
 // toolDecl matches the MCP exposure marker, `@tool` on its own (on, the
 // default) or `@tool false` (off). A recipe is a tool unless its author says
@@ -473,7 +479,15 @@ func (r Recipe) Render(values map[string]any) (string, error) {
 			}
 			lits[p.Name] = lit
 		case p.Default != nil:
-			lits[p.Name] = *p.Default
+			v, ok := decodeLiteral(p, *p.Default)
+			if !ok {
+				return "", fmt.Errorf("%s default must be a valid %s: %q", p.Name, p.Type, *p.Default)
+			}
+			lit, err := literal(p, v)
+			if err != nil {
+				return "", fmt.Errorf("%s default must be a valid %s: %w", p.Name, p.Type, err)
+			}
+			lits[p.Name] = lit
 		case !p.Required:
 			lits[p.Name] = "undefined"
 		default:
@@ -531,15 +545,44 @@ func literal(p Placeholder, v any) (string, error) {
 	switch p.Type {
 	case TypeNumber:
 		switch n := v.(type) {
-		case float64:
-			return strconv.FormatFloat(n, 'g', -1, 64), nil
 		case int:
 			return strconv.Itoa(n), nil
-		case string:
-			if _, err := strconv.ParseFloat(n, 64); err != nil {
-				return "", fmt.Errorf("%s is a number, got %q", p.Name, n)
+		case int8:
+			return strconv.FormatInt(int64(n), 10), nil
+		case int16:
+			return strconv.FormatInt(int64(n), 10), nil
+		case int32:
+			return strconv.FormatInt(int64(n), 10), nil
+		case int64:
+			return strconv.FormatInt(n, 10), nil
+		case uint:
+			return strconv.FormatUint(uint64(n), 10), nil
+		case uint8:
+			return strconv.FormatUint(uint64(n), 10), nil
+		case uint16:
+			return strconv.FormatUint(uint64(n), 10), nil
+		case uint32:
+			return strconv.FormatUint(uint64(n), 10), nil
+		case uint64:
+			return strconv.FormatUint(n, 10), nil
+		case uintptr:
+			return strconv.FormatUint(uint64(n), 10), nil
+		case float32:
+			if math.IsNaN(float64(n)) || math.IsInf(float64(n), 0) {
+				return "", fmt.Errorf("%s is a number, got %q", p.Name, v)
 			}
-			return n, nil
+			return strconv.FormatFloat(float64(n), 'g', -1, 32), nil
+		case float64:
+			if math.IsNaN(n) || math.IsInf(n, 0) {
+				return "", fmt.Errorf("%s is a number, got %q", p.Name, v)
+			}
+			return strconv.FormatFloat(n, 'g', -1, 64), nil
+		case string:
+			return numberStringLiteral(p, n)
+		case json.Number:
+			return numberStringLiteral(p, n.String())
+		default:
+			return "", fmt.Errorf("%s is a number, got %q", p.Name, v)
 		}
 	case TypeBoolean:
 		switch t := v.(type) {
@@ -551,6 +594,12 @@ func literal(p Placeholder, v any) (string, error) {
 				return "", fmt.Errorf("%s is a boolean, got %q", p.Name, t)
 			}
 			return strconv.FormatBool(b), nil
+		default:
+			return "", fmt.Errorf("%s is a boolean, got %q", p.Name, v)
+		}
+	case TypeString:
+		if _, ok := v.(string); !ok {
+			return "", fmt.Errorf("%s is a string, got %q", p.Name, v)
 		}
 	case TypeJSON:
 		if s, ok := v.(string); ok && json.Valid([]byte(s)) {
@@ -562,6 +611,16 @@ func literal(p Placeholder, v any) (string, error) {
 		return "", fmt.Errorf("%s cannot be encoded: %w", p.Name, err)
 	}
 	return string(b), nil
+}
+
+func numberStringLiteral(p Placeholder, n string) (string, error) {
+	if !jsonNumberLiteral.MatchString(n) {
+		return "", fmt.Errorf("%s is a number, got %q", p.Name, n)
+	}
+	if _, err := strconv.ParseFloat(n, 64); err != nil {
+		return "", fmt.Errorf("%s is a number, got %q", p.Name, n)
+	}
+	return n, nil
 }
 
 // FormSchema is the elicitation schema that asks for the missing values.

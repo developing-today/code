@@ -45,7 +45,7 @@ var EffectProbes = map[string]string{
 	"logging.file":               "TestLoggingFileOffWritesNoDurableLog",
 	"script.captureConsole":      "TestScriptCaptureConsoleOffDropsConsoleOutput",
 	"script.prefix":              "TestScriptPrefixIsReachableFromTheEnvironment",
-	"script.typecheck":           "TestScriptTypecheckOnRefusesATypeError",
+	"script.check":               "TestScriptTypecheckOnRefusesATypeError",
 	"script.env":                 "TestScriptEnvIsReachableFromTheEnvironment",
 	"paths.state":                "TestStateDirectoryIsReachableAsASetting",
 	"registry.url":               "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
@@ -56,8 +56,14 @@ var EffectProbes = map[string]string{
 	"registry.pageSize":          "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
 	"registry.maxPages":          "TestTheRegistryPageCapSaysItStoppedEarly",
 	"paths.configFile":           "TestPathsConfigFileChangesWhichConfigLoads",
+	"tasks.maxAge":               "TestTasksMaxAgeIsReachableFromEnvironment",
+	"deps.source":                "TestDepsSourceNoneDropsTheManifestLayer",
+	"deps.manifest":              "TestDepsManifestNamesTheManifestResolutionReads",
+	"deps.packages":              "TestDepsPackagesPinContradictingTheManifestFailsTheRun",
+	"paths.deps":                 "TestPathsDepsExtendsManifestDiscovery",
 	"script.cwd":                 "TestScriptCwdIsReachableFromTheEnvironment",
 	"script.interpreter":         "TestScriptInterpreterIsReachableFromTheEnvironment",
+	"proxy.timeout":              "TestProxyUpstreamTimeoutIsReachableFromTheEnvironment",
 }
 
 // EffectExemptions maps a setting path to the reason no effect probe
@@ -78,6 +84,11 @@ var EffectExemptions = map[string]string{
 	"logging.maxAge":                     "log pipeline bound or rendering choice: its effect appears only across log volume, rotation, or time, none of which a single harness run produces deterministically",
 	"logging.keep":                       "log pipeline bound or rendering choice: its effect appears only across log volume, rotation, or time, none of which a single harness run produces deterministically",
 	"script.runtime":                     "script launcher pipeline: its effect needs a runtime, profile, or launcher fixture exercising that exact stage, which the harness script fixtures do not yet provide",
+	"script.imports":                     "static import resolution is covered by deterministic internal/preflight graph tests; the e2e harness has no Deno graph fixture yet",
+	"script.importsOnMissing":            "missing-package policies are covered by deterministic internal/preflight resolver tests; the e2e harness has no Deno graph fixture yet",
+	"script.importsOnDynamic":            "computed-import policies are covered by deterministic internal/preflight graph tests; the e2e harness has no Deno graph fixture yet",
+	"script.importsCrossProject":         "cross-project subset policies are covered by deterministic internal/preflight resolver tests; the e2e harness has no multi-project Deno graph fixture yet",
+	"script.importsNetwork":              "registry lookup gating is covered by deterministic internal/preflight resolver tests; the e2e harness has no Deno graph fixture yet",
 	"script.runtimes":                    "script launcher pipeline: its effect needs a runtime, profile, or launcher fixture exercising that exact stage, which the harness script fixtures do not yet provide",
 	"script.runtimeOrder":                "script launcher pipeline: its effect needs a runtime, profile, or launcher fixture exercising that exact stage, which the harness script fixtures do not yet provide",
 	"script.permissions":                 "script launcher pipeline: its effect needs a runtime, profile, or launcher fixture exercising that exact stage, which the harness script fixtures do not yet provide",
@@ -91,6 +102,7 @@ var EffectExemptions = map[string]string{
 	"exec.maxOutputBytes":                "call-scoped exec behaviour with no dedicated with/without probe yet; the exec e2e tests exercise the surface only at its defaults",
 	"exec.output":                        "call-scoped exec behaviour with no dedicated with/without probe yet; the exec e2e tests exercise the surface only at its defaults",
 	"exec.where":                         "call-scoped exec behaviour with no dedicated with/without probe yet; the exec e2e tests exercise the surface only at its defaults",
+	"deps.autoInstall":                   "a runtime fetch policy: its effect is which --install flag a bun run carries, observable only when a runtime actually fetches a missing package -- a network install the harness does not perform deterministically",
 	"artifacts.enabled":                  "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
 	"artifacts.dir":                      "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
 	"artifacts.delivery":                 "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
@@ -121,6 +133,7 @@ var EffectExemptions = map[string]string{
 	"daemon.uiDir":                       "daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically",
 	"daemon.inline":                      "daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically",
 	"daemon.autostart":                   "daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically",
+	"daemon.roots":                       "configured upstream roots only affect an upstream roots/list request; the e2e harness does not yet issue that server request, while daemon hook and mcpclient unit tests cover settings conversion and the response path",
 	"hooks":                              "hook execution: its effect needs a hook configured for a specific event and an event that fires it; the harness has no per-event hook fixture",
 	"hooks.timeout":                      "hook execution: its effect needs a hook configured for a specific event and an event that fires it; the harness has no per-event hook fixture",
 	"mcp.pageSize":                       "MCP list/passthrough surface: paging behaviour is unit-tested in mcpserver, but no e2e with/without probe drives it through a client yet",
@@ -169,6 +182,15 @@ var EffectExemptions = map[string]string{
 	"prompt.sample":                      "prompt/sampling behaviour: its effect needs a sampling provider or several candidate actions; no fixture provides one",
 	"prompt.catalogBudget":               "prompt/sampling behaviour: its effect needs a sampling provider or several candidate actions; no fixture provides one",
 	"prompt.sampleTimeout":               "prompt/sampling behaviour: its effect needs a sampling provider or several candidate actions; no fixture provides one",
+	"model.apiKeyEnv":                    "model layer is covered by internal/model and daemon unit tests; no settings-driven e2e with/without probe exists yet",
+	"model.baseURL":                      "model layer is covered by internal/model and daemon unit tests; no settings-driven e2e with/without probe exists yet",
+	"model.budget":                       "model layer is covered by internal/model and daemon unit tests; no settings-driven e2e with/without probe exists yet",
+	"model.default":                      "model layer is covered by internal/model and daemon unit tests; no settings-driven e2e with/without probe exists yet",
+	"model.profiles":                     "model layer is covered by internal/model and daemon unit tests; no settings-driven e2e with/without probe exists yet",
+	"model.provider":                     "model layer is covered by internal/model and daemon unit tests; no settings-driven e2e with/without probe exists yet",
+	"model.providers":                    "model layer is covered by internal/model and daemon unit tests; no settings-driven e2e with/without probe exists yet",
+	"model.timeout":                      "model layer is covered by internal/model and daemon unit tests; no settings-driven e2e with/without probe exists yet",
+	"sampling.answerLocally":             "model layer is covered by internal/model and daemon unit tests; no settings-driven e2e with/without probe exists yet",
 	"prompt.maxTokens":                   "prompt/sampling behaviour: its effect needs a sampling provider or several candidate actions; no fixture provides one",
 	"prompt.runTimeout":                  "prompt/sampling behaviour: its effect needs a sampling provider or several candidate actions; no fixture provides one",
 	"http.bodyLimit":                     "HTTP server bound (body limits, timeouts, buffers): its effect needs oversized bodies, idle connections, or time passage a single run does not produce",
@@ -236,6 +258,7 @@ var EffectExemptions = map[string]string{
 	"plugin.annotate":                    "read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host",
 	"plugin.headless":                    "read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host",
 	"plugin.daemonTools":                 "read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host",
+	"plugin.disabledTools":               "read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host",
 	"protoMessages.listMaxAge":           "protocol message timing: era fixtures cover the flow end-to-end, but no per-setting with/without probe exists yet",
 	"protoMessages.readMaxAge":           "protocol message timing: era fixtures cover the flow end-to-end, but no per-setting with/without probe exists yet",
 	"protoMessages.taskAfter":            "protocol message timing: era fixtures cover the flow end-to-end, but no per-setting with/without probe exists yet",
@@ -243,6 +266,7 @@ var EffectExemptions = map[string]string{
 	"protoTasks.maxTTL":                  "task-store limits: covered by internal/tasks store tests (TTL clamp), not by a settings with/without probe",
 	"protoTasks.maxPerRequestor":         "task-store limits: covered by internal/tasks store tests (per-requestor cap), not by a settings with/without probe",
 	"protoTasks.perMinute":               "task-store limits: covered by internal/tasks store tests (admission window), not by a settings with/without probe",
+	"protoTasks.cancelGrace":             "task-store cancellation timing: covered by internal/tasks store tests, not by a settings with/without probe",
 	"completion.perMinute":               "completion rate limit: covered by internal/daemon handler tests (429 before the pool at the limit, admitted when disabled), not by a settings with/without probe",
 	"completion.serverPerMinute":         "completion rate limit: covered by internal/daemon handler tests (per-server window binds across callers), not by a settings with/without probe",
 	"upstream.protocol":                  "upstream protocol detection: its effect needs a peer whose era must be probed, beyond what the fake server presents",
@@ -259,7 +283,7 @@ var EffectExemptions = map[string]string{
 // EffectExemptionPin is the ratchet: the exemption count at the time
 // the guard landed. It may only ever be lowered, and only in the PR
 // that removes an exemption by adding the probe that replaces it.
-const EffectExemptionPin = 190 // raised by two for completion.perMinute + completion.serverPerMinute (#2387): completion rate limits whose effects are covered by internal/daemon handler tests (429 before the pool; per-server window across callers), not settings probes; previously raised by three for protoTasks.maxTTL / maxPerRequestor / perMinute (#2498): task-store limits whose effects are covered by internal/tasks store tests, not settings probes; raised by two for artifacts.idleTtl + artifacts.maxAge (#2548), in the artifact-store exemption style of artifacts.ttl; raised by one for exec.maxOutputBytes (CODE-16, #1937), in the call-scoped exec exemption style of exec.timeout; previously raised by one for policy.write (#1979)
+const EffectExemptionPin = 208 // deliberate +1 for daemon.roots and +8 for model.*: model settings are covered by internal/model and daemon unit tests; settings-driven e2e probes are not yet present. Deliberate +1 (2026-11-03, #1925 slice 3) for sampling.answerLocally: same model-layer coverage, daemon unit tests in internal/daemon/sampling_local_test.go. Deliberate +1 (2026-11-03, #5242) for plugin.disabledTools: read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host, the same basis as every other plugin.* exemption. Deliberate +5 (2026-11-04, #1915 stage 2): import graph, missing, dynamic, cross-project and network policies are covered by deterministic internal/preflight tests, but the e2e harness has no isolated Deno graph fixture yet.
 
 // CheckEffectCoverage returns one violation per way the probe and
 // exemption maps fail to cover reg exactly: a setting with neither,

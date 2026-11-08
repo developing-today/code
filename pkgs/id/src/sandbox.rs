@@ -178,6 +178,7 @@ impl Sandbox {
                 matches!(
                     export.name(),
                     "memory"
+                        | "plaza_abi_version"
                         | "plaza_alloc"
                         | "plaza_init"
                         | "plaza_update"
@@ -936,6 +937,463 @@ mod tests {
     }
 
     #[test]
+    fn checked_in_roc_examples_export_abi_version_one() {
+        for wasm in [
+            include_bytes!("../examples/roc-counter/counter.wasm").as_slice(),
+            include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm").as_slice(),
+        ] {
+            let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+            let mut store = Store::new(&runner.engine, ());
+            store.set_fuel(runner.limits.fuel).unwrap();
+            let instance = Instance::new(&mut store, &runner.module, &[]).unwrap();
+            let abi_version = instance
+                .get_typed_func::<(), i32>(&mut store, "plaza_abi_version")
+                .unwrap()
+                .call(&mut store, ())
+                .unwrap();
+
+            assert_eq!(abi_version, 1);
+        }
+    }
+
+    // ---- Plaza guest ABI conformance suite (F12.7, #1064) -----------------
+    //
+    // The contract under test is `examples/roc-world/ABI.md` (v1). The suite
+    // loads the checked-in Wasm modules — no Roc toolchain required — and
+    // asserts the documented export surface and wire behaviour end to end:
+    // signatures, the version getter, buffer ownership and the shared
+    // output slot, snapshot/restore round-trips, and the capability
+    // protocol exercised through the world-fixture base (#544/#239).
+    // Every failure names the offending export or module so a future ABI
+    // change fails loudly instead of drifting silently.
+
+    const ABI_MD: &str = include_str!("../examples/roc-world/ABI.md");
+
+    const CONFORMANCE_MODULES: [(&str, &[u8]); 2] = [
+        (
+            "roc-counter",
+            include_bytes!("../examples/roc-counter/counter.wasm"),
+        ),
+        (
+            "tic-tac-toe",
+            include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm"),
+        ),
+    ];
+
+    /// Parse the ABI.md export table into (name, params, results) triples.
+    /// Signature cells spell types with labels (`(i32 byte_len) -> i32 ptr`);
+    /// only the `i32`/`i64` tokens are part of the Wasm signature. Types are
+    /// compared by kind name because wasmtime's `ValType` is not `PartialEq`.
+    fn abi_documented_signatures() -> Vec<(String, Vec<&'static str>, Vec<&'static str>)> {
+        let types = |text: &str| -> Vec<&'static str> {
+            text.split(|c: char| !(c.is_ascii_alphanumeric()))
+                .filter(|token| !token.is_empty())
+                .filter_map(|token| match token {
+                    "i32" => Some("i32"),
+                    "i64" => Some("i64"),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut documented = Vec::new();
+        for line in ABI_MD.lines() {
+            let mut cells = line.split('|');
+            let _ = cells.next();
+            let Some(name) = cells.next() else { continue };
+            let name = name.trim().trim_matches('`');
+            if !name.starts_with("plaza_") {
+                continue;
+            }
+            let signature = cells.next().unwrap_or("").trim().trim_matches('`');
+            let (params, results) = signature.split_once("->").unwrap_or((signature, ""));
+            let results = results.trim();
+            documented.push((
+                name.to_owned(),
+                types(params),
+                if results == "()" {
+                    Vec::new()
+                } else {
+                    types(results)
+                },
+            ));
+        }
+        documented
+    }
+
+    fn conformance_raw_instance(runner: &Sandbox) -> (Store<()>, Instance) {
+        let mut store = Store::new(&runner.engine, ());
+        store.set_fuel(runner.limits.fuel).unwrap();
+        let instance = Instance::new(&mut store, &runner.module, &[]).unwrap();
+        (store, instance)
+    }
+
+    #[test]
+    fn conformance_documented_exports_match_abi_md_signatures() {
+        let documented = abi_documented_signatures();
+        assert_eq!(
+            documented.len(),
+            14,
+            "ABI.md should document 14 plaza_* exports, parsed: {documented:?}"
+        );
+        for (label, wasm) in CONFORMANCE_MODULES {
+            let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+            let (mut store, instance) = conformance_raw_instance(&runner);
+            for export in runner.module.exports() {
+                let name = export.name();
+                assert!(
+                    name == "memory" || documented.iter().any(|(n, _, _)| n == name),
+                    "{label}: export `{name}` is not documented in ABI.md"
+                );
+            }
+            assert!(
+                instance.get_memory(&mut store, "memory").is_some(),
+                "{label}: missing the required `memory` export"
+            );
+            let type_names = |types: Vec<wasmtime::ValType>| -> Vec<String> {
+                types
+                    .iter()
+                    .map(|ty| match ty {
+                        wasmtime::ValType::I32 => "i32".to_owned(),
+                        wasmtime::ValType::I64 => "i64".to_owned(),
+                        other => format!("{other:?}"),
+                    })
+                    .collect()
+            };
+            for (name, params, results) in &documented {
+                let func = instance
+                    .get_func(&mut store, name)
+                    .unwrap_or_else(|| panic!("{label}: documented export `{name}` is missing"));
+                let ty = func.ty(&mut store);
+                assert_eq!(
+                    type_names(ty.params().collect()),
+                    params.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    "{label}: export `{name}` parameter signature differs from ABI.md"
+                );
+                assert_eq!(
+                    type_names(ty.results().collect()),
+                    results.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    "{label}: export `{name}` result signature differs from ABI.md"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn conformance_abi_version_export_returns_one() {
+        for (label, wasm) in CONFORMANCE_MODULES {
+            let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+            let (mut store, instance) = conformance_raw_instance(&runner);
+            let version = instance
+                .get_typed_func::<(), i32>(&mut store, "plaza_abi_version")
+                .unwrap_or_else(|e| panic!("{label}: export `plaza_abi_version` is unusable: {e}"))
+                .call(&mut store, ())
+                .unwrap();
+            assert_eq!(
+                version, 1,
+                "{label}: export `plaza_abi_version` must return 1 for ABI v1"
+            );
+        }
+    }
+
+    #[test]
+    fn conformance_buffer_ownership_and_shared_output_slot() {
+        // The canonical Roc guest, driven at the raw ABI level: the host
+        // allocates guest-owned input, writes the event, frees the exact
+        // allocation after the call, and reads outputs through the one
+        // shared pointer + `plaza_out_len` slot.
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let (mut store, instance) = conformance_raw_instance(&runner);
+        let memory = instance.get_memory(&mut store, "memory").unwrap();
+        let alloc = instance
+            .get_typed_func::<i32, i32>(&mut store, "plaza_alloc")
+            .unwrap();
+        let free = instance
+            .get_typed_func::<(i32, i32), ()>(&mut store, "plaza_free")
+            .unwrap();
+        let init = instance
+            .get_typed_func::<i64, i32>(&mut store, "plaza_init")
+            .unwrap();
+        let update = instance
+            .get_typed_func::<(i32, i32, i32, i32), i32>(&mut store, "plaza_update")
+            .unwrap();
+        let view = instance
+            .get_typed_func::<i32, i32>(&mut store, "plaza_view")
+            .unwrap();
+        let snapshot = instance
+            .get_typed_func::<i32, i32>(&mut store, "plaza_snapshot")
+            .unwrap();
+        let restore = instance
+            .get_typed_func::<(i32, i32), i32>(&mut store, "plaza_restore")
+            .unwrap();
+        let out_len = instance
+            .get_typed_func::<(), i32>(&mut store, "plaza_out_len")
+            .unwrap();
+        let error_ptr = instance
+            .get_typed_func::<(), i32>(&mut store, "plaza_error_ptr")
+            .unwrap();
+        let error_len = instance
+            .get_typed_func::<(), i32>(&mut store, "plaza_error_len")
+            .unwrap();
+
+        let read_output = |store: &mut Store<()>, ptr: i32| -> Vec<u8> {
+            let len = out_len.call(&mut *store, ()).unwrap();
+            assert!(
+                len > 0,
+                "export output must leave a positive `plaza_out_len`"
+            );
+            let mut buf = vec![0u8; usize::try_from(len).unwrap()];
+            memory
+                .read(&*store, usize::try_from(ptr).unwrap(), &mut buf)
+                .unwrap();
+            buf
+        };
+
+        let model = init.call(&mut store, 7).unwrap();
+        // Host -> guest input: allocate, write, call, free the allocation.
+        let event = b"inc";
+        let in_ptr = alloc
+            .call(&mut store, i32::try_from(event.len()).unwrap())
+            .unwrap();
+        assert!(in_ptr > 0, "`plaza_alloc` must return a usable pointer");
+        memory
+            .write(&mut store, usize::try_from(in_ptr).unwrap(), event)
+            .unwrap();
+        let model = update
+            .call(
+                &mut store,
+                (model, 1, in_ptr, i32::try_from(event.len()).unwrap()),
+            )
+            .unwrap();
+        free.call(&mut store, (in_ptr, i32::try_from(event.len()).unwrap()))
+            .unwrap();
+
+        let view_ptr = view.call(&mut store, model).unwrap();
+        let view_bytes = read_output(&mut store, view_ptr);
+        assert!(
+            String::from_utf8(view_bytes.clone())
+                .unwrap()
+                .contains("count=1"),
+            "view after one inc: {}",
+            String::from_utf8_lossy(&view_bytes)
+        );
+        // The diagnostic pair is readable at rest and within its cap.
+        let diag_len = error_len.call(&mut store, ()).unwrap();
+        assert!(
+            (0..=4096).contains(&diag_len),
+            "`plaza_error_len` at rest must be within the 4096-byte cap, got {diag_len}"
+        );
+        let _ = error_ptr.call(&mut store, ()).unwrap();
+
+        // `plaza_snapshot` reuses the same output slot; a following view
+        // call re-owns it and returns the identical bytes.
+        let snapshot_ptr = snapshot.call(&mut store, model).unwrap();
+        let snapshot_bytes = read_output(&mut store, snapshot_ptr);
+        let view_ptr = view.call(&mut store, model).unwrap();
+        assert_eq!(read_output(&mut store, view_ptr), view_bytes);
+
+        // Restore consumes a host-allocated snapshot buffer, freed after.
+        let snap_ptr = alloc
+            .call(&mut store, i32::try_from(snapshot_bytes.len()).unwrap())
+            .unwrap();
+        memory
+            .write(
+                &mut store,
+                usize::try_from(snap_ptr).unwrap(),
+                &snapshot_bytes,
+            )
+            .unwrap();
+        let restored = restore
+            .call(
+                &mut store,
+                (snap_ptr, i32::try_from(snapshot_bytes.len()).unwrap()),
+            )
+            .unwrap();
+        free.call(
+            &mut store,
+            (snap_ptr, i32::try_from(snapshot_bytes.len()).unwrap()),
+        )
+        .unwrap();
+        let view_ptr = view.call(&mut store, restored).unwrap();
+        assert_eq!(read_output(&mut store, view_ptr), view_bytes);
+    }
+
+    #[test]
+    fn conformance_snapshot_restore_round_trip_is_byte_identical() {
+        for (label, wasm) in CONFORMANCE_MODULES {
+            let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+            let mut world = runner.instantiate(7).unwrap();
+            if label == "roc-counter" {
+                world.update(1, b"inc").unwrap();
+                world.update(1, b"inc").unwrap();
+            }
+            let view_before = world.view().unwrap();
+            let records_before = world.records().unwrap();
+            if let Some(records) = &records_before {
+                let value: serde_json::Value = serde_json::from_slice(records)
+                    .unwrap_or_else(|e| panic!("{label}: `plaza_records` output is not JSON: {e}"));
+                assert!(
+                    value.is_object(),
+                    "{label}: `plaza_records` must return a JSON object of string keys"
+                );
+            }
+            if let Some(wants) = world.wants().unwrap() {
+                let text = String::from_utf8(wants).unwrap();
+                crate::world_caps::parse_wants(&text).unwrap_or_else(|e| {
+                    panic!("{label}: `plaza_wants` document fails the capability schema: {e}")
+                });
+            }
+            let snapshot = world
+                .snapshot()
+                .unwrap()
+                .unwrap_or_else(|| panic!("{label}: the Roc host must export `plaza_snapshot`"));
+            let mut restored = runner.instantiate(7).unwrap();
+            restored.restore(&snapshot).unwrap();
+            assert_eq!(
+                restored.view().unwrap(),
+                view_before,
+                "{label}: view differs after snapshot/restore"
+            );
+            assert_eq!(
+                restored.records().unwrap(),
+                records_before,
+                "{label}: records differ after snapshot/restore"
+            );
+            // The ABI's probe rule: a restored model re-snapshots to the
+            // exact bytes the host journaled.
+            assert_eq!(
+                restored.snapshot().unwrap().unwrap(),
+                snapshot,
+                "{label}: snapshot after restore is not byte-identical"
+            );
+        }
+    }
+
+    #[test]
+    fn conformance_capability_protocol_replays_through_the_fixture_base() {
+        use crate::world::{WorldEvent, WorldEventKind, WorldProgram};
+        use crate::world_fixture::{Fixture, FixtureEvent, FixtureHeader, Verdict};
+
+        let wasm = include_bytes!("../examples/roc-chat/roc-chat.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut live = runner.instantiate(7).unwrap();
+        let mut events: Vec<FixtureEvent> = Vec::new();
+        let mut sequence = 0u64;
+        let mut input = |live: &mut WorldInstance, events: &mut Vec<FixtureEvent>, bytes: &[u8]| {
+            sequence += 1;
+            WorldProgram::update(
+                live,
+                &WorldEvent {
+                    sequence,
+                    participant_id: 1,
+                    kind: WorldEventKind::Input(bytes.to_vec()),
+                },
+            )
+            .unwrap();
+            events.push(FixtureEvent::Input {
+                sequence,
+                participant_id: 1,
+                bytes: bytes.to_vec(),
+            });
+        };
+        let host =
+            |live: &mut WorldInstance, events: &mut Vec<FixtureEvent>, event: serde_json::Value| {
+                WorldProgram::update(
+                    live,
+                    &WorldEvent {
+                        sequence: 0,
+                        participant_id: 0,
+                        kind: WorldEventKind::System {
+                            event: event.to_string(),
+                        },
+                    },
+                )
+                .unwrap();
+                events.push(FixtureEvent::System {
+                    event: event.to_string(),
+                });
+            };
+
+        // Type "hi" and submit: the guest requests `chat.say` as r0, and
+        // the document must satisfy the capability schema in world_caps.
+        input(&mut live, &mut events, b"h");
+        input(&mut live, &mut events, b"i");
+        input(&mut live, &mut events, b"\r");
+        let wants = WorldProgram::wants(&mut live).unwrap().unwrap();
+        let parsed = crate::world_caps::parse_wants(&wants).unwrap();
+        assert!(
+            parsed
+                .requests
+                .iter()
+                .any(|r| r.id == "r0" && r.cap == "chat.say"),
+            "expected a chat.say request r0 in wants: {wants}"
+        );
+        host(
+            &mut live,
+            &mut events,
+            serde_json::json!({"cap":"result","id":"r0","ok":true,"value":{"sequence":1}}),
+        );
+        // Ask for history: answered as r1, the view reports the line.
+        for byte in b"hist" {
+            input(&mut live, &mut events, &[*byte]);
+        }
+        input(&mut live, &mut events, b"\r");
+        let wants = WorldProgram::wants(&mut live).unwrap().unwrap();
+        assert!(wants.contains("chat.history"), "wants after hist: {wants}");
+        host(
+            &mut live,
+            &mut events,
+            serde_json::json!({
+                "cap": "result",
+                "id": "r1",
+                "ok": true,
+                "value": {"lines": [{"sequence": 1, "participant": 1, "text": "hi"}]},
+            }),
+        );
+        let live_view = String::from_utf8(live.view().unwrap()).unwrap();
+        assert_eq!(live_view, "chat seen=1 last=hi input=");
+        let live_records = WorldProgram::records(&mut live).unwrap();
+
+        // The same session as a fixture (#239 base): encode/decode round
+        // trip, module check, then replay and the #544 determinism verify.
+        let fixture = Fixture {
+            header: FixtureHeader {
+                world_id: "roc-chat-conformance".to_owned(),
+                module_hash: Some(crate::world_session::module_hash(wasm)),
+                current_sequence: sequence,
+                complete: true,
+                records: live_records
+                    .as_deref()
+                    .map(|text| crate::world::parse_records(text).unwrap()),
+            },
+            events,
+        };
+        let text = crate::world_fixture::encode(&fixture.header, &fixture.events);
+        let decoded = crate::world_fixture::decode(&text).unwrap();
+        assert_eq!(decoded, fixture);
+        crate::world_fixture::check_module(&decoded.header, wasm).unwrap();
+        let replayed = crate::world_fixture::replay(&runner, 7, &decoded, false).unwrap();
+        assert_eq!(
+            replayed.view.as_deref(),
+            Some(live_view.as_str()),
+            "fixture replay must reproduce the live view"
+        );
+        if decoded.header.records.is_some() {
+            assert_eq!(replayed.verdict, Verdict::Match);
+        }
+        let verification = crate::world_fixture::verify(&runner, 7, &decoded, false).unwrap();
+        assert!(
+            verification.is_deterministic(),
+            "fixture replay diverged: {:?}",
+            verification.divergence
+        );
+        assert!(
+            verification.steps > 0,
+            "verify must compare per-event records"
+        );
+    }
+
+    #[test]
     fn checked_in_roc_counter_compiles_and_initializes_in_the_import_free_sandbox() {
         let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
@@ -1026,7 +1484,7 @@ mod tests {
 
     #[test]
     fn checked_in_tic_tac_toe_plays_a_full_game() {
-        let wasm = include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm");
+        let wasm = include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut world = runner.instantiate(7).unwrap();
         let records = |world: &mut WorldInstance| {
@@ -1105,7 +1563,7 @@ mod tests {
         );
 
         // Tic-tac-toe: the board alone carries the ply count and the winner.
-        let wasm = include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm");
+        let wasm = include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut live = runner.instantiate(7).unwrap();
         for (participant, cell) in [(1u64, "0"), (2, "3"), (1, "1"), (2, "4"), (1, "2")] {
@@ -1326,7 +1784,7 @@ mod tests {
             ),
             (
                 "tic-tac-toe",
-                include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm"),
+                include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm"),
             ),
         ];
         println!("| example | plaza_layout | bytes @ 80x24 | bytes @ 200x60 |");
@@ -1987,7 +2445,7 @@ mod tests {
             },
             Example {
                 name: "tic-tac-toe",
-                wasm: include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm"),
+                wasm: include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm"),
                 drive: drive_tic_tac_toe,
             },
             Example {

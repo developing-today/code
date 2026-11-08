@@ -78,8 +78,8 @@ use iroh_base::EndpointId;
 
 use crate::{
     CLIENT_KEY_FILE, FindMatch, META_ALPN, MetaRequest, MetaResponse, TaggedMatch, cmd_get_one,
-    cmd_get_one_remote, load_or_create_keypair, match_kind, open_store, print_match_cli,
-    print_matches_cli,
+    cmd_get_one_remote, helpers::download_output_path, load_or_create_keypair, match_kind,
+    open_store, print_match_cli, print_matches_cli,
 };
 
 /// Options for filtering and limiting search results.
@@ -149,37 +149,38 @@ impl SearchOptions {
     }
 }
 
-/// Build the local write path for a downloaded find/search match.
+/// Plan all bulk-download destinations before creating directories or writing files.
 ///
-/// A match name is untrusted input: in remote mode both the name and the
-/// blob content come from the queried node, so the name must never be used
-/// as a filesystem path verbatim (`../` and absolute names would overwrite
-/// arbitrary local files — issue #1614). The write path is derived from the
-/// name's final path component only (`Path::file_name` ruling), optionally
-/// under `dir`. A name with no final component (`..`, `/`, a trailing
-/// separator, empty) is refused and nothing is written. Ordinary
-/// single-segment names produce byte-identical paths to the previous
-/// verbatim behaviour.
-fn download_output_path(dir: Option<&str>, name: &str) -> Result<String> {
-    if name.is_empty() || name.ends_with('/') {
-        bail!(
-            "refusing download of match with unsafe name {:?}: no final path component",
-            name
-        );
+/// Match names are deduplicated the same way as the output loops. Distinct matches
+/// that flatten to the same final-component path are rejected as a batch so a
+/// later download cannot silently overwrite an earlier one.
+fn plan_download_paths<'a>(
+    dir: &str,
+    matches: &'a [TaggedMatch],
+) -> Result<Vec<(&'a TaggedMatch, String)>> {
+    let mut seen_matches = std::collections::HashSet::new();
+    let mut destinations = std::collections::HashMap::new();
+    let mut plan = Vec::new();
+
+    for m in matches {
+        let key = format!("{}:{}", m.hash, m.name);
+        if !seen_matches.insert(key) {
+            continue;
+        }
+
+        let output_path = download_output_path(Some(dir), &m.name)?;
+        if let Some(previous_name) = destinations.insert(output_path.clone(), m.name.as_str()) {
+            bail!(
+                "refusing bulk download: destination collision between matches {:?} and {:?} at {:?}",
+                previous_name,
+                m.name,
+                output_path
+            );
+        }
+        plan.push((m, output_path));
     }
-    let Some(file_name) = std::path::Path::new(name)
-        .file_name()
-        .and_then(|c| c.to_str())
-    else {
-        bail!(
-            "refusing download of match with unsafe name {:?}: no final path component",
-            name
-        );
-    };
-    Ok(match dir {
-        Some(dir) => format!("{}/{}", dir, file_name),
-        None => file_name.to_owned(),
-    })
+
+    Ok(plan)
 }
 
 /// Find files matching queries and output their content.
@@ -262,21 +263,16 @@ pub async fn cmd_find(
     // --all mode: output all matches
     if all {
         if let Some(ref dir_path) = dir {
+            let plan = plan_download_paths(dir_path, &all_matches)?;
             std::fs::create_dir_all(dir_path)?;
-            // Deduplicate by hash+name for file output
-            let mut seen = std::collections::HashSet::new();
-            for m in &all_matches {
-                let key = format!("{}:{}", m.hash, m.name);
-                if seen.insert(key) {
-                    let output_path = download_output_path(Some(dir_path), &m.name)?;
-                    if let Some(ref node_str) = node {
-                        let node_id: EndpointId = node_str.parse()?;
-                        cmd_get_one_remote(node_id, &m.name, &output_path, no_relay).await?;
-                    } else {
-                        cmd_get_one(&m.name, &output_path, false, false).await?;
-                    }
-                    print_match_cli(m, format);
+            for (m, output_path) in plan {
+                if let Some(ref node_str) = node {
+                    let node_id: EndpointId = node_str.parse()?;
+                    cmd_get_one_remote(node_id, &m.name, &output_path, no_relay).await?;
+                } else {
+                    cmd_get_one(&m.name, &output_path, false, false).await?;
                 }
+                print_match_cli(m, format);
             }
         } else {
             // Output all to stdout (concatenated)
@@ -403,20 +399,16 @@ pub async fn cmd_search(
     // --all mode: output all files (like find --all)
     if all {
         if let Some(ref dir_path) = dir {
+            let plan = plan_download_paths(dir_path, &all_matches)?;
             std::fs::create_dir_all(dir_path)?;
-            let mut seen = std::collections::HashSet::new();
-            for m in &all_matches {
-                let key = format!("{}:{}", m.hash, m.name);
-                if seen.insert(key) {
-                    let output_path = download_output_path(Some(dir_path), &m.name)?;
-                    if let Some(ref node_str) = node {
-                        let node_id: EndpointId = node_str.parse()?;
-                        cmd_get_one_remote(node_id, &m.name, &output_path, no_relay).await?;
-                    } else {
-                        cmd_get_one(&m.name, &output_path, false, false).await?;
-                    }
-                    print_match_cli(m, format);
+            for (m, output_path) in plan {
+                if let Some(ref node_str) = node {
+                    let node_id: EndpointId = node_str.parse()?;
+                    cmd_get_one_remote(node_id, &m.name, &output_path, no_relay).await?;
+                } else {
+                    cmd_get_one(&m.name, &output_path, false, false).await?;
                 }
+                print_match_cli(m, format);
             }
         } else {
             // Output all to stdout (concatenated)
@@ -944,7 +936,7 @@ pub async fn cmd_find_matches(
         send.write_all(&req).await?;
         send.finish()?;
         let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
         let result = match resp {
@@ -1059,6 +1051,19 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn test_download_output_path_dash_name_is_not_the_stdout_sentinel() {
+        // A match-derived "-" must name a file, not the stdout sentinel;
+        // only an explicit user-supplied "-" means stdout.
+        assert_eq!(download_output_path(None, "-").unwrap(), "./-");
+        assert_eq!(download_output_path(None, "nested/-").unwrap(), "./-");
+        assert_eq!(
+            download_output_path(Some("out"), "nested/-").unwrap(),
+            "out/-"
+        );
+    }
+
+    #[test]
     fn test_download_output_path_refuses_names_without_final_component() {
         for name in ["..", "/", "", "foo/", "../", "."] {
             assert!(
@@ -1067,6 +1072,33 @@ mod tests {
             );
             assert!(download_output_path(Some("out"), name).is_err());
         }
+    }
+
+    #[test]
+    fn test_plan_download_paths_rejects_final_component_collisions() {
+        let matches = vec![
+            TaggedMatch {
+                query: "report".to_owned(),
+                hash: Hash::from_bytes([0; 32]),
+                name: "one/report.txt".to_owned(),
+                kind: MatchKind::Exact,
+                is_hash_match: false,
+            },
+            TaggedMatch {
+                query: "report".to_owned(),
+                hash: Hash::from_bytes([1; 32]),
+                name: "two/report.txt".to_owned(),
+                kind: MatchKind::Exact,
+                is_hash_match: false,
+            },
+        ];
+
+        let error = plan_download_paths("out", &matches)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("destination collision"), "{error}");
+        assert!(error.contains("one/report.txt"), "{error}");
+        assert!(error.contains("two/report.txt"), "{error}");
     }
 
     #[test]
@@ -1386,7 +1418,6 @@ mod tests {
         assert!(result.contains("abcdef123456")); // Header should include hash prefix
         assert!(result.contains("lines:")); // Header should show line count
     }
-
 
     // Regression (#1787): lines = usize::MAX/2 + 1 must not overflow the
     // printers' doubling — saturating arithmetic prints short content once,

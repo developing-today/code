@@ -425,7 +425,9 @@ async fn wait_for_commit(signal: &CommitSignal, committed: usize) {
     }
 }
 
-/// Writes one message as frames, or closes the connection if the cut is due.
+/// Writes one message as frames, or closes the connection if the cut is due. Session messages are
+/// non-empty: the initiator starts with `full_range`, and each non-empty incoming message produces
+/// at least one reply entry; `read_flight` rejects an empty incoming message before that point.
 async fn write_flight(
     send: &mut SendStream,
     conn: Option<&Connection>,
@@ -499,6 +501,7 @@ async fn read_flight(recv: &mut RecvStream, budget: &mut ReadBudget) -> Result<V
             break;
         }
     }
+    ensure!(!entries.is_empty(), "peer sent an empty flight");
     check_bounds(&entries)?;
     Ok(entries)
 }
@@ -850,6 +853,10 @@ mod tests {
                 tag: None,
                 document: None,
                 removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
             };
             events.push(chain::sign(&key, seq, backlink, Some(body), ext).unwrap());
         }
@@ -881,6 +888,85 @@ mod tests {
             .into_iter()
             .map(|e| e.1)
             .collect()
+    }
+
+    /// A peer that sends the zero-count `[0, 0]` frame cannot end reconciliation as all-skip.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_read_flight_rejects_empty_flight() {
+        let server = endpoint(vec![ALPN.to_vec()]).await.unwrap();
+        let client = endpoint(vec![]).await.unwrap();
+        let target = loopback_addr(&server);
+        let peer = tokio::spawn(async move {
+            let incoming = server.accept().await.unwrap();
+            let conn = incoming.await.unwrap();
+            let (mut send, _recv) = conn.accept_bi().await.unwrap();
+            send.write_all(&2u32.to_be_bytes()).await.unwrap();
+            send.write_all(&[0, 0]).await.unwrap();
+            send.finish().unwrap();
+            // Stay alive until the client closes: dropping the endpoint here would tear
+            // the connection down before the client has read the flight.
+            conn.closed().await;
+        });
+
+        let conn = client.connect(target, ALPN).await.unwrap();
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        // A stream is announced to the peer only once it carries data, and the peer
+        // accept_bi waits for that announcement. One byte announces this stream; the
+        // peer never reads our half.
+        send.write_all(&[0]).await.unwrap();
+        let mut budget = ReadBudget {
+            budget: 64,
+            read: 0,
+        };
+        let err = read_flight(&mut recv, &mut budget)
+            .await
+            .expect_err("the empty flight was accepted");
+        assert!(err.to_string().contains("empty flight"), "{err:#}");
+
+        conn.close(0u32.into(), b"done");
+        client.close().await;
+        peer.await.unwrap();
+    }
+
+    /// Refusing an empty first flight prevents a session from reporting a successful zero transfer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_empty_first_flight_fails_the_session() {
+        let (_dir, mut store) = open();
+        populate(&mut store, &[(1, 1)]);
+        let before = ids(&store);
+        let server = endpoint(vec![ALPN.to_vec()]).await.unwrap();
+        let client = endpoint(vec![]).await.unwrap();
+        let target = loopback_addr(&server);
+        let peer = tokio::spawn(async move {
+            let incoming = server.accept().await.unwrap();
+            let conn = incoming.await.unwrap();
+            let (mut send, _recv) = conn.accept_bi().await.unwrap();
+            send.write_all(&2u32.to_be_bytes()).await.unwrap();
+            send.write_all(&[0, 0]).await.unwrap();
+            send.finish().unwrap();
+            // Stay alive until the client closes: dropping the endpoint here would tear
+            // the connection down before the client has read the flight.
+            conn.closed().await;
+        });
+
+        let conn = client.connect(target, ALPN).await.unwrap();
+        let outcome = sync_over(
+            &mut store,
+            &conn,
+            true,
+            Params::default(),
+            NOW,
+            Duration::from_secs(5),
+            &testing::open_gate(),
+        )
+        .await;
+        let err = outcome.expect_err("the empty first flight completed a session");
+        assert!(err.to_string().contains("empty flight"), "{err:#}");
+        assert_eq!(ids(&store), before, "the refused session changed the store");
+
+        conn.close(0u32.into(), b"done");
+        client.close().await;
+        peer.await.unwrap();
     }
 
     /// Runs one session on each side of a loopback connection. The dialer is `a`. Both sessions
@@ -987,6 +1073,8 @@ mod tests {
             a.sync_entries().unwrap().is_empty(),
             "a fresh store reads as empty"
         );
+        // Each side still sends one full-range entry, so matching empty stores end via a genuine
+        // non-empty all-skip flight rather than a zero-entry flight.
         let (da, db) = loopback(
             &mut a,
             &mut b,
@@ -1021,6 +1109,10 @@ mod tests {
                 tag: None,
                 document: None,
                 removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
             },
         )
         .unwrap();
@@ -1063,6 +1155,10 @@ mod tests {
                 tag: None,
                 document: None,
                 removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
             },
         )
         .unwrap();
@@ -1109,6 +1205,10 @@ mod tests {
                 tag: None,
                 document: None,
                 removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
             },
         )
         .unwrap();
@@ -1137,6 +1237,122 @@ mod tests {
         assert_eq!(
             db.voided, 0,
             "voided counts stored-but-unapplied events, not refused arrivals: {db:?}"
+        );
+    }
+
+    /// #2414: a range session counts an arrival it stores but does not apply as
+    /// voided, not as accepted and not as refused. The shape is a content event
+    /// that names a voided group operation in its `after` set: the membership
+    /// layer voids an event that names a voided event when its author is not a
+    /// member of the group at that position (resolve rule 3), so the receiver
+    /// keeps the event without applying it. This is the stored-but-unapplied
+    /// shape the frozen-arrival test above cannot reach: a frozen arrival is
+    /// turned away, while this one is kept.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_a_range_session_counts_a_stored_but_unapplied_arrival_as_voided() {
+        use crate::membership::AuthId;
+        use crate::membership::body::encode_body;
+        use p2panda_auth::Access;
+        use p2panda_auth::group::{GroupAction, GroupMember};
+
+        fn gkey(who: u8) -> SigningKey {
+            SigningKey::from_bytes(&[who; 32])
+        }
+        fn gauth(who: u8) -> AuthId {
+            AuthId::Key(*gkey(who).verifying_key().as_bytes())
+        }
+        fn ext(group: Option<Hash>, after: Vec<Hash>, kind: &str) -> ChainExt {
+            ChainExt {
+                kind: kind.to_owned(),
+                group,
+                after,
+                tag: None,
+                document: None,
+                removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
+            }
+        }
+        // The group create, by A, listing A, B and C as managers. The group is
+        // the create's ID.
+        let create_body = encode_body(&GroupAction::Create {
+            initial_members: [b'A', b'B', b'C']
+                .iter()
+                .map(|who| (GroupMember::Individual(gauth(*who)), Access::manage()))
+                .collect(),
+        })
+        .unwrap();
+        let create = chain::sign(
+            &gkey(b'A'),
+            0,
+            None,
+            Some(&create_body),
+            ext(None, Vec::new(), "group.op"),
+        )
+        .unwrap();
+        let group = create.id;
+        // D is not a member, so D's operation on the group is stored but voided.
+        let op_body = encode_body(&GroupAction::Add {
+            member: GroupMember::Individual(gauth(b'E')),
+            access: Access::manage(),
+        })
+        .unwrap();
+        let op = chain::sign(
+            &gkey(b'D'),
+            0,
+            None,
+            Some(&op_body),
+            ext(Some(group), vec![group], "group.op"),
+        )
+        .unwrap();
+        // D's next event names the voided operation, so it is stored but does
+        // not apply either, on any store that holds the group state.
+        let target = chain::sign(
+            &gkey(b'D'),
+            1,
+            Some(op.id),
+            None,
+            ext(Some(group), vec![op.id], "message"),
+        )
+        .unwrap();
+
+        let (_da, mut a) = open();
+        let (_db, mut b) = open();
+        for store in [&mut a, &mut b] {
+            let created = store
+                .ingest_with_body(&create.bytes, Some(&create_body), NOW)
+                .unwrap();
+            assert!(matches!(created, Ingest::Accepted { .. }), "{created:?}");
+            let voided = store
+                .ingest_with_body(&op.bytes, Some(&op_body), NOW)
+                .unwrap();
+            assert!(matches!(voided, Ingest::Voided { .. }), "{voided:?}");
+        }
+        // Only A holds the target; it is voided there too, and sync still
+        // carries it: a voided event counts as present.
+        let held = a.ingest_events(vec![target.clone()], NOW).unwrap();
+        assert!(matches!(held[0], Ingest::Voided { .. }), "{held:?}");
+
+        let (da, db) = loopback(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+        )
+        .await
+        .unwrap();
+        let (da, db) = (da.unwrap(), db.unwrap());
+        assert_eq!(da.received, 0, "A learns nothing new: {da:?}");
+        assert_eq!(db.received, 1, "the target is the one arrival: {db:?}");
+        assert_eq!(db.voided, 1, "the target is stored but not applied: {db:?}");
+        assert_eq!(db.accepted, 0, "a voided arrival is not accepted: {db:?}");
+        assert_eq!(db.refused, 0, "a voided arrival is not refused: {db:?}");
+        assert!(
+            !b.event_applied(&target.id).unwrap(),
+            "the target is present on B but does not apply"
         );
     }
 
@@ -1652,6 +1868,43 @@ mod tests {
             "the dialer's session ends with the refusal"
         );
         assert_eq!(ids(&b), before_b, "no event crossed to the stranger");
+        assert_eq!(ids(&a), before_a, "the server's store is unchanged");
+    }
+
+    /// #2245: a peer blocked by key is refused by the acceptor's gate
+    /// before any event is sent, under the open policy included. Both
+    /// sides end with an error, and neither store changes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_blocked_peer_range_session_is_refused_and_sends_no_event() {
+        let (_da, mut a) = open();
+        let (_db, mut b) = open();
+        populate(&mut a, &[(1, 4)]);
+        let (before_a, before_b) = (ids(&a), ids(&b));
+        let gate = testing::open_gate().with_blocks(testing::stub_blocks(
+            &[*testing::key(0xd1).public().as_bytes()],
+            &[],
+        ));
+        let (dialer, acceptor) = loopback_gated(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+            &gate,
+            testing::key(0xd1),
+        )
+        .await
+        .unwrap();
+        let refused = acceptor.expect_err("a blocked peer was served events");
+        assert!(
+            refused.downcast_ref::<PullRefused>().is_some(),
+            "{refused:#}"
+        );
+        assert!(
+            dialer.is_err(),
+            "the dialer's session ends with the refusal"
+        );
+        assert_eq!(ids(&b), before_b, "no event crossed to the blocked peer");
         assert_eq!(ids(&a), before_a, "the server's store is unchanged");
     }
 

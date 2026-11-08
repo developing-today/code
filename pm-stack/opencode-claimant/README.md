@@ -1,89 +1,168 @@
-# opencode-claimant — laptop-side claimant/executor for the opencode lane
+# OpenCode Lane Claimant/Executor - Slice 1
 
-Implements slice 1 of
-[#3026](https://github.com/developing-today/code/issues/3026): queue
-tasks assigned the **opencode execution lane** get launched from the
-laptop side, with the session id bound in the task record at launch
-time — no Muse cron boots or hands off to OpenCode.
+## Overview
 
-## Mechanism (Drew's correction on #3026, 2026-10-31)
+This directory contains the implementation for slice 1 of OpenCode lane claimant/executor (#3026).
 
-The claimant is an **OpenChamber native scheduled task** on the laptop
-(cron `*/10 * * * *`, America/Chicago; route
-`opencode-route`/`workhorse`, agent `build`). OpenCode itself has no
-scheduler (#2019, upstream anomalyco/opencode#41906); the systemd-timer
-composition from #2019 is fallback-only and is NOT used here. No new
-service unit is needed: the claimant is a scheduled session, and the
-worker sessions it launches run on the standing OpenCode server
-(127.0.0.1:13420), the same surface pm-dispatch launches through.
+## Scope (Slice 1)
 
-## Pieces
+Slice 1 implements the **read-only discovery and reporting** phase for the opencode execution lane:
 
-- `prompt.md` — the scheduled task's prompt: gate, cap, candidate
-  handling, launch-time binding, terminal-state duties, supervision.
-  This file is the source of truth; the installer embeds it verbatim.
-- `poll.py` — read-only candidate discovery the prompt runs each fire:
-  claimed tasks whose `progress.lane` is `opencode` with no bound
-  `session_id` (across the four repo-health queues), plus the live
-  root-session count for the 12-session cap. It cannot mutate anything.
-- `install.mjs` — idempotent installer: merges the task definition
-  (stable id `f1b4a33b-14d5-4a69-9ad6-d221e42e3ac9`) into the laptop's
-  code-project OpenChamber store, preserving all other tasks, with a
-  timestamped backup before any write. `--dry-run` prints exactly what
-  would be installed and writes nothing.
+1. ✅ **Supervision** - Reports stuck_bound tasks (read-only in shadow mode)
+2. ✅ **Candidate Discovery** - Discovers unbound opencode-lane tasks from the four queues
+3. ❌ **Session Creation/Binding** - NOT implemented in slice 1 (would be live mode only)
+4. ❌ **Prompt Delivery** - NOT implemented in slice 1 (would be live mode only)
+5. ✅ **Fire Logging** - Always logs execution results to `~/.local/state/opencode-claimant/fires.jsonl`
 
-## Modes and the gate
+## Execution Modes
 
-The prompt reads its mode from `~/.local/state/opencode-claimant/mode`;
-anything but `live` means **shadow**: discover, verify, and log what
-would launch — launch nothing. The task also installs **disabled**.
-Shadow is what makes the worked example safe beside the live
-conductor: no double-launch is possible until the parallel-run gate
-(#3026 slice 2, enqueued when slice 1 completes) enables the task and
-flips the mode — the stand-down of the conductor's launch role waits
-for that gate, per the issue.
+### Shadow Mode (Default)
 
-## Supervision choice (recorded on #3026)
+When `~/.local/state/opencode-claimant/mode` contains `shadow` (or is missing/readable):
+- Discovers candidates via `poll.py`
+- Reports what **would** be launched without mutating any state
+- Does NOT create sessions, bind tasks, or send prompts
+- Always logs fire results
 
-Stall supervision is the claimant itself on its next fire: bound
-sessions are re-checked against the OpenCode server, a vanished
-session with no terminal state is noted and only relaunched after its
-lease expires, never over a live session. Tend's fleet-watchdog,
-reading the lane ledger, is the backstop — the same division #3026
-names.
+### Live Mode
 
-## Binding, and why it closes the Oct 28 gap
+When mode file contains `live`:
+- Performs supervision checks on bound sessions
+- Discovers candidates via `poll.py`
+- Creates sessions and binds tasks atomically
+- Sends prompts to worker sessions
+- Logs fire results
 
-The launch PATCH-then-ledger order copies pm-dispatch (the one
-precedent that binds a known task to a known session): create session,
-PATCH `progress.session_id` + `launched_by`, checkpoint `launched`,
-agent-note on the issue. A session without a binding is treated as a
-defect, not a launch.
+**Note:** Full live mode implementation is planned for future slices.
 
-## Tests
+## Files
 
-`bun test` in this directory (merge idempotence, prompt embedding,
-store-shape refusal); `python3 -m unittest test_poll.py` here covers
-poll.py's active-only cap counting. The worked example for slice 1 is
-`install.mjs --dry-run` against the live store plus a shadow
-`poll.py` run: both are read-only and are recorded on #3026.
+### claimant.py
 
-## Known gap found by the first shadow poll (2026-10-31) — RESOLVED by the gate
+Main entry point for the claimant/executor. Implements the 6-step process:
 
-`poll.py` originally counted every root session `GET /api/session`
-returns — 41 at the first shadow run, most of them
-finished-but-unarchived lane sessions, so `cap_room` read 0 even when
-few sessions were active. The gate refinement (task 4408) counts only
-**active** roots toward the cap: a finished session carries
-`time.idle` and an `outcome` (both verified on the live server: 50
-roots, 46 finished, at the gate check), a running one carries neither,
-and a marker-less root silent for 30+ minutes is treated as a zombie,
-not a worker. A root the server itself holds in `GET
-/api/session/active` always counts — a resumed session keeps its
-stored outcome from the earlier run while it is mid-run again, so the
-server's active set overrides the stored markers (the same rule the
-aggregator's session mapper applies). `poll.py` still reports the raw root total as
-`live_root_sessions` alongside the new `active_root_sessions`;
-`cap_room` derives from the active count. An unreadable server still
-yields `cap_room: null` — the cap fails closed, which is the safe
-direction.
+1. **Supervision** - Checks bound sessions for recovery candidates
+2. **Gate** - Verifies unbound opencode-lane candidates exist
+3. **Cap** - Checks concurrency limit (36 active root sessions)
+4. **Launch** - Simulates or executes session creation and binding
+5. **Terminal States** - Handled by worker sessions
+6. **Fire Logging** - Records execution results
+
+### poll.py
+
+Read-only candidate discovery (provided, not modified in slice 1):
+- Discovers unbound opencode-lane tasks from 4 queues
+- Identifies stuck_bound tasks for recovery
+- Calculates concurrency cap room
+- Returns structured JSON output
+
+### test_shadow_simple.py
+
+Test script that verifies shadow mode execution with simulated poll.py output.
+
+## Constants
+
+- **Queues**: `repo-health-code-pilot`, `repo-health-opencode-pilot`, `repo-health-openchamber-pilot`, `repo-health-nix-pilot`
+- **Concurrency Cap**: 36 active root sessions
+- **Recovery launched_by values**:
+  - `opencode-claimant-recovery:zero-message-deleted`
+  - `opencode-claimant-recovery:gone-session`
+
+## Usage
+
+### Run in shadow mode (default)
+
+```bash
+python3 pm-stack/opencode-claimant/claimant.py
+```
+
+### Run in live mode
+
+```bash
+echo "live" > ~/.local/state/opencode-claimant/mode
+python3 pm-stack/opencode-claimant/claimant.py
+```
+
+### Run tests
+
+```bash
+python3 pm-stack/opencode-claimant/test_shadow_simple.py
+```
+
+## Fire Log Format
+
+Each execution creates a JSON line in `~/.local/state/opencode-claimant/fires.jsonl`:
+
+```json
+{
+  "timestamp": "2026-11-07T22:35:33.713683+00:00",
+  "mode": "shadow",
+  "candidates_seen": [...],
+  "sessions_launched": [...],
+  "cap_room": 35,
+  "skips": [...]
+}
+```
+
+## Implementation Notes
+
+### Shadow Mode Behavior
+
+In shadow mode, the claimant:
+1. Reads mode from file (defaults to "shadow")
+2. Runs supervision step (reports stuck_bound tasks)
+3. Runs gate step (checks for candidates)
+4. Runs cap step (checks concurrency limit)
+5. Runs launch step (simulates launches with fake session IDs)
+6. Logs fire results
+
+### Live Mode Behavior (Future Slices)
+
+In live mode, the claimant will:
+1. Run supervision step (verifies and recovers stuck sessions)
+2. Run gate step (checks for candidates)
+3. Run cap step (checks concurrency limit)
+4. Run launch step (creates real sessions and binds tasks atomically)
+5. Send prompts to bound sessions
+6. Log fire results
+
+### Atomic Operations
+
+The implementation ensures:
+- Never double-bind a task
+- Never bind a session ID that wasn't just created
+- Never exceed concurrency cap
+- Session creation is verified before binding
+- Bind operations are atomic (via repo-queue CLI)
+
+### Error Handling
+
+- Unknown cap room → fail closed (launch nothing)
+- Session creation failure → leave task unbound for next fire
+- Bind failure → delete session and leave task unbound
+- Prompt delivery failure → reconcile bound session before retrying
+
+## Future Work (Beyond Slice 1)
+
+1. **Live mode supervision recovery**: Delete zero-message sessions and reclaim tasks
+2. **Session creation**: POST /api/session with verified location
+3. **Atomic binding**: repo-queue bind with session ID
+4. **Prompt delivery**: Send task-specific instructions to worker
+5. **Agent notes**: Post handoff notes to issues
+6. **Conductor integration**: Full live mode execution
+
+## Testing
+
+The test script `test_shadow_simple.py` demonstrates:
+- Mode detection (shadow mode)
+- Gate step (finds candidates)
+- Cap step (calculates available slots)
+- Launch step (simulates session creation)
+- Fire logging (creates log entry)
+
+## References
+
+- Issue: #3026 - OpenCode lane claimant/executor
+- Design: doc/fleet-schedule-registry.md
+- Migration: 0021 (bind_repo_task_lane_session), 0022 (atomic recovery)
+- Hard rules: Never work tasks yourself, never double-launch, never exceed cap

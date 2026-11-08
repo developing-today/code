@@ -1,10 +1,12 @@
 package preflight_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/preflight"
 )
@@ -103,6 +105,42 @@ func TestTypeCheckIsSkippedWhenOff(t *testing.T) {
 	}
 }
 
+func TestScriptCheckModesSelectTypesAndStrictCommands(t *testing.T) {
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "main.ts")
+	if err := os.WriteFile(entry, []byte("export {};\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "args")
+	stub := filepath.Join(dir, "deno-stub")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + marker + "'\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		mode preflight.TypeCheckMode
+		want []string
+	}{
+		{preflight.TypeCheckTypes, []string{"check", entry}},
+		{preflight.TypeCheckStrict, []string{"check", "--all", entry}},
+	} {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			rep := preflight.TypeCheckResolved(context.Background(), stub, entry, tc.mode, 0, nil, dir)
+			if err := rep.Err(); err != nil {
+				t.Fatalf("check failed: %v", err)
+			}
+			got, err := os.ReadFile(marker)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fields := strings.Fields(string(got)); strings.Join(fields, "\x00") != strings.Join(tc.want, "\x00") {
+				t.Errorf("arguments = %q, want %q", fields, tc.want)
+			}
+		})
+	}
+}
+
 func TestTypeCheckSaysSoWhenTheRuntimeCannotDoIt(t *testing.T) {
 	// Node and Bun strip types rather than checking them. Saying so is
 	// better than pretending the check ran.
@@ -125,5 +163,41 @@ func TestMergeCombinesReports(t *testing.T) {
 	})
 	if got := len(preflight.Merge(a, b, nil).Problems); got != 2 {
 		t.Errorf("got %d", got)
+	}
+}
+
+// Codex round (PR #2589): the type-check subprocess runs where the
+// script will execute, so a relative --config in the runtime arguments
+// resolves against the same directory at check time as at execution.
+func TestTypeCheckRunsInExecutionWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	execDir := t.TempDir()
+	entry := filepath.Join(dir, "main.ts")
+	if err := os.WriteFile(entry, []byte("export {};\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "cwd")
+	stub := filepath.Join(dir, "deno-stub")
+	script := "#!/bin/sh\npwd -P > '" + marker + "'\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rep := preflight.TypeCheckResolved(context.Background(), stub, entry,
+		preflight.TypeCheckOn, 10*time.Second,
+		[]string{"--config", "./deno.json"}, execDir)
+	if err := rep.Err(); err != nil {
+		t.Fatalf("unexpected report: %v", err)
+	}
+	got, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(execDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(got)) != want {
+		t.Fatalf("type check ran in %q, want the execution directory %q",
+			strings.TrimSpace(string(got)), want)
 	}
 }

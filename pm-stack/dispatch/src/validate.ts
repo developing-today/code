@@ -2,6 +2,8 @@
 // body validators for POST /v1/sessions and POST /v1/tasks. Pure functions —
 // unit-tested without a server.
 
+import { lstatSync, readlinkSync, realpathSync } from "node:fs";
+
 export class ValidationError extends Error {
   status = 400;
 }
@@ -76,7 +78,16 @@ export function parseModel(input: unknown): ModelRef | null {
     if (slash <= 0 || slash === t.length - 1) {
       throw new ValidationError(`model: string form must be "provider/model", got ${JSON.stringify(input)}`);
     }
-    return { providerID: t.slice(0, slash), id: t.slice(slash + 1) };
+    // Hold the string form to the same standard as the object form below:
+    // each segment is trimmed, and an empty segment after trimming is
+    // rejected. A hint like "anthropic / claude-sonnet" must not launch a
+    // session against a provider named "anthropic ".
+    const providerID = t.slice(0, slash).trim();
+    const id = t.slice(slash + 1).trim();
+    if (!providerID || !id) {
+      throw new ValidationError(`model: string form must be "provider/model", got ${JSON.stringify(input)}`);
+    }
+    return { providerID, id };
   }
   if (typeof input === "object") {
     const o = input as Record<string, unknown>;
@@ -151,11 +162,13 @@ export function parseSessionRequest(body: unknown): SessionRequest {
 /** Session-directory scoping for POST /v1/sessions (issues #2903, #2664).
  * One rule for every caller type (OIDC and bearer alike): a missing, empty,
  * or whitespace-only directory resolves to the target repo's clone, and an
- * explicit directory must be an absolute, normalized path equal to or inside
- * that clone. Relative paths, other repos' clones, and arbitrary absolute
- * paths are rejected BEFORE any issue/task/session is created. (This
- * supersedes the #2903-era bearer free-form directory; extra roots and
- * allowlists stay out of scope per design issue #2668.) */
+ * explicit directory must be an absolute path equal to or inside that
+ * clone AFTER symlink resolution (issue #3999). Relative paths, other
+ * repos' clones, arbitrary absolute paths, and in-clone paths whose
+ * resolved form escapes the clone (a committed symlink such as the
+ * code clone's worktrees or nixpkgs links) are rejected BEFORE any
+ * issue/task/session is created. Extra roots and allowlists stay out
+ * of scope per design issue #2668. */
 export function resolveSessionDirectory(
   callerType: "oidc" | "bearer",
   repo: string,
@@ -166,31 +179,82 @@ export function resolveSessionDirectory(
   if (scoped === undefined) {
     throw new ValidationError(`directory: no repo directory is configured for ${repo}`);
   }
-  const root = normalizeDirectory(scoped);
+  const budget: SymlinkBudget = { expansions: 0 };
+  const root = canonicalizeDirectory(scoped, budget);
   if (directory === undefined || directory.trim() === "") return root;
-  const norm = normalizeDirectory(directory);
-  if (norm === root || norm.startsWith(`${root}/`)) return norm;
+  const resolved = canonicalizeDirectory(directory, budget);
+  if (resolved === root || resolved.startsWith(`${root}/`)) return resolved;
   throw new ValidationError(
     `directory: ${callerType} callers may only run inside the target repo clone (${root}) or a directory within it`,
   );
 }
 
-/** Lexical absolute-path normalization: collapses duplicate slashes, "."
- * and ".." segments and trailing slashes. Relative paths are rejected. */
-function normalizeDirectory(d: string): string {
+/** Canonicalize an absolute directory path: resolve each component's
+ * symlinks as it is appended, so a ".." segment pops the RESOLVED parent
+ * (kernel order), not the lexical one. A component that does not exist
+ * cannot be a symlink, so the remaining tail is appended lexically onto
+ * the canonical prefix (the nearest-existing-ancestor rule); a dangling
+ * symlink still resolves through its readlink target, so a committed
+ * link pointing outside the clone is judged by where it points, not by
+ * whether its target happens to exist on this machine. Relative paths
+ * are rejected. */
+interface SymlinkBudget {
+  expansions: number;
+}
+
+function canonicalizeDirectory(d: string, budget: SymlinkBudget, depth = 0): string {
   if (!d.startsWith("/")) {
     throw new ValidationError(`directory: must be an absolute path, got "${d}"`);
   }
-  const parts: string[] = [];
+  if (depth > 40) {
+    throw new ValidationError(`directory: too many symlink levels in "${d}"`);
+  }
+  let resolved = "/";
   for (const seg of d.split("/")) {
     if (seg === "" || seg === ".") continue;
     if (seg === "..") {
-      parts.pop();
+      resolved = resolved.slice(0, resolved.lastIndexOf("/")) || "/";
       continue;
     }
-    parts.push(seg);
+    const next = resolved === "/" ? `/${seg}` : `${resolved}/${seg}`;
+    resolved = resolveComponent(next, budget, depth);
   }
-  return `/${parts.join("/")}`;
+  return resolved;
+}
+
+function resolveComponent(path: string, budget: SymlinkBudget, depth: number): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    // Nonexistent (or dangling): fall through to the symlink check.
+  }
+  try {
+    if (lstatSync(path).isSymbolicLink()) {
+      const target = readlinkSync(path);
+      const parent = path.slice(0, path.lastIndexOf("/")) || "/";
+      const absolute = target.startsWith("/") ? target : parent === "/" ? `/${target}` : `${parent}/${target}`;
+      // The budget is shared across the WHOLE resolution, not per
+      // recursion: a chain of dangling links shaped
+      // lN -> l(N-1)/../l(N-1) doubles the expansions per level while
+      // every individual recursion stays under the depth limit, so
+      // only a global cap keeps total work linear (Codex review
+      // round 2 of PR #4032). The kernel's per-syscall MAXSYMLINKS
+      // bound inside realpathSync has the same shape.
+      budget.expansions += 1;
+      if (budget.expansions > 40) {
+        throw new ValidationError(`directory: too many symlink expansions resolving "${path}"`);
+      }
+      return canonicalizeDirectory(absolute, budget, depth + 1);
+    }
+  } catch (e) {
+    // Our own depth-limit error must terminate traversal, not be
+    // swallowed as a filesystem miss: with a cyclic symlink
+    // (loop -> loop/../loop) swallowing it lets the caller re-expand
+    // the cycle segment by segment (Codex review of PR #4032).
+    if (e instanceof ValidationError) throw e;
+    // Not present at all: a plain lexical component.
+  }
+  return path;
 }
 
 export interface TaskRequest {
@@ -250,5 +314,16 @@ export function titleFromPrompt(prompt: string, max = 120): string {
       .split("\n")
       .map((l) => l.trim())
       .find((l) => l.length > 0) ?? "dispatch request";
-  return first.length > max ? first.slice(0, max - 1) + "…" : first;
+  if (first.length <= max) return first;
+
+  // Keep the UTF-16 cap and suffix, but don't leave half of a surrogate pair.
+  let end = max - 1;
+  if (end > 0 && end < first.length) {
+    const before = first.charCodeAt(end - 1);
+    const after = first.charCodeAt(end);
+    if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) {
+      end--;
+    }
+  }
+  return first.slice(0, end) + "…";
 }

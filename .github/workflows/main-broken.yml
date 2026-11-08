@@ -82,6 +82,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
+      contents: read
       issues: write
       actions: read
       pull-requests: read
@@ -92,9 +93,28 @@ jobs:
       RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
     steps:
+      # The pm-dispatch-queue action is loaded from this checkout rather
+      # than as `developing-today/code/.github/actions/pm-dispatch-queue@main`.
+      # The remote form made the runner download the whole repo as an
+      # action archive during "Set up job", which failed on every run with
+      # `Could not find file .../_staging/code-<sha>/archive` and broke the
+      # watcher entirely (issue #4867, runs 41627469155 / 41629527441 /
+      # 41665798024). A local action path is resolved from the workspace
+      # and needs no action-repository download.
+      - name: Check out the watcher action
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
       - name: Identify breakage
         id: identify
         run: |
+          # Intentional: the single-quoted strings in this block are jq programs
+          # evaluated by jq, not the shell -- $-expressions in them are jq's, and
+          # letting the shell expand them would break the queries. The printf
+          # format strings below are likewise literal; each carries a per-line
+          # directive on each flagged line (actionlint prepends a `set` line to
+          # the script, which defeats a single block-top directive).
           set -euo pipefail
           if [ -z "${RUN_ID:-}" ]; then
             echo "::error::no run id (workflow_run id or inputs.run_id required)"; exit 1
@@ -121,6 +141,7 @@ jobs:
             --search "$bid" --json number --jq '.[0].number // empty')
           ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           title="main-broken: $GH_REPO $wf @$short_sha — $first_job"
+          # shellcheck disable=SC2016
           body=$(printf 'Main-tier workflow `%s` failed on main.\n\n- Run: %s\n- Head commit: `%s`\n- Failing jobs: %s\n- Breakage-ID: %s\n\nFiled by the main-breakage chain (.github/workflows/main-broken.yml, #1782). Exactly one holder owns this breakage at a time; every transition is an agent-note:v1 comment on this issue.\n' \
             "$wf" "$run_url" "$head_sha" "$failing_csv" "$bid")
           if [ "$DRY_RUN" = "true" ]; then
@@ -135,6 +156,7 @@ jobs:
           fi
           if [ -n "$existing" ]; then
             action=append
+            # shellcheck disable=SC2016
             prompt=$(printf 'Fix GitHub issue #%s in %s: main-tier workflow `%s` failed on main again.\n\n- Run: %s\n- Head commit: `%s`\n- Failing jobs: %s\n- Breakage-ID: %s\n\nThis is a recurrence of the breakage tracked by that issue. Diagnose the failure, fix the root cause, and deliver the fix as a pull request whose description contains "Fixes #%s", so the issue closes when the fix lands.\n' \
               "$existing" "$GH_REPO" "$wf" "$run_url" "$head_sha" "$failing_csv" "$bid" "$existing")
           else
@@ -187,7 +209,7 @@ jobs:
       - name: Queue the breakage via pm-dispatch (creates the issue)
         id: dispatch-create
         if: steps.identify.outputs.action == 'create'
-        uses: developing-today/code/.github/actions/pm-dispatch-queue@main
+        uses: ./.github/actions/pm-dispatch-queue
         with:
           title: ${{ steps.identify.outputs.title }}
           prompt: ${{ steps.identify.outputs.prompt }}
@@ -249,7 +271,7 @@ jobs:
       - name: Queue a fresh fix task via pm-dispatch (existing issue)
         id: dispatch-append
         if: steps.identify.outputs.action == 'append'
-        uses: developing-today/code/.github/actions/pm-dispatch-queue@main
+        uses: ./.github/actions/pm-dispatch-queue
         with:
           title: ${{ steps.identify.outputs.title }}
           prompt: ${{ steps.identify.outputs.prompt }}

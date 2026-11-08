@@ -65,6 +65,7 @@ rebinding) is not re-checked.
 ## Testing
 
 ```bash
+python3 -m pip install -r container/requirements.txt
 npm test   # from pkgs/lab-ops-hub — runs BOTH suites, fails if either fails
 ```
 
@@ -72,8 +73,10 @@ That one command runs the TypeScript suite (`test/lib.test.ts`, the
 Worker copy of the crawl validator) and the Python suite
 (`test/test_container_validate.py`, the container copy) — the two
 implementations share one SSRF policy, so both are pinned together.
-Neither suite needs `npm install` (pure helpers / stdlib only). CI
-runs the same command on every pull request touching
+The Python suite needs the pinned `idna` dependency installed first:
+`python3 -m pip install -r container/requirements.txt`. Neither suite
+needs `npm install`. CI installs that Python dependency and runs the same
+test command on every pull request touching
 `pkgs/lab-ops-hub/**` (`.github/workflows/lab-ops-hub.yml`).
 
 ## Develop / deploy

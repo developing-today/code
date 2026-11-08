@@ -270,10 +270,22 @@ func Scan(dir, kind string, staleAge time.Duration, match func(name string) bool
 		}
 		return nil, err
 	}
+	// The listing itself decides what a lease file is: a lease
+	// for a file entry lives beside it as <entry>.lease-<random>
+	// (leaseLocation), so a name is a beside-file lease only when
+	// its entry is here too (#3112). Collected up front because
+	// the skip must not depend on visit order.
+	siblings := make(map[string]bool, len(ents))
+	for _, e := range ents {
+		siblings[e.Name()] = e.IsDir()
+	}
 	var out []Entry
 	for _, e := range ents {
 		name := e.Name()
 		if strings.HasPrefix(name, leasePrefix) || strings.HasPrefix(name, ".tmp-") {
+			continue
+		}
+		if !e.IsDir() && isBesideLease(name, siblings) {
 			continue
 		}
 		if match != nil && !match(name) {
@@ -299,6 +311,28 @@ func Scan(dir, kind string, staleAge time.Duration, match func(name string) bool
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].LastUsed.Before(out[j].LastUsed) })
 	return out, nil
+}
+
+// isBesideLease reports whether name is the beside-file lease of
+// a sibling entry: leaseLocation names a file entry's lease
+// <entry>.lease-<random> in the same directory, while a directory
+// entry's leases live inside it — so the name before the lease
+// infix must be a file in this listing. A genuine entry whose name
+// merely contains the infix, with no such sibling, stays an
+// entry (#3112).
+func isBesideLease(name string, siblings map[string]bool) bool {
+	for off := 0; ; {
+		idx := strings.Index(name[off:], leasePrefix)
+		if idx < 0 {
+			return false
+		}
+		if base := name[:off+idx]; base != "" {
+			if isDir, ok := siblings[base]; ok && !isDir {
+				return true
+			}
+		}
+		off += idx + 1
+	}
 }
 
 func dirSize(root string) int64 {

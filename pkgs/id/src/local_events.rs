@@ -24,6 +24,10 @@ use p2panda_core::{Hash, SigningKey};
 use crate::chain::{ChainExt, Event, MAX_AFTER, sign};
 use crate::documents::{DOCUMENT_KIND, DocumentRef, REMOVAL_KIND};
 use crate::event_store::{EventStore, Ingest};
+use crate::notes::{
+    AppliedNote, CREATE_KIND as NOTE_CREATE_KIND, NoteFoldError, NoteOp, NoteRecord,
+    REVISE_KIND as NOTE_REVISE_KIND, check_note_op, fold_notes,
+};
 use crate::search::{Hit, ValueMatch, search_store};
 use crate::tag_claims::{CLEAR_KIND, Claim, MAX_CLEAR_CLAIMS, SET_KIND, TagOp, check_op};
 use crate::waiting::{AuthorKey, WaitingLimits};
@@ -66,6 +70,28 @@ pub enum Entry {
         /// The claims it names.
         claims: Vec<Hash>,
     },
+    /// A `note.create`: the note it establishes. Its ID is the note's stable ID.
+    NoteCreate {
+        /// The event's ID, which is also the note's ID.
+        id: Hash,
+        /// The key that signed it.
+        author: AuthorKey,
+        /// The note's first content.
+        content: DocumentRef,
+    },
+    /// A `note.revise` of the note it names.
+    NoteRevise {
+        /// The event's ID, which is the revision's ID.
+        id: Hash,
+        /// The key that signed it.
+        author: AuthorKey,
+        /// The note's stable ID.
+        note: Hash,
+        /// The revision's content.
+        content: DocumentRef,
+        /// The revisions this one builds on.
+        parents: Vec<Hash>,
+    },
     /// A `document.remove` of the document it names.
     Remove {
         /// The event's ID.
@@ -85,6 +111,8 @@ impl Entry {
             Self::Document { id, .. }
             | Self::Set { id, .. }
             | Self::Clear { id, .. }
+            | Self::NoteCreate { id, .. }
+            | Self::NoteRevise { id, .. }
             | Self::Remove { id, .. } => *id,
         }
     }
@@ -96,6 +124,8 @@ impl Entry {
             Self::Document { author, .. }
             | Self::Set { author, .. }
             | Self::Clear { author, .. }
+            | Self::NoteCreate { author, .. }
+            | Self::NoteRevise { author, .. }
             | Self::Remove { author, .. } => *author,
         }
     }
@@ -107,6 +137,8 @@ impl Entry {
             Self::Document { .. } => DOCUMENT_KIND,
             Self::Set { .. } => SET_KIND,
             Self::Clear { .. } => CLEAR_KIND,
+            Self::NoteCreate { .. } => NOTE_CREATE_KIND,
+            Self::NoteRevise { .. } => NOTE_REVISE_KIND,
             Self::Remove { .. } => REMOVAL_KIND,
         }
     }
@@ -137,6 +169,45 @@ pub struct Published {
 
 /// Every applied event's entry by ID, and every applied event's parents by ID.
 type Log = (HashMap<Hash, Entry>, HashMap<Hash, Vec<Hash>>);
+
+/// Folds store note events while quarantining malformed remote revisions.
+///
+/// Unknown/foreign-parent revisions are removed first. If the remaining same-note graph is
+/// cyclic, remove a revision identified by the strict fold and repeat so its dependents are
+/// quarantined too; unrelated healthy notes remain readable.
+fn fold_remote_notes(
+    mut applied: Vec<AppliedNote>,
+) -> std::result::Result<Vec<NoteRecord>, NoteFoldError> {
+    loop {
+        let owners: HashMap<Hash, Hash> = applied
+            .iter()
+            .map(|event| match &event.op {
+                NoteOp::Create { .. } => (event.id, event.id),
+                NoteOp::Revise { note, .. } => (event.id, *note),
+            })
+            .collect();
+        let before = applied.len();
+        applied.retain(|event| match &event.op {
+            NoteOp::Create { .. } => true,
+            NoteOp::Revise { note, parents, .. } => {
+                owners.get(note) == Some(note)
+                    && parents
+                        .iter()
+                        .all(|parent| owners.get(parent) == Some(note))
+            }
+        });
+        if applied.len() != before {
+            continue;
+        }
+
+        match fold_notes(&applied) {
+            Err(NoteFoldError::CyclicParent { revision, .. }) => {
+                applied.retain(|event| event.id != revision);
+            }
+            result => return result,
+        }
+    }
+}
 
 /// The event store, and the key the node signs its events with.
 #[derive(Debug)]
@@ -205,10 +276,14 @@ impl LocalEvents {
         tags: &[(String, Option<String>)],
     ) -> Result<Published> {
         let document = DocumentRef::for_bytes(media_type, content)?;
+        let mut seen = HashSet::with_capacity(tags.len());
         for (name, value) in tags {
             check_tag(name, value.as_deref())?;
+            if !seen.insert((name, value)) {
+                bail!("a publish names the same tag twice");
+            }
         }
-        let id = self.record(DOCUMENT_KIND, None, Some(document.clone()), None, &[])?;
+        let id = self.record(DOCUMENT_KIND, None, Some(document.clone()), None, None, &[])?;
         let mut claims = Vec::with_capacity(tags.len());
         for (name, value) in tags {
             claims.push(self.set_tag(id, name, value.as_deref())?);
@@ -231,11 +306,13 @@ impl LocalEvents {
             name: name.to_owned(),
             value: value.map(str::to_owned),
         };
-        self.record(SET_KIND, Some(op), None, None, &[])
+        self.record(SET_KIND, Some(op), None, None, None, &[])
     }
 
-    /// Clears every live claim named `name` on `subject`, whoever set it. Nothing to clear is an
-    /// error.
+    /// Clears every live claim named `name` on `subject`, whoever set it, by recording
+    /// `tag.clear` markers naming them. Nothing to clear is an error. A marker hides a claim
+    /// in the default view only when this node's key authored the claim or is an admin of the
+    /// group owning the subject (#2090); the markers are recorded either way.
     ///
     /// One `tag.clear` event names at most [`MAX_CLEAR_CLAIMS`] claims, so a name with more live
     /// claims than that is cleared by several events, in the order [`EventStore::tag_claims`]
@@ -320,6 +397,7 @@ impl LocalEvents {
                 Some(TagOp::Clear { claims: ids }),
                 None,
                 None,
+                None,
                 &required,
             )?);
         }
@@ -327,7 +405,7 @@ impl LocalEvents {
         Ok((count, event))
     }
 
-    /// The live claims on `subject`, sorted by claim ID.
+    /// The live claims on `subject` in the default view, sorted by claim ID.
     ///
     /// # Errors
     ///
@@ -349,6 +427,137 @@ impl LocalEvents {
     pub fn search(&self, name: &str, value: Option<&str>) -> Result<Vec<Hit>> {
         let matching = value.map_or(ValueMatch::Any, ValueMatch::Exact);
         Ok(search_store(&self.store, name, matching)?)
+    }
+
+    /// Creates a note with `content` as its first content. The returned ID is the note's
+    /// stable ID: the `note.create` event's ID. The bytes are not kept here: they are a
+    /// blob, named by the content reference the event carries.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the media type is refused, or the store cannot record the event.
+    pub fn create_note(&mut self, media_type: &str, content: &[u8]) -> Result<Hash> {
+        let content = DocumentRef::for_bytes(media_type, content)?;
+        let op = NoteOp::Create { content };
+        check_note_op(NOTE_CREATE_KIND, &op)?;
+        self.record(NOTE_CREATE_KIND, None, None, None, Some(op), &[])
+    }
+
+    /// Adds one revision with `content` to the note `note`, building on `parents`. The
+    /// parents must be revisions of that note already in the store; naming two heads is
+    /// an explicit merge. The new revision's ID is returned.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the note is not in the store, a parent is not a revision of it, the
+    /// operation breaks a note rule, or the store cannot record the event.
+    pub fn revise_note(
+        &mut self,
+        note: Hash,
+        media_type: &str,
+        content: &[u8],
+        parents: &[Hash],
+    ) -> Result<Hash> {
+        let record = self.note_history(note)?;
+        for parent in parents {
+            if record.revision(*parent).is_none() {
+                bail!(
+                    "{} is not a revision of note {}",
+                    parent.to_hex(),
+                    note.to_hex()
+                );
+            }
+        }
+        // Reserve the parent authors' current heads in the new event's
+        // `after` frontier (PR #3908 Codex P2): past the frontier cap, a
+        // parent author omitted from `after` breaks dependency closure --
+        // a receiver could apply this revision before its note or parents
+        // arrive and then fail its note queries with UnknownNote or
+        // UnknownParent. `tag.clear` already reserves claim authors' heads
+        // the same way.
+        let parent_authors: HashSet<AuthorKey> = parents
+            .iter()
+            .filter_map(|parent| record.revision(*parent))
+            .map(|revision| revision.author)
+            .collect();
+        let required: Vec<Hash> = self
+            .frontier()?
+            .into_iter()
+            .filter(|head| parent_authors.contains(&head.author))
+            .map(|head| head.event)
+            .collect();
+        let content = DocumentRef::for_bytes(media_type, content)?;
+        let op = NoteOp::Revise {
+            note,
+            content,
+            parents: parents.to_vec(),
+        };
+        check_note_op(NOTE_REVISE_KIND, &op)?;
+        self.record(NOTE_REVISE_KIND, None, None, None, Some(op), &required)
+    }
+
+    /// Every note in the store, in note ID order, each with its revisions and heads.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the store cannot be read, or its note events do not fold.
+    pub fn notes(&self) -> Result<Vec<NoteRecord>> {
+        let (entries, _) = self.log()?;
+        let applied: Vec<AppliedNote> = entries
+            .values()
+            .filter_map(|entry| match entry {
+                Entry::NoteCreate {
+                    id,
+                    author,
+                    content,
+                } => Some(AppliedNote {
+                    id: *id,
+                    author: *author,
+                    op: NoteOp::Create {
+                        content: content.clone(),
+                    },
+                }),
+                Entry::NoteRevise {
+                    id,
+                    author,
+                    note,
+                    content,
+                    parents,
+                } => Some(AppliedNote {
+                    id: *id,
+                    author: *author,
+                    op: NoteOp::Revise {
+                        note: *note,
+                        content: content.clone(),
+                        parents: parents.clone(),
+                    },
+                }),
+                _ => None,
+            })
+            .collect();
+        // Ingest checks only a revision's shape, not whether its note graph
+        // can be folded. Quarantine invalid remote revisions so one bad event
+        // cannot disable notes(), note_history(), or revise_note() for the
+        // healthy notes in this store. The events stay in the store.
+        Ok(fold_remote_notes(applied)?)
+    }
+
+    /// The note `note`: its revisions in ID order and its current heads.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `note` is not the ID of a `note.create` in the store, or the store
+    /// cannot be read.
+    pub fn note_history(&self, note: Hash) -> Result<NoteRecord> {
+        self.notes()?
+            .into_iter()
+            .find(|record| record.id == note)
+            .with_context(|| {
+                format!(
+                    "{} is not a note: no note.create has that event ID",
+                    note.to_hex()
+                )
+            })
     }
 
     /// The head of each author's chain, in author order.
@@ -418,6 +627,7 @@ impl LocalEvents {
                 Entry::Remove {
                     document: removed, ..
                 } => *removed == document,
+                Entry::NoteCreate { .. } | Entry::NoteRevise { .. } => false,
             })
             .cloned()
             .collect())
@@ -494,7 +704,8 @@ impl LocalEvents {
 
     /// Signs one event with the node's key, after a bounded frontier of the other authors'
     /// heads (see [`LocalEvents::bounded_after`]), and ingests it. `required` names heads the
-    /// frontier must include when it is capped; other kinds than `tag.clear` require none.
+    /// frontier must include when it is capped; most kinds require none, a `tag.clear`
+    /// requires its claim authors' heads, and a `note.revise` its parent authors' heads.
     /// The store must apply it, or the call fails.
     fn record(
         &mut self,
@@ -502,6 +713,7 @@ impl LocalEvents {
         tag: Option<TagOp>,
         document: Option<DocumentRef>,
         removes: Option<Hash>,
+        note: Option<NoteOp>,
         required: &[Hash],
     ) -> Result<Hash> {
         let author = self.author();
@@ -514,6 +726,10 @@ impl LocalEvents {
             tag,
             document,
             removes,
+            note,
+            link: None,
+            checkpoint: None,
+            rotation: None,
         };
         let event = sign(&self.key, chain.next_seq, chain.head, None, ext)?;
         match self.store.ingest(&event.bytes, now_ms())? {
@@ -540,11 +756,39 @@ fn entry_of(event: &Event) -> Option<Entry> {
     let id = event.id;
     let author = *event.header.verifying_key.as_bytes();
     let ext = &event.header.extensions;
-    match (ext.kind.as_str(), &ext.tag, &ext.document, ext.removes) {
-        (DOCUMENT_KIND, _, Some(document), _) => Some(Entry::Document {
+    match (
+        ext.kind.as_str(),
+        &ext.tag,
+        &ext.document,
+        ext.removes,
+        &ext.note,
+    ) {
+        (DOCUMENT_KIND, _, Some(document), _, _) => Some(Entry::Document {
             id,
             author,
             document: document.clone(),
+        }),
+        (NOTE_CREATE_KIND, _, _, _, Some(NoteOp::Create { content })) => Some(Entry::NoteCreate {
+            id,
+            author,
+            content: content.clone(),
+        }),
+        (
+            NOTE_REVISE_KIND,
+            _,
+            _,
+            _,
+            Some(NoteOp::Revise {
+                note,
+                content,
+                parents,
+            }),
+        ) => Some(Entry::NoteRevise {
+            id,
+            author,
+            note: *note,
+            content: content.clone(),
+            parents: parents.clone(),
         }),
         (
             SET_KIND,
@@ -555,6 +799,7 @@ fn entry_of(event: &Event) -> Option<Entry> {
             }),
             _,
             _,
+            _,
         ) => Some(Entry::Set {
             id,
             author,
@@ -562,12 +807,12 @@ fn entry_of(event: &Event) -> Option<Entry> {
             name: name.clone(),
             value: value.clone(),
         }),
-        (CLEAR_KIND, Some(TagOp::Clear { claims }), _, _) => Some(Entry::Clear {
+        (CLEAR_KIND, Some(TagOp::Clear { claims }), _, _, _) => Some(Entry::Clear {
             id,
             author,
             claims: claims.clone(),
         }),
-        (REMOVAL_KIND, _, _, Some(document)) => Some(Entry::Remove {
+        (REMOVAL_KIND, _, _, Some(document), _) => Some(Entry::Remove {
             id,
             author,
             document,
@@ -666,9 +911,19 @@ mod tests {
     fn test_clear_spanning_more_authors_than_the_cap_clears_exactly_its_claims() {
         // Regression for #1736: 40 authors hold a claim named "topic" on the
         // subject -- more distinct authors than MAX_AFTER, so the clear must
-        // split by author. Exactly those claims are removed: a claim with a
-        // different name on the same subject, and a same-name claim on a
-        // different subject, both survive.
+        // split by author. The markers name exactly those claims, and each
+        // named claim sits in its marker's causal past, which is what removes
+        // a claim in the fold (crate::tag_claims). A claim with a different
+        // name on the same subject, and a same-name claim on a different
+        // subject, are named by no marker.
+        //
+        // The view the claims are read through is role-aware (#2090, the
+        // owner decision on #185): the default view hides a claim only when
+        // the marker's poster is the claim's author or an admin of the group
+        // owning the subject. The clearing node here (key 0) is neither, and
+        // the subject has no owning group, so its markers do not hide the
+        // claims in tags_on -- the naming and causal-past assertions are the
+        // part #1736 broke, and they are what this test pins.
         let dir = tempfile::TempDir::new().unwrap();
         let subject = id(201);
         let other_subject = id(202);
@@ -680,10 +935,214 @@ mod tests {
         let mut events = LocalEvents::open(dir.path(), key(0)).unwrap();
         let (cleared, _) = events.clear_tag(subject, "topic").unwrap();
         assert_eq!(cleared, 40);
-        let remaining = events.tags_on(subject).unwrap();
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].name, "other");
+
+        let (entries, parents) = events.log().unwrap();
+        let mut claim_author: HashMap<Hash, AuthorKey> = HashMap::new();
+        let mut topic_claims: HashSet<Hash> = HashSet::new();
+        for entry in entries.values() {
+            if let Entry::Set {
+                id,
+                author,
+                subject: on,
+                name,
+                ..
+            } = entry
+            {
+                claim_author.insert(*id, *author);
+                if *on == subject && name == "topic" {
+                    topic_claims.insert(*id);
+                }
+            }
+        }
+        assert_eq!(topic_claims.len(), 40);
+        let mut named: HashSet<Hash> = HashSet::new();
+        let mut markers = 0usize;
+        for entry in entries.values() {
+            let Entry::Clear { id, claims, .. } = entry else {
+                continue;
+            };
+            markers += 1;
+            // One marker names claims of at most MAX_AFTER distinct authors:
+            // the split respects the same cap as the frontier it rides on.
+            let authors: HashSet<AuthorKey> =
+                claims.iter().map(|claim| claim_author[claim]).collect();
+            assert!(authors.len() <= MAX_AFTER, "a marker spans {authors:?}");
+            // Each named claim sits in this marker's causal past.
+            let seen = parents
+                .get(id)
+                .map(|named_parents| crate::tag_claims::causal_past(named_parents, &parents))
+                .unwrap_or_default();
+            for claim in claims {
+                assert!(named.insert(*claim), "a claim is named by two markers");
+                assert!(
+                    seen.contains(claim),
+                    "a named claim is outside its marker's causal past"
+                );
+            }
+        }
+        // The clear split, and together the markers name exactly the 40
+        // "topic" claims on the subject -- nothing else.
+        assert!(markers > 1, "the clear did not split: {markers} marker(s)");
+        assert_eq!(named, topic_claims);
+        // The default view (#2090): this poster's markers hide nothing, so
+        // every claim on the subject is still listed.
+        assert_eq!(events.tags_on(subject).unwrap().len(), 41);
         assert_eq!(events.tags_on(other_subject).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_notes_revise_concurrently_and_merge_explicitly() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut events = LocalEvents::open(dir.path(), key(7)).unwrap();
+        let note = events.create_note("text/markdown", b"first").unwrap();
+        let a = events
+            .revise_note(note, "text/markdown", b"branch a", &[note])
+            .unwrap();
+        let b = events
+            .revise_note(note, "text/markdown", b"branch b", &[note])
+            .unwrap();
+        let record = events.note_history(note).unwrap();
+        assert_eq!(record.id, note);
+        assert_eq!(record.heads, {
+            let mut heads = vec![a, b];
+            heads.sort_by_key(|id| *id.as_bytes());
+            heads
+        });
+        let merged = events
+            .revise_note(note, "text/markdown", b"merged", &[a, b])
+            .unwrap();
+        let record = events.note_history(note).unwrap();
+        assert_eq!(record.heads, vec![merged]);
+        assert_eq!(record.revisions.len(), 4);
+        // A parent that is not a revision of this note is refused before signing.
+        assert!(
+            events
+                .revise_note(note, "text/markdown", b"bad", &[id(222)])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_invalid_remote_revision_does_not_disable_valid_notes() {
+        // PR #3908 Codex P1: a signed note.revise naming an unknown note
+        // is applied by ingest (shape is all it checks); it must not make
+        // notes(), note_history(), or revise_note() fail for valid notes.
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut events = LocalEvents::open(dir.path(), key(7)).unwrap();
+        let note = events.create_note("text/markdown", b"first").unwrap();
+        let foreign = sign(
+            &key(9),
+            0,
+            None,
+            None,
+            ChainExt {
+                kind: NOTE_REVISE_KIND.to_owned(),
+                group: None,
+                after: Vec::new(),
+                tag: None,
+                document: None,
+                removes: None,
+                note: Some(NoteOp::Revise {
+                    note: id(222),
+                    content: DocumentRef::for_bytes("text/markdown", b"bogus").unwrap(),
+                    parents: vec![id(223)],
+                }),
+                link: None,
+                checkpoint: None,
+                rotation: None,
+            },
+        )
+        .unwrap();
+        let ingested = events.store.ingest(&foreign.bytes, now_ms()).unwrap();
+        assert!(matches!(ingested, Ingest::Accepted { .. }), "{ingested:?}");
+        let notes = events.notes().unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].id, note);
+        assert!(events.note_history(note).is_ok());
+        assert!(
+            events
+                .revise_note(note, "text/markdown", b"second", &[note])
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_cyclic_remote_revisions_do_not_disable_healthy_notes() {
+        fn applied_create(byte: u8) -> AppliedNote {
+            AppliedNote {
+                id: id(byte),
+                author: [1; 32],
+                op: NoteOp::Create {
+                    content: DocumentRef::for_bytes("text/markdown", b"note").unwrap(),
+                },
+            }
+        }
+
+        fn applied_revise(event: u8, note: u8, parents: &[u8]) -> AppliedNote {
+            AppliedNote {
+                id: id(event),
+                author: [1; 32],
+                op: NoteOp::Revise {
+                    note: id(note),
+                    content: DocumentRef::for_bytes("text/markdown", b"revision").unwrap(),
+                    parents: parents.iter().map(|parent| id(*parent)).collect(),
+                },
+            }
+        }
+
+        for cyclic in [
+            vec![applied_revise(21, 20, &[21])],
+            vec![applied_revise(21, 20, &[22]), applied_revise(22, 20, &[21])],
+            vec![
+                applied_revise(21, 20, &[22]),
+                applied_revise(22, 20, &[23]),
+                applied_revise(23, 20, &[21]),
+            ],
+        ] {
+            let mut events = vec![
+                applied_create(10),
+                applied_revise(11, 10, &[10]),
+                applied_create(20),
+            ];
+            events.extend(cyclic);
+            events.push(applied_revise(24, 20, &[21]));
+
+            let notes = fold_remote_notes(events).unwrap();
+            assert_eq!(notes.len(), 2);
+            assert_eq!(notes[0].id, id(10));
+            assert_eq!(notes[0].revisions.len(), 2);
+            assert_eq!(notes[1].id, id(20));
+            assert_eq!(notes[1].revisions.len(), 1);
+        }
+    }
+
+    #[test]
+    fn test_revise_reserves_parent_author_head_past_the_after_cap() {
+        // PR #3908 Codex P2: with more other authors than MAX_AFTER, the
+        // parent author's head must still be named in the revision's
+        // `after`, or a receiver could apply the revision before its
+        // parents arrive.
+        let dir = tempfile::TempDir::new().unwrap();
+        let subject = id(210);
+        for byte in 1..=40u8 {
+            foreign_claim(dir.path(), byte, subject, "topic");
+        }
+        let mut parent_events = LocalEvents::open(dir.path(), key(99)).unwrap();
+        let note = parent_events
+            .create_note("text/markdown", b"first")
+            .unwrap();
+        drop(parent_events);
+        let mut events = LocalEvents::open(dir.path(), key(0)).unwrap();
+        let revision = events
+            .revise_note(note, "text/markdown", b"second", &[note])
+            .unwrap();
+        let author = events.author();
+        let applied = events
+            .store
+            .applied_events(&author, None, None, usize::MAX)
+            .unwrap();
+        let event = applied.iter().find(|e| e.id == revision).unwrap();
+        assert!(event.header.extensions.after.contains(&note));
     }
 
     #[test]
@@ -711,6 +1170,44 @@ mod tests {
         assert!(check_tag("topic", Some("plans")).is_ok());
         assert!(check_tag("", None).is_err());
         assert!(check_tag("e\u{301}", None).is_err());
+    }
+
+    #[test]
+    fn test_publish_refuses_a_repeated_tag_pair_before_recording() {
+        // Regression for #4772: a repeated exact (name, value) pair in one
+        // publish call recorded two identical live claims. The batch must be
+        // refused before anything is recorded, like the sibling validators
+        // (tag.clear claim lists, ChainExt.after, note.revise parents).
+        let (_dir, mut events) = open_events();
+        assert!(events.frontier().unwrap().is_empty());
+        for tags in [
+            vec![
+                ("city".to_owned(), Some("Seattle".to_owned())),
+                ("city".to_owned(), Some("Seattle".to_owned())),
+            ],
+            vec![("city".to_owned(), None), ("city".to_owned(), None)],
+        ] {
+            assert!(events.publish("text/plain", b"hello", &tags).is_err());
+            assert!(
+                events.frontier().unwrap().is_empty(),
+                "a refused publish records nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn test_publish_accepts_distinct_pairs_sharing_a_name() {
+        // Same name with different values, and bare plus valued, are distinct
+        // claims and must stay legal — only the exact pair repeats refuse.
+        let (_dir, mut events) = open_events();
+        let tags = vec![
+            ("city".to_owned(), Some("Seattle".to_owned())),
+            ("city".to_owned(), Some("Portland".to_owned())),
+            ("city".to_owned(), None),
+        ];
+        let published = events.publish("text/plain", b"hello", &tags).unwrap();
+        assert_eq!(published.claims.len(), 3);
+        assert_eq!(events.tags_on(published.id).unwrap().len(), 3);
     }
 
     fn open_events() -> (tempfile::TempDir, LocalEvents) {

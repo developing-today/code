@@ -43,6 +43,15 @@ ORG.append(repo("developing-today/some-fork", fork=True))
 USER = [repo(n) for n in FLEET_AND_SIDE if n.startswith("dezren39/")]
 USER.append(repo("dezren39/scratch"))
 
+# The developing-today-forks org capture (#5615): opencode and
+# openchamber moved there on 2026-11-04 and are GitHub forks;
+# some-tool is a forks-org-owned non-fork repo.
+FORKS_ORG = [
+    repo("developing-today-forks/opencode", fork=True),
+    repo("developing-today-forks/openchamber", fork=True),
+    repo("developing-today-forks/some-tool"),
+]
+
 CENSUS = """# All-repos census — fixture
 
 | /home/user/git/code | https://github.com/developing-today/code.git | main |
@@ -57,6 +66,7 @@ class GenerateTest(unittest.TestCase):
     def setUp(self) -> None:
         self.dir = Path(tempfile.mkdtemp())
         (self.dir / "org.json").write_text(json.dumps(ORG))
+        (self.dir / "forks-org.json").write_text(json.dumps(FORKS_ORG))
         (self.dir / "user.json").write_text(json.dumps(USER))
         (self.dir / "census.md").write_text(CENSUS)
         self.out = self.dir / "repo-universe.yaml"
@@ -68,6 +78,8 @@ class GenerateTest(unittest.TestCase):
                 str(GENERATE),
                 "--org-json",
                 str(self.dir / "org.json"),
+                "--forks-org-json",
+                str(self.dir / "forks-org.json"),
                 "--user-json",
                 str(self.dir / "user.json"),
                 "--census",
@@ -125,26 +137,221 @@ class GenerateTest(unittest.TestCase):
                 )
         self.assertFalse(live_out.exists())
 
+    def test_forks_org_repos_are_enumerated(self) -> None:
+        # #5615: the forks-org capture is merged before classification,
+        # so forks-org repos land in the artifact from the GitHub
+        # enumeration itself, not via census or overrides.
+        artifact = self.run_gen()
+        self.assertIn(
+            "- name: developing-today-forks/some-tool\n"
+            "    url: https://github.com/developing-today-forks/some-tool\n"
+            "    class: owned\n    watch: issues\n    sources: [github]",
+            artifact,
+        )
+        self.assertIn(
+            "- name: developing-today-forks/opencode\n"
+            "    url: https://github.com/developing-today-forks/opencode\n"
+            "    class: fork\n    watch: inventory-only\n    sources: [github]",
+            artifact,
+        )
+        self.assertIn(
+            "- name: developing-today-forks/openchamber\n"
+            "    url: https://github.com/developing-today-forks/openchamber\n"
+            "    class: fork\n    watch: inventory-only\n    sources: [github]",
+            artifact,
+        )
+
+    def test_live_fetches_both_orgs(self) -> None:
+        # --live must enumerate orgs/developing-today-forks/repos
+        # alongside orgs/developing-today/repos (#5615) and merge the
+        # captures before classification.
+        spec = importlib.util.spec_from_file_location("generate", GENERATE)
+        gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gen)
+        requested: list[str] = []
+
+        def fake_run(cmd, **kwargs):
+            if "--paginate" in cmd:
+                endpoint = cmd[-1]
+                requested.append(endpoint)
+                if "developing-today-forks" in endpoint:
+                    payload = FORKS_ORG
+                elif "user/repos" in endpoint:
+                    payload = USER
+                else:
+                    payload = ORG
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=json.dumps(payload), stderr=""
+                )
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps({"login": "dezren39"}), stderr=""
+            )
+
+        live_out = self.dir / "live-out.yaml"
+        with mock.patch.object(gen.subprocess, "run", side_effect=fake_run):
+            rc = gen.main(
+                [
+                    "--live",
+                    "--census",
+                    str(self.dir / "census.md"),
+                    "--output",
+                    str(live_out),
+                ]
+            )
+        self.assertEqual(rc, 0)
+        self.assertTrue(
+            any(e.startswith("orgs/developing-today/repos") for e in requested),
+            f"developing-today org not enumerated: {requested}",
+        )
+        self.assertTrue(
+            any(e.startswith("orgs/developing-today-forks/repos") for e in requested),
+            f"developing-today-forks org not enumerated: {requested}",
+        )
+        out = live_out.read_text()
+        self.assertIn("developing-today-forks/some-tool", out)
+        self.assertIn("developing-today-forks/opencode", out)
+
+    def run_gen_omitting(self, *omit: str) -> subprocess.CompletedProcess:
+        captures = {
+            "--org-json": "org.json",
+            "--forks-org-json": "forks-org.json",
+            "--user-json": "user.json",
+        }
+        argv = [sys.executable, str(GENERATE)]
+        for flag, filename in captures.items():
+            if flag not in omit:
+                argv += [flag, str(self.dir / filename)]
+        argv += [
+            "--census",
+            str(self.dir / "census.md"),
+            "--output",
+            str(self.out),
+        ]
+        return subprocess.run(argv, capture_output=True, text=True)
+
     def test_offline_mode_requires_both_captures(self) -> None:
         # Omitting a capture without --live must fail, not silently
         # regenerate with that source emptied (deleting every
         # GitHub-only repo from the omitted source).
-        proc = subprocess.run(
+        proc = self.run_gen_omitting("--forks-org-json", "--user-json")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertFalse(self.out.exists())
+
+    def test_offline_mode_requires_each_capture_singly(self) -> None:
+        # Each capture omitted on its own must fail, name the missing
+        # flag, and write no output (#6612: omitting only
+        # --forks-org-json used to exit 0 with the whole forks org
+        # silently dropped from the artifact).
+        for flag in ("--org-json", "--forks-org-json", "--user-json"):
+            with self.subTest(flag=flag):
+                proc = self.run_gen_omitting(flag)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn(flag, proc.stderr)
+                self.assertFalse(self.out.exists())
+
+    def run_gen_raw(self) -> subprocess.CompletedProcess:
+        return subprocess.run(
             [
                 sys.executable,
                 str(GENERATE),
                 "--org-json",
                 str(self.dir / "org.json"),
+                "--forks-org-json",
+                str(self.dir / "forks-org.json"),
+                "--user-json",
+                str(self.dir / "user.json"),
                 "--census",
                 str(self.dir / "census.md"),
+                "--census-label",
+                "fixture census",
                 "--output",
                 str(self.out),
             ],
             capture_output=True,
             text=True,
         )
+
+    def assert_wrong_shape_fails_named(self, proc: subprocess.CompletedProcess) -> None:
+        # #6716: a wrong-shape entry must fail with a clear error
+        # naming the capture source and the entry — no bare
+        # TypeError/KeyError traceback, and no artifact written.
         self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("org.json", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertNotIn("TypeError", proc.stderr)
+        self.assertNotIn("KeyError", proc.stderr)
         self.assertFalse(self.out.exists())
+
+    def test_non_dict_entry_in_page_array_fails_named(self) -> None:
+        (self.dir / "org.json").write_text(json.dumps(ORG + ["oops"]))
+        self.assert_wrong_shape_fails_named(self.run_gen_raw())
+
+    def test_dict_page_without_full_name_fails_named(self) -> None:
+        # A saved API error page concatenated after a valid page: the
+        # object document is an entry with no full_name.
+        (self.dir / "org.json").write_text(
+            json.dumps(ORG) + "\n" + json.dumps({"message": "API rate limit exceeded"})
+        )
+        proc = self.run_gen_raw()
+        self.assert_wrong_shape_fails_named(proc)
+        self.assertIn("full_name", proc.stderr)
+
+    def test_null_entry_fails_named(self) -> None:
+        (self.dir / "org.json").write_text(json.dumps(ORG + [None]))
+        self.assert_wrong_shape_fails_named(self.run_gen_raw())
+
+    def test_consumers_validate_entries_directly(self) -> None:
+        # build/merge_repos validate entries that never passed
+        # through decode_pages, so a direct caller gets the named
+        # error instead of a bare KeyError/TypeError (#6716).
+        spec = importlib.util.spec_from_file_location("generate", GENERATE)
+        gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gen)
+        with self.assertRaises(ValueError):
+            gen.merge_repos([{"name": "no-full-name"}])
+        with self.assertRaises(ValueError):
+            gen.build([{"name": "no-full-name"}], [], CENSUS, "label", {})
+        with self.assertRaises(ValueError):
+            gen.build([], ["oops"], CENSUS, "label", {})
+        with self.assertRaises(ValueError):
+            gen.decode_pages(json.dumps([{"full_name": "a/b"}, None]), source="cap X")
+
+    def test_field_level_wrong_shapes_fail_named(self) -> None:
+        # #6814: fields inside an object entry are validated at the
+        # same gate — a malformed full_name, a non-string or
+        # newline-bearing html_url, or a string "false" fork must be
+        # a named ValueError, not a corrupt artifact or a silently
+        # un-watched repo.
+        spec = importlib.util.spec_from_file_location("generate", GENERATE)
+        gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gen)
+        good = {"full_name": "developing-today/code"}
+        bad_entries = [
+            {"full_name": ""},
+            {"full_name": "noslash"},
+            {"full_name": "a/b\n  - name: evil/injected"},
+            {"full_name": "/leading"},
+            {**good, "html_url": 12345},
+            {**good, "html_url": ["x", "y"]},
+            {**good, "html_url": "https://example.com\n  - name: evil/injected"},
+            {**good, "fork": "false"},
+            {**good, "fork": 0},
+        ]
+        for entry in bad_entries:
+            with self.assertRaises(ValueError, msg=f"entry accepted: {entry!r}"):
+                gen.decode_pages(json.dumps([entry]), source="cap Y")
+        # Control: well-formed fields, and absent html_url/fork,
+        # pass exactly as before.
+        self.assertEqual(gen.decode_pages(json.dumps([repo("a/b", fork=True)])), [repo("a/b", fork=True)])
+        self.assertEqual(gen.decode_pages(json.dumps([good])), [good])
+
+    def test_newline_full_name_capture_fails_named_end_to_end(self) -> None:
+        (self.dir / "org.json").write_text(
+            json.dumps(ORG + [{"full_name": "a/b\n  - name: evil/injected", "html_url": "https://github.com/a/b", "fork": False}])
+        )
+        proc = self.run_gen_raw()
+        self.assert_wrong_shape_fails_named(proc)
+        self.assertIn("full_name", proc.stderr)
 
     def test_idempotent_zero_diff_on_unchanged_inputs(self) -> None:
         first = self.run_gen()
