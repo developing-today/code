@@ -1251,6 +1251,154 @@ class TestBackups(ColdStoreTestBase):
         self.assertEqual([row["name"] for row in rows], list(reversed(names)))
 
 
+class TestDriveResponseShapes(ColdStoreTestBase):
+    def test_find_folder_rejects_wrong_response_shapes(self):
+        invalid_bodies = (
+            b"not json",
+            b"[]",
+            b'{"files":"not-a-list"}',
+            b'{"files":[7]}',
+            b'{"files":[{"id":7,"name":"folder"}]}',
+            b'{"files":[{"id":"folder-id"}]}',
+        )
+        with mock.patch.object(self.store, "_auth_headers", return_value={}):
+            for body in invalid_bodies:
+                with self.subTest(body=body):
+                    with mock.patch.object(
+                        cold_store,
+                        "http_request",
+                        return_value=(200, {}, body),
+                    ):
+                        with self.assertRaisesRegex(
+                            cold_store.ColdStoreError, "files.list for folder"
+                        ):
+                            self.store._find_folder("root", None)
+
+            with mock.patch.object(
+                cold_store,
+                "http_request",
+                return_value=(200, {}, b'{"files":[]}'),
+            ):
+                self.assertIsNone(self.store._find_folder("root", None))
+
+    def test_create_folder_requires_object_with_string_id(self):
+        for body in (b"[]", b"{}", b'{"id":7}'):
+            with self.subTest(body=body):
+                with mock.patch.object(self.store, "_auth_headers", return_value={}):
+                    with mock.patch.object(
+                        cold_store,
+                        "http_request",
+                        return_value=(201, {}, body),
+                    ):
+                        with self.assertRaisesRegex(
+                            cold_store.ColdStoreError, "folder create"
+                        ):
+                            self.store._create_folder("root", None)
+
+    def test_resumable_upload_completion_requires_string_id(self):
+        blob = Path(self.tmp.name) / "blob.bin"
+        blob.write_bytes(b"bundle")
+        for body in (b"not json", b"[]", b'{"id":7}'):
+            with self.subTest(body=body):
+                def fake_http(method, _url, **_kwargs):
+                    if method == "POST":
+                        return 200, {"Location": "https://upload.example/session"}, b""
+                    return 201, {}, body
+
+                with mock.patch.object(self.store, "_auth_headers", return_value={}):
+                    with mock.patch.object(
+                        cold_store, "http_request", side_effect=fake_http
+                    ):
+                        with self.assertRaisesRegex(
+                            cold_store.ColdStoreError, "resumable upload completion"
+                        ):
+                            self.store._resumable_upload(blob, "bundle.csb", "parent")
+
+    def test_list_backups_rejects_wrong_response_shapes(self):
+        invalid_bodies = (
+            b"[]",
+            b'{"files":"not-a-list"}',
+            b'{"files":[7]}',
+            b'{"files":[{"id":"f1","name":"backup","size":"abc"}]}',
+            b'{"files":[{"id":"f1","name":"backup","size":"-1"}]}',
+            b'{"files":[{"id":"f1","name":"backup","size":"1","createdTime":7}]}',
+            b'{"nextPageToken":[]}',
+        )
+        with mock.patch.object(self.store, "_folder_id", return_value="folder-id"):
+            with mock.patch.object(self.store, "_auth_headers", return_value={}):
+                for body in invalid_bodies:
+                    with self.subTest(body=body):
+                        with mock.patch.object(
+                            cold_store,
+                            "http_request",
+                            return_value=(200, {}, body),
+                        ):
+                            with self.assertRaisesRegex(
+                                cold_store.ColdStoreError, "files.list for backups"
+                            ):
+                                self.store.list_backups("supabase")
+
+    def test_get_backup_rejects_wrong_response_shapes(self):
+        invalid_bodies = (
+            b"[]",
+            b'{"files":"not-a-list"}',
+            b'{"files":[{"id":7,"name":"backup","size":"1"}]}',
+            b'{"files":[{"id":"f1","name":"backup","size":"abc"}]}',
+        )
+        with mock.patch.object(self.store, "_folder_id", return_value="folder-id"):
+            with mock.patch.object(self.store, "_auth_headers", return_value={}):
+                for body in invalid_bodies:
+                    with self.subTest(body=body):
+                        with mock.patch.object(
+                            cold_store,
+                            "http_request",
+                            return_value=(200, {}, body),
+                        ):
+                            with self.assertRaisesRegex(
+                                cold_store.ColdStoreError,
+                                "files.list for get-backup",
+                            ):
+                                self.store.get_backup(
+                                    "supabase",
+                                    "backup.sql",
+                                    str(Path(self.tmp.name) / "out.sql"),
+                                )
+
+    def test_upload_readback_wrong_shapes_are_verification_errors(self):
+        invalid_bodies = (
+            b"not json",
+            b"[]",
+            b'{"id":"f1","md5Checksum":"abc","size":"not-a-number"}',
+            b'{"id":7,"md5Checksum":"abc","size":"1"}',
+        )
+        request = cold_store.http_request
+        for i, body in enumerate(invalid_bodies):
+            with self.subTest(body=body):
+                source = self.write_src(f"bundle-{i}.txt", b"bundle contents")
+                packed = self.store.pack([str(source)])
+
+                def fail_readback(method, url, *args, **kwargs):
+                    if method == "GET" and "md5Checksum" in url:
+                        return 200, {}, body
+                    return request(method, url, *args, **kwargs)
+
+                with mock.patch.object(
+                    cold_store, "http_request", side_effect=fail_readback
+                ):
+                    with self.assertRaisesRegex(
+                        cold_store.ColdStoreError, "files.get after upload"
+                    ):
+                        self.store.upload(packed["bundle_id"])
+
+                conn = self.store.db()
+                state = conn.execute(
+                    "SELECT state FROM bundles WHERE bundle_id=?",
+                    (packed["bundle_id"],),
+                ).fetchone()["state"]
+                conn.close()
+                self.assertEqual(state, "uploading")
+
+
 class TestSyncManifest(ColdStoreTestBase):
     def setUp(self):
         super().setUp()
