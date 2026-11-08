@@ -367,45 +367,61 @@ def cap_step() -> int:
     return cap_room
 
 
+def _post_prompt(session_id: str, prompt: str) -> bool:
+    """One prompt POST; True iff the server accepted it."""
+    try:
+        result = subprocess.run(
+            ["curl", "-s", "-f", "-m", "15", "-X", "POST",
+             "-H", "Content-Type: application/json",
+             *_auth_header_args(),
+             "-d", json.dumps({"text": prompt}),
+             f"{OPENCODE_URL}/api/session/{session_id}/prompt"],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _get_messages(session_id: str) -> Optional[List]:
+    """The session's message list, or None when it cannot be read
+    (transport failure, non-JSON body, error object): an unreadable
+    session is an UNKNOWN delivery state, never an empty one."""
+    try:
+        result = subprocess.run(
+            ["curl", "-s", "-m", "5", *_auth_header_args(),
+             f"{OPENCODE_URL}/api/session/{session_id}/messages"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout or "[]")
+        if isinstance(data, dict) and "data" in data:
+            data = data["data"]
+        return data if isinstance(data, list) else None
+    except Exception:
+        return None
+
+
 def _send_prompt(session_id: str, prompt: str) -> bool:
-    """Deliver the execution prompt to a bound session via
-    POST /api/session/{id}/prompt. Returns True iff the prompt is
-    confirmed delivered. A failed POST is reconciled before any
-    resend (prompt.md step 4): if a message already landed, the
-    worker may be executing and must never be double-prompted; if
-    the session demonstrably has no messages, resend ONCE to the
-    same session."""
-    for attempt in (1, 2):
-        try:
-            result = subprocess.run(
-                ["curl", "-s", "-f", "-m", "15", "-X", "POST",
-                 "-H", "Content-Type: application/json",
-                 *_auth_header_args(),
-                 "-d", json.dumps({"text": prompt}),
-                 f"{OPENCODE_URL}/api/session/{session_id}/prompt"],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                return True
-        except Exception:
-            pass
-        if attempt == 1:
-            try:
-                msgs = subprocess.run(
-                    ["curl", "-s", "-m", "5", *_auth_header_args(),
-                     f"{OPENCODE_URL}/api/session/{session_id}/messages"],
-                    capture_output=True,
-                    text=True,
-                )
-                data = json.loads(msgs.stdout or "[]")
-                if isinstance(data, dict) and "data" in data:
-                    data = data["data"]
-                if isinstance(data, list) and len(data) > 0:
-                    return True
-            except Exception:
-                pass
-    return False
+    """Deliver the execution prompt to a bound session. Returns True
+    iff the prompt is confirmed delivered. A failed POST is
+    reconciled before any resend (prompt.md step 4): if a message
+    already landed, the worker may be executing and must never be
+    double-prompted; only a successful reconcile that proves the
+    message list is EMPTY earns one resend to the same session. An
+    inconclusive reconcile (unreadable session) never resends — the
+    binding stands and the caller flags the launch instead."""
+    if _post_prompt(session_id, prompt):
+        return True
+    messages = _get_messages(session_id)
+    if messages is None:
+        return False
+    if len(messages) > 0:
+        return True
+    return _post_prompt(session_id, prompt)
 
 
 def launch_step(mode: str, cap_room: int) -> List[Dict]:

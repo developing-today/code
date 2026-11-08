@@ -50,7 +50,7 @@ class Result:
 
 
 def make_fake_run(binds, *, session_get="gone", messages="[]",
-                  prompt_rc=0):
+                  prompt_rc=0, prompts=None):
     """Build a subprocess.run stub dispatching on argv shape.
 
     binds: list collecting every repo-queue bind argv.
@@ -58,6 +58,7 @@ def make_fake_run(binds, *, session_get="gone", messages="[]",
     (what curl -s prints for a 404); "active" -> a live session.
     prompt_rc: return code for the prompt POST (curl -f fails on
     HTTP errors, so 1 models a rejected prompt send).
+    prompts: optional list collecting every prompt POST argv.
     """
 
     def fake_run(cmd, **kwargs):
@@ -71,6 +72,8 @@ def make_fake_run(binds, *, session_get="gone", messages="[]",
         if argv[0] == "curl" and joined.rstrip().endswith("/messages"):
             return Result(0, messages)
         if argv[0] == "curl" and joined.rstrip().endswith("/prompt"):
+            if prompts is not None:
+                prompts.append(cmd)
             return Result(prompt_rc, "")
         if argv[0] == "curl" and "-X" in argv and "POST" in argv:
             return Result(0, json.dumps({
@@ -194,6 +197,25 @@ class TestLaunchStep(unittest.TestCase):
         self.assertEqual(skips, [])
         self.assertEqual(len(launched), 1)
         self.assertNotIn("prompt_failed", launched[0])
+
+    def test_unreadable_session_is_never_resent(self):
+        # The POST failed and the reconcile read is unusable (error
+        # body, not a message list): delivery state is unknown, so
+        # no second POST may go out — the worker might be executing
+        # the first one. The launch is flagged instead.
+        binds = []
+        prompts = []
+        with patch.object(claimant, "run_poll",
+                          return_value={"candidates": [dict(CANDIDATE)]}), \
+             patch.object(claimant.subprocess, "run",
+                          make_fake_run(binds, prompt_rc=1,
+                                        messages='{"error": "boom"}',
+                                        prompts=prompts)):
+            launched, skips = claimant.launch_step("live", 3)
+        self.assertEqual(skips, [])
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(launched[0].get("prompt_failed"), True)
+        self.assertEqual(len(prompts), 1)
 
 
 class TestSupervisionStep(unittest.TestCase):
