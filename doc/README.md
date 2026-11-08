@@ -45,6 +45,7 @@ Folders are named `<UTC datetime>_<kind>_<name>`. The kinds in use are `feature`
 - [PM stack forecasting: velocity, quota walls, and stall risk](2026-11-01T21-07-00Z_design_pm-stack_forecasting/2026-11-01T21-07-00Z_design_pm-stack_forecasting.md)
 - [Authenticated peer announcements and bounded discovery](2026-11-02T08-13-35Z_design_peer-announcement-authentication/2026-11-02T08-13-35Z_design_peer-announcement-authentication.md)
 - [Graph-native currency event contracts](2026-11-07T03-55-49Z_feature_graph_currency_contracts/2026-11-07T03-55-49Z_feature_graph_currency_contracts.md) (first implementation slice for #5522; later v1 layers remain)
+- [The capability model: requested vs discovered-used sets, registry schema, custom-compiled platforms](2026-11-08T09-15-00Z_design_id_capability_model/2026-11-08T09-15-00Z_design_id_capability_model.md) (canonical capability registry schema for #5958; feeds #5998, #6000, #6017)
 
 Two names break the pattern. They stay as they are because other documents link to them: `2026-03-23T00:00:00Z_feature_file_list_ui/` has colons in its name, and `2026-10-14T10-18-19Z_design_p7_2_cloudflare_workers.md` is a file, not a folder.
 
