@@ -297,7 +297,7 @@ const extractMeta: Extractor = (s, now) => {
   return { windows: [pctWindow("weekly", Number(pct[1]), resetIso)] };
 };
 
-function goWorkspace(name: "drewrypope" | "popesdrew"): Extractor {
+function goWorkspace(name: "drewrypope" | "popesdrew" | "developing-today-0"): Extractor {
   return (s, now) => {
     const m = first(
       s,
@@ -505,7 +505,8 @@ interface PoolSpec {
 
 // POOL NAMING (2026-11-03, Drew): a pool's id is its OpenCode config
 // provider id whenever the config defines one — meta, openai.main,
-// openai.alternate, opencode-go.drewrypope, opencode-go.popesdrew, cline-pass,
+// openai.alternate, opencode-go.drewrypope, opencode-go.popesdrew,
+// opencode-go.developing-today-0, cline-pass,
 // opendesign, deepseek, commandcode. The colon-suffixed spellings these
 // replaced (meta:high-usage, openai:codex, opencode-go:drewrypope, ...)
 // survive only in the historical snapshot series and the one-shot
@@ -580,6 +581,14 @@ export const POOL_SPECS: PoolSpec[] = [
     plan: "popesdrew account",
     heading: /^### OpenCode Go/,
     extract: goWorkspace("popesdrew"),
+    shellNote: "No current read.",
+  },
+  {
+    id: "opencode-go.developing-today-0",
+    provider: "OpenCode Go",
+    plan: "developing-today-0 account",
+    heading: /^### OpenCode Go/,
+    extract: goWorkspace("developing-today-0"),
     shellNote: "No current read.",
   },
   {
