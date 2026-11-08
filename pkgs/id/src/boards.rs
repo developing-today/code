@@ -1645,16 +1645,16 @@ fn validate_text(name: &str, value: &str, allow_empty: bool) -> Result<()> {
     Ok(())
 }
 
-struct CappedBuffer {
-    bytes: Vec<u8>,
+struct SerializedSizeLimit {
+    limit: usize,
+    written: usize,
 }
 
-impl Write for CappedBuffer {
+impl Write for SerializedSizeLimit {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        let limit = MAX_GAME_DATA_BYTES + 1;
-        let remaining = limit.saturating_sub(self.bytes.len());
+        let remaining = self.limit.saturating_sub(self.written);
         let written = buffer.len().min(remaining);
-        self.bytes.extend_from_slice(&buffer[..written]);
+        self.written += written;
         Ok(written)
     }
 
@@ -1664,18 +1664,13 @@ impl Write for CappedBuffer {
 }
 
 fn validate_game_data(name: &str, value: &serde_json::Value) -> Result<()> {
-    let mut writer = CappedBuffer {
-        bytes: Vec::with_capacity(MAX_GAME_DATA_BYTES + 1),
+    let mut writer = SerializedSizeLimit {
+        limit: MAX_GAME_DATA_BYTES,
+        written: 0,
     };
     match serde_json::to_writer(&mut writer, value) {
-        Ok(()) => {
-            ensure!(
-                writer.bytes.len() <= MAX_GAME_DATA_BYTES,
-                "{name} is at most {MAX_GAME_DATA_BYTES} serialized bytes"
-            );
-            Ok(())
-        }
-        Err(_) if writer.bytes.len() > MAX_GAME_DATA_BYTES => {
+        Ok(()) => Ok(()),
+        Err(_) if writer.written == MAX_GAME_DATA_BYTES => {
             bail!("{name} is at most {MAX_GAME_DATA_BYTES} serialized bytes")
         }
         Err(error) => Err(error.into()),
