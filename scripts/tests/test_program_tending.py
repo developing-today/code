@@ -7,6 +7,7 @@ run log always covers all five sections with the hard-stop labels named.
 
 import io
 import json
+import os
 import subprocess
 import sys
 import unittest
@@ -84,6 +85,58 @@ class ProgramTendingScaffoldTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
         log = json.loads(proc.stdout)
         self.assertEqual(len(log["sections"]), 5)
+
+
+class GhApiAuthHeaderTest(unittest.TestCase):
+    """#6860: _gh_api sends the workflow token when one is in the
+    environment, and sends no Authorization header when none is."""
+
+    def capture_request(self):
+        captured = {}
+
+        class FakeResp:
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return b"[]"
+
+        def fake_urlopen(req, timeout=None):
+            captured["req"] = req
+            return FakeResp()
+
+        return captured, fake_urlopen
+
+    def test_authorization_sent_from_gh_token(self):
+        captured, fake_urlopen = self.capture_request()
+        with mock.patch.dict(os.environ, {"GH_TOKEN": "test-token-6860"}, clear=True):
+            with mock.patch.object(pt.urllib.request, "urlopen", fake_urlopen):
+                self.assertEqual(pt._gh_api("/repos/x/y/issues"), [])
+        self.assertEqual(
+            captured["req"].get_header("Authorization"), "Bearer test-token-6860"
+        )
+
+    def test_authorization_falls_back_to_github_token(self):
+        captured, fake_urlopen = self.capture_request()
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "fallback-6860"}, clear=True):
+            with mock.patch.object(pt.urllib.request, "urlopen", fake_urlopen):
+                pt._gh_api("/repos/x/y/issues")
+        self.assertEqual(
+            captured["req"].get_header("Authorization"), "Bearer fallback-6860"
+        )
+
+    def test_no_authorization_without_token(self):
+        captured, fake_urlopen = self.capture_request()
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch.object(pt.urllib.request, "urlopen", fake_urlopen):
+                pt._gh_api("/repos/x/y/issues")
+        self.assertIsNone(captured["req"].get_header("Authorization"))
+
 
 
 if __name__ == "__main__":
