@@ -362,8 +362,8 @@ func scanCode(src string) []bool {
 			if state == stSingle {
 				quote = '\''
 			}
-			switch {
-			case c == '\\':
+			switch c {
+			case '\\':
 				i++ // the escaped byte is string text, whatever it is
 				if i < len(src) && src[i] == '\r' && i+1 < len(src) && src[i+1] == '\n' {
 					// A CRLF continuation is one escaped newline:
@@ -371,19 +371,19 @@ func scanCode(src string) []bool {
 					// end the string below and desync the scan.
 					i++
 				}
-			case c == quote:
+			case quote:
 				state = stCode
-			case c == '\n':
+			case '\n':
 				// An unterminated literal ends at the line, so one bad
 				// string cannot swallow the rest of the script.
 				state = stCode
 				code[i] = true
 			}
 		case stTemplate:
-			switch {
-			case c == '\\':
+			switch c {
+			case '\\':
 				i++
-			case c == '`':
+			case '`':
 				state = stCode
 			}
 		}

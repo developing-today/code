@@ -117,7 +117,7 @@ export const goDurationMs = (v: string | undefined): number | undefined => {
   // past the ceiling), and an infinite discovery cooldown silently
   // disabled daemon rediscovery for the whole session (#2309).
   // Unparseable-by-Go is this function's "treated as absent".
-  if (!Number.isFinite(total) || total > 9_223_372_036_854.776) return undefined;
+  if (!Number.isFinite(total) || total > 9_223_372_036_854.775) return undefined;
   return v.trim().startsWith("-") ? undefined : total;
 };
 

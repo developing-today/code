@@ -35,7 +35,7 @@ Prints one JSON object:
   }
 
 Read-only by construction: claimed rows come from the repo-queue
-binary (`~/fleet-brokers/bin/repo-queue list --queue <queue>
+binary (`~/.local/bin/repo-queue list --queue <queue>
 --status claimed` — the deployed binary's list verb rejects
 `--worker`, verified 2026-11-07) and session state from GETs to the
 laptop OpenCode server. The claimant treats a null cap_room as NO
@@ -78,7 +78,11 @@ CONCURRENCY_CAP = CAP
 # fires every 10 min and a working session updates far more often.
 ACTIVE_WINDOW_MS = 30 * 60 * 1000
 
-REPO_QUEUE_CMD = Path.home() / "fleet-brokers" / "bin" / "repo-queue"
+# Packaged fleet binary via its repo-queue argv0 alias
+# (~/.local/bin/repo-queue -> ~/.local/bin/fleet); the hand-built
+# ~/fleet-brokers/bin tree was retired by the code#5362 cutover
+# (task 12731).
+REPO_QUEUE_CMD = Path.home() / ".local" / "bin" / "repo-queue"
 PRIMARY_CLONE = Path.home() / "git" / "code"
 OPENCODE_URL = os.environ.get("OPENCODE_URL", "http://127.0.0.1:13420")
 AUTH_FILE = os.environ.get(

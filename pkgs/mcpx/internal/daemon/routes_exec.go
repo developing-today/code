@@ -534,7 +534,7 @@ func (s *Server) handleArtifactGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	w.Header().Set("Content-Type", meta.Mime)
 	// Attachment, and the name quoted: the name came from a script, and a
 	// browser deciding to render somebody else's bytes inline is how a store

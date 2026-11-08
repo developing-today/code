@@ -115,6 +115,40 @@ function fetchUsageItems(user: string, year: number, month: number): BillingUsag
   return items as BillingUsageItem[];
 }
 
+// Reject unknown, duplicated, or positional arguments BEFORE any gh
+// call or outbox write (#7254). The flag values were validated in
+// #3419/#6922, but argv itself was only probed token-by-token
+// (includes/indexOf), so an unrecognized token was silently ignored:
+// a typo'd --yer fell back to the current year, a typo'd --prnit made
+// the includes("--print") check false and turned a dry run into a
+// real outbox append, and a duplicated flag silently took the first
+// value. Mirrors rejectUnknownArgs in generate-digest.ts (#7097) /
+// append-usage-snapshots.ts (#6961).
+const VALUE_FLAGS = ["--year", "--month", "--user", "--by"];
+const STANDALONE_FLAGS = ["--print"];
+const USAGE = "collect-github-billing [--year YYYY] [--month M] [--user <name>] [--by <name>] [--print]";
+
+function rejectUnknownArgs(): void {
+  const args = process.argv.slice(2);
+  const seen = new Set<string>();
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i] as string;
+    if (VALUE_FLAGS.includes(token)) {
+      if (seen.has(token)) usageError(`duplicate ${token} (usage: ${USAGE})`);
+      seen.add(token);
+      i++; // skip the value; the resolvers validate it
+      continue;
+    }
+    if (STANDALONE_FLAGS.includes(token)) {
+      if (seen.has(token)) usageError(`duplicate ${token} (usage: ${USAGE})`);
+      seen.add(token);
+      continue;
+    }
+    usageError(`unknown argument ${JSON.stringify(token)} (usage: ${USAGE})`);
+  }
+}
+rejectUnknownArgs();
+
 async function main(): Promise<void> {
   const now = new Date();
   const year = resolveYear(now);

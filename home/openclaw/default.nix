@@ -172,6 +172,7 @@ in
       OPENCLAW_GATEWAY_TOKEN = "/run/secrets/openclaw/gateway-token";
       OPENCLAW_SLACK_BOT_TOKEN = "/run/secrets/openclaw/slack-bot-token";
       OPENCLAW_SLACK_APP_TOKEN = "/run/secrets/openclaw/slack-app-token";
+      OPENCLAW_TELEGRAM_BOT_TOKEN = "/run/secrets/openclaw/telegram-bot-token";
       TAVILY_API_KEY = "/run/secrets/openclaw/tavily-api-key";
       OPENCODE_SERVER_AUTH = "${homeDir}/.local/state/openclaw/opencode-server-auth";
     };
@@ -254,6 +255,14 @@ in
     runtimePlugins = [
       "acpx" # ACP backend: opencode / claude / codex / gemini / copilot harnesses
       "slack" # Slack channel (channel inert until app tokens are wired; see CHANNELS.md)
+      # NOTE: no "telegram" entry here — in the pinned build (2026.10.7)
+      # Telegram is a bundled core channel: extensions/telegram ships
+      # inside the openclaw-gateway package itself, so it is absent from
+      # the external runtime-plugin catalog (report.json) and listing it
+      # here fails evaluation (#7042). It activates from the
+      # channels.telegram config + plugins.entries.telegram below
+      # (bot @shed_openclaw_bot, created 2026-11-07; token via env
+      # SecretRef).
       "discord"
       "whatsapp"
       "matrix"
@@ -376,6 +385,21 @@ in
           };
           dmPolicy = "allowlist";
           allowFrom = [ "U0CBX163G8Z" ]; # Drew
+          groupPolicy = "allowlist";
+        };
+        # Telegram wired 2026-11-07: bot @shed_openclaw_bot (Shed),
+        # created via BotFather from Drew's account; token via env
+        # SecretRef fed from the sops-decrypted laptop file. DMs from
+        # Drew only (numeric user id).
+        telegram = {
+          enabled = true;
+          botToken = {
+            source = "env";
+            provider = "default";
+            id = "OPENCLAW_TELEGRAM_BOT_TOKEN";
+          };
+          dmPolicy = "allowlist";
+          allowFrom = [ "8290042325" ]; # Drew
           groupPolicy = "allowlist";
         };
       };
@@ -530,6 +554,7 @@ in
             };
           };
           slack.enabled = true;
+          telegram.enabled = true;
           codex.enabled = true;
           copilot.enabled = true;
           "memory-lancedb" = {

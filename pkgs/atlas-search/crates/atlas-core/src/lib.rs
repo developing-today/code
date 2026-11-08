@@ -35,6 +35,7 @@ pub mod fusion;
 pub mod local;
 pub mod search;
 pub mod shards;
+pub mod stage;
 pub mod turso;
 pub mod types;
 
@@ -55,6 +56,10 @@ pub use local::LocalBackend;
 pub use search::{
     BackendBranchExecutor, BranchPoolExecutor, SearchMode, SearchOptions, run_get_chunk,
     run_search, run_search_with_executor,
+};
+pub use stage::{
+    REGISTRY_V1_DDL, Registry, STAGE_SCHEMA_VERSION, STAGE_V1_DDL, STAGE_V1_TABLES, StagingUnit,
+    UnitState, check_stage_schema, provision_staging_db, schema_version,
 };
 pub use turso::TursoBackend;
 pub use types::{BranchQuery, DEFAULT_MODEL, DEFAULT_VEC_TABLE, VectorBackend};

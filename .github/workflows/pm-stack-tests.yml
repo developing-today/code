@@ -5,10 +5,18 @@ on:
   push:
     paths:
       - "pm-stack/external-comms/**"
+      - "pm-stack/opencode-claimant/**"
+      - "pm-stack/opencode-usage-export/**"
+      - "pm-stack/cloudflare-export/**"
+      - "pm-stack/supabase-export/**"
       - ".github/workflows/pm-stack-tests.yml"
   pull_request:
     paths:
       - "pm-stack/external-comms/**"
+      - "pm-stack/opencode-claimant/**"
+      - "pm-stack/opencode-usage-export/**"
+      - "pm-stack/cloudflare-export/**"
+      - "pm-stack/supabase-export/**"
       - ".github/workflows/pm-stack-tests.yml"
 
 permissions:
@@ -16,9 +24,9 @@ permissions:
 
 jobs:
   test:
-    name: aggregator + projector + dispatch + python suites
+    name: aggregator + projector + dispatch + python suites + quota exporters
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -77,7 +85,7 @@ jobs:
       - name: Test claimant and grist Python suites
         run: |
           fail=0
-          for t in pm-stack/opencode-claimant/test_poll.py pm-stack/grist/test_update_choice_options.py; do
+          for t in pm-stack/opencode-claimant/test_poll.py pm-stack/opencode-claimant/test_claimant.py pm-stack/grist/test_update_choice_options.py; do
             if [ ! -f "$t" ]; then
               echo "::error::Missing suite file $t — the pm-stack Python suites were not run in full."
               fail=1
@@ -87,12 +95,13 @@ jobs:
             exit 1
           fi
           python3 -m unittest pm-stack/opencode-claimant/test_poll.py || fail=1
+          python3 -m unittest pm-stack/opencode-claimant/test_claimant.py || fail=1
           python3 -m unittest discover -s pm-stack/grist -p 'test_*.py' || fail=1
           if [ "$fail" -ne 0 ]; then
             echo "::error::pm-stack Python suites: at least one suite failed (see above)."
             exit 1
           fi
-          echo "pm-stack Python suites: test_poll.py + grist discovery passed."
+          echo "pm-stack Python suites: test_poll.py + test_claimant.py + grist discovery passed."
 
       # Python suite for #6217: pm-stack/external-comms/
       # test_push_quarantine.py (6 tests, the pinning suite for the
@@ -108,3 +117,33 @@ jobs:
             exit 1
           fi
           python3 -m unittest test_push_quarantine
+
+      # The quota exporter suites need Node 24: opencode-usage-export
+      # imports node:sqlite, which under the runner's default Node 22
+      # prints an ExperimentalWarning to stderr — and that suite's
+      # import test asserts the child's stderr is empty. (Codex P1
+      # finding on PR #6928, verified against the suite at lines
+      # 52-68 of opencode-usage-export.test.mjs.)
+      - name: Set up Node 24 for the quota exporter suites
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      # Quota exporter suites for #6084
+      # opencode-usage-export: node --test (12 tests)
+      - name: Test opencode-usage-export suite
+        run: node --test pm-stack/opencode-usage-export/opencode-usage-export.test.mjs
+
+      # cloudflare-export: node --test (35 tests)
+      - name: Test cloudflare-export suite
+        run: node --test pm-stack/cloudflare-export/cloudflare-quota-export.test.mjs
+
+      # supabase-export: bun test (12 tests)
+      - name: Test supabase-export suite
+        working-directory: pm-stack/supabase-export
+        run: |
+          if [ ! -f supabase-quota-export.test.mjs ]; then
+            echo "::error::Missing suite file pm-stack/supabase-export/supabase-quota-export.test.mjs — the supabase suite was not run."
+            exit 1
+          fi
+          bun test
