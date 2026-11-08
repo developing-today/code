@@ -521,6 +521,48 @@
             }
           }
         },
+        "deepseek-v4-1-flash-1017": {
+          "name": "DeepSeek V4.1 Flash 1017",
+          // Declared 2026-11-07 (Drew, direct order): NOT a Vibe
+          // preset — a La Plateforme catalog model the Mistral wire
+          // also serves (the "mistral" provider's catalog carries
+          // this id, family deepseek-flash). Declaring it here makes
+          // mistral-plan's ordered draw land on THIS leg for the
+          // model, so deepseek-flash-plan's mistral-plan member
+          // rides the Vibe plan key instead of the account API
+          // budget (billing follows the key — see the credential
+          // note above). The limit mirrors the mistral catalog
+          // entry (context + output both, per the schema warning
+          // above). The variants mirror the same catalog entry
+          // (none/low/high/max) so the provider-route group's
+          // variant intersection for this model is unchanged.
+          "limit": {
+            "context": 1048576,
+            "output": 128000
+          },
+          "variants": {
+            "none": {
+              "options": {
+                "reasoning_effort": "none"
+              }
+            },
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            }
+          }
+        },
         "codestral-latest": {
           "name": "Codestral"
         },
@@ -1975,6 +2017,19 @@
         // -> none because mistral-small on this wire offers only
         // none/high) and xhigh -> max (mirroring the Go/ClinePass
         // leaves).
+
+        // SUPERSEDED IN PART 2026-11-07 (Drew, later direct order:
+        // "why isn't vibe ds flash in there"): the model is now
+        // declared on the _vibe provider itself (see its models
+        // block), so inside mistral-plan's ordered group the draw
+        // for this member lands on the VIBE leg and bills the Vibe
+        // plan budget, not the account API budget (which sits
+        // exhausted until 2026-12-01). The mistral API leg remains
+        // the group's fallback for this model, as for every
+        // mistral-plan model. The variant remap below is unchanged:
+        // both legs now declare none/low/high/max for the model, so
+        // the group's variant intersection is the same set the
+        // API-leg seating was written against.
         "targets": [
           {
             "model": "opencode-go-plans/deepseek-v4.1-flash",
