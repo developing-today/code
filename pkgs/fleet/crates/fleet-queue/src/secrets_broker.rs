@@ -118,22 +118,55 @@ fn refresh(state: &Arc<State>) -> Result<usize, String> {
     result
 }
 
+/// Parse the `bws secret list` entries strictly: every entry must
+/// carry a string `id` and a string `key`. A malformed entry fails
+/// the whole parse (#6568): silently dropping it here would install
+/// the partial listing as the whole cache and evict a secret that
+/// exists, defeating the #5504 fail-whole fetch count below — the
+/// count can only see entries this parse kept.
+fn parse_list_entries(list: &Value) -> Result<Vec<(String, String)>, String> {
+    let arr = list.as_array().ok_or("bws list is not an array")?;
+    let mut items = Vec::with_capacity(arr.len());
+    for (i, s) in arr.iter().enumerate() {
+        let id = s
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("bws list entry {i} has a missing or non-string id"))?;
+        let key = s
+            .get("key")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("bws list entry {i} has a missing or non-string key"))?;
+        items.push((id.to_string(), key.to_string()));
+    }
+    Ok(items)
+}
+
+/// Resolve one key to its id in a `bws secret list` payload.
+/// Ok(None) is a definite "not in the vault"; a key-matching entry
+/// whose id is missing or non-string is a source failure (Err), not
+/// an absence (#6568) — reporting it as not-in-vault would send
+/// consumers a 404 for a secret that exists.
+fn resolve_list_id(list: &Value, name: &str) -> Result<Option<String>, String> {
+    let arr = list.as_array().ok_or("bws list is not an array")?;
+    for s in arr {
+        if s.get("key").and_then(|k| k.as_str()) == Some(name) {
+            return match s.get("id").and_then(|i| i.as_str()) {
+                Some(id) => Ok(Some(id.to_string())),
+                None => Err(format!(
+                    "bws list entry for key {name:?} has a missing or non-string id"
+                )),
+            };
+        }
+    }
+    Ok(None)
+}
+
 fn do_refresh(state: &Arc<State>) -> Result<usize, String> {
     let token = bws_token().ok_or("no Bitwarden access token available")?;
     let list_raw = bws_run(&["secret", "list", "-o", "json"], &token)?;
     let list: Value =
         serde_json::from_str(&list_raw).map_err(|e| format!("bws list not json: {e}"))?;
-    let items: Vec<(String, String)> = list
-        .as_array()
-        .ok_or("bws list is not an array")?
-        .iter()
-        .filter_map(|s| {
-            Some((
-                s.get("id")?.as_str()?.to_string(),
-                s.get("key")?.as_str()?.to_string(),
-            ))
-        })
-        .collect();
+    let items: Vec<(String, String)> = parse_list_entries(&list)?;
     // Fetch values with a small worker pool over a shared index.
     // Every per-item failure is counted: a refresh that could not fetch
     // a listed secret must fail as a whole (the caller keeps serving the
@@ -200,15 +233,7 @@ fn fetch_one(name: &str) -> Result<Option<String>, String> {
     let list_raw = bws_run(&["secret", "list", "-o", "json"], &token)?;
     let list: Value =
         serde_json::from_str(&list_raw).map_err(|e| format!("bws list not json: {e}"))?;
-    let id = list.as_array().and_then(|items| {
-        items.iter().find_map(|s| {
-            if s.get("key").and_then(|k| k.as_str()) == Some(name) {
-                s.get("id").and_then(|i| i.as_str()).map(str::to_string)
-            } else {
-                None
-            }
-        })
-    });
+    let id = resolve_list_id(&list, name)?;
     let Some(id) = id else {
         return Ok(None);
     };
@@ -516,7 +541,7 @@ fn url_decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{State, fetch_through_with, url_decode};
+    use super::{State, fetch_through_with, parse_list_entries, resolve_list_id, url_decode};
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, RwLock};
@@ -620,5 +645,61 @@ mod tests {
         // Malformed escapes stay literal.
         assert_eq!(url_decode("a%2"), "a%2");
         assert_eq!(url_decode("a%zz"), "a%zz");
+    }
+
+    #[test]
+    fn parse_list_entries_keeps_well_formed_entries_in_order() {
+        let list = serde_json::json!([
+            {"id": "id-1", "key": "alpha", "value": "x"},
+            {"id": "id-2", "key": "beta"}
+        ]);
+        assert_eq!(
+            parse_list_entries(&list).unwrap(),
+            vec![
+                ("id-1".to_string(), "alpha".to_string()),
+                ("id-2".to_string(), "beta".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_list_entries_fails_whole_on_a_malformed_entry() {
+        // #6568: any entry with a missing or non-string id or key
+        // fails the parse, so a refresh can never install a partial
+        // listing as the whole cache and evict a listed secret.
+        for bad in [
+            serde_json::json!([{"key": "alpha"}]),
+            serde_json::json!([{"id": 7, "key": "alpha"}]),
+            serde_json::json!([{"id": "id-1"}]),
+            serde_json::json!([{"id": "id-1", "key": 7}]),
+            serde_json::json!([{"id": "id-1", "key": "alpha"}, {"key": "beta"}]),
+        ] {
+            assert!(parse_list_entries(&bad).is_err(), "accepted {bad}");
+        }
+        assert!(parse_list_entries(&serde_json::json!({"not": "array"})).is_err());
+    }
+
+    #[test]
+    fn resolve_list_id_distinguishes_absent_from_malformed() {
+        let list = serde_json::json!([
+            {"id": "id-1", "key": "alpha"},
+            {"id": "id-2", "key": "beta"}
+        ]);
+        assert_eq!(
+            resolve_list_id(&list, "beta").unwrap(),
+            Some("id-2".to_string())
+        );
+        assert_eq!(resolve_list_id(&list, "absent").unwrap(), None);
+        assert_eq!(
+            resolve_list_id(&serde_json::json!([]), "alpha").unwrap(),
+            None
+        );
+        // #6568: a key-matching entry with a missing or non-string
+        // id is a source failure, not "not in the vault".
+        let missing = serde_json::json!([{"key": "alpha"}]);
+        assert!(resolve_list_id(&missing, "alpha").is_err());
+        let non_string = serde_json::json!([{"id": 7, "key": "alpha"}]);
+        assert!(resolve_list_id(&non_string, "alpha").is_err());
+        assert!(resolve_list_id(&serde_json::json!({"not": "array"}), "alpha").is_err());
     }
 }
