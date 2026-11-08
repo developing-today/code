@@ -16,12 +16,28 @@ during the dual-run diff period.
 - `src/turso.ts` — minimal libSQL `/v2/pipeline` client with typed
   args (no string interpolation).
 - `src/sink.ts` — the #5690 agent-events sink (POST the queue
-  broker's `/events-append` when `EVENTS_BROKER_URL` is set; until
-  a public broker route exists — the broker is tailnet-only — the
-  Worker performs the sink's own INSERT into fleet-queue `events`),
-  plus the fleet-queue stores that replace PG `agent.repo_snapshots`
-  (`agent_repo_snapshots`) and `agent.watermarks` (`agent_watermarks`,
-  `dirty:<repo>` keys).
+  broker's `/events-append` when `EVENTS_BROKER_URL` is set; the
+  broker route is public since #6925 — see below — and the Worker's
+  own INSERT into fleet-queue `events` remains as the outage
+  fallback when the var is unset), plus the fleet-queue stores that
+  replace PG `agent.repo_snapshots` (`agent_repo_snapshots`) and
+  `agent.watermarks` (`agent_watermarks`, `dirty:<repo>` keys).
+
+## Broker route (#6925)
+
+`EVENTS_BROKER_URL = https://queue-broker.security.cab`: a
+Cloudflare Tunnel ingress row on the pm-stack tunnel
+(`0ee3bf69-e5d1-4ed8-95de-4a17a18156b5`) forwarding to the
+broker's tailnet listener (`100.99.113.103:4801`). A Cloudflare
+Access application on the hostname admits only the
+`github-ci-worker-queue-broker` service token; the Worker sends
+its `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers
+plus the broker's own `X-Agent-Token` (the broker does not read
+`Authorization: Bearer`). Auth chain, verified live 2026-11-07:
+no Access headers → 403 at the edge; Access headers with a wrong
+agent token → 401 from the broker; both correct → the broker
+answers. Unsetting `EVENTS_BROKER_URL` reverts the sink to the
+direct-Turso INSERT fallback with no code change.
 
 ## Writes (Turso only — no Postgres anywhere)
 
@@ -39,7 +55,13 @@ during the dual-run diff period.
 in BWS as `cloudflare.github-ci-webhook-secret`; the org/App flip
 rotates it again per #5693), `TURSO_PLATFORM_TOKEN`
 (`turso.fleet-platform-rw-token`), `TURSO_QUEUE_TOKEN`
-(`turso.fleet-queue-rw-token`).
+(`turso.fleet-queue-rw-token`), `EVENTS_BROKER_TOKEN` (the queue
+broker's own agent token — the value in
+`~/.config/queue-broker/token` on the laptop), and
+`EVENTS_BROKER_ACCESS_CLIENT_ID` / `EVENTS_BROKER_ACCESS_CLIENT_SECRET`
+(the #6925 Access service token, vaulted in BWS as
+`cloudflare.access.queue-broker-client-id` /
+`cloudflare.access.queue-broker-client-secret`).
 
 ## Run
 

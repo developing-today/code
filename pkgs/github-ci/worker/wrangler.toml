@@ -11,6 +11,14 @@
 #   TURSO_PLATFORM_TOKEN    turso.fleet-platform-rw-token (ci_events)
 #   TURSO_QUEUE_TOKEN       turso.fleet-queue-rw-token (agent events,
 #                           snapshots, watermarks)
+#   EVENTS_BROKER_TOKEN     the queue broker's own agent token (the
+#                           value in ~/.config/queue-broker/token on
+#                           the laptop); sent as X-Agent-Token.
+#   EVENTS_BROKER_ACCESS_CLIENT_ID / EVENTS_BROKER_ACCESS_CLIENT_SECRET
+#                           Cloudflare Access service token for
+#                           queue-broker.security.cab (#6925), vaulted
+#                           in BWS as cloudflare.access.queue-broker-
+#                           client-id / -client-secret.
 name = "github-ci"
 main = "src/index.ts"
 compatibility_date = "2025-09-15"
@@ -19,9 +27,11 @@ workers_dev = true
 [vars]
 TURSO_PLATFORM_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io"
 TURSO_QUEUE_URL = "https://fleet-queue-dezren39.aws-us-east-1.turso.io"
-# EVENTS_BROKER_URL is intentionally unset: the queue broker
-# (/events-append, #5690) listens on the tailnet only, which a Worker
-# cannot reach. When a public broker route exists, set this var and
-# the Worker POSTs there instead of writing the sink table directly;
-# until then it performs the sink write itself (the exact INSERT the
-# broker's /events-append verb and the Edge Function's turso sink do).
+EVENTS_BROKER_URL = "https://queue-broker.security.cab"
+# EVENTS_BROKER_URL (#6925): the queue broker's public route —
+# Cloudflare Tunnel ingress on the pm-stack tunnel to the broker's
+# tailnet listener, gated by a Cloudflare Access service-token-only
+# application plus the broker's X-Agent-Token check. With this set,
+# the Worker POSTs /events-append to the broker instead of writing
+# the sink table itself; the direct INSERT in sink.ts remains the
+# outage fallback (unset this var to revert to it).
