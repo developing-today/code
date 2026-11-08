@@ -4,11 +4,16 @@
 Run:  python3 -m unittest pm-stack/opencode-claimant/test_claimant.py
 
 The transport (curl to the OpenCode server) and the queue CLI
-(repo-queue) are stubbed at subprocess.run, and poll discovery is
-stubbed at claimant.run_poll, so the suite exercises the real step
-logic with no server and no queue:
+(repo-queue) are stubbed at subprocess.run, poll discovery is
+stubbed at claimant.run_poll, and supervision's claimed rows are
+stubbed at the poll module's fetch_claimed_rows, so the suite
+exercises the real step logic with no server and no queue:
 
-- launch_step launches and binds a valid handed_off candidate;
+- launch_step launches, binds and prompts a valid handed_off
+  candidate; a prompt that cannot be landed flags the launch entry
+  instead of reading as a clean launch;
+- launch_step in shadow mode mutates nothing and records the
+  would-launch window as skips (#7366);
 - launch_step records a skip (not silence) when a candidate's state
   changes before launch, and main() writes those skips into the
   fires.jsonl entry;
@@ -44,29 +49,20 @@ class Result:
         self.stderr = stderr
 
 
-def make_fake_run(binds, *, session_get="gone", messages="[]"):
+def make_fake_run(binds, *, session_get="gone", messages="[]",
+                  prompt_rc=0):
     """Build a subprocess.run stub dispatching on argv shape.
 
     binds: list collecting every repo-queue bind argv.
     session_get: "gone" -> the session GET returns an error body
     (what curl -s prints for a 404); "active" -> a live session.
+    prompt_rc: return code for the prompt POST (curl -f fails on
+    HTTP errors, so 1 models a rejected prompt send).
     """
 
     def fake_run(cmd, **kwargs):
         argv = [str(part) for part in cmd]
         joined = " ".join(argv)
-        if "repo-queue" in argv[0] and "list" in argv:
-            queue = argv[argv.index("--queue") + 1]
-            if queue == claimant.QUEUES[0]:
-                rows = [{
-                    "id": 4242,
-                    "attempts": 0,
-                    "max_attempts": 5,
-                    "progress": {"lane": "opencode", "session_id": "ses_gone"},
-                }]
-            else:
-                rows = []
-            return Result(0, json.dumps(rows))
         if "repo-queue" in argv[0] and "bind" in argv:
             binds.append(cmd)
             return Result(0, "{}")
@@ -74,6 +70,8 @@ def make_fake_run(binds, *, session_get="gone", messages="[]"):
             return Result(0, "")
         if argv[0] == "curl" and joined.rstrip().endswith("/messages"):
             return Result(0, messages)
+        if argv[0] == "curl" and joined.rstrip().endswith("/prompt"):
+            return Result(prompt_rc, "")
         if argv[0] == "curl" and "-X" in argv and "POST" in argv:
             return Result(0, json.dumps({
                 "id": "ses_new1",
@@ -89,6 +87,26 @@ def make_fake_run(binds, *, session_get="gone", messages="[]"):
         return Result(0, "")
 
     return fake_run
+
+
+BOUND_ROW = {
+    "id": 4242,
+    "attempts": 0,
+    "max_attempts": 5,
+    "progress": {"lane": "opencode", "session_id": "ses_gone"},
+}
+
+
+def stub_claimed_rows(rows):
+    """Patch the poll module's broker read (supervision's row source)
+    to serve `rows` for the first queue and [] for the rest."""
+    poll_mod = claimant._load_poll_module()
+
+    def fake_fetch(queue):
+        return list(rows) if queue == claimant.QUEUES[0] else []
+
+    return patch.object(poll_mod, "fetch_claimed_rows",
+                        side_effect=fake_fetch)
 
 
 CANDIDATE = {
@@ -136,11 +154,53 @@ class TestLaunchStep(unittest.TestCase):
         self.assertEqual(launched, [])
         self.assertEqual(skips, [{"task_id": 777, "reason": "task_state_changed"}])
 
+    def test_shadow_mode_launches_nothing(self):
+        # #7366: a shadow fire must not create, bind or prompt — the
+        # candidate is reported as a would-launch skip only.
+        binds = []
+        with patch.object(claimant, "run_poll",
+                          return_value={"candidates": [dict(CANDIDATE)]}), \
+             patch.object(claimant.subprocess, "run", make_fake_run(binds)):
+            launched, skips = claimant.launch_step("shadow", 3)
+        self.assertEqual(launched, [])
+        self.assertEqual(skips, [{"task_id": 777,
+                                  "reason": "shadow_would_launch"}])
+        self.assertEqual(binds, [])
+
+    def test_failed_prompt_flags_the_launch(self):
+        # #7356: the prompt POST is rejected and no message landed —
+        # the launch is recorded, but flagged, never read as clean.
+        binds = []
+        with patch.object(claimant, "run_poll",
+                          return_value={"candidates": [dict(CANDIDATE)]}), \
+             patch.object(claimant.subprocess, "run",
+                          make_fake_run(binds, prompt_rc=1)):
+            launched, skips = claimant.launch_step("live", 3)
+        self.assertEqual(skips, [])
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(launched[0].get("prompt_failed"), True)
+        self.assertEqual(len(binds), 1)
+
+    def test_landed_prompt_despite_post_error_is_clean(self):
+        # The POST's response was lost but the message landed: the
+        # reconcile read sees it and no resend/flag happens.
+        binds = []
+        with patch.object(claimant, "run_poll",
+                          return_value={"candidates": [dict(CANDIDATE)]}), \
+             patch.object(claimant.subprocess, "run",
+                          make_fake_run(binds, prompt_rc=1,
+                                        messages='[{"id": "m1"}]')):
+            launched, skips = claimant.launch_step("live", 3)
+        self.assertEqual(skips, [])
+        self.assertEqual(len(launched), 1)
+        self.assertNotIn("prompt_failed", launched[0])
+
 
 class TestSupervisionStep(unittest.TestCase):
     def test_gone_zero_message_session_is_recovered(self):
         binds = []
-        with patch.object(claimant.subprocess, "run", make_fake_run(binds)):
+        with stub_claimed_rows([BOUND_ROW]), \
+             patch.object(claimant.subprocess, "run", make_fake_run(binds)):
             recovered = claimant.supervision_step("live")
         self.assertEqual(recovered, [{
             "task_id": 4242,
@@ -154,7 +214,8 @@ class TestSupervisionStep(unittest.TestCase):
 
     def test_active_session_is_left_bound(self):
         binds = []
-        with patch.object(claimant.subprocess, "run",
+        with stub_claimed_rows([BOUND_ROW]), \
+             patch.object(claimant.subprocess, "run",
                           make_fake_run(binds, session_get="active")):
             recovered = claimant.supervision_step("live")
         self.assertEqual(recovered, [])
@@ -182,6 +243,7 @@ class TestMainFireLog(unittest.TestCase):
             fires = state_dir / "fires.jsonl"
             with patch.object(claimant, "read_mode", return_value="live"), \
                  patch.object(claimant, "run_poll", side_effect=poll_stub), \
+                 stub_claimed_rows([]), \
                  patch.object(claimant, "get_active_root_session_count",
                               return_value=0), \
                  patch.object(claimant.subprocess, "run", make_fake_run([])), \
