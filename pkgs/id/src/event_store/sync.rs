@@ -1272,6 +1272,7 @@ mod tests {
                 note: None,
                 link: None,
                 checkpoint: None,
+                rotation: None,
             }
         }
         // The group create, by A, listing A, B and C as managers. The group is
