@@ -146,19 +146,12 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
             }
         };
 
-        let mut capped = false;
-        for peer in &rpc_peers {
-            if offer_peer(&mut all_peers, peer.clone(), options.max_peers) == PeerOffer::Capped {
-                capped = true;
-                break;
-            }
-        }
-        if capped {
-            tracing::warn!(
-                "peers: max-peers cap ({}) reached in RPC results; truncating",
-                options.max_peers
-            );
-        }
+        merge_capped(
+            &mut all_peers,
+            rpc_peers.iter().cloned(),
+            options.max_peers,
+            "RPC results",
+        );
 
         // Depth crawling via RPC
         if options.depth != 0 && !rpc_peers.is_empty() {
@@ -171,15 +164,7 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
                 options.no_mdns,
             )
             .await;
-            for peer in crawled {
-                if offer_peer(&mut all_peers, peer, options.max_peers) == PeerOffer::Capped {
-                    tracing::warn!(
-                        "peers: max-peers cap ({}) reached merging crawl results; truncating",
-                        options.max_peers
-                    );
-                    break;
-                }
-            }
+            merge_capped(&mut all_peers, crawled, options.max_peers, "crawl results");
         }
     }
 
@@ -188,15 +173,7 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
         let gossip_peers = discover_via_gossip(&options).await;
         match gossip_peers {
             Ok(peers) => {
-                for peer in peers {
-                    if offer_peer(&mut all_peers, peer, options.max_peers) == PeerOffer::Capped {
-                        tracing::warn!(
-                            "peers: max-peers cap ({}) reached merging gossip results; truncating",
-                            options.max_peers
-                        );
-                        break;
-                    }
-                }
+                merge_capped(&mut all_peers, peers, options.max_peers, "gossip results");
             }
             Err(e) => {
                 if options.gossip {
@@ -259,13 +236,22 @@ enum PeerOffer {
 /// combined-mode merge in [`cmd_peers`] — so no single oversized
 /// response or announcement stream can grow a retained collection past
 /// it. A cap of 0 refuses every new peer.
+///
+/// A duplicate never consumes a cap slot, and it only replaces the
+/// stored record when it is at least as fresh: `ListPeers` serves each
+/// server's independent discovery snapshot, so an older crawl snapshot
+/// must not roll back a newer RPC record. Equal timestamps keep the
+/// existing arrival-order behavior (the later record wins), matching
+/// [`merge_gossip_peers`].
 fn offer_peer(
     peers: &mut HashMap<EndpointId, PeerAnnouncement>,
     peer: PeerAnnouncement,
     max_peers: usize,
 ) -> PeerOffer {
-    if peers.contains_key(&peer.node_id) {
-        peers.insert(peer.node_id, peer);
+    if let Some(existing) = peers.get(&peer.node_id) {
+        if peer.timestamp_secs >= existing.timestamp_secs {
+            peers.insert(peer.node_id, peer);
+        }
         return PeerOffer::Updated;
     }
     if peers.len() >= max_peers {
@@ -273,6 +259,35 @@ fn offer_peer(
     }
     peers.insert(peer.node_id, peer);
     PeerOffer::Added
+}
+
+/// Merges `incoming` into `peers` under the `--max-peers` cap (#1765),
+/// warning once when anything was refused.
+///
+/// Unlike a plain `break` on the first refusal, this keeps scanning
+/// after the cap is hit: a refused peer is a *new* node id, but a later
+/// entry may be an *update* to a peer already retained, and dropping it
+/// would make the output depend on `HashMap` iteration order. The
+/// collection still never grows past `max_peers`.
+fn merge_capped(
+    peers: &mut HashMap<EndpointId, PeerAnnouncement>,
+    incoming: impl IntoIterator<Item = PeerAnnouncement>,
+    max_peers: usize,
+    source: &str,
+) {
+    let mut capped = false;
+    for peer in incoming {
+        if offer_peer(peers, peer, max_peers) == PeerOffer::Capped {
+            capped = true;
+        }
+    }
+    if capped {
+        tracing::warn!(
+            "peers: max-peers cap ({}) reached in {}; truncating",
+            max_peers,
+            source
+        );
+    }
 }
 
 /// Queries the local serve instance for its peer list via RPC.
@@ -406,23 +421,28 @@ async fn crawl_peers(
                 .await
             {
                 Ok(Ok(peers)) => {
+                    let mut capped = false;
                     for peer in peers {
                         let node_id = peer.node_id;
                         match offer_peer(&mut all_peers, peer, max_peers) {
                             PeerOffer::Added => next_frontier.push(node_id),
                             PeerOffer::Updated => {}
                             PeerOffer::Capped => {
-                                // Insertion stops here, including at the
-                                // final depth: warn and drop the rest of
-                                // this response (#1765).
-                                tracing::warn!(
-                                    "peers: max-peers cap ({}) reached at depth {}; truncating response",
-                                    max_peers,
-                                    current_depth
-                                );
-                                break;
+                                // New node ids stop here, including at the
+                                // final depth (#1765) — but keep scanning:
+                                // later entries may update peers already
+                                // retained, and dropping them would make the
+                                // result depend on response order.
+                                capped = true;
                             }
                         }
+                    }
+                    if capped {
+                        tracing::warn!(
+                            "peers: max-peers cap ({}) reached at depth {}; truncating response",
+                            max_peers,
+                            current_depth
+                        );
                     }
                 }
                 Ok(Err(e)) => {
@@ -582,6 +602,15 @@ mod tests {
             // Fresh stamp: PeerDiscovery::update refuses announcements
             // older than STALE_THRESHOLD relative to the wall clock.
             timestamp_secs: now_secs(),
+        }
+    }
+
+    fn stamped(byte: u8, name: &str, timestamp_secs: u64) -> PeerAnnouncement {
+        PeerAnnouncement {
+            node_id: SecretKey::from_bytes(&[byte; 32]).public(),
+            name: Some(name.to_owned()),
+            blob_count: 7,
+            timestamp_secs,
         }
     }
 
@@ -852,6 +881,55 @@ mod tests {
             offer_peer(&mut peers, announcement(2, None), 1),
             PeerOffer::Capped
         );
+    }
+
+    #[test]
+    fn test_offer_peer_older_duplicate_does_not_roll_back_fresher_record() {
+        // Codex P2 on #3750: a crawl snapshot older than the RPC record
+        // must not overwrite it.
+        let mut peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
+        assert_eq!(
+            offer_peer(&mut peers, stamped(1, "fresh", 100), 10),
+            PeerOffer::Added
+        );
+        assert_eq!(
+            offer_peer(&mut peers, stamped(1, "stale", 90), 10),
+            PeerOffer::Updated
+        );
+        let kept = peers.values().next().unwrap();
+        assert_eq!(kept.name.as_deref(), Some("fresh"));
+        assert_eq!(kept.timestamp_secs, 100);
+    }
+
+    #[test]
+    fn test_offer_peer_equal_timestamp_keeps_arrival_order() {
+        let mut peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
+        offer_peer(&mut peers, stamped(1, "first", 100), 10);
+        offer_peer(&mut peers, stamped(1, "second", 100), 10);
+        assert_eq!(
+            peers.values().next().unwrap().name.as_deref(),
+            Some("second")
+        );
+    }
+
+    #[test]
+    fn test_merge_capped_still_applies_updates_after_a_refusal() {
+        // Codex P2 on #3750: breaking on the first refused peer dropped
+        // later updates to retained peers, making output depend on
+        // iteration order.
+        let mut peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
+        peers.insert(stamped(1, "a-v1", 100).node_id, stamped(1, "a-v1", 100));
+        merge_capped(
+            &mut peers,
+            vec![
+                stamped(9, "new", 100),  // refused: over cap
+                stamped(1, "a-v2", 200), // update to retained peer
+            ],
+            1,
+            "test",
+        );
+        assert_eq!(peers.len(), 1, "cap still holds");
+        assert_eq!(peers.values().next().unwrap().name.as_deref(), Some("a-v2"));
     }
 
     #[tokio::test]
