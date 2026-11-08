@@ -1243,11 +1243,25 @@ export class EventsStore {
         );
       }
     }
+    // Ingestion stamps are strictly monotonic within the stream
+    // (#3322, PR #7665): pageEvents fixes its snapshot at the newest
+    // ingestedAt it has seen and excludes anything ingested later,
+    // but a wall-clock stamp can tie at millisecond resolution when
+    // appends land in the same ms — a tied late append then leaks
+    // into a snapshot taken before it existed. Stamping at least
+    // 1ms past the newest stamp already in the stream (record calls
+    // are serialized on recordChain, so this is race-free) makes
+    // the snapshot boundary exact.
+    const lastIngestedMs = this.events.reduce(
+      (latest, e) => Math.max(latest, Date.parse(e.ingestedAt) || 0),
+      0,
+    );
+    const ingestedAt = new Date(Math.max(Date.now(), lastIngestedMs + 1)).toISOString();
     const event: AuditEvent = {
       ...parsed.value,
       version: 2,
       id: input.id ?? randomUUID(),
-      ingestedAt: new Date().toISOString(),
+      ingestedAt,
       attribution: input.attribution ?? { confidence: "unknown", asserted: false },
       source: input.source ?? { identity: "pm-stack/aggregator" },
       ...(input.corrects !== undefined ? { corrects: input.corrects } : {}),
