@@ -26,7 +26,7 @@ import { diffCoverage, type CoverageSnapshotFile } from "./coverage.ts";
 import { DIGEST_SECTION_LIMIT, type Digest, type DigestKind } from "./digest.ts";
 import { registryQueryString, type RegistryView } from "./registry-view.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
-import { applyBoardDonePolicy, DONE_STRIP_RENDER_LIMIT } from "./board-policy.ts";
+import { applyBoardDonePolicy, DONE_STRIP_RENDER_LIMIT, selectVisibleDoneCards } from "./board-policy.ts";
 import { cardState, pendingVerb, type CardState } from "./card-state.ts";
 import {
   DELEGATION_DEFAULT_OBJECT_REF,
@@ -1491,14 +1491,10 @@ export function renderBoardBody(
       let visibleItems = colItems;
       let doneNote = "";
       if (k === "done" && colItems.length > DONE_STRIP_RENDER_LIMIT) {
-        const sorted = [...colItems].sort(
-          (a, b) => (Date.parse(b.updatedAt ?? "") || 0) - (Date.parse(a.updatedAt ?? "") || 0),
-        );
+        visibleItems = selectVisibleDoneCards(colItems, { showAll: renderOpts?.showAllDone ?? false });
         if (renderOpts?.showAllDone) {
-          visibleItems = sorted;
           doneNote = ` — showing all, newest first; <a href="/board">show fewer</a>`;
         } else {
-          visibleItems = sorted.slice(0, DONE_STRIP_RENDER_LIMIT);
           doneNote = ` — showing the ${DONE_STRIP_RENDER_LIMIT} most recent; <a href="/board?done=all">show all ${colItems.length}</a>`;
         }
       }

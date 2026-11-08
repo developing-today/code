@@ -222,6 +222,23 @@ describe("server boots from fixtures", () => {
     expect(attention.length).toBeGreaterThan(0);
   });
 
+  test("board JSON is the board's own bounded twin (#5082)", async () => {
+    const res = await fetch(`http://127.0.0.1:${port}/api/board.json`);
+    expect(res.status).toBe(200);
+    // Machine consumer: no pretty-print padding.
+    const raw = await res.text();
+    expect(raw).not.toContain("\n  \"board\"");
+    const body = JSON.parse(raw) as {
+      board: { links?: { ref: string }[]; status?: string }[];
+      items: { ref: string }[];
+    };
+    // Every shipped item resolves a link the shipped cards actually carry:
+    // the payload never carries an unreachable item closure.
+    const linked = new Set(body.board.flatMap((card) => (card.links ?? []).map((l) => l.ref)));
+    expect(body.items.length).toBeGreaterThan(0);
+    expect(body.items.every((item) => linked.has(item.ref))).toBe(true);
+  });
+
   test("unknown project page is a styled 404; a known project stays 200 (#1186)", async () => {
     const missing = await fetch(`http://127.0.0.1:${port}/program/nope`);
     expect(missing.status).toBe(404);

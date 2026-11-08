@@ -139,6 +139,7 @@ import { buildQueueView, queueInputsStale } from "./queue-view.ts";
 import { dashboardResponseWithinDeadline } from "./assembly-deadline.ts";
 import { dispatchStateFor, fetchRfaState, RFA_NOT_PICKED_UP } from "./sources/ready-for-agent.ts";
 import { TodayCache, TODAY_CACHE_TTL_MS } from "./today-cache.ts";
+import { boardJsonBody, boardJsonItemsMap } from "./board-json.ts";
 
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
@@ -442,6 +443,16 @@ async function discussTitle(objectRef: string): Promise<{ title: string; githubR
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body, null, 2), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
+/** Same response shape as {@link json} without the 2-space pretty-print:
+ *  the board JSON legitimately carries seconds of data and the pretty
+ *  form adds ~10% bytes for nothing a machine consumer reads (#5082). */
+function jsonCompact(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json; charset=utf-8" },
   });
@@ -1875,17 +1886,23 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/api/board.json") {
     const { board, items } = await boardContext();
+    const showAllDone = url.searchParams.get("done") === "all";
     const resolved = await resolveView(url);
-    if (!resolved) return json({ board, items: [...items.values()] });
+    if (!resolved) return jsonCompact(boardJsonBody(board, items, { showAllDone }));
     const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
-    const keptBoard = board.filter((b) =>
-      linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
+    // Filter the already-bounded board (same done policy + strip limit as
+    // the page), then report the items those kept cards can resolve —
+    // #5082: the view branch must not reintroduce the full closure.
+    const bounded = boardJsonBody(board, items, { showAllDone });
+    const boundedItems = boardJsonItemsMap(bounded);
+    const keptBoard = bounded.board.filter((b) =>
+      linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, boundedItems, poolByRef, resolved.filters),
     );
-    const keptItems = [...items.values()].filter((it) =>
-      itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters),
-    );
-    return json({ board: keptBoard, items: keptItems, view: resolved.view?.id ?? null });
+    const keptRefs = new Set<RefKey>();
+    for (const card of keptBoard) for (const link of card.links) keptRefs.add(link.ref);
+    const keptItems = bounded.items.filter((it) => keptRefs.has(it.ref));
+    return jsonCompact({ board: keptBoard, items: keptItems, view: resolved.view?.id ?? null });
   }
   if (path === "/api/roadmap.json") {
     const { rows, items, reconciliation } = await roadmapContext();
