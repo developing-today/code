@@ -26,12 +26,11 @@
 //   Project's single writer (#910), so it performs the Status write
 //   itself and its run log names "requested via dashboard, action
 //   da-…".
-// - kind "session" — routed by the action's sessionSource: the Jules
-//   keeper (jules-review) consumes source "jules" (answer only —
-//   poke/stop render disabled on Jules cards); the orchestration pass
-//   consumes the OpenCode sources ("opencode-sandbox",
-//   "opencode-laptop") for poke/answer/stop. Sources with no live
-//   control channel (claude-code, cron) render no enabled controls.
+// - kind "session" — routed by the action's sessionSource: the
+//   orchestration pass consumes the OpenCode sources
+//   ("opencode-sandbox", "opencode-laptop") for poke/answer/stop.
+//   Sources with no live control channel (claude-code, cron) render
+//   no enabled controls.
 // - kind "preference" — the orchestration pass: set-delegation-default
 //   records the standing auto toggle (#1290; Drew's 2026-10-27 decision
 //   is the initial record). The aggregator also reads these records to
@@ -64,6 +63,7 @@ import { isObjectRef, validateAuthor } from "./comments.ts";
 import type { ViewFilters } from "./views.ts";
 import { validateViewFilters, validateViewName } from "./views.ts";
 import type { DashAuthor, RefKey, SessionSource } from "./model.ts";
+import { isValidRef } from "./model.ts";
 import { isNonEmptyString, isRecord, parseIsoDate } from "./validate.ts";
 import {
   archiveStoreBytes,
@@ -284,8 +284,7 @@ function answerQuestionIds(action: Pick<NewAction, "verb" | "payload">): string[
   return [...ids];
 }
 
-const GH_REF = /^[\w.-]+\/[\w.-]+#\d+$/;
-const SESSION_SOURCES = new Set(["opencode-sandbox", "opencode-laptop", "jules", "claude-code", "cron"]);
+const SESSION_SOURCES = new Set(["opencode-sandbox", "opencode-laptop", "claude-code", "cron"]);
 
 function cleanText(v: unknown, max: number): string | undefined {
   if (typeof v !== "string") return undefined;
@@ -429,7 +428,7 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
 
   let targetRef: RefKey | undefined;
   if (b.targetRef !== undefined) {
-    if (typeof b.targetRef !== "string" || !GH_REF.test(b.targetRef)) {
+    if (!isValidRef(b.targetRef)) {
       return { ok: false, error: "targetRef must be owner/repo#N" };
     }
     targetRef = b.targetRef;
@@ -503,7 +502,7 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
       return { ok: false, error: "request-status objectRef must be gh:<owner/repo#N>" };
     }
     targetRef ??= b.objectRef.slice(3);
-    if (!GH_REF.test(targetRef)) return { ok: false, error: "request-status target must be owner/repo#N" };
+    if (!isValidRef(targetRef)) return { ok: false, error: "request-status target must be owner/repo#N" };
   }
   if (kind === "session") {
     if (sessionId === undefined) return { ok: false, error: "session actions require sessionId" };
@@ -746,7 +745,12 @@ export class ActionsStore {
       createdAt: new Date().toISOString(),
       state: duplicate ? "rejected" : "new",
       ...(input.supersedes ? { supersedes: input.supersedes } : {}),
-      ...(duplicate ? { duplicateOf: duplicate.id, resultNote: `Duplicate answer; existing action ${duplicate.id} is ${duplicate.state}.` } : {}),
+      ...(duplicate
+        ? {
+            duplicateOf: duplicate.id,
+            resultNote: `Duplicate answer; existing action ${duplicate.id} is ${duplicate.state}.`,
+          }
+        : {}),
     };
     this.actions.push(action);
     if (!duplicate && input.supersedes) {

@@ -9,7 +9,7 @@
 import { readFile } from "node:fs/promises";
 import type { UnmatchedCharge } from "./charges-match.ts";
 import type { CheckoutDrift } from "./checkout-drift.ts";
-import { isProjectPoolItem } from "./projects.ts";
+import { isProjectAudit, isProjectPoolItem } from "./projects.ts";
 import { isRepoCensus, type RepoCensus } from "./coverage.ts";
 import { isSessionRecord } from "./registry.ts";
 import {
@@ -28,17 +28,18 @@ import type {
   ChargeRow,
   DnsSection,
   GoalMeasurement,
-  JulesSummary,
   OrchestrationProvenance,
   OrchestrationSection,
   PaygLine,
   PoolFreshness,
   ProjectPoolItem,
+  ProjectAudit,
   QuotaCredentialRow,
   QuotaPool,
   QuotaView,
   QuotaWindow,
   SaasService,
+  UninstrumentedSaasService,
   SessionFeedEntry,
   SessionRecord,
   SnapshotRecord,
@@ -87,19 +88,21 @@ export interface FleetFeed {
   /** PAYG lines loadFeed's sanitization dropped (#2450), set only
    * when drops occurred; absent on raw parsed feeds and clean loads. */
   paygDropped?: number;
-  /** Sandbox-server + Jules sessions, pre-classification (render classifies). */
+  /** Sandbox-server sessions, pre-classification (render classifies). */
   attention: SessionFeedEntry[];
-  /** Jules keeper totals (slice 2); absent when the keeper state is unreadable. */
-  julesSummary?: JulesSummary;
   /** The orchestration job's latest section (#899), when one exists. */
   orchestration?: OrchestrationSection;
   /** The DNS/domain register (#902), parsed by the collector (slice 3). */
   dns?: DnsSection;
-  /** Identity-registry records (#906 §3): sandbox OpenCode + Jules + Muse launches. */
+  /** Identity-registry records (#906 §3): sandbox OpenCode + Muse launches. */
   registry?: SessionRecord[];
   /** Usage & billing hub (design §2.3): family-2 services extracted from
    * quota-view.md Part (b) by the collector; absent in older feeds. */
   saas?: SaasService[];
+  /** Tracker-derived services without an instrumented quota card. */
+  uninstrumentedServices?: UninstrumentedSaasService[];
+  /** Malformed tracker rows dropped by loadFeed (#1172). */
+  uninstrumentedServicesDropped?: number;
   /** Hub PAYG lines (§1.2), from quota-view.md + the provider registry. */
   payg?: PaygLine[];
   /** Hub charges evidence (§2.4), from the same dated records. */
@@ -123,6 +126,8 @@ export interface FleetFeed {
    * state, read by the collector via GraphQL. Absent when the
    * collector had no Projects token or the read failed. */
   projects?: ProjectPoolItem[];
+  /** Scheduled Project #4 audit snapshot (fields, views, totals, and distributions). */
+  projectAudit?: ProjectAudit;
   /** Project #4 coverage census (#1220): per-repo open-issue and
    * gate-label counts from the collector's Search API reads, embedded
    * beside the projects section. Absent when the collector had no
@@ -163,7 +168,13 @@ export function sanitizeCollectionError(value: unknown): string {
     .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]+|xox[baprs]-[A-Za-z0-9-]+)/gi, "[redacted]")
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted]")
     .replace(
-      /\b((?:access[_-]?token|refresh[_-]?token|token|api[_-]?key|password|secret|authorization)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi,
+      // Quoted keys (#3966): JSON bodies embed credentials as
+      // {"api_key": "v"}, {'password': 'v'}, or nested {"secret":
+      // "v"} — the keyword is wrapped in quotes, so allow an
+      // optional quote on each side of the name. `key` covers bare
+      // URL credential params (?key=..., &api_key=...); the value
+      // stops at & so sibling params survive.
+      /(["']?\b(?:access[_-]?token|refresh[_-]?token|token|api[_-]?key|password|secret|key|authorization)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;&]+)/gi,
       "$1[redacted]",
     )
     .replace(/(https?:\/\/)[^/@\s:]+(?::[^/@\s]*)?@/gi, "$1[redacted]@")
@@ -213,19 +224,76 @@ export function sanitizeFeedMetadata(value: unknown): FeedMetadata | undefined {
  * sometimes publishes, so requiring strictly an array would reject real
  * sections.
  */
+const GOAL_MOMENTUMS: readonly string[] = ["moving", "stalled", "blocked", "no-work-lined-up"];
+const LINED_UP_HORIZONS: readonly string[] = ["today", "tomorrow", "next-3-days", "longer", "incoming"];
+const LINED_UP_STATUSES: readonly string[] = ["in-progress", "queued", "blocked", "done-recently"];
+
+// #3897: element gates for the per-goal arrays. todayFromSection reads
+// element fields directly (t.horizon, s.blocker), so a record alone is
+// not enough — the fields it dereferences must be the right shapes, or
+// the designed invalid-section fallback never happens and the consumer
+// throws (or silently renders falsified state) instead.
+function isLinedUpElement(v: unknown): boolean {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.title === "string" &&
+    typeof v.horizon === "string" &&
+    LINED_UP_HORIZONS.includes(v.horizon) &&
+    (v.status === undefined || (typeof v.status === "string" && LINED_UP_STATUSES.includes(v.status))) &&
+    (v.horizonWhy === undefined || typeof v.horizonWhy === "string") &&
+    // #6174: consumers dereference `ref` as a string (assembleWorkItems
+    // keys items by it; todayFromSection carries it to the render), so
+    // its type is gated here like the other dereferenced fields. A
+    // string that is not a GitHub ref stays valid at the gate — goal
+    // ids are legitimate lined-up refs in live data (#6149); consumers
+    // guard those with isValidRef at the render (#6149/#6205).
+    (v.ref === undefined || typeof v.ref === "string") &&
+    // #4316: blockedBy is a DependencyRef[] — the same shape the
+    // top-level dependencies array is gated with (isDependencyElement).
+    // Ungated, a malformed blockedBy passed the section as valid and
+    // its blockers were silently dropped by the canonical layer
+    // (asBlockers), rendering a blocked task as unblocked. Absence is
+    // fine; a present value must be an array of dependency elements.
+    (v.blockedBy === undefined ||
+      (Array.isArray(v.blockedBy) && v.blockedBy.every(isDependencyElement)))
+  );
+}
+
+function isStalledElement(v: unknown): boolean {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.title === "string" &&
+    typeof v.since === "string" &&
+    (v.blocker === undefined || typeof v.blocker === "string")
+  );
+}
+
 function isGoalMeasurement(v: unknown): boolean {
   if (typeof v !== "object" || v === null) return false;
   const g = v as Partial<GoalMeasurement>;
   return (
+    // #3897: the scalar fields todayFromSection renders (project name,
+    // momentum state, summary) were never checked — a goal missing them
+    // passed and rendered nameless / silently "stalled".
+    typeof g.goal === "string" &&
+    g.goal.length > 0 &&
+    typeof g.momentum === "string" &&
+    GOAL_MOMENTUMS.includes(g.momentum) &&
+    typeof g.summary === "string" &&
+    (typeof g.goalId === "string" || g.goalId === null) &&
     Array.isArray(g.linedUp) &&
     Array.isArray(g.stalled) &&
     Array.isArray(g.gaps) &&
     // #2417: todayFromSection dereferences every lined-up / stalled
     // element, so a non-record element must fail here, at the gate —
     // presence of the arrays alone let [null] through to a TypeError.
-    g.linedUp.every(isRecord) &&
-    g.stalled.every(isRecord) &&
-    (typeof g.progressedSinceLastRun === "string" || Array.isArray(g.progressedSinceLastRun))
+    g.linedUp.every(isLinedUpElement) &&
+    g.stalled.every(isStalledElement) &&
+    // #3897: gaps are joined into the rendered detail line, so a
+    // non-string element would render as "[object Object]".
+    g.gaps.every((gap) => typeof gap === "string") &&
+    (typeof g.progressedSinceLastRun === "string" ||
+      (Array.isArray(g.progressedSinceLastRun) && g.progressedSinceLastRun.every((line) => typeof line === "string")))
   );
 }
 
@@ -440,6 +508,11 @@ export function poolAvailableFromFeed(feed: Partial<FleetFeed> | null | undefine
   return Array.isArray(feed?.projects);
 }
 
+/** Fail-soft read of the scheduled Project #4 audit snapshot. */
+export function projectAuditFromFeed(feed: Partial<FleetFeed> | null | undefined): ProjectAudit | null {
+  return isProjectAudit(feed?.projectAudit) ? feed.projectAudit : null;
+}
+
 /** Fail-soft read of the coverage census from a parsed feed: absent
  * or malformed sections yield null (the panel then renders backlog
  * counts as unavailable), malformed rows drop individually. A duplicate
@@ -523,12 +596,7 @@ function isQuotaCredentialRow(v: unknown): v is QuotaCredentialRow {
 type QuotaActiveSession = NonNullable<QuotaPool["activeSessions"]>[number];
 
 function isQuotaActiveSession(v: unknown): v is QuotaActiveSession {
-  return (
-    isRecord(v) &&
-    typeof v.session === "string" &&
-    typeof v.model === "string" &&
-    isNonNegative(v.tokens)
-  );
+  return isRecord(v) && typeof v.session === "string" && typeof v.model === "string" && isNonNegative(v.tokens);
 }
 
 /** One historical burn segment as renderQuota maps it (#2429).
@@ -558,12 +626,7 @@ export function isBurnSegment(v: unknown): v is BurnSegment {
  * totals and attention severity. */
 export function isUnmatchedCharge(v: unknown): v is UnmatchedCharge {
   if (!isRecord(v)) return false;
-  return (
-    typeof v.merchant === "string" &&
-    isFiniteNumber(v.amountUsd) &&
-    v.amountUsd > 0 &&
-    isIsoDate(v.at)
-  );
+  return typeof v.merchant === "string" && isFiniteNumber(v.amountUsd) && v.amountUsd > 0 && isIsoDate(v.at);
 }
 
 /** One charges-evidence row as the /quota charges strip renders it
@@ -608,11 +671,15 @@ function isUsageMetric(v: unknown): boolean {
   return (
     typeof v.id === "string" &&
     typeof v.label === "string" &&
-    (v.used === null || isFiniteNumber(v.used)) &&
-    (v.limit === null || isFiniteNumber(v.limit)) &&
+    // Range gates mirror isSnapshotRecord (#5188): a negative used,
+    // limit, or percent is never legitimate usage data, and a record
+    // derived from one is refused on snapshot readback — refuse it
+    // here, at the feed boundary, instead.
+    (v.used === null || isNonNegative(v.used)) &&
+    (v.limit === null || isNonNegative(v.limit)) &&
     typeof v.unit === "string" &&
     USAGE_UNITS.includes(v.unit) &&
-    (v.percent === undefined || isFiniteNumber(v.percent)) &&
+    (v.percent === undefined || isNonNegative(v.percent)) &&
     (v.lowerBound === undefined || typeof v.lowerBound === "boolean") &&
     typeof v.highlight === "boolean" &&
     (v.note === undefined || typeof v.note === "string")
@@ -621,9 +688,16 @@ function isUsageMetric(v: unknown): boolean {
 
 function isPaygEstimate(v: unknown): boolean {
   if (!isRecord(v)) return false;
+  const { low, high } = v;
   return (
-    isFiniteNumber(v.low) &&
-    isFiniteNumber(v.high) &&
+    // Order + range gates mirror the snapshot pair rule (#5188):
+    // endpoints are non-negative and low <= high (low === high and
+    // zero endpoints pass); an inverted or negative pair renders
+    // nonsense money and its derived snapshot record is refused by
+    // isSnapshotRecord.
+    isNonNegative(low) &&
+    isNonNegative(high) &&
+    low <= high &&
     typeof v.period === "string" &&
     (v.note === undefined || typeof v.note === "string")
   );
@@ -649,14 +723,14 @@ function isSaasService(v: unknown): v is SaasService {
     v.metrics.every(isUsageMetric) &&
     (v.paygEstimate === null || isPaygEstimate(v.paygEstimate)) &&
     (v.paygNote === undefined || typeof v.paygNote === "string") &&
-    (v.billedUsd === undefined || v.billedUsd === null || isFiniteNumber(v.billedUsd)) &&
-    (typeof v.measuredAt === "string" || v.measuredAt === null) &&
+    (v.billedUsd === undefined || v.billedUsd === null || isNonNegative(v.billedUsd)) &&
+    (v.measuredAt === null || isIsoDate(v.measuredAt)) &&
     typeof v.sourceClass === "string" &&
     USAGE_SOURCE_CLASSES.includes(v.sourceClass) &&
     typeof v.sourceNote === "string" &&
     sourcesValid &&
     (v.nextDate === undefined || typeof v.nextDate === "string" || v.nextDate === null) &&
-    isFiniteNumber(v.cadenceDays) &&
+    isNonNegative(v.cadenceDays) &&
     isStringArray(v.conflicts) &&
     Array.isArray(v.reads) &&
     v.reads.every((read) => isRecord(read) && typeof read.at === "string" && typeof read.text === "string") &&
@@ -713,7 +787,8 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
   let droppedActiveSessions = 0;
   let droppedPoolFreshness = 0;
   let droppedBurnTokensPerMin = 0;
-  const lifecycleRows = quota.credentialLifecycle === undefined ? undefined : arrayOf(isCredentialLifecycleRow)(quota.credentialLifecycle);
+  const lifecycleRows =
+    quota.credentialLifecycle === undefined ? undefined : arrayOf(isCredentialLifecycleRow)(quota.credentialLifecycle);
   const droppedCredentialLifecycle = lifecycleRows?.dropped ?? (quota.credentialLifecycle === undefined ? 0 : 1);
   const keptPools: QuotaPool[] = (pools?.values ?? []).map((pool) => {
     const windows = arrayOf(isQuotaWindow)(pool.windows);
@@ -778,7 +853,9 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
             providerName: safeProviderReason(row.providerName),
             label: safeProviderReason(row.label),
             ...(row.reason ? { reason: safeProviderReason(row.reason) } : {}),
-            ...(row.userAction ? { userAction: { owner: "user" as const, title: safeProviderReason(row.userAction.title) } } : {}),
+            ...(row.userAction
+              ? { userAction: { owner: "user" as const, title: safeProviderReason(row.userAction.title) } }
+              : {}),
           })),
         }
       : {}),
@@ -843,7 +920,8 @@ export function isFleetFeed(v: unknown): v is FleetFeed {
     // unguarded, so — like burn/choices above — the feed is rejected
     // whole. Malformed ELEMENTS inside an array are loadFeed's
     // drop-and-count concern, not the gate's.
-    (f.chargesAttention === undefined || Array.isArray(f.chargesAttention))
+    (f.chargesAttention === undefined || Array.isArray(f.chargesAttention)) &&
+    (f.uninstrumentedServices === undefined || Array.isArray(f.uninstrumentedServices))
   );
 }
 
@@ -862,9 +940,7 @@ export interface SubscriptionSanitization {
  * render verbatim as renewal dates. */
 export function isSubscriptionRow(v: unknown): v is { name: string; plan: string; renewsAt: string | null } {
   if (!isRecord(v)) return false;
-  return (
-    typeof v.name === "string" && typeof v.plan === "string" && (v.renewsAt === null || isIsoDate(v.renewsAt))
-  );
+  return typeof v.name === "string" && typeof v.plan === "string" && (v.renewsAt === null || isIsoDate(v.renewsAt));
 }
 
 /** Drop malformed subscription rows at the loadFeed boundary (#2446,
@@ -876,6 +952,32 @@ export function sanitizeSubscriptions(v: unknown): SubscriptionSanitization {
   if (v === undefined) return { dropped: 0 };
   if (!Array.isArray(v)) return { dropped: 1 };
   const rows = v.filter(isSubscriptionRow);
+  return { rows, dropped: v.length - rows.length };
+}
+
+export interface UninstrumentedServiceSanitization {
+  rows?: UninstrumentedSaasService[];
+  dropped: number;
+}
+
+/** A tracker row safe to hand to renderers (#1172). */
+export function isUninstrumentedSaasService(v: unknown): v is UninstrumentedSaasService {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.name === "string" &&
+    typeof v.whatFor === "string" &&
+    typeof v.status === "string" &&
+    (v.checkedAt === null || isIsoDate(v.checkedAt)) &&
+    typeof v.overageBehavior === "string" &&
+    typeof v.guardrailNotes === "string"
+  );
+}
+
+/** Drop malformed tracker rows at the shared feed boundary. */
+export function sanitizeUninstrumentedServices(v: unknown): UninstrumentedServiceSanitization {
+  if (v === undefined) return { dropped: 0 };
+  if (!Array.isArray(v)) return { dropped: 1 };
+  const rows = v.filter(isUninstrumentedSaasService);
   return { rows, dropped: v.length - rows.length };
 }
 
@@ -892,9 +994,11 @@ export interface RegistrySanitization {
  * dropped individually. */
 export function sanitizeRegistry(v: unknown): RegistrySanitization {
   if (v === undefined) return { dropped: 0 };
-  if (!Array.isArray(v)) return { rows: [], dropped: 1 };
-  const rows = v.filter(isSessionRecord);
-  return { rows, dropped: v.length - rows.length };
+  // Shared container primitive (#2576 Phase 1): a non-array section is one
+  // shape failure; malformed array entries drop individually and count.
+  const parsed = arrayOf(isSessionRecord)(v);
+  if (parsed === null) return { rows: [], dropped: 1 };
+  return { rows: parsed.values, dropped: parsed.dropped };
 }
 
 /** A PAYG line safe for both the attention derivation and the quota renderer. */
@@ -962,6 +1066,7 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
     const charges =
       parsed.chargesAttention === undefined ? undefined : arrayOf(isUnmatchedCharge)(parsed.chargesAttention);
     const subs = sanitizeSubscriptions(parsed.subscriptions);
+    const uninstrumented = sanitizeUninstrumentedServices(parsed.uninstrumentedServices);
     // Registry rows feed both the session registry and coverage, so sanitize
     // once here rather than letting the two consumers see different inputs.
     const registry = sanitizeRegistry(parsed.registry);
@@ -1007,6 +1112,8 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
       ...(charges && charges.dropped > 0 ? { chargesAttentionDropped: charges.dropped } : {}),
       subscriptions: subs.rows,
       ...(subs.dropped > 0 ? { subscriptionsDropped: subs.dropped } : {}),
+      ...(uninstrumented.rows ? { uninstrumentedServices: uninstrumented.rows } : {}),
+      ...(uninstrumented.dropped > 0 ? { uninstrumentedServicesDropped: uninstrumented.dropped } : {}),
       ...(registry.rows !== undefined ? { registry: registry.rows } : {}),
       ...(registry.dropped > 0 ? { registryDropped: registry.dropped } : {}),
       ...(payg.rows !== undefined ? { payg: payg.rows } : {}),

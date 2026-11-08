@@ -231,6 +231,63 @@ export function nextCoverageSnapshot(
   return { baseline: stored.baseline, current, weekly: stored.weekly ?? stored.current, anchorAt: anchor };
 }
 
+/** One coverage count: a finite number, or null when unavailable. */
+function isCoverageCount(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isFinite(value));
+}
+
+/** Structural gate for one stored coverage row (#4140). */
+function isCoverageRow(value: unknown): value is RepoCoverage {
+  if (!value || typeof value !== "object") return false;
+  const row = value as Record<string, unknown>;
+  return (
+    typeof row.repo === "string" &&
+    isCoverageCount(row.openIssues) &&
+    isCoverageCount(row.gateNow) &&
+    isCoverageCount(row.gateNext) &&
+    isCoverageCount(row.poolItems) &&
+    isCoverageCount(row.poolUnsetStatus) &&
+    isCoverageCount(row.poolUnsetArea)
+  );
+}
+
+/** Structural gate for one stored coverage report (#4140). */
+function isCoverageReport(value: unknown): value is CoverageReport {
+  if (!value || typeof value !== "object") return false;
+  const report = value as Record<string, unknown>;
+  return (
+    typeof report.generatedAt === "string" &&
+    Array.isArray(report.repos) &&
+    report.repos.every(isCoverageRow)
+  );
+}
+
+/**
+ * Whole-file gate for the stored snapshot (#4140): `current` must be a
+ * report; `baseline` and `weekly` may be null or absent (files written
+ * before `weekly` existed) but when present must be reports. Anything
+ * else reads as absent, per the store's contract — a malformed
+ * baseline used to sail through `read()` and crash `diffCoverage` on
+ * the /projects path, and a malformed `weekly` could be promoted into
+ * the baseline slot by the weekly rotation.
+ *
+ * `anchorAt` is gated too (#5196): it may be absent (files written
+ * before it existed) but a present-and-unusable one is corruption, and
+ * corrupt reads as absent — otherwise the bad anchor would be
+ * re-persisted on every panel read and weekly rotation would freeze
+ * forever with no signal.
+ */
+function isCoverageSnapshotFile(value: unknown): value is CoverageSnapshotFile {
+  if (!value || typeof value !== "object") return false;
+  const file = value as Record<string, unknown>;
+  return (
+    isCoverageReport(file.current) &&
+    (file.baseline === null || file.baseline === undefined || isCoverageReport(file.baseline)) &&
+    (file.weekly === null || file.weekly === undefined || isCoverageReport(file.weekly)) &&
+    (file.anchorAt === undefined || isValidAnchorAt(file.anchorAt))
+  );
+}
+
 /** Thin JSON store for the coverage snapshot; corrupt reads as absent. */
 export class CoverageSnapshotStore {
   private writeChain: Promise<void> = Promise.resolve();
@@ -240,17 +297,10 @@ export class CoverageSnapshotStore {
 
   async read(): Promise<CoverageSnapshotFile | null> {
     try {
-      const parsed = JSON.parse(await readFile(this.file, "utf8")) as CoverageSnapshotFile;
-      if (!parsed || typeof parsed !== "object" || !parsed.current || !Array.isArray(parsed.current.repos)) {
-        return null;
-      }
-      // A present-but-unusable anchorAt is corruption, and corrupt
-      // reads as absent (#5196): returning the file would re-persist
-      // the bad anchor on every panel read and freeze rotation.
-      if (parsed.anchorAt !== undefined && !isValidAnchorAt(parsed.anchorAt)) {
-        return null;
-      }
-      return parsed;
+      const parsed: unknown = JSON.parse(await readFile(this.file, "utf8"));
+      // The #4140 whole-file gate now also rejects a present-but-unusable
+      // anchorAt (#5196), so a poisoned anchor reads as absent here too.
+      return isCoverageSnapshotFile(parsed) ? parsed : null;
     } catch {
       return null;
     }

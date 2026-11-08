@@ -52,7 +52,17 @@ describe("isSessionRecord timestamp validity (#5078)", () => {
   });
 
   test("accepts absent timestamps", () => {
-    expect(isSessionRecord({ id: "a", source: "s", label: "l", status: "succeeded", agentId: "claude-code", agentLabel: "Muse", taskRefs: [] })).toBe(true);
+    expect(
+      isSessionRecord({
+        id: "a",
+        source: "s",
+        label: "l",
+        status: "succeeded",
+        agentId: "claude-code",
+        agentLabel: "Muse",
+        taskRefs: [],
+      }),
+    ).toBe(true);
     const { lastSeenAt: _ls, startedAt: _st, ...absent } = valid;
     expect(isSessionRecord(absent)).toBe(true);
   });

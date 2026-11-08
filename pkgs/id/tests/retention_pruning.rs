@@ -16,9 +16,9 @@ use id::chain::{ChainExt, Event, sign};
 use id::documents::{DOCUMENT_KIND, DocumentRef};
 use id::event_store::EventStore;
 use id::membership::AuthId;
-use id::notes::{CREATE_KIND as NOTE_CREATE_KIND, NoteOp, REVISE_KIND as NOTE_REVISE_KIND};
-use id::note_links::{LINK_KIND, NoteLinkOp};
 use id::membership::body::encode_body;
+use id::note_links::{LINK_KIND, NoteLinkOp};
+use id::notes::{CREATE_KIND as NOTE_CREATE_KIND, NoteOp, REVISE_KIND as NOTE_REVISE_KIND};
 use id::tag_claims::{CLEAR_KIND, SET_KIND, TagOp};
 use id::waiting::WaitingLimits;
 use p2panda_auth::Access;
@@ -73,6 +73,7 @@ impl Chains {
             note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
         };
         let event = sign(&key(who), seq, backlink, body.as_deref(), ext).unwrap();
         self.last.insert(who, (seq, event.id));
@@ -113,11 +114,7 @@ impl Chains {
         )
     }
 
-    fn note_create(
-        &mut self,
-        who: u8,
-        content: Hash,
-    ) -> (Event, Option<Vec<u8>>) {
+    fn note_create(&mut self, who: u8, content: Hash) -> (Event, Option<Vec<u8>>) {
         let doc = DocumentRef {
             media_type: "text/plain".to_owned(),
             content,
@@ -137,6 +134,7 @@ impl Chains {
             note: Some(NoteOp::Create { content: doc }),
             link: None,
             checkpoint: None,
+            rotation: None,
         };
         let event = sign(&key(who), seq, backlink, None, ext).unwrap();
         self.last.insert(who, (seq, event.id));
@@ -174,6 +172,7 @@ impl Chains {
             }),
             link: None,
             checkpoint: None,
+            rotation: None,
         };
         let event = sign(&key(who), seq, backlink, None, ext).unwrap();
         self.last.insert(who, (seq, event.id));
@@ -209,6 +208,7 @@ impl Chains {
                 pin,
             }),
             checkpoint: None,
+            rotation: None,
         };
         let event = sign(&key(who), seq, backlink, None, ext).unwrap();
         self.last.insert(who, (seq, event.id));
@@ -569,19 +569,21 @@ fn test_prune_preserves_note_parents_reachable_only_via_note_refs() {
 
     // Bob revises again, but his event's `after` is empty: the ONLY references to the
     // note and to rev1 are inside the note operation itself.
-    let (rev2, rev2_body) = chains.note_revise(
-        2,
-        &[],
-        create.id,
-        &[rev1.id],
-        Hash::digest(b"note v3"),
-    );
+    let (rev2, rev2_body) =
+        chains.note_revise(2, &[], create.id, &[rev1.id], Hash::digest(b"note v3"));
     deliver(&mut store, &rev2, rev2_body.as_deref());
 
     // Charlie writes an unrelated event that saw rev2, keeping rev2 (and, through its
     // note references, its history) in the surviving frontier.
-    let (anchor_event, anchor_body) =
-        chains.sign(3, None, &[rev2.id], "message", Some(b"seen".to_vec()), None, None);
+    let (anchor_event, anchor_body) = chains.sign(
+        3,
+        None,
+        &[rev2.id],
+        "message",
+        Some(b"seen".to_vec()),
+        None,
+        None,
+    );
     deliver(&mut store, &anchor_event, anchor_body.as_deref());
 
     store.check_invariants().unwrap();
@@ -591,7 +593,10 @@ fn test_prune_preserves_note_parents_reachable_only_via_note_refs() {
     let count = store
         .prune_behind_cut(&[rev1.id], &[anchor_event.id])
         .unwrap();
-    assert_eq!(count, 0, "note history reachable only via note refs must survive");
+    assert_eq!(
+        count, 0,
+        "note history reachable only via note refs must survive"
+    );
     assert!(store.event_by_id(&create.id).unwrap().is_some());
     assert!(store.event_by_id(&rev1.id).unwrap().is_some());
     assert!(store.event_by_id(&rev2.id).unwrap().is_some());
@@ -644,8 +649,15 @@ fn test_prune_preserves_link_targets_reachable_only_via_link_refs() {
     deliver(&mut store, &link, link_body.as_deref());
 
     // Charlie anchors on the link, keeping it in the surviving frontier.
-    let (anchor_event, anchor_body) =
-        chains.sign(3, None, &[link.id], "message", Some(b"seen".to_vec()), None, None);
+    let (anchor_event, anchor_body) = chains.sign(
+        3,
+        None,
+        &[link.id],
+        "message",
+        Some(b"seen".to_vec()),
+        None,
+        None,
+    );
     deliver(&mut store, &anchor_event, anchor_body.as_deref());
 
     store.check_invariants().unwrap();
@@ -655,7 +667,10 @@ fn test_prune_preserves_link_targets_reachable_only_via_link_refs() {
     let count = store
         .prune_behind_cut(&[t_rev.id], &[anchor_event.id])
         .unwrap();
-    assert_eq!(count, 0, "link target and pin reachable only via link refs must survive");
+    assert_eq!(
+        count, 0,
+        "link target and pin reachable only via link refs must survive"
+    );
     assert!(store.event_by_id(&t_create.id).unwrap().is_some());
     assert!(store.event_by_id(&t_rev.id).unwrap().is_some());
     assert!(store.event_by_id(&link.id).unwrap().is_some());

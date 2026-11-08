@@ -27,16 +27,10 @@ function baseView(): QuotaView {
         { name: "weekly", unit: "other", limit: 100, used: 68, percent: 68, resetsAt: null },
       ]),
       pool("openai", [{ name: "7-day", unit: "other", limit: 100, used: 11, percent: 11, resetsAt: null }]),
-      pool(
-        "meta",
-        [{ name: "weekly", unit: "other", limit: 100, used: 100, percent: 100, resetsAt: null }],
-        "walled",
-      ),
+      pool("meta", [{ name: "weekly", unit: "other", limit: 100, used: 100, percent: 100, resetsAt: null }], "walled"),
       pool("deepseek", []),
-      pool("cline-pass", [
-        { name: "monthly", unit: "other", limit: 100, used: 69, percent: 69, resetsAt: null },
-      ]),
-      pool("commandcode", [{ name: "monthly credits", unit: "usd", limit: 10, used: 6.57, resetsAt: null }]),
+      pool("cline-pass", [{ name: "monthly", unit: "other", limit: 100, used: 69, percent: 69, resetsAt: null }]),
+      pool("_commandcode", [{ name: "monthly credits", unit: "usd", limit: 10, used: 6.57, resetsAt: null }]),
     ],
     burn: [],
     choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: ["meta"] },
@@ -160,9 +154,7 @@ describe("quota-current overlay", () => {
     const staleAt = iso(QUOTA_CURRENT_FRESH_MS + 5 * 60_000);
     const out = overlayQuotaCurrent(
       baseView(),
-      file([
-        entry({ serviceId: "cline-pass", measuredAt: staleAt, windows: [win("monthly", 71, staleAt)] }),
-      ]),
+      file([entry({ serviceId: "cline-pass", measuredAt: staleAt, windows: [win("monthly", 71, staleAt)] })]),
       NOW,
     );
     const cline = out.pools.find((p) => p.id === "cline-pass")!;
@@ -200,9 +192,7 @@ describe("quota-current overlay", () => {
       const futureAt = iso(-futureMs);
       const out = overlayQuotaCurrent(
         baseView(),
-        file([
-          entry({ serviceId: "cline-pass", measuredAt: futureAt, windows: [win("monthly", 71, futureAt)] }),
-        ]),
+        file([entry({ serviceId: "cline-pass", measuredAt: futureAt, windows: [win("monthly", 71, futureAt)] })]),
         NOW,
       );
       const cline = out.pools.find((p) => p.id === "cline-pass")!;
@@ -264,7 +254,7 @@ describe("quota-current overlay", () => {
 
   test("pools with no gatherer entry are untouched and carry no freshness", () => {
     const out = overlayQuotaCurrent(baseView(), file([entry({ serviceId: "meta", windows: [] })]), NOW);
-    const cc = out.pools.find((p) => p.id === "commandcode")!;
+    const cc = out.pools.find((p) => p.id === "_commandcode")!;
     expect(cc.freshness).toBeUndefined();
     expect(cc.windows[0].used).toBe(6.57);
     expect(cc.state).toBe("healthy");
@@ -287,11 +277,7 @@ describe("quota-current overlay", () => {
 
   test("the input view is not mutated", () => {
     const view = baseView();
-    overlayQuotaCurrent(
-      view,
-      file([entry({ serviceId: "meta", windows: [win("weekly", 9, iso(60_000))] })]),
-      NOW,
-    );
+    overlayQuotaCurrent(view, file([entry({ serviceId: "meta", windows: [win("weekly", 9, iso(60_000))] })]), NOW);
     expect(view.pools.find((p) => p.id === "meta")!.windows[0].percent).toBe(100);
     expect(view.gatherer).toBeUndefined();
   });
@@ -316,12 +302,8 @@ describe("quota-current overlay", () => {
     expect(parsed?.sanitized).toEqual({ droppedProviders: 1, droppedWindows: 3 });
     expect(parsed?.providers).toHaveLength(2);
     const out = overlayQuotaCurrent(baseView(), parsed!, NOW);
-    expect(out.pools.find((p) => p.id === "meta")?.windows.map((w) => [w.name, w.percent])).toEqual([
-      ["weekly", 42],
-    ]);
-    expect(out.pools.find((p) => p.id === "openai")?.windows.map((w) => [w.name, w.percent])).toEqual([
-      ["7-day", 17],
-    ]);
+    expect(out.pools.find((p) => p.id === "meta")?.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 42]]);
+    expect(out.pools.find((p) => p.id === "openai")?.windows.map((w) => [w.name, w.percent])).toEqual([["7-day", 17]]);
   });
 
   test("an ok entry whose windows are entirely malformed is downgraded so a valid fresh sibling supplies the headline", () => {
@@ -456,6 +438,42 @@ describe("overlayTursoUsage (#1049)", () => {
     expect(out[0].metrics[0].used).toBe(1);
     expect(out[0].conflicts).toHaveLength(1);
     expect(out[0].conflicts[0]).toContain("HTTP 401");
+  });
+  test("a partial fresh entry preserves the metrics it omits, marked stale (#6227)", () => {
+    // The 2026-11-05 live shape from issue #6227: the fresh turso
+    // entry carried databases / rows-written / sync only, and the
+    // overlay erased the card's dated storage and rows-read values.
+    const svc = tursoSvc();
+    svc.metrics = [
+      { id: "databases", label: "Databases", used: 40, limit: 100, unit: "count", percent: 40, highlight: true },
+      { id: "storage", label: "Storage", used: 7.358009, limit: 5, unit: "gb", highlight: true },
+      { id: "rows-read", label: "Rows read / month", used: 821_437_321, limit: 500_000_000, unit: "rows", highlight: true },
+    ];
+    const at = iso(5 * 60_000);
+    const out = overlayTursoUsage(
+      [svc],
+      file([
+        entry({
+          serviceId: "turso",
+          providerId: "turso",
+          source: "opencode-quota",
+          measuredAt: at,
+          windows: [tursoWin("databases", 44, 44, at), tursoWin("rows-written", 1_672_071, 16.721, at), tursoWin("sync", 0, 0, at)],
+        }),
+      ]),
+      NOW,
+    );
+    const byId = new Map(out[0].metrics.map((m) => [m.id, m]));
+    expect(byId.get("databases")?.used).toBe(44);
+    expect(byId.get("databases")?.note).toBeUndefined();
+    expect(byId.get("rows-written")?.used).toBe(1_672_071);
+    // Omitted metrics keep their last dated values, flagged stale —
+    // never erased, never presented as fresh.
+    expect(byId.get("storage")?.used).toBe(7.358009);
+    expect(byId.get("storage")?.note).toContain("stale: last measured 2026-10-20T00:00:00.000Z");
+    expect(byId.get("rows-read")?.used).toBe(821_437_321);
+    expect(byId.get("rows-read")?.note).toContain("stale:");
+    expect(out[0].measuredAt).toBe(at);
   });
   test("no turso entry or no turso card passes through unchanged", () => {
     const services = [tursoSvc()];
@@ -657,10 +675,8 @@ describe("per-credential rows: Codex findings on PR #2978", () => {
 });
 
 describe("stale-path newest pick is finite-gated (#2253)", () => {
-  const staleRead = () =>
-    entry({ serviceId: "meta", measuredAt: iso(2 * 3_600_000), source: "real-src", windows: [] });
-  const garbageRead = () =>
-    entry({ serviceId: "meta", measuredAt: "not-a-date", source: "garbage-src", windows: [] });
+  const staleRead = () => entry({ serviceId: "meta", measuredAt: iso(2 * 3_600_000), source: "real-src", windows: [] });
+  const garbageRead = () => entry({ serviceId: "meta", measuredAt: "not-a-date", source: "garbage-src", windows: [] });
 
   test("a garbage measuredAt listed first does not shadow the real stale read", () => {
     const out = overlayQuotaCurrent(baseView(), file([garbageRead(), staleRead()]), NOW);
@@ -726,8 +742,8 @@ describe("overlay: split gatherer rows land on the four split hub pools (#1331)"
     view.pools.push(
       pool("opencode-go.drewrypope", []),
       pool("opencode-go.popesdrew", []),
-      pool("antigravity-direct.gemini", []),
-      pool("antigravity-direct.claude-gpt", []),
+      pool("_antigravity.gemini", []),
+      pool("_antigravity.claude-gpt", []),
     );
     const out = overlayQuotaCurrent(
       view,
@@ -748,12 +764,12 @@ describe("overlay: split gatherer rows land on the four split hub pools (#1331)"
         }),
         entry({
           providerId: "antigravity",
-          serviceId: "antigravity-direct.gemini",
+          serviceId: "_antigravity.gemini",
           windows: [win("weekly", 40, iso(5 * 60_000))],
         }),
         entry({
           providerId: "antigravity",
-          serviceId: "antigravity-direct.claude-gpt",
+          serviceId: "_antigravity.claude-gpt",
           windows: [win("weekly", 90, iso(5 * 60_000))],
         }),
       ]),
@@ -762,9 +778,16 @@ describe("overlay: split gatherer rows land on the four split hub pools (#1331)"
     const byId = new Map(out.pools.map((p) => [p.id, p]));
     expect(byId.get("opencode-go.drewrypope")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 62.5]]);
     expect(byId.get("opencode-go.popesdrew")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 50]]);
-    expect(byId.get("antigravity-direct.gemini")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 40]]);
-    expect(byId.get("antigravity-direct.claude-gpt")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 90]]);
-    for (const id of ["opencode-go.drewrypope", "opencode-go.popesdrew", "antigravity-direct.gemini", "antigravity-direct.claude-gpt"]) {
+    expect(byId.get("_antigravity.gemini")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 40]]);
+    expect(byId.get("_antigravity.claude-gpt")!.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["weekly", 90],
+    ]);
+    for (const id of [
+      "opencode-go.drewrypope",
+      "opencode-go.popesdrew",
+      "_antigravity.gemini",
+      "_antigravity.claude-gpt",
+    ]) {
       expect(byId.get(id)!.freshness).toEqual({
         measuredAt: iso(5 * 60_000),
         source: "openchamber-quota",
@@ -1013,9 +1036,7 @@ describe("parseQuotaCurrent measuredAt gates (#4987)", () => {
   test("leap-date and normal measuredAt stamps still validate", () => {
     const leap = "2024-02-29T07:00:00.000Z";
     const doc = JSON.parse(
-      JSON.stringify(
-        file([entry({ serviceId: "openai", measuredAt: leap, windows: [win("7-day", 17, leap)] })]),
-      ),
+      JSON.stringify(file([entry({ serviceId: "openai", measuredAt: leap, windows: [win("7-day", 17, leap)] })])),
     );
     const parsed = parseQuotaCurrent(doc);
     expect(parsed?.sanitized).toEqual({ droppedProviders: 0, droppedWindows: 0 });

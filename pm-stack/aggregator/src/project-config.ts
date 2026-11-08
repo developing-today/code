@@ -87,8 +87,8 @@ export interface ProjectConfig {
 }
 
 const CODE = "developing-today/code";
-const OPENCODE = "developing-today/opencode";
-const OPENCHAMBER = "developing-today/openchamber";
+const OPENCODE = "developing-today-forks/opencode";
+const OPENCHAMBER = "developing-today-forks/openchamber";
 const NIX = "dezren39/nix";
 const blob = (path: string): string => `https://github.com/${CODE}/blob/main/${path}`;
 const tree = (path: string): string => `https://github.com/${CODE}/tree/main/${path}`;
@@ -348,7 +348,7 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
     id: "repo-fleet",
     title: "Repo fleet",
     intro:
-      "The four working repos and the automation that keeps them healthy: developing-today/code, developing-today/opencode, developing-today/openchamber, and dezren39/nix. Issue sweeps, the issue creator, PR shepherding, Jules, and the hourly orchestration job work these queues; this project tracks the fleet-level work — CI, automation, and triage — while each project's own checks live in its own roadmap.",
+      "The four working repos and the automation that keeps them healthy: developing-today/code, developing-today-forks/opencode, developing-today-forks/openchamber, and dezren39/nix. Issue sweeps, the issue creator, PR shepherding and the hourly orchestration job work these queues; this project tracks the fleet-level work — CI, automation, and triage — while each project's own checks live in its own roadmap.",
     poolArea: "fleet-ops",
     roadmapArea: "Repo fleet",
     homeDoc: home("planning/roadmaps/repo-and-ci.md"),

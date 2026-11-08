@@ -517,6 +517,16 @@ const handlers = {
 };
 
 async function dispatch(message) {
+  // A line can be valid JSON without being a JSON-RPC message object:
+  // `null` (the one value whose destructure throws) and other primitives
+  // carry no id/method. Ignore them like the non-JSON lines the stdin
+  // handler already skips (#6919) — destructuring `null` here escaped as
+  // an unhandled rejection from the void-called dispatch and killed the
+  // whole adapter.
+  if (!message || typeof message !== 'object') {
+    debug('ignoring non-object JSON line on stdin');
+    return;
+  }
   const { id, method, params } = message;
   const isRequest = id !== undefined && id !== null;
   if (!method) {

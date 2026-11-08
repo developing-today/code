@@ -18,6 +18,7 @@
 // never collapse them into one pool.
 import { poolState } from "./derive.ts";
 import type { QuotaPool, QuotaWindow } from "./model.ts";
+import { parseIsoDate } from "./validate.ts";
 
 const MONTHS: Record<string, number> = {
   Jan: 0,
@@ -164,6 +165,10 @@ function dateTimeCentral(date: string, hhmm: string): string {
  * flow through the shared conversion unchanged.
  */
 function resetDateTimeCentral(date: string, hhmm: string): string | null {
+  // Gate the calendar date and clock time with the shared primitive FIRST:
+  // dateTimeCentral supplies the Central-time offset conversion, but the
+  // ingest contract's real-date check belongs to validate.ts (#2470).
+  if (parseIsoDate(`${date}T${hhmm}`) === null) return null;
   try {
     return dateTimeCentral(date, hhmm);
   } catch {
@@ -322,6 +327,10 @@ function goWorkspace(name: "drewrypope" | "popesdrew"): Extractor {
   };
 }
 
+/** ClinePass has 5-hour, weekly, and monthly windows; an offset beyond a
+ * year is not a plausible reset for any of them (#2383). */
+const MAX_CLINEPASS_RESET_OFFSET_DAYS = 366;
+
 const extractClinePass: Extractor = (s) => {
   const measured = first(s, /Measured (\d{4}-\d{2}-\d{2}) ~(\d{2}:\d{2}) CDT/i);
   const m = first(
@@ -329,8 +338,41 @@ const extractClinePass: Extractor = (s) => {
     /5-hour \*\*(\d+(?:\.\d+)?)%\*\* used; weekly \*\*(\d+(?:\.\d+)?)%\*\* used \(resets in (\d+)d (\d+)h\); monthly \*\*(\d+(?:\.\d+)?)%\*\* used \(resets in (\d+)d (\d+)h\)/i,
   );
   if (!measured || !m) return null;
-  const base = Date.parse(dateTimeCentral(measured[1], measured[2]));
-  const rel = (d: string, h: string) => new Date(base + (Number(d) * 24 + Number(h)) * 3_600_000).toISOString();
+  // The measured capture is the anchor for both relative resets (#2383).
+  // The measured capture anchors reset dates, not the percentages. If it
+  // is an impossible calendar/wall time, retain the matched windows and
+  // mark only their resets unknown (#2383). The shared primitive owns
+  // date validity; dateTimeCentral owns the Central-time offset conversion.
+  let base: number | null = null;
+  if (parseIsoDate(`${measured[1]}T${measured[2]}`) !== null) {
+    try {
+      const anchor = dateTimeCentral(measured[1], measured[2]);
+      base = parseIsoDate(anchor)?.getTime() ?? null;
+    } catch {
+      // Nonexistent Central wall time: keep the read, with no reset anchor.
+    }
+  }
+  const rel = (d: string, h: string): string | null => {
+    const days = Number(d);
+    const hours = Number(h);
+    if (
+      base === null ||
+      !Number.isInteger(days) ||
+      !Number.isInteger(hours) ||
+      days < 0 ||
+      hours < 0 ||
+      hours > 23 ||
+      days > MAX_CLINEPASS_RESET_OFFSET_DAYS
+    ) {
+      return null;
+    }
+    const resetMs = base + (days * 24 + hours) * 3_600_000;
+    if (!Number.isFinite(resetMs)) return null;
+    const reset = new Date(resetMs);
+    if (!Number.isFinite(reset.getTime())) return null;
+    const iso = reset.toISOString();
+    return parseIsoDate(iso) === null ? null : iso;
+  };
   return {
     windows: [
       pctWindow("5-hour", Number(m[1]), null),
@@ -475,6 +517,12 @@ interface PoolSpec {
 // antigravity-direct.gemini / antigravity-direct.claude-gpt — the
 // opencode-go.<workspace> pattern (Drew, 2026-11-03: "why are you not
 // including antigravity in the board?"). Ground truth for the
+// RENAMED 2026-11-07 (#1823, Drew): fleet-built providers carry a
+// leading underscore — the commandcode pool is now _commandcode and
+// the Antigravity pools ride under _antigravity.gemini /
+// _antigravity.claude-gpt. Per the rule above, each starts a NEW
+// snapshot series; the pre-rename series stay in the store under
+// their old ids, unrewritten.
 // choice: the deployed config defines antigravity-agy,
 // antigravity-direct and antigravity-ls (ls/agy are the disabled
 // legacy doors; no antigravity-local provider exists), and
@@ -543,7 +591,7 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read (dashboard-only source).",
   },
   {
-    id: "commandcode",
+    id: "_commandcode",
     provider: "Command Code",
     plan: "GO",
     heading: /^### Command Code/,
@@ -551,7 +599,7 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read.",
   },
   {
-    id: "antigravity-direct.gemini",
+    id: "_antigravity.gemini",
     provider: "Antigravity",
     plan: "Gemini pool",
     heading: /^### Gemini/,
@@ -559,7 +607,7 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read.",
   },
   {
-    id: "antigravity-direct.claude-gpt",
+    id: "_antigravity.claude-gpt",
     provider: "Antigravity",
     plan: "Claude+GPT pool",
     heading: /^### Gemini/,
@@ -597,7 +645,7 @@ const SHELL_POOLS: QuotaPool[] = [
  * OpenCode config door sat in disabled_providers. That hid live,
  * measured pools whose traffic runs through model routes rather than
  * the disabled direct door: at removal time the deployed board was
- * missing anthropic:claude-pro, commandcode, deepseek and BOTH
+ * missing anthropic:claude-pro, _commandcode, deepseek and BOTH
  * Antigravity pools even though the OpenCode quota read reported
  * them. Pool assembly no longer consults disabled_providers at all;
  * extractQuotaPools returns every pool it knows, and the serve-time

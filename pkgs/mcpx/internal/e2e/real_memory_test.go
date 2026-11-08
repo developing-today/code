@@ -29,7 +29,7 @@ func TestRealMemoryServerRoundTrip(t *testing.T) {
   }
 }`, server, memoryFile)
 	e := newEnv(t, cfg)
-	e.setenv("MCPX_ELICIT_CONFIRM_DESTRUCTIVE=true", "MCPX_ELICIT_ASK_TIMEOUT=60s")
+	e.setenv("MCPX_POLICY_WRITE=ask", "MCPX_ELICIT_ASK_TIMEOUT=60s")
 	e.run("ls")
 
 	out := realConfirmedCall(t, e, "call", "memory.create_entities", `{"entities":[{"name":"realsoftware-probe","entityType":"probe","observations":["created by the mcpx realsoftware subset"]}]}`)

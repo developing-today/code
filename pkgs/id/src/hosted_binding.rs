@@ -61,6 +61,69 @@
 //! wins. No failure path creates a partial binding, a store, or any claim
 //! on the key.
 //!
+//! ## Lifecycle transition table (#5048, closing audit of #5047)
+//!
+//! Every name the ceremony mints is claimed once, by one holder, for its
+//! stated lifetime. Each row names the live-state transitions of one public
+//! [`HostedBindingService`] method. Disposition: **conforming** (matches §3.4
+//! / §4 as written), **known gap** (behavior differs from the contract; a
+//! named follow-up owns the fix), or **out of scope** (not part of this
+//! slice).
+//!
+//! | Method | Live state touched | Transitions | Disposition |
+//! | --- | --- | --- | --- |
+//! | `new`, `with_seed`, `set_now_override`, `service_id`, `service_public_key` | none | none | conforming |
+//! | `signup_account`, `account` | account row | creates or refreshes the row; claims no key | conforming |
+//! | `request_challenge` | challenge (live); one-time maps | runs the #5644 bounded sweep of expired one-time state, then inserts a live challenge, expiring after `CHALLENGE_TTL_SECS`; 30/account/hour | conforming; the challenge is not required to belong to an existing account (see `submit_proof`) |
+//! | `canonical_transcript` | none | pure | conforming |
+//! | `submit_proof` | challenge; binding indexes | expiry: no state change (§3.4). Session mismatch, bad or malformed signature, and conflict consume the challenge. Success consumes it and claims the `sub` and `iroh_id` in the indexes | conforming; an unknown account is detected only after the challenge is consumed |
+//! | `complete_browser_ceremony` | as `request_challenge` plus `submit_proof` | composition only | conforming |
+//! | `create_pairing_code` | pairing code (live); one-time maps | consumed check precedes live-map lookup (#4868); the #5644 bounded sweep runs before the collision loop, so expired codes no longer reserve their value; minting supersedes every earlier unexchanged code for the challenge (#4871); 10/account/hour | conforming |
+//! | `exchange_pairing_code` | pairing code; challenge (read only) | removes the code before any check, so it is single-use even on failure; does not consume the challenge | conforming; see (a) |
+//! | `request_delayed_rebind` | challenge; binding; rebind request | expiry: no state change (§3.4, #5048). Session mismatch and bad signature consume the challenge. `active` becomes `rebind_pending`; a pending request reserves the target key | conforming; `SameKey` and `NewKeyBoundElsewhere` after a valid proof leave the challenge consumed, as a successful proof already spent it |
+//! | `cancel_rebind` | rebind request; binding | `pending` becomes `cancelled`; binding `rebind_pending` becomes `active` (re-attested) | known gap tracked by #5643: the request is marked `cancelled` before binding lookup and re-attestation, so `NoBinding` or `RecordEncoding` can fail after that mutation |
+//! | `rebind_with_old_key_authorization` | challenge; binding; rebind request | fast path, or early approval of a pending request (`pending` becomes `effected`). Expiry: no state change. Once proof verification starts, session mismatch or signature failure consumes the challenge; success swaps the key index and appends history | conforming; pre-proof request/binding errors do not consume the challenge; failures after a valid proof leave it consumed |
+//! | `effect_due_rebind` | rebind request; binding | `pending` becomes `effected` once `effective_at` has passed; the target reservation is rechecked before any mutation; `NewKeyBoundElsewhere` leaves the request `pending` | conforming |
+//! | `apply_rebind` (private) | binding; key index; history; rebind records | refuses a foreign key-index owner; appends history; releases the old key from the index; claims the new key | conforming |
+//! | `rebind_request`, `pending_rebind_for_binding`, `rebind_records`, `binding`, `binding_for_sub`, `verify_rebind_record`, `verify_key_signature`, `verify_attestation`, `verify_service_attestation` | none | read only | conforming |
+//!
+//! `verify_challenge_proof` (private, shared by the two rebind entry
+//! points) follows the same §3.4 rule as `submit_proof`: expiry returns
+//! [`RebindError::ChallengeExpired`] with no state change (#5048 correction).
+//! Its doc names the same semantics, so one challenge object has one expiry
+//! meaning on both error surfaces.
+//!
+//! Dispositions for the four audit items:
+//!
+//! - **(a) Expired pairing codes.** Fixed by #5644. `create_pairing_code`
+//!   runs the bounded sweep (`prune_expired_one_time_state`) before its
+//!   collision loop, so an expired, unexchanged code no longer reserves
+//!   its six-digit value; a code also still leaves `pairing_codes` when
+//!   exchanged or superseded for the same challenge.
+//! - **(b) `consumed_challenges` growth.** Fixed by #5644. A consumed
+//!   marker now carries the consumed challenge's original `expires_at`:
+//!   replay is rejected through the whole validity window, the marker is
+//!   pruned once that window ends (on access via `replay_blocked`, or by
+//!   the sweep), and a later presentation then reports
+//!   `UnknownChallenge` rather than `ChallengeReplay` — the documented
+//!   post-expiry error-semantics change. The same sweep removes expired
+//!   unconsumed challenges from `challenges`, so none of the three
+//!   one-time maps grows for the process lifetime anymore.
+//! - **(c) Reservation scan cost.** `pending_rebind_reserves_iroh` scans
+//!   every retained rebind request. Requests are kept in all statuses, so
+//!   the scan grows with history. A target-key index is the named
+//!   alternative. It is not taken: reservation is a predicate over `Pending`
+//!   requests, so there is one source of truth, and a second index would be
+//!   a second place for state to disagree (the #4887 failure family). The
+//!   cost is accepted at this volume; revisit if request history is pruned
+//!   or grows large.
+//! - **(d) Old-key-side symmetry.** Confirmed without a new reservation. The
+//!   old key stays the binding's current key in `binding_by_iroh`, and the
+//!   binding is `rebind_pending`, for the whole wait. `apply_rebind` releases
+//!   it only when the rebind takes effect, after which it survives only in
+//!   history. This matches the contract: the old key is no longer the
+//!   account's once the rebind is effective.
+//!
 //! ## Device linkage (§1.3)
 //!
 //! Devices bind nothing individually and get no binding records. A device
@@ -72,9 +135,9 @@
 //! stores, or returns a private key. The service attestation key is the
 //! service's **own** key, not a custodial user key.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
@@ -111,8 +174,7 @@ pub const CSE_OFFER_DISCLOSURE: &str = "Hosted storage is operator-readable at r
 /// Final-screen notice for the in-browser variant (§3.3a): a binding whose
 /// only key copy dies with a browser profile is a support incident scheduled
 /// in advance.
-pub const BROWSER_KEY_EXPORT_NOTICE: &str =
-    "Export your Iroh root key now and keep the copy somewhere safe. If this browser \
+pub const BROWSER_KEY_EXPORT_NOTICE: &str = "Export your Iroh root key now and keep the copy somewhere safe. If this browser \
     profile is lost without an exported copy, the binding cannot be recovered except \
     through the delayed-rebind wait.";
 
@@ -238,7 +300,7 @@ pub fn parse_rfc3339(text: &str) -> Option<u64> {
     let hour = num(11, 13)?;
     let minute = num(14, 16)?;
     let second = num(17, 19)?;
-    if !(1..=12).contains(&month) || hour > 23 || minute > 59 || second > 60 {
+    if !(1..=12).contains(&month) || hour > 23 || minute > 59 || second > 59 {
         return None;
     }
     let leap = is_leap_year(year);
@@ -424,7 +486,9 @@ pub struct Challenge {
 }
 
 /// Short-lived pairing code for the own-node variant (§3.3b): single-use,
-/// expires with the challenge, rate-limited per account.
+/// expires with the challenge, rate-limited per account. At most one live
+/// code exists per challenge: minting a new code supersedes every earlier
+/// unexchanged code for the same challenge (#4871).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PairingCode {
     /// The pending ceremony's challenge.
@@ -583,11 +647,7 @@ pub fn rebind_authorization_bytes(
 ) -> Vec<u8> {
     canonical_fields(
         REBIND_AUTHORIZATION_DOMAIN,
-        &[
-            binding_id,
-            &hex_encode(new_iroh_id),
-            challenge_id,
-        ],
+        &[binding_id, &hex_encode(new_iroh_id), challenge_id],
     )
 }
 
@@ -643,9 +703,9 @@ pub enum CeremonyError {
     /// challenge. Repeated failures rate-limit issuance per account.
     #[error("bad signature: the proof does not verify against the claimed key")]
     BadSignature,
-    /// This `iroh_id` is already bound to another `sub`. Not retryable as
-    /// a fresh binding; the rebind path (slice 2) applies.
-    #[error("key already bound to another account: use the rebind protocol")]
+    /// This `iroh_id` is bound to another `sub` or reserved by a pending
+    /// delayed rebind. Not retryable as a fresh binding; use the rebind path.
+    #[error("key is bound or reserved elsewhere: use the rebind protocol")]
     IrohIdBoundElsewhere,
     /// This `sub` already has an active binding for a different key. Not
     /// completable here; the rebind protocol (slice 2) applies.
@@ -694,13 +754,15 @@ pub enum RebindError {
     /// The replacement key is the currently bound key.
     #[error("new key is the currently bound key")]
     SameKey,
-    /// The replacement key is bound to another account.
-    #[error("new key already bound to another account")]
+    /// The replacement key is bound elsewhere or reserved by another
+    /// pending delayed rebind.
+    #[error("new key is bound or reserved elsewhere")]
     NewKeyBoundElsewhere,
     /// No live challenge with that ID.
     #[error("unknown challenge: request a fresh one")]
     UnknownChallenge,
-    /// The challenge expired; it is consumed and dead.
+    /// The challenge expired. State change: none; the challenge is dead.
+    /// Retry with a fresh challenge.
     #[error("challenge expired: request a fresh challenge")]
     ChallengeExpired,
     /// The challenge was already presented.
@@ -748,7 +810,11 @@ pub struct HostedBindingService {
     binding_by_sub: HashMap<String, String>,
     binding_by_iroh: HashMap<String, String>,
     challenges: HashMap<String, Challenge>,
-    consumed_challenges: HashSet<String>,
+    /// Consumed challenge IDs mapped to the consumed challenge's original
+    /// `expires_at` (#5644): a marker blocks replay only until that expiry,
+    /// after which it is pruned and a late presentation reports
+    /// `UnknownChallenge`, not `ChallengeReplay`.
+    consumed_challenges: HashMap<String, u64>,
     rebind_requests: HashMap<String, RebindRequest>,
     rebind_records: Vec<RebindRecord>,
     pairing_codes: HashMap<String, PairingCode>,
@@ -778,7 +844,7 @@ impl HostedBindingService {
             binding_by_sub: HashMap::new(),
             binding_by_iroh: HashMap::new(),
             challenges: HashMap::new(),
-            consumed_challenges: HashSet::new(),
+            consumed_challenges: HashMap::new(),
             rebind_requests: HashMap::new(),
             rebind_records: Vec::new(),
             pairing_codes: HashMap::new(),
@@ -879,6 +945,11 @@ impl HostedBindingService {
             return Err(CeremonyError::RateLimited);
         }
         log.push(now);
+        // Sweep only after the rate-limit check (#5644, Codex P2 on
+        // PR #6319): a caller who is already rate-limited must not be
+        // able to trigger repeated full-map cleanup on the rejection
+        // path.
+        self.prune_expired_one_time_state(now);
 
         let mut rng = rand::rng();
         let mut nonce = [0u8; 32];
@@ -942,7 +1013,7 @@ impl HostedBindingService {
         key_signature: &[u8],
         cse_choice: Option<bool>,
     ) -> Result<BindingRecord, CeremonyError> {
-        if self.consumed_challenges.contains(challenge_id) {
+        if self.replay_blocked(challenge_id) {
             return Err(CeremonyError::ChallengeReplay);
         }
         let challenge = self
@@ -952,8 +1023,9 @@ impl HostedBindingService {
             .ok_or(CeremonyError::UnknownChallenge)?;
         let now = self.now();
         if now >= challenge.expires_at {
-            self.challenges.remove(challenge_id);
-            self.consumed_challenges.insert(challenge_id.to_owned());
+            // §3.4: expiry is state-free — the challenge is neither
+            // removed nor recorded as consumed, so a repeat presentation
+            // returns ChallengeExpired again, never ChallengeReplay (#4868).
             return Err(CeremonyError::ChallengeExpired);
         }
         if session_sub != challenge.sub {
@@ -974,6 +1046,7 @@ impl HostedBindingService {
         }
         // Conflict checks (§1.2 rules): an `active` or `rebind_pending`
         // binding reserves the account; one `sub` per `iroh_id` at a time.
+        // A pending delayed rebind also reserves its target key.
         if let Some(existing_id) = self.binding_by_sub.get(session_sub) {
             let Some(existing) = self.bindings.get(existing_id) else {
                 // An index entry without a record is corrupt registry state,
@@ -993,9 +1066,9 @@ impl HostedBindingService {
                 }
             }
         }
-        if self
-            .binding_by_iroh
-            .contains_key(&hex_encode(&challenge.iroh_id))
+        let iroh_id = hex_encode(&challenge.iroh_id);
+        if self.binding_by_iroh.contains_key(&iroh_id)
+            || self.pending_rebind_reserves_iroh(&iroh_id, None)
         {
             return Err(CeremonyError::IrohIdBoundElsewhere);
         }
@@ -1008,7 +1081,7 @@ impl HostedBindingService {
         let transcript = ChallengeTranscript {
             challenge_id: challenge.challenge_id.clone(),
             sub: challenge.sub.clone(),
-            iroh_id: hex_encode(&challenge.iroh_id),
+            iroh_id,
             service_id: challenge.service_id.clone(),
             nonce: B64.encode(challenge.nonce),
             issued_at: unix_secs_to_rfc3339(challenge.issued_at),
@@ -1047,8 +1120,43 @@ impl HostedBindingService {
     }
 
     fn consume(&mut self, challenge_id: &str) {
+        // The replay marker keeps the challenge's original expiry (#5644):
+        // replay is blocked through the whole validity window, and no
+        // longer — the marker is prunable from `expires_at` on.
+        let expires_at = self
+            .challenges
+            .get(challenge_id)
+            .map_or_else(|| self.now() + CHALLENGE_TTL_SECS, |c| c.expires_at);
         self.challenges.remove(challenge_id);
-        self.consumed_challenges.insert(challenge_id.to_owned());
+        self.consumed_challenges
+            .insert(challenge_id.to_owned(), expires_at);
+    }
+
+    /// Whether `challenge_id` was consumed and its original validity
+    /// window has not yet ended (#5644). An expired marker is removed on
+    /// access and no longer blocks: the challenge is long gone from
+    /// `challenges`, so the caller falls through to `UnknownChallenge`.
+    fn replay_blocked(&mut self, challenge_id: &str) -> bool {
+        match self.consumed_challenges.get(challenge_id) {
+            Some(&expires_at) if self.now() < expires_at => true,
+            Some(_) => {
+                self.consumed_challenges.remove(challenge_id);
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Bounded cleanup sweep for the one-time ceremony maps (#5644):
+    /// expired unconsumed challenges, expired unexchanged pairing codes,
+    /// and consumed markers past the original challenge expiry are
+    /// removed. Called from the rate-limited minting paths
+    /// (`request_challenge`, `create_pairing_code`), so the sweep itself
+    /// is bounded by the issuance rate limits.
+    fn prune_expired_one_time_state(&mut self, now: u64) {
+        self.challenges.retain(|_, c| now < c.expires_at);
+        self.pairing_codes.retain(|_, p| now < p.expires_at);
+        self.consumed_challenges.retain(|_, &mut exp| now < exp);
     }
 
     // -- variants (§3.3) -----------------------------------------------------
@@ -1082,7 +1190,9 @@ impl HostedBindingService {
     /// Variant (b), own-node, browser side: mint a short-lived pairing code
     /// tied to the pending ceremony. The browser displays it; the user
     /// enters it on their node. Single-use, expires with the challenge,
-    /// rate-limited per account.
+    /// rate-limited per account. Minting supersedes every previously
+    /// minted, unexchanged code for the same challenge (#4871), so asking
+    /// for a fresh code revokes the old one.
     ///
     /// # Errors
     ///
@@ -1095,14 +1205,17 @@ impl HostedBindingService {
         session_sub: &str,
         challenge_id: &str,
     ) -> Result<String, CeremonyError> {
+        // The consumed check comes first: consume() removes a challenge
+        // from the live map, so checking the map first would make this
+        // ChallengeReplay branch unreachable (#4868).
+        if self.replay_blocked(challenge_id) {
+            return Err(CeremonyError::ChallengeReplay);
+        }
         let challenge = self
             .challenges
             .get(challenge_id)
             .cloned()
             .ok_or(CeremonyError::UnknownChallenge)?;
-        if self.consumed_challenges.contains(challenge_id) {
-            return Err(CeremonyError::ChallengeReplay);
-        }
         let now = self.now();
         if now >= challenge.expires_at {
             return Err(CeremonyError::ChallengeExpired);
@@ -1120,6 +1233,9 @@ impl HostedBindingService {
         }
         log.push(now);
 
+        // Sweep before the collision loop (#5644): an expired,
+        // unexchanged code no longer reserves its six-digit value.
+        self.prune_expired_one_time_state(now);
         let mut rng = rand::rng();
         let code = loop {
             let candidate: u32 = rng.random_range(0..1_000_000);
@@ -1128,6 +1244,15 @@ impl HostedBindingService {
                 break candidate;
             }
         };
+        // Minting supersedes every earlier unexchanged code for this
+        // challenge (#4871): at most one live pairing code per ceremony,
+        // so "that code went to the wrong place, give me a new one"
+        // actually revokes the old one. The supersede runs after the new
+        // code is generated, while the old codes are still in the map, so
+        // the collision loop above can never re-issue a just-revoked
+        // string as its replacement.
+        self.pairing_codes
+            .retain(|_, existing| existing.challenge_id != challenge.challenge_id);
         self.pairing_codes.insert(
             code.clone(),
             PairingCode {
@@ -1167,16 +1292,16 @@ impl HostedBindingService {
 
     /// Verify a presented challenge proof the way §3.2 specifies —
     /// existence, expiry, single-use, session match, signature — and
-    /// consume the challenge on first presentation. Shared by the rebind
-    /// paths, which need the same proof of the **new** key's possession
-    /// without §3's conflict outcomes.
+    /// consume it on the first non-expired presentation. Expiry is
+    /// state-free (§3.4). Shared by the rebind paths, which need the same
+    /// proof of the **new** key's possession without §3's conflict outcomes.
     fn verify_challenge_proof(
         &mut self,
         session_sub: &str,
         challenge_id: &str,
         key_signature: &[u8],
     ) -> Result<Challenge, RebindError> {
-        if self.consumed_challenges.contains(challenge_id) {
+        if self.replay_blocked(challenge_id) {
             return Err(RebindError::ChallengeReplay);
         }
         let challenge = self
@@ -1185,7 +1310,7 @@ impl HostedBindingService {
             .cloned()
             .ok_or(RebindError::UnknownChallenge)?;
         if self.now() >= challenge.expires_at {
-            self.consume(challenge_id);
+            // §3.4, as in `submit_proof`: expiry is state-free (#4868).
             return Err(RebindError::ChallengeExpired);
         }
         if session_sub != challenge.sub {
@@ -1223,7 +1348,9 @@ impl HostedBindingService {
             return Err(error);
         };
         let verifying = VerifyingKey::from_bytes(&key_array).map_err(|_| error.clone())?;
-        verifying.verify_strict(message, &signature).map_err(|_| error)
+        verifying
+            .verify_strict(message, &signature)
+            .map_err(|_| error)
     }
 
     /// The binding for `sub`, requiring an `active` status for paths that
@@ -1245,14 +1372,16 @@ impl HostedBindingService {
     /// and returns the request plus the §4.3 notice artefact.
     ///
     /// During the wait the old key keeps full control, the new key has
-    /// none, and the pending binding keeps reserving the account: fresh
-    /// ceremonies fail with [`CeremonyError::RebindPending`] for the whole
-    /// wait, so the delay cannot be bypassed by re-running §3.
+    /// none, and the pending binding reserves both the account and target
+    /// key: fresh ceremonies fail with [`CeremonyError::RebindPending`]
+    /// for that account and with [`CeremonyError::IrohIdBoundElsewhere`]
+    /// for another account attempting the reserved key.
     ///
     /// # Errors
     ///
     /// See [`RebindError`]: no binding, one already pending, the new key
-    /// is the old key or is bound elsewhere, or the challenge proof fails.
+    /// is the old key, bound elsewhere, or reserved by another pending
+    /// request, or the challenge proof fails.
     pub fn request_delayed_rebind(
         &mut self,
         session_sub: &str,
@@ -1266,7 +1395,9 @@ impl HostedBindingService {
         if new_iroh_id == binding.iroh_id {
             return Err(RebindError::SameKey);
         }
-        if self.binding_by_iroh.contains_key(&new_iroh_id) {
+        if self.binding_by_iroh.contains_key(&new_iroh_id)
+            || self.pending_rebind_reserves_iroh(&new_iroh_id, None)
+        {
             return Err(RebindError::NewKeyBoundElsewhere);
         }
         let now = self.now();
@@ -1288,8 +1419,7 @@ impl HostedBindingService {
                 .attest_bytes(&mutated)
                 .ok_or(RebindError::RecordEncoding)?,
         );
-        self.bindings
-            .insert(mutated.binding_id.clone(), mutated);
+        self.bindings.insert(mutated.binding_id.clone(), mutated);
         let notice = RebindNotice {
             rebind_id: request.rebind_id.clone(),
             binding_id: request.binding_id.clone(),
@@ -1350,7 +1480,8 @@ impl HostedBindingService {
                 .attest_bytes(&binding)
                 .ok_or(RebindError::RecordEncoding)?,
         );
-        self.bindings.insert(binding.binding_id.clone(), binding.clone());
+        self.bindings
+            .insert(binding.binding_id.clone(), binding.clone());
         Ok(binding)
     }
 
@@ -1411,7 +1542,12 @@ impl HostedBindingService {
         if new_iroh_id == binding.iroh_id {
             return Err(RebindError::SameKey);
         }
-        if self.binding_by_iroh.contains_key(&new_iroh_id) {
+        if self.binding_by_iroh.contains_key(&new_iroh_id)
+            || self.pending_rebind_reserves_iroh(
+                &new_iroh_id,
+                request.as_ref().map(|request| request.rebind_id.as_str()),
+            )
+        {
             return Err(RebindError::NewKeyBoundElsewhere);
         }
         Self::verify_hex_signature(
@@ -1476,6 +1612,14 @@ impl HostedBindingService {
         if self.now() < effective_secs {
             return Err(RebindError::RebindNotYetEffective);
         }
+        if self
+            .binding_by_iroh
+            .get(&request.new_iroh_id)
+            .is_some_and(|binding_id| binding_id != &request.binding_id)
+            || self.pending_rebind_reserves_iroh(&request.new_iroh_id, Some(rebind_id))
+        {
+            return Err(RebindError::NewKeyBoundElsewhere);
+        }
         let record = RebindRecord {
             rebind_id: request.rebind_id.clone(),
             binding_id: request.binding_id.clone(),
@@ -1499,20 +1643,24 @@ impl HostedBindingService {
         Ok((updated, record))
     }
 
-    /// Apply a verified rebind (§4.4 steps 1–3): sign the record, append
-    /// the old key to history, replace the binding's key, set it back to
-    /// `active`, re-attest, re-index, and retain the published record.
+    /// Apply a verified rebind (§4.4 steps 1–3): reject a foreign key-index
+    /// owner, sign the record, append the old key to history, replace the
+    /// binding's key, set it back to `active`, re-attest, re-index, and
+    /// retain the published record.
     fn apply_rebind(
         &mut self,
         record: &RebindRecord,
     ) -> Result<(BindingRecord, RebindRecord), RebindError> {
+        if self
+            .binding_by_iroh
+            .get(&record.new_iroh_id)
+            .is_some_and(|binding_id| binding_id != &record.binding_id)
+        {
+            return Err(RebindError::NewKeyBoundElsewhere);
+        }
         let mut record = record.clone();
-        record.service_signature = hex_encode(
-            &self
-                .service_key
-                .sign(&record.canonical_bytes())
-                .to_bytes(),
-        );
+        record.service_signature =
+            hex_encode(&self.service_key.sign(&record.canonical_bytes()).to_bytes());
         let mut binding = self
             .bindings
             .get(&record.binding_id)
@@ -1538,7 +1686,8 @@ impl HostedBindingService {
         self.binding_by_iroh.remove(&record.old_iroh_id);
         self.binding_by_iroh
             .insert(record.new_iroh_id.clone(), record.binding_id.clone());
-        self.bindings.insert(binding.binding_id.clone(), binding.clone());
+        self.bindings
+            .insert(binding.binding_id.clone(), binding.clone());
         self.rebind_records.push(record.clone());
         Ok((binding, record))
     }
@@ -1555,6 +1704,16 @@ impl HostedBindingService {
     pub fn pending_rebind_for_binding(&self, binding_id: &str) -> Option<&RebindRequest> {
         self.rebind_requests.values().find(|request| {
             request.binding_id == binding_id && request.status == RebindRequestStatus::Pending
+        })
+    }
+
+    /// Whether a pending delayed rebind reserves `iroh_id`, optionally
+    /// ignoring the request currently being effected or approved.
+    fn pending_rebind_reserves_iroh(&self, iroh_id: &str, except_rebind_id: Option<&str>) -> bool {
+        self.rebind_requests.values().any(|request| {
+            request.status == RebindRequestStatus::Pending
+                && request.new_iroh_id == iroh_id
+                && Some(request.rebind_id.as_str()) != except_rebind_id
         })
     }
 
@@ -1801,7 +1960,7 @@ fn prune_before(log: &mut Vec<u64>, cutoff: u64) {
 mod tests {
     use super::*;
     use crate::groups::policy::{Policy, Template};
-    use crate::groups::{fold, Body, Create, DeviceOp, Event, Key, Role};
+    use crate::groups::{Body, Create, DeviceOp, Event, Key, Role, fold};
 
     const SUB: &str = "108204481453987112345678";
     const OTHER_SUB: &str = "209305592564098223456789";
@@ -1927,6 +2086,44 @@ mod tests {
     }
 
     #[test]
+    fn minting_a_pairing_code_supersedes_earlier_codes_for_the_challenge() {
+        let mut service = service();
+        signup(&mut service, SUB);
+        let iroh_id = root_key(17).verifying_key().to_bytes();
+        let challenge = service.request_challenge(SUB, &iroh_id).unwrap();
+        let other = service.request_challenge(SUB, &iroh_id).unwrap();
+
+        let code_a = service
+            .create_pairing_code(SUB, &challenge.challenge_id)
+            .unwrap();
+        let other_code = service
+            .create_pairing_code(SUB, &other.challenge_id)
+            .unwrap();
+        let code_b = service
+            .create_pairing_code(SUB, &challenge.challenge_id)
+            .unwrap();
+
+        // The superseded code no longer exchanges. The replacement is
+        // generated while the old code is still in the map, so the two
+        // strings are always distinct.
+        assert_ne!(code_a, code_b);
+        assert_eq!(
+            service.exchange_pairing_code(&code_a),
+            Err(CeremonyError::UnknownChallenge)
+        );
+        // The surviving code exchanges and returns the challenge, once.
+        let exchanged = service.exchange_pairing_code(&code_b).unwrap();
+        assert_eq!(exchanged.challenge_id, challenge.challenge_id);
+        assert_eq!(
+            service.exchange_pairing_code(&code_b),
+            Err(CeremonyError::UnknownChallenge)
+        );
+        // Supersede is per-challenge: the other ceremony's code is untouched.
+        let other_exchanged = service.exchange_pairing_code(&other_code).unwrap();
+        assert_eq!(other_exchanged.challenge_id, other.challenge_id);
+    }
+
+    #[test]
     fn wrong_key_consumes_and_retry_needs_a_fresh_challenge() {
         let mut service = service();
         signup(&mut service, SUB);
@@ -1971,6 +2168,53 @@ mod tests {
             service.submit_proof(SUB, &challenge.challenge_id, &signature.to_bytes(), None),
             Err(CeremonyError::ChallengeReplay)
         );
+    }
+
+    #[test]
+    fn expired_challenge_is_not_recorded_as_consumed() {
+        // #4868: expiry is state-free (§3.4), so presenting the same
+        // expired challenge again returns ChallengeExpired, not
+        // ChallengeReplay.
+        let mut service = service();
+        signup(&mut service, SUB);
+        let key = root_key(21);
+        let iroh_id = key.verifying_key().to_bytes();
+        let challenge = service.request_challenge(SUB, &iroh_id).unwrap();
+        service.set_now_override(Some(1_700_000_000 + CHALLENGE_TTL_SECS + 1));
+        let signature = key.sign(&HostedBindingService::canonical_transcript(&challenge));
+        for _ in 0..2 {
+            assert_eq!(
+                service.submit_proof(SUB, &challenge.challenge_id, &signature.to_bytes(), None),
+                Err(CeremonyError::ChallengeExpired)
+            );
+        }
+    }
+
+    #[test]
+    fn create_pairing_code_reports_replay_for_a_consumed_challenge() {
+        // #4868: a challenge consumed by a failed submit (bad signature)
+        // is dead; create_pairing_code must return ChallengeReplay, not
+        // UnknownChallenge. Unknown and live challenges are unchanged.
+        let mut service = service();
+        signup(&mut service, SUB);
+        let key = root_key(22);
+        let iroh_id = key.verifying_key().to_bytes();
+        assert_eq!(
+            service.create_pairing_code(SUB, "no-such-challenge"),
+            Err(CeremonyError::UnknownChallenge)
+        );
+        let challenge = service.request_challenge(SUB, &iroh_id).unwrap();
+        let bad = root_key(23).sign(&HostedBindingService::canonical_transcript(&challenge));
+        assert_eq!(
+            service.submit_proof(SUB, &challenge.challenge_id, &bad.to_bytes(), None),
+            Err(CeremonyError::BadSignature)
+        );
+        assert_eq!(
+            service.create_pairing_code(SUB, &challenge.challenge_id),
+            Err(CeremonyError::ChallengeReplay)
+        );
+        let live = service.request_challenge(SUB, &iroh_id).unwrap();
+        assert!(service.create_pairing_code(SUB, &live.challenge_id).is_ok());
     }
 
     #[test]
@@ -2198,6 +2442,85 @@ mod tests {
     }
 
     #[test]
+    fn consumed_marker_blocks_replay_only_until_original_expiry() {
+        // #5644: the replay marker carries the consumed challenge's
+        // original expiry. Inside the validity window a replay is
+        // ChallengeReplay; past it the marker is pruned on access and
+        // the presentation reports UnknownChallenge.
+        let mut service = service();
+        signup(&mut service, SUB);
+        let key = root_key(31);
+        let iroh_id = key.verifying_key().to_bytes();
+        let challenge = service.request_challenge(SUB, &iroh_id).unwrap();
+        let signature = key.sign(&HostedBindingService::canonical_transcript(&challenge));
+        service
+            .submit_proof(SUB, &challenge.challenge_id, &signature.to_bytes(), None)
+            .unwrap();
+        // One second before the original expiry: still blocked.
+        service.set_now_override(Some(1_700_000_000 + CHALLENGE_TTL_SECS - 1));
+        assert_eq!(
+            service.submit_proof(SUB, &challenge.challenge_id, &signature.to_bytes(), None),
+            Err(CeremonyError::ChallengeReplay)
+        );
+        assert_eq!(service.consumed_challenges.len(), 1);
+        // At the expiry the marker is gone (boundary: now >= expires_at).
+        service.set_now_override(Some(1_700_000_000 + CHALLENGE_TTL_SECS));
+        assert_eq!(
+            service.submit_proof(SUB, &challenge.challenge_id, &signature.to_bytes(), None),
+            Err(CeremonyError::UnknownChallenge)
+        );
+        assert!(service.consumed_challenges.is_empty());
+    }
+
+    #[test]
+    fn expired_unconsumed_challenge_is_swept_by_the_next_request() {
+        // #5644: request_challenge runs the bounded sweep, so an expired
+        // unconsumed challenge does not stay in `challenges` for the
+        // process lifetime; presenting it afterwards is UnknownChallenge.
+        let mut service = service();
+        signup(&mut service, SUB);
+        let key = root_key(32);
+        let iroh_id = key.verifying_key().to_bytes();
+        let stale = service.request_challenge(SUB, &iroh_id).unwrap();
+        service.set_now_override(Some(1_700_000_000 + CHALLENGE_TTL_SECS));
+        let fresh = service.request_challenge(SUB, &iroh_id).unwrap();
+        assert_eq!(service.challenges.len(), 1);
+        assert!(service.challenges.contains_key(&fresh.challenge_id));
+        let signature = key.sign(&HostedBindingService::canonical_transcript(&stale));
+        assert_eq!(
+            service.submit_proof(SUB, &stale.challenge_id, &signature.to_bytes(), None),
+            Err(CeremonyError::UnknownChallenge)
+        );
+    }
+
+    #[test]
+    fn expired_pairing_code_is_swept_and_stops_reserving_its_value() {
+        // #5644: create_pairing_code sweeps before its collision loop,
+        // so an expired unexchanged code leaves `pairing_codes` and no
+        // longer reserves its six-digit value; exchanging it afterwards
+        // is UnknownChallenge (it was removed, not merely expired).
+        let mut service = service();
+        signup(&mut service, SUB);
+        let iroh_id = root_key(33).verifying_key().to_bytes();
+        let challenge = service.request_challenge(SUB, &iroh_id).unwrap();
+        let stale_code = service
+            .create_pairing_code(SUB, &challenge.challenge_id)
+            .unwrap();
+        assert_eq!(service.pairing_codes.len(), 1);
+        service.set_now_override(Some(1_700_000_000 + CHALLENGE_TTL_SECS));
+        let fresh = service.request_challenge(SUB, &iroh_id).unwrap();
+        service
+            .create_pairing_code(SUB, &fresh.challenge_id)
+            .unwrap();
+        assert_eq!(service.pairing_codes.len(), 1);
+        assert!(!service.pairing_codes.contains_key(&stale_code));
+        assert_eq!(
+            service.exchange_pairing_code(&stale_code),
+            Err(CeremonyError::UnknownChallenge)
+        );
+    }
+
+    #[test]
     fn rfc3339_round_trips() {
         assert_eq!(unix_secs_to_rfc3339(0), "1970-01-01T00:00:00Z");
         assert_eq!(unix_secs_to_rfc3339(1_700_000_000), "2023-11-14T22:13:20Z");
@@ -2212,6 +2535,11 @@ mod tests {
         assert_eq!(parse_rfc3339("2023-02-29T00:00:00Z"), None);
         assert_eq!(parse_rfc3339("2024-02-29T00:00:00Z"), Some(1_709_164_800));
         assert_eq!(parse_rfc3339("not-a-time"), None);
+        // A leap second is not modelled (#756, the same ruling
+        // parse_iso_timestamp follows): second 60 is refused on every
+        // date instead of aliasing to the next minute (#5416).
+        assert_eq!(parse_rfc3339("2016-12-31T23:59:60Z"), None);
+        assert_eq!(parse_rfc3339("2023-06-15T12:30:60Z"), None);
     }
 
     #[test]
@@ -2328,6 +2656,70 @@ mod tests {
     }
 
     #[test]
+    fn pending_rebind_target_cannot_be_bound_by_ordinary_ceremony() {
+        let mut service = service();
+        let binding = bind(&mut service, SUB, 21);
+        signup(&mut service, OTHER_SUB);
+        let new_key = root_key(22);
+        let (challenge_id, proof) = signed_challenge(&mut service, SUB, &new_key);
+        let (request, _) = service
+            .request_delayed_rebind(SUB, &challenge_id, &proof)
+            .unwrap();
+
+        let (challenge_id, proof) = signed_challenge(&mut service, OTHER_SUB, &new_key);
+        assert_eq!(
+            service.submit_proof(OTHER_SUB, &challenge_id, &proof, None),
+            Err(CeremonyError::IrohIdBoundElsewhere)
+        );
+        assert!(service.binding_for_sub(OTHER_SUB).is_none());
+        assert_eq!(
+            service.binding_by_iroh.get(&binding.iroh_id),
+            Some(&binding.binding_id)
+        );
+        assert!(!service.binding_by_iroh.contains_key(&request.new_iroh_id));
+        assert_eq!(
+            service.rebind_request(&request.rebind_id).unwrap().status,
+            RebindRequestStatus::Pending
+        );
+    }
+
+    #[test]
+    fn another_account_cannot_request_a_reserved_rebind_target() {
+        let mut service = service();
+        let first_binding = bind(&mut service, SUB, 21);
+        let other_binding = bind(&mut service, OTHER_SUB, 23);
+        let reserved_key = root_key(22);
+        let (challenge_id, proof) = signed_challenge(&mut service, SUB, &reserved_key);
+        let (first_request, _) = service
+            .request_delayed_rebind(SUB, &challenge_id, &proof)
+            .unwrap();
+
+        let by_iroh_before = service.binding_by_iroh.clone();
+        let by_sub_before = service.binding_by_sub.clone();
+        let requests_before = service.rebind_requests.clone();
+        let (challenge_id, proof) = signed_challenge(&mut service, OTHER_SUB, &reserved_key);
+        assert_eq!(
+            service.request_delayed_rebind(OTHER_SUB, &challenge_id, &proof),
+            Err(RebindError::NewKeyBoundElsewhere)
+        );
+        assert_eq!(service.binding_by_iroh, by_iroh_before);
+        assert_eq!(service.binding_by_sub, by_sub_before);
+        assert_eq!(service.rebind_requests, requests_before);
+        assert_eq!(service.binding_for_sub(OTHER_SUB), Some(&other_binding));
+        assert_eq!(
+            service.binding_for_sub(SUB).unwrap().binding_id,
+            first_binding.binding_id
+        );
+        assert_eq!(
+            service
+                .rebind_request(&first_request.rebind_id)
+                .unwrap()
+                .status,
+            RebindRequestStatus::Pending
+        );
+    }
+
+    #[test]
     fn delayed_rebind_cancel_restores_active_and_restarts_full_wait() {
         let mut service = service();
         let binding = bind(&mut service, SUB, 21);
@@ -2344,7 +2736,10 @@ mod tests {
             Err(RebindError::BadOldKeySignature)
         );
         assert_eq!(
-            service.pending_rebind_for_binding(&binding.binding_id).unwrap().status,
+            service
+                .pending_rebind_for_binding(&binding.binding_id)
+                .unwrap()
+                .status,
             RebindRequestStatus::Pending
         );
 
@@ -2442,6 +2837,171 @@ mod tests {
     }
 
     #[test]
+    fn delayed_rebind_effect_refuses_a_target_bound_elsewhere_without_mutation() {
+        let mut service = service();
+        let binding = bind(&mut service, SUB, 21);
+        let other_binding = bind(&mut service, OTHER_SUB, 23);
+        let new_key = root_key(22);
+        let (challenge_id, proof) = signed_challenge(&mut service, SUB, &new_key);
+        let (request, _) = service
+            .request_delayed_rebind(SUB, &challenge_id, &proof)
+            .unwrap();
+
+        // Simulate a competing bind that raced with or predates this pending
+        // request. Keep the foreign record and its by-key index consistent.
+        let mut other_claim = other_binding.clone();
+        other_claim.iroh_id = request.new_iroh_id.clone();
+        other_claim.service_attestation = hex_encode(&service.attest_bytes(&other_claim).unwrap());
+        service.binding_by_iroh.remove(&other_binding.iroh_id);
+        service.binding_by_iroh.insert(
+            request.new_iroh_id.clone(),
+            other_binding.binding_id.clone(),
+        );
+        service
+            .bindings
+            .insert(other_claim.binding_id.clone(), other_claim.clone());
+
+        let binding_before = service.binding(&binding.binding_id).unwrap().clone();
+        let other_before = service.binding(&other_binding.binding_id).unwrap().clone();
+        let by_sub_before = service.binding_by_sub.clone();
+        let by_iroh_before = service.binding_by_iroh.clone();
+        let request_before = service.rebind_request(&request.rebind_id).unwrap().clone();
+        let published_before = service.rebind_records().to_vec();
+        let counter = countersign(
+            &binding.binding_id,
+            &binding.iroh_id,
+            &new_key,
+            REBIND_VIA_DELAYED,
+        );
+        service.set_now_override(Some(T0 + REBIND_WAITING_PERIOD_SECS));
+
+        assert_eq!(
+            service.effect_due_rebind(&request.rebind_id, &counter),
+            Err(RebindError::NewKeyBoundElsewhere)
+        );
+        assert_eq!(service.binding(&binding.binding_id), Some(&binding_before));
+        assert_eq!(
+            service.binding(&other_binding.binding_id),
+            Some(&other_before)
+        );
+        assert_eq!(service.binding_by_sub, by_sub_before);
+        assert_eq!(service.binding_by_iroh, by_iroh_before);
+        assert_eq!(
+            service.rebind_request(&request.rebind_id),
+            Some(&request_before)
+        );
+        assert_eq!(service.rebind_records(), published_before);
+    }
+
+    #[test]
+    fn delayed_rebind_effect_refuses_a_target_reserved_by_another_pending_request() {
+        let mut service = service();
+        let binding = bind(&mut service, SUB, 21);
+        let other_binding = bind(&mut service, OTHER_SUB, 23);
+        let new_key = root_key(22);
+        let (challenge_id, proof) = signed_challenge(&mut service, SUB, &new_key);
+        let (request, _) = service
+            .request_delayed_rebind(SUB, &challenge_id, &proof)
+            .unwrap();
+
+        // Model a competing pending request that was already present in
+        // retained state when this request reaches its effect time.
+        let mut other_pending_binding = other_binding.clone();
+        other_pending_binding.status = BindingStatus::RebindPending;
+        other_pending_binding.service_attestation =
+            hex_encode(&service.attest_bytes(&other_pending_binding).unwrap());
+        service.bindings.insert(
+            other_pending_binding.binding_id.clone(),
+            other_pending_binding.clone(),
+        );
+        let other_request = RebindRequest {
+            rebind_id: "earlier-pending-request".to_owned(),
+            binding_id: other_binding.binding_id.clone(),
+            sub: OTHER_SUB.to_owned(),
+            old_iroh_id: other_binding.iroh_id.clone(),
+            new_iroh_id: request.new_iroh_id.clone(),
+            requested_at: request.requested_at.clone(),
+            effective_at: request.effective_at.clone(),
+            status: RebindRequestStatus::Pending,
+        };
+        service
+            .rebind_requests
+            .insert(other_request.rebind_id.clone(), other_request.clone());
+
+        let binding_before = service.binding(&binding.binding_id).unwrap().clone();
+        let other_before = service.binding(&other_binding.binding_id).unwrap().clone();
+        let by_sub_before = service.binding_by_sub.clone();
+        let by_iroh_before = service.binding_by_iroh.clone();
+        let request_before = service.rebind_request(&request.rebind_id).unwrap().clone();
+        let other_request_before = service
+            .rebind_request(&other_request.rebind_id)
+            .unwrap()
+            .clone();
+        let counter = countersign(
+            &binding.binding_id,
+            &binding.iroh_id,
+            &new_key,
+            REBIND_VIA_DELAYED,
+        );
+        service.set_now_override(Some(T0 + REBIND_WAITING_PERIOD_SECS));
+
+        assert_eq!(
+            service.effect_due_rebind(&request.rebind_id, &counter),
+            Err(RebindError::NewKeyBoundElsewhere)
+        );
+        assert_eq!(service.binding(&binding.binding_id), Some(&binding_before));
+        assert_eq!(
+            service.binding(&other_binding.binding_id),
+            Some(&other_before)
+        );
+        assert_eq!(service.binding_by_sub, by_sub_before);
+        assert_eq!(service.binding_by_iroh, by_iroh_before);
+        assert_eq!(
+            service.rebind_request(&request.rebind_id),
+            Some(&request_before)
+        );
+        assert_eq!(
+            service.rebind_request(&other_request.rebind_id),
+            Some(&other_request_before)
+        );
+        assert!(service.rebind_records().is_empty());
+    }
+
+    #[test]
+    fn apply_rebind_refuses_to_overwrite_another_bindings_key_index() {
+        let mut service = service();
+        let binding = bind(&mut service, SUB, 21);
+        let other_binding = bind(&mut service, OTHER_SUB, 23);
+        let record = RebindRecord {
+            rebind_id: "conflicting-rebind".to_owned(),
+            binding_id: binding.binding_id.clone(),
+            old_iroh_id: binding.iroh_id.clone(),
+            new_iroh_id: other_binding.iroh_id.clone(),
+            effective_at: unix_secs_to_rfc3339(T0),
+            via: REBIND_VIA_OLD_KEY.to_owned(),
+            service_signature: String::new(),
+            new_key_countersignature: String::new(),
+        };
+        let binding_before = service.binding(&binding.binding_id).unwrap().clone();
+        let other_before = service.binding(&other_binding.binding_id).unwrap().clone();
+        let by_sub_before = service.binding_by_sub.clone();
+        let by_iroh_before = service.binding_by_iroh.clone();
+
+        assert_eq!(
+            service.apply_rebind(&record),
+            Err(RebindError::NewKeyBoundElsewhere)
+        );
+        assert_eq!(service.binding(&binding.binding_id), Some(&binding_before));
+        assert_eq!(
+            service.binding(&other_binding.binding_id),
+            Some(&other_before)
+        );
+        assert_eq!(service.binding_by_sub, by_sub_before);
+        assert_eq!(service.binding_by_iroh, by_iroh_before);
+        assert!(service.rebind_records().is_empty());
+    }
+
+    #[test]
     fn fast_path_rebind_is_immediate_and_rejects_bad_authorization() {
         let mut service = service();
         let binding = bind(&mut service, SUB, 21);
@@ -2507,6 +3067,61 @@ mod tests {
     }
 
     #[test]
+    fn fast_path_rebind_cannot_take_a_pending_request_target() {
+        let mut service = service();
+        let binding = bind(&mut service, SUB, 21);
+        let other_binding = bind(&mut service, OTHER_SUB, 23);
+        let reserved_key = root_key(22);
+        let (challenge_id, proof) = signed_challenge(&mut service, SUB, &reserved_key);
+        let (request, _) = service
+            .request_delayed_rebind(SUB, &challenge_id, &proof)
+            .unwrap();
+
+        let (challenge_id, proof) = signed_challenge(&mut service, OTHER_SUB, &reserved_key);
+        let target_id = reserved_key.verifying_key().to_bytes();
+        let authorization = root_key(23).sign(&rebind_authorization_bytes(
+            &other_binding.binding_id,
+            &target_id,
+            &challenge_id,
+        ));
+        let counter = countersign(
+            &other_binding.binding_id,
+            &other_binding.iroh_id,
+            &reserved_key,
+            REBIND_VIA_OLD_KEY,
+        );
+        let by_sub_before = service.binding_by_sub.clone();
+        let by_iroh_before = service.binding_by_iroh.clone();
+
+        assert_eq!(
+            service.rebind_with_old_key_authorization(
+                OTHER_SUB,
+                None,
+                &challenge_id,
+                &proof,
+                &authorization.to_bytes(),
+                &counter,
+            ),
+            Err(RebindError::NewKeyBoundElsewhere)
+        );
+        assert_eq!(
+            service.binding(&other_binding.binding_id),
+            Some(&other_binding)
+        );
+        assert_eq!(
+            service.binding_for_sub(SUB).unwrap().binding_id,
+            binding.binding_id
+        );
+        assert_eq!(service.binding_by_sub, by_sub_before);
+        assert_eq!(service.binding_by_iroh, by_iroh_before);
+        assert_eq!(
+            service.rebind_request(&request.rebind_id).unwrap().status,
+            RebindRequestStatus::Pending
+        );
+        assert!(service.rebind_records().is_empty());
+    }
+
+    #[test]
     fn approve_early_converts_pending_delayed_rebind() {
         let mut service = service();
         let binding = bind(&mut service, SUB, 21);
@@ -2563,6 +3178,25 @@ mod tests {
         // Nothing pends and nothing changed.
         let stored = service.binding_for_sub(SUB).unwrap();
         assert_eq!(stored.status, BindingStatus::Active);
-        assert!(service.pending_rebind_for_binding(&stored.binding_id).is_none());
+        assert!(
+            service
+                .pending_rebind_for_binding(&stored.binding_id)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn expired_rebind_challenge_is_not_recorded_as_consumed() {
+        let mut service = service();
+        bind(&mut service, SUB, 21);
+        let new_key = root_key(22);
+        let (challenge_id, proof) = signed_challenge(&mut service, SUB, &new_key);
+        service.set_now_override(Some(T0 + CHALLENGE_TTL_SECS));
+        for _ in 0..2 {
+            assert_eq!(
+                service.request_delayed_rebind(SUB, &challenge_id, &proof),
+                Err(RebindError::ChallengeExpired)
+            );
+        }
     }
 }

@@ -499,7 +499,10 @@ fn refusal_response(error: &anyhow::Error) -> Response {
     // and as a `Retry-After` header. The directory limiters behind
     // this surface compute no bucket value of their own, so the abuse
     // contract's floor (`RETRY_FLOOR_MS`) is what is emitted.
-    if matches!(error.downcast_ref::<Refusal>(), Some(Refusal::RateLimited(_))) {
+    if matches!(
+        error.downcast_ref::<Refusal>(),
+        Some(Refusal::RateLimited(_))
+    ) {
         let retry_ms = crate::abuse::RETRY_FLOOR_MS;
         return (
             StatusCode::TOO_MANY_REQUESTS,

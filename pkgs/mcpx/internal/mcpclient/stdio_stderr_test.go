@@ -39,7 +39,7 @@ func TestAFailedWriteCarriesStderrTheChildHadNotPrintedYet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tr.Close()
+	defer func() { _ = tr.Close() }()
 
 	// The parent is reaped well before the grandchild speaks.
 	select {

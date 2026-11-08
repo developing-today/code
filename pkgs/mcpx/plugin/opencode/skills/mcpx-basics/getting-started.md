@@ -11,9 +11,9 @@ runtime on `PATH`: deno, bun or node (tried in that order). `call`, `ls`,
 
 ```sh
 # with nix
-nix run github:dezren39/nix#mcpx -- --version
+nix run github:dezren39/darwin-nix#mcpx -- --version
 
-# from a checkout of github.com/dezren39/nix
+# from a checkout of github.com/dezren39/darwin-nix
 cd pkgs/mcpx && go build -o ~/.local/bin/mcpx ./cmd/mcpx
 ```
 
