@@ -66,9 +66,11 @@ The offset-embed model needs three things the chunk store cannot express:
 ## 2. Proposal in one paragraph
 
 Intern the *embedded text* once (`span_text`, content-addressed by
-SHA-256 of the exact bytes), attach vectors only to
-`(text_hash, embedder_id)` (`span_embeddings`) — so a reused span costs
-one manifest row and zero vectors — and record a source object's version
+SHA-256 of the exact bytes), intern the *embedded window* once
+(`span_windows`, keyed by SHA-256 of the span plus its recorded
+neighbours), attach vectors only to `(window_hash, embedder_id)`
+(`span_embeddings`) — so a reused span costs one manifest row and zero
+vectors — and record a source object's version
 as an ordered manifest of span references (`source_versions` +
 `version_spans`) whose overlap, head/tail match provenance and
 **per-reference** context (`span_contexts`) are explicit columns. Keep
@@ -97,7 +99,10 @@ nothing in the tables below is repository-specific.
 
 ## 4. Schema
 
-Six tables in the Atlas core tier. DDL is SQLite/libSQL dialect, as the
+Seven tables in the Atlas core tier (`span_text`, `span_windows`,
+`embedders`, `span_embeddings`, `source_objects`, `source_versions`,
+`version_spans`, plus the per-reference `span_contexts` and provenance
+`span_occurrences`). DDL is SQLite/libSQL dialect, as the
 publish files use today. Applied once per version
 (`_schema_version`), never edited in place — the same rule
 `atlas_stage_v1.sql` states.
@@ -133,21 +138,62 @@ CREATE TABLE embedders (
 );
 
 CREATE TABLE span_embeddings (
-  text_hash    TEXT NOT NULL REFERENCES span_text(text_hash),
+  window_hash  TEXT NOT NULL REFERENCES span_windows(window_hash),
   embedder_id  TEXT NOT NULL REFERENCES embedders(embedder_id),
   vec          BLOB NOT NULL,
   created_at   TEXT NOT NULL,
-  PRIMARY KEY (text_hash, embedder_id)
+  PRIMARY KEY (window_hash, embedder_id)
 );
 ```
 
-A vector is a function of the text **and** the embedder configuration,
-so the key is the pair. Reuse is therefore sound by construction: two
-versions share a vector iff they share both. The boundary-drift question
-(#6038: same paragraph, different neighbours) is *out of scope here* and
-does not weaken the invariant — reuse is byte-identical-text reuse, never
-"similar text" reuse (the ≥0.9 dedup edge is #5733's, applied in the
-matcher, not the schema).
+A vector is a function of the **window text that was actually embedded**
+and of the embedder configuration, so the key is that pair. The window is
+the embedded unit the matcher hands the embedder — the span plus its
+recorded neighbours (#6038 §"Reuse-safety rule", landed on `main` as
+`pkgs/atlas-search/eval/boundary-drift-6038.md`, PR #7661): two versions
+share a vector iff they share the exact window bytes *and* the embedder.
+
+Keying by `text_hash` alone was the earlier draft of this document and is
+**withdrawn**. The measurement behind it: holding the target paragraph
+byte-identical and changing only a neighbour flips top-10 membership in
+10.3–17.8% of query/target pairs, and even a one-sentence boundary shift
+flips 5.8–6.9%. Span identity is therefore *not* a sufficient reuse key —
+window identity is. Reuse remains byte-identical reuse, never "similar
+text" reuse (the ≥0.9 dedup edge is #5733's, applied in the matcher, not
+the schema); what changes is that "identical" is judged over the window.
+
+Cost of the stricter key: a span whose neighbours change gets a new
+window row and a new vector even though its own bytes are unchanged. That
+is the measured price of correctness, and it is bounded — the window is
+derived from spans already stored, so a window row costs one hash plus
+its vector, never a second copy of the text.
+
+### 4.2a Window interning: `span_windows`
+
+```sql
+CREATE TABLE span_windows (
+  window_hash   TEXT PRIMARY KEY,   -- sha256 of the exact bytes handed to the embedder
+  text_hash     TEXT NOT NULL REFERENCES span_text(text_hash),  -- the span itself
+  prev_text_hash TEXT REFERENCES span_text(text_hash),          -- recorded left neighbour, NULL at version start
+  next_text_hash TEXT REFERENCES span_text(text_hash),          -- recorded right neighbour, NULL at version end
+  window_text   TEXT NOT NULL,      -- the embedded bytes, verbatim (archaeological record, as span_text)
+  byte_len      INTEGER NOT NULL,
+  created_at    TEXT NOT NULL
+);
+CREATE INDEX span_windows_by_text ON span_windows (text_hash);
+```
+
+`window_text` is stored for the same reason `span_text.text` is: a hit
+must render its evidence even when the neighbours' spans have since been
+GC'd or the source version retired. `window_hash` is the reuse key; the
+`prev_/next_text_hash` columns make the re-embed trigger computable
+without re-deriving the manifest — a neighbour added, removed, replaced
+or boundary-moved produces a different `window_hash` and therefore a
+different `span_embeddings` row.
+
+`version_spans` therefore also carries `window_hash` (the window each
+reference was embedded under), so a version's manifest is enough to
+reproduce its embeddings without recomputing boundaries.
 
 ### 4.3 Object graph: `source_objects`, `source_versions`
 
@@ -185,6 +231,7 @@ CREATE TABLE version_spans (
   version_id        INTEGER NOT NULL REFERENCES source_versions(version_id),
   ordinal           INTEGER NOT NULL,   -- ordering for reconstruction, not identity
   text_hash         TEXT NOT NULL REFERENCES span_text(text_hash),
+  window_hash       TEXT NOT NULL REFERENCES span_windows(window_hash),  -- the window this reference was embedded under (§4.2a)
   start_off         INTEGER NOT NULL,   -- UTF-8 byte offset, inclusive
   end_off           INTEGER NOT NULL,   -- exclusive
   head_match_hash   TEXT,               -- prior span whose tail this span's head matched (#6036)
@@ -265,9 +312,9 @@ rowid, because libSQL vector and FTS5 keys are integers:
 ```sql
 CREATE TABLE span_index (
   span_uid   INTEGER PRIMARY KEY,        -- store-local
-  text_hash  TEXT NOT NULL,
+  window_hash TEXT NOT NULL,
   embedder_id TEXT NOT NULL,
-  UNIQUE (text_hash, embedder_id)
+  UNIQUE (window_hash, embedder_id)
 );
 -- vec_snowflake_m_v2_768_f32(span_uid INTEGER PRIMARY KEY, vec BLOB)
 -- span_fts(span_uid, text)  -- FTS5, populated from span_text
@@ -275,8 +322,10 @@ CREATE TABLE span_index (
 
 Search joins `version_spans` → `span_index` → vector/FTS **within one
 store**; results carry `(locator, version_key, start_off, end_off,
-text_hash)` and are de-duplicated by `text_hash` at the cross-store
-merge, mirroring today's content-hash merge in `local.rs`.
+text_hash, window_hash)` and are de-duplicated by `text_hash` at the
+cross-store merge, mirroring today's content-hash merge in `local.rs`
+(the merge dedups *text* for rendering; the vector hit was scored under
+its own window, which is what the ranking means).
 
 ## 5. Identity rules
 
@@ -296,8 +345,8 @@ merge, mirroring today's content-hash merge in `local.rs`.
 
 Three phases; the chunk tables are never dropped in this design.
 
-**Phase A — dual write.** Ingest writes `span_text`/`span_embeddings`/
-`source_versions`/`version_spans` and today's `chunks` rows, deriving
+**Phase A — dual write.** Ingest writes `span_text`/`span_windows`/
+`span_embeddings`/`source_versions`/`version_spans` and today's `chunks` rows, deriving
 spans from the chunker's own intervals so both views agree by
 construction. Backfill the existing corpus:
 
@@ -335,11 +384,13 @@ message, idempotent by `(object_id, version_key)`.
 
 | # | Invariant | Oracle |
 |---|---|---|
-| I1 | `span_embeddings` has at most one row per `(text_hash, embedder_id)`, and `span_text.text` hashes to `text_hash` | recompute hash; `UNIQUE` PK |
+| I1 | `span_embeddings` has at most one row per `(window_hash, embedder_id)`; `span_text.text` hashes to `text_hash`; `span_windows.window_text` hashes to `window_hash` | recompute hashes; `UNIQUE` PK |
+| I1a | A vector is never reused across a window change: two references share a `span_embeddings` row only if their `window_hash` is equal, and any neighbour add/remove/replace or boundary move yields a different `window_hash` | construct the perturbed window (§#6038 cases) and assert the hash differs and a new row is required |
+| I1b | `version_spans.window_hash` resolves to a `span_windows` row whose `text_hash` equals `version_spans.text_hash` | join + equality check |
 | I2 | Every non-synthetic version's span intervals cover `[0, byte_len)` with no gap; overlaps are allowed only where `head_match_hash`/`tail_match_hash` is set | interval arithmetic vs `source_versions.byte_len` |
 | I3 | Reconstruction (`sort by start_off`, union overlaps by byte-equality trimming) reproduces the version bytes exactly once — the non-doubling guarantee | sha256 of reconstruction == `source_versions.content_hash` |
-| I4 | Re-ingesting an unchanged version emits an identical manifest (same ordinals, offsets, hashes) and creates **zero** new `span_text`/`span_embeddings` rows | manifest diff; row counts before/after |
-| I5 | Editing one region adds spans only for that region plus acceptance metadata; untouched spans keep their rows and vectors across versions | manifest diff between version N and N+1 |
+| I4 | Re-ingesting an unchanged version emits an identical manifest (same ordinals, offsets, hashes, window hashes) and creates **zero** new `span_text`/`span_windows`/`span_embeddings` rows | manifest diff; row counts before/after |
+| I5 | Editing one region adds spans only for that region plus acceptance metadata; untouched spans keep their text rows, and keep their vectors **only where their window is unchanged** (a neighbour edit re-embeds them, per #6038) | manifest diff between version N and N+1, split by window-hash equality |
 | I6 | Reusing a span under a different heading changes only the new version's `context_hash`; the prior version's row is unchanged | row snapshot compare |
 | I7 | Every legacy `chunk_id` resolves through `legacy_chunk_map` to a `text_hash` whose text equals the old chunk text | join + string compare |
 | I8 | No `secret-bearing`/`local-only` `text_hash` appears in a published store | label join at export time |
@@ -373,13 +424,16 @@ new; bytes 242–300 match `h_C`'s tail. Matcher (#6036) emits:
 span's head matched; the precise run lengths are #6036's acceptance
 data, stored in the occurrence/provenance rows, not in the interval.
 
-Result: one new `span_text` row (`h_N`), one new `span_embeddings` row,
-three new manifest rows, zero re-embeds of the 0–16 and 242–300 regions,
-and a `span_occurrences` row recording that `h_A` and `h_C` were found
-again. Reconstruction of version 2 unions `[0,17)`, `[17,241)`,
-`[242,300)` → 300 bytes, exact. If the edit had left a 20-byte overlap
-between `h_A`'s tail and `h_N`'s head, both rows would still exist and
-the union would trim the duplicate — the non-doubling join.
+Result: one new `span_text` row (`h_N`), **two** new `span_embeddings`
+rows — `h_N`'s window, and `h_C`'s window, whose right neighbour changed
+from `h_N`'s predecessor to end-of-version (the #6038 re-embed trigger,
+I1a) — three new manifest rows, no re-embed of the 0–16 region (its
+window is unchanged), and a `span_occurrences` row recording that `h_A`
+and `h_C` were found again. Reconstruction of version 2 unions
+`[0,17)`, `[17,241)`, `[242,300)` → 300 bytes, exact. If the edit had
+left a 20-byte overlap between `h_A`'s tail and `h_N`'s head, both rows
+would still exist and the union would trim the duplicate — the
+non-doubling join.
 
 ## 9. Boundaries with the sibling designs
 
@@ -388,11 +442,19 @@ the union would trim the duplicate — the non-doubling join.
   bytes, half-open) and stores the outcome.
 - **#6037 (boundary policy v2):** owns where new spans *start*; the
   schema accepts any interval.
-- **#6038 (drift):** measures whether a reused vector's rank moves with
-  neighbours. If drift turns out unacceptable, the remedy is a *policy*
-  change (re-embed within a window), not a schema change: the
-  `span_embeddings` key already permits several embedder/template
-  variants for the same text.
+- **#6038 (drift):** **landed** on `main` — `pkgs/atlas-search/eval/boundary-drift-6038.md`
+  (PR #7661, merge `ec6938ae4c8e`), measured on 50 real-corpus targets:
+  a one-sentence boundary shift flips top-10 membership 5.8–6.9% of
+  query/target pairs, one replaced neighbour 10.3–17.8%. Its
+  reuse-safety rule — *reuse only byte-identical windows; re-embed on
+  any context change; key stored vectors by the hash of the exact window
+  text* — is **adopted here as the schema contract**, not deferred to
+  policy: §4.2/§4.2a key `span_embeddings` by `window_hash`, and I1a
+  makes "a neighbour change forces a re-embed" a schema-level property
+  test. This supersedes this document's first draft, which keyed vectors
+  by `text_hash` and called drift out of scope. The measurement is
+  scoped to its pool (50 targets, 20 queries) — it is the basis for a
+  conservative key, and a wider measurement would only strengthen it.
 - **#6039 (overlap budget):** supplies the numbers for the size model;
   overlap is stored, so any budget can be evaluated against the same
   data.
@@ -407,12 +469,14 @@ JSON text — default JSON text, matching `session_labels.topics`.
 
 ## 10. Go/no-go
 
-**GO** on the six-table schema and the migration phases as written. The
-parts that are *not* decided here and must land before implementation
-starts: #6036's thresholds (they do not change the tables), #6039's
-overlap numbers (they change defaults, not keys), and a resolved answer
-on synthetic-span reconciliation for the 107,639-chunk backfill (the
-only migration step that can silently lose text).
+**GO** on the six-table schema (now seven with `span_windows`) and the
+migration phases as written. The parts that are *not* decided here and
+must land before implementation starts: #6036's thresholds (they do not
+change the tables), #6039's overlap numbers (they change defaults, not
+keys), and a resolved answer on synthetic-span reconciliation for the
+107,639-chunk backfill (the only migration step that can silently lose
+text). #6038 is settled and folded in (§9); #5733's ≥0.9 dedup edge
+stays in the matcher and cannot loosen the `window_hash` key.
 
 **No-go** alternative considered and rejected: extending `chunks` with
 `version_id/start/end` columns. It keeps one row per occurrence, so a
