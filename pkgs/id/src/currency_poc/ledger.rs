@@ -169,6 +169,7 @@ pub struct InMemoryLedger {
     accounts: HashMap<AccountId, Account>,
     balances: HashMap<AccountId, AccountBalance>,
     transfers: HashMap<TransferId, Transfer>,
+    failed_transfers: HashMap<TransferId, TransferError>,
     transfer_order: Vec<TransferId>,
 }
 
@@ -186,6 +187,15 @@ impl InMemoryLedger {
         staged: &mut HashMap<AccountId, AccountBalance>,
         staged_transfers: &HashMap<TransferId, Transfer>,
     ) -> Result<(), TransferError> {
+        // A transfer ID previously recorded as failed is refused
+        // with `IdAlreadyFailed`, matching the variant's contract
+        // above and the live binding's status mapping (tb_ledger.rs)
+        // -- never the stored original error, which goes stale once
+        // its cause is fixed (#6628).
+        if self.failed_transfers.contains_key(&transfer.id) {
+            return Err(TransferError::IdAlreadyFailed);
+        }
+        
         if let Some(existing) = self.transfers.get(&transfer.id) {
             return if existing == transfer {
                 Err(TransferError::Exists)
@@ -381,6 +391,45 @@ impl LedgerBackend for InMemoryLedger {
                     }
                 }
                 Some((failing_offset, error)) => {
+                    // Record failed transfer IDs for IdAlreadyFailed behavior.
+                    // When a transfer fails for its own reason (validation/balance
+                    // errors), TigerBeetle remembers the ID and refuses resubmission.
+                    // The stored error is kept for diagnosis; future
+                    // submissions of the ID are refused with
+                    // `IdAlreadyFailed`, not the stored error (#6628).
+                    // Only record failures that are transfer-level errors (not chain-level failures).
+                    if !matches!(
+                        error,
+                        TransferError::LinkedEventFailed | TransferError::LinkedEventChainOpen
+                    ) {
+                        // Record only the leg that actually failed
+                        // (#6627): the chain's other legs did not fail
+                        // and must remain submittable, and an ID that
+                        // is already posted must never be marked
+                        // failed -- `validate_and_stage` consults
+                        // `failed_transfers` before `transfers`, so a
+                        // failure cached against a posted ID would
+                        // break its idempotent `Exists` retry.
+                        let failing = &chain[failing_offset];
+                        // But if an earlier leg already broke the
+                        // chain with `Exists`, TigerBeetle never
+                        // attempted this leg at all (the result
+                        // selection below reports only
+                        // `LinkedEventFailed` for it): caching its
+                        // error would refuse a leg that was never
+                        // tried, so only cache when this leg is the
+                        // leg the chain actually broke on.
+                        let chain_broke_at_earlier_exists = matches!(
+                            first_exists_offset,
+                            Some(exists_offset) if exists_offset < failing_offset
+                        );
+                        if !chain_broke_at_earlier_exists
+                            && !self.transfers.contains_key(&failing.id)
+                        {
+                            self.failed_transfers.insert(failing.id, error);
+                        }
+                    }
+                    
                     // The chain broke at the first non-`Created` leg in
                     // chain order: an earlier `Exists` leg (TigerBeetle
                     // breaks on it before ever reaching the hard

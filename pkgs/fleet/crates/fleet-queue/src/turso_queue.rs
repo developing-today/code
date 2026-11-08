@@ -30,6 +30,18 @@
 //! record execution, health aggregation). Every deviation from the
 //! PG behavior is listed in the cutover runbook.
 //!
+//! agent.events (#5690): the PG stream's queue-transition writers
+//! are this backend's `event()` calls (same dispatch, same database
+//! as the task write — the closest libSQL gets to the PG RPCs'
+//! single-transaction coupling; see doc/fleet/agent-events-turso.md
+//! for the full writer/reader inventory and the coupling verdict).
+//! The non-queue writers (github-ci webhooks, fleet-fetch) and the
+//! stream's consumers get broker verbs here: /events-append,
+//! /events-seen (the event_seen ready-condition primitive),
+//! /events-count (observability + health), /events-prune (the
+//! prune_events port). All of it exists only on this backend; the
+//! Postgres dispatch is untouched.
+//!
 //! Atomicity: libSQL is single-writer. A claim is ONE conditional
 //! UPDATE whose WHERE clause re-checks claimability (status in
 //! queued/parked with a due not_before, attempts left) against the
@@ -354,7 +366,7 @@ impl Clone for Arg {
     }
 }
 
-const SCHEMA: [&str; 10] = [
+const SCHEMA: [&str; 12] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, title TEXT, body TEXT, \
@@ -400,6 +412,8 @@ const SCHEMA: [&str; 10] = [
         kind TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '{}', \
         created_at TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS events_task ON events(task_id, id)",
+    "CREATE INDEX IF NOT EXISTS events_kind_ts ON events(kind, created_at)",
+    "CREATE INDEX IF NOT EXISTS events_created ON events(created_at)",
 ];
 
 // ---------------------------------------------------------------------------
@@ -483,6 +497,414 @@ fn event(
     Ok(())
 }
 
+/// Parse an /events-append request: kind is required and must be a
+/// non-empty string; worker_id/task_id optional (the PG stream's
+/// non-queue writers always wrote task_id NULL); detail defaults {}.
+fn parse_event_append(
+    req: &Value,
+) -> Result<(Option<String>, Option<i64>, String, Value), String> {
+    let kind = req_str(req, "kind")
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| "kind is required".to_string())?
+        .to_string();
+    let worker = req_str(req, "worker_id").map(str::to_string);
+    let task_id = req_i64(req, "task_id");
+    let detail = req.get("detail").cloned().unwrap_or_else(|| json!({}));
+    Ok((worker, task_id, kind, detail))
+}
+
+/// Retention cutoff for /events-prune: rows strictly older than
+/// keep_days (clamped to 1..=3650, mirroring prune_events(30)'s
+/// fixed 30-day default at the call site) are deleted.
+fn prune_cutoff(now: i64, keep_days: i64) -> String {
+    let days = keep_days.clamp(1, 3650);
+    iso(now - days * 86_400)
+}
+
+fn verb_events_append(t: &TursoBackend, req: &Value) -> Value {
+    let (worker, task_id, kind, detail) = match parse_event_append(req) {
+        Ok(v) => v,
+        Err(e) => return fail(2, e),
+    };
+    let work = (|| -> Result<Value, TErr> {
+        let now = now_iso();
+        let res = t.exec(
+            "INSERT INTO events (worker_id, task_id, kind, detail, created_at) \
+             VALUES (?, ?, ?, ?, ?)",
+            &[
+                arg_str(worker.as_deref()),
+                task_id.map(Arg::Int).unwrap_or(Arg::Null),
+                Arg::Text(kind.clone()),
+                Arg::Text(detail.to_string()),
+                Arg::Text(now),
+            ],
+        )?;
+        Ok(json!({"id": res.last_insert_rowid.unwrap_or(0), "kind": kind}))
+    })();
+    match work {
+        Ok(v) => ok(json!({"row": v})),
+        Err(e) => terr(e),
+    }
+}
+
+/// The event_seen primitive: has an event of `kind` been recorded
+/// for `task_id`? Replaces the PG revalidate_parked_tasks() EXISTS
+/// subquery, which cannot reach across databases; a broker-side
+/// revalidator sweeper calls this per parked task (cutover doc).
+fn verb_events_seen(t: &TursoBackend, req: &Value) -> Value {
+    let (Some(task_id), Some(kind)) = (req_i64(req, "task_id"), req_str(req, "kind")) else {
+        return fail(2, "task_id and kind are required".to_string());
+    };
+    let kind = kind.to_string();
+    let work = (|| -> Result<Value, TErr> {
+        let rows = t.query_objs(
+            "SELECT COUNT(*) AS n, MAX(created_at) AS latest FROM events \
+             WHERE task_id = ? AND kind = ?",
+            &[Arg::Int(task_id), Arg::Text(kind.clone())],
+            &[],
+        )?;
+        let first = rows.into_iter().next().unwrap_or(json!({}));
+        let n = first.get("n").and_then(|v| v.as_i64()).unwrap_or(0);
+        Ok(json!({
+            "task_id": task_id,
+            "kind": kind,
+            "seen": n > 0,
+            "count": n,
+            "latest_created_at": first
+                .get("latest")
+                .cloned()
+                .unwrap_or(Value::Null),
+        }))
+    })();
+    match work {
+        Ok(v) => ok(json!({"row": v})),
+        Err(e) => terr(e),
+    }
+}
+
+/// Observability shape parity with the ad-hoc PG queries
+/// (count by kind, optionally since an ISO timestamp).
+fn verb_events_count(t: &TursoBackend, req: &Value) -> Value {
+    let mut sql = "SELECT COUNT(*) AS n FROM events WHERE 1 = 1".to_string();
+    let mut args: Vec<Arg> = Vec::new();
+    if let Some(k) = req_str(req, "kind") {
+        sql += " AND kind = ?";
+        args.push(Arg::Text(k.to_string()));
+    }
+    if let Some(since) = req_str(req, "since") {
+        sql += " AND created_at > ?";
+        args.push(Arg::Text(since.to_string()));
+    }
+    let work = (|| -> Result<Value, TErr> {
+        let rows = t.query_objs(&sql, &args, &[])?;
+        let n = rows
+            .into_iter()
+            .next()
+            .and_then(|r| r.get("n").and_then(|v| v.as_i64()))
+            .unwrap_or(0);
+        Ok(json!({"count": n}))
+    })();
+    match work {
+        Ok(v) => ok(json!({"row": v})),
+        Err(e) => terr(e),
+    }
+}
+
+/// prune_events, shared by the /events-prune verb and /sweep:
+/// delete events older than keep_days and self-log an events_pruned
+/// row, like the PG function. Returns (deleted, cutoff).
+fn prune_events(t: &TursoBackend, keep_days: i64) -> Result<(i64, String), TErr> {
+    let cutoff = prune_cutoff(now_unix(), keep_days);
+    let deleted = t
+        .exec(
+            "DELETE FROM events WHERE created_at < ?",
+            &[Arg::Text(cutoff.clone())],
+        )?
+        .affected as i64;
+    event(
+        t,
+        Some("prune_events"),
+        None,
+        "events_pruned",
+        &json!({"deleted": deleted, "cutoff": cutoff, "keep_days": keep_days.clamp(1, 3650)}),
+    )?;
+    Ok((deleted, cutoff))
+}
+
+/// prune_events port: delete events older than keep_days (default
+/// 30, the PG cron's argument) and self-log an events_pruned row,
+/// like the PG function. PG ran this daily at 04:17 via pg_cron;
+/// post-cutover a timer calls this verb (cutover doc).
+fn verb_events_prune(t: &TursoBackend, req: &Value) -> Value {
+    let keep_days = req_i64(req, "keep_days").unwrap_or(30);
+    let work = (|| -> Result<Value, TErr> {
+        let (deleted, cutoff) = prune_events(t, keep_days)?;
+        Ok(json!({"deleted": deleted, "cutoff": cutoff}))
+    })();
+    match work {
+        Ok(v) => ok(json!({"row": v})),
+        Err(e) => terr(e),
+    }
+}
+
+/// The revalidate_parked_tasks outcome for one parked task, as a
+/// pure function of what the sweeper could observe (migration 0023
+/// §revalidate): the DB-verifiable kinds release, time parks are
+/// only ever confirmed (elapsed time is never evidence — they
+/// release through claim at not_before), and anything the database
+/// cannot verify goes stale so the park surfaces for an agent with
+/// external access instead of sitting silently.
+fn revalidate_outcome(
+    kind: Option<&str>,
+    target_status: Option<&str>,
+    want_status: Option<&str>,
+    event_seen: bool,
+) -> &'static str {
+    match kind {
+        Some("time") => "confirmed",
+        Some("task_terminal") => match target_status {
+            None => "stale",
+            Some("done") | Some("cancelled") => "released",
+            Some(_) => "confirmed",
+        },
+        Some("task_status") => match target_status {
+            None => "stale",
+            Some(s) if Some(s) == want_status => "released",
+            Some(_) => "confirmed",
+        },
+        Some("event_seen") => {
+            if event_seen {
+                "released"
+            } else {
+                "confirmed"
+            }
+        }
+        _ => "stale",
+    }
+}
+
+/// revalidate_parked_tasks port (migration 0023, as fixed by 0024),
+/// replacing the retired pg_cron job park-revalidation-daily
+/// (#6803). Checks parked tasks whose last check (or last update)
+/// is older than min_age_seconds, oldest first, up to limit, and
+/// stamps last_checked_at / check_outcome on each. Satisfied
+/// DB-verifiable conditions release the task to queued with the
+/// binding cleared and a park_released event; every check leaves a
+/// park_revalidated event, worker 'park-revalidation-sweeper'.
+///
+/// observe_only (the C3 landing mode, agent-events-turso.md):
+/// outcomes are computed and logged (releases as would_release)
+/// but no task row is mutated, so the first enabled run re-checks
+/// the same population.
+fn revalidate_parked(
+    t: &TursoBackend,
+    min_age_seconds: i64,
+    limit: i64,
+    observe_only: bool,
+) -> Result<Value, TErr> {
+    let cutoff = iso(now_unix() - min_age_seconds.max(0));
+    let rows = t.query_objs(
+        &format!(
+            "SELECT {TASK_COLS} FROM tasks WHERE status = 'parked' \
+             AND COALESCE(last_checked_at, updated_at) < ? \
+             ORDER BY COALESCE(last_checked_at, updated_at) ASC LIMIT ?"
+        ),
+        &[Arg::Text(cutoff), Arg::Int(limit.clamp(1, 5000))],
+        &TASK_JSON_COLS,
+    )?;
+    let mut results: Vec<Value> = Vec::new();
+    let (mut released, mut confirmed, mut stale, mut would_release) = (0i64, 0i64, 0i64, 0i64);
+    for row in &rows {
+        let id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let condition = row.get("ready_condition").cloned().unwrap_or(Value::Null);
+        let kind = condition.get("kind").and_then(|v| v.as_str());
+        let mut target_status: Option<String> = None;
+        let mut event_seen = false;
+        match kind {
+            Some("task_terminal") | Some("task_status") => {
+                if let Some(tid) = condition.get("task_id").and_then(|v| v.as_i64()) {
+                    let trow = t.query_objs(
+                        "SELECT status FROM tasks WHERE id = ?",
+                        &[Arg::Int(tid)],
+                        &[],
+                    )?;
+                    target_status = trow
+                        .into_iter()
+                        .next()
+                        .and_then(|r| {
+                            r.get("status").and_then(|v| v.as_str()).map(str::to_string)
+                        });
+                }
+            }
+            Some("event_seen") => {
+                let tid = condition
+                    .get("task_id")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(id);
+                if let Some(ek) = condition.get("event_kind").and_then(|v| v.as_str()) {
+                    let nrow = t.query_objs(
+                        "SELECT COUNT(*) AS n FROM events WHERE task_id = ? AND kind = ?",
+                        &[Arg::Int(tid), Arg::Text(ek.to_string())],
+                        &[],
+                    )?;
+                    let n = nrow
+                        .into_iter()
+                        .next()
+                        .and_then(|r| r.get("n").and_then(|v| v.as_i64()))
+                        .unwrap_or(0);
+                    event_seen = n > 0;
+                }
+            }
+            _ => {}
+        }
+        let outcome = revalidate_outcome(
+            kind,
+            target_status.as_deref(),
+            condition.get("status").and_then(|v| v.as_str()),
+            event_seen,
+        );
+        if observe_only {
+            let logged = if outcome == "released" {
+                would_release += 1;
+                "would_release"
+            } else {
+                match outcome {
+                    "confirmed" => confirmed += 1,
+                    _ => stale += 1,
+                }
+                outcome
+            };
+            event(
+                t,
+                Some("park-revalidation-sweeper"),
+                Some(id),
+                "park_revalidated",
+                &json!({"outcome": logged, "condition_kind": kind, "observe_only": true, "via": "revalidate_parked_tasks"}),
+            )?;
+            results.push(json!({"task_id": id, "outcome": logged}));
+            continue;
+        }
+        match outcome {
+            "released" => {
+                released += 1;
+                let progress = row.get("progress").cloned().unwrap_or(json!({}));
+                let (progress, cleared) = clear_binding(&progress, "revalidate_parked_tasks");
+                let mut stamp = json!({
+                    "outcome": "released", "at": now_iso(), "condition": condition,
+                });
+                if let Some(note) = condition.get("note") {
+                    stamp["note"] = note.clone();
+                }
+                let progress = merge_obj(&progress, &json!({"park_revalidation": stamp}));
+                t.exec(
+                    "UPDATE tasks SET status = 'queued', not_before = NULL, \
+                       last_checked_at = ?, check_outcome = 'released', \
+                       progress = ?, updated_at = ? \
+                     WHERE id = ? AND status = 'parked'",
+                    &[
+                        Arg::Text(now_iso()),
+                        Arg::Text(progress.to_string()),
+                        Arg::Text(now_iso()),
+                        Arg::Int(id),
+                    ],
+                )?;
+                if let Some(old) = cleared {
+                    on_binding_cleared(
+                        t,
+                        "park-revalidation-sweeper",
+                        id,
+                        &old,
+                        "revalidate_parked_tasks",
+                    )?;
+                }
+                event(
+                    t,
+                    Some("park-revalidation-sweeper"),
+                    Some(id),
+                    "park_released",
+                    &json!({"condition": condition, "via": "revalidate_parked_tasks"}),
+                )?;
+            }
+            _ => {
+                if outcome == "confirmed" {
+                    confirmed += 1;
+                } else {
+                    stale += 1;
+                }
+                t.exec(
+                    "UPDATE tasks SET last_checked_at = ?, check_outcome = ?, \
+                       updated_at = ? WHERE id = ? AND status = 'parked'",
+                    &[
+                        Arg::Text(now_iso()),
+                        Arg::Text(outcome.to_string()),
+                        Arg::Text(now_iso()),
+                        Arg::Int(id),
+                    ],
+                )?;
+                event(
+                    t,
+                    Some("park-revalidation-sweeper"),
+                    Some(id),
+                    "park_revalidated",
+                    &json!({"outcome": outcome, "condition_kind": kind, "via": "revalidate_parked_tasks"}),
+                )?;
+            }
+        }
+        results.push(json!({"task_id": id, "outcome": outcome}));
+    }
+    Ok(json!({
+        "checked": rows.len(), "released": released, "confirmed": confirmed,
+        "stale": stale, "would_release": would_release,
+        "observe_only": observe_only, "results": results,
+    }))
+}
+
+/// One sweeper cycle (#6803): the Turso replacement for the retired
+/// pg_cron trio — expire_leases (was every minute), prune_events
+/// (daily 04:17) and revalidate_parked_tasks (daily 05:17) — driven
+/// by systemd timers POSTing here. Parts are opt-in per call except
+/// expire, which defaults on: the minutely timer sends
+/// {"expire": true} alone, the daily timer adds prune + revalidate.
+/// observe_only defaults true (C3): releases must be opted into by
+/// passing observe_only=false. A summary event is appended only
+/// when the cycle changed something or ran the daily parts, so the
+/// minutely expire stays silent while it has nothing to expire.
+fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
+    let do_expire = req_bool(req, "expire").unwrap_or(true);
+    let do_revalidate = req_bool(req, "revalidate").unwrap_or(false);
+    let do_prune = req_bool(req, "prune").unwrap_or(false);
+    let observe_only = req_bool(req, "observe_only").unwrap_or(true);
+    let work = (|| -> Result<Value, TErr> {
+        let mut out = json!({"observe_only": observe_only});
+        let mut expired = 0i64;
+        if do_expire {
+            expired = expire_leases(t)?;
+            out["expired_leases"] = json!(expired);
+        }
+        if do_revalidate {
+            out["revalidation"] = revalidate_parked(
+                t,
+                req_i64(req, "min_age_seconds").unwrap_or(86_400),
+                req_i64(req, "limit").unwrap_or(500),
+                observe_only,
+            )?;
+        }
+        if do_prune {
+            let (deleted, cutoff) = prune_events(t, req_i64(req, "keep_days").unwrap_or(30))?;
+            out["prune"] = json!({"deleted": deleted, "cutoff": cutoff});
+        }
+        if expired > 0 || do_revalidate || do_prune {
+            event(t, Some("fleet-sweeper"), None, "sweep", &out)?;
+        }
+        Ok(out)
+    })();
+    match work {
+        Ok(v) => ok(json!({"row": v})),
+        Err(e) => terr(e),
+    }
+}
+
 fn touch_worker(t: &TursoBackend, worker: &str, task_id: Option<i64>) -> Result<(), TErr> {
     // PG workers is the roster table (id/role/display_name/status/
     // last_heartbeat_at): a touch upserts the heartbeat and marks
@@ -554,8 +976,11 @@ fn on_binding_cleared(
 
 /// expire_leases (migration 0023 §1): claimed rows whose lease has
 /// lapsed return to queued, binding cleared, lease rows dropped.
-fn expire_leases(t: &TursoBackend) -> Result<(), TErr> {
+/// Returns how many tasks were returned to queued (PG returned the
+/// count; claim ignores it, the /sweep verb reports it, #6803).
+fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
     let now = now_iso();
+    let mut expired = 0i64;
     let rows = t.query_objs(
         &format!(
             "SELECT {TASK_COLS} FROM tasks \
@@ -587,6 +1012,7 @@ fn expire_leases(t: &TursoBackend) -> Result<(), TErr> {
         if upd.affected == 0 {
             continue;
         }
+        expired += 1;
         event(
             t,
             Some(&worker),
@@ -602,7 +1028,7 @@ fn expire_leases(t: &TursoBackend) -> Result<(), TErr> {
         "DELETE FROM leases WHERE lease_until < ?",
         &[Arg::Text(now)],
     )?;
-    Ok(())
+    Ok(expired)
 }
 
 /// record_repo_task_lane_execution, contract-shaped: stamp the
@@ -681,9 +1107,41 @@ fn req_i64(req: &Value, key: &str) -> Option<i64> {
     req.get(key).and_then(|v| v.as_i64())
 }
 
+fn req_bool(req: &Value, key: &str) -> Option<bool> {
+    req.get(key).and_then(|v| v.as_bool())
+}
+
 // ---------------------------------------------------------------------------
 // Verbs
 // ---------------------------------------------------------------------------
+
+/// Statuses in which a task still owns its dedupe key: an enqueue
+/// that dedupe-matches one of these is a true duplicate and returns
+/// the live row. Terminal rows (done/cancelled/failed) do NOT block
+/// the key (#6838): PG's enqueue revived on dedupe-over-terminal,
+/// and the Turso port dropped that nuance (cutover doc deviation 6).
+pub const LIVE_STATUSES: [&str; 4] = ["queued", "claimed", "parked", "blocked"];
+pub const TERMINAL_STATUSES: [&str; 3] = ["done", "cancelled", "failed"];
+
+/// Partition the rows sharing one (queue, dedupe_key) into the live
+/// dedupe hit, if any, and the newest terminal predecessor, if any.
+/// Rows arrive ordered by id ASC, so the last terminal row seen is
+/// the most recent attempt — the one a revive links back to.
+fn dedupe_partition(rows: &[Value]) -> (Option<Value>, Option<Value>) {
+    let mut live: Option<Value> = None;
+    let mut terminal: Option<Value> = None;
+    for row in rows {
+        let status = row.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if LIVE_STATUSES.contains(&status) {
+            if live.is_none() {
+                live = Some(row.clone());
+            }
+        } else if TERMINAL_STATUSES.contains(&status) {
+            terminal = Some(row.clone());
+        }
+    }
+    (live, terminal)
+}
 
 fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
     let packet = req.get("packet").cloned().unwrap_or(Value::Null);
@@ -696,24 +1154,44 @@ fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
         });
     }
     let queue = req_str(req, "queue").unwrap_or("").to_string();
+    if queue.is_empty() {
+        return fail(2, "enqueue: queue is required".to_string());
+    }
+    // Shadow queues are for deliberate shadow runs only (#7016): an
+    // enqueue may land in one only when the caller declares shadow
+    // intent, so a forgotten --queue can never silently misroute
+    // real work there again.
+    if queue.ends_with("-shadow") && !req_bool(req, "shadow_intent").unwrap_or(false) {
+        return fail(
+            2,
+            format!(
+                "enqueue: queue {queue} is a shadow queue; pass shadow_intent \
+                 (CLI: --shadow-intent) to enqueue there deliberately"
+            ),
+        );
+    }
     let task = task_from_packet(&packet, &queue);
     if req.get("dry_run").and_then(|d| d.as_bool()).unwrap_or(false) {
         return ok(json!({"dry_run": true, "task": task, "warnings": warnings}));
     }
     let now = now_iso();
     let dedupe = task.get("dedupe_key").and_then(|v| v.as_str()).map(str::to_string);
-    let work = (|| -> Result<Value, TErr> {
+    let work = (|| -> Result<(Value, Option<Value>), TErr> {
+        let mut predecessor: Option<Value> = None;
         if let Some(dk) = &dedupe {
             let existing = t.query_objs(
                 &format!(
-                    "SELECT {TASK_COLS} FROM tasks WHERE queue = ? AND dedupe_key = ?"
+                    "SELECT {TASK_COLS} FROM tasks WHERE queue = ? AND dedupe_key = ? \
+                     ORDER BY id ASC"
                 ),
                 &[Arg::Text(queue.clone()), Arg::Text(dk.clone())],
                 &TASK_JSON_COLS,
             )?;
-            if let Some(row) = existing.into_iter().next() {
-                return Ok(row);
+            let (live, terminal) = dedupe_partition(&existing);
+            if let Some(row) = live {
+                return Ok((row, None));
             }
+            predecessor = terminal;
         }
         let ins = t.exec(
             "INSERT INTO tasks (queue, title, body, payload, dedupe_key, priority, \
@@ -741,13 +1219,140 @@ fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             ],
         )?;
         let id = ins.last_insert_rowid.unwrap_or(0);
-        get_task(t, id).map(|r| r.unwrap_or(Value::Null))
+        // Revive-on-enqueue (#6838): the key's only prior row(s) are
+        // terminal, so this fresh task is a revival, not a first
+        // enqueue. Link it to its predecessor in progress (the audit
+        // chain) and leave an event on BOTH rows.
+        if let Some(pred) = &predecessor {
+            let pred_id = pred.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+            let link = json!({
+                "task_id": pred_id,
+                "status": pred.get("status").cloned().unwrap_or(Value::Null),
+                "completed_at": pred.get("completed_at").cloned().unwrap_or(Value::Null),
+                "revived_at": now_iso(),
+                "via": "enqueue_repo_task_turso",
+            });
+            t.exec(
+                "UPDATE tasks SET progress = ? WHERE id = ?",
+                &[
+                    Arg::Text(json!({"revived_from": link}).to_string()),
+                    Arg::Int(id),
+                ],
+            )?;
+            event(
+                t,
+                Some("enqueue_repo_task"),
+                Some(id),
+                "task_revived",
+                &json!({"predecessor": link, "dedupe_key": dedupe}),
+            )?;
+            event(
+                t,
+                Some("enqueue_repo_task"),
+                Some(pred_id),
+                "revived_by",
+                &json!({"successor_task_id": id, "dedupe_key": dedupe}),
+            )?;
+        }
+        let row = get_task(t, id).map(|r| r.unwrap_or(Value::Null))?;
+        Ok((row, predecessor))
     })();
     match work {
-        Ok(row) if !row.is_null() => ok(json!({
-            "row": row, "rpc": "enqueue_repo_task_turso", "warnings": warnings
-        })),
+        Ok((row, predecessor)) if !row.is_null() => {
+            let mut envelope = json!({
+                "row": row, "rpc": "enqueue_repo_task_turso", "warnings": warnings
+            });
+            if let Some(pred) = &predecessor {
+                envelope["revived_from"] = json!({
+                    "task_id": pred.get("id").cloned().unwrap_or(Value::Null),
+                    "status": pred.get("status").cloned().unwrap_or(Value::Null),
+                });
+            }
+            ok(envelope)
+        }
         Ok(_) => fail(5, "enqueue_repo_task_turso returned no row"),
+        Err(e) => terr(e),
+    }
+}
+
+/// Whether a task row may be revived by the /revive verb (#6838):
+/// a failed row can always be re-queued; a queued row only when it
+/// is dead at cap (attempts exhausted — the silent-zombie state
+/// #6463 censused). Anything else is live or terminal-done work the
+/// verb must not touch.
+fn revive_eligible(status: &str, attempts: i64, max_attempts: i64) -> Result<(), String> {
+    match status {
+        "failed" => Ok(()),
+        "queued" if attempts >= max_attempts => Ok(()),
+        "queued" => Err(format!(
+            "task is queued with attempts {attempts} < max_attempts {max_attempts}: \
+             not dead at cap, nothing to revive"
+        )),
+        other => Err(format!(
+            "task status {other} cannot be revived (only failed, or queued dead-at-cap)"
+        )),
+    }
+}
+
+/// The revive verb (#6838): reset a dead task in place — attempts
+/// back to 0, last_error cleared, status queued, due now (or at the
+/// caller's not_before) — with a `revived` audit event. This is the
+/// supported path the fleet monitor's dead-in-queue self-repair
+/// re-points to, replacing its direct SQL.
+fn verb_revive(t: &TursoBackend, req: &Value) -> Value {
+    let task_id = req_i64(req, "task_id").unwrap_or(0);
+    let worker = req_str(req, "worker").unwrap_or("fleet-queue-cli").to_string();
+    let reason = req_str(req, "reason").unwrap_or("").to_string();
+    let not_before = req_str(req, "not_before")
+        .map(str::to_string)
+        .unwrap_or_else(now_iso);
+    let work = (|| -> Result<Value, String> {
+        let Some(row) = get_task(t, task_id).map_err(|e| e)? else {
+            return Err(format!("revive_task: task {task_id} does not exist"));
+        };
+        let status = row
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let attempts = row.get("attempts").and_then(|v| v.as_i64()).unwrap_or(0);
+        let max_attempts = row
+            .get("max_attempts")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(4);
+        revive_eligible(&status, attempts, max_attempts)
+            .map_err(|e| format!("revive_task: task {task_id}: {e}"))?;
+        t.exec(
+            "UPDATE tasks SET status = 'queued', attempts = 0, last_error = NULL, \
+               not_before = ?, worker_id = NULL, lease_until = NULL, \
+               updated_at = ? WHERE id = ?",
+            &[
+                Arg::Text(not_before.clone()),
+                Arg::Text(now_iso()),
+                Arg::Int(task_id),
+            ],
+        )
+        .map_err(|e| e)?;
+        event(
+            t,
+            Some(&worker),
+            Some(task_id),
+            "revived",
+            &json!({
+                "reason": reason, "previous_status": status,
+                "previous_attempts": attempts, "not_before": not_before,
+                "via": "revive_task_turso",
+            }),
+        )
+        .map_err(|e| e)?;
+        get_task(t, task_id)
+            .map(|r| r.unwrap_or(Value::Null))
+            .map_err(|e| e)
+    })();
+    match work {
+        Ok(row) if !row.is_null() => ok(json!({"row": row})),
+        Ok(_) => fail(5, format!("revive_task: task {task_id} does not exist")),
+        Err(e) if e.starts_with("revive_task:") => fail(5, e),
         Err(e) => terr(e),
     }
 }
@@ -1452,12 +2057,161 @@ fn verb_fail(t: &TursoBackend, req: &Value) -> Value {
     }
 }
 
+/// Completion gating (Drew's triage doctrine, #7016; the
+/// completion-without-evidence defect, 2026-11-07): what a task's
+/// completion must carry depends on its class, derived from the
+/// packet kind in its payload.
+#[derive(Debug, PartialEq)]
+enum CompletionClass {
+    /// Work that produces an artifact: completion requires an
+    /// evidence reference recorded on the task.
+    Fix,
+    /// Triage annotates and validates; it never completes the
+    /// issue. Completion re-enqueues the follow-on by default.
+    Triage,
+    /// No packet kind (hand-built rows, legacy tasks): ungated, so
+    /// the gate never breaks non-packet work.
+    Ungated,
+}
+
+fn completion_class(payload: &Value) -> CompletionClass {
+    match payload.get("kind").and_then(|k| k.as_str()) {
+        Some("small_fix") | Some("ci_investigation") | Some("pr_shepherd") => {
+            CompletionClass::Fix
+        }
+        Some("triage") => CompletionClass::Triage,
+        _ => CompletionClass::Ungated,
+    }
+}
+
+/// The evidence reference on a completion result, if it carries
+/// one: a merged PR, a commit, or a verified-closure note, under
+/// any of the field names the fleet's completion notes use.
+fn evidence_ref(result: &Value) -> Option<Value> {
+    for key in [
+        "evidence",
+        "pr_url",
+        "pr",
+        "merged_pr",
+        "commit",
+        "commit_sha",
+        "verified_closure",
+    ] {
+        match result.get(key) {
+            Some(Value::String(s)) if !s.trim().is_empty() => {
+                return Some(json!({key: s}));
+            }
+            Some(Value::Array(a)) if !a.is_empty() => {
+                return Some(json!({key: a}));
+            }
+            Some(v @ Value::Object(_)) => return Some(json!({key: v})),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// What a triage completion does with its issue (doctrine exits:
+/// invalid is the only no-evidence-free exit, and both exits still
+/// require the validation evidence on the record).
+#[derive(Debug, PartialEq)]
+enum TriageOutcome {
+    FollowOn,
+    ExitInvalid,
+    ExitAlreadySolved,
+}
+
+/// The broker-side completion gate. Err = the completion is
+/// rejected and the task stays claimed.
+fn gate_completion(
+    class: &CompletionClass,
+    result: &Value,
+) -> Result<Option<TriageOutcome>, String> {
+    match class {
+        CompletionClass::Ungated => Ok(None),
+        CompletionClass::Fix => {
+            if evidence_ref(result).is_none() {
+                return Err(
+                    "complete_task: fix-class completion requires an evidence \
+                     reference on the result (merged PR, commit, or \
+                     verified-closure note); the task remains claimed"
+                        .to_string(),
+                );
+            }
+            Ok(None)
+        }
+        CompletionClass::Triage => {
+            let outcome = result
+                .get("triage_outcome")
+                .and_then(|v| v.as_str())
+                .unwrap_or("follow_on");
+            match outcome {
+                "follow_on" => Ok(Some(TriageOutcome::FollowOn)),
+                "invalid" => {
+                    // The validation note is the evidence for this
+                    // exit; a bare verdict is not enough.
+                    let noted = evidence_ref(result).is_some()
+                        || matches!(
+                            result.get("triage_note"),
+                            Some(Value::String(s)) if !s.trim().is_empty()
+                        );
+                    if !noted {
+                        return Err(
+                            "complete_task: triage exit 'invalid' requires the \
+                             validation evidence on the result (evidence or \
+                             triage_note); the task remains claimed"
+                                .to_string(),
+                        );
+                    }
+                    Ok(Some(TriageOutcome::ExitInvalid))
+                }
+                "already_solved" => {
+                    if evidence_ref(result).is_none() {
+                        return Err(
+                            "complete_task: triage exit 'already_solved' requires \
+                             an evidence reference on the result (merged PR, \
+                             commit, or verified-closure note); the task \
+                             remains claimed"
+                                .to_string(),
+                        );
+                    }
+                    Ok(Some(TriageOutcome::ExitAlreadySolved))
+                }
+                other => Err(format!(
+                    "complete_task: unknown triage_outcome {other:?} \
+                     (follow_on | invalid | already_solved)"
+                )),
+            }
+        }
+    }
+}
+
+/// The follow-on fix key for a triage key: same family shape with
+/// the family swapped triage -> fix. None for keys with no fix
+/// counterpart (maintenance, pr families).
+fn follow_on_key(triage_key: &str) -> Option<String> {
+    if triage_key.contains(":triage:") && triage_key.contains(":issue:") {
+        Some(triage_key.replacen(":triage:", ":fix:", 1))
+    } else {
+        None
+    }
+}
+
 fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     let row = match claimed_by(t, task_id, &worker, "complete_task") {
         Ok(r) => r,
         Err(v) => return v,
+    };
+    // The completion gate runs BEFORE any mutation: a rejected
+    // completion leaves the task claimed by its worker.
+    let payload = row.get("payload").cloned().unwrap_or(json!({}));
+    let class = completion_class(&payload);
+    let gate_result = req.get("result").cloned().unwrap_or(json!({}));
+    let triage_outcome = match gate_completion(&class, &gate_result) {
+        Ok(o) => o,
+        Err(e) => return fail(2, e),
     };
     // Terminal transitions keep the session binding (migration 0023
     // header): on a done row it is the execution record.
@@ -1485,8 +2239,125 @@ fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
             "completed",
             &json!({"via": "complete_task_turso"}),
         )?;
+        // Triage doctrine (#7016): a triage completion is not the
+        // issue being done — the issue goes back in the queue as a
+        // fix follow-on unless triage exited it (invalid /
+        // already_solved, gated above). The follow-on dedupes
+        // against any live fix task for the same key; a terminal
+        // predecessor links via progress like an enqueue revive.
+        let mut follow_on_id: Option<i64> = None;
+        if triage_outcome == Some(TriageOutcome::FollowOn) {
+            let queue = row
+                .get("queue")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let triage_key = row
+                .get("dedupe_key")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            match follow_on_key(&triage_key) {
+                Some(fix_key) => {
+                    let existing = t.query_objs(
+                        &format!(
+                            "SELECT {TASK_COLS} FROM tasks \
+                             WHERE queue = ? AND dedupe_key = ? ORDER BY id ASC"
+                        ),
+                        &[Arg::Text(queue.clone()), Arg::Text(fix_key.clone())],
+                        &TASK_JSON_COLS,
+                    )?;
+                    let (live, terminal) = dedupe_partition(&existing);
+                    let fid = if let Some(live_row) = live {
+                        live_row.get("id").and_then(|v| v.as_i64()).unwrap_or(0)
+                    } else {
+                        let mut fpayload = payload.clone();
+                        if let Some(obj) = fpayload.as_object_mut() {
+                            obj.insert("kind".to_string(), json!("small_fix"));
+                            obj.insert(
+                                "triage_follow_on".to_string(),
+                                json!({"from_task": task_id, "at": now_iso()}),
+                            );
+                        }
+                        let fprogress = match &terminal {
+                            Some(pred) => json!({
+                                "triage_source_task": task_id,
+                                "revived_from": {
+                                    "task_id": pred.get("id").cloned().unwrap_or(Value::Null),
+                                    "status": pred.get("status").cloned().unwrap_or(Value::Null),
+                                    "via": "triage_completion_follow_on",
+                                },
+                            }),
+                            None => json!({"triage_source_task": task_id}),
+                        };
+                        let ins = t.exec(
+                            "INSERT INTO tasks (queue, title, body, payload, dedupe_key, \
+                               priority, status, max_attempts, progress, result, \
+                               created_at, updated_at) \
+                             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, '{}', ?, ?)",
+                            &[
+                                Arg::Text(queue.clone()),
+                                arg_str(row.get("title").and_then(|v| v.as_str())),
+                                arg_str(row.get("body").and_then(|v| v.as_str())),
+                                Arg::Text(fpayload.to_string()),
+                                Arg::Text(fix_key.clone()),
+                                row.get("priority")
+                                    .and_then(|v| v.as_i64())
+                                    .map(Arg::Int)
+                                    .unwrap_or(Arg::Null),
+                                Arg::Int(
+                                    fpayload
+                                        .get("max_attempts")
+                                        .and_then(|v| v.as_i64())
+                                        .unwrap_or(4),
+                                ),
+                                Arg::Text(fprogress.to_string()),
+                                Arg::Text(now_iso()),
+                                Arg::Text(now_iso()),
+                            ],
+                        )?;
+                        let new_id = ins.last_insert_rowid.unwrap_or(0);
+                        event(
+                            t,
+                            Some(&worker),
+                            Some(new_id),
+                            "enqueued",
+                            &json!({
+                                "via": "triage_completion_follow_on",
+                                "source_task": task_id, "dedupe_key": fix_key,
+                            }),
+                        )?;
+                        new_id
+                    };
+                    follow_on_id = Some(fid);
+                    event(
+                        t,
+                        Some(&worker),
+                        Some(task_id),
+                        "triage_follow_on_enqueued",
+                        &json!({"follow_on_task_id": fid, "dedupe_key": fix_key}),
+                    )?;
+                }
+                None => {
+                    event(
+                        t,
+                        Some(&worker),
+                        Some(task_id),
+                        "triage_follow_on_skipped",
+                        &json!({
+                            "reason": "dedupe key has no fix-family counterpart",
+                            "dedupe_key": triage_key,
+                        }),
+                    )?;
+                }
+            }
+        }
         let row = get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))?;
-        verb_with_execution(t, req, row)
+        let mut envelope = verb_with_execution(t, req, row)?;
+        if let (Some(obj), Some(fid)) = (envelope.as_object_mut(), follow_on_id) {
+            obj.insert("follow_on_task_id".to_string(), json!(fid));
+        }
+        Ok(envelope)
     })();
     match work {
         Ok(v) => v,
@@ -1555,6 +2426,7 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
                     "queue": q, "queued": 0, "claimed": 0, "parked": 0,
                     "blocked": 0, "done": 0, "cancelled": 0, "failed": 0,
                     "total": 0, "oldest_queued_at": Value::Null,
+                    "terminal_events_24h": 0, "terminal_events_7d": 0,
                 })
             });
             let status = r
@@ -1575,6 +2447,50 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
                         r.get("oldest_queued_at").cloned().unwrap_or(Value::Null),
                     );
                 }
+            }
+        }
+        // Terminal-event counters, the agent.repo_queue_health
+        // view's terminal_events_24h/7d (#5690): events and tasks
+        // share this database, so the JOIN the PG view did is a
+        // local query here — no cross-database problem.
+        let mut tsql = "SELECT t.queue AS queue, COUNT(*) AS n7, \
+               SUM(CASE WHEN e.created_at > ? THEN 1 ELSE 0 END) AS n24 \
+             FROM events e JOIN tasks t ON t.id = e.task_id \
+             WHERE e.kind IN ('completed', 'failed') AND e.created_at > ?"
+            .to_string();
+        let mut targs: Vec<Arg> = vec![
+            Arg::Text(iso(now_unix() - 86_400)),
+            Arg::Text(iso(now_unix() - 7 * 86_400)),
+        ];
+        if let Some(q) = &queue_filter {
+            tsql += " AND t.queue = ?";
+            targs.push(Arg::Text(q.clone()));
+        }
+        tsql += " GROUP BY t.queue";
+        let trows = t.query_objs(&tsql, &targs, &[])?;
+        for r in &trows {
+            let q = r
+                .get("queue")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let entry = by_queue.entry(q.clone()).or_insert_with(|| {
+                json!({
+                    "queue": q, "queued": 0, "claimed": 0, "parked": 0,
+                    "blocked": 0, "done": 0, "cancelled": 0, "failed": 0,
+                    "total": 0, "oldest_queued_at": Value::Null,
+                    "terminal_events_24h": 0, "terminal_events_7d": 0,
+                })
+            });
+            if let Some(obj) = entry.as_object_mut() {
+                obj.insert(
+                    "terminal_events_24h".to_string(),
+                    r.get("n24").cloned().unwrap_or(json!(0)),
+                );
+                obj.insert(
+                    "terminal_events_7d".to_string(),
+                    r.get("n7").cloned().unwrap_or(json!(0)),
+                );
             }
         }
         Ok(Value::Array(by_queue.into_iter().map(|(_, v)| v).collect()))
@@ -1636,6 +2552,7 @@ fn verb_signal_count(t: &TursoBackend, req: &Value) -> Value {
 pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
     match path {
         "/enqueue" => verb_enqueue(t, req),
+        "/revive" => verb_revive(t, req),
         "/claim" => verb_claim(t, req),
         "/lane" => verb_lane(t, req),
         "/bind" => verb_bind(t, req),
@@ -1649,6 +2566,11 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/list" => verb_list(t, req),
         "/health" => verb_health(t, req),
         "/signal-count" => verb_signal_count(t, req),
+        "/events-append" => verb_events_append(t, req),
+        "/events-seen" => verb_events_seen(t, req),
+        "/events-count" => verb_events_count(t, req),
+        "/events-prune" => verb_events_prune(t, req),
+        "/sweep" => verb_sweep(t, req),
         _ => fail(2, format!("unknown command {path}")),
     }
 }
@@ -1708,9 +2630,180 @@ mod tests {
     }
 
     #[test]
+    fn event_append_requires_a_kind() {
+        assert!(parse_event_append(&json!({})).is_err());
+        assert!(parse_event_append(&json!({"kind": "  "})).is_err());
+        let (w, tid, kind, detail) = parse_event_append(
+            &json!({"kind": "push", "worker_id": "github-webhook"}),
+        )
+        .unwrap();
+        assert_eq!(kind, "push");
+        assert_eq!(w.as_deref(), Some("github-webhook"));
+        assert_eq!(tid, None);
+        assert_eq!(detail, json!({}));
+        let (_, tid2, _, _) = parse_event_append(
+            &json!({"kind": "claimed", "task_id": 42, "detail": {"a": 1}}),
+        )
+        .unwrap();
+        assert_eq!(tid2, Some(42));
+    }
+
+    #[test]
+    fn prune_cutoff_clamps_and_subtracts_days() {
+        let now = 1_794_020_400; // 2026-11-07T03:00:00Z
+        assert_eq!(prune_cutoff(now, 30), iso(now - 30 * 86_400));
+        assert_eq!(prune_cutoff(now, 0), iso(now - 86_400));
+        assert_eq!(prune_cutoff(now, 99_999), iso(now - 3650 * 86_400));
+    }
+
+    #[test]
+    fn revalidate_outcome_matrix() {
+        // Time parks are never released by the sweeper: elapsed time
+        // is not evidence; they release through claim at not_before.
+        assert_eq!(revalidate_outcome(Some("time"), None, None, false), "confirmed");
+        // No condition, or a kind the database cannot verify: stale,
+        // so the park surfaces instead of sitting silently.
+        assert_eq!(revalidate_outcome(None, None, None, false), "stale");
+        assert_eq!(revalidate_outcome(Some("issue_closed"), None, None, false), "stale");
+        assert_eq!(revalidate_outcome(Some("person_answer"), None, None, false), "stale");
+        // task_terminal releases on done/cancelled only.
+        assert_eq!(revalidate_outcome(Some("task_terminal"), Some("done"), None, false), "released");
+        assert_eq!(revalidate_outcome(Some("task_terminal"), Some("cancelled"), None, false), "released");
+        assert_eq!(revalidate_outcome(Some("task_terminal"), Some("queued"), None, false), "confirmed");
+        assert_eq!(revalidate_outcome(Some("task_terminal"), None, None, false), "stale");
+        // task_status releases on the exact wanted status.
+        assert_eq!(revalidate_outcome(Some("task_status"), Some("blocked"), Some("blocked"), false), "released");
+        assert_eq!(revalidate_outcome(Some("task_status"), Some("queued"), Some("blocked"), false), "confirmed");
+        assert_eq!(revalidate_outcome(Some("task_status"), None, Some("blocked"), false), "stale");
+        // event_seen releases when the event exists for the task.
+        assert_eq!(revalidate_outcome(Some("event_seen"), None, None, true), "released");
+        assert_eq!(revalidate_outcome(Some("event_seen"), None, None, false), "confirmed");
+    }
+
+    #[test]
+    fn dedupe_partition_live_hit_wins_and_terminal_is_newest() {
+        let rows = vec![
+            json!({"id": 1, "status": "done"}),
+            json!({"id": 2, "status": "cancelled"}),
+        ];
+        let (live, terminal) = dedupe_partition(&rows);
+        assert!(live.is_none());
+        // The newest terminal row is the revive predecessor.
+        assert_eq!(terminal.unwrap().get("id"), Some(&json!(2)));
+        let rows = vec![
+            json!({"id": 1, "status": "done"}),
+            json!({"id": 3, "status": "parked"}),
+            json!({"id": 4, "status": "failed"}),
+        ];
+        let (live, terminal) = dedupe_partition(&rows);
+        assert_eq!(live.unwrap().get("id"), Some(&json!(3)));
+        assert_eq!(terminal.unwrap().get("id"), Some(&json!(4)));
+        let (live, terminal) = dedupe_partition(&[]);
+        assert!(live.is_none() && terminal.is_none());
+    }
+
+    #[test]
+    fn revive_eligibility_matches_6838() {
+        // Failed rows can always be re-queued.
+        assert!(revive_eligible("failed", 4, 4).is_ok());
+        assert!(revive_eligible("failed", 1, 4).is_ok());
+        // Queued rows only when dead at cap (the #6463 zombie state).
+        assert!(revive_eligible("queued", 4, 4).is_ok());
+        assert!(revive_eligible("queued", 3, 4).is_err());
+        // Live work and done work are untouchable.
+        assert!(revive_eligible("claimed", 4, 4).is_err());
+        assert!(revive_eligible("done", 4, 4).is_err());
+        assert!(revive_eligible("cancelled", 4, 4).is_err());
+    }
+
+    #[test]
     fn merge_obj_is_shallow_and_object_only() {
         let out = merge_obj(&json!({"a": 1, "b": 2}), &json!({"b": 3, "c": 4}));
         assert_eq!(out, json!({"a": 1, "b": 3, "c": 4}));
         assert_eq!(merge_obj(&json!(null), &json!({"a": 1})), json!({"a": 1}));
+    }
+
+    #[test]
+    fn completion_gate_fix_class_requires_evidence() {
+        let fix = CompletionClass::Fix;
+        assert!(gate_completion(&fix, &json!({})).is_err());
+        assert!(gate_completion(&fix, &json!({"note": "did stuff"})).is_err());
+        assert!(gate_completion(&fix, &json!({"evidence": ""})).is_err());
+        assert!(gate_completion(&fix, &json!({"evidence": []})).is_err());
+        assert!(gate_completion(
+            &fix,
+            &json!({"pr_url": "https://github.com/developing-today/code/pull/1"})
+        )
+        .is_ok());
+        assert!(gate_completion(&fix, &json!({"commit": "abc123"})).is_ok());
+        assert!(gate_completion(
+            &fix,
+            &json!({"verified_closure": "closed by #1, verified on the issue"})
+        )
+        .is_ok());
+        assert!(gate_completion(&fix, &json!({"evidence": ["artifact"]})).is_ok());
+    }
+
+    #[test]
+    fn completion_gate_triage_doctrine() {
+        let triage = CompletionClass::Triage;
+        // Default: the issue goes back in the queue as a follow-on.
+        assert_eq!(
+            gate_completion(&triage, &json!({})).unwrap(),
+            Some(TriageOutcome::FollowOn)
+        );
+        assert_eq!(
+            gate_completion(&triage, &json!({"triage_outcome": "follow_on"})).unwrap(),
+            Some(TriageOutcome::FollowOn)
+        );
+        // Invalid is an exit only with the validation evidence.
+        assert!(gate_completion(&triage, &json!({"triage_outcome": "invalid"})).is_err());
+        assert_eq!(
+            gate_completion(
+                &triage,
+                &json!({"triage_outcome": "invalid", "triage_note": "not a real issue: duplicate of #1"})
+            )
+            .unwrap(),
+            Some(TriageOutcome::ExitInvalid)
+        );
+        // Already-solved needs a real evidence reference.
+        assert!(
+            gate_completion(&triage, &json!({"triage_outcome": "already_solved"})).is_err()
+        );
+        assert_eq!(
+            gate_completion(
+                &triage,
+                &json!({"triage_outcome": "already_solved", "pr_url": "https://x/pull/2"})
+            )
+            .unwrap(),
+            Some(TriageOutcome::ExitAlreadySolved)
+        );
+        assert!(
+            gate_completion(&triage, &json!({"triage_outcome": "done"})).is_err()
+        );
+    }
+
+    #[test]
+    fn completion_class_and_follow_on_key() {
+        assert_eq!(
+            completion_class(&json!({"kind": "small_fix"})),
+            CompletionClass::Fix
+        );
+        assert_eq!(
+            completion_class(&json!({"kind": "triage"})),
+            CompletionClass::Triage
+        );
+        assert_eq!(completion_class(&json!({})), CompletionClass::Ungated);
+        // Ungated completions never gate, whatever the result.
+        assert_eq!(gate_completion(&CompletionClass::Ungated, &json!({})).unwrap(), None);
+        assert_eq!(
+            follow_on_key("repo-health:v1:triage:developing-today/code:issue:787"),
+            Some("repo-health:v1:fix:developing-today/code:issue:787".to_string())
+        );
+        // Maintenance triage keys have no fix counterpart.
+        assert_eq!(
+            follow_on_key("repo-health:v1:maintenance:developing-today/code:weekly:2026-W44"),
+            None
+        );
     }
 }

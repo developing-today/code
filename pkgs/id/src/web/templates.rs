@@ -1332,6 +1332,7 @@ mod tests {
         assert!(html.contains("data-world-program=\"a&quot;&lt;b&gt;\""));
     }
 
+    #[test]
     fn test_render_world_page_exposes_presentation_controls() {
         let html = render_world_page(&AssetUrls::default(), Some("/ws/arena"));
         assert!(html.contains("data-world-socket=\"/ws/arena\""));

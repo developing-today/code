@@ -146,6 +146,15 @@ def _shape(value):
     return type(value).__name__
 
 
+# Plan fields every consumer treats as a repo name / branch name (or
+# null): clone_all hashes "reference" into its scheduler state and
+# passes "branch" to manifest's head_sha string concatenation;
+# manifest groups families by "reference", sorts the anchors, and
+# copies "parent" into MANIFEST.json. All three must be strings or
+# null — any other JSON shape is poison (#6834).
+_PLAN_STRING_FIELDS = ("reference", "branch", "parent")
+
+
 def validate_plan(plan, source="plan.json"):
     """Split a loaded plan.json into (valid entries, named problems).
 
@@ -154,6 +163,17 @@ def validate_plan(plan, source="plan.json"):
     poison entry (#6637): it is reported by index and skipped, never
     allowed to crash the run for every other repo. A non-list top
     level invalidates the whole file as a single named problem.
+
+    The consumed string fields ("reference", "branch", "parent")
+    are validated per entry (#6834): a value that is neither a string
+    nor null/absent is reported by entry and field and neutralized
+    to None — a list/dict reference is unhashable in clone_all's
+    scheduler and manifest's family grouping, a numeric reference
+    crashes manifest's mixed-type anchor sort (or writes a bogus
+    FAMILIES anchor), and a non-string branch crashes head_sha for a
+    present mirror. The entry itself is kept: its repo is fine, only
+    the poisoned field is dropped. Entries are copied, never mutated
+    in place.
     """
     if not isinstance(plan, list):
         return [], [
@@ -162,13 +182,23 @@ def validate_plan(plan, source="plan.json"):
         ]
     entries, problems = [], []
     for i, item in enumerate(plan):
-        if isinstance(item, dict) and isinstance(item.get("repo"), str):
-            entries.append(item)
-        else:
+        if not (isinstance(item, dict) and isinstance(item.get("repo"), str)):
             problems.append(
                 f"{source}: entry {i} is not an object with a string "
                 f"'repo' (got {_shape(item)}) — skipped"
             )
+            continue
+        entry = dict(item)
+        for field in _PLAN_STRING_FIELDS:
+            value = entry.get(field)
+            if value is not None and not isinstance(value, str):
+                problems.append(
+                    f"{source}: entry {i} ({entry['repo']}) field "
+                    f"'{field}' is {_shape(value)}, expected a string "
+                    f"or null — set to null"
+                )
+                entry[field] = None
+        entries.append(entry)
     return entries, problems
 
 

@@ -273,6 +273,7 @@ function poolFor(provider: string, model: string): string | null {
     case "meta":
       return "meta";
     case "claude-code":
+    case "_claude":
       return "anthropic:claude-pro";
     case "openai":
     case "openai-codex":
@@ -292,6 +293,8 @@ function poolFor(provider: string, model: string): string | null {
     case "antigravity-agy":
     case "google":
       return model.startsWith("gemini") ? "antigravity-direct.gemini" : "antigravity-direct.claude-gpt";
+    case "_antigravity":
+      return model.startsWith("gemini") ? "_antigravity.gemini" : "_antigravity.claude-gpt";
     default:
       // opencode-go is deliberately unattributed in slice 1: which
       // workspace (Personal vs Lab) a sandbox session burns is not

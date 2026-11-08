@@ -140,5 +140,118 @@ class ConformanceRecordTests(unittest.TestCase):
         self.assertIsNotNone(state)
 
 
+class StoredShapeTests(unittest.TestCase):
+    """#6850: wrong-shape stored values and skipped-names arguments are
+    one named error (leg + field, exit 1, no traceback) -- never a raw
+    TypeError/AttributeError, and never silently iterated as
+    characters/keys the way a string or object names value was."""
+
+    def run_raw(self, stored, names_arg=None):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            summary = root / "summary.md"
+            out = root / "new.json"
+            args = [
+                "python3", str(SCRIPT), "leg", "10", "0",
+                "run/2", NOW, stored, str(summary), str(out),
+                "12", "1", "1", "0",
+            ]
+            if names_arg is not None:
+                args.append(names_arg)
+            result = subprocess.run(args, capture_output=True, text=True, check=False)
+            return result
+
+    def assert_named_error(self, result, *needles):
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        for needle in needles:
+            self.assertIn(needle, result.stderr)
+
+    def test_stored_top_level_string_is_a_named_error(self):
+        self.assert_named_error(
+            self.run_raw(json.dumps("hello")),
+            "stored record for leg 'leg'", "must be a JSON object")
+
+    def test_stored_top_level_list_is_a_named_error(self):
+        self.assert_named_error(
+            self.run_raw(json.dumps([1, 2])),
+            "stored record for leg 'leg'", "must be a JSON object")
+
+    def test_stored_invalid_json_is_a_named_error_not_a_traceback(self):
+        self.assert_named_error(
+            self.run_raw("{oops"),
+            "stored record for leg 'leg'", "not valid JSON")
+
+    def test_best_as_string_is_a_named_error(self):
+        stored = json.dumps({"best": "x", "largest": stored_record()})
+        self.assert_named_error(
+            self.run_raw(stored), "field 'best'", "must be an object")
+
+    def test_count_field_as_string_is_a_named_error(self):
+        bad = stored_record()
+        bad["passed_count"] = "10"
+        stored = json.dumps({"best": bad, "largest": stored_record()})
+        self.assert_named_error(
+            self.run_raw(stored), "'best.passed_count'", "non-negative integer")
+
+    def test_skipped_count_as_string_is_a_named_error(self):
+        bad = stored_record()
+        bad["skipped_count"] = "1"
+        stored = json.dumps({"best": stored_record(), "largest": bad})
+        self.assert_named_error(
+            self.run_raw(stored), "'largest.skipped_count'", "non-negative integer")
+
+    def test_bool_and_negative_counts_are_named_errors(self):
+        for value in (True, -1):
+            bad = stored_record()
+            bad["failed_count"] = value
+            stored = json.dumps({"best": bad, "largest": stored_record()})
+            self.assert_named_error(
+                self.run_raw(stored), "'best.failed_count'", "non-negative integer")
+
+    def test_skipped_as_int_is_a_named_error(self):
+        bad = stored_record()
+        bad["skipped"] = 3
+        stored = json.dumps({"best": bad, "largest": stored_record()})
+        self.assert_named_error(
+            self.run_raw(stored), "'best.skipped'", "list of strings")
+
+    def test_skipped_as_string_is_a_named_error_not_a_character_set(self):
+        # The silent case: best.skipped as a string used to be compared
+        # as a set of characters by the #6392 guard.
+        bad = stored_record()
+        bad["skipped"] = "abcde"
+        stored = json.dumps({"best": bad, "largest": stored_record()})
+        self.assert_named_error(
+            self.run_raw(stored), "'best.skipped'", "list of strings")
+
+    def test_non_string_timestamp_is_a_named_error(self):
+        bad = stored_record()
+        bad["run"] = 42
+        stored = json.dumps({"best": bad, "largest": stored_record()})
+        self.assert_named_error(self.run_raw(stored), "'best.run'", "must be a string")
+
+    def test_names_as_string_is_a_named_error_not_characters(self):
+        # The silent case: skipped became ['a', 'b', 'c'].
+        self.assert_named_error(
+            self.run_raw(STORED, json.dumps("abc")),
+            "skipped names for leg 'leg'", "list of strings")
+
+    def test_names_as_object_is_a_named_error_not_keys(self):
+        self.assert_named_error(
+            self.run_raw(STORED, json.dumps({"a": 1})),
+            "skipped names for leg 'leg'", "list of strings")
+
+    def test_names_as_int_and_list_with_int_are_named_errors(self):
+        for arg in ("123", json.dumps(["check-A", 1])):
+            self.assert_named_error(
+                self.run_raw(STORED, arg),
+                "skipped names for leg 'leg'", "list of strings")
+
+    def test_names_invalid_json_is_a_named_error(self):
+        self.assert_named_error(
+            self.run_raw(STORED, "{oops"), "skipped names for leg 'leg'", "not valid JSON")
+
+
 if __name__ == "__main__":
     unittest.main()

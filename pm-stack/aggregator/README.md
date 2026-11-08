@@ -13,6 +13,38 @@ by this server.
 Design record (source of truth):
 [`doc/2026-10-24T11-05-38Z_design_project-management-stack/`](../../doc/2026-10-24T11-05-38Z_design_project-management-stack/).
 
+## Lazy-initialization contract (#3879)
+
+**A lazy initializer memoizes success, never failure.** Concurrent
+callers share the one in-flight attempt; once that attempt settles, a
+failure — a rejection, or a fail-soft failure *value* (`null`,
+`false`) — leaves no memo behind, so the next caller retries. A
+success is memoized for the process lifetime unless the module
+already has an explicit invalidation path, which stays. Every layer
+clears independently: an initializer built on another initializer
+applies the contract to its own resolved value — "the layer below
+retries" is never a reason for a layer to keep a failure. Per-call
+fail-soft behaviour is unchanged: a caller whose attempt failed still
+gets the failure value for that call and reports its surface
+unavailable — the contract removes the *permanence*, not the
+posture. Retry cost stays bounded by the layer that knows it
+(`src/secrets.ts` caches a failed resolution for 5 minutes), never by
+a second per-site failure TTL.
+
+The aggregator's three memo sites follow this contract:
+
+- `src/supabase.ts` — `clientPromise` (`getSupabaseClient`), cleared
+  when an attempt resolves `null` or rejects (#3732).
+- `src/alerts.ts` — `storePromise` (`getAlertsStore`), cleared
+  independently of the client layer when an attempt resolves `null`
+  or rejects (#3732).
+- `src/push.ts` — `configurePromise` (`ensurePushConfigured`),
+  cleared when an attempt settles `false`; the 401/403 reset in
+  `sendPush` is its explicit invalidation path and stays (#3729).
+
+Design: #3879 ("failure is not a result"). The rule was first stated
+for pm-dispatch in #2668; it is one rule for both apps.
+
 ## The views
 
 Nav tiers (#1497 curation, confirmed 2026-11-01): the top nav bar carries the
@@ -633,10 +665,13 @@ Each tick:
 
 Fail-soft: a subcommand failure or unparseable output writes a
 heartbeat with the error, exits non-zero, and leaves the previous
-`quota-current.json` untouched. **Remaining hop:** the aggregator
-does not read `quota-current.json` yet — `Source` pickup (freshness
-rendering, lazy pull on page load) is the follow-up that makes the
-tick visible on /quota.
+`quota-current.json` untouched. The aggregator does read
+`quota-current.json`: `overlayQuotaCurrent` (`src/quota-current.ts`)
+overlays the latest tick onto the /quota display, consumed by the
+live source (`src/sources/live.ts`). That consumption is
+display-only — decision consumption (measured placement, rotation,
+demotion) is the OpenCode-side remainder tracked by
+developing-today-forks/opencode#566.
 
 - **Sandbox attention** — sessions mapped by the shared OpenCode v2
   mapper (`src/sources/opencode.ts`), stamped `opencode-sandbox` with

@@ -34,6 +34,7 @@ This list is the workflow's request catalog (`request_catalog` in [`.agents/rese
 
 Folders are named `<UTC datetime>_<kind>_<name>`. The kinds in use are `feature`, `design`, `architecture`, `phase`, `fix`, `reference` and `research`. Run `ls doc/` to list them all. Some starting points:
 
+- [Architecture index](../planning/architecture/README.md) — every architecture and design record in one place, plus the ADR index and template.
 - [Next stage platform architecture](2026-10-17T15-00-00Z_architecture_next_stage_platform/2026-10-17T15-00-00Z_architecture_next_stage_platform.md)
 - [Portable world surfaces](2026-10-14T19-39-30Z_architecture_portable_world_surfaces/2026-10-14T19-39-30Z_architecture_portable_world_surfaces.md)
 - [Roc worlds architecture](2026-10-07T00-20-00Z_architecture_roc_worlds/2026-10-07T00-20-00Z_architecture_roc_worlds.md)

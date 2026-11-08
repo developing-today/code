@@ -8,6 +8,33 @@
 //! Iroh proves *which node* connected. That is logged for operators but never
 //! grants anything: the join capability inside the session is the only
 //! authority over a world.
+//!
+//! ## The validated-reply contract (#6669)
+//!
+//! Every `WorldClient` reply extraction in this module follows one
+//! contract — a reply is not its defaults:
+//!
+//! 1. A field that constitutes the answer is required and typed.
+//!    Missing or mistyped is a malformed-reply error naming the
+//!    field ("host sent a malformed …", "host omitted …"). Success
+//!    fields are never defaulted: a default that is also a real
+//!    value is a fabricated answer.
+//! 2. Optional means absent-or-null, never mistyped: absent/`null`
+//!    => `None`, a correctly typed value => `Some`, anything else
+//!    => the rule-1 error (the `parse_module_info_reply` shape).
+//! 3. Typed payloads are decoded at extraction, not cloned:
+//!    validate-then-return (`parse_caps_reply`,
+//!    `parse_caps_ceiling_reply`, `parse_policy_reply`).
+//! 4. A list reply's entries are part of the answer: a malformed
+//!    entry fails the listing. A listing is complete or it errors.
+//! 5. Extraction lives in `WorldClient`, never in callers. Callers
+//!    consume validated answers; a caller's typed decode of a
+//!    returned value is consumption, not validation.
+//!
+//! The closing inventory that dispositioned every public
+//! `WorldClient` method against these rules is recorded on issue
+//! #6670. A lax extraction found later is filed as a follow-up
+//! issue, not patched silently and not defaulted around.
 
 use std::collections::HashMap;
 use std::sync::{
@@ -1106,7 +1133,8 @@ impl WorldClient {
     ///
     /// # Errors
     ///
-    /// Fails with the host's message if the admin token or profile is refused.
+    /// Fails with the host's message if the admin token or profile is refused,
+    /// or if the reply does not carry a valid `update.requested` profile.
     pub async fn set_execution_profile(
         &mut self,
         admin_token: &str,
@@ -1122,6 +1150,26 @@ impl WorldClient {
             .recv_json()
             .await?
             .context("host closed without replying")?;
+        Self::parse_set_execution_profile_reply(&reply)
+    }
+
+    /// Validate an `execution_profile` reply to a set request: the
+    /// host's typed contract (`ServerFrame::ExecutionProfile`) always
+    /// carries an `update` whose `requested` is a real
+    /// [`crate::world_limits::WorldExecutionProfile`], so a reply
+    /// whose `update.requested` is missing or malformed is not a
+    /// success — it is a host that did not confirm the profile change
+    /// (#6777, the setter leg of #6635: the getter already extracts
+    /// `update.requested` with this same refusal). On success the
+    /// frame is returned unchanged: consumers print it verbatim and
+    /// manifest apply counts the step on `Ok`, so a byte-identical
+    /// return keeps both honest. Factored out of
+    /// [`WorldClient::set_execution_profile`] so the validation can be
+    /// unit-tested without a live host sending frames no real host
+    /// sends.
+    fn parse_set_execution_profile_reply(
+        reply: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
         if reply["type"] != "execution_profile" {
             bail!(
                 "{}",
@@ -1130,7 +1178,14 @@ impl WorldClient {
                     .unwrap_or("host refused the execution profile change")
             );
         }
-        Ok(reply)
+        let requested = reply
+            .get("update")
+            .and_then(|update| update.get("requested"))
+            .context("host returned a malformed execution profile")?;
+        let _validated: crate::world_limits::WorldExecutionProfile =
+            serde_json::from_value(requested.clone())
+                .context("host returned a malformed execution profile")?;
+        Ok(reply.clone())
     }
 
     /// Read the world's requested execution profile.
@@ -1802,9 +1857,28 @@ impl WorldClient {
                     .with_context(|| format!("invalid record in page for sequence {sequence}"))?;
             }
 
-            // Check cursor validation: next_after must equal the last key of this page
-            let next_after = reply["next_after"].as_str();
-            if let Some(next) = next_after {
+            // Disposition the cursor strictly (#6778): the host's
+            // typed frame (ServerFrame::Records, world/actor.rs)
+            // serializes next_after as a string or null — null (or
+            // absent) ends the listing, a string continues it, and
+            // any other type is a malformed reply, never a silent
+            // end-of-listing. Same shape as parse_admin_history_cursor
+            // below and the SSH drain's records_cursor.
+            let next_after: Option<String> = match reply.get("next_after") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::String(next)) => Some(next.clone()),
+                Some(other) => anyhow::bail!(
+                    "malformed records reply: next_after must be a string or null, got {}",
+                    match other {
+                        serde_json::Value::Bool(_) => "boolean",
+                        serde_json::Value::Number(_) => "number",
+                        serde_json::Value::Array(_) => "array",
+                        serde_json::Value::Object(_) => "object",
+                        _ => "unknown",
+                    }
+                ),
+            };
+            if let Some(next) = &next_after {
                 // Validate that next_after matches the last key in this page
                 if let Some((last_key, _)) = page.iter().next_back() {
                     anyhow::ensure!(
@@ -1822,7 +1896,7 @@ impl WorldClient {
                 // Validate that the cursor advanced from what we sent
                 if let Some(cursor) = &after {
                     anyhow::ensure!(
-                        next > cursor.as_str(),
+                        next.as_str() > cursor.as_str(),
                         "records cursor did not advance: next_after={next:?}, previous cursor={cursor:?}"
                     );
                 }
@@ -1830,7 +1904,7 @@ impl WorldClient {
 
             pages.push((sequence, page));
             match next_after {
-                Some(next) => after = Some(next.to_owned()),
+                Some(next) => after = Some(next),
                 None => return Ok(pages),
             }
         }
@@ -2895,6 +2969,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_records_client_rejects_mistyped_cursor() {
+        // next_after as a number: present but mistyped must be
+        // refused as malformed (#6778), never read as the final page
+        // while the host may hold more records.
+        let page = serde_json::json!({
+            "type": "records",
+            "sequence": 7,
+            "records": {"a": 1},
+            "next_after": 42,
+        });
+        let err = rogue_records(vec![page]).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("next_after"),
+            "mistyped cursor error must name next_after: {err:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_records_client_accepts_conforming_pages() {
         let pages = vec![
             records_page(serde_json::json!({"a": 1, "b": 2}), Some("b")),
@@ -3047,6 +3139,63 @@ mod tests {
 
         // A non-caps_ceiling frame still bails with the host's message.
         let refused = WorldClient::parse_caps_ceiling_reply(&serde_json::json!({
+            "type": "error",
+            "message": "admin token refused",
+        }));
+        assert!(
+            refused
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("admin token refused")
+        );
+    }
+
+    #[test]
+    fn set_execution_profile_reply_requires_a_valid_requested() {
+        // Issue #6777: an `execution_profile` frame carrying no valid
+        // `update.requested` must not read as a successful profile
+        // change. Driven through the factored reply parser. Oracle:
+        // the host's typed `ServerFrame::ExecutionProfile` always
+        // carries a real profile, and the getter in this file extracts
+        // `update.requested` with the same refusal (#6635).
+        let requested = serde_json::to_value(crate::world_limits::WorldExecutionProfile {
+            wasm_fuel: Some(424242),
+            ..Default::default()
+        })
+        .unwrap();
+        let frame = serde_json::json!({
+            "type": "execution_profile",
+            "update": {
+                "requested": requested,
+                "applies_on_next_program_install_or_process_restart": false,
+            },
+            "message": "current persisted execution profile",
+        });
+        let ok = WorldClient::parse_set_execution_profile_reply(&frame).unwrap();
+        // Success returns the frame unchanged (byte-identical Value).
+        assert_eq!(ok, frame);
+
+        // Missing update, missing/null requested, and a mistyped
+        // requested all refuse with the malformed-profile error.
+        for bad_reply in [
+            serde_json::json!({"type": "execution_profile", "message": "ok"}),
+            serde_json::json!({"type": "execution_profile", "update": {}, "message": "ok"}),
+            serde_json::json!({"type": "execution_profile", "update": {"requested": null}, "message": "ok"}),
+            serde_json::json!({"type": "execution_profile", "update": {"requested": {"wasm_fuel": "lots"}}, "message": "ok"}),
+        ] {
+            let result = WorldClient::parse_set_execution_profile_reply(&bad_reply);
+            assert!(result.is_err(), "reply {bad_reply} must be refused");
+            let err = result.err().unwrap();
+            assert!(
+                err.to_string().contains("malformed execution profile"),
+                "unexpected error: {err}"
+            );
+        }
+
+        // A non-execution_profile frame still bails with the host's
+        // message.
+        let refused = WorldClient::parse_set_execution_profile_reply(&serde_json::json!({
             "type": "error",
             "message": "admin token refused",
         }));

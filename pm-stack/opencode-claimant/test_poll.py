@@ -10,8 +10,11 @@ never count.
 """
 
 import importlib.util
+import json
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 _spec = importlib.util.spec_from_file_location(
     "poll", Path(__file__).resolve().parent / "poll.py"
@@ -291,6 +294,86 @@ class TestIsStuckBound(unittest.TestCase):
                 NOW,
             )
         )
+
+
+class TestFetchClaimedRows(unittest.TestCase):
+    """Claimed rows come from the repo-queue binary (#5419 replaced
+    the broker-HTTP read this suite originally pinned when it was
+    written against the pre-#5419 poll.py). subprocess.run is
+    stubbed; no queue is touched. A queue that cannot be read
+    contributes no rows: fetch_claimed_rows returns [] on any CLI
+    or payload failure."""
+
+    class Result:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def fetch(self, payload, returncode=0):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            stdout = payload if isinstance(payload, str) else json.dumps(payload)
+            return self.Result(returncode, stdout)
+
+        with patch.object(poll.subprocess, "run", side_effect=fake_run):
+            rows = poll.fetch_claimed_rows("repo-health-code-pilot")
+        return rows, captured
+
+    def test_cli_list_reads_claimed_rows_and_normalizes(self):
+        raw = {
+            "id": 42,
+            "queue": "repo-health-code-pilot",
+            "status": "claimed",
+            "worker_id": "repo-worker",
+            "progress": {"lane": "opencode", "stage": "handed_off"},
+        }
+        rows, captured = self.fetch({"rows": [raw]})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], 42)
+        self.assertEqual(rows[0]["progress"]["stage"], "handed_off")
+        cmd = [str(part) for part in captured["cmd"]]
+        self.assertEqual(
+            cmd[1:],
+            ["list", "--queue", "repo-health-code-pilot",
+             "--status", "claimed"],
+        )
+
+    def test_flattened_row_gets_progress_synthesized(self):
+        rows, _ = self.fetch([{
+            "id": 7,
+            "status": "claimed",
+            "lane": "opencode",
+            "stage": "handed_off",
+            "session_id": None,
+        }])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["progress"]["lane"], "opencode")
+        self.assertEqual(rows[0]["progress"]["stage"], "handed_off")
+
+    def test_empty_list_is_a_valid_empty_queue(self):
+        rows, _ = self.fetch({"rows": []})
+        self.assertEqual(rows, [])
+
+    def test_cli_failure_returns_no_rows(self):
+        rows, _ = self.fetch("", returncode=1)
+        self.assertEqual(rows, [])
+
+    def test_malformed_payload_returns_no_rows(self):
+        rows, _ = self.fetch("this is not json")
+        self.assertEqual(rows, [])
+
+    def test_non_dict_and_unclaimed_rows_are_skipped(self):
+        rows, _ = self.fetch({"rows": [
+            None,
+            {"id": 1, "status": "queued"},
+            {"id": 2, "status": "claimed",
+             "progress": {"lane": "opencode"}},
+        ]})
+        self.assertEqual([r["id"] for r in rows], [2])
 
 
 class TestFetchSessions(unittest.TestCase):

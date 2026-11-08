@@ -166,7 +166,7 @@ const OBSERVED_BY = "quota-gatherer";
  * concurrency (opencode#1729); the small explicit ask gives it
  * room, and its result replaces the listing's timed-out one.
  * Remove it here when the cap is raised.) */
-const EXPLICIT_ASK_PROVIDERS = ["meta", "command-code", "deepseek", "mistral"];
+const EXPLICIT_ASK_PROVIDERS = ["meta", "_commandcode", "deepseek", "mistral"];
 
 async function writeAtomic(path: string, text: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
@@ -570,7 +570,7 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
     const t0 = Date.now() - group.ms;
     const entries = group.results.map((r) => entryFromResult(r, tickAt));
     let run = finalizeRun(id, entries, t0);
-    if (id === "command-code") run = keepCommandCodePlanWindows(run);
+    if (id === "command-code" || id === "_commandcode") run = keepCommandCodePlanWindows(run);
     runs.push(run);
   }
   return runs;
