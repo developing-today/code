@@ -149,7 +149,7 @@ func (d *Deps) fingerprint() string {
 		return ""
 	}
 	h := sha256.New()
-	fmt.Fprintf(h, "packages:%q\nmanifest:%q:%s\nsource:%s auto:%s\n",
+	_, _ = fmt.Fprintf(h, "packages:%q\nmanifest:%q:%s\nsource:%s auto:%s\n",
 		d.Packages, d.ManifestName, d.Manifest, d.Source, d.AutoInstall)
 	pkgDirNames := make([]string, 0, len(d.PackageDirs))
 	for name := range d.PackageDirs {
@@ -157,18 +157,18 @@ func (d *Deps) fingerprint() string {
 	}
 	sort.Strings(pkgDirNames)
 	for _, name := range pkgDirNames {
-		fmt.Fprintf(h, "pkgdir:%s:%s\n", name, d.PackageDirs[name])
+		_, _ = fmt.Fprintf(h, "pkgdir:%s:%s\n", name, d.PackageDirs[name])
 	}
 	writeLock := func(name string, content []byte) {
 		sum := sha256.Sum256(content)
-		fmt.Fprintf(h, "lock:%s:%s\n", name, hex.EncodeToString(sum[:]))
+		_, _ = fmt.Fprintf(h, "lock:%s:%s\n", name, hex.EncodeToString(sum[:]))
 	}
 	if len(d.Lockfile) > 0 {
 		writeLock(d.LockfileName, d.Lockfile)
 	}
 	if len(d.NPMRC) > 0 {
 		sum := sha256.Sum256(d.NPMRC)
-		fmt.Fprintf(h, "npmrc:%s\n", hex.EncodeToString(sum[:]))
+		_, _ = fmt.Fprintf(h, "npmrc:%s\n", hex.EncodeToString(sum[:]))
 	}
 	for _, l := range d.Lockfiles {
 		writeLock(l.Name, l.Content)
@@ -1233,7 +1233,7 @@ func installAddons(ctx context.Context, dir, kind, bunBin string, env map[string
 	if err := os.MkdirAll(addonsDir, 0o700); err != nil {
 		return err
 	}
-	defer os.RemoveAll(addonsDir)
+	defer func() { _ = os.RemoveAll(addonsDir) }()
 	addDeps := make(map[string]string, len(am.Packages))
 	for name, spec := range am.Packages {
 		addDeps[name] = rebaseAddonSpec(spec)
@@ -1549,7 +1549,7 @@ func projectDenoConfigIdentity(dir string) string {
 		return ""
 	}
 	h := sha256.New()
-	fmt.Fprintf(h, "cfgdir:%s\n", cfgDir)
+	_, _ = fmt.Fprintf(h, "cfgdir:%s\n", cfgDir)
 	if b, err := json.Marshal(struct {
 		Imports         map[string]string            `json:"imports"`
 		Scopes          map[string]map[string]string `json:"scopes"`
@@ -1628,8 +1628,8 @@ func localDepsIdentity(d *Deps, base string) string {
 	for _, ref := range refs {
 		rel := ref.rel
 		src := filepath.Join(ref.base, rel)
-		fmt.Fprintf(h, "base:%s\n", ref.base)
-		fmt.Fprintf(h, "ref:%s:", rel)
+		_, _ = fmt.Fprintf(h, "base:%s\n", ref.base)
+		_, _ = fmt.Fprintf(h, "ref:%s:", rel)
 		info, err := os.Stat(src)
 		if err != nil {
 			h.Write([]byte("missing\n"))
@@ -1642,7 +1642,7 @@ func localDepsIdentity(d *Deps, base string) string {
 				continue
 			}
 			sum := sha256.Sum256(content)
-			fmt.Fprintf(h, "file:%s\n", hex.EncodeToString(sum[:]))
+			_, _ = fmt.Fprintf(h, "file:%s\n", hex.EncodeToString(sum[:]))
 			continue
 		}
 		// A directory artifact (link: or a file: directory): hash
@@ -1660,7 +1660,7 @@ func localDepsIdentity(d *Deps, base string) string {
 				return nil
 			}
 			sum := sha256.Sum256(content)
-			fmt.Fprintf(h, "entry:%s:%s\n", r, hex.EncodeToString(sum[:]))
+			_, _ = fmt.Fprintf(h, "entry:%s:%s\n", r, hex.EncodeToString(sum[:]))
 			return nil
 		})
 	}

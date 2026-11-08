@@ -1401,7 +1401,7 @@ func (s *Service) streamBodies(res *Result, opts Options, emit func(Frame)) {
 				break
 			}
 		}
-		f.Close()
+		_ = f.Close()
 		emit(Frame{Type: FrameArtifactEnd, ID: a.ID})
 	}
 }

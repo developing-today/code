@@ -9,12 +9,14 @@ import {
   isUnmatchedCharge,
   loadFeed,
   poolFromFeed,
+  projectAuditFromFeed,
   projectPoolSectionProblem,
   sanitizeCollectionError,
   sanitizeQuotaView,
   sanitizeFeedMetadata,
   sanitizeRegistry,
   sanitizeSubscriptions,
+  sanitizeUninstrumentedServices,
 } from "../src/feed.ts";
 import { buildAttentionFlags } from "../src/derive.ts";
 import { renderQuota } from "../src/render.ts";
@@ -83,6 +85,24 @@ describe("feed project-pool section gate (#2399)", () => {
     expect(projectPoolSectionProblem([{ ...EDGElESS, parentRef: 7 }])).toBe("item 0");
     expect(projectPoolSectionProblem([{ ...EDGElESS, epicRef: null }])).toBe("item 0");
     expect(projectPoolSectionProblem([{ ...EDGElESS, blocks: "developing-today/code#1" }])).toBe("item 0");
+  });
+
+  test("every edge ref uses the shared parseRef validity rule and drops only its bad item", () => {
+    const unsafe = "developing-today/code#99999999999999999999";
+    const malformed = [
+      { ...GRAPHED, blockedBy: [unsafe] },
+      { ...GRAPHED, blockedBy: ["812"] },
+      { ...GRAPHED, blocks: [unsafe] },
+      { ...GRAPHED, parentRef: "812" },
+      { ...GRAPHED, epicRef: unsafe },
+    ];
+
+    expect(isProjectPoolItem(GRAPHED)).toBe(true);
+    for (const bad of malformed) expect(isProjectPoolItem(bad)).toBe(false);
+    expect(projectPoolSectionProblem([GRAPHED, malformed[0]])).toBe("item 1");
+    expect(
+      poolFromFeed({ projects: [EDGElESS, ...malformed, GRAPHED] as unknown as never }).map((p) => p.ref),
+    ).toEqual([EDGElESS.ref, GRAPHED.ref]);
   });
 
   test("structural fields + optional-field types are gated (#2418)", () => {
@@ -201,6 +221,25 @@ describe("feed project-pool section gate (#2399)", () => {
     expect(pool.length).toBe(2);
     expect(isProjectPoolSection(pool)).toBe(true);
     expect(poolFromFeed({ projects: pool }).length).toBe(2);
+  });
+});
+
+describe("Project #4 audit feed section (#1218)", () => {
+  const audit = {
+    title: "Developing Today",
+    number: 4,
+    url: "https://github.com/orgs/developing-today/projects/4",
+    generatedAt: "2026-11-01T20:00:00.000Z",
+    totalItems: 1,
+    fields: [{ id: "status", name: "Status", dataType: "SINGLE_SELECT", options: [{ id: "todo", name: "Todo" }] }],
+    views: [{ id: "board", name: "Board", layout: "BOARD_LAYOUT", filter: null }],
+    counts: { status: { Todo: 1 }, area: { "(unset)": 1 }, repo: { "developing-today/code": 1 } },
+  };
+
+  test("returns only a well-shaped audit snapshot", () => {
+    expect(projectAuditFromFeed({ projectAudit: audit })).toEqual(audit);
+    expect(projectAuditFromFeed({ projectAudit: { ...audit, totalItems: "1" } as never })).toBeNull();
+    expect(projectAuditFromFeed({})).toBeNull();
   });
 });
 
@@ -688,6 +727,47 @@ describe("feed subscriptions sanitization (#2446)", () => {
     const clean = await loadWithSubs([SUB, SUB_NULL_RENEW]);
     expect(clean?.subscriptions).toEqual([SUB, SUB_NULL_RENEW]);
     expect(clean?.subscriptionsDropped).toBeUndefined();
+  });
+});
+
+describe("uninstrumented tracker feed sanitization (#1172)", () => {
+  const SERVICE = {
+    name: "Render",
+    whatFor: "PaaS",
+    status: "checked",
+    checkedAt: "2026-10-29",
+    overageBehavior: "wall",
+    guardrailNotes: "Keep no payment method on free workspaces",
+  };
+  const UNDATED_SERVICE = { ...SERVICE, status: "unchecked", checkedAt: null };
+  const feedWithServices = (uninstrumentedServices: unknown) => ({
+    version: 1,
+    generatedAt: "2026-10-01T00:00:00Z",
+    quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+    attention: [],
+    uninstrumentedServices,
+  });
+  const loadWithServices = async (uninstrumentedServices: unknown) => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-feed-tracker-"));
+    const file = join(dir, "feed.json");
+    writeFileSync(file, JSON.stringify(feedWithServices(uninstrumentedServices)));
+    return loadFeed(file);
+  };
+
+  test("valid tracker rows survive; malformed rows drop and are counted", async () => {
+    const out = sanitizeUninstrumentedServices([SERVICE, UNDATED_SERVICE, null, { ...SERVICE, checkedAt: "yesterday" }]);
+    expect(out.rows).toEqual([SERVICE, UNDATED_SERVICE]);
+    expect(out.dropped).toBe(2);
+    const loaded = await loadWithServices([SERVICE, UNDATED_SERVICE, null]);
+    expect(loaded?.uninstrumentedServices).toEqual([SERVICE, UNDATED_SERVICE]);
+    expect(loaded?.uninstrumentedServicesDropped).toBe(1);
+  });
+
+  test("an absent tracker section remains absent for older feeds", async () => {
+    expect(sanitizeUninstrumentedServices(undefined)).toEqual({ dropped: 0 });
+    const loaded = await loadWithServices(undefined);
+    expect(loaded?.uninstrumentedServices).toBeUndefined();
+    expect(loaded?.uninstrumentedServicesDropped).toBeUndefined();
   });
 });
 
@@ -1182,5 +1262,49 @@ describe("collector section metadata (#1178)", () => {
     const legacyFile = join(dir, "legacy.json");
     writeFileSync(legacyFile, JSON.stringify(baseFeed()));
     expect((await loadFeed(legacyFile))?.meta).toBeUndefined();
+  });
+});
+
+describe("sanitizeCollectionError quoted-key + URL redaction (#3966)", () => {
+  test("JSON double-quoted keys redact the value, keep the key and text", () => {
+    expect(sanitizeCollectionError('{"api_key": "abc123short"}')).toBe('{"api_key": [redacted]}');
+    expect(sanitizeCollectionError('{"password": "hunter2pw"}')).toBe('{"password": [redacted]}');
+    expect(sanitizeCollectionError('upstream 500 {"token":"tok-abc12345"} retrying')).toBe(
+      'upstream 500 {"token":[redacted]} retrying',
+    );
+  });
+
+  test("single-quoted and nested keys redact the value", () => {
+    expect(sanitizeCollectionError("{'token': 'tok-abc12345'}")).toBe("{'token': [redacted]}");
+    expect(sanitizeCollectionError('{"data": {"secret": "s3cr3t-value-9"}}')).toBe(
+      '{"data": {"secret": [redacted]}}',
+    );
+    expect(sanitizeCollectionError('{"secret": "contains \\" quote and remains private"}')).toBe(
+      '{"secret": [redacted]}',
+    );
+  });
+
+  test("bare URL credential params redact the value, sibling params survive", () => {
+    expect(sanitizeCollectionError("fetch failed: https://api.example.com/data?key=supersecretvalue")).toBe(
+      "fetch failed: https://api.example.com/data?key=[redacted]",
+    );
+    expect(sanitizeCollectionError("get https://h.example/?api_key=abc123&foo=bar failed")).toBe(
+      "get https://h.example/?api_key=[redacted]&foo=bar failed",
+    );
+  });
+
+  test("words merely containing key do not redact, unquoted forms still redact", () => {
+    expect(sanitizeCollectionError("monkey=x")).toBe("monkey=x");
+    expect(sanitizeCollectionError("keyboard=y")).toBe("keyboard=y");
+    expect(sanitizeCollectionError("turnkey=abc")).toBe("turnkey=abc");
+    expect(sanitizeCollectionError("request failed token=secret-value")).toBe("request failed token=[redacted]");
+    expect(sanitizeCollectionError("plain error with no secrets at all")).toBe("plain error with no secrets at all");
+  });
+
+  test("quoted forms are redacted through sanitizeFeedMetadata", () => {
+    const meta = sanitizeFeedMetadata({
+      sections: { dns: { status: "error", at: "2026-10-01T00:00:00Z", error: '{"api_key": "abc123short"}' } },
+    });
+    expect(meta?.sections.dns?.error).toBe('{"api_key": [redacted]}');
   });
 });

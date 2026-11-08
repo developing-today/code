@@ -99,7 +99,7 @@ func TestMalformedEnvironmentPairsAreCaught(t *testing.T) {
 }
 
 func TestTypeCheckIsSkippedWhenOff(t *testing.T) {
-	r := preflight.TypeCheck(nil, "/bin/deno", "/nope.ts", preflight.TypeCheckOff, 0)
+	r := preflight.TypeCheck(context.TODO(), "/bin/deno", "/nope.ts", preflight.TypeCheckOff, 0)
 	if len(r.Problems) != 0 {
 		t.Errorf("off means off: %v", r.Problems)
 	}
@@ -144,7 +144,7 @@ func TestScriptCheckModesSelectTypesAndStrictCommands(t *testing.T) {
 func TestTypeCheckSaysSoWhenTheRuntimeCannotDoIt(t *testing.T) {
 	// Node and Bun strip types rather than checking them. Saying so is
 	// better than pretending the check ran.
-	r := preflight.TypeCheck(nil, "/usr/bin/node", "/x.ts", preflight.TypeCheckOn, 0)
+	r := preflight.TypeCheck(context.TODO(), "/usr/bin/node", "/x.ts", preflight.TypeCheckOn, 0)
 	if len(r.Problems) != 1 {
 		t.Fatalf("expected one note, got %v", r.Problems)
 	}

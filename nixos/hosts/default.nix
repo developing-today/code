@@ -24,6 +24,7 @@ in
       "services/flatpak"
       "services/id-mail"
       "services/pm-stack"
+      "services/lab-tunnel"
       "services/pm-apps"
       "services/power-guard"
       "services/openai-cred-watchdog"
@@ -62,6 +63,11 @@ in
         # PM dashboard stack (aggregator + projector, git-sync and
         # quota-gatherer timers) as NixOS-managed user services.
         services.pm-stack.enable = true;
+      }
+      {
+        # Lab cluster Cloudflare Tunnel (code#6455): connector +
+        # edge status service for lab.security.cab.
+        services.lab-tunnel.enable = true;
       }
       {
         # PM app servers (code#1752): Kaneo + PostgreSQL, Grist, and
@@ -225,6 +231,9 @@ in
       # VAAPI-pinned streaming host, Moonlight client, encoder
       # watchdog. KRdp above remains the Plasma-side option.
       ./amd-sunshine.nix
+      # RustDesk permanent-password re-assertion from the vault
+      # (code#5694); RustDesk itself stays imperative, see the file.
+      ./amd-rustdesk.nix
       ./amd-ipv4-preference.nix
       ./amd-openclaw-secrets.nix
     ];

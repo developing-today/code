@@ -1,4 +1,5 @@
 import type { QuotaCurrentEntry } from "./model.ts";
+import { isIsoDate } from "./validate.ts";
 
 export type CredentialLifecycleState =
   | "ok"
@@ -70,7 +71,7 @@ export function lifecycleForEntry(entry: QuotaCurrentEntry, now = new Date()): C
     ...(hasExpiry ? { expiresAt } : {}),
     ...(error ? { reason: error } : {}),
   };
-  if (entry.providerId === "claude" && (state === "expired" || state === "expiring")) {
+  if ((entry.providerId === "claude" || entry.providerId === "_claude") && (state === "expired" || state === "expiring")) {
     const title =
       entry.credentialSource === "opencode"
         ? "Refresh Anthropic authentication in OpenCode"
@@ -81,7 +82,7 @@ export function lifecycleForEntry(entry: QuotaCurrentEntry, now = new Date()): C
             : undefined;
     if (title) row.userAction = { owner: "user", title };
   }
-  if (entry.providerId === "claude" && state === "expired" && !row.reason) {
+  if ((entry.providerId === "claude" || entry.providerId === "_claude") && state === "expired" && !row.reason) {
     row.reason = "Claude credential expiry is confirmed by its configured credential source.";
   }
   return row;
@@ -106,10 +107,9 @@ export function isCredentialLifecycleRow(value: unknown): value is CredentialLif
     typeof row.label === "string" &&
     typeof row.state === "string" &&
     states.includes(row.state as CredentialLifecycleState) &&
-    typeof row.measuredAt === "string" &&
+    isIsoDate(row.measuredAt) &&
     (row.credentialId === undefined || typeof row.credentialId === "string") &&
-    (row.expiresAt === undefined ||
-      (typeof row.expiresAt === "string" && Number.isFinite(Date.parse(row.expiresAt)))) &&
+    (row.expiresAt === undefined || isIsoDate(row.expiresAt)) &&
     (row.reason === undefined || typeof row.reason === "string") &&
     (row.userAction === undefined ||
       (typeof row.userAction === "object" &&

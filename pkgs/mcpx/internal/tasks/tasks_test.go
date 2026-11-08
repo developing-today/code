@@ -2,6 +2,7 @@ package tasks_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
+	_ "modernc.org/sqlite"
 )
 
 func TestAResultIsWaitedForRatherThanPolledFor(t *testing.T) {
@@ -147,7 +149,7 @@ func TestTaskPersistenceAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open reopen failed: %v", err)
 	}
-	defer st2.Close()
+	defer func() { _ = st2.Close() }()
 
 	// t1 should still exist and be completed with its result
 	snap1, ok := st2.Get(t1.TaskID)
@@ -562,7 +564,7 @@ func TestRetentionAcrossReopenRunsFromCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open reopen failed: %v", err)
 	}
-	defer st2.Close()
+	defer func() { _ = st2.Close() }()
 	snap, ok := st2.Get(t1.TaskID)
 	if !ok {
 		t.Fatal("t1 was deleted at reopen: its retention was clocked from creation")
@@ -698,7 +700,7 @@ func TestTaskTouchMetadataPersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st2.Close()
+	defer func() { _ = st2.Close() }()
 	got, ok := st2.Get(task.TaskID)
 	if !ok || got.ExpiresAt == nil || got.LastTouched == nil {
 		t.Fatalf("touched task did not survive reopen: %+v", got)
@@ -907,5 +909,84 @@ func TestIsErrorStatusMessageUsesFirstTextAndFallsBack(t *testing.T) {
 				t.Errorf("got status=%q statusMessage=%q, want failed with %q", got.Status, got.StatusMessage, tc.want)
 			}
 		})
+	}
+}
+
+// seedLegacyTaskRow writes a pre-expires_ms terminal row directly, as an
+// older daemon version would have left it: expires_ms is 0, so the load
+// path must derive the deadline from the stored TTL and the store's
+// configured maxAge.
+func seedLegacyTaskRow(t *testing.T, dbPath, id string, completedAt time.Time, ttl time.Duration, result string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("seed open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	ms := completedAt.UnixMilli()
+	_, err = db.Exec(`INSERT INTO tasks (task_id, status, status_message, created_at_ms, updated_at_ms, ttl_ms, last_touched_ms, expires_ms, poll_interval, result_json, fault_json)
+		VALUES (?, 'completed', '', ?, ?, ?, ?, 0, 0, ?, NULL)`,
+		id, ms, ms, ttl.Milliseconds(), ms, result)
+	if err != nil {
+		t.Fatalf("seed insert %s: %v", id, err)
+	}
+}
+
+// Regression for issue #6248: startup migration must not delete a legacy
+// terminal row before its stored TTL-derived deadline under the
+// configured retention. Oracle: with tasks.maxAge=4h, a row completed
+// 2h ago with a stored 4h TTL survives Open and its result stays
+// readable, while a row already expired under that same 4h retention
+// (completed 5h ago, TTL 4h) is still pruned. The control case reopens
+// an identically seeded database with the built-in defaults (plain
+// Open, maxAge 1h) and the 2h-old row is gone — the original loss.
+func TestOpenWithRetentionPreservesLegacyRowUntilStoredTTLDeadline(t *testing.T) {
+	now := time.Now()
+	seed := func(dbPath string) {
+		st, err := tasks.Open(dbPath)
+		if err != nil {
+			t.Fatalf("Open (schema) failed: %v", err)
+		}
+		if err := st.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		seedLegacyTaskRow(t, dbPath, "legacy-keep", now.Add(-2*time.Hour), 4*time.Hour, `{"data":"legacy-result"}`)
+		seedLegacyTaskRow(t, dbPath, "legacy-expired", now.Add(-5*time.Hour), 4*time.Hour, `{"data":"expired-result"}`)
+	}
+
+	dbPath := t.TempDir() + "/tasks.db"
+	seed(dbPath)
+	st, err := tasks.OpenWithRetention(dbPath, 0, 4*time.Hour)
+	if err != nil {
+		t.Fatalf("OpenWithRetention failed: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	snap, ok := st.Get("legacy-keep")
+	if !ok {
+		t.Fatalf("legacy-keep missing after OpenWithRetention with maxAge=4h: startup migration deleted a result inside its configured retention")
+	}
+	if snap.Status != tasks.Completed {
+		t.Errorf("legacy-keep status = %q, want completed", snap.Status)
+	}
+	res, fault, err := st.Result(context.Background(), "legacy-keep")
+	if err != nil || fault != nil {
+		t.Errorf("legacy-keep result err=%v fault=%v", err, fault)
+	}
+	if m, _ := res.(map[string]any); m["data"] != "legacy-result" {
+		t.Errorf("legacy-keep result data = %v", res)
+	}
+	if _, ok := st.Get("legacy-expired"); ok {
+		t.Errorf("legacy-expired survived: rows expired under the effective retention must still be pruned")
+	}
+
+	controlPath := t.TempDir() + "/tasks.db"
+	seed(controlPath)
+	plain, err := tasks.Open(controlPath)
+	if err != nil {
+		t.Fatalf("Open (control) failed: %v", err)
+	}
+	defer func() { _ = plain.Close() }()
+	if _, ok := plain.Get("legacy-keep"); ok {
+		t.Errorf("control: legacy-keep survived plain Open with the built-in 1h maxAge; the seeded row does not reproduce the pre-fix loss")
 	}
 }

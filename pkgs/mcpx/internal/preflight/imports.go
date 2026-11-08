@@ -1,3 +1,4 @@
+// Package preflight statically checks a script before it runs: the import graph, resolution and related stages.
 // Import-graph stage of preflight: stage 1 (Graph) of #1915, report mode.
 //
 // mcpx used to learn about a broken import only when the runtime loaded the
@@ -317,12 +318,6 @@ func (r *Report) mergeDynamics(dynamics []DynamicImport, mode DynamicImportMode)
 	}
 }
 
-// CheckImports computes the import graph of entry with deno and reports
-// every unresolved specifier plus every computed dynamic import in the
-// graph's local files. denoBin is the deno binary to use; the graph is a
-// property of the source, not of the runtime that will execute it, so any
-// deno serves. An empty denoBin is reported, not silently skipped: a check
-// that did not run must not look like a check that passed.
 // ResolutionArgs selects the arguments of a configured runtime that
 // decide how specifiers resolve -- an import map can redirect a specifier
 // to a different module, and a config file can carry the map, workspace
@@ -331,6 +326,12 @@ func (r *Report) mergeDynamics(dynamics []DynamicImport, mode DynamicImportMode)
 // run-only switches) does not change the graph and is not forwarded: deno
 // info rejects several of them, and a check that errors on its own flags
 // would report scripts as broken that run fine.
+// CheckImports computes the import graph of entry with deno and reports
+// every unresolved specifier plus every computed dynamic import in the
+// graph's local files. denoBin is the deno binary to use; the graph is a
+// property of the source, not of the runtime that will execute it, so any
+// deno serves. An empty denoBin is reported, not silently skipped: a check
+// that did not run must not look like a check that passed.
 func ResolutionArgs(args []string) []string {
 	valueFlags := map[string]bool{
 		"--import-map": true, "--config": true,
@@ -957,13 +958,6 @@ func isIdentPartIn(c byte) bool {
 }
 
 func isSpaceIn(c byte) bool { return c == ' ' || c == '\t' || c == '\r' || c == '\n' }
-
-func skipSpaceIn(src string, i int) int {
-	for i < len(src) && isSpaceIn(src[i]) {
-		i++
-	}
-	return i
-}
 
 func readIdentIn(src string, i int) (string, int) {
 	j := i

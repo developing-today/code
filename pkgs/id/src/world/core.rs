@@ -938,6 +938,7 @@ impl WorldCore {
                         core.sequence,
                         event.sequence
                     );
+                    core.validate_restored_event_author(&event, false)?;
                     match &event.kind {
                         WorldEventKind::ProgramInstalled {
                             module_hash,
@@ -1019,6 +1020,9 @@ impl WorldCore {
                         }),
                         "journal checkpoint contains a host system event"
                     );
+                    for event in &events {
+                        core.validate_restored_event_author(event, true)?;
+                    }
                     core.sequence = sequence;
                     core.events = events.into();
                     while core.events.len() > core.limits.retained_events {
@@ -1191,6 +1195,71 @@ impl WorldCore {
             replay,
             presence,
         })
+    }
+
+    /// Scopes a participant capability chain records in the journal
+    /// itself: the intersection of every ancestor issued scope.
+    /// Unlike `effective_scopes`, this never consults the world
+    /// directory: friendship and ceilings are mutable current state,
+    /// and restore runs before the directory is loaded, so historical
+    /// events are judged against what the journal recorded when they
+    /// were committed (Codex P1 finding on PR #4518).
+    fn journaled_scopes(&self, participant_id: u64) -> Option<WorldScopes> {
+        self.capabilities.get(&participant_id)?;
+        let mut scopes = WorldScopes::ALL;
+        let mut current = Some(participant_id);
+        while let Some(record) = current.and_then(|id| self.capabilities.get(&id)) {
+            scopes = scopes.intersect(record.scopes.implied());
+            current = record.parent;
+        }
+        Some(scopes)
+    }
+
+    /// Check that a journaled event could have been authored by the
+    /// participant state rebuilt so far. For compacted checkpoint events,
+    /// revocation timing is no longer represented: `checkpoint_entries`
+    /// writes the current revoked flags before the retained historical events.
+    /// Keep those events valid when their participant and scope are present;
+    /// ordinary `Committed` entries retain enough journal order to reject an
+    /// author revoked before that event.
+    fn validate_restored_event_author(
+        &self,
+        event: &WorldEvent,
+        checkpoint_event: bool,
+    ) -> Result<()> {
+        let participant_id = event.participant_id;
+        if participant_id == 0 {
+            return Ok(());
+        }
+
+        let record = self.capabilities.get(&participant_id).with_context(|| {
+            format!(
+                "journal event at sequence {} uses participant {participant_id} before it was issued",
+                event.sequence
+            )
+        })?;
+        ensure!(
+            checkpoint_event || !record.revoked,
+            "journal event at sequence {} is authored by participant {participant_id} after revocation",
+            event.sequence
+        );
+
+        let required_scope = match &event.kind {
+            WorldEventKind::Input(_) | WorldEventKind::EntityInput { .. } => {
+                Some((WorldScopes::INPUT, "INPUT"))
+            }
+            WorldEventKind::Chat(_) => Some((WorldScopes::CHAT, "CHAT")),
+            WorldEventKind::System { .. } | WorldEventKind::ProgramInstalled { .. } => None,
+        };
+        if let Some((scope, name)) = required_scope {
+            ensure!(
+                self.journaled_scopes(participant_id)
+                    .is_some_and(|scopes| scopes.contains(scope)),
+                "journal event at sequence {} uses participant {participant_id} without {name} scope",
+                event.sequence
+            );
+        }
+        Ok(())
     }
 
     /// Whether enough events piled up behind the last checkpoint to trim.

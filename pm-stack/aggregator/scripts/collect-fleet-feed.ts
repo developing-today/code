@@ -104,11 +104,17 @@ import { chargeServiceCatalog } from "../src/charges-catalog.ts";
 import { filterNewUnmatched, mergeChargeRows, parseChargeCandidates } from "../src/charges-collect.ts";
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
-import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../src/saas-extract.ts";
+import {
+  extractCharges,
+  extractPaygLines,
+  extractSaasServices,
+  extractSubscriptions,
+  extractUninstrumentedServices,
+} from "../src/saas-extract.ts";
 import type { ChargeRow, PaygLine, SaasService, SnapshotRecord } from "../src/model.ts";
 import { recordsFromDns, recordsFromPaygLines, recordsFromSaasServices } from "../src/snapshot-records.ts";
 import { isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
-import { fetchProjectPool } from "../src/projects.ts";
+import { fetchProjectSnapshot } from "../src/projects.ts";
 import type { ProjectPoolItem } from "../src/model.ts";
 import { REPOS } from "../src/model.ts";
 import type { RepoCensus } from "../src/coverage.ts";
@@ -243,6 +249,9 @@ const quotaViewPath =
     HOME,
     "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
   );
+const freeServicesTrackerPath =
+  process.env.PM_AGG_FREE_SERVICES_TRACKER ??
+  join(HOME, "hatch-personal/workspace/ai-subscriptions/free-services-to-check.md");
 const orchestrationPath = process.env.ORCHESTRATION_PATH ?? join(HIDDEN, "orchestration.json");
 const dnsRegisterPath =
   process.env.DNS_REGISTER_PATH ??
@@ -273,6 +282,7 @@ function poolFor(provider: string, model: string): string | null {
     case "meta":
       return "meta";
     case "claude-code":
+    case "_claude":
       return "anthropic:claude-pro";
     case "openai":
     case "openai-codex":
@@ -292,6 +302,8 @@ function poolFor(provider: string, model: string): string | null {
     case "antigravity-agy":
     case "google":
       return model.startsWith("gemini") ? "antigravity-direct.gemini" : "antigravity-direct.claude-gpt";
+    case "_antigravity":
+      return model.startsWith("gemini") ? "_antigravity.gemini" : "_antigravity.claude-gpt";
     default:
       // opencode-go is deliberately unattributed in slice 1: which
       // workspace (Personal vs Lab) a sandbox session burns is not
@@ -625,6 +637,7 @@ async function main(): Promise<void> {
 
   // --- usage & billing hub sections (design §2.3: ride the same feed) ---
   let saas: SaasService[] | undefined;
+  let uninstrumentedServices: ReturnType<typeof extractUninstrumentedServices> | undefined;
   let payg: PaygLine[] | undefined;
   let charges: ChargeRow[] | undefined;
   let subscriptions: FleetFeed["subscriptions"];
@@ -642,6 +655,12 @@ async function main(): Promise<void> {
     for (const key of ["saas", "payg", "charges", "subscriptions"]) markSection(key, "ok");
   } else {
     for (const key of ["saas", "payg", "charges", "subscriptions"]) markSection(key, "skipped");
+  }
+  try {
+    const trackerText = await readFile(freeServicesTrackerPath, "utf8");
+    uninstrumentedServices = extractUninstrumentedServices(trackerText);
+  } catch {
+    console.error("collector: free-services tracker unreadable; quota registry omitted");
   }
 
   // --- charges auto-matching (#1057) -------------------------------------
@@ -815,17 +834,16 @@ async function main(): Promise<void> {
   // other section: no token / read failure = section omitted, and the
   // aggregator's items() falls back to its previous chain.
   let projects: ProjectPoolItem[] | undefined;
+  let projectAudit: FleetFeed["projectAudit"];
   try {
     const token = await resolveProjectToken();
     if (!token) {
       console.error("collector: no GitHub Project token available (env or bws); projects section omitted");
       markSection("projects", "skipped");
     } else {
-      projects = await fetchProjectPool(token);
-      if (!projects.length) {
-        console.error("collector: GitHub Project read returned zero items; projects section omitted");
-        projects = undefined;
-      }
+      const snapshot = await fetchProjectSnapshot(token, fetch, now.toISOString());
+      projects = snapshot.items;
+      projectAudit = snapshot.audit;
       markSection("projects", "ok");
     }
   } catch (err) {
@@ -954,12 +972,14 @@ async function main(): Promise<void> {
     ...(dns ? { dns } : {}),
     ...(registry.length ? { registry } : {}),
     ...(saas ? { saas } : {}),
+    ...(uninstrumentedServices ? { uninstrumentedServices } : {}),
     ...(payg ? { payg } : {}),
     ...(charges ? { charges } : {}),
     ...(chargesAttention ? { chargesAttention } : {}),
     ...(subscriptions ? { subscriptions } : {}),
     ...(dedupedSnapshots.length ? { snapshots: dedupedSnapshots } : {}),
     ...(projects ? { projects } : {}),
+    ...(projectAudit ? { projectAudit } : {}),
     ...(coverage ? { coverage } : {}),
     aa,
   });
@@ -982,7 +1002,7 @@ async function main(): Promise<void> {
         ? `, hub ${saas.length} services / ${payg?.length ?? 0} payg / ${charges?.length ?? 0} charges`
         : ", no hub sections") +
       (dedupedSnapshots.length ? `, snapshots ${dedupedSnapshots.length} records` : "") +
-      (projects ? `, projects ${projects.length} items` : ", no projects section") +
+      (projectAudit ? `, projects ${projectAudit.totalItems} total / ${projects?.length ?? 0} resolvable` : ", no projects section") +
       (coverage ? `, coverage ${coverage.length} repos` : ", no coverage section") +
       (aa.status === "ok"
         ? `, aa ${aa.rankings?.length ?? 0} rankings / ${aa.configs?.length ?? 0} configs / ${aa.testRuns?.length ?? 0} test runs`

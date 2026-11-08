@@ -31,8 +31,8 @@ import type { Source } from "../source.ts";
 
 const GRIST_DOC = "czYHYKgG9SHcm9CPwiKEq1"; // "Program roadmap"
 const CODE = "developing-today/code";
-const OPENCODE = "developing-today/opencode";
-const OPENCHAMBER = "developing-today/openchamber";
+const OPENCODE = "developing-today-forks/opencode";
+const OPENCHAMBER = "developing-today-forks/openchamber";
 const NIX = "dezren39/nix";
 
 function gh(
@@ -1238,6 +1238,7 @@ export const FIXTURE_USAGE: UsageView = {
       usageNote: "Counts only in this hub — secret names/values never enter it. No count recorded yet.",
     },
   ],
+  uninstrumentedServices: [],
   payg: [
     {
       id: "meta-payg",

@@ -77,7 +77,7 @@ func lockStoreDir(dir string) (func(), error) {
 		return nil, err
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("locking elicitation store directory: %w", err)
 	}
 	return func() {
@@ -105,7 +105,7 @@ func openAt(dest, legacyPath string) (*Broker, error) {
 						return nil, oerr
 					}
 					if terr := tightenFiles(legacyPath); terr != nil {
-						b.Close()
+						_ = b.Close()
 						return nil, fmt.Errorf("tightening legacy elicitation store: %w", terr)
 					}
 					return b, nil
@@ -125,7 +125,7 @@ func openAt(dest, legacyPath string) (*Broker, error) {
 		return nil, err
 	}
 	if err := tightenFiles(dest); err != nil {
-		b.Close()
+		_ = b.Close()
 		return nil, err
 	}
 	return b, nil
@@ -173,17 +173,17 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, storeFileMode)
 	if err != nil {
 		return err
 	}
 	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
+		_ = out.Close()
 		return err
 	}
 	if err := out.Sync(); err != nil {
-		out.Close()
+		_ = out.Close()
 		return err
 	}
 	return out.Close()

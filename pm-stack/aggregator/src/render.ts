@@ -58,6 +58,7 @@ import type { NeedsDrewCensus } from "./needs-drew.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
 import type { NotificationRollup } from "./notifications.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
+import { providerDisplayNames } from "./provider-display.ts";
 import type { QueueView, QueueRow } from "./queue-view.ts";
 import type { HealthView, PageHealth } from "./health.ts";
 import {
@@ -99,6 +100,7 @@ import {
   SESSION_SOURCE_LABELS,
   countedEstimate,
   refsInText,
+  isValidRef,
   refUrl,
 } from "./model.ts";
 import { PAGES, groupedPages, primaryGroupedPages, manifestRouteFor, pageByRoute } from "./pages.ts";
@@ -114,6 +116,7 @@ import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
 import { EPIC_GRAPH_DEFAULT_CAP, epicGraph, epicSelector } from "./epic-graph.ts";
 import { type AuthorIdentity } from "./registry.ts";
 import type { SearchResult } from "./search-view.ts";
+import { dnsAnchor } from "./search-view.ts";
 
 export function esc(s: unknown): string {
   return String(s ?? "")
@@ -134,340 +137,10 @@ export function fmtDate(iso: string | null | undefined): string {
     .replace(/\.\d+Z$/, "Z");
 }
 
-const CSS = `
-:root { color-scheme: light dark; }
-* { box-sizing: border-box; }
-body { margin: 0; font: 14px/1.45 system-ui, -apple-system, sans-serif; background: #0e1117; color: #e6edf3; }
-[id] { scroll-margin-top: 96px; }
-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; padding: 8px 16px; border-bottom: 1px solid #30363d; background: #161b22; position: sticky; top: 0; }
-.navsearch { display: flex; align-items: center; gap: 4px; margin-left: auto; }
-.navsearch input, .search-page-form input { min-width: 12rem; padding: 7px 9px; border: 1px solid #30363d; border-radius: 6px; background: #0d1117; color: inherit; }
-.navsearch button, .search-page-form button { padding: 7px 10px; border: 1px solid #30363d; border-radius: 6px; background: #21262d; color: inherit; cursor: pointer; }
-.search-page-form { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
-.search-page-form input { flex: 1; }
-.navgroup { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
-.navgroup + .navgroup { border-left: 1px solid #30363d; padding-left: 12px; }
-.navlabel { color: #8b949e; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; margin-right: 4px; }
-nav a { color: #58a6ff; text-decoration: none; padding: 5px 9px; border-radius: 6px; white-space: nowrap; display: inline-flex; align-items: center; min-height: 40px; }
-nav a.active, nav a:hover { background: #21262d; }
-nav a.active { background: #1f6feb33; color: #fff; box-shadow: inset 0 -2px 0 #1f6feb; }
-.navgroup[data-current="true"] .navlabel { color: #58a6ff; }
-main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 80px; }
-h1 { font-size: 18px; } h2 { font-size: 15px; }
-a { color: #58a6ff; }
-.card { border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; margin: 8px 0; background: #161b22; overflow-wrap: anywhere; }
-.muted { color: #8b949e; font-size: 12px; }
-@media (max-width: 480px) {
-  .attention-card-header { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; min-width: 0; margin-bottom: 4px; }
-  .attention-card-header > strong { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
-  .attention-card-header .badge { white-space: normal; }
-  .item-session-records > .session-record-line { box-sizing: border-box; max-width: 100%; min-width: 0; }
-  .item-session-records .session-record-meta { display: block; max-width: 100%; overflow-wrap: anywhere; }
-}
-.badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid #30363d; margin: 1px 2px 1px 0; white-space: nowrap; }
-.badge.open { background: #1f6feb33; border-color: #1f6feb; color: #58a6ff; }
-.badge.merged { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
-.badge.closed { background: #8b949e22; border-color: #8b949e; color: #8b949e; }
-.badge.implementing { background: #d2992233; border-color: #d29922; color: #e3b341; }
-.badge.review { background: #bc8cff33; border-color: #bc8cff; color: #bc8cff; }
-.badge.healthy { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
-.badge.near { background: #d2992233; border-color: #d29922; color: #e3b341; }
-.badge.walled { background: #f8514933; border-color: #f85149; color: #f85149; }
-.badge.src { background: #21262d; color: #e6edf3; }
-.badge.acked { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
-.badge.unverified { background: transparent; border-style: dashed; opacity: 0.75; }
-.badge.drew { background: #f8514933; border-color: #f85149; color: #f85149; }
-.badge.orch { background: #1f6feb33; border-color: #1f6feb; color: #58a6ff; }
-.badge.moving { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
-.badge.stalled { background: #d2992233; border-color: #d29922; color: #e3b341; }
-.badge.blocked { background: #f8514933; border-color: #f85149; color: #f85149; }
-.strip { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-.today-health-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 0 0 12px; }
-.today-health-link { min-width: 0; border: 1px solid #30363d; border-radius: 7px; padding: 5px 8px; background: #161b22; text-decoration: none; overflow-wrap: anywhere; }
-.today-health-link.ok { border-color: #2ea04388; color: #3fb950; }
-.today-health-link.warn { border-color: #d29922; color: #e3b341; }
-.today-health-link.unknown { border-color: #6e7681; color: #c9d1d9; }
-@media (max-width: 480px) { .today-health-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.board { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; align-items: start; }
-.col { border: 1px solid #30363d; border-radius: 8px; padding: 8px; background: #0d1117; }
-.col h2 { margin: 2px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: #8b949e; }
-.tblwrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-table { border-collapse: collapse; width: 100%; }
-caption { caption-side: top; text-align: left; font-weight: 600; font-size: 12.5px; padding: 6px 8px; color: #8b949e; }
-th, td { border: 1px solid #30363d; padding: 6px 8px; vertical-align: top; text-align: left; }
-th { background: #161b22; }
-.tl-cell { min-width: 110px; }
-.banner { border: 1px solid #d29922; background: #d2992211; border-radius: 8px; padding: 8px 12px; margin: 12px 0; color: #e3b341; }
-.banner.drew { border-color: #f85149; background: #f8514911; color: #f85149; }
-.pool { display: grid; grid-template-columns: 220px 1fr; gap: 8px 16px; }
-meter { width: 140px; height: 14px; }
-.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
-.chips a { border: 1px solid #30363d; border-radius: 999px; padding: 5px 12px; text-decoration: none; color: #e6edf3; background: #161b22; display: inline-flex; align-items: center; min-height: 40px; }
-.chips a.active { border-color: #1f6feb; background: #1f6feb33; color: #58a6ff; }
-.fchip { border: 1px solid #30363d; border-radius: 999px; padding: 5px 12px; color: #e6edf3; background: #161b22; font-size: 12.5px; }
-.fchip.live { border-color: #2ea04388; }
-.fchip.stale { border-color: #d29922; color: #e3b341; }
-.fchip.invalid { border-color: #f85149; color: #f85149; }
-.fchip.error { border-color: #f85149; color: #f85149; }
-.fchip.absent { border-color: #d29922; color: #e3b341; }
-.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: #8b949e; vertical-align: baseline; }
-.dot.up, .dot.self { background: #3fb950; }
-.dot.down, .dot.invalid { background: #f85149; }
-.dot.stale, .dot.absent { background: #d29922; }
-.dot.off, .dot.unknown { background: #8b949e; }
-.dot.fixtures { background: #bc8cff; }
-.srcdetail { margin: 6px 0; }
-.srcdetail summary { cursor: pointer; }
-.reason { border-left: 3px solid #f85149; padding: 6px 10px; margin: 8px 0 2px; background: #f851490d; }
-.orch-note { border-left: 3px solid #1f6feb; padding: 6px 10px; margin: 8px 0 2px; background: #1f6feb0d; }
-.cov { border: 1px solid #30363d; border-radius: 8px; padding: 8px 12px; margin: 12px 0; background: #0d1117; }
-.cov li { margin: 3px 0; }
-.kids { margin: 6px 0 2px 14px; border-left: 2px solid #30363d; padding-left: 10px; }
-.kids summary { cursor: pointer; color: #58a6ff; font-size: 12px; padding: 4px 0; }
-.obj { display: flex; gap: 10px; align-items: flex-start; }
-.obj .n { font-size: 16px; font-weight: 700; color: #58a6ff; min-width: 22px; }
-.badge.Muse { background: #bc8cff33; border-color: #bc8cff; color: #bc8cff; }
-.badge.agent { background: #1f6feb33; border-color: #1f6feb; color: #58a6ff; }
-.badge.msg { background: #d2992233; border-color: #d29922; color: #e3b341; }
-.badge.gh { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
-.cmt { border-left: 3px solid #30363d; padding: 6px 10px; margin: 6px 0; background: #161b22; border-radius: 0 6px 6px 0; overflow-wrap: anywhere; }
-.cmt.msg { border-left-color: #d29922; }
-.cmt.github { border-left-color: #2ea043; }
-.cform { border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: #0d1117; }
-.cform label { display: block; font-size: 12px; color: #8b949e; margin: 8px 0 3px; }
-.cform textarea, .cform select, .cform input[type="text"] { width: 100%; background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 7px 9px; font: inherit; }
-.raform { border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: #0d1117; }
-.raform label { display: block; font-size: 12px; color: #8b949e; margin: 8px 0 3px; }
-.raform textarea, .raform select, .raform input[type="date"] { width: 100%; background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 7px 9px; font: inherit; }
-.raform button { margin-top: 10px; background: #1f6feb; color: #fff; border: 0; border-radius: 6px; padding: 8px 16px; font: inherit; cursor: pointer; }
-.raform .err { color: #f85149; font-size: 12px; margin-top: 6px; }
-.roadmap-annotation { border-left: 3px solid #bc8cff; padding: 5px 8px; margin: 5px 0; background: #161b22; border-radius: 0 6px 6px 0; overflow-wrap: anywhere; }
-.cform .kinds { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 4px; }
-.cform .kinds label { display: inline-flex; gap: 5px; align-items: center; margin: 0; font-size: 13px; color: #e6edf3; }
-.cform button { margin-top: 10px; background: #1f6feb; color: #fff; border: 0; border-radius: 6px; padding: 8px 16px; font: inherit; cursor: pointer; }
-.cform .err { color: #f85149; font-size: 12px; margin-top: 6px; }
-.actbox { border: 1px dashed #30363d; border-radius: 8px; padding: 8px 10px; margin: 10px 0 2px; background: #0d1117; }
-.actbox fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
-.actbox .ahead { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 6px; }
-.actbox .ahead label { font-size: 12px; color: #8b949e; }
-.actbox select, .aform select, .aform input[type="text"], .aform input[type="datetime-local"] { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 7px 9px; font: inherit; min-height: 44px; }
-.aform { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
-.aform input[type="text"] { flex: 1 1 180px; }
-.aform button { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 8px 14px; font: inherit; cursor: pointer; min-height: 44px; }
-.aform button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
-.aform button.danger { border-color: #f85149; color: #f85149; }
-.aform button:disabled, .actbox fieldset:disabled button { opacity: .45; cursor: not-allowed; }
-.aform .confirm { display: inline-flex; gap: 5px; align-items: center; font-size: 13px; min-height: 44px; }
-.aform .err { color: #f85149; font-size: 12px; flex-basis: 100%; }
-.aform .why { color: #8b949e; font-size: 12px; flex-basis: 100%; }
-.badge.act-pending { background: #d2992233; border-color: #d29922; color: #e3b341; }
-.badge.act-applied { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
-.badge.act-rejected { background: #f8514933; border-color: #f85149; color: #f85149; }
-.badge.act-snoozed { background: #bc8cff33; border-color: #bc8cff; color: #bc8cff; }
-.badge.whyuser { background: #d2992233; border-color: #d29922; color: #e3b341; }
-.badge.whyuser.access, .badge.whyuser.policy { background: #f8514933; border-color: #f85149; color: #f85149; }
-.propbox { border: 1px solid #2ea043; background: #2ea04311; border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
-.propbox.expired { border-color: #8b949e; background: #8b949e11; }
-.unablebox { border: 1px solid #f85149; background: #f8514911; border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
-.qblock { border-top: 1px solid #21262d; padding: 6px 0 2px; margin-top: 6px; }
-.qblock .qopts { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 4px 0; }
-.qblock label { display: inline-flex; gap: 5px; align-items: center; font-size: 13px; min-height: 40px; }
-.optform .effect { color: #8b949e; font-size: 12px; flex-basis: 100%; }
-nav select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 6px 8px; font: inherit; margin-left: auto; max-width: 45vw; }
-.foot { margin-top: 40px; border-top: 1px solid #30363d; padding-top: 10px; color: #8b949e; font-size: 12px; }
-.card.stale { opacity: .55; }
-.card.acked { opacity: .72; }
-.card .sentline { color: #3fb950; font-size: 12.5px; margin: 6px 0 2px; }
-.card.tombstone { opacity: .6; }
-details.carddetail { margin: 8px 0 2px; border-top: 1px solid #21262d; padding-top: 6px; }
-details.carddetail summary { cursor: pointer; color: #58a6ff; font-size: 12.5px; padding: 4px 0; }
-details.carddetail dl { display: grid; grid-template-columns: 110px 1fr; gap: 2px 10px; margin: 6px 0; font-size: 12.5px; }
-details.carddetail dt { color: #8b949e; }
-details.carddetail dd { margin: 0; overflow-wrap: anywhere; }
-.histline { font-size: 12.5px; margin: 3px 0; }
-pre { max-width: 100%; overflow-x: auto; }
-.quickbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
-.quickbar .qlabel { font-size: 12px; color: #8b949e; flex-basis: 100%; }
-.qchip { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 12.5px; cursor: pointer; min-height: 40px; }
-.qchip.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
-.qchip:disabled { opacity: .45; cursor: not-allowed; }
-.aform.qform { display: inline-flex; margin: 0; }
-.cbox { border-top: 1px solid #21262d; margin-top: 8px; padding-top: 6px; }
-.cbox .cform { border: 0; padding: 4px 0 0; margin: 0; background: none; }
-.cbox summary { cursor: pointer; color: #58a6ff; font-size: 12.5px; padding: 4px 0; }
-.qblock .qanswered { color: #3fb950; font-size: 12px; }
-.qblock .qremaining { color: #e3b341; font-size: 12px; }
-.skel { border: 1px dashed #30363d; border-radius: 8px; padding: 14px 12px; margin: 8px 0; color: #8b949e; background: #0d1117; }
-.orderctl { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; font-size: 12.5px; color: #8b949e; }
-.bulkbar { border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: #0d1117; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.bulkbar select, .bulkbar input[type="text"] { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 7px 9px; font: inherit; min-height: 44px; }
-.bulkpickline { margin: 8px 0 -4px; font-size: 12.5px; color: #8b949e; }
-.bulkpickline input { width: 18px; height: 18px; vertical-align: -3px; }
-.bulkreview { flex-basis: 100%; border-top: 1px dashed #30363d; padding-top: 8px; }
-.bulkreview ul { margin: 6px 0; padding-left: 20px; max-height: 240px; overflow: auto; }
-.bulkresults { flex-basis: 100%; font-size: 13px; }
-.orderctl .aform { margin: 0; }
-.stripcard .restore-note { font-size: 12.5px; }
-.badge.stale { background: #d2992233; border-color: #d29922; color: #e3b341; }
-.badge.conflict { background: #bc8cff33; border-color: #bc8cff; color: #bc8cff; }
-.flag { border: 1px solid #f85149; background: #f8514911; border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
-.flag.payg { border-color: #d29922; background: #d2992211; }
-.svcgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; align-items: start; }
-.chart { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 8px; margin: 8px 0; overflow-x: auto; }
-.xtabs { display: flex; gap: 6px; margin: 12px 0 4px; border-bottom: 1px solid #30363d; }
-.xtab { background: none; border: 1px solid transparent; border-bottom: 0; color: #8b949e; font: inherit; font-weight: 600; padding: 8px 14px; border-radius: 8px 8px 0 0; cursor: pointer; }
-.xtab:hover { color: #e6edf3; }
-.xtab.active { color: #e6edf3; background: #161b22; border-color: #30363d; }
-.xpl-filters { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
-.xpl-filters input[type="search"], .xpl-filters select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 6px 8px; font: inherit; }
-.xpl-filters input[type="search"] { min-width: 220px; flex: 1; }
-.xchip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 3px 9px; min-height: 40px; border-radius: 999px; border: 1px solid #30363d; background: #161b22; color: #e6edf3; cursor: pointer; font: inherit; }
-.xchip .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
-.xchip.off { opacity: .38; text-decoration: line-through; }
-.xp-seg { display: inline-flex; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; }
-.xp-seg button { background: #161b22; color: #8b949e; border: 0; font: inherit; font-weight: 600; padding: 6px 12px; cursor: pointer; }
-.xp-seg button.active { background: #1f6feb; color: #fff; }
-.xpl-charts { display: grid; grid-template-columns: 1fr; gap: 4px; }
-.xpl-charts .chart svg { width: 100%; height: auto; display: block; }
-.xpl-charts .chart.primary { border-color: #1f6feb; }
-.chart-tools { display: inline-flex; gap: 4px; margin-left: 10px; }
-.chart-tools button { border: 1px solid #30363d; background: #161b22; color: #e6edf3; border-radius: 6px; padding: 3px 8px; cursor: pointer; font: inherit; font-size: 11.5px; }
-.chart-mini { display: inline-block; max-width: 100%; }
-.chart-zoomable { cursor: grab; touch-action: none; }
-.chart-zoomable:active { cursor: grabbing; }
-.chart-expanded { position: fixed !important; inset: 12px; z-index: 80; background: #0d1117; border: 1px solid #30363d; border-radius: 10px; padding: 14px; overflow: auto; box-shadow: 0 12px 48px rgba(0,0,0,.6); }
-.chart-expanded svg { width: 100% !important; max-width: none !important; height: auto; max-height: calc(100vh - 150px); }
-circle.xpt { cursor: pointer; }
-g.xpt-control { cursor: pointer; }
-g.xpt-control .xpt-hit { fill: transparent; stroke: transparent; stroke-width: 0; pointer-events: all; }
-g.xpt-control:focus-visible .xpt-hit { stroke: #fff; stroke-width: 2; }
-g.xpt-control .xpt { pointer-events: none; }
-.xpl-table td.num, .xpl-table th.num { text-align: right; }
-.xpl-table tr { cursor: pointer; }
-.xpl-table tr:hover td { background: #161b22; }
-.xpl-detail { display: none; }
-body.xp-plan .xpl-costcol { display: none; }
-.xpl-ctl { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; font-size: 12px; margin: 2px 0 4px; }
-.xpl-ctl button { border: 1px solid #30363d; background: #161b22; color: #e6edf3; border-radius: 6px; padding: 3px 10px; cursor: pointer; font: inherit; font-size: 11.5px; }
-.xpl-ctl button.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
-.xpl-ctl select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 4px 6px; font: inherit; font-size: 12px; }
-.chart h3 { display: inline-block; margin: 2px 10px 2px 0; font-size: 13.5px; }
-.hchip { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; min-height: 40px; padding: 3px 6px 3px 9px; border-radius: 6px; background: #21262d; border: 1px solid #30363d; margin: 0 5px 5px 0; }
-.hchip button { border: none; background: none; cursor: pointer; font-size: 13px; line-height: 1; color: #e6edf3; padding: 10px 8px; }
-.xpl-ctl-btn { margin-top: 6px; border: 1px solid #30363d; background: #1f6feb; color: #fff; border-radius: 6px; padding: 5px 12px; cursor: pointer; font: inherit; font-size: 12px; }
-/* Non-colour cues (#1215): state badges also differ by icon prefix and
-   status dots by shape, so colour is never the only signal. */
-.badge.walled::before, .badge.blocked::before { content: "\\26d4  "; }
-.badge.drew::before { content: "\\26a0  "; }
-.badge.healthy::before, .badge.moving::before, .badge.merged::before, .badge.acked::before, .badge.act-applied::before { content: "\\2713  "; }
-.badge.near::before, .badge.implementing::before, .badge.stale::before, .badge.act-pending::before { content: "\\25f7  "; }
-.badge.review::before, .badge.conflict::before { content: "\\25c6  "; }
-.badge.act-rejected::before { content: "\\2715  "; }
-.badge.act-snoozed::before { content: "\\263e  "; }
-.badge.open::before { content: "\\25cf  "; }
-.dot.down, .dot.invalid { border-radius: 2px; }
-.dot.stale, .dot.absent { border-radius: 2px; transform: rotate(45deg); }
-.dot.fixtures { background: transparent; border: 2px solid #bc8cff; }
-/* Light theme (#1215): a real light palette under prefers-color-scheme;
-   the dark palette above stays the default for dark scheme. */
-@media (prefers-color-scheme: light) {
-  body { background: #ffffff; color: #1f2328; }
-  nav { background: #f6f8fa; border-bottom-color: #d1d9e0; }
-  .navgroup + .navgroup { border-left-color: #d1d9e0; }
-  .navlabel { color: #59636e; }
-  .navgroup[data-current="true"] .navlabel { color: #0969da; }
-  nav a { color: #0969da; }
-  nav a.active, nav a:hover { background: #eaeef2; }
-  nav a.active { background: #0969da26; color: #0550ae; box-shadow: inset 0 -2px 0 #0969da; }
-  a { color: #0969da; }
-  .card { background: #ffffff; border-color: #d1d9e0; }
-  .col { background: #f6f8fa; border-color: #d1d9e0; }
-  .col h2 { color: #59636e; }
-  .muted, .foot, caption { color: #59636e; }
-  .badge { border-color: #d1d9e0; }
-  .badge.open, .badge.orch, .badge.agent { color: #0969da; }
-  .badge.merged, .badge.healthy, .badge.moving, .badge.gh, .badge.acked, .badge.act-applied { color: #1a7f37; }
-  .badge.closed { color: #59636e; }
-  .badge.implementing, .badge.near, .badge.stalled, .badge.stale, .badge.msg, .badge.act-pending, .badge.whyuser { color: #9a6700; }
-  .badge.walled, .badge.drew, .badge.blocked, .badge.act-rejected { color: #cf222e; }
-  .badge.review, .badge.Muse, .badge.conflict, .badge.act-snoozed { color: #8250df; }
-  .badge.src { background: #eaeef2; color: #1f2328; }
-  th, td { border-color: #d1d9e0; }
-  th { background: #f6f8fa; }
-  .banner { color: #9a6700; }
-  .banner.drew { color: #cf222e; }
-  .chips a, .fchip, .qchip, .hchip, .xchip { background: #f6f8fa; color: #1f2328; border-color: #d1d9e0; }
-  /* The tray chip background lightens above, so its restore (x) button must drop its dark-surface foreground too (Codex P2 on PR #3308). */
-  .hchip button { color: #1f2328; }
-  .chips a.active { color: #0969da; }
-  .fchip.stale, .fchip.absent, .qblock .qremaining { color: #9a6700; }
-  .fchip.invalid, .cform .err, .aform .err { color: #cf222e; }
-  .dot { background: #59636e; }
-  .dot.up, .dot.self { background: #1a7f37; }
-  .dot.down, .dot.invalid { background: #cf222e; }
-  .dot.stale, .dot.absent { background: #9a6700; }
-  .dot.off, .dot.unknown { background: #59636e; }
-  .dot.fixtures { background: transparent; border-color: #8250df; }
-  .cmt { background: #f6f8fa; border-left-color: #d1d9e0; }
-  .cov, .cform, .actbox, .skel { background: #f6f8fa; border-color: #d1d9e0; }
-  /* Charts keep their authored dark surface in light mode: the SVG
-     foregrounds are generated for dark (model labels #c9d1d9, the
-     Pareto frontier #e6edf3), so a light chart background would wash
-     them out — the chart card and its controls stay dark instead. */
-  .chart { background: #0d1117; border-color: #30363d; color: #e6edf3; }
-  .chart .muted { color: #8b949e; }
-  .chart .xpl-ctl button, .chart .xpl-ctl select { background: #161b22; color: #e6edf3; border-color: #30363d; }
-  .chart .xpl-ctl button.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
-  .cform textarea, .cform select, .cform input[type="text"], .raform textarea, .raform select, .raform input[type="date"], .actbox select, .aform select, .aform input[type="text"], .aform input[type="datetime-local"], nav select, .xpl-filters input[type="search"], .xpl-filters select, .xpl-ctl select { background: #ffffff; color: #1f2328; border-color: #d1d9e0; }
-  .cform label, .actbox .ahead label, .aform .why, .optform .effect, .orderctl { color: #59636e; }
-  .cform .kinds label { color: #1f2328; }
-  .aform button { background: #f6f8fa; color: #1f2328; border-color: #d1d9e0; }
-  .aform button.danger { color: #cf222e; border-color: #cf222e; }
-  .xtabs { border-bottom-color: #d1d9e0; }
-  .xtab { color: #59636e; }
-  .xtab:hover, .xtab.active { color: #1f2328; }
-  .xtab.active { background: #f6f8fa; border-color: #d1d9e0; }
-  .xp-seg button { background: #f6f8fa; color: #59636e; }
-  .xpl-table tr:hover td { background: #f6f8fa; }
-  .xpl-ctl button { background: #f6f8fa; color: #1f2328; border-color: #d1d9e0; }
-  .card .sentline, .qblock .qanswered { color: #1a7f37; }
-  details.carddetail { border-top-color: #d1d9e0; }
-  details.carddetail dt { color: #59636e; }
-  details.carddetail summary, .cbox summary, .kids summary { color: #0969da; }
-  .kids { border-left-color: #d1d9e0; }
-  .obj .n { color: #0969da; }
-  .foot { border-top-color: #d1d9e0; }
-  .qblock { border-top-color: #d1d9e0; }
-  .cbox { border-top-color: #d1d9e0; }
-}
-  .epic-graph-flex { display: flex; gap: 16px; align-items: flex-start; }
-  .epic-graph-svg { flex: 1 1 auto; min-width: 0; overflow-x: auto; }
-  .epic-graph-side { flex: 0 0 320px; max-width: 100%; }
-  .epic-graph-list { margin: 0; padding-left: 18px; }
-  .epic-graph-list li { margin: 4px 0; }
-  .epic-graph-selector { position: static; }
-  .epic-graph-selector a { white-space: normal; display: inline; min-height: 0; padding: 0; }
-  @media (max-width: 720px) { .epic-graph-flex { flex-direction: column; } .epic-graph-side { flex: none; width: 100%; } }
-@media (max-width: 720px) {
-  body { font-size: 13.5px; }
-  body { overflow-x: clip; }
-  main { padding: 12px 10px 60px; }
-  nav { padding: 7px 10px; gap: 2px 8px; }
-  .navgroup + .navgroup { padding-left: 8px; }
-  .navlabel { font-size: 10px; margin-right: 2px; }
-  nav a { padding: 5px 7px; }
-  [id] { scroll-margin-top: 192px; }
-  button, select, input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), textarea, summary { min-height: 40px; }
-  label:has(input[type="checkbox"]), label:has(input[type="radio"]) { display: inline-flex; align-items: center; min-height: 40px; }
-  a.today-health-link { min-height: 40px; }
-  h1 { font-size: 16px; }
-  .board { grid-template-columns: 1fr; }
-  .pool { grid-template-columns: 1fr; }
-  th, td { padding: 5px 6px; }
-  meter { width: 96px; }
-  .card { padding: 8px 10px; }
-}
-`;
+/* The stylesheet lives in src/ui.css (Tailwind v4 + DaisyUI v5 plus the
+   legacy component rules below it) and is built to the committed static
+   asset src/assets/app.css by `bun run build:css` — see the README's
+   "Styling" section. Do not inline page CSS here. */
 
 /** Canonical tailnet URL for this dashboard (MagicDNS — never the raw IP). */
 export const TAILNET_URL = "http://amd-6.raptor-pumpkinseed.ts.net:4870";
@@ -779,11 +452,21 @@ export function pageDropdown(active: string): string {
       return `<optgroup label="${esc(group.title)}">${options}</optgroup>`;
     })
     .join("");
-  return `<select aria-label="Go to page" onchange="if(this.value)location.href=this.value"><option value="">Pages ▾</option>${groups}</select>`;
+  return `<select aria-label="Go to page" class="select select-bordered select-sm" data-on:change="if (evt.target.value) { window.location.href = evt.target.value; }"><option value="">Pages ▾</option>${groups}</select>`;
+}
+
+export function themeToggle(): string {
+  // Datastar-first theme toggle (Phase C): the vendored Datastar v1 binds
+  // data-on:<event> (colon form) for handlers — the dash form does not bind
+  // clicks (verified live against the vendored bundle). A $pmTheme signal seeded from
+  // the <html data-theme> the inline bootstrap set (stored choice or the
+  // dark default); the effect is the single writer of data-theme +
+  // localStorage, and the click handler only flips the signal.
+  return `<span class="theme-toggle-wrap" data-signals="{ pmTheme: 'dark' }" data-init="$pmTheme = document.documentElement.getAttribute('data-theme') || 'dark'" data-effect="document.documentElement.setAttribute('data-theme', $pmTheme); try { localStorage.setItem('pm-theme', $pmTheme); } catch (e) {}"><button type="button" class="btn btn-ghost btn-sm theme-toggle" data-on:click="$pmTheme = $pmTheme === 'dark' ? 'light' : 'dark'" aria-label="Toggle between dark and light theme" title="Toggle dark / light theme">◐ <span data-text="$pmTheme === 'dark' ? 'Dark' : 'Light'"></span></button></span>`;
 }
 
 function globalSearch(): string {
-  return `<form class="navsearch" action="/search" method="get" role="search"><input type="search" name="q" aria-label="Search board and roadmap work" placeholder="Search work…" required><button type="submit">Search</button></form>`;
+  return `<form class="navsearch" action="/search" method="get" role="search"><input type="search" name="q" aria-label="Search board and roadmap work" placeholder="Search work…" required class="input input-bordered input-sm"><button type="submit" class="btn btn-sm">Search</button></form>`;
 }
 
 function layout(
@@ -803,14 +486,14 @@ function layout(
   const links = navLinks(active);
   const dropdown = pageDropdown(active);
   return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(title)} · aggregator</title><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#161b22"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="PM Stack"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"><style>${CSS}</style><script type="module" src="/assets/datastar.js"></script></head>
-<body><nav>${links}${dropdown}${globalSearch()}</nav><main>${chipsHtml}${body}
+<html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(title)} · aggregator</title><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#161b22"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="PM Stack"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"><script>try{var __pmTheme=localStorage.getItem('pm-theme');if(__pmTheme==='light'||__pmTheme==='dark')document.documentElement.setAttribute('data-theme',__pmTheme);}catch(e){}</script><link rel="stylesheet" href="/assets/app.css"><script type="module" src="/assets/datastar.js"></script></head>
+<body><nav class="navbar bg-base-200 shadow-md flex-wrap items-center gap-x-3 px-4">${links}${dropdown}${globalSearch()}${themeToggle()}</nav><main class="w-full">${chipsHtml}${body}
 <div class="foot"><details class="srcdetail"><summary>source detail</summary>board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}</details><span class="kbd-hint">${KEY_HINT}</span> · tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
 </main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script>${extra}${paletteHtml()}${KEYBOARD_SCRIPT}</body></html>`;
 }
 
-/** First-slice global search over board/roadmap subjects and linked refs. */
+/** Global search over board/roadmap subjects, linked refs, and the slice-2 sources (#1212): registry sessions, the DNS register, services, and tier items. */
 export function renderSearch(
   query: string,
   results: SearchResult[],
@@ -823,22 +506,38 @@ export function renderSearch(
       const badges = result.refs
         .map((ref) => {
           const item = items.get(ref);
+          // Codex P1 on PR #7331 (defense in depth): a non-GitHub ref
+          // (tracked-goal id, orch: key) must never reach refUrl, which
+          // throws on it — render it as a plain-text badge instead.
           return item
             ? itemBadge(item)
-            : `<a class="badge closed" href="${esc(refUrl(ref))}" title="Unresolved by the current item source">${esc(ref)} · unresolved</a>`;
+            : isValidRef(ref)
+              ? `<a class="badge closed" href="${esc(refUrl(ref))}" title="Unresolved by the current item source">${esc(ref)} · unresolved</a>`
+              : `<span class="badge closed">${esc(ref)} · unresolved</span>`;
         })
         .join(" ");
-      return `<div class="card"><a href="/item/${encodeURIComponent(result.id)}"><strong>${esc(result.title)}</strong></a><br><span class="muted">${result.kind} · ${esc(result.summary)}</span>${badges ? `<div class="strip">${badges}</div>` : ""}</div>`;
+      return `<div class="card"><a href="${esc(result.href)}"><strong>${esc(result.title)}</strong></a><br><span class="muted">${result.kind} · ${esc(result.summary)}</span>${badges ? `<div class="strip">${badges}</div>` : ""}</div>`;
     })
     .join("");
-  const body = `<h1>Search</h1><p class="muted">Search board items and roadmap rows by subject, title, or linked issue/PR ref. Linked GitHub badges show their current projected state and whether the result is fixture-only.</p><form class="search-page-form" action="/search" method="get" role="search"><label for="search-query">Search work</label><input id="search-query" type="search" name="q" value="${esc(query)}" placeholder="Title or owner/repo#123"><button type="submit">Search</button></form>${query ? `<h2>${results.length} result${results.length === 1 ? "" : "s"} for “${esc(query)}”</h2>${cards || '<p class="muted">No matching work found.</p>'}` : '<p class="muted">Enter a title or issue/PR reference to search.</p>'}`;
+  const body = `<h1>Search</h1><p class="muted">Search board items, roadmap rows, registry sessions, DNS domains, services, and tier items by subject, title, or linked issue/PR ref. Every result links to its own detail view. Linked GitHub badges show their current projected state and whether the result is fixture-only.</p><form class="search-page-form" action="/search" method="get" role="search"><label for="search-query">Search work</label><input id="search-query" type="search" name="q" value="${esc(query)}" placeholder="Title or owner/repo#123"><button type="submit" class="btn btn-sm">Search</button></form>${query ? `<h2>${results.length} result${results.length === 1 ? "" : "s"} for “${esc(query)}”</h2>${cards || '<p class="muted">No matching work found.</p>'}` : '<p class="muted">Enter a title or issue/PR reference to search.</p>'}`;
+  // #1212 slice 2: the search page carries the same freshness facets
+  // as the home page of each result kind present (board/roadmap/items
+  // for work, registry for sessions, dns for the register, quota and
+  // usage for services, orchestration/attention/registry for tiers).
+  const chipKeys = new Set<keyof Provenance>(["board", "roadmap", "items"]);
+  for (const result of results) {
+    if (result.kind === "registry") chipKeys.add("registry");
+    if (result.kind === "dns") chipKeys.add("dns");
+    if (result.kind === "service") { chipKeys.add("quota"); chipKeys.add("usage"); }
+    if (result.kind === "tier") { chipKeys.add("orchestration"); chipKeys.add("attention"); chipKeys.add("registry"); }
+  }
   return layout(
     "Search",
     body,
     provenance,
     "/search",
     "",
-    detail ? freshnessChips(detail, ["board", "roadmap", "items"]) : "",
+    detail ? freshnessChips(detail, [...chipKeys]) : "",
   );
 }
 
@@ -2021,7 +1720,7 @@ function timelineTable(
       return `<tr><th scope="row">${esc(theme)}</th>${cells}</tr>`;
     })
     .join("");
-  return `<div class="tblwrap"><table><caption>Roadmap timeline by theme</caption>${head}${body}</table></div>`;
+  return `<div class="tblwrap"><table class="table table-zebra"><caption>Roadmap timeline by theme</caption>${head}${body}</table></div>`;
 }
 
 export function renderRoadmap(
@@ -2104,6 +1803,8 @@ export interface ItemExtras {
   epicRollup?: EpicRollup;
   /** Project-pool briefs for linked refs (#1279). */
   briefs?: Map<RefKey, ItemBrief>;
+  /** Real ready-for-agent dispatch state for explicitly labelled linked issues. */
+  dispatchStates?: { ref: RefKey; state: string; provenance: { source: string; observedAt: string } }[];
   /** The shared audit stream, scoped to the item's canonical refs. */
   activity?: { events: AuditEvent[]; globalHref: string; gaps: GapRecord[]; coverage?: readonly ActivityCoverage[] };
 }
@@ -2189,12 +1890,20 @@ export function renderItem(
     ? `<p>Live services: ${extras.serviceLinks.map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>`
     : "";
   const epicRollup = extras?.epicRollup ? epicRollupHtml(extras.epicRollup) : "";
+  const dispatchSection = extras?.dispatchStates?.length
+    ? `<section><h2>ready-for-agent dispatch</h2><ul>${extras.dispatchStates
+        .map(
+          (entry) =>
+            `<li><a href="https://github.com/${esc(entry.ref.replace("#", "/issues/"))}">${esc(entry.ref)}</a>: <strong>${esc(entry.state)}</strong> <span class="muted">· ${esc(entry.provenance.source)} checked ${esc(entry.provenance.observedAt)}</span></li>`,
+        )
+        .join("")}</ul></section>`
+    : "";
   const activitySection = extras?.activity
     ? `<h2>Activity stream</h2><p><a href="${esc(extras.activity.globalHref)}">View these events in the global river</a></p><p class="muted"><strong>Freshness: unknown.</strong> The ingestion checkpoint records deliveries, not successful source polls. An empty event list does not establish complete coverage. Known gaps and documented source coverage are shown below.</p>${eventTableHtml(extras.activity.events)}<h3>Known activity gaps</h3><p class="muted">Gap records are source-scoped and do not currently identify affected item refs, so this is the global known-gap list.</p><div class="tblwrap">${gapsHtml(extras.activity.gaps)}</div><h3>Activity source coverage</h3><div class="tblwrap">${activityCoverageHtml(extras.activity.coverage)}</div>`
     : "";
   return layout(
     title,
-    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${epicRollup}${svcLinks}${stripHtml(items, links)}
+    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${epicRollup}${svcLinks}${dispatchSection}${stripHtml(items, links)}
 ${
   extras?.briefs
     ? briefPanelsForRefs(
@@ -2203,8 +1912,8 @@ ${
       )
     : ""
 }
-<h2>Linked issues / PRs</h2><div class="tblwrap"><table><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
- <h2>Activity stream comments</h2><div class="tblwrap"><table><caption>Comments</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
+<h2>Linked issues / PRs</h2><div class="tblwrap"><table class="table table-zebra"><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
+ <h2>Activity stream comments</h2><div class="tblwrap"><table class="table table-zebra"><caption>Comments</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
  ${activitySection}${sessionSection}${statusSection}${roadmapAnnotationSection}${dashSection}`,
     provenance,
     "/board",
@@ -2348,6 +2057,17 @@ function serviceCardHtml(svc: SaasService, history: SnapshotRecord[]): string {
   return `<div class="card${f.stale ? " stale" : ""}"><div><strong><a href="/quota/service/${esc(svc.id)}">${esc(svc.name)}</a></strong>${svc.status !== "active" ? ` <span class="badge src">${esc(svc.status)}</span>` : ""}${conflict}<br><span class="muted">${esc(svc.plan)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}${svc.nextDate ? `<br><span class="muted">next: ${esc(svc.nextDate)}</span>` : ""}</div><div>${metrics}${billed}${payg}${pace}<div><a href="/quota/service/${esc(svc.id)}">show all →</a></div></div></div>`;
 }
 
+function uninstrumentedServicesHtml(services: UsageView["uninstrumentedServices"]): string {
+  if (!services.length) return "";
+  const rows = services
+    .map(
+      (svc) =>
+        `<tr><th scope="row">${esc(svc.name)}</th><td>${esc(svc.whatFor)}</td><td>${esc(svc.status)}</td><td>${esc(svc.checkedAt ?? "no check date recorded")}</td><td>${esc(svc.overageBehavior)}</td><td>${esc(svc.guardrailNotes)}</td></tr>`,
+    )
+    .join("");
+  return `<h2>Tracker services without instrumented quotas</h2><details><summary>${services.length} evaluated services — expand for tracker states and guardrails</summary><div class="tblwrap"><table><caption>Services in free-services-to-check.md</caption><tr><th scope="col">Service</th><th scope="col">What for</th><th scope="col">Tracker state</th><th scope="col">Checked</th><th scope="col">Overage behavior</th><th scope="col">Guardrail notes</th></tr>${rows}</table></div></details>`;
+}
+
 /** A one-line pace projection on a card, when the history supports one (§1.5). */
 function paceLineHtml(serviceId: string, history: SnapshotRecord[]): string {
   const metricIds = [...new Set(history.filter((r) => r.unit === "pct").map((r) => r.metricId))];
@@ -2371,20 +2091,91 @@ function chargesStripHtml(usage: UsageView): string {
     )
     .join("");
   const total = usage.charges.reduce((sum, c) => sum + c.amountUsd, 0);
-  return `<h2>Charges this period</h2><p class="muted">Evidence, not accounting — charges observed on cards/receipts in the local records (full balances stay in the finance tooling). Total observed: $${total.toFixed(2)}.</p><div class="tblwrap"><table><caption>Charges this period</caption><tr><th scope="col">Date</th><th scope="col">Charge</th><th scope="col">Amount</th><th scope="col">Method</th><th scope="col">Evidence</th></tr>${rows}</table></div>`;
+  return `<h2>Charges this period</h2><p class="muted">Evidence, not accounting — charges observed on cards/receipts in the local records (full balances stay in the finance tooling). Total observed: $${total.toFixed(2)}.</p><div class="tblwrap"><table class="table table-zebra"><caption>Charges this period</caption><tr><th scope="col">Date</th><th scope="col">Charge</th><th scope="col">Amount</th><th scope="col">Method</th><th scope="col">Evidence</th></tr>${rows}</table></div>`;
 }
 
 /** Lazy-refresh strip (#1171): a visible "refreshing" marker while a
  *  gatherer run is in flight, plus the manual refresh-now control. Both
  *  use the same trigger path; neither blocks the page on provider calls. */
-function quotaRefreshHtml(refresh?: import("./quota-refresh.ts").RefreshStatus): string {
+function quotaRefreshHtml(
+  refresh?: import("./quota-refresh.ts").RefreshStatus,
+  generatedAt?: string | null,
+): string {
   if (!refresh) return "";
   const marker = refresh.refreshing
     ? `<span class="badge refreshing" data-quota-refreshing="true">refreshing — the quota gatherer is running; reload for updated data</span>`
     : refresh.stale
       ? `<span class="muted">quota data is older than five minutes</span>`
       : "";
-  return `<div class="card quota-refresh"><div>${marker || '<span class="muted">quota data is fresh</span>'}</div><form method="post" action="/quota/refresh"><button type="submit">Refresh now</button></form></div>`;
+  // Manual refresh (#6125): the button POSTs the manual trigger route
+  // (POST /api/quota/refresh -> quotaRefresher.manual -> the deployed
+  // quota-gatherer.service, whose read is the single `opencode quota`
+  // source), then polls /api/quota.json until quota-current.json's
+  // generatedAt advances. Success is never faked: an advanced file whose
+  // gatherer reported failure, a failed request, or a poll window with
+  // no advance all surface as a failure message. The form remains the
+  // no-JS path (POST /quota/refresh, same manual trigger, 303 back).
+  return `<div class="card quota-refresh" data-quota-generated-at="${esc(generatedAt ?? "")}"${refresh.refreshing ? ' data-quota-refreshing="true"' : ""}><div><span data-quota-refresh-status aria-live="polite">${marker || '<span class="muted">quota data is fresh</span>'}</span></div><form method="post" action="/quota/refresh"><button type="submit" class="btn btn-primary btn-sm" data-quota-refresh-btn>Refresh quota</button></form></div>
+<script>
+(function () {
+  var strip = document.querySelector(".quota-refresh[data-quota-generated-at]");
+  if (!strip || strip.dataset.wired) return;
+  strip.dataset.wired = "1";
+  var btn = strip.querySelector("[data-quota-refresh-btn]");
+  var status = strip.querySelector("[data-quota-refresh-status]");
+  function say(text) { if (status) status.textContent = text; }
+  var MAX_POLLS = 72; // 72 x 5s = 6 min, the gatherer's MAX_REFRESH_MS bound.
+  function poll(baseline) {
+    var tries = 0;
+    var timer = setInterval(function () {
+      tries++;
+      fetch("/api/quota.json", { cache: "no-store" })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          var gen = data && data.gatherer ? data.gatherer.generatedAt : null;
+          if (gen && gen !== baseline) {
+            clearInterval(timer);
+            if (data.gatherer.ok === false) {
+              say("refresh failed — the quota gatherer ran but reported an error; the previous data is still shown");
+              if (btn) btn.disabled = false;
+            } else {
+              say("quota data updated — reloading…");
+              window.location.reload();
+            }
+          } else if (tries >= MAX_POLLS) {
+            clearInterval(timer);
+            say("refresh did not complete — quota data did not advance, so the gatherer may have failed; the previous data is still shown");
+            if (btn) btn.disabled = false;
+          }
+        })
+        .catch(function () { /* a transient poll error keeps polling until the cap */ });
+    }, 5000);
+  }
+  if (btn) {
+    btn.addEventListener("click", function (ev) {
+      ev.preventDefault();
+      btn.disabled = true;
+      say("refreshing — the quota gatherer is running…");
+      fetch("/api/quota/refresh", { method: "POST" })
+        .then(function (r) {
+          if (!r.ok) throw new Error("the refresh request failed (" + r.status + ")");
+          return r.json();
+        })
+        .then(function (res) {
+          poll((res && res.generatedAt) || strip.getAttribute("data-quota-generated-at") || "");
+        })
+        .catch(function (err) {
+          say("refresh failed — " + err.message);
+          btn.disabled = false;
+        });
+    });
+  }
+  if (strip.getAttribute("data-quota-refreshing") === "true") {
+    if (btn) btn.disabled = true;
+    poll(strip.getAttribute("data-quota-generated-at") || "");
+  }
+})();
+</script>`;
 }
 
 export function renderQuota(
@@ -2396,6 +2187,22 @@ export function renderQuota(
    *  manual refresh-now control. Absent means no request was made. */
   refresh?: import("./quota-refresh.ts").RefreshStatus,
 ): string {
+  // "-direct" display rule (#6125): judged over every provider name/id
+  // this surface renders — pool providers, pool ids, burn rows, the
+  // model-choice pool lists, and credential-lifecycle provider names.
+  // Display only; ids and keys below stay exactly as the view carries
+  // them.
+  const displayNames = providerDisplayNames([
+    ...view.pools.map((p) => p.provider),
+    ...view.pools.map((p) => p.id),
+    ...(view.burn ?? []).map((b) => b.provider),
+    ...(view.burn ?? []).map((b) => b.pool),
+    ...(view.choices
+      ? [...view.choices.hasHeadroom, ...view.choices.burnBeforeReset, ...view.choices.doNotStart]
+      : []),
+    ...(view.credentialLifecycle ?? []).map((c) => c.providerName),
+  ]);
+  const display = (name: string) => displayNames.get(name) ?? name;
   const credentialLifecycle = view.credentialLifecycle?.length
     ? `<h2>Credential lifecycle</h2><div class="card">${view.credentialLifecycle
         .map((credential) => {
@@ -2404,7 +2211,27 @@ export function renderQuota(
           const action = credential.userAction
             ? ` · <strong>user action:</strong> ${esc(credential.userAction.title)}`
             : "";
-          return `<div><strong>${esc(credential.providerName)} · ${esc(credential.label)}</strong> <span class="badge ${esc(credential.state)}">${esc(credential.state)}</span>${expiry}${reason}${action}</div>`;
+          return `<div><strong>${esc(display(credential.providerName))} · ${esc(credential.label)}</strong> <span class="badge ${esc(credential.state)}">${esc(credential.state)}</span>${expiry}${reason}${action}</div>`;
+        })
+        .join("")}</div>`
+    : "";
+  // #6671: provider-auth keeper problems render as their own card —
+  // a dying provider session (or a keeper that stopped reporting)
+  // must be visible on the board, not only in a state file. All-ok
+  // keepers render nothing here (no alert, no noise).
+  const providerAuthProblems = (view.providerAuth ?? []).filter((a) => a.reporting !== "ok");
+  const providerAuthSection = providerAuthProblems.length
+    ? `<h2>Provider auth</h2><div class="card">${providerAuthProblems
+        .map((a) => {
+          const detail =
+            a.reporting === "attention"
+              ? `${esc(a.alert ?? a.status ?? "attention")}${a.alertSince ? ` · since ${fmtDate(a.alertSince)}` : ""}${a.sessionExpiresAt ? ` · session expires ${fmtDate(a.sessionExpiresAt)}` : ""}${a.lastGoodAt ? ` · last good ${fmtDate(a.lastGoodAt)}` : ""}`
+              : a.reporting === "stale"
+                ? `keeper not reporting · last check ${fmtDate(a.checkedAt)}`
+                : a.reporting === "invalid"
+                  ? "keeper not reporting · state file invalid"
+                  : "keeper not reporting · no state file";
+          return `<div><strong>${esc(a.provider)}</strong> <span class="badge error">${esc(a.reporting)}</span> <span class="muted">${detail}</span></div>`;
         })
         .join("")}</div>`
     : "";
@@ -2437,18 +2264,18 @@ export function renderQuota(
       const fresh = p.freshness
         ? `<div class="muted">gatherer · ${esc(p.freshness.state)} · measured ${fmtDate(p.freshness.measuredAt)} · ${esc(p.freshness.source)}${p.freshness.error ? ` · ${esc(p.freshness.error)}` : ""}</div>`
         : "";
-      return `<div class="card pool"><div><strong>${esc(p.provider)}</strong><br><span class="muted">${esc(p.plan)}</span><br><span class="badge ${esc(p.state)}">${esc(p.state)}${p.wallLiftsAt ? ` · lifts ${fmtDate(p.wallLiftsAt)}` : ""}</span>${p.burnTokensPerMin ? ` <span class="muted">${p.burnTokensPerMin} tok/min</span>` : ""}</div><div>${windows}${credRows}${sessions}${fresh}${p.note ? `<div class="muted">${esc(p.note)}</div>` : ""}</div></div>`;
+      return `<div class="card pool"><div><strong>${esc(display(p.provider))}</strong><br><span class="muted">${esc(p.plan)}</span><br><span class="badge ${esc(p.state)}">${esc(p.state)}${p.wallLiftsAt ? ` · lifts ${fmtDate(p.wallLiftsAt)}` : ""}</span>${p.burnTokensPerMin ? ` <span class="muted">${p.burnTokensPerMin} tok/min</span>` : ""}</div><div>${windows}${credRows}${sessions}${fresh}${p.note ? `<div class="muted">${esc(p.note)}</div>` : ""}</div></div>`;
     })
     .join("");
   const burn = view.burn
     .map(
       (b) =>
-        `<tr><td>${esc(b.provider)}</td><td>${esc(b.pool)}</td><td>${fmtDate(b.from)}</td><td>${fmtDate(b.to)}</td><td>${b.tokens.toLocaleString()}</td></tr>`,
+        `<tr><td>${esc(display(b.provider))}</td><td>${esc(display(b.pool))}</td><td>${fmtDate(b.from)}</td><td>${fmtDate(b.to)}</td><td>${b.tokens.toLocaleString()}</td></tr>`,
     )
     .join("");
-  const choices = (list: string[]) => (list.length ? list.map(esc).join(", ") : "—");
-  const burnAndChoices = `<h2>Burn between resets</h2><div class="tblwrap"><table><caption>Burn between resets</caption><tr><th scope="col">Provider</th><th scope="col">Pool</th><th scope="col">From</th><th scope="col">To</th><th scope="col">Tokens</th></tr>${burn || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>
-<h2>Model choice</h2><div class="tblwrap"><table><caption>Model choice rules</caption><tr><th scope="col">Rule</th><th scope="col">Pools</th></tr>
+  const choices = (list: string[]) => (list.length ? list.map((id) => esc(display(id))).join(", ") : "—");
+  const burnAndChoices = `<h2>Burn between resets</h2><div class="tblwrap"><table class="table table-zebra"><caption>Burn between resets</caption><tr><th scope="col">Provider</th><th scope="col">Pool</th><th scope="col">From</th><th scope="col">To</th><th scope="col">Tokens</th></tr>${burn || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>
+<h2>Model choice</h2><div class="tblwrap"><table class="table table-zebra"><caption>Model choice rules</caption><tr><th scope="col">Rule</th><th scope="col">Pools</th></tr>
 <tr><td>Headroom for a new session</td><td>${choices(view.choices.hasHeadroom)}</td></tr>
 <tr><td>Burn-it-before-reset (unused headroom)</td><td>${choices(view.choices.burnBeforeReset)}</td></tr>
 <tr><td>Do not start a second session</td><td>${choices(view.choices.doNotStart)}</td></tr></table></div>`;
@@ -2457,6 +2284,8 @@ export function renderQuota(
       "Quota + throughput",
       `<h1>Quota + throughput</h1><p class="muted">All pooled quotas, resets, and burn rates. Machine-first: the same data is at <a href="/api/quota.json">/api/quota.json</a>.</p>
 ${credentialLifecycle}
+${providerAuthSection}
+${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
 <h2>Pools</h2>${pools}
 ${burnAndChoices}`,
       provenance,
@@ -2499,10 +2328,11 @@ ${burnAndChoices}`,
     `<h1>Usage &amp; billing</h1><p class="muted">Token quotas, PAYG dollars, and SaaS usage vs limits — from dated local records; every card carries its measured-at stamp, and stale cards dim. Machine-first: <a href="/api/quota.json">/api/quota.json</a>.</p>
 ${attentionStripHtml(usage)}
 ${credentialLifecycle}
-${quotaRefreshHtml(refresh)}
+${providerAuthSection}
+${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
 <h2>Token quotas</h2>${pools}
 ${paygCardHtml(usage)}
-<h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}
+<h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}${uninstrumentedServicesHtml(usage.uninstrumentedServices ?? [])}
 ${chargesStripHtml(usage)}
 <h2>Sources</h2><div class="card"><div>Research records behind the cards on this page that carry provenance — all in <code>~/workspace/ai-subscriptions/</code>:</div><div>· evidence baseline: <code>evidence-and-interpretation-baseline-2026-10-20.md</code> (dated official pricing wording + interpretation notes)</div><div>· master tracker: the tracker behind <code>quota-view.md</code> Part (b) — each card with a tracker row cites its Summary (b) row and service section</div><div>· candidate evaluations: <code>free-services-to-check.md</code></div><div class="muted">Per-service provenance (tracker row or its absence, baseline, quota-view section) is on each service's detail page.</div></div>
 ${burnAndChoices}`,
@@ -2610,7 +2440,7 @@ export function renderServiceDetail(
 <h1>${esc(svc.name)}</h1>
 <div class="card${f.stale ? " stale" : ""}"><strong>${esc(svc.plan)}</strong> <span class="badge src">${esc(svc.status)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}<br><span class="muted">source: ${esc(svc.sourceNote)}${svc.nextDate ? ` · next: ${esc(svc.nextDate)}` : ""}${svc.billedUsd != null ? ` · billed this period: $${svc.billedUsd.toFixed(2)}` : ""}</span>${svc.usageNote ? `<br>${esc(svc.usageNote)}` : ""}</div>
 <h2>Sources</h2><div class="card">${svc.sources ? `<div>quota-view section: <code>${esc(svc.sources.quotaViewSection)}</code> in <code>quota-view.md</code> Part (b)</div><div>tracker row: ${svc.sources.trackerRow ? `<code>Summary (b) — ${esc(svc.sources.trackerRow)}</code>` : (svc.status === "candidate" || svc.status === "no-account") ? "none — no Summary (b) row; candidate / not held (§1.4)" : "none — no Summary (b) row"}</div><div>evidence baseline: <code>${esc(svc.sources.baselineDoc)}</code></div>` : `<div class="muted">source: ${esc(svc.sourceNote)}</div>`}</div>
-<h2>All metrics</h2><div class="tblwrap"><table><caption>All metrics</caption><tr><th scope="col">Metric</th><th scope="col">Used</th><th scope="col">Limit</th><th scope="col">%</th><th scope="col">Note</th></tr>${metricRows}</table></div>
+<h2>All metrics</h2><div class="tblwrap"><table class="table table-zebra"><caption>All metrics</caption><tr><th scope="col">Metric</th><th scope="col">Used</th><th scope="col">Limit</th><th scope="col">%</th><th scope="col">Note</th></tr>${metricRows}</table></div>
 ${payg}
 <h2>Snapshot history</h2>${snapshotFreshnessStamp(history, svc.cadenceDays, now)}${charts || ""}
 ${paces ? `<h2>Pace projections</h2><div class="card">${paces}</div>` : ""}
@@ -2711,7 +2541,16 @@ function tierItemCard(
   const action = item.recommendedAction
     ? `<br><span class="muted">Recommended: ${esc(item.recommendedAction)}</span>`
     : "";
-  const ref = item.ref ? `<br><a href="${esc(refUrl(item.ref))}">${esc(item.ref)}</a>` : "";
+  // A tier item's ref is only sometimes a GitHub ref: tracked-goal items
+  // carry their goal id (e.g. "goal_…"), and refUrl throws on those — one
+  // such item 500ed the whole Needs-you render (phase-b inventory,
+  // 2026-11-05). Non-GitHub refs render as plain code, never a link.
+  const refLink = item.ref
+    ? isValidRef(item.ref)
+      ? `<a href="${esc(refUrl(item.ref))}">${esc(item.ref)}</a>`
+      : `<code>${esc(item.ref)}</code>`
+    : "";
+  const ref = item.ref ? `<br>${refLink}` : "";
   const cmt = counts ? commentBadge(tierItemObjectRef(item), counts) : "";
   const badges = actionBadgesHtml(act?.actions);
   // #1291: on Needs User cards, the item's own contract renders — the
@@ -2742,7 +2581,7 @@ function tierItemCard(
   // carries a gh: ref, and every card expands inline to its full
   // detail — source, state, since/lastSeenAt, horizon, blockedBy,
   // the question payload, and the recorded action history.
-  const titleHtml = item.ref ? `<a href="${esc(refUrl(item.ref))}">${esc(item.title)}</a>` : esc(item.title);
+  const titleHtml = item.ref && isValidRef(item.ref) ? `<a href="${esc(refUrl(item.ref))}">${esc(item.title)}</a>` : esc(item.title);
   const questionPayload = item.questions?.length
     ? `<dt>Questions</dt><dd>${item.questions
         .map(
@@ -2753,7 +2592,7 @@ function tierItemCard(
     : item.question
       ? `<dt>Question</dt><dd>“${esc(item.question)}”</dd>`
       : "";
-  const detail = `<details class="carddetail"><summary>Details &amp; history</summary><dl><dt>Source</dt><dd>${esc(item.source)} · ${esc(item.kind)}${item.state ? ` · state ${esc(item.state)}` : ""}</dd><dt>Since</dt><dd>${esc(fmtDate(item.since))}</dd><dt>Last seen</dt><dd>${esc(fmtDate(item.lastSeenAt))}</dd>${item.horizon ? `<dt>Horizon</dt><dd>${esc(item.horizon)}</dd>` : ""}<dt>Ref</dt><dd><code>${esc(objectRef)}</code>${item.ref ? ` · <a href="${esc(refUrl(item.ref))}">${esc(item.ref)}</a>` : ""}</dd>${item.blockedBy?.length ? `<dt>Blocked by</dt><dd>${item.blockedBy.map((d) => esc(`${d.task} (${d.status}${d.workerLabel ? `, ${d.workerLabel}` : ""})`)).join("; ")}</dd>` : ""}${questionPayload}</dl>${actionHistoryHtml(act?.actions)}</details>`;
+  const detail = `<details class="carddetail"><summary>Details &amp; history</summary><dl><dt>Source</dt><dd>${esc(item.source)} · ${esc(item.kind)}${item.state ? ` · state ${esc(item.state)}` : ""}</dd><dt>Since</dt><dd>${esc(fmtDate(item.since))}</dd><dt>Last seen</dt><dd>${esc(fmtDate(item.lastSeenAt))}</dd>${item.horizon ? `<dt>Horizon</dt><dd>${esc(item.horizon)}</dd>` : ""}<dt>Ref</dt><dd><code>${esc(objectRef)}</code>${item.ref ? ` · ${refLink}` : ""}</dd>${item.blockedBy?.length ? `<dt>Blocked by</dt><dd>${item.blockedBy.map((d) => esc(`${d.task} (${d.status}${d.workerLabel ? `, ${d.workerLabel}` : ""})`)).join("; ")}</dd>` : ""}${questionPayload}</dl>${actionHistoryHtml(act?.actions)}</details>`;
   const commentBox =
     act?.identities && act.commentOpts ? cardCommentHtml(objectRef, item.ref, act.comments, act.commentOpts) : "";
   return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><div class="attention-card-header"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span>${isUserTier ? whyUserBadge(item) : ""}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""} <strong>${titleHtml}</strong>${cmt}${badges}</div><br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${extBody}${ref}${controls}${detail}${commentBox}</div>`;
@@ -3549,6 +3388,9 @@ export function renderTodayBody(
   queueStale = false,
 ): string {
   const walled = quota.pools.filter((p) => p.state === "walled");
+  // "-direct" display rule (#6125), judged over this view's pool set.
+  const poolDisplayNames = providerDisplayNames(quota.pools.map((p) => p.provider));
+  const displayPoolProvider = (name: string) => poolDisplayNames.get(name) ?? name;
   const alerts: string[] = [];
   const drewTotal = attention.drew.length + attention.drewExtra.length;
   if (drewTotal) {
@@ -3558,7 +3400,7 @@ export function renderTodayBody(
   }
   if (walled.length) {
     alerts.push(
-      `<div class="banner"><strong>Walled pools:</strong> ${walled.map((p) => esc(`${p.provider} (${p.plan})`)).join(", ")} — <a href="/quota">quota</a></div>`,
+      `<div class="banner"><strong>Walled pools:</strong> ${walled.map((p) => esc(`${displayPoolProvider(p.provider)} (${p.plan})`)).join(", ")} — <a href="/quota">quota</a></div>`,
     );
   }
   // #1139: the derived view's banner names the section's TRUE state —
@@ -3579,11 +3421,16 @@ export function renderTodayBody(
   const actions = today.actions?.length
     ? `<h2>Pushed back into motion</h2>${today.actions.map((a) => `<div class="card"><span class="badge">${esc(a.kind)}</span> <strong>${esc(a.target)}</strong><br>${esc(a.summary)}<br><span class="muted">${esc(fmtDate(a.at))}</span></div>`).join("")}`
     : "";
+  // #6174: an objective ref comes from publisher lined-up data and is
+  // only sometimes a GitHub ref — tracked-goal items carry their goal id,
+  // and refUrl throws on those, which 500ed the whole /today render (the
+  // Today-page sibling of the #6149 Needs-you fix). Mirror tierItemCard:
+  // GitHub refs link, everything else renders as plain code.
   const objectives = today.objectives.length
     ? today.objectives
         .map(
           (o, i) =>
-            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.ref ? `<br><a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : ""}</div></div>`,
+            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.ref ? `<br>${isValidRef(o.ref) ? `<a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : `<code>${esc(o.ref)}</code>`}` : ""}</div></div>`,
         )
         .join("")
     : `<p class="muted">No objectives lined up for today.</p>`;
@@ -3679,7 +3526,9 @@ function queueRows(rows: QueueRow[], empty: string): string {
         : "";
       const worker = item.worker ? `<br><strong>Worker:</strong> ${esc(item.worker)}` : "";
       const epic = item.epic
-        ? `<br><span class="muted">Epic: <a href="${esc(item.epic.url)}">${esc(item.epic.title)}</a></span>`
+        ? item.epic.url
+          ? `<br><span class="muted">Epic: <a href="${esc(item.epic.url)}">${esc(item.epic.title)}</a></span>`
+          : `<br><span class="muted">Epic: ${esc(item.epic.title)}</span>`
         : "";
       const why = item.why ? `<br><span class="muted">${esc(item.why)}</span>` : "";
       const horizon = item.horizon ? ` · ${esc(item.horizon)}` : "";
@@ -3808,12 +3657,19 @@ function reconciledInProgress(data: OverviewData): OverviewInProgressItem[] {
     for (const task of goal.linedUp) {
       if (task.status !== "in-progress") continue;
       if (task.ref) {
-        signal(task.ref, "active-session", task.title);
+        // #6205: a lined-up ref is feed data, not necessarily a GitHub
+        // ref (goal ids, bare numbers). Signaling an invalid ref makes
+        // ensure() fall back to refUrl(), whose parseRef throws and
+        // kills the whole overview — skip refs the shared rule rejects.
+        if (isValidRef(task.ref)) signal(task.ref, "active-session", task.title);
         continue;
       }
       for (const ref of refsInText(task.title)) signal(ref, "active-session", task.title);
       for (const match of task.title.matchAll(/([\w.-]+\/[\w.-]+)#(\d+)/g)) {
-        signal(`${match[1]}#${match[2]}`, "active-session", task.title);
+        const ref = `${match[1]}#${match[2]}`;
+        // #6205: same guard for title-scraped refs — \d+ admits
+        // numbers parseRef rejects as unsafe integers.
+        if (isValidRef(ref)) signal(ref, "active-session", task.title);
       }
     }
   }
@@ -3882,13 +3738,15 @@ export function deriveOverview(data: OverviewData): OverviewSummary {
     else if (item.status === "Done") row.done += 1;
     byRepo.set(item.repo, row);
   }
+  // "-direct" display rule (#6125), judged over this view's pool set.
+  const quotaDisplayNames = providerDisplayNames(data.quota.pools.map((pool) => pool.provider));
   const quota = data.quota.pools.map((pool) => {
     // #1134 review (Codex P2): derive from used/limit with the shared
     // helper — a window that carries `used` and `limit` but no explicit
     // `percent` must not silently drop out of the tightest-window figure.
     const percents = pool.windows.map((w) => windowPercent(w));
     return {
-      provider: pool.provider,
+      provider: quotaDisplayNames.get(pool.provider) ?? pool.provider,
       plan: pool.plan,
       state: pool.state,
       worstPercent: percents.length ? Math.max(...percents) : null,
@@ -4010,7 +3868,7 @@ function dnsTable(entries: DnsEntry[], renewingSoon: Set<DnsEntry>, nextRenewal?
   const rows = entries
     .map(
       (e) =>
-        `<tr${e === nextRenewal ? ' id="dns-next-renewal"' : ""} data-dns-row data-dns-status="${esc(e.status)}" data-dns-renewing-soon="${renewingSoon.has(e)}"><td><strong>${esc(e.domain)}</strong></td><td>${esc(e.renewal)}</td><td>${e.priceUsd != null ? `$${e.priceUsd.toFixed(2)}` : "—"}</td><td>${esc(e.autoRenew)}</td><td>${esc(e.plan)}</td><td>${esc(e.review)}</td></tr>`,
+        `<tr${e === nextRenewal ? ' id="dns-next-renewal"' : ""} data-dns-row data-dns-status="${esc(e.status)}" data-dns-renewing-soon="${renewingSoon.has(e)}"><td><strong id="${esc(dnsAnchor(e.domain))}">${esc(e.domain)}</strong></td><td>${esc(e.renewal)}</td><td>${e.priceUsd != null ? `$${e.priceUsd.toFixed(2)}` : "—"}</td><td>${esc(e.autoRenew)}</td><td>${esc(e.plan)}</td><td>${esc(e.review)}</td></tr>`,
     )
     .join("");
   return `<div class="tblwrap"><table id="dns-register-table"><caption>Domain register</caption><thead><tr><th scope="col">Domain</th><th scope="col">Next renewal</th><th scope="col">Price (list)</th><th scope="col">Auto-renew</th><th scope="col">Plan / status</th><th scope="col">Review?</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">none</td></tr>'}</tbody></table></div>`;
@@ -5792,7 +5650,7 @@ function aaTimingsTable(testRuns: AaTestRun[]): string {
         `<tr><td><strong>${esc(variantLabel(r.modelVariantKey))}</strong><br><span class="muted">${esc(r.snapshotDate ?? "no snapshot date")}</span></td><td>${r.intelligence ?? "—"}</td><td>${fmtCost(r.costPerTaskUsd)}</td><td>${fmtTimed(r.ttftSeconds)}</td><td>${fmtTimed(r.firstAnswerSeconds)}</td><td>${fmtTimed(r.e2e500Seconds)}</td><td>${fmtTimed(r.timePerTaskSeconds)}</td><td>${r.outputSpeedTps ?? "—"}</td></tr>`,
     )
     .join("");
-  return `<div class="tblwrap"><table><caption>Model configurations — intelligence and cost</caption><tr><th scope="col">Configuration</th><th scope="col">Intelligence</th><th scope="col">$/task</th><th scope="col">TTFT</th><th scope="col">First answer</th><th scope="col">E2E (500 tok)</th><th scope="col">Time / task</th><th scope="col">Speed (t/s)</th></tr>${rows || '<tr><td colspan="8" class="muted">none</td></tr>'}</table></div>`;
+  return `<div class="tblwrap"><table class="table table-zebra"><caption>Model configurations — intelligence and cost</caption><tr><th scope="col">Configuration</th><th scope="col">Intelligence</th><th scope="col">$/task</th><th scope="col">TTFT</th><th scope="col">First answer</th><th scope="col">E2E (500 tok)</th><th scope="col">Time / task</th><th scope="col">Speed (t/s)</th></tr>${rows || '<tr><td colspan="8" class="muted">none</td></tr>'}</table></div>`;
 }
 
 function aaConfigsTable(configs: AaConfig[]): string {
@@ -5802,7 +5660,7 @@ function aaConfigsTable(configs: AaConfig[]): string {
         `<tr><td><strong>${esc(c.modelName)}</strong></td><td>${esc(c.effort ?? "—")}</td><td>${c.intelligence ?? "—"}</td><td>${fmtCost(c.costPerTaskUsd)}</td><td>${c.speedTps ?? "—"}</td></tr>`,
     )
     .join("");
-  return `<div class="tblwrap"><table><caption>Models — effort, intelligence, cost, and speed</caption><tr><th scope="col">Model</th><th scope="col">Effort (AA label)</th><th scope="col">Intelligence</th><th scope="col">$/task</th><th scope="col">Speed (t/s)</th></tr>${rows || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>`;
+  return `<div class="tblwrap"><table class="table table-zebra"><caption>Models — effort, intelligence, cost, and speed</caption><tr><th scope="col">Model</th><th scope="col">Effort (AA label)</th><th scope="col">Intelligence</th><th scope="col">$/task</th><th scope="col">Speed (t/s)</th></tr>${rows || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>`;
 }
 
 function aaCaiTable(rowsIn: AaCaiRow[]): string {
@@ -5815,7 +5673,7 @@ function aaCaiTable(rowsIn: AaCaiRow[]): string {
     .join("");
   return `<h2>Coding Agent Index observations</h2>
 <p class="muted">The import's Coding Agent Index rows — a model plus its agent harness and settings, checked as published. Kept strictly separate from the AA Intelligence Index rows above: no score is converted between the indexes. "Not published" costs stay blank rather than estimated. These rows power the explorer's Coding agents perspective.</p>
-<div class="tblwrap"><table><caption>Model benchmark scores</caption><tr><th scope="col">Model</th><th scope="col">Effort</th><th scope="col">Harness</th><th scope="col">Version</th><th scope="col">CAI score</th><th scope="col">DeepSWE v1.1</th><th scope="col">Terminal-Bench 4.0</th><th scope="col">SWE-Atlas-QnA</th><th scope="col">$/task</th><th scope="col">Agent wall time / task</th><th scope="col">Tokens / task</th></tr>${rows || '<tr><td colspan="11" class="muted">none</td></tr>'}</table></div>`;
+<div class="tblwrap"><table class="table table-zebra"><caption>Model benchmark scores</caption><tr><th scope="col">Model</th><th scope="col">Effort</th><th scope="col">Harness</th><th scope="col">Version</th><th scope="col">CAI score</th><th scope="col">DeepSWE v1.1</th><th scope="col">Terminal-Bench 4.0</th><th scope="col">SWE-Atlas-QnA</th><th scope="col">$/task</th><th scope="col">Agent wall time / task</th><th scope="col">Tokens / task</th></tr>${rows || '<tr><td colspan="11" class="muted">none</td></tr>'}</table></div>`;
 }
 
 function aaNameList(names: string[]): string {
@@ -6136,7 +5994,7 @@ export function renderConflicts(inbox: ConflictInbox, provenance: Provenance, de
         )
         .join("");
       return `<h2 id="class-${esc(cls.classId)}">${esc(cls.label)} (${entries.length})</h2>
-<div class="tblwrap"><table><caption>${esc(cls.label)} — item, sources, both values, age</caption><tr><th scope="col">Item</th><th scope="col">Sources</th><th scope="col">Both values</th><th scope="col">Disagreeing for</th><th scope="col">Records</th></tr>${rows}</table></div>`;
+<div class="tblwrap"><table class="table table-zebra"><caption>${esc(cls.label)} — item, sources, both values, age</caption><tr><th scope="col">Item</th><th scope="col">Sources</th><th scope="col">Both values</th><th scope="col">Disagreeing for</th><th scope="col">Records</th></tr>${rows}</table></div>`;
     })
     .join("");
   const oldest =
@@ -6166,7 +6024,7 @@ export function renderPages(provenance: Provenance, history: PageHealth[] = []):
   }).join("");
   return layout(
     "All pages",
-    `<h1>All pages</h1><p class="muted">Every registered page, from the manifest in <code>src/pages.ts</code> — the nav bar renders the primary tier, the page dropdown lists them all (#1497). Last-rendered + status come live from the render registry (#1147), the same one <a href="/health">Health</a> reports — a page this process has not rendered yet says so, never a fake time. Adding a page is one manifest entry + a render function + a route (recipe in the README).</p><div class="tblwrap"><table><caption>All registered pages</caption><tr><th scope="col">Page</th><th scope="col">Route</th><th scope="col">JSON twin</th><th scope="col">Nav tier</th><th scope="col">Last rendered</th><th scope="col">What it is</th></tr>${rows}</table></div>`,
+    `<h1>All pages</h1><p class="muted">Every registered page, from the manifest in <code>src/pages.ts</code> — the nav bar renders the primary tier, the page dropdown lists them all (#1497). Last-rendered + status come live from the render registry (#1147), the same one <a href="/health">Health</a> reports — a page this process has not rendered yet says so, never a fake time. Adding a page is one manifest entry + a render function + a route (recipe in the README).</p><div class="tblwrap"><table class="table table-zebra"><caption>All registered pages</caption><tr><th scope="col">Page</th><th scope="col">Route</th><th scope="col">JSON twin</th><th scope="col">Nav tier</th><th scope="col">Last rendered</th><th scope="col">What it is</th></tr>${rows}</table></div>`,
     provenance,
     "/pages",
   );
@@ -6254,7 +6112,7 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
     : "Backends: none reported.";
   const rfaSection = `<h2 id="ready-for-agent">ready-for-agent harness</h2>
 <div class="card">${rfaState} — ${esc(rfa.detail)}<br>${rfaBackendLine}</div>
-<div class="tblwrap"><table><caption>ready-for-agent repositories — settings and dispatch work items</caption><tr><th scope="col">Repository</th><th scope="col">Paused</th><th scope="col">Merge policy</th><th scope="col">Work items</th></tr>${rfaRepoRows}</table></div>`;
+<div class="tblwrap"><table class="table table-zebra"><caption>ready-for-agent repositories — settings and dispatch work items</caption><tr><th scope="col">Repository</th><th scope="col">Paused</th><th scope="col">Merge policy</th><th scope="col">Work items</th></tr>${rfaRepoRows}</table></div>`;
   const cov = view.itemsCoverage;
   const coverageLine =
     cov && cov.total > 0
@@ -6287,10 +6145,10 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
 ${degraded}${modeNote}
 <h2 id="topology">Services &amp; topology</h2>
 <p class="muted">What runs where: the component, its port and bind as actually deployed, what consumes it, and what breaks without it. State is probed, never assumed.</p>
-<div class="tblwrap"><table><caption>Services, ports, and topology</caption><tr><th scope="col">Service</th><th scope="col">Port</th><th scope="col">Bind</th><th scope="col">Runs as</th><th scope="col">State</th><th scope="col">Consumed by</th><th scope="col">If it is down</th></tr>${serviceRows}</table></div>
+<div class="tblwrap"><table class="table table-zebra"><caption>Services, ports, and topology</caption><tr><th scope="col">Service</th><th scope="col">Port</th><th scope="col">Bind</th><th scope="col">Runs as</th><th scope="col">State</th><th scope="col">Consumed by</th><th scope="col">If it is down</th></tr>${serviceRows}</table></div>
 ${rfaSection}
 <h2>Feed sections</h2>
-<div class="tblwrap"><table><caption>Feed sections — presence and age</caption><tr><th scope="col">Section</th><th scope="col">Present</th><th scope="col">Age</th><th scope="col">Note</th></tr>${sectionRows}</table></div>
+<div class="tblwrap"><table class="table table-zebra"><caption>Feed sections — presence and age</caption><tr><th scope="col">Section</th><th scope="col">Present</th><th scope="col">Age</th><th scope="col">Note</th></tr>${sectionRows}</table></div>
 <h2>Jobs</h2>
 <div class="card"><strong>Orchestration pass</strong><br>${orchLine}</div>
 <div class="card"><strong>Fleet-feed collector</strong><br>${collLine}</div>
@@ -6313,7 +6171,7 @@ ${rfaSection}
 ${facets}
 <h2>Pages</h2>
 <p class="muted">Render history of this process — a page nobody has opened since boot is labelled unrendered, not green.</p>
-<div class="tblwrap"><table><caption>Pages — last rendered</caption><tr><th scope="col">Page</th><th scope="col">Route</th><th scope="col">Last rendered</th></tr>${pageRows}</table></div>`;
+<div class="tblwrap"><table class="table table-zebra"><caption>Pages — last rendered</caption><tr><th scope="col">Page</th><th scope="col">Route</th><th scope="col">Last rendered</th></tr>${pageRows}</table></div>`;
   return layout("Health", body, provenance, "/health");
 }
 
@@ -6577,7 +6435,7 @@ function trackedTable(tracked: TrackedIssue[]): string {
         : `<tr><td><span class="badge closed">unresolved</span></td><td><code>${esc(ref)}</code></td><td><span class="muted">unresolved — the current source cannot resolve this ref</span></td><td>—</td></tr>`,
     )
     .join("");
-  return `<div class="tblwrap"><table><caption>Tracked issues</caption><tr><th scope="col">Tracked issue</th><th scope="col">Title</th><th scope="col">State</th><th scope="col">Updated</th></tr>${rows}</table></div>`;
+  return `<div class="tblwrap"><table class="table table-zebra"><caption>Tracked issues</caption><tr><th scope="col">Tracked issue</th><th scope="col">Title</th><th scope="col">State</th><th scope="col">Updated</th></tr>${rows}</table></div>`;
 }
 
 function poolSummaryHtml(live: ProgramLive): string {
@@ -6669,6 +6527,12 @@ ${trackedTable(live.tracked)}${poolSectionHtml}`;
 
 const POOL_ITEM_CAP = 24;
 
+/** Render a graph ref as a link only when it satisfies the shared ref rule. */
+function poolRefLink(ref: RefKey): string {
+  const label = esc(ref);
+  return isValidRef(ref) ? `<a href="${esc(refUrl(ref))}">${label}</a>` : label;
+}
+
 /** The #2400 graph section of a project page: blocked weight + longest
  * blocked chain and the depth-graph SVG, from the part-1 edge contract
  * (#2399). Graceful absence is explicit: a pool with no effort labels
@@ -6685,7 +6549,7 @@ function poolGraphHtml(items: ProjectPoolItem[], allW: ReturnType<typeof summari
   const blocked = blockedSummary(items);
   const chainHtml =
     blocked.longestChain.length >= 2
-      ? ` · longest blocked chain: ${blocked.longestChain.map((r) => `<a href="${esc(refUrl(r))}">${esc(r)}</a>`).join(" → ")} (${blocked.longestChain.length - 1} link${blocked.longestChain.length === 2 ? "" : "s"})`
+      ? ` · longest blocked chain: ${blocked.longestChain.map(poolRefLink).join(" → ")} (${blocked.longestChain.length - 1} link${blocked.longestChain.length === 2 ? "" : "s"})`
       : "";
   const blockedHtml = blocked.blockedCount
     ? `<p class="muted"><strong>Blocked weight: ${blocked.blockedWeight}</strong> across ${blocked.blockedCount} open item${blocked.blockedCount === 1 ? "" : "s"} waiting on an unresolved blocker${blocked.blockedUnsizedCount ? ` (${blocked.blockedUnsizedCount} of them unsized — counted, never zero-weighted)` : ""}${chainHtml}.</p>`
@@ -6786,17 +6650,21 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
     ? `<p class="muted">Truncated: this graph shows ${g.nodes.length} of ${g.totalNodes} nodes (cap ${EPIC_GRAPH_DEFAULT_CAP}). The counts above cover the full set; a capped graph is not complete.</p>`
     : "";
 
-  // Ranked summary: open member items by how many unresolved blockers
-  // they wait on, from the graph's pre-cap ranking (the full transitive
-  // unblock ranking is #3974; this is the per-epic blocked summary
-  // beside the graph). Never derived from the capped node list: a
-  // member the cap hid is still waiting.
+  // Ranked summary: open member items by how many distinct open epic items
+  // are in the transitive blockedBy ancestry of their blockers (the full
+  // transitive downstream ranking is #3974). Never derived from the
+  // capped node list: a member the cap hid is still waiting.
   const ranked = g.rankedBlocked;
   const rankedHtml = ranked.length
     ? `<ul class="epic-graph-list">${ranked
         .map(
-          (r) =>
-            `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${r.blockers.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>`).join(", ")}</li>`,
+          (r) => {
+            const blockerItems = r.blockers.map((b) => poolRefLink(b));
+            const contributingItems = r.contributingItems.length > 0
+              ? `<br><span class="muted">Contributing downstream epics: ${r.contributingItems.map((ci) => poolRefLink(ci)).join(", ")}</span>`
+              : "";
+            return `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.downstreamCount} distinct downstream open epic item${r.downstreamCount === 1 ? "" : "s"} via ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${blockerItems.join(", ")}${contributingItems}</li>`;
+          },
         )
         .join("")}</ul>`
     : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
@@ -6838,7 +6706,8 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
         : n.epic
           ? `<rect x="${x - 6}" y="${y - 6}" width="12" height="12" fill="${n.state === "open" ? "#8957e5" : "#6e7781"}" stroke="#0d1117" stroke-width="1.5"/>`
           : `<circle cx="${x}" cy="${y}" r="6" fill="${n.state === "open" ? "#bf8700" : "#6e7781"}" stroke="#0d1117" stroke-width="1.5"/>`;
-      return `${shape}<a href="${esc(n.issueUrl)}"><text x="${x + 11}" y="${y + 4}" font-size="11" fill="currentColor">${esc(label)}</text></a>`;
+      const nodeLabel = `<text x="${x + 11}" y="${y + 4}" font-size="11" fill="currentColor">${esc(label)}</text>`;
+      return `${shape}${isValidRef(n.ref) ? `<a href="${esc(n.issueUrl)}">${nodeLabel}</a>` : nodeLabel}`;
     })
     .join("");
   const svg = g.edges.length
@@ -6851,13 +6720,14 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
         ? "not in this pool / status unknown — unresolved"
         : `issue ${esc(n.state ?? "unknown")}`;
       const blockedBy = n.blockers.length
-        ? `blocked by: ${n.blockers.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>${unresolvedOf(b) ? " (unresolved)" : " (resolved)"}`).join(", ")}`
+        ? `blocked by: ${n.blockers.map((b) => `${poolRefLink(b)}${unresolvedOf(b) ? " (unresolved)" : " (resolved)"}`).join(", ")}`
         : "blocked by: none observed";
       const blocks = n.dependents.length
-        ? `blocks: ${n.dependents.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>`).join(", ")}`
+        ? `blocks: ${n.dependents.map(poolRefLink).join(", ")}`
         : "blocks: none observed";
       const name = n.title ? `${esc(n.title)}` : "(outside this pool — no title in this feed)";
-      return `<li><a href="${esc(n.issueUrl)}">${esc(n.ref)}</a> ${name} — ${stateText}; ${blockedBy}; ${blocks}</li>`;
+      const nodeRef = isValidRef(n.ref) ? `<a href="${esc(n.issueUrl)}">${esc(n.ref)}</a>` : esc(n.ref);
+      return `<li>${nodeRef} ${name} — ${stateText}; ${blockedBy}; ${blocks}</li>`;
     })
     .join("")}</ul>`;
 
@@ -7312,7 +7182,7 @@ ${rollup.undated ? `<p class="muted">${rollup.undated} ledger row(s) carried no 
 <h2>Per class, per week</h2>
 ${
   rollup.classes.length
-    ? `<div class="tblwrap"><table><caption>Sent vs acted-on by class and rolling week</caption><tr><th scope="col">class</th>${weekHeads}<th scope="col">rolling 4 weeks</th></tr>${rows}</table></div>`
+    ? `<div class="tblwrap"><table class="table table-zebra"><caption>Sent vs acted-on by class and rolling week</caption><tr><th scope="col">class</th>${weekHeads}<th scope="col">rolling 4 weeks</th></tr>${rows}</table></div>`
     : `<p class="muted">No sends in the rolling four-week window.</p>`
 }
 ${proposalHtml}`;

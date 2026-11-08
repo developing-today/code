@@ -162,6 +162,57 @@ test('a non-participating optional capture does not prevent participating ids fr
   );
 });
 
+test('a non-numeric version capture is excluded deterministically in both input orders (#6893)', () => {
+  // Oracle: permutation invariance — the returned set must not depend
+  // on enumeration order, and a NaN-component capture never wins.
+  const policy = { families: { suffixed: '^model-([0-9]+-[a-z0-9]+)$' } };
+  const forward = allowedModelIds(policy, { keep: ['suffixed'] }, ['model-2-1', 'model-2-beta']);
+  const reversed = allowedModelIds(policy, { keep: ['suffixed'] }, ['model-2-beta', 'model-2-1']);
+  assert.deepEqual(forward, new Set(['model-2-1']));
+  assert.deepEqual(reversed, forward);
+});
+
+test('a family whose only candidates have non-numeric captures selects nothing (#6893)', () => {
+  const policy = { families: { suffixed: '^model-([0-9]+-[a-z0-9]+)$' } };
+  assert.deepEqual(
+    allowedModelIds(policy, { keep: ['suffixed'] }, ['model-2-beta', 'model-2-alpha']),
+    new Set(),
+  );
+  assert.deepEqual(
+    allowedModelIds(policy, { keep: ['suffixed'] }, ['model-2-alpha', 'model-2-beta']),
+    new Set(),
+  );
+});
+
+test('allowedModelIds returns the same set for every permutation of the same ids (#6893)', () => {
+  const policy = { families: { suffixed: '^model-([0-9]+-[a-z0-9]+)$' } };
+  const ids = ['model-2-1', 'model-2-beta', 'model-3-0'];
+  const permutations = [
+    ids,
+    [ids[0], ids[2], ids[1]],
+    [ids[1], ids[0], ids[2]],
+    [ids[1], ids[2], ids[0]],
+    [ids[2], ids[0], ids[1]],
+    [ids[2], ids[1], ids[0]],
+  ];
+  for (const permutation of permutations) {
+    assert.deepEqual(
+      allowedModelIds(policy, { keep: ['suffixed'] }, permutation),
+      new Set(['model-3-0']),
+    );
+  }
+});
+
+test('shipped-policy control: families select the same newest model in both input orders (#6893)', () => {
+  const policyPath = path.join(binDir, 'sync-models.policy.json');
+  const shippedPolicy = JSON.parse(fs.readFileSync(policyPath, 'utf-8'));
+  const ids = ['gemini-1-flash', 'gemini-2-flash', 'gemini-1.5-flash'];
+  const forward = allowedModelIds(shippedPolicy, { keep: ['gemini-flash'] }, ids);
+  const reversed = allowedModelIds(shippedPolicy, { keep: ['gemini-flash'] }, [...ids].reverse());
+  assert.deepEqual(forward, new Set(['gemini-2-flash']));
+  assert.deepEqual(reversed, forward);
+});
+
 test('shipped policy still loads unchanged and known families select the newest model', () => {
   const policyPath = path.join(binDir, 'sync-models.policy.json');
   const shippedPolicy = JSON.parse(fs.readFileSync(policyPath, 'utf-8'));

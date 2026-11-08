@@ -20,6 +20,7 @@ import {
   coverageFromFeed,
   poolAvailableFromFeed,
   poolFromFeed,
+  projectAuditFromFeed,
   type FleetFeed,
   type SectionDiagnosis,
 } from "../feed.ts";
@@ -43,6 +44,7 @@ import {
   extractPaygLines,
   extractSaasServices,
   extractSubscriptions,
+  extractUninstrumentedServices,
 } from "../saas-extract.ts";
 import { mergeChargeRows } from "../charges-collect.ts";
 import type { CloudflareExportDoc, SupabaseExportDoc } from "../saas-extract.ts";
@@ -78,6 +80,7 @@ import {
   type SessionRecord,
   type SourceCoverage,
   type UsageView,
+  isValidRef,
   parseRef,
   refsInText,
   refUrl,
@@ -485,7 +488,19 @@ export async function projectorLinks(baseUrl: string, subject: string): Promise<
   const r = await getJson(`${baseUrl}/links?subject=${encodeURIComponent(subject)}`);
   if (!r.ok) return [];
   const rows = (r.json as { links?: ProjectorLinkRow[] }).links ?? [];
-  return rows.map((row) => ({ ref: row.ref, relation: asRelation(row.relation) }));
+  // Stored rows bypass the projector's POST /links gate (legacy/seeded
+  // data), so the shared ref rule (#4952) is applied here at the read
+  // boundary (#6211): a ref parseRef rejects - an unsafe-integer number,
+  // or not owner/repo#N at all - must never reach a renderer, where
+  // refUrl would throw on it and 500 the page. The drop is logged so a
+  // bad registry row stays visible instead of silently vanishing.
+  return rows.flatMap((row) => {
+    if (!isValidRef(row.ref)) {
+      console.error(`[registry] WARNING: dropping projector link with invalid ref ${JSON.stringify(row.ref)} for subject ${subject} (#6211)`);
+      return [];
+    }
+    return [{ ref: row.ref, relation: asRelation(row.relation) }];
+  });
 }
 
 /**
@@ -538,6 +553,7 @@ const TITLE_REPO_ALIASES: Record<string, string> = {
 export function titleRefs(title: string): RefKey[] {
   const out: RefKey[] = [];
   const add = (ref: RefKey) => {
+    if (!isValidRef(ref)) return;
     if (!out.includes(ref)) out.push(ref);
   };
   for (const ref of refsInText(title)) add(ref);
@@ -600,6 +616,8 @@ const normTitle = (s: string): string =>
  * - repeats inside the section itself (the same task lined up under
  *   two goals, or twice under one) emit once, keyed by first ref,
  *   else by normalized title.
+ * Only parseRef-accepted refs participate; invalid candidates are logged
+ * and otherwise behave as absent.
  * Tasks with no ref anywhere still emit (title only, no GitHub link).
  */
 export function inFlightBoardItems(section: OrchestrationSection, existing: BoardItem[]): BoardItem[] {
@@ -615,10 +633,16 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
     if (item.linedUpStatus !== "in-progress" && item.linedUpStatus !== "queued" && item.linedUpStatus !== "blocked")
       continue;
     const refs: RefKey[] = [];
-    const add = (ref: RefKey) => {
+    const add = (ref: unknown) => {
+      if (!isValidRef(ref)) {
+        console.error(
+          `[board] WARNING: dropping invalid in-flight ref ${JSON.stringify(ref)} for task ${item.id}`,
+        );
+        return;
+      }
       if (!refs.includes(ref)) refs.push(ref);
     };
-    if (item.ref) add(item.ref);
+    if (item.ref !== undefined && item.ref !== null && item.ref !== "") add(item.ref);
     for (const ref of titleRefs(item.title)) add(ref);
     const remainingRefs = refs.filter((ref) => !existingRefs.has(ref));
     if (refs.length > 0 && remainingRefs.length === 0) continue;
@@ -1269,6 +1293,10 @@ export function liveSource(
       const feed = await getFeed();
       return poolAvailableFromFeed(feed);
     },
+    async projectAudit() {
+      const feed = await getFeed();
+      return projectAuditFromFeed(feed);
+    },
     async needsDrew(): Promise<NeedsDrewCensus | null> {
       return needsDrewSweep();
     },
@@ -1367,6 +1395,11 @@ export function liveSource(
       // plus the stewardship / check-usage outbox); a background writer
       // tick lands them into the local store. This reader only reads it.
       const feed = await getFeed();
+      const uninstrumentedServices =
+        feed?.uninstrumentedServices ??
+        (await readFile(cfg.freeServicesTrackerFile, "utf8")
+          .then(extractUninstrumentedServices)
+          .catch(() => []));
       const store = new SnapshotStore(cfg.snapshotsDir);
       const history = await store.byService().catch(() => ({}));
       const domains =
@@ -1401,10 +1434,13 @@ export function liveSource(
       const chargesDroppedNote = feed?.chargesDropped
         ? ` · sanitized at load: dropped ${feed.chargesDropped} malformed charge row(s) (#2445)`
         : "";
+      const trackerRowsDroppedNote = feed?.uninstrumentedServicesDropped
+        ? ` · sanitized at load: dropped ${feed.uninstrumentedServicesDropped} malformed tracker row(s) (#1172)`
+        : "";
       const saasDroppedNote = feed?.saasDropped
         ? ` · sanitized at load: dropped ${feed.saasDropped} malformed SaaS service row(s) (#2451)`
         : "";
-      const feedSanitizationNotes = saasDroppedNote + chargesDroppedNote;
+      const feedSanitizationNotes = saasDroppedNote + chargesDroppedNote + trackerRowsDroppedNote;
       const feedChargeFlags: AttentionFlag[] = (feed?.chargesAttention ?? []).map((u) => ({
         kind: "unmatched-charge",
         label: `${u.merchant} — unrecognized SaaS/AI charge`,
@@ -1424,6 +1460,7 @@ export function liveSource(
           .catch(() => null);
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(feed.saas, cfExport), supabaseExport),
+          uninstrumentedServices,
           payg: feed.payg ?? [],
           charges: feedCharges,
           subscriptions: feed.subscriptions ?? [],
@@ -1456,6 +1493,7 @@ export function liveSource(
         // evidence (the feed rows) takes precedence.
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(extractSaasServices(doc), cfExport), supabaseExport),
+          uninstrumentedServices,
           payg: extractPaygLines(doc, registryText),
           charges: mergeChargeRows(feedCharges, extractCharges(doc, registryText)),
           subscriptions: extractSubscriptions(doc),
@@ -1481,6 +1519,7 @@ export function liveSource(
         // sections that are missing, not for the ones that arrived.
         return {
           ...fallback,
+          uninstrumentedServices,
           charges: feedCharges.length ? feedCharges : fallback.charges,
           chargesNote: feedCharges.length ? undefined : fallback.chargesNote,
           attention: [...fallback.attention, ...feedChargeFlags],

@@ -142,7 +142,7 @@ func (s *Server) handleMetricsTools(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	calls, _ := st.Calls(logstore.Query{})
 	errors, _ := st.Errors(logstore.Query{})

@@ -23,10 +23,10 @@
 # store) and is read at service start.
 let
   homeDir = "/home/user";
-  # Local provider-proxy ports. The canonical definitions live in
-  # home/common/default.nix (clefProxyPort..claudeCodeProxyPort); these are
-  # the same numbers, repeated here because OpenClaw's config is rendered
-  # as data, not shell env. Keep in sync with home/common.
+  # Local service ports, repeated here because OpenClaw's config is
+  # rendered as data, not shell env. (The provider-proxy ports that
+  # once had to stay in sync with home/common/default.nix are all
+  # retired — the last, museProxyPort 18747, on 2026-11-06.)
   # The opencode-route provider talks to the OpenCode server facade
   # directly (127.0.0.1:13420/v1) since the route proxy's retirement
   # (opencode#1153, 2026-11-04); the proxy's port (18750) is free.
@@ -66,13 +66,18 @@ in
     };
   };
 
-  # Start after the provider proxies + mcpx it depends on. The proxies
-  # are owned by the proxy-supervisor (transient fps-* units on the
-  # canonical ports), so the gateway must not Want the manual per-proxy
-  # units: a gateway restart would re-pull them, and the manual
-  # commandcode-proxy unit crash-loops on its already-taken port (#883).
-  # The gateway reaches the proxies by port, not by unit; only mcpx and
-  # the opencode-route proxy are real unit dependencies.
+  # Start after the services it depends on. The gateway's model lifeline
+  # is the OpenCode server (opencode.service, facade on 127.0.0.1:13420)
+  # since the route proxy retired (opencode#1153, 2026-11-04); it is
+  # ordered After it but does not Want it (the server has its own
+  # enablement; the ExecStartPre below waits for its service record).
+  # The gateway must not Want the per-proxy units: a gateway restart
+  # would re-pull them (the manual commandcode-proxy unit once
+  # crash-looped on its already-taken port, #883, in the retired
+  # proxy-supervisor era). The commandcode-proxy and agy-proxy units
+  # themselves are gone — commandcode in the 2026-11-06 proxy-infra
+  # decommission, agy on 2026-10-30 — so their After entries below
+  # are gone too. Only mcpx and the embedding server are Wanted.
   # Stable local embedding endpoint for memory-lancedb (#1300 phase 1):
   # a dedicated llama-server on a FIXED loopback port, reusing the
   # llama.cpp build and the Qwen3-Embedding-0.6B GGUF that OpenCode's
@@ -98,17 +103,24 @@ in
     Unit = {
       After = [
         "openclaw-embedding.service"
-        "commandcode-proxy.service"
-        "agy-proxy.service"
-        "codex-proxy.service"
         "mcpx.service"
+        "opencode.service"
       ];
       Wants = [
         "openclaw-embedding.service"
         "mcpx.service"
       ];
+      # The 2026-11-04 death: a restart raced the OpenCode server's
+      # service record, ExecStartPre failed five times inside the
+      # default 10s start-limit window, and systemd parked the unit as
+      # start-limit-hit — down for a day, silently. A transient
+      # pre-start failure must never be able to do that again: wide
+      # window, generous burst, slower restart spacing.
+      StartLimitIntervalSec = "600";
+      StartLimitBurst = 30;
     };
     Service = {
+      RestartSec = lib.mkForce "5s"; # module default is 1s — the burst spacing that let 2026-11-04 happen
       # Materialize the facade credential at every gateway start
       # (opencode#1146 step 3): the opencode server password lives
       # in its service record — the same source oc-password-sync
@@ -122,7 +134,27 @@ in
           set -eu
           umask 077
           mkdir -p "$HOME/.local/state/openclaw"
-          PW=$(${pkgs.jq}/bin/jq -r .password "$HOME/.local/state/opencode/service-prod.json")
+          # The OpenCode server writes its service record at ITS start;
+          # a gateway restart that races it (both restarted by one
+          # system switch, 2026-11-04) must wait for the record instead
+          # of failing instantly: that night the record was missing for
+          # ~3 minutes, this step failed five times in seconds, the
+          # unit hit the start limit, and the gateway stayed down until
+          # manually revived a day later. Wait up to ~3 minutes for a
+          # record that yields a password, then fail loudly.
+          record="$HOME/.local/state/opencode/service-prod.json"
+          PW=""
+          for attempt in $(seq 1 90); do
+            if [ -f "$record" ]; then
+              PW=$(${pkgs.jq}/bin/jq -r '.password // empty' "$record" 2>/dev/null || true)
+              [ -n "$PW" ] && break
+            fi
+            sleep 2
+          done
+          if [ -z "$PW" ]; then
+            echo "openclaw-facade-auth-materialize: $record never yielded a password" >&2
+            exit 1
+          fi
           printf 'Basic %s' "$(printf 'opencode:%s' "$PW" | ${pkgs.coreutils}/bin/base64 -w0)" > "$HOME/.local/state/openclaw/opencode-server-auth"
         ''
       );
@@ -140,6 +172,7 @@ in
       OPENCLAW_GATEWAY_TOKEN = "/run/secrets/openclaw/gateway-token";
       OPENCLAW_SLACK_BOT_TOKEN = "/run/secrets/openclaw/slack-bot-token";
       OPENCLAW_SLACK_APP_TOKEN = "/run/secrets/openclaw/slack-app-token";
+      OPENCLAW_TELEGRAM_BOT_TOKEN = "/run/secrets/openclaw/telegram-bot-token";
       TAVILY_API_KEY = "/run/secrets/openclaw/tavily-api-key";
       OPENCODE_SERVER_AUTH = "${homeDir}/.local/state/openclaw/opencode-server-auth";
     };
@@ -222,6 +255,14 @@ in
     runtimePlugins = [
       "acpx" # ACP backend: opencode / claude / codex / gemini / copilot harnesses
       "slack" # Slack channel (channel inert until app tokens are wired; see CHANNELS.md)
+      # NOTE: no "telegram" entry here — in the pinned build (2026.10.7)
+      # Telegram is a bundled core channel: extensions/telegram ships
+      # inside the openclaw-gateway package itself, so it is absent from
+      # the external runtime-plugin catalog (report.json) and listing it
+      # here fails evaluation (#7042). It activates from the
+      # channels.telegram config + plugins.entries.telegram below
+      # (bot @shed_openclaw_bot, created 2026-11-07; token via env
+      # SecretRef).
       "discord"
       "whatsapp"
       "matrix"
@@ -298,7 +339,7 @@ in
           # Laptop operations
 
           - Everything is a systemd **user** service (linger on): `systemctl --user status|restart <name>`, logs via `journalctl --user -u <name>`.
-          - Provider proxies on loopback: clef 18742, agy 18743, codex 18744, antigravity-ls 18745, muse 18747, commandcode 18748, claude-code 18749, opencode-route 18750. This gateway: 18789 (tailnet).
+          - No provider proxies remain on loopback: the last one, muse 18747, retired 2026-11-06 when muse-direct went native in the fork (the codex, clef, agy, antigravity-ls, design-code, commandcode and claude-code doors retired earlier — codex, commandcode and claude-code in the 2026-11-06 proxy-infra decommission); the OpenCode server facade on 13420 is this gateway's only model route. This gateway: 18789 (tailnet).
           - OpenChamber's managed OpenCode port is dynamic — read `~/.config/openchamber/managed-opencode/state.json`, never hardcode it.
           - Secrets are referenced by name only (Bitwarden Secrets Manager; sops files under /run/secrets/agent-auth/). Never print or commit a secret value.
 
@@ -344,6 +385,21 @@ in
           };
           dmPolicy = "allowlist";
           allowFrom = [ "U0CBX163G8Z" ]; # Drew
+          groupPolicy = "allowlist";
+        };
+        # Telegram wired 2026-11-07: bot @shed_openclaw_bot (Shed),
+        # created via BotFather from Drew's account; token via env
+        # SecretRef fed from the sops-decrypted laptop file. DMs from
+        # Drew only (numeric user id).
+        telegram = {
+          enabled = true;
+          botToken = {
+            source = "env";
+            provider = "default";
+            id = "OPENCLAW_TELEGRAM_BOT_TOKEN";
+          };
+          dmPolicy = "allowlist";
+          allowFrom = [ "8290042325" ]; # Drew
           groupPolicy = "allowlist";
         };
       };
@@ -402,6 +458,10 @@ in
             every = "30m";
             lightContext = true;
             isolatedSession = true;
+            # NOTE: heartbeat.skipWhenBusy (upstream-recommended on
+            # constrained hosts) cannot be expressed yet — the pinned
+            # nix-openclaw generated schema has no such option. Revisit
+            # after the nix-openclaw upgrade.
             activeHours = {
               start = "07:00";
               end = "23:00";
@@ -494,10 +554,20 @@ in
             };
           };
           slack.enabled = true;
+          telegram.enabled = true;
           codex.enabled = true;
           copilot.enabled = true;
           "memory-lancedb" = {
             enabled = true;
+            # Conversation access for the plugin's typed hooks. Without
+            # this, the gateway blocks memory-lancedb's before_prompt_build
+            # (autoRecall injection) and agent_end (autoCapture) hooks —
+            # observed live 2026-11-05: the plugin initialized against an
+            # empty LanceDB (0 memories) while both hooks were blocked,
+            # so the memory slot has been decorative since the Nov 4
+            # deployment. This flag is upstream's per-plugin consent for
+            # exactly that access.
+            hooks.allowConversationAccess = true;
             config = {
               embedding = {
                 # Direct OpenAI-compatible path against the fixed local
@@ -510,7 +580,12 @@ in
                 dimensions = 1024; # Qwen3-Embedding-0.6B hidden size
               };
               autoRecall = true;
-              autoCapture = false;
+              # Auto-capture ON (2026-11-05): phase 1 (#1300) shipped
+              # with capture off while recall proved out; the standard
+              # advanced lancedb setup runs both, and Shed's memory
+              # only compounds if Drew's messages are captured as they
+              # land. The plugin filters (length, markup) still apply.
+              autoCapture = true;
             };
           };
         };

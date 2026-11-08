@@ -241,7 +241,7 @@ func warnSink(opts Options) io.Writer {
 // caller whose script otherwise runs fine (Codex review, PR #6111).
 func reportWarning(opts Options, w preflight.Problem) {
 	msg := w.String()
-	fmt.Fprintln(warnSink(opts), "mcpx:", msg)
+	_, _ = fmt.Fprintln(warnSink(opts), "mcpx:", msg)
 	if opts.OnWarning != nil {
 		opts.OnWarning(msg)
 	}
@@ -336,7 +336,7 @@ func npmrcReferencedVars(npmrc []byte) []string {
 			continue
 		}
 		name := text[start:j]
-		if c := name[0]; !(c == '_' || ('A' <= c && c <= 'Z') || ('a' <= c && c <= 'z')) {
+		if c := name[0]; c != '_' && ('A' > c || c > 'Z') && ('a' > c || c > 'z') {
 			continue
 		}
 		if !seen[name] {
@@ -798,7 +798,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		stderrDone = make(chan struct{})
 		go func() {
 			defer close(stderrDone)
-			defer pr.Close()
+			defer func() { _ = pr.Close() }()
 			_ = logging.Stream(pr, opts.Log, logging.StreamOptions{
 				Enrich:      opts.Enrich,
 				Passthrough: passthrough,
@@ -808,7 +808,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			})
 		}()
 		defer func() {
-			pw.Close()
+			_ = pw.Close()
 			<-stderrDone
 		}()
 	} else if opts.Stderr != nil {
@@ -838,10 +838,12 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		if cmd.Process != nil {
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 			select {
-			case <-waitCh:
+			case recvErr := <-waitCh:
+				_ = recvErr
 			case <-time.After(defaults.ShutdownGrace):
 				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-				<-waitCh
+				recvErr := <-waitCh
+				_ = recvErr
 			}
 		}
 		res.Duration = time.Since(start)
@@ -1053,9 +1055,9 @@ func writeIfChanged(path, content string) error {
 		return err
 	}
 	tmp := f.Name()
-	defer os.Remove(tmp)
+	defer func() { _ = os.Remove(tmp) }()
 	if _, err := f.WriteString(content); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	if err := f.Close(); err != nil {
@@ -1090,17 +1092,17 @@ func textScanSource(opts Options, scriptPath string) string {
 	return scan
 }
 
-// writeLauncher emits a shim that imports the user's module and calls its
-// entry point if it has one.
-//
-// The shim is written beside the script so its relative import resolves, and
-// so the generated client next to the script is the one both files see.
-// LauncherNone, given as the launcher, means no shim at all: the script is
+// LauncherNone given as the launcher means no shim at all: the script is
 // handed to the runtime untouched. Nothing is installed, nothing is captured,
 // nothing wraps the error. It is the escape hatch for a script that wants the
 // runtime and none of the harness.
 const LauncherNone = "none"
 
+// writeLauncher emits a shim that imports the user's module and calls its
+// entry point if it has one.
+//
+// The shim is written beside the script so its relative import resolves, and
+// so the generated client next to the script is the one both files see.
 func writeLauncher(workDir, scriptPath, export string, ph Phases, captureConsole bool, opts Options) (string, error) {
 	if strings.TrimSpace(opts.Launcher) == LauncherNone {
 		return "", nil

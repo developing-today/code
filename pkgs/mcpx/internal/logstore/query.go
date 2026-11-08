@@ -167,7 +167,7 @@ func reverse(rs []Record) {
 }
 
 func scanRecords(rows *sql.Rows) ([]Record, error) {
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Record
 	for rows.Next() {
 		var (
