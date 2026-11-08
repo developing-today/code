@@ -176,27 +176,24 @@ describe("advanceSnapshot property: head_sha invariant (#6945, testing doctrine)
   // Oracle: the resolved default branch is storedDef (existing row only)
   // else the payload default else unknown. head_sha may be written ONLY
   // for a non-deletion push whose ref is exactly refs/heads/<resolved>,
-  // and the written value must be the push's after SHA. Generated
-  // combinations (seeded PRNG over the full factor grid) are checked
-  // against this oracle via the captured Turso pipeline INSERTs.
+  // and the written value must be the push's after SHA. The full factor
+  // grid (row existence x stored default x payload default x push ref x
+  // deletion SHA = 192 combinations) is enumerated exhaustively and
+  // every cell is checked against this oracle via the captured Turso
+  // pipeline INSERTs — no sampling, so no cell can be missed.
   it("property: head_sha is written only for a non-deletion push matching the resolved default", async () => {
-    let seed = 0x6945;
-    const rnd = () => {
-      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-      return seed / 0x7fffffff;
-    };
-    const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(rnd() * xs.length)];
     const existsOpts = [true, false] as const;
     const defOpts = [null, "main", "dev"] as const;
     const payloadOpts = [undefined, null, "main", "dev"] as const;
     const refOpts = ["refs/heads/main", "refs/heads/dev", "refs/heads/feature-x", "refs/tags/v1"] as const;
     const afterOpts = [SHA, ZERO] as const;
-    for (let i = 0; i < 250; i++) {
-      const exists = pick(existsOpts);
-      const storedDef = pick(defOpts);
-      const payloadDef = pick(payloadOpts);
-      const ref = pick(refOpts);
-      const after = pick(afterOpts);
+    let cells = 0;
+    for (const exists of existsOpts)
+    for (const storedDef of defOpts)
+    for (const payloadDef of payloadOpts)
+    for (const ref of refOpts)
+    for (const after of afterOpts) {
+      cells++;
       const resolved = (exists ? storedDef : null) || payloadDef || null;
       const expectHead = after !== ZERO && !!resolved && ref === `refs/heads/${resolved}`;
       const captured: CapturedInsert[] = [];
@@ -219,5 +216,8 @@ describe("advanceSnapshot property: head_sha invariant (#6945, testing doctrine)
       }
       vi.unstubAllGlobals();
     }
+    expect(cells).toBe(
+      existsOpts.length * defOpts.length * payloadOpts.length * refOpts.length * afterOpts.length,
+    );
   });
 });
