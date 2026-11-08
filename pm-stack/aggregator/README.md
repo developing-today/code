@@ -665,10 +665,13 @@ Each tick:
 
 Fail-soft: a subcommand failure or unparseable output writes a
 heartbeat with the error, exits non-zero, and leaves the previous
-`quota-current.json` untouched. **Remaining hop:** the aggregator
-does not read `quota-current.json` yet — `Source` pickup (freshness
-rendering, lazy pull on page load) is the follow-up that makes the
-tick visible on /quota.
+`quota-current.json` untouched. The aggregator does read
+`quota-current.json`: `overlayQuotaCurrent` (`src/quota-current.ts`)
+overlays the latest tick onto the /quota display, consumed by the
+live source (`src/sources/live.ts`). That consumption is
+display-only — decision consumption (measured placement, rotation,
+demotion) is the OpenCode-side remainder tracked by
+developing-today-forks/opencode#566.
 
 - **Sandbox attention** — sessions mapped by the shared OpenCode v2
   mapper (`src/sources/opencode.ts`), stamped `opencode-sandbox` with
