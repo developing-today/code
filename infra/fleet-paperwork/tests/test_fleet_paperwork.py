@@ -116,6 +116,9 @@ class _FakeClient:
     def token_for(self, owner):
         return "test-token"
 
+    def assert_repo_in_scope(self, repo):
+        return None
+
 
 class TestFindByExactTitle(unittest.TestCase):
     """The real find_by_exact_title against stubbed Search-API payloads,
@@ -166,6 +169,95 @@ class TestFindByExactTitle(unittest.TestCase):
         hit, paths = self.run_lookup({1: page1, 2: [issue]})
         self.assertEqual(hit["number"], 99)
         self.assertEqual(len(paths), 2)
+
+
+class TestCreateReadback(unittest.TestCase):
+    """#6901: the create readback must compare body, state and requested
+    labels against what was sent — not just title and number — so a create
+    whose body was dropped or whose labels were not applied fails loudly."""
+
+    TITLE = "Preserved branch: queue/x — decision needed"
+    BODY = "## Finding\n\nbody that the filer sent\n"
+    REPO = "developing-today/code"
+
+    def run_create(self, readback_overrides, labels=None):
+        """Run cmd_create against stubbed HTTP. Returns (exit_code, paths)."""
+        paths = []
+        created = {"number": 42, "html_url": "https://example.test/42"}
+        readback = {
+            "number": 42,
+            "title": self.TITLE,
+            "body": self.BODY,
+            "state": "open",
+            "labels": [{"name": n} for n in (labels or [])],
+        }
+        readback.update(readback_overrides)
+
+        def fake_http(method, path, token, payload=None):
+            paths.append((method, path))
+            if method == "POST":
+                return 200, created
+            return 200, readback
+
+        args = [
+            "create",
+            "--repo",
+            self.REPO,
+            "--title",
+            self.TITLE,
+            "--body",
+            self.BODY,
+            "--no-dedupe",
+            "--pace",
+            "0",
+        ]
+        for label in labels or []:
+            args += ["--label", label]
+
+        with unittest.mock.patch.object(fp, "AppClient", lambda _s: _FakeClient()), \
+             unittest.mock.patch.object(
+                 fp, "find_by_exact_title", lambda *_a, **_k: None
+             ), \
+             unittest.mock.patch.object(fp, "http", fake_http):
+            try:
+                code = fp.main(args)
+            except SystemExit as exc:
+                code = exc.code
+        return code, paths
+
+    def test_matching_readback_passes(self):
+        code, paths = self.run_create({})
+        self.assertEqual(code, 0)
+        self.assertEqual([m for m, _ in paths], ["POST", "GET"])
+
+    def test_dropped_body_fails(self):
+        code, _ = self.run_create({"body": ""})
+        self.assertEqual(code, 1)
+
+    def test_mangled_body_fails(self):
+        code, _ = self.run_create({"body": self.BODY.strip()})
+        self.assertEqual(code, 1)
+
+    def test_closed_state_fails(self):
+        code, _ = self.run_create({"state": "closed"})
+        self.assertEqual(code, 1)
+
+    def test_missing_labels_fail(self):
+        """Labels were requested but the readback shows none applied."""
+        code, _ = self.run_create({"labels": []}, labels=["kind/bug"])
+        self.assertEqual(code, 1)
+
+    def test_applied_labels_pass(self):
+        code, _ = self.run_create({}, labels=["kind/bug", "effort/xs"])
+        self.assertEqual(code, 0)
+
+    def test_extra_labels_are_tolerated(self):
+        """GitHub may add labels on create; only the requested ones matter."""
+        code, _ = self.run_create(
+            {"labels": [{"name": "kind/bug"}, {"name": "auto-added"}]},
+            labels=["kind/bug"],
+        )
+        self.assertEqual(code, 0)
 
 
 class TestGenericCommandArgs(unittest.TestCase):
