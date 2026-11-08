@@ -119,6 +119,7 @@ pub(crate) const HOST_RESERVED_ROUTES: &[&str] = &[
     "/files",
     "/settings",
     "/peers",
+    "/groups",
     "/edit/{*name}",
     "/hash/{hash}",
     "/view/{*name}",
@@ -520,7 +521,7 @@ socket = "/ws/arena"
     fn host_page_routes_are_reserved() {
         // Packet cases 2-3: `route = "/"` and `route = "/files"` parsed
         // Ok and panicked on the duplicate host route (routes.rs:322).
-        for reserved in ["/", "/files", "/settings", "/peers"] {
+        for reserved in ["/", "/files", "/settings", "/peers", "/groups"] {
             let source = format!("[interfaces.web]\nroute = {reserved:?}\n");
             assert!(
                 matches!(

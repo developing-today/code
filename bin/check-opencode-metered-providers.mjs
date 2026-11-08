@@ -345,7 +345,19 @@ export function checkConfig(source) {
 }
 
 async function main() {
-  const configPath = resolve(process.argv[2] ?? DEFAULT_CONFIG);
+  // Exactly one optional config path: anything beyond it (a second
+  // config, an unknown flag) was previously ignored silently, so an
+  // invocation that looked like it checked two configs checked one
+  // (#7751). Fail fast with a usage error, before any file is read.
+  const args = process.argv.slice(2);
+  if (args.length > 1) {
+    console.error(
+      `Metered-provider config guard: unexpected extra argument '${args[1]}' — expected at most one config path`,
+    );
+    process.exitCode = 2;
+    return;
+  }
+  const configPath = resolve(args[0] ?? DEFAULT_CONFIG);
   const source = await readFile(configPath, 'utf8');
   const issues = checkConfig(source);
   if (issues.length) {

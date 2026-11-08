@@ -1107,3 +1107,101 @@ fn hours_span_count_is_capped() {
             if message.contains("513") && message.contains("512")
     ));
 }
+
+#[test]
+fn custom_period_extreme_anchor_is_out_of_range_not_a_panic_or_wrapped_window() {
+    // #7766: Period::check rejects only a zero length, so a body can carry
+    // any i64 anchor. count_periods must answer OutOfRange for windows its
+    // arithmetic cannot represent — the unchecked operators panicked in
+    // debug builds and silently wrapped to a phantom (or end-before-start)
+    // window in release builds.
+    for (anchor, length_seconds, at) in [
+        (i64::MIN, 86_400_u64, 0_i64),
+        (i64::MAX - 100, 1_000, i64::MAX - 100),
+        (i64::MIN + 1_000, 86_400, i64::MIN + 1_000),
+    ] {
+        let fed = always(expectation(
+            0x62,
+            vec![dog_a()],
+            "fed",
+            Window::CountPerPeriod {
+                count: 1,
+                period: Period::Custom(PeriodCustom {
+                    anchor,
+                    length_seconds,
+                }),
+            },
+        ));
+        assert_eq!(
+            evaluate(&[fed], &[], at),
+            Err(EvalError::OutOfRange),
+            "anchor={anchor} length={length_seconds}"
+        );
+    }
+    // An ordinary custom period still evaluates.
+    let fed = always(expectation(
+        0x63,
+        vec![dog_a()],
+        "fed",
+        Window::CountPerPeriod {
+            count: 1,
+            period: Period::Custom(PeriodCustom {
+                anchor: midnight(2026, 6, 15),
+                length_seconds: 86_400,
+            }),
+        },
+    ));
+    assert!(evaluate(&[fed], &[], midnight(2026, 6, 16)).is_ok());
+}
+
+#[test]
+fn week_period_at_calendar_boundary_is_out_of_range_not_a_panic() {
+    // #7771: the Week branch of count_periods used unchecked
+    // NaiveDate +/- Duration, which panics (chrono's expect) when
+    // monday + 7, monday - 7, or the Monday offset itself leaves the
+    // representable calendar — where the Day branch answers
+    // OutOfRange via succ_opt/pred_opt (and Custom since #7766).
+    // `always` expectations evaluate in UTC.
+    for (label, at) in [
+        (
+            "max",
+            NaiveDate::MAX
+                .and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_utc()
+                .timestamp(),
+        ),
+        (
+            "min",
+            NaiveDate::MIN
+                .and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_utc()
+                .timestamp(),
+        ),
+    ] {
+        let fed = always(expectation(
+            0x64,
+            vec![dog_a()],
+            "fed",
+            Window::AtLeastOncePer {
+                period: Period::Week,
+            },
+        ));
+        assert_eq!(
+            evaluate(&[fed], &[], at),
+            Err(EvalError::OutOfRange),
+            "week period at calendar {label}"
+        );
+    }
+    // An ordinary week still evaluates.
+    let fed = always(expectation(
+        0x65,
+        vec![dog_a()],
+        "fed",
+        Window::AtLeastOncePer {
+            period: Period::Week,
+        },
+    ));
+    assert!(evaluate(&[fed], &[], midnight(2026, 6, 16)).is_ok());
+}

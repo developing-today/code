@@ -796,6 +796,7 @@ async function init(): Promise<void> {
         removeBtn.className = "tag-remove-btn";
         removeBtn.textContent = "\u00d7";
         removeBtn.title = "Remove tag";
+        removeBtn.setAttribute("aria-label", `Remove tag ${label}`);
         removeBtn.onclick = (e) => {
           e.preventDefault();
           if (filename) {

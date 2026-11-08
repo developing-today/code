@@ -286,10 +286,23 @@ function answerQuestionIds(action: Pick<NewAction, "verb" | "payload">): string[
 
 const SESSION_SOURCES = new Set(["opencode-sandbox", "opencode-laptop", "claude-code", "cron"]);
 
+// Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7694, mirroring the #3178 guard in pm-dispatch
+// validate.ts): an astral character straddling the cap is dropped whole.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
+
 function cleanText(v: unknown, max: number): string | undefined {
   if (typeof v !== "string") return undefined;
   const t = v.trim();
-  return t === "" ? undefined : t.slice(0, max);
+  if (t === "") return undefined;
+  return capUnits(t, max);
 }
 
 /** Validate an untrusted POST body into a NewAction, or explain why not. */
@@ -785,8 +798,11 @@ export class ActionsStore {
     if (a.state !== "new") return { action: a, transitioned: false };
     a.state = result.outcome;
     a.appliedAt = new Date().toISOString();
-    a.appliedByRun = result.byRun.slice(0, 200);
-    if (result.note) a.resultNote = result.note.slice(0, 2_000);
+    // Same surrogate-safe cap as cleanText (#7711): a raw slice here stored
+    // a lone high surrogate in appliedByRun/resultNote whenever an astral
+    // character straddled the cap.
+    a.appliedByRun = capUnits(result.byRun, 200);
+    if (result.note) a.resultNote = capUnits(result.note, 2_000);
     await this.persist();
     return { action: a, transitioned: true };
   }

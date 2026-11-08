@@ -103,6 +103,19 @@ export const ACTIVITY_SOURCE_COVERAGE: readonly ActivityCoverage[] = [
   },
 ];
 
+// Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7725, mirroring the #7694/#7711 capUnits guard in
+// actions.ts): an astral character straddling the cap is dropped whole, so
+// a persisted summary can never end in a lone high surrogate.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
+
 // -- writers: pure mappings from source observations to deliveries -------
 
 /** Map watchdog tier items to deliveries, one per breach episode.
@@ -117,7 +130,7 @@ export function watchdogDeliveries(items: readonly TierItem[]): ActivityDelivery
     at: item.since,
     kind: "watchdog-event",
     ref: item.id,
-    summary: item.title.slice(0, 500),
+    summary: capUnits(item.title, 500),
   }));
 }
 
@@ -193,7 +206,7 @@ export function kaneoChangeDeliveries(
         at: card.updatedAt ?? new Date().toISOString(),
         kind: "kaneo-change",
         ref: card.id,
-        summary: `Kaneo card appeared in ${card.status}: ${card.title}`.slice(0, 500),
+        summary: capUnits(`Kaneo card appeared in ${card.status}: ${card.title}`, 500),
         ...(card.kaneoUrl ? { link: card.kaneoUrl } : {}),
       });
     } else if (before.status !== card.status) {
@@ -204,7 +217,7 @@ export function kaneoChangeDeliveries(
         at: card.updatedAt ?? new Date().toISOString(),
         kind: "kaneo-change",
         ref: card.id,
-        summary: `Kaneo card moved ${before.status} -> ${card.status}: ${card.title}`.slice(0, 500),
+        summary: capUnits(`Kaneo card moved ${before.status} -> ${card.status}: ${card.title}`, 500),
         ...(card.kaneoUrl ? { link: card.kaneoUrl } : {}),
       });
     }
@@ -482,7 +495,7 @@ export class IngestionStore {
           actor: d.source,
           kind: d.kind,
           ref: d.ref,
-          summary: (d.link ? `${d.summary} — ${d.link}` : d.summary).slice(0, 500),
+          summary: capUnits(d.link ? `${d.summary} — ${d.link}` : d.summary, 500),
         });
       } catch (err) {
         failed++;

@@ -159,6 +159,7 @@ pub mod app_manifest;
 #[cfg(feature = "world")]
 pub mod artifact;
 pub mod attestation;
+pub mod backup;
 pub mod blob_gate;
 #[cfg(feature = "world")]
 pub mod boards;

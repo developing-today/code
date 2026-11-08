@@ -744,7 +744,9 @@ in
   # bin programs and the agyProxyPort/antigravityLsProxyPort lets from
   # git history, drop the session-variable removals below, and
   # re-point the plan seats in opencode.jsonc back from
-  # antigravity-direct.
+  # antigravity-direct. Before retiring any future provider door, run
+  # the retirement gate (scripts/check-provider-retirement-gate.sh, #5610)
+  # to verify zero active configuration references remain.
 
   # Design Code proxy removed (2026-11-03, Drew): its unit definition
   # stood here. Drew removed the design persona routes and the whole
