@@ -469,7 +469,7 @@ JSON text — default JSON text, matching `session_labels.topics`.
 
 ## 10. Go/no-go
 
-**GO** on the six-table schema (now seven with `span_windows`) and the
+**GO** on the seven-table schema and the
 migration phases as written. The parts that are *not* decided here and
 must land before implementation starts: #6036's thresholds (they do not
 change the tables), #6039's overlap numbers (they change defaults, not
