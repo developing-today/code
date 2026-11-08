@@ -173,6 +173,33 @@ function initWorld(): void {
     }
     return false;
   };
+  // The HTTP doors validate like the WS doors do (#7831): a 200 with the
+  // wrong shape fails closed through the existing error paths instead of
+  // throwing a raw TypeError or trusting fields the server never promised.
+  // Field set mirrors HostViewResponse in pkgs/id/src/web/world_ws.rs.
+  const isHostViewResponse = (
+    value: unknown,
+  ): value is {
+    snapshot: NonNullable<WorldFrame["snapshot"]> | null;
+    view: string | null;
+    surface: ScreenSurface | null;
+    records_sequence: number;
+    records: Record<string, unknown>;
+    next_after: string | null;
+  } =>
+    isRecord(value) &&
+    isFiniteNumber(value.records_sequence) &&
+    isRecord(value.records) &&
+    (value.next_after === null || typeof value.next_after === "string") &&
+    (value.snapshot === null || value.snapshot === undefined || isWorldSnapshot(value.snapshot)) &&
+    (value.view === null || value.view === undefined || typeof value.view === "string") &&
+    (value.surface === null || value.surface === undefined || isRecord(value.surface));
+  const isInviteResponse = (value: unknown): value is { capability: string; display_name: string } =>
+    isRecord(value) &&
+    typeof value.capability === "string" &&
+    value.capability.length > 0 &&
+    typeof value.display_name === "string";
+
   const rejectFrame = () => {
     setStatus("Received an invalid world frame", "error");
     appendLine(log, "error: invalid world frame");
@@ -430,14 +457,10 @@ function initWorld(): void {
           throw new Error(response.status === 401 ? "Host authorization denied" : "Host view unavailable");
         }
         if (generation !== hostViewGeneration || !hostMode) return;
-        const result = (await response.json()) as {
-          snapshot?: NonNullable<WorldFrame["snapshot"]>;
-          view?: string | null;
-          surface?: ScreenSurface | null;
-          records_sequence: number;
-          records: Record<string, unknown>;
-          next_after: string | null;
-        };
+        const result: unknown = await response.json();
+        if (!isHostViewResponse(result)) {
+          throw new Error("Host view unavailable");
+        }
         if (recordsSequence !== null && recordsSequence !== result.records_sequence) {
           throw new Error("World records changed while paging; refresh the host view");
         }
@@ -563,7 +586,10 @@ function initWorld(): void {
       if (!response.ok) {
         throw new Error(response.status === 401 ? "Admin token refused" : `Invite failed (${response.status})`);
       }
-      const result = (await response.json()) as { capability: string; display_name: string };
+      const result: unknown = await response.json();
+      if (!isInviteResponse(result)) {
+        throw new Error("Invite failed");
+      }
       showCapability(result.capability);
       admin.value = "";
       setStatus("Invite created. Copy it or join this browser.", "good");
