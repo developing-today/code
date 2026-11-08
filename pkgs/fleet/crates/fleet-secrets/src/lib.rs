@@ -154,14 +154,26 @@ impl Resolver {
     }
 
     /// The default chain for a resolved fleet config.
+    ///
+    /// A broker path-resolution failure (e.g. `HOME` unavailable, so
+    /// `broker_socket()` / `secrets_token_file()` cannot resolve) is
+    /// a broker-*source* failure, not a chain-construction failure
+    /// (#6826): the chain is built with a broker source that reports
+    /// the recorded path error, so resolution still attempts the
+    /// `bws` fallback, and the broker error rides the chain's error
+    /// list when every source fails. When the paths resolve, the
+    /// chain is exactly what it was before. The `Result` stays for
+    /// signature stability; path failures no longer produce `Err`.
     pub fn default_chain(
         config: &fleet_config::Config,
     ) -> Result<Resolver, fleet_config::ConfigError> {
+        let paths = config.broker_socket().and_then(|broker_socket| {
+            config
+                .secrets_token_file()
+                .map(|token_file| (broker_socket, token_file))
+        });
         Ok(Resolver::new(vec![
-            Box::new(BrokerSource {
-                broker_socket: config.broker_socket()?,
-                token_file: config.secrets_token_file()?,
-            }),
+            broker_source(paths),
             Box::new(BwsSource::new()),
         ]))
     }
@@ -183,6 +195,47 @@ impl Resolver {
         Err(SecretError::Chain {
             name: name.to_string(),
             errors,
+        })
+    }
+}
+
+/// The broker source for a pair of resolved broker paths, or —
+/// when path resolution itself failed (#6826) — a source that can
+/// only report that failure. Split from `Resolver::default_chain`
+/// so the failure shape is testable without bending the process
+/// environment.
+fn broker_source(
+    paths: Result<(PathBuf, PathBuf), fleet_config::ConfigError>,
+) -> Box<dyn SecretSource> {
+    match paths {
+        Ok((broker_socket, token_file)) => Box::new(BrokerSource {
+            broker_socket,
+            token_file,
+        }),
+        Err(e) => Box::new(BrokerPathErrorSource {
+            detail: e.to_string(),
+        }),
+    }
+}
+
+/// A secrets-broker source whose paths never resolved: every
+/// resolution attempt fails with the recorded path error, so the
+/// chain moves on to the next source and the error is retained in
+/// the chain's failure list (#6826).
+struct BrokerPathErrorSource {
+    detail: String,
+}
+
+impl SecretSource for BrokerPathErrorSource {
+    fn source_name(&self) -> &'static str {
+        "secrets-broker"
+    }
+
+    fn resolve(&self, name: &str) -> Result<SecretValue, SecretError> {
+        Err(SecretError::Unavailable {
+            source: "secrets-broker",
+            name: name.to_string(),
+            detail: self.detail.clone(),
         })
     }
 }
@@ -521,6 +574,83 @@ mod tests {
             !text.contains("fixture"),
             "error must not carry values: {text}"
         );
+    }
+
+    #[test]
+    fn broker_path_error_is_a_broker_source_failure_not_a_chain_failure() {
+        // #6826: with the broker paths unresolvable, the broker
+        // source reports the recorded path error under the broker's
+        // own name — it does not abort chain construction.
+        let source = broker_source(Err(fleet_config::ConfigError::MissingHome {
+            setting: "the default broker socket path",
+        }));
+        assert_eq!(source.source_name(), "secrets-broker");
+        let err = source.resolve("some.name").unwrap_err();
+        let text = format!("{err}");
+        assert!(
+            text.contains("HOME is unset or empty"),
+            "the recorded path error is the broker failure: {text}"
+        );
+    }
+
+    #[test]
+    fn broker_path_error_still_falls_through_to_the_bws_fallback() {
+        // #6826: a chain holding the path-error broker source
+        // resolves through the next source in the chain.
+        let resolver = Resolver::new(vec![
+            broker_source(Err(fleet_config::ConfigError::MissingHome {
+                setting: "the default broker socket path",
+            })),
+            Box::new(FakeSource {
+                name: "bws",
+                result: Ok("fixture-value-not-a-secret".to_string()),
+            }),
+        ]);
+        let v = resolver.resolve("some.name").unwrap();
+        assert_eq!(v.expose(), "fixture-value-not-a-secret");
+    }
+
+    #[test]
+    fn broker_path_error_is_retained_when_every_source_fails() {
+        // #6826: when the fallback also fails, the chain's error
+        // still carries the broker path error.
+        let resolver = Resolver::new(vec![
+            broker_source(Err(fleet_config::ConfigError::MissingHome {
+                setting: "the default broker socket path",
+            })),
+            Box::new(FakeSource {
+                name: "bws",
+                result: Err(SecretError::Unavailable {
+                    source: "bws",
+                    name: "x".into(),
+                    detail: "down".into(),
+                }),
+            }),
+        ]);
+        let err = resolver.resolve("some.name").unwrap_err();
+        let text = format!("{err}");
+        assert!(
+            text.contains("HOME is unset or empty"),
+            "chain error retains the broker path error: {text}"
+        );
+        assert!(
+            text.contains("bws"),
+            "chain error names the fallback too: {text}"
+        );
+    }
+
+    #[test]
+    fn default_chain_builds_broker_then_bws_when_paths_resolve() {
+        // Unchanged behaviour on the happy path (#6826): the real
+        // broker source first, the bws fallback second.
+        let config = fleet_config::Config::default();
+        let resolver = Resolver::default_chain(&config).unwrap();
+        let names: Vec<&str> = resolver
+            .sources
+            .iter()
+            .map(|s| s.source_name())
+            .collect();
+        assert_eq!(names, ["secrets-broker", "bws"]);
     }
 
     #[test]
