@@ -33,6 +33,9 @@
 //   OPENCODE_ROUTE_PROXY_PORT        listen port (default 18750)
 //   OPENCODE_ROUTE_PROXY_HOST        listen host (default 127.0.0.1)
 //   OPENCODE_ROUTE_PROXY_TIMEOUT_MS  per-request cap (default 1200000)
+//   OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS  first-response cap per leaf
+//                                         (default 3000 ms; below the client
+//                                         no-output window)
 //   OPENCODE_ROUTE_PROXY_CONFIG      opencode.jsonc path (default:
 //                                    ~/.local/share/opencode/opencode.jsonc,
 //                                    else ../.opencode/opencode.jsonc
@@ -60,6 +63,10 @@ import { parseProxyMillis, parseProxyPort } from "./proxy-port.mjs";
 const PORT = parseProxyPort("OPENCODE_ROUTE_PROXY_PORT", 18750);
 const HOST = process.env.OPENCODE_ROUTE_PROXY_HOST || "127.0.0.1";
 const TIMEOUT_MS = parseProxyMillis("OPENCODE_ROUTE_PROXY_TIMEOUT_MS", 1_200_000);
+const LEAF_TIMEOUT_MS = parseProxyMillis(
+  "OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS",
+  3_000,
+);
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH =
   process.env.OPENCODE_ROUTE_PROXY_CONFIG ||
@@ -962,10 +969,27 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
       const next = attempts[i + 1];
       const failedOverTo = next ? `${next.providerId}/${next.modelKey}` : null;
       let res;
+      const leafDeadlineCtl = new AbortController();
+      const leafTimer = setTimeout(
+        () =>
+          leafDeadlineCtl.abort(
+            new Error("opencode-route-proxy leaf first-response timeout"),
+          ),
+        LEAF_TIMEOUT_MS,
+      );
+      const leafSignal = AbortSignal.any([signal, leafDeadlineCtl.signal]);
       try {
-        res = await callLeaf(cfg, leaf, body, wantStream, signal, sessionLabel);
+        res = await callLeaf(
+          cfg,
+          leaf,
+          body,
+          wantStream,
+          leafSignal,
+          sessionLabel,
+        );
       } catch (err) {
         const ended = Date.now();
+        const leafTimedOut = !signal.aborted && leafDeadlineCtl.signal.aborted;
         recordAttempt({
           started,
           ended,
@@ -973,7 +997,7 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
           providerId: leaf.providerId,
           modelId: leaf.modelKey,
           variant: leaf.variant,
-          outcome: signal.aborted ? "timeout" : "failure",
+          outcome: signal.aborted || leafTimedOut ? "timeout" : "failure",
           errorTag: err.tag || "Transport",
           errorCode: err.code ?? null,
           errorMessage: String(err.message || err).slice(0, 500),
@@ -986,6 +1010,8 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
         lastErr = err;
         if (signal.aborted) throw err;
         continue;
+      } finally {
+        clearTimeout(leafTimer);
       }
       if (!res.ok) {
         const ended = Date.now();

@@ -1,0 +1,1473 @@
+#!/usr/bin/env python3
+"""Yard reaper for ~/git/fleet (code#7093): dry-run-first, liveness-aware
+cleanup of the WHOLE scratch yard -- every cargo target tree, plus
+nested clones, probe/scratch trees, bench fixture floods, and the
+queue/ sub-worktrees.
+
+Born as the cargo-target-janitor (code#3448) and widened to the full
+yard by code#7093 under Drew's disposition rule (2026-11-07):
+KEEP text, scripts, and markdown -- provenance beats extension.
+Whole entries are reaped only when they are preservation-verified
+(a nested clone clean with HEAD equal to its live remote tip, or a
+scratch tree holding zero keep-set files); bulk (target/ trees,
+fixture floods, generated files) is reaped under the same liveness
+gates the janitor always used. No archive branches, no local
+preservation tier: preservation = pushed to origin or PR'd."""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+GIB = 1024**3
+QUEUE = "repo-health-code-pilot"
+REPO = "developing-today/code"
+
+# --- yard-reaper additions (code#7093) ---
+# Drew's keep set (2026-11-07): human-authored text, scripts, markdown.
+KEEP_SUFFIXES = {
+    ".md", ".txt", ".sh", ".py", ".ts", ".js", ".json", ".yaml", ".yml",
+    ".toml", ".log",
+}
+# Fixture floods are GENERATED .txt bulk despite the keep extension;
+# provenance (directory name) beats extension (#7093 heuristics:
+# watcher-bench fixture dirs identified by name; generated files are
+# never authored text wherever they sit inside target/-style bulk,
+# which the walk prunes before counting).
+FIXTURE_DIR_MARKERS = ("watcher-bench", "bench-fixture", "fixture")
+# Package caches and vendored trees are dependency bulk, not authored
+# text, wherever they sit: bun/npm/pip caches, vendored sources,
+# language toolchains. Provenance again: nothing a human authored
+# for the fleet lives under a cache or vendor path, and the first
+# real dry-run showed probe trees whose only "keep-set" files were
+# package sources inside cache/ trees (#7093 run 20261108T220620Z).
+BULK_DIR_NAMES = {
+    "target", "dist", "node_modules", ".git",
+    "cache", ".cache", "vendor", ".bun", ".npm", ".venv",
+    "__pycache__",
+}
+# Examination holds: entries another lane is actively examining are
+# never reaped, whatever their class. Exact top-level yard names.
+DENY_NAMES = {"7780-1931-slice1", "11081"}
+TASK_ID_RE = re.compile(r"(?:queue/|task-|target-)(\d+)(?:-|$)")
+# Ad-hoc targets are exactly "target-<task-id>" (README). Anything else
+# starting with "target-" (e.g. a registered worktree named
+# "target-42-worktree") is a checkout, never a disposable target.
+ADHOC_TARGET_RE = re.compile(r"target-\d+")
+
+
+class SafetyError(RuntimeError):
+    pass
+
+
+@dataclass
+class Target:
+    path: Path
+    bytes: int
+    newest_mtime: float
+    branch: str | None
+    task_id: int | None
+    task_status: str | None = None
+    protected: str | None = None
+    reason: str | None = None
+    issue_id: int | None = None
+
+
+@dataclass
+class Entry:
+    """One yard entry (a fleet child or a queue/ child) in the yard scan."""
+
+    path: Path
+    bytes: int
+    newest_mtime: float
+    kind: str  # clone | scratch
+    protected: str | None = None
+    reason: str | None = None
+    keep_files: int = 0
+    total_files: int = 0
+    head: str | None = None
+    remote_tip: str | None = None
+
+
+def task_id_from(value: str) -> int | None:
+    match = TASK_ID_RE.search(value)
+    return int(match.group(1)) if match else None
+
+
+# Fallback-era and broker-era names carry the issue number as well as
+# (for broker tasks) the task id: branches queue/<task>-<issue>-<slug>
+# and queue/fallback-<issue>-<slug> / queue/fb-<issue>-<slug>; fleet
+# dirs <task>-<issue>-<slug>, <task>-issue-<issue>-<slug>, and
+# fb-<issue>-<slug> / fallback-<issue>-<slug>. Fallback claims are
+# keyed by issue (there are no task ids in fallback mode, #6619), so
+# protection needs the issue identity too (#6812).
+BRANCH_TASK_ISSUE_RE = re.compile(r"^queue/(\d+)-(\d+)(?:-|$)")
+BRANCH_FALLBACK_RE = re.compile(r"^queue/(?:fallback|fb)-(\d+)(?:-|$)")
+DIR_TASK_ISSUE_RE = re.compile(r"^(\d+)-(\d+)(?:-|$)")
+DIR_TASK_ISSUE_ALT_RE = re.compile(r"^(\d+)-issue-(\d+)(?:-|$)")
+DIR_FALLBACK_RE = re.compile(r"^(?:fallback|fb)-(\d+)(?:-|$)")
+
+
+def issue_id_from(value: str) -> int | None:
+    match = BRANCH_FALLBACK_RE.search(value)
+    if match:
+        return int(match.group(1))
+    for pattern in (BRANCH_TASK_ISSUE_RE, DIR_TASK_ISSUE_ALT_RE, DIR_TASK_ISSUE_RE):
+        match = pattern.search(value)
+        if match:
+            return int(match.group(2))
+    match = DIR_FALLBACK_RE.search(value)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def dir_task_id(value: str) -> int | None:
+    # First numeric segment of a <task>-<issue>-<slug> fleet dir name;
+    # task_id_from only recognises the queue/task-/target- prefixes.
+    for pattern in (DIR_TASK_ISSUE_RE, DIR_TASK_ISSUE_ALT_RE):
+        match = pattern.search(value)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def is_adhoc_target(entry: Path, registered: set[Path]) -> bool:
+    return (
+        ADHOC_TARGET_RE.fullmatch(entry.name) is not None
+        and entry.resolve() not in registered
+    )
+
+
+def worktree_root_for_target(path: Path) -> Path | None:
+    # The checkout owning a <worktree>/pkgs/id/target path, or a
+    # repo-root <worktree>/target path (#6812: root targets are real
+    # cargo output when a build runs at the checkout root or with
+    # CARGO_TARGET_DIR=<worktree>/target). An ad-hoc target-<id> dir
+    # is its own target, never a checkout root.
+    if (
+        path.name == "target"
+        and path.parent.name == "id"
+        and path.parent.parent.name == "pkgs"
+    ):
+        return path.parent.parent.parent
+    if path.name == "target" and ADHOC_TARGET_RE.fullmatch(path.parent.name) is None:
+        return path.parent
+    return None
+
+
+def branch_for_unregistered(path: Path, cache: dict) -> str | None:
+    # Current branch of a checkout the primary does not register
+    # (e.g. the fleet/queue/* worktrees), read from the checkout
+    # itself. None when unreadable — the caller treats the worktree
+    # as unmapped, which protects its targets.
+    resolved = path.resolve()
+    if resolved in cache:
+        return cache[resolved]
+    branch = None
+    if (path / ".git").exists():
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(path), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            name = proc.stdout.strip()
+            if proc.returncode == 0 and name and name != "HEAD":
+                branch = name
+        except (OSError, subprocess.SubprocessError):
+            branch = None
+    cache[resolved] = branch
+    return branch
+
+
+def looks_like_cargo_target(path: Path) -> bool:
+    # A repo-root target/ is cargo output only when it holds build
+    # products; a stray dir named target is not the janitor's concern.
+    return any(
+        (path / marker).is_dir() for marker in ("debug", "release", ".fingerprint")
+    )
+
+
+def owner_changed(target: Target, branches_now: dict[Path, str | None]) -> bool:
+    """Whether the checkout owning a worktree target has moved to a
+    different branch/task since discovery. A switch between plan and
+    removal invalidates the plan's queue/PR checks, which are keyed to
+    the recorded branch/task (#4175 Codex P2): the apply path must
+    re-derive the owner and stop if it changed."""
+    root = worktree_root_for_target(target.path)
+    if root is None:
+        return False
+    current_branch = branches_now.get(root.resolve())
+    current_task = (
+        task_id_from(current_branch or "")
+        or task_id_from(root.name)
+        or dir_task_id(root.name)
+    )
+    return current_branch != target.branch or current_task != target.task_id
+
+
+def cwd_inside(cwds: list[Path], base: Path) -> bool:
+    return any(cwd == base or cwd.is_relative_to(base) for cwd in cwds)
+
+
+def target_stats(path: Path) -> tuple[int, float]:
+    """Count regular files without following symlinks; fail closed on I/O errors."""
+    total = 0
+    newest = path.lstat().st_mtime
+    seen_inodes: set[tuple[int, int]] = set()
+    for root, dirs, files in os.walk(path, followlinks=False):
+        dirs[:] = [name for name in dirs if not (Path(root) / name).is_symlink()]
+        for name in dirs + files:
+            entry = Path(root) / name
+            try:
+                st = entry.lstat()
+            except FileNotFoundError:
+                continue  # Cargo may be creating/removing files during the scan.
+            newest = max(newest, st.st_mtime)
+            if stat.S_ISREG(st.st_mode):
+                # Cargo hard-links artifacts (target/debug/<bin> and
+                # target/debug/deps/<bin>-<hash> share an inode): count
+                # each inode once, at allocated size, so the cap and the
+                # reclaimed reporting track real disk usage.
+                key = (st.st_dev, st.st_ino)
+                if key in seen_inodes:
+                    continue
+                seen_inodes.add(key)
+                blocks = getattr(st, "st_blocks", 0)
+                total += blocks * 512 if blocks else st.st_size
+            else:
+                total += st.st_size
+    return total, newest
+
+
+def active_process_cwds(proc_root: Path = Path("/proc")) -> list[Path]:
+    """Return current-user process working directories.
+
+    The janitor's version of this scan watched build processes only
+    and failed closed when a watched process's cwd was unreadable.
+    The yard reaper watches EVERY process of the current user (#7093
+    live-use gate): any cwd inside an entry protects it, whatever
+    the process is doing there. Unreadable processes are skipped,
+    never fatal: systemd --user managers, kernel-adjacent helpers,
+    and other un-inspectable processes have cwds outside the yard by
+    construction (the yard is only ever entered by lane shells and
+    build tools, all readable), and a fail-closed refusal here once
+    meant the reaper could never complete a single scan on this
+    host (pid 1-adjacent user manager, 2026-11-08). What protects an
+    entry is a readable cwd inside it -- that check stays exact.
+    """
+    try:
+        pids = list(proc_root.iterdir())
+    except OSError as exc:
+        raise SafetyError(f"cannot inspect process table: {exc}") from exc
+    result = []
+    uid = os.getuid()
+    for entry in pids:
+        if not entry.name.isdigit():
+            continue
+        try:
+            if entry.stat().st_uid != uid:
+                continue
+            result.append(Path(os.readlink(entry / "cwd")))
+        except (FileNotFoundError, PermissionError, OSError):
+            continue  # exited mid-scan or not inspectable; see docstring
+    return result
+
+
+def discover_primaries(git_root: Path) -> list[Path]:
+    """Every primary checkout under git_root.
+
+    A primary is a checkout whose .git is a directory; linked
+    worktrees have .git as a file. The yard holds worktrees of
+    MANY primaries (code, opencode, openchamber, nix, ...), so the
+    registered set is only correct when every primary contributes
+    it -- the janitor needed just one primary because its targets
+    all belonged to that primary's repo shape; whole-entry
+    classification cannot assume that (#7093).
+    """
+    primaries = []
+    if not git_root.is_dir():
+        return primaries
+    for child in sorted(git_root.iterdir()):
+        if child.is_symlink() or not child.is_dir():
+            continue
+        if (child / ".git").is_dir():
+            primaries.append(child)
+    return primaries
+
+
+def all_worktree_branches(git_root: Path) -> dict[Path, str | None]:
+    """Registered worktree -> branch across every primary."""
+    merged: dict[Path, str | None] = {}
+    for primary in discover_primaries(git_root):
+        try:
+            merged.update(worktree_branches(primary))
+        except (OSError, subprocess.SubprocessError):
+            continue  # one unreadable primary must not blind the scan
+    return merged
+
+
+def worktree_branches(primary: Path) -> dict[Path, str | None]:
+    proc = subprocess.run(
+        ["git", "-C", str(primary), "worktree", "list", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    result: dict[Path, str | None] = {}
+    current: Path | None = None
+    for line in proc.stdout.splitlines():
+        if line.startswith("worktree "):
+            current = Path(line[9:]).resolve()
+            result[current] = None
+        elif current is not None and line.startswith("branch "):
+            result[current] = line[7:].removeprefix("refs/heads/")
+        elif not line:
+            current = None
+    return result
+
+
+def load_queue_client(helper: Path):
+    """Load the existing helper and its transient key once per run."""
+    if not helper.is_file():
+        raise SafetyError(f"queue helper unavailable: {helper}")
+    spec = importlib.util.spec_from_file_location("repo_queue_helper", helper)
+    if spec is None or spec.loader is None:
+        raise SafetyError("cannot load repo-queue helper")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    key = module.get_service_key()  # never print or persist this value
+    return module, key
+
+
+CLAIMS_PAGE = 1000
+# Fail-closed bound on pagination (#6618): a liveness read that cannot
+# be completed inside the bound raises SafetyError and cleanup stops,
+# rather than proceeding on a set that might be silently truncated.
+MAX_CLAIM_PAGES = 100
+STATES_CHUNK = 500
+
+
+def queue_claims(client) -> set[int]:
+    """Read ALL the pilot's claimed IDs through the existing helper.
+
+    Paginated (#6618): a single page capped at 1000 rows silently
+    dropped every claimed task past row 1000 from the never-delete
+    set. Pages are followed until a short page arrives; needing more
+    than MAX_CLAIM_PAGES pages fails closed.
+
+    Keyset pagination on id (#6790): pages are ordered by id and each
+    next page asks for id greater than the largest id seen. Offset
+    paging over this LIVE set was not stable — PostgREST re-evaluates
+    offset against the current filtered set on every request, so a
+    task leaving the claimed set mid-read shifted every later row one
+    position forward and the next offset page skipped a still-claimed
+    task, dropping it from the never-delete set. Rows leaving behind
+    the keyset cursor cannot shift rows ahead of it; rows ahead are
+    read exactly once, in order.
+    """
+    module, key = client
+    rows = []
+    after = 0
+    for _ in range(MAX_CLAIM_PAGES):
+        query = (
+            "tasks?select=id,queue,status,payload&"
+            f"queue=eq.{QUEUE}&status=eq.claimed"
+            f"&id=gt.{after}&order=id.asc&limit={CLAIMS_PAGE}"
+        )
+        page = module.http("GET", query, key) or []
+        rows.extend(page)
+        if len(page) < CLAIMS_PAGE:
+            break
+        after = max(int(row["id"]) for row in page)
+    else:
+        raise SafetyError(
+            f"claimed-task read exceeded {MAX_CLAIM_PAGES} pages "
+            f"of {CLAIMS_PAGE}; refusing to trust a possibly-truncated set"
+        )
+    return {
+        int(row["id"])
+        for row in rows
+        if row.get("status") == "claimed"
+        and row.get("queue") == QUEUE
+        and (row.get("payload") or {}).get("repo") == REPO
+    }
+
+
+def queue_task_states(client, task_ids: set[int]) -> dict[int, str]:
+    """States for a locally-built ID set, read in chunks (#6618).
+
+    Disposition of the old single `limit=1000` read: the ID set comes
+    from local fleet directories and can in principle exceed 1000, so
+    it is chunked — each query names at most STATES_CHUNK specific
+    IDs with limit=1000 > STATES_CHUNK, so no chunk's page can ever
+    truncate its answer.
+    """
+    if not task_ids:
+        return {}
+    module, key = client
+    states = {}
+    ordered = sorted(task_ids)
+    for start in range(0, len(ordered), STATES_CHUNK):
+        chunk = ordered[start : start + STATES_CHUNK]
+        ids = ",".join(str(task_id) for task_id in chunk)
+        rows = (
+            module.http(
+                "GET",
+                f"tasks?select=id,status&queue=eq.{QUEUE}&id=in.%28{ids}%29&limit=1000",
+                key,
+            )
+            or []
+        )
+        states.update({int(row["id"]): str(row["status"]) for row in rows})
+    return states
+
+
+class ClaimsSource:
+    # One readable source of queue liveness for a janitor run.
+    # claims() returns (claimed_task_ids, claimed_issue_numbers):
+    # the broker source keys protection by task id, the GitHub
+    # fallback source by issue number, because fallback claims live
+    # on issues (there are no task ids in fallback mode, #6619).
+    # states() returns broker task states, or {} when the source
+    # has none — a source with no states never makes a target
+    # eligible via the terminal-task reason; it never weakens a
+    # protection.
+    name = "abstract"
+
+    def claims(self):
+        raise NotImplementedError
+
+    def states(self, task_ids):
+        return {}
+
+
+class HelperClaimsSource(ClaimsSource):
+    name = "repo-queue-helper"
+
+    def __init__(self, helper: Path):
+        self._client = load_queue_client(helper)
+
+    def claims(self):
+        return queue_claims(self._client), set()
+
+    def states(self, task_ids):
+        return queue_task_states(self._client, task_ids)
+
+
+def parse_fallback_scan(scan: dict) -> set[int]:
+    # Issue numbers with a live fallback claim in a scan document.
+    # Live and contested both protect: a contested issue has two
+    # workers who believe they hold it, and the #6619 protocol says
+    # neither proceeds — but the work is claimed, so never delete
+    # under it. Stale/released/free do not protect here; the
+    # queue/claimed label union in FallbackClaimsSource covers the
+    # ambiguous broker-era residue separately.
+    issues = set()
+    for item in scan.get("items", []):
+        claim = item.get("claim") or {}
+        if claim.get("state") in {"live", "contested"}:
+            issues.add(int(item["number"]))
+    return issues
+
+
+def labelled_claimed_issues() -> set[int]:
+    # Open issues carrying queue/claimed, read completely via gh.
+    # A broker-era claim leaves this label but no fallback marker;
+    # the scan fold calls such an issue free, but its claim state
+    # is genuinely unknown (a parked broker task can resume), so
+    # the label alone protects. Paginated like open_pr_branches:
+    # complete or fail closed.
+    issues = set()
+    for page_no in range(1, MAX_PR_PAGES + 1):
+        proc = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{REPO}/issues?state=open&labels=queue%2Fclaimed"
+                f"&per_page={PR_PAGE}&page={page_no}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        try:
+            rows = json.loads(proc.stdout)
+            if not isinstance(rows, list):
+                raise TypeError("issues response is not a list")
+            for row in rows:
+                if "pull_request" not in row:
+                    issues.add(int(row["number"]))
+        except (ValueError, KeyError, TypeError) as exc:
+            raise SafetyError(f"invalid gh issues response: {exc}") from exc
+        if len(rows) < PR_PAGE:
+            return issues
+    raise SafetyError(
+        f"claimed-issue read exceeded {MAX_PR_PAGES} pages of {PR_PAGE}; "
+        "refusing to trust a possibly-truncated set"
+    )
+
+
+def fleet_binary() -> str:
+    found = shutil.which("fleet")
+    if found:
+        return found
+    local = Path.home() / ".local" / "bin" / "fleet"
+    if local.is_file():
+        return str(local)
+    raise SafetyError("fleet binary not found on PATH or in ~/.local/bin")
+
+
+class FallbackClaimsSource(ClaimsSource):
+    name = "github-fallback"
+
+    def claims(self):
+        proc = subprocess.run(
+            [fleet_binary(), "queue", "fallback", "scan", "--repo", REPO],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if proc.returncode != 0:
+            raise SafetyError(
+                f"fallback scan failed (exit {proc.returncode}): "
+                f"{proc.stderr.strip()[:200]}"
+            )
+        try:
+            scan = json.loads(proc.stdout)
+        except ValueError as exc:
+            raise SafetyError(f"invalid fallback scan output: {exc}") from exc
+        return set(), parse_fallback_scan(scan) | labelled_claimed_issues()
+
+
+def load_claims_source(helper: Path) -> ClaimsSource:
+    # The repo-queue helper stays the first choice where it still
+    # exists, but its absence is no longer fatal (#6812): the
+    # helper was retired in the fleet-binary migration, and a
+    # janitor that refuses every run enforces nothing. The GitHub
+    # fallback source needs only gh + the fleet binary and works
+    # while the queue backend is down. If neither source can be
+    # read, claims() raises and the run fails closed as before.
+    if helper.is_file():
+        return HelperClaimsSource(helper)
+    return FallbackClaimsSource()
+
+
+PR_PAGE = 100
+MAX_PR_PAGES = 200
+
+
+def open_pr_branches(repo: str = REPO) -> set[str]:
+    """Read ALL open PR branch names, paginated (#6618).
+
+    The old single `gh pr list --limit 500` silently dropped every
+    open PR past the first 500 from the never-delete set. This pages
+    the REST pulls endpoint (per_page/page) until a short page; a
+    read that still has not terminated after MAX_PR_PAGES pages
+    fails closed instead of trusting a possibly-truncated set.
+    Both call sites (plan-time and the apply-loop re-check) use this
+    one function, so there is no second, weaker copy.
+    """
+    branches = set()
+    for page_no in range(1, MAX_PR_PAGES + 1):
+        proc = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{repo}/pulls?state=open&per_page={PR_PAGE}&page={page_no}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        try:
+            rows = json.loads(proc.stdout)
+            if not isinstance(rows, list):
+                raise TypeError("pulls response is not a list")
+            for row in rows:
+                branches.add(str(row["head"]["ref"]))
+        except (ValueError, KeyError, TypeError) as exc:
+            raise SafetyError(f"invalid gh PR response: {exc}") from exc
+        if len(rows) < PR_PAGE:
+            return branches
+    raise SafetyError(
+        f"open-PR read exceeded {MAX_PR_PAGES} pages of {PR_PAGE}; "
+        "refusing to trust a possibly-truncated set"
+    )
+
+
+def scan_entries(root: Path):
+    # (entry, is_top_level) for every dir that can own targets: the
+    # fleet children, plus the queue/ sub-worktrees one level down
+    # (#6812: queue/ alone held ~90 GiB the old top-level-only scan
+    # never saw).
+    for entry in sorted(root.iterdir()):
+        yield entry, True
+    queue_dir = root / "queue"
+    if queue_dir.is_dir() and not queue_dir.is_symlink():
+        for entry in sorted(queue_dir.iterdir()):
+            yield entry, False
+
+
+def target_paths_for_entry(entry: Path, registered: set, top_level: bool):
+    # (target_path, owning_worktree_or_None) pairs owned by one
+    # fleet entry: its pkgs/id target, its repo-root cargo target
+    # (#6812), or the entry itself when it is an ad-hoc target-<id>.
+    if top_level and is_adhoc_target(entry, registered):
+        return [(entry, None)]
+    paths = []
+    pkgs_target = entry / "pkgs" / "id" / "target"
+    if not pkgs_target.is_symlink() and pkgs_target.is_dir():
+        paths.append((pkgs_target, entry.resolve()))
+    root_target = entry / "target"
+    if (
+        not root_target.is_symlink()
+        and root_target.is_dir()
+        and looks_like_cargo_target(root_target)
+    ):
+        # A checkout's root target belongs to the checkout. A
+        # non-checkout dir's root target (lane probe/scratch trees —
+        # ~113 GiB of them, #6812) belongs to no checkout: it is
+        # returned with worktree None and handled like an ad-hoc
+        # target, except that its owning dir still exists, so the
+        # worktree-gone reason must not fire for it (see discover).
+        checkout = (entry / ".git").exists() or entry.resolve() in registered
+        paths.append((root_target, entry.resolve() if checkout else None))
+    return paths
+
+
+def is_fixture_dir(path: Path, root: Path) -> bool:
+    # Provenance heuristic (#7093): a directory whose own name marks
+    # it as bench-fixture bulk. Its files are generated .txt floods,
+    # not authored text, whatever their extension.
+    try:
+        rel = path.relative_to(root)
+        parts = rel.parts
+    except ValueError:
+        parts = (path.name,)
+    if parts in ((), (".",)):
+        parts = (path.name,)
+    return any(
+        marker in part.lower()
+        for part in parts
+        for marker in FIXTURE_DIR_MARKERS
+    )
+
+
+def classify_entry_files(
+    path: Path,
+) -> tuple[int, float, int, int]:
+    """Walk an entry once: (bytes, newest_mtime, keep_files, total_files).
+
+    Keep-set counting prunes bulk subtrees (BULK_DIR_NAMES:
+    target/, dist/, node_modules/, .git internals, package caches,
+    vendored trees): authored text is never counted inside
+    generated bulk. Fixture directories are
+    walked (their bulk counts toward size) but their files never
+    count as keep-set. Symlinks are never followed; inode-deduped
+    allocated bytes match target_stats accounting.
+    """
+    total = 0
+    newest = path.lstat().st_mtime
+    keep = 0
+    files = 0
+    seen_inodes: set[tuple[int, int]] = set()
+    for root_dir, dirs, names in os.walk(path, followlinks=False):
+        root_path = Path(root_dir)
+        kept_dirs = []
+        for name in dirs:
+            child = root_path / name
+            if child.is_symlink():
+                continue
+            if name in BULK_DIR_NAMES:
+                sub_bytes, sub_newest = target_stats(child)
+                total += sub_bytes
+                newest = max(newest, sub_newest)
+                continue
+            kept_dirs.append(name)
+        dirs[:] = kept_dirs
+        fixture = is_fixture_dir(root_path, path)
+        for name in names:
+            entry = root_path / name
+            try:
+                st = entry.lstat()
+            except FileNotFoundError:
+                continue
+            newest = max(newest, st.st_mtime)
+            if stat.S_ISREG(st.st_mode):
+                key = (st.st_dev, st.st_ino)
+                if key not in seen_inodes:
+                    seen_inodes.add(key)
+                    blocks = getattr(st, "st_blocks", 0)
+                    total += blocks * 512 if blocks else st.st_size
+                files += 1
+                if not fixture and Path(name).suffix.lower() in KEEP_SUFFIXES:
+                    keep += 1
+            else:
+                total += st.st_size
+    return total, newest, keep, files
+
+
+def git_out(path: Path, *argv: str, timeout: int = 60) -> tuple[int, str]:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(path), *argv],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return proc.returncode, proc.stdout
+    except (OSError, subprocess.SubprocessError):
+        return 1, ""
+
+
+def clone_verdict(path: Path) -> tuple[str | None, str | None, str | None]:
+    """(protection, head, remote_tip) for a nested clone.
+
+    Preservation proof for a clone is exact (#7093): clean tree
+    (no tracked changes, no untracked files -- anything in the
+    checkout that is not committed is unlanded) AND HEAD equal to
+    the LIVE tip of its upstream branch, read with ls-remote so a
+    stale remote-tracking ref cannot fake it. Any failure to prove
+    either half protects the clone.
+    """
+    rc, status = git_out(path, "status", "--porcelain")
+    if rc != 0:
+        return "clone-unreadable", None, None
+    if status.strip():
+        return "clone-unlanded-state", None, None
+    rc, head_out = git_out(path, "rev-parse", "HEAD")
+    if rc != 0:
+        return "clone-unreadable", None, None
+    head = head_out.strip()
+    rc, upstream = git_out(
+        path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"
+    )
+    upstream = upstream.strip()
+    if rc != 0 or "/" not in upstream:
+        return "clone-no-upstream", head, None
+    remote, branch = upstream.split("/", 1)
+    rc, remote_url = git_out(path, "remote", "get-url", remote)
+    if rc != 0 or not remote_url.strip():
+        return "clone-no-upstream", head, None
+    try:
+        proc = subprocess.run(
+            ["git", "ls-remote", remote_url.strip(), f"refs/heads/{branch}"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        rows = proc.stdout.split()
+        tip = rows[0] if proc.returncode == 0 and rows else None
+    except (OSError, subprocess.SubprocessError):
+        tip = None
+    if tip is None:
+        return "clone-tip-unverified", head, None
+    if tip != head:
+        return "clone-head-not-on-remote", head, tip
+    return None, head, tip
+
+
+def discover_entries(
+    fleet_root: Path,
+    registered: set[Path],
+    claimed: set[int],
+    claimed_issues: set[int],
+    prs: set[str],
+    process_cwds: list[Path],
+    idle_before: float,
+) -> list[Entry]:
+    """Classify every yard entry the target scan does not own.
+
+    Registered worktrees are skipped (the worktree-reaper owns
+    them; their target/ trees are still the target plan's). Loose
+    root files are skipped (always kept). Everything else --
+    nested clones, probe/scratch trees, fixture floods, queue/
+    children -- is classified for whole-entry reaping under the
+    keep rule.
+    """
+    root = fleet_root.resolve(strict=True)
+    entries: list[Entry] = []
+    for entry, top_level in scan_entries(root):
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        resolved = entry.resolve()
+        if resolved in registered:
+            continue
+        if top_level and entry.name in DENY_NAMES:
+            entries.append(
+                Entry(resolved, 0, 0, "held", protected="examination-hold")
+            )
+            continue
+        # A linked worktree of a primary the (possibly partial)
+        # registered set missed still carries branch state; only a
+        # checkout whose branch is unregistered AND which has no
+        # .git file is out of the worktree-reaper's world. .git as a
+        # FILE means linked worktree: never classify it here.
+        is_clone = (entry / ".git").is_dir()
+        size, newest, keep, files = classify_entry_files(entry)
+        task_id = task_id_from(entry.name) or dir_task_id(entry.name)
+        issue_id = issue_id_from(entry.name)
+        protection = None
+        reason = None
+        head = tip = None
+        if task_id is not None and task_id in claimed:
+            protection = "live-claimed-task"
+        elif issue_id is not None and issue_id in claimed_issues:
+            protection = "live-claimed-issue"
+        elif any(
+            cwd == resolved or cwd.is_relative_to(resolved)
+            for cwd in process_cwds
+        ):
+            protection = "process-in-entry"
+        elif newest > idle_before:
+            protection = "active-within-4h"
+        elif is_clone:
+            protection, head, tip = clone_verdict(entry)
+            if protection is None:
+                reason = "clone-verified-clean"
+        elif keep > 0:
+            protection = "holds-keep-set"
+        else:
+            reason = "scratch-no-keep-set"
+        entries.append(
+            Entry(
+                resolved,
+                size,
+                newest,
+                "clone" if is_clone else "scratch",
+                protected=protection,
+                reason=reason,
+                keep_files=keep,
+                total_files=files,
+                head=head,
+                remote_tip=tip,
+            )
+        )
+    return entries
+
+
+def discover_targets(
+    fleet_root: Path,
+    branches: dict[Path, str | None],
+    claimed: set[int],
+    statuses: dict[int, str],
+    prs: set[str],
+    process_cwds: list[Path],
+    stale_before: float,
+    claimed_issues: set[int] | None = None,
+) -> list[Target]:
+    if claimed_issues is None:
+        claimed_issues = set()
+    root = fleet_root.resolve(strict=True)
+    registered = {path.resolve() for path in branches}
+    worktree_task_ids = {
+        task_id
+        for branch in branches.values()
+        if (task_id := task_id_from(branch or "")) is not None
+    }
+    candidates = []
+    branch_cache: dict = {}
+    for entry, top_level in scan_entries(root):
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        for target, worktree in target_paths_for_entry(entry, registered, top_level):
+            if worktree is None and target == entry:
+                # Ad-hoc target-<id>: the entry IS the target.
+                candidates.append(
+                    (target, None, None, task_id_from(entry.name), None, None, True)
+                )
+                continue
+            if worktree is None:
+                # Scratch root target: no checkout, but the owning
+                # dir exists and a build inside it must protect it.
+                task_id = task_id_from(entry.name) or dir_task_id(entry.name)
+                issue_id = issue_id_from(entry.name)
+                candidates.append(
+                    (target, None, None, task_id, issue_id, entry.resolve(), False)
+                )
+                continue
+            branch = branches.get(worktree)
+            if branch is None:
+                branch = branch_for_unregistered(entry, branch_cache)
+            task_id = (
+                task_id_from(branch or "")
+                or task_id_from(entry.name)
+                or dir_task_id(entry.name)
+            )
+            issue_id = issue_id_from(branch or "") or issue_id_from(entry.name)
+            candidates.append((target, worktree, branch, task_id, issue_id, worktree, False))
+
+    result = []
+    for path, worktree, branch, task_id, issue_id, owner_dir, adhoc in candidates:
+        resolved = path.resolve(strict=True)
+        if not resolved.is_relative_to(root) or resolved == root:
+            continue
+        try:
+            size, newest = target_stats(resolved)
+        except OSError as exc:
+            result.append(
+                Target(
+                    path, 0, 0, branch, task_id,
+                    protected=f"stat-failed: {exc}", issue_id=issue_id,
+                )
+            )
+            continue
+        status = statuses.get(task_id) if task_id is not None else None
+        if (
+            worktree is None
+            and adhoc
+            and task_id is not None
+            and task_id not in worktree_task_ids
+        ):
+            reason = "worktree-gone"
+        elif status in {"done", "failed", "cancelled"}:
+            reason = "terminal-task"
+        else:
+            reason = "older-than-threshold" if newest <= stale_before else None
+        protection = None
+        if worktree is None and adhoc and task_id is None:
+            protection = "unmapped-ad-hoc-target"
+        elif task_id is not None and task_id in claimed:
+            protection = "live-claimed-task"
+        elif issue_id is not None and issue_id in claimed_issues:
+            protection = "live-claimed-issue"
+        elif branch and branch in prs:
+            protection = "open-pr-worktree"
+        elif task_id is not None and any(task_id_from(pr) == task_id for pr in prs):
+            protection = "open-pr-worktree"
+        elif worktree is not None and branch is None:
+            protection = "unmapped-worktree"
+        elif owner_dir is not None and cwd_inside(process_cwds, owner_dir):
+            protection = "process-in-worktree"
+        elif worktree is None and any(cwd.is_relative_to(root) for cwd in process_cwds):
+            # target-* may be shared via CARGO_TARGET_DIR, so preserve it
+            # while any fleet Cargo build is running.
+            protection = "fleet-build-active"
+        elif any(
+            cwd == resolved or cwd.is_relative_to(resolved) for cwd in process_cwds
+        ):
+            protection = "process-in-target"
+        elif reason is None:
+            protection = "younger-than-48h"
+        result.append(
+            Target(
+                resolved,
+                size,
+                newest,
+                branch,
+                task_id,
+                status,
+                protected=protection,
+                reason=reason,
+                issue_id=issue_id,
+            )
+        )
+    return result
+
+
+def measure_total(
+    fleet_root: Path, branches: dict[Path, str | None] | None = None
+) -> int:
+    """Re-measure every in-scope target once, including ones created mid-run."""
+    root = fleet_root.resolve(strict=True)
+    registered = {path.resolve() for path in (branches or {})}
+    total = 0
+    for entry, top_level in scan_entries(root):
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        for path, _worktree in target_paths_for_entry(entry, registered, top_level):
+            if path.is_symlink() or not path.is_dir():
+                continue
+            resolved = path.resolve(strict=True)
+            if resolved.is_relative_to(root):
+                total += target_stats(resolved)[0]
+    return total
+
+
+def build_plan(targets: list[Target], cap_bytes: int) -> tuple[list[Target], int]:
+    total = sum(target.bytes for target in targets)
+    eligible = sorted(
+        (t for t in targets if t.protected is None),
+        key=lambda t: (t.newest_mtime, str(t.path)),
+    )
+    selected = []
+    projected = total
+    for target in eligible:
+        if projected <= cap_bytes or len(selected) >= 20:
+            break
+        selected.append(target)
+        projected -= target.bytes
+    return selected, projected
+
+
+def append_log(log: Path, record: dict) -> None:
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(record, sort_keys=True) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--fleet-root", type=Path, default=Path.home() / "git/fleet")
+    parser.add_argument("--primary", type=Path, default=Path.home() / "git/code")
+    parser.add_argument(
+        "--queue-helper", type=Path, default=Path.home() / "hatch/tools/repo-queue.py"
+    )
+    parser.add_argument(
+        "--state-dir",
+        type=Path,
+        default=Path.home() / ".local/state/yard-reaper",
+    )
+    parser.add_argument("--cap-gib", type=int, default=150)
+    parser.add_argument("--stale-hours", type=int, default=48)
+    parser.add_argument(
+        "--idle-hours",
+        type=int,
+        default=4,
+        help="yard age gate for whole entries (#7093): entries with any "
+        "activity newer than this are protected",
+    )
+    parser.add_argument(
+        "--max-entry-removals",
+        type=int,
+        default=100,
+        help="cap on whole-entry removals per run; the rest are logged deferred",
+    )
+    parser.add_argument(
+        "--trash-dir",
+        type=Path,
+        default=Path.home() / ".local/share/Trash/yard-reaper",
+        help="recoverable trash root; reaped entries are moved here, "
+        "named one by one, never deleted outright",
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="delete explicitly listed eligible targets; default is dry-run",
+    )
+    args = parser.parse_args()
+    if args.cap_gib < 1 or args.stale_hours < 1:
+        parser.error("cap and stale threshold must be positive")
+    if args.idle_hours < 1 or args.max_entry_removals < 1:
+        parser.error("idle hours and entry cap must be positive")
+
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    log = args.state_dir / "runs" / f"yard-run-{run_id}-{os.getpid()}.jsonl"
+    try:
+        # Snapshot every independent liveness source before producing a plan.
+        branches = all_worktree_branches(args.primary.parent)
+        source = load_claims_source(args.queue_helper)
+        claimed, claimed_issues = source.claims()
+        prs = open_pr_branches()
+        cwds = active_process_cwds()
+        task_ids = set()
+        registered = {path.resolve() for path in branches}
+        for entry in args.fleet_root.iterdir():
+            if is_adhoc_target(entry, registered):
+                task_id = task_id_from(entry.name)
+                if task_id is not None:
+                    task_ids.add(task_id)
+            branch = branches.get(entry.resolve())
+            task_id = task_id_from(branch or "") or task_id_from(entry.name)
+            if task_id is not None and (entry / "pkgs/id/target").is_dir():
+                task_ids.add(task_id)
+        statuses = source.states(task_ids)
+        now = time.time()
+        targets = discover_targets(
+            args.fleet_root,
+            branches,
+            claimed,
+            statuses,
+            prs,
+            cwds,
+            now - args.stale_hours * 3600,
+            claimed_issues=claimed_issues,
+        )
+        total = sum(t.bytes for t in targets)
+        selected, projected = build_plan(targets, args.cap_gib * GIB)
+        entries = discover_entries(
+            args.fleet_root,
+            registered,
+            claimed,
+            claimed_issues,
+            prs,
+            cwds,
+            now - args.idle_hours * 3600,
+        )
+        target_paths = {t.path.resolve() for t in targets}
+        target_bytes_by_path = {t.path.resolve(): t.bytes for t in targets}
+        yard_total = 0
+        for e in entries:
+            if e.kind == "held":
+                continue
+            overlap = sum(
+                size
+                for tp, size in target_bytes_by_path.items()
+                if tp == e.path or tp.is_relative_to(e.path)
+            )
+            yard_total += max(0, e.bytes - overlap)
+        eligible_entries = sorted(
+            (e for e in entries if e.protected is None),
+            key=lambda e: (e.newest_mtime, str(e.path)),
+        )
+        print(
+            json.dumps(
+                {
+                    "mode": "apply" if args.apply else "dry-run",
+                    "claims_source": source.name,
+                    "cap_gib": args.cap_gib,
+                    "total_gib": round(total / GIB, 2),
+                    "projected_gib": round(projected / GIB, 2),
+                    "over_cap_after_this_run": projected > args.cap_gib * GIB,
+                    "candidates": [
+                        {
+                            "path": str(t.path),
+                            "gib": round(t.bytes / GIB, 2),
+                            "reason": t.reason,
+                            "task_id": t.task_id,
+                            "task_status": t.task_status,
+                            "branch": t.branch,
+                        }
+                        for t in selected
+                    ],
+                    "protected": [
+                        {
+                            "path": str(t.path),
+                            "gib": round(t.bytes / GIB, 2),
+                            "reason": t.protected,
+                        }
+                        for t in targets
+                        if t.protected
+                    ],
+                    "yard_total_gib": round(yard_total / GIB, 2),
+                    "entry_candidates": [
+                        {
+                            "path": str(e.path),
+                            "gib": round(e.bytes / GIB, 2),
+                            "kind": e.kind,
+                            "reason": e.reason,
+                            "keep_files": e.keep_files,
+                            "total_files": e.total_files,
+                        }
+                        for e in eligible_entries
+                    ],
+                    "entry_protected": [
+                        {
+                            "path": str(e.path),
+                            "gib": round(e.bytes / GIB, 2),
+                            "kind": e.kind,
+                            "reason": e.protected,
+                            "keep_files": e.keep_files,
+                            "total_files": e.total_files,
+                        }
+                        for e in entries
+                        if e.protected
+                    ],
+                    "heuristics": [
+                        "keep-set suffixes: " + ",".join(sorted(KEEP_SUFFIXES)),
+                        "fixture dirs by name: " + ",".join(FIXTURE_DIR_MARKERS),
+                        "keep-set not counted inside target/, dist/, "
+                        "node_modules/, .git/ or fixture dirs",
+                        "clone reap requires clean status AND HEAD == "
+                        "live ls-remote tip of upstream branch",
+                        "scratch reap requires zero keep-set files",
+                        "registered worktrees excluded (worktree-reaper "
+                        "owns them); yard-root files always kept",
+                    ],
+                    "log": str(log),
+                },
+                indent=2,
+            )
+        )
+        append_log(
+            log,
+            {
+                "event": "plan",
+                "at": datetime.now(timezone.utc).isoformat(),
+                "mode": "apply" if args.apply else "dry-run",
+                "claims_source": source.name,
+                "total_bytes": total,
+                "cap_bytes": args.cap_gib * GIB,
+                "selected": [
+                    {
+                        "path": str(t.path),
+                        "bytes": t.bytes,
+                        "reason": t.reason,
+                        "task_id": t.task_id,
+                        "branch": t.branch,
+                    }
+                    for t in selected
+                ],
+                "protected": {str(t.path): t.protected for t in targets if t.protected},
+                "entries": [
+                    {
+                        "path": str(e.path),
+                        "bytes": e.bytes,
+                        "kind": e.kind,
+                        "reason": e.reason,
+                        "protected": e.protected,
+                        "keep_files": e.keep_files,
+                        "total_files": e.total_files,
+                        "head": e.head,
+                        "remote_tip": e.remote_tip,
+                    }
+                    for e in entries
+                ],
+                "yard_total_bytes": yard_total,
+            },
+        )
+        if not args.apply:
+            return 0
+
+        reclaimed = 0
+        remaining_estimate = total
+        for target in selected:
+            # Fresh queue, PR, and process state immediately before each removal.
+            fresh_claimed, fresh_issues = source.claims()
+            fresh_prs = open_pr_branches()
+            fresh_cwds = active_process_cwds()
+            path = target.path
+            if path.is_symlink() or not path.is_dir():
+                raise SafetyError(f"target changed since plan: {path}")
+            resolved = path.resolve(strict=True)
+            if not resolved.is_relative_to(args.fleet_root.resolve(strict=True)):
+                raise SafetyError(f"target escaped fleet root: {path}")
+            if target.task_id in fresh_claimed:
+                raise SafetyError(
+                    f"task {target.task_id} became live; stopping before {path}"
+                )
+            if target.issue_id is not None and target.issue_id in fresh_issues:
+                raise SafetyError(
+                    f"issue {target.issue_id} became claimed; stopping before {path}"
+                )
+            if target.reason == "terminal-task":
+                fresh_status = source.states({target.task_id}).get(
+                    target.task_id
+                )
+                if fresh_status not in {"done", "failed", "cancelled"}:
+                    raise SafetyError(
+                        f"task {target.task_id} is no longer terminal; stopping"
+                    )
+            if target.reason == "worktree-gone":
+                current_branches = all_worktree_branches(args.primary.parent)
+                if target.task_id in {
+                    task_id_from(branch or "") for branch in current_branches.values()
+                }:
+                    raise SafetyError(
+                        f"task {target.task_id} gained a worktree; stopping"
+                    )
+            if target.branch and target.branch in fresh_prs:
+                raise SafetyError(f"branch {target.branch} gained an open PR; stopping")
+            if target.task_id is not None and any(
+                task_id_from(pr) == target.task_id for pr in fresh_prs
+            ):
+                raise SafetyError(f"task {target.task_id} gained an open PR; stopping")
+            worktree_root = worktree_root_for_target(resolved)
+            if worktree_root is not None and owner_changed(
+                target, all_worktree_branches(args.primary.parent)
+            ):
+                raise SafetyError(
+                    f"owning worktree changed branch/task since plan; stopping before {path}"
+                )
+            if worktree_root is not None and cwd_inside(fresh_cwds, worktree_root):
+                raise SafetyError(
+                    f"build process active in worktree; stopping before {path}"
+                )
+            if any(
+                cwd == resolved or cwd.is_relative_to(resolved) for cwd in fresh_cwds
+            ):
+                raise SafetyError(f"process entered target; stopping before {path}")
+            if target.branch is None and any(
+                cwd.is_relative_to(args.fleet_root.resolve(strict=True))
+                for cwd in fresh_cwds
+            ):
+                raise SafetyError(
+                    f"fleet build active; stopping before ad-hoc target {path}"
+                )
+            if remaining_estimate <= args.cap_gib * GIB:
+                break
+            size, mtime = target_stats(resolved)
+            if (
+                target.reason == "older-than-threshold"
+                and mtime > now - args.stale_hours * 3600
+            ):
+                raise SafetyError(f"target became recent; stopping before {path}")
+            # Write-ahead record is fsynced before the bounded, exact-path removal.
+            append_log(
+                log,
+                {
+                    "event": "delete-start",
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "path": str(resolved),
+                    "bytes": size,
+                    "task_id": target.task_id,
+                    "branch": target.branch,
+                },
+            )
+            shutil.rmtree(resolved)
+            reclaimed += size
+            remaining_estimate -= size
+            append_log(
+                log,
+                {
+                    "event": "deleted",
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "path": str(resolved),
+                    "bytes": size,
+                },
+            )
+        # --- whole-entry reaping (#7093): trash, never delete ---
+        # Re-verified against fresh liveness immediately before each
+        # move, exactly like the target loop above. An entry moves to
+        # the recoverable trash under its own name; nothing in this
+        # loop ever unlinks an entry.
+        trash_root = args.trash_dir / run_id
+        reaped_entries = []
+        deferred_entries = []
+        entry_reclaimed = 0
+        for entry in eligible_entries:
+            if len(reaped_entries) >= args.max_entry_removals:
+                deferred_entries.append(entry.path.name)
+                continue
+            fresh_claimed, fresh_issues = source.claims()
+            fresh_cwds = active_process_cwds()
+            resolved = entry.path
+            if resolved.is_symlink() or not resolved.is_dir():
+                raise SafetyError(f"entry changed since plan: {resolved}")
+            if not resolved.is_relative_to(root):
+                raise SafetyError(f"entry escaped fleet root: {resolved}")
+            task_id = task_id_from(resolved.name) or dir_task_id(resolved.name)
+            if task_id is not None and task_id in fresh_claimed:
+                raise SafetyError(
+                    f"task {task_id} became live; stopping before {resolved}"
+                )
+            issue_id = issue_id_from(resolved.name)
+            if issue_id is not None and issue_id in fresh_issues:
+                raise SafetyError(
+                    f"issue {issue_id} became claimed; stopping before {resolved}"
+                )
+            if any(
+                cwd == resolved or cwd.is_relative_to(resolved)
+                for cwd in fresh_cwds
+            ):
+                raise SafetyError(f"process entered entry; stopping before {resolved}")
+            size, newest, keep, _files = classify_entry_files(resolved)
+            if newest > now - args.idle_hours * 3600:
+                raise SafetyError(f"entry became recent; stopping before {resolved}")
+            if entry.kind == "clone":
+                verdict, _head, _tip = clone_verdict(resolved)
+                if verdict is not None:
+                    raise SafetyError(
+                        f"clone no longer verified ({verdict}); "
+                        f"stopping before {resolved}"
+                    )
+            elif keep > 0:
+                raise SafetyError(
+                    f"entry gained keep-set files; stopping before {resolved}"
+                )
+            dest = trash_root / resolved.name
+            if resolved.parent == root / "queue":
+                dest = trash_root / "queue" / resolved.name
+            if dest.exists():
+                raise SafetyError(f"trash destination already exists: {dest}")
+            append_log(
+                log,
+                {
+                    "event": "reap-start",
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "path": str(resolved),
+                    "bytes": size,
+                    "kind": entry.kind,
+                    "reason": entry.reason,
+                    "trash": str(dest),
+                },
+            )
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(resolved), str(dest))
+            append_log(
+                log,
+                {
+                    "event": "reaped",
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "path": str(resolved),
+                    "bytes": size,
+                    "trash": str(dest),
+                },
+            )
+            reaped_entries.append(resolved.name)
+            entry_reclaimed += size
+        remaining = measure_total(args.fleet_root, branches)
+        append_log(
+            log,
+            {
+                "event": "summary",
+                "at": datetime.now(timezone.utc).isoformat(),
+                "reclaimed_bytes": reclaimed,
+                "remaining_bytes": remaining,
+                "over_cap": remaining > args.cap_gib * GIB,
+                "entries_reaped": reaped_entries,
+                "entries_deferred": deferred_entries,
+                "entry_reclaimed_bytes": entry_reclaimed,
+                "trash_root": str(trash_root) if reaped_entries else None,
+            },
+        )
+        print(
+            json.dumps(
+                {
+                    "reclaimed_gib": round(reclaimed / GIB, 2),
+                    "remaining_gib": round(remaining / GIB, 2),
+                    "over_cap": remaining > args.cap_gib * GIB,
+                    "entries_reaped": len(reaped_entries),
+                    "entry_reclaimed_gib": round(entry_reclaimed / GIB, 2),
+                    "entries_deferred": deferred_entries,
+                    "log": str(log),
+                },
+                indent=2,
+            )
+        )
+        return 0
+    except (
+        SafetyError,
+        OSError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        SystemExit,
+    ) as exc:
+        # A refusal is a run too (#6812): until it left a record,
+        # an hourly-dead janitor was visible only in the systemd
+        # journal while its state dir stayed empty.
+        try:
+            append_log(
+                log,
+                {
+                    "event": "refused",
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "mode": "apply" if args.apply else "dry-run",
+                    "reason": str(exc),
+                },
+            )
+        except OSError:
+            pass
+        print(f"yard-reaper: refusing cleanup: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

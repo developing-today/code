@@ -488,6 +488,19 @@ of silently showing canned data. `bun run dev` sets the switch for you.
 Secrets are read from the environment only and are never committed or
 printed. Names here reference Bitwarden entries (`kaneo.*`, `grist.*`).
 
+### WIP-cap configuration (#1281 step 1)
+
+The single source for cross-repo board WIP caps is
+[`src/wip-caps.json`](src/wip-caps.json). `laneCaps` sets the starting
+cap for each standard board lane; `defaultCap` applies to any additional
+lane. The initial values are pilot thresholds, not hard limits: exceeding
+one only displays a warning and never blocks work. `projectCaps` may
+override a lane cap by the GitHub Project URL, and `epicCaps` may override
+it by canonical epic ref (`owner/repo#N`). Project and epic counts are
+derived from the board items linked to the current Project-pool snapshot;
+unlinked cards still count toward their lane total. The board and Today
+view use the same summary, and `/api/today.json` includes it. Done cards
+are completion history and are not counted as WIP.
 ### Activity ingestion into the event stream (#3321)
 
 Watchdog breach episodes and Kaneo board changes are ingested into the
@@ -579,6 +592,23 @@ requirement Kaneo cannot provide) render live.
 The footer of every page states, facet by facet, whether it is live or
 fixture-backed. When a live reader is unreachable, that facet alone
 falls back to fixtures and the footer says why.
+
+## Roadmap Horizon contract (#1207)
+
+`Program roadmap.Horizon` accepts a real calendar date (`YYYY-MM-DD`), a
+quarter (`Q1`–`Q4 YYYY`), or one of `Now`, `Next`, `Later`, `Ongoing`, and
+`Unscheduled`. Dates must exist in the Gregorian calendar. Leading/trailing
+whitespace and bucket/quarter case are normalized for classification only;
+the reader never rewrites a Grist cell. `Now`/`Next`/`Later` are retained as
+legacy relative buckets, while blank and unknown values are invalid.
+
+Invalid rows are not filtered: the original value stays on the roadmap card,
+with a warning and an invalid-value banner. Correct cells in Grist explicitly;
+the seed command validates `seed/roadmap.json` before making API calls, but
+does not migrate or overwrite an existing populated table (seed is not a
+migration mechanism). Day views also show dated rows outside the selected
+window and undated/coarse rows, and every grain displays per-theme Done/total
+counts over the full roadmap set.
 
 ## The fleet feed (quota + sandbox attention, slice 1 — #890)
 

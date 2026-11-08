@@ -768,7 +768,7 @@ async function loadTodayContext() {
   const diagnosis = source.diagnostics?.().orchestration;
   const queue = buildQueueView({ board, pool, items, orchestration });
   return {
-    today: deriveToday(board, rows, items, orchestration, new Date(), diagnosis),
+    today: deriveToday(board, rows, items, orchestration, new Date(), diagnosis, pool),
     view,
     coverage,
     ...signals,

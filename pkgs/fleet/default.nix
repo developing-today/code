@@ -40,6 +40,9 @@ let
       ./.
       ../atlas-search/Cargo.toml
       ../atlas-search/crates
+      # atlas-core include_str!s the stage DDL from schema/ (stage.rs);
+      # without it the fleet build fails on the missing .sql files.
+      ../atlas-search/schema
     ];
   };
 
