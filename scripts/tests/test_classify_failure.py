@@ -150,3 +150,19 @@ class UnknownAndShapeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CompilerPrecedenceTests(unittest.TestCase):
+    def test_compiler_error_beats_test_timeout(self):
+        r = classify("panic: test timed out after 10m0s\nerror[E0308]: mismatched types\n")
+        self.assertEqual(r["classification"], "real-regression")
+        self.assertEqual(r["route"], "fix")
+
+    def test_timeout_without_compiler_error_stays_flake(self):
+        r = classify("panic: test timed out after 10m0s\n")
+        self.assertEqual(r["classification"], "flake-suspect")
+
+
+class TailLinesTests(unittest.TestCase):
+    def test_zero_tail_is_empty(self):
+        self.assertEqual(cf.tail_lines("a\nb\nc", 0), [])

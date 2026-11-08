@@ -352,8 +352,11 @@ jobs:
               action_line="escalating: already re-run once (attempt $attempt) and still failing - treat as infrastructure, not a code fix."
             fi
             if [ "$CLASS" = "flake-suspect" ]; then
-              strikes=$(gh api "repos/$GH_REPO/issues/$INUM/comments?per_page=100" \
-                --jq '[.[] | select(.body | test("scout: classification flake-suspect"))] | length')
+              # --paginate + count matching comment ids: counting only
+              # the first page of comments misses strikes on long-lived
+              # breakage issues (CodeRabbit finding, PR #7806).
+              strikes=$(gh api --paginate "repos/$GH_REPO/issues/$INUM/comments?per_page=100" \
+                --jq '.[] | select(.body | test("scout: classification flake-suspect")) | .id' | wc -l | tr -d ' ')
               if [ "${strikes:-0}" -ge 2 ]; then
                 action_line="$action_line Third flake strike for Breakage-ID $BID - filing a flake-fix issue."
               fi
@@ -368,7 +371,13 @@ jobs:
             gh issue edit "$INUM" --repo "$GH_REPO" --add-label "status/needs-triage" || true
           fi
           if [ "$do_rerun" = "true" ]; then
-            gh run rerun "$RUN_ID" --repo "$GH_REPO" --failed || true
+            # A failed rerun request must not read as a rerun on the
+            # issue: report it so the breakage gets manual triage
+            # (CodeRabbit finding, PR #7806).
+            if ! gh run rerun "$RUN_ID" --repo "$GH_REPO" --failed; then
+              gh issue comment "$INUM" --repo "$GH_REPO" \
+                --body "agent-note:v1 - scout: automatic re-run request FAILED for run $RUN_URL_OUT (Breakage-ID: $BID); no rerun happened and no fix task is queued - triage manually." || true
+            fi
           fi
           if [ "$CLASS" = "flake-suspect" ] && [ "${strikes:-0}" -ge 2 ]; then
             # in:title + exclude this breakage issue itself: the scout

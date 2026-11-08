@@ -95,6 +95,17 @@ RULES: list[tuple[str, str, list[re.Pattern[str]]]] = [
         ],
     ),
     (
+        "real-regression",
+        "fix",
+        [
+            # Deterministic compiler diagnostics beat flake signals: a log
+            # tail holding both a test timeout and a compiler error is a
+            # regression to fix, not a flake to re-run (CodeRabbit Major
+            # finding, PR #7806).
+            re.compile(r"error\[E\d+\]:|error TS\d+:|compilation (failed|error)", re.I),
+        ],
+    ),
+    (
         "flake-suspect",
         "rerun",
         [
@@ -112,7 +123,6 @@ RULES: list[tuple[str, str, list[re.Pattern[str]]]] = [
             re.compile(r"^--- FAIL:|^=== RUN.*\n.*--- FAIL:", re.I | re.M),
             re.compile(r"--- FAIL:", re.I),
             re.compile(r"\bFAILED\b.*(::|test)|failures?:\s*$", re.I),
-            re.compile(r"error\[E\d+\]:|error TS\d+:|compilation (failed|error)", re.I),
             re.compile(r"assertion(error|failed)|assert(ion)? failed", re.I),
             re.compile(r"test result: FAILED", re.I),
             re.compile(r"exit code 1.*(test|spec)", re.I),
@@ -128,6 +138,8 @@ GROUP_END_RE = re.compile(r"##\[endgroup\]", re.I)
 
 
 def tail_lines(text: str, n: int) -> list[str]:
+    if n <= 0:
+        return []
     lines = text.splitlines()
     return lines[-n:] if len(lines) > n else lines
 
