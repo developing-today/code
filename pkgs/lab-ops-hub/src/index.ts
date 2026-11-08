@@ -289,13 +289,13 @@ export default {
           )
             .bind(
               valid.values.name,
-              b.role ?? "compute",
-              b.cpu ?? null,
-              b.ram_gb ?? null,
-              b.storage ?? null,
-              b.gpu ?? null,
-              b.status ?? "planned",
-              b.notes ?? null,
+              valid.values.role,
+              valid.values.cpu,
+              valid.values.ram_gb,
+              valid.values.storage,
+              valid.values.gpu,
+              valid.values.status,
+              valid.values.notes,
             )
             .run();
         } catch (e) {
@@ -324,7 +324,7 @@ export default {
         const valid = validateNoteBody(b);
         if (!valid.ok) return json({ error: valid.error }, 400);
         const r = await env.DB.prepare("INSERT INTO notes (title, body, tags) VALUES (?1,?2,?3)")
-          .bind(valid.values.title, valid.values.text, b.tags ?? "")
+          .bind(valid.values.title, valid.values.text, valid.values.tags)
           .run();
         ctx.waitUntil(logUsage(env, "d1_write", "note"));
         return json({ ok: true, id: r.meta.last_row_id }, 201);
@@ -366,7 +366,7 @@ export default {
         const valid = validateTaskBody(b);
         if (!valid.ok) return json({ error: valid.error }, 400);
         const r = await env.DB.prepare("INSERT INTO tasks (title, machine_id, due) VALUES (?1,?2,?3)")
-          .bind(valid.values.title, b.machine_id ?? null, b.due ?? null)
+          .bind(valid.values.title, valid.values.machine_id, valid.values.due)
           .run();
         ctx.waitUntil(logUsage(env, "d1_write", "task"));
         return json({ ok: true, id: r.meta.last_row_id }, 201);

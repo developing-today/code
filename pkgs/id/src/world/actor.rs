@@ -578,6 +578,26 @@ impl WorldActor {
         Ok(())
     }
 
+    /// Durably record related entries as one transaction, or turn the world
+    /// read-only. Builder install events and their audit attribution must never
+    /// be split across a crash.
+    fn persist_transaction(&mut self, entries: &[JournalEntry]) -> Result<()> {
+        ensure!(
+            !self.storage_failed,
+            "world storage failed; the world is read-only"
+        );
+        if let Some(journal) = self.journal.as_mut() {
+            let started = std::time::Instant::now();
+            if let Err(error) = journal.append_transaction(entries) {
+                self.storage_failed = true;
+                tracing::error!("world journal transaction failed: {error:#}");
+                return Err(error.context("world storage failed; the world is read-only"));
+            }
+            self.metrics.record_journal_append(started.elapsed());
+        }
+        Ok(())
+    }
+
     /// Publish freshly recomputed records. Participant events push their own
     /// view frame right after the event; host events signal the views watch.
     fn republished(&mut self, records: Records, sequence: u64) {
@@ -1709,23 +1729,24 @@ impl WorldActor {
                         trust: trust.clone(),
                     },
                 };
-                let result = self
-                    .persist(JournalEntry::Committed {
-                        event: candidate.clone(),
-                    })
-                    .and_then(|()| {
-                        // The builder authority leaves a journal-only audit
-                        // record, alongside the install event.
-                        if let Some(by) = installed_by {
-                            return self.persist(JournalEntry::BuilderInstalled {
-                                by,
-                                module_hash: module_hash.clone(),
-                                seed,
-                            });
-                        }
-                        Ok(())
-                    })
-                    .and_then(|()| self.core.commit_prepared(candidate));
+                let install_event = JournalEntry::Committed {
+                    event: candidate.clone(),
+                };
+                let persisted = if let Some(by) = installed_by {
+                    // The builder authority leaves a journal-only audit
+                    // record. Persist it atomically with the install event.
+                    self.persist_transaction(&[
+                        install_event,
+                        JournalEntry::BuilderInstalled {
+                            by,
+                            module_hash: module_hash.clone(),
+                            seed,
+                        },
+                    ])
+                } else {
+                    self.persist(install_event)
+                };
+                let result = persisted.and_then(|()| self.core.commit_prepared(candidate));
                 let result = match result {
                     Ok(event) => {
                         if let WorldEventKind::ProgramInstalled { module_hash, .. } = &event.kind {

@@ -88,6 +88,34 @@ describe("dashboard actions store", () => {
     expect(retry?.action.state).toBe("applied");
   });
 
+  test("markResult caps never split a surrogate pair (#7711)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-actions-result-surrogate-"));
+    const store = new ActionsStore(join(dir, "actions.json"));
+    // byRun cap 200: 199 units + an astral character straddling the cap is
+    // dropped whole, never stored as a lone high surrogate.
+    const a1 = await store.add(newAction({ objectRef: "orch:item-result-byRun" }));
+    const byRun = await store.markResult(a1.action.id, {
+      outcome: "applied",
+      byRun: "r".repeat(199) + "\u{1F600}" + "tail",
+    });
+    expect(byRun?.appliedByRun?.length).toBe(199);
+    expect(byRun?.appliedByRun?.endsWith("r")).toBe(true);
+    // note cap 2000: same rule at the larger cap.
+    const a2 = await store.add(newAction({ objectRef: "orch:item-result-note" }));
+    const noted = await store.markResult(a2.action.id, {
+      outcome: "applied",
+      byRun: "orch-test",
+      note: "n".repeat(1999) + "\u{1F600}" + "tail",
+    });
+    expect(noted?.resultNote?.length).toBe(1999);
+    expect(noted?.resultNote?.endsWith("n")).toBe(true);
+    // A pair that fits exactly inside the cap is kept whole.
+    const a3 = await store.add(newAction({ objectRef: "orch:item-result-fit" }));
+    const fit = "n".repeat(1998) + "\u{1F600}";
+    const fitted = await store.markResult(a3.action.id, { outcome: "applied", byRun: "orch-test", note: fit });
+    expect(fitted?.resultNote).toBe(fit);
+  });
+
   test("answer question slots dedupe option and survey submissions with an audit pointer", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agg-answer-dedupe-"));
     const store = new ActionsStore(join(dir, "actions.json"));
