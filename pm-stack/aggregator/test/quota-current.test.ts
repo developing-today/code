@@ -1124,6 +1124,23 @@ describe("shell-pool stale/retained path (#6942)", () => {
     expect(od.note).toBeUndefined();
   });
 
+  test("an errored shell pool with adopted windows is excluded from model-choice guidance", () => {
+    const out = overlayQuotaCurrent(
+      shellView(),
+      legErrorFile([
+        retainedEntry(),
+        entry({ serviceId: "meta", windows: [win("5h", 1.33, iso(5 * 60_000))] }),
+      ]),
+      NOW,
+    );
+    const od = out.pools.find((p) => p.id === "opendesign")!;
+    expect(od.windows.length).toBeGreaterThan(0); // windows stand for display
+    expect(out.choices.hasHeadroom).toContain("meta"); // the fresh read still guides
+    expect(out.choices.hasHeadroom).not.toContain("opendesign");
+    expect(out.choices.burnBeforeReset).not.toContain("opendesign");
+    expect(out.choices.doNotStart).not.toContain("opendesign");
+  });
+
   test("a spec pool with a leg error keeps the #1268 stale classification and its base dated windows", () => {
     const f = legErrorFile([
       entry({
