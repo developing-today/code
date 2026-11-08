@@ -1,3 +1,4 @@
+// Package defaults defines every default value the program ships, parsed from the embedded defaults.json.
 package defaults
 
 import (

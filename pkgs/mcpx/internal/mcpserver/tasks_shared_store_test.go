@@ -174,7 +174,7 @@ func TestInjectedStoreKeepsMCPTasksAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+	defer func() { _ = reopened.Close() }()
 	got, ok := reopened.Get(id)
 	if !ok || got.Status != tasks.Completed {
 		t.Errorf("terminal MCP task after reopen: %+v, ok=%v", got, ok)

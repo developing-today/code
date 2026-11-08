@@ -72,8 +72,8 @@ func (s *Set) clampValue(v *Value) *Value {
 }
 
 // Rank is the position of raw in an ordered setting.
-func (d Setting) Rank(raw string) (int, bool) {
-	for i, e := range d.Enum {
+func (s Setting) Rank(raw string) (int, bool) {
+	for i, e := range s.Enum {
 		if e == raw {
 			return i, true
 		}
