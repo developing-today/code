@@ -477,7 +477,7 @@ describe("goDurationMs", () => {
     // Just under the ceiling still parses (the largest Go duration
     // is 2562047h47m16.854775807s = 2^63-1 ns).
     expect(goDurationMs("2562047h47m16.854775s")).toBeDefined();
-    expect(goDurationMs("2562047h47m16.854775s")).toBeLessThanOrEqual(9_223_372_036_854.776);
+    expect(goDurationMs("2562047h47m16.854775s")).toBeLessThanOrEqual(9_223_372_036_854.775);
     // #2309: Go accepts a bare "0" as zero.
     expect(goDurationMs("0")).toBe(0);
   });
