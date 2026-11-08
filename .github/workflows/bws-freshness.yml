@@ -6,10 +6,14 @@ name: bws freshness
 #
 # Two jobs:
 # - fixture-tests runs the lib/bws-to-sops.sh --check contract tests with
-#   stubbed bws/sops binaries. It needs no credentials and always runs.
+#   stubbed bws/sops binaries. It needs no credentials and runs on the
+#   schedule, on dispatch, and on pull requests that touch the check,
+#   its tests, or this workflow (#6646) — a --check contract regression
+#   is caught before merge, not by the nightly run on main.
 # - live-check compares live BWS against secrets/sops/common/bws.yaml and
 #   keeps exactly one open drift issue per drift episode (commenting on
 #   repeats, closing it when a later run finds the mirror fresh again).
+#   It runs on schedule/dispatch only, never on pull requests.
 #
 # PREREQUISITE GATE: live-check stays disabled until a secure credentialed
 # runner exists. GitHub-hosted runners have no BWS access token and no SOPS
@@ -26,6 +30,15 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "23 6 * * *"
+  # No push trigger exists in this workflow, so pull_request cannot
+  # double-run the fixture suite (ci-policy dedup rule).
+  pull_request:
+    paths:
+      - "lib/bws-to-sops.sh"
+      - "lib/bws-to-sops-check.test.sh"
+      - "lib/bws-freshness-drift-issue.sh"
+      - "lib/bws-freshness-drift-issue.test.sh"
+      - ".github/workflows/bws-freshness.yml"
 
 permissions:
   contents: read
@@ -36,17 +49,19 @@ concurrency:
 
 jobs:
   fixture-tests:
-    name: "full (main tier): bws freshness fixture tests"
+    name: "basic: bws freshness fixture tests"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - name: Run the --check fixture tests (stubbed bws/sops, no credentials)
         run: bash lib/bws-to-sops-check.test.sh
+      - name: Run the drift-issue finder tests (stubbed gh, no credentials)
+        run: bash lib/bws-freshness-drift-issue.test.sh
 
   live-check:
     name: "full (main tier): bws freshness live check"
-    if: vars.BWS_FRESHNESS_ENABLED == 'true'
+    if: vars.BWS_FRESHNESS_ENABLED == 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -73,6 +88,7 @@ jobs:
         run: |
           title="bws.yaml mirror drift detected"
           {
+            echo "<!-- bws-freshness-drift-issue v1 -->"
             echo "The scheduled names-only freshness check (#5451) found drift between BWS and \`secrets/sops/common/bws.yaml\`. Key names only — no values are ever printed by the check."
             echo
             echo '```'
@@ -81,19 +97,18 @@ jobs:
             echo
             echo "Fix: run \`lib/bws-to-sops.sh\` on a credentialed machine and commit the regenerated mirror. This issue closes automatically when a later check finds the mirror fresh."
           } > issue-body.md
-          existing="$(gh issue list --search "$title in:title state:open" --json number --jq '.[0].number // empty')"
+          existing="$(bash lib/bws-freshness-drift-issue.sh)"
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --body-file issue-body.md
           else
-            gh issue create --title "$title" --body-file issue-body.md --label "priority/normal"
+            gh issue create --title "$title" --body-file issue-body.md --label "bws-drift" --label "priority/normal"
           fi
       - name: Close the drift issue when the mirror is fresh again
         if: steps.check.outputs.rc == '0'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          title="bws.yaml mirror drift detected"
-          existing="$(gh issue list --search "$title in:title state:open" --json number --jq '.[0].number // empty')"
+          existing="$(bash lib/bws-freshness-drift-issue.sh)"
           if [ -n "$existing" ]; then
             gh issue close "$existing" --comment "A later scheduled freshness check (#5451) found the mirror up to date; closing this drift episode."
           fi

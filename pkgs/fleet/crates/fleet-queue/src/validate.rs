@@ -12,7 +12,7 @@ pub const KINDS: [&str; 4] = ["pr_shepherd", "triage", "small_fix", "ci_investig
 // Both the old and the current names of the two repos that moved to the
 // developing-today-forks org (2026-11-04) stay allowlisted: in-flight queue
 // tasks carry dedupe keys with the old names and must keep validating,
-// while new tasks use the developing-today-forks names.
+// while new tasks use the developing-today-forks names. The same applies to dezren39/nix, renamed to dezren39/darwin-nix.
 pub const FLEET_REPOS: [&str; 9] = [
     "developing-today/code",
     "developing-today/opencode",

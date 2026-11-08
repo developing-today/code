@@ -38,6 +38,7 @@ use crate::world_compile::Compiler;
 #[cfg(feature = "sandbox")]
 use crate::world_compile::{COMPILE_TIMEOUT, CompileSpec};
 use crate::world_hub::{WorldHub, WorldLease};
+pub(crate) use id_core::json_unique::parse_json_without_duplicate_keys;
 
 /// Bound the extra presentation latency while coalescing view-only redraws.
 const VIEW_COALESCE_WINDOW: Duration = Duration::from_millis(5);
@@ -873,131 +874,6 @@ pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
     }
 }
 
-/// Parse one JSON value while refusing repeated object keys at every depth.
-/// `serde_json::Value` normally keeps only the last value for a repeated key,
-/// which can make routing and later checks observe different bytes than the
-/// client sent.
-fn parse_json_without_duplicate_keys(text: &str) -> Result<serde_json::Value, serde_json::Error> {
-    use serde::Deserialize;
-    use serde::de::{self, MapAccess, SeqAccess, Visitor};
-    use std::collections::HashSet;
-    use std::fmt;
-
-    struct UniqueValue(serde_json::Value);
-
-    impl<'de> Deserialize<'de> for UniqueValue {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: serde::Deserializer<'de>,
-        {
-            struct UniqueValueVisitor;
-
-            impl<'de> Visitor<'de> for UniqueValueVisitor {
-                type Value = UniqueValue;
-
-                fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                    formatter.write_str("a JSON value without duplicate object keys")
-                }
-
-                fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
-                where
-                    E: de::Error,
-                {
-                    Ok(UniqueValue(serde_json::Value::Bool(value)))
-                }
-
-                fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
-                where
-                    E: de::Error,
-                {
-                    Ok(UniqueValue(serde_json::Value::Number(value.into())))
-                }
-
-                fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
-                where
-                    E: de::Error,
-                {
-                    Ok(UniqueValue(serde_json::Value::Number(value.into())))
-                }
-
-                fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
-                where
-                    E: de::Error,
-                {
-                    serde_json::Number::from_f64(value)
-                        .map(serde_json::Value::Number)
-                        .map(UniqueValue)
-                        .ok_or_else(|| E::custom("JSON number is not finite"))
-                }
-
-                fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-                where
-                    E: de::Error,
-                {
-                    Ok(UniqueValue(serde_json::Value::String(value.to_owned())))
-                }
-
-                fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
-                where
-                    E: de::Error,
-                {
-                    Ok(UniqueValue(serde_json::Value::String(value)))
-                }
-
-                fn visit_none<E>(self) -> Result<Self::Value, E>
-                where
-                    E: de::Error,
-                {
-                    Ok(UniqueValue(serde_json::Value::Null))
-                }
-
-                fn visit_unit<E>(self) -> Result<Self::Value, E>
-                where
-                    E: de::Error,
-                {
-                    Ok(UniqueValue(serde_json::Value::Null))
-                }
-
-                fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
-                where
-                    A: SeqAccess<'de>,
-                {
-                    let mut values = Vec::new();
-                    while let Some(value) = sequence.next_element::<UniqueValue>()? {
-                        values.push(value.0);
-                    }
-                    Ok(UniqueValue(serde_json::Value::Array(values)))
-                }
-
-                fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-                where
-                    A: MapAccess<'de>,
-                {
-                    let mut seen = HashSet::new();
-                    let mut values = serde_json::Map::new();
-                    while let Some(key) = map.next_key::<String>()? {
-                        if !seen.insert(key.clone()) {
-                            return Err(de::Error::custom(format!(
-                                "duplicate JSON object key {key:?}"
-                            )));
-                        }
-                        let value = map.next_value::<UniqueValue>()?;
-                        values.insert(key, value.0);
-                    }
-                    Ok(UniqueValue(serde_json::Value::Object(values)))
-                }
-            }
-
-            deserializer.deserialize_any(UniqueValueVisitor)
-        }
-    }
-
-    let mut deserializer = serde_json::Deserializer::from_str(text);
-    let value = UniqueValue::deserialize(&mut deserializer)?.0;
-    deserializer.end()?;
-    Ok(value)
-}
-
 /// Run one session to completion.
 ///
 /// The first frame names the world (`"world": "<name>"`, default world if
@@ -1708,8 +1584,9 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
     }
 }
 
-/// Serve query frames (`info`, `records`, `records_ticket`,
-/// `download_module`) until the peer closes, denies, or sends a frame that
+/// Serve query frames (`info`, `caps`, `execution_profile`, `metrics`,
+/// `records`, `records_ticket`, `download_module`) until the peer closes,
+/// denies, or sends a frame that
 /// ends the session. A `join` frame switches to the joined session.
 async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: ClientFrame) {
     let mut next = Some(first);
@@ -1866,6 +1743,85 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                 if let Err(message) = download_module_session(service, io, &module_hash).await {
                     let _ = send_error(service.frame_meter(), io, message).await;
                     return;
+                }
+            }
+            ClientFrame::Caps { capability } => {
+                // Read-only like `info`/`metrics` (#6802): the stats
+                // verb chains info -> caps -> profile -> metrics over
+                // one connection, so the query session serves caps
+                // with the first-frame authorization (a participant
+                // capability) instead of refusing the frame.
+                let token = JoinCapability::from_wire(capability);
+                if service.world().participant_id(token).await.is_err() {
+                    let _ = send_error(service.frame_meter(), io, "join denied").await;
+                    return;
+                }
+                io.mark_authorized();
+                match service.world().caps_report().await {
+                    Ok(report) => {
+                        if !send_json(
+                            service.frame_meter(),
+                            io,
+                            &ServerFrame::Caps { report },
+                        )
+                        .await
+                        {
+                            return;
+                        }
+                    }
+                    Err(_) => {
+                        let _ = send_error(
+                            service.frame_meter(),
+                            io,
+                            "capability report unavailable",
+                        )
+                        .await;
+                        return;
+                    }
+                }
+            }
+            ClientFrame::ExecutionProfileInfo {
+                admin_token,
+                capability,
+            } => {
+                // Same authorization as the first-frame handler: an
+                // admin token, or a participant capability (the stats
+                // verb sends the latter). (#6802)
+                let auth_ok = if let Some(admin) = admin_token.as_deref() {
+                    service.authorize_admin(Some(admin)).is_ok()
+                } else if let Some(cap) = capability.as_deref() {
+                    let token = JoinCapability::from_wire(cap.to_string());
+                    service.world().participant_id(token).await.is_ok()
+                } else {
+                    false
+                };
+                if !auth_ok {
+                    let _ = send_error(service.frame_meter(), io, "access denied").await;
+                    return;
+                }
+                match service.world().execution_profile().await {
+                    Ok(profile) => {
+                        if !send_json(
+                            service.frame_meter(),
+                            io,
+                            &ServerFrame::ExecutionProfile {
+                                update: crate::world::ExecutionProfileUpdate {
+                                    requested: profile,
+                                    applies_on_next_program_install_or_process_restart: false,
+                                },
+                                message: "current persisted execution profile",
+                            },
+                        )
+                        .await
+                        {
+                            return;
+                        }
+                    }
+                    Err(error) => {
+                        let _ =
+                            send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                        return;
+                    }
                 }
             }
             _ => {
@@ -2186,7 +2142,8 @@ async fn install_module_session<I: SessionIo>(
                 return Err("invalid module chunk frame");
             };
             let Ok(ClientFrame::InstallChunk { offset, data_hex }) =
-                serde_json::from_str::<ClientFrame>(&text)
+                parse_json_without_duplicate_keys(&text)
+                    .and_then(|value| serde_json::from_value::<ClientFrame>(value))
             else {
                 return Err("expected module chunk frame");
             };
@@ -2205,7 +2162,7 @@ async fn install_module_session<I: SessionIo>(
         let incoming = tokio::time::timeout(Duration::from_secs(30), io.recv())
             .await
             .map_err(|_| "timed out waiting for install completion")?;
-        if !matches!(incoming, Inbound::Text(ref text) if matches!(serde_json::from_str::<ClientFrame>(text), Ok(ClientFrame::InstallEnd)))
+        if !matches!(incoming, Inbound::Text(ref text) if matches!(parse_json_without_duplicate_keys(text).and_then(|value| serde_json::from_value::<ClientFrame>(value)), Ok(ClientFrame::InstallEnd)))
         {
             return Err("expected install_end frame");
         }

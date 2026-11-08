@@ -22,11 +22,18 @@ verify is passed through unchanged. Correctly-escaped statements, and
 statements whose SQL carries no quotes, pass through untouched.
 
 The filter is line-oriented and constant-memory: it buffers only the
-lines of one candidate statement (which ends at a line ending in
-``');``). An unterminated statement at EOF is flushed unchanged —
+lines of one candidate statement. A candidate ends at a line ending
+in ``');`` only when that line really closes the statement (#6531):
+either the buffered text already parses as a valid statement ending
+exactly at that line, or (a mis-escaped literal, which cannot be
+parsed) the next line begins a new top-level statement or the input
+ends. A line ending in ``');`` inside the embedded SQL — a trigger
+body's ``SELECT RAISE(ABORT, 'bad');`` — therefore does not split the
+statement. An unterminated statement at EOF is flushed unchanged —
 the caller's truncation guard judges the filtered stream.
 """
 
+import re
 import sys
 
 SCHEMA_INSERT = b"INSERT INTO sqlite_schema("
@@ -34,6 +41,12 @@ STATEMENT_END = b"');"
 QUOTE = 0x27  # '
 COMMA = 0x2C  # ,
 SPACE = b" \t\r\n"
+# A line that begins a new top-level dump statement (column 0).
+TOP_LEVEL_START = re.compile(
+    rb"(?:INSERT|PRAGMA|COMMIT|BEGIN|CREATE|DELETE|UPDATE|DROP|ALTER|"
+    rb"REPLACE|ANALYZE|VACUUM|--)",
+    re.IGNORECASE,
+)
 
 
 def parse_literal(text, pos):
@@ -139,23 +152,71 @@ def repair_chunk(chunk):
     return repair_statement(core) + newline
 
 
+def ends_statement(chunk, next_line):
+    """Whether the buffered chunk (last line ends in ``');``) is complete.
+
+    A valid literal closing exactly at the chunk end is definitive.
+    Otherwise the chunk may be a mis-escaped statement (unparseable by
+    design), so it ends only where a new top-level statement follows,
+    or at EOF (next_line is None).
+    """
+    text = chunk.rstrip(b"\r\n").lstrip()
+    if text.startswith(SCHEMA_INSERT):
+        pos = _final_literal_start(text)
+        if pos is not None:
+            end = parse_literal(text, pos)
+            if end is not None and text[end:] == b");":
+                return True
+    if next_line is None:
+        return True
+    return bool(
+        next_line.lstrip().startswith(SCHEMA_INSERT)
+        or TOP_LEVEL_START.match(next_line)
+    )
+
+
+def _final_literal_start(text):
+    """Index of the opening quote of the final VALUES() literal, or None."""
+    vpos = text.find(b"VALUES(")
+    if vpos < 0:
+        return None
+    pos = vpos + len(b"VALUES(")
+    for _ in range(4):
+        pos = skip_value(text, pos)
+        if pos is None or pos >= len(text) or text[pos] != COMMA:
+            return None
+        pos += 1
+    while pos < len(text) and text[pos] in SPACE:
+        pos += 1
+    if pos >= len(text) or text[pos] != QUOTE:
+        return None
+    return pos
+
+
 def main():
     out = sys.stdout.buffer
     buffered = None
-    for line in sys.stdin.buffer:
+    lines = iter(sys.stdin.buffer)
+    line = next(lines, None)
+    while line is not None:
+        next_line = next(lines, None)
         if buffered is not None:
             buffered.append(line)
             if line.rstrip(b"\r\n").endswith(STATEMENT_END):
-                out.write(repair_chunk(b"".join(buffered)))
-                buffered = None
-            continue
-        if line.lstrip().startswith(SCHEMA_INSERT):
-            if line.rstrip(b"\r\n").endswith(STATEMENT_END):
+                chunk = b"".join(buffered)
+                if ends_statement(chunk, next_line):
+                    out.write(repair_chunk(chunk))
+                    buffered = None
+        elif line.lstrip().startswith(SCHEMA_INSERT):
+            if line.rstrip(b"\r\n").endswith(STATEMENT_END) and ends_statement(
+                line, next_line
+            ):
                 out.write(repair_chunk(line))
             else:
                 buffered = [line]
-            continue
-        out.write(line)
+        else:
+            out.write(line)
+        line = next_line
     if buffered is not None:
         out.write(b"".join(buffered))
     out.flush()

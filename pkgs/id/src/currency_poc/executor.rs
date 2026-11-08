@@ -313,6 +313,19 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
             .put(record)
             .context("intent state persist (Submitted) failed")?;
         let results = self.backend.create_transfers(&record.legs);
+        // #4669: the trait contract is one result per leg. zip()
+        // stops at the shorter side, so a short vector would leave
+        // legs unexamined and still advance to Posted — refuse here,
+        // before any per-leg verdict, and stay Submitted for the
+        // recovery scanner.
+        if results.len() != record.legs.len() {
+            bail!(
+                "conversion {}: backend returned {} results for {} legs \u{2014} refusing to mark Posted on a short result vector",
+                record.conversion_id,
+                results.len(),
+                record.legs.len()
+            );
+        }
         for (leg, result) in record.legs.iter().zip(results.iter()) {
             match result {
                 Ok(()) | Err(TransferError::Exists) => {}
