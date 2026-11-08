@@ -24,6 +24,8 @@ from ghb_common import (
     backup_root,
     inventory,
     build_plan,
+    load_plan,
+    report_problems,
     valid_mirror,
     mirror_path,
     clone_status_record,
@@ -80,9 +82,8 @@ def main():
     plan, excluded, gaps, pending, skipped_empty = build_plan(repos, cfg)
     today = time.strftime("%Y-%m-%d")
     old_plan_path = os.path.join(root, "plan.json")
-    old_items = []
-    if os.path.exists(old_plan_path):
-        old_items = json.load(open(old_plan_path))
+    old_items, old_plan_problems = load_plan(root)
+    report_problems(old_plan_problems)
     old = [p["repo"] for p in old_items]
     # Last-known-good (#3229): an owner whose inventory FAILED (null
     # repositoryOwner, SAML-blocked, gh error, ...) keeps its previously
