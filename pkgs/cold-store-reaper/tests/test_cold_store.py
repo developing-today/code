@@ -356,6 +356,92 @@ class TestAuth(ColdStoreTestBase):
         self.assertNotIn("fake-refresh-token", json.dumps(result))
 
 
+
+class TestTokenResponseShapes(ColdStoreTestBase):
+    """#6846: a shape-drifted HTTP-200 token response must raise the
+    module's ColdStoreError naming the flow and the shape — never a
+    raw JSONDecodeError/AttributeError/TypeError/KeyError — mirroring
+    the D1 hardening in #2618. Transport is stubbed, as in the probe.
+    """
+
+    def stub_token(self, body: bytes):
+        return mock.patch(
+            "cold_store.http_request", return_value=(200, {}, body)
+        )
+
+    # -- access_token -------------------------------------------------
+    def test_access_token_non_json_body(self):
+        with self.stub_token(b"not json"):
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.access_token()
+        self.assertIn("token refresh", str(ctx.exception))
+
+    def test_access_token_list_body(self):
+        with self.stub_token(b"[]"):
+            with self.assertRaises(cold_store.ColdStoreError):
+                self.store.access_token()
+
+    def test_access_token_string_body(self):
+        with self.stub_token(b'"hello"'):
+            with self.assertRaises(cold_store.ColdStoreError):
+                self.store.access_token()
+
+    def test_access_token_missing_token_field(self):
+        with self.stub_token(b'{"expires_in": 3600}'):
+            with self.assertRaises(cold_store.ColdStoreError):
+                self.store.access_token()
+
+    def test_access_token_non_string_token(self):
+        with self.stub_token(b'{"access_token": 123, "expires_in": 3600}'):
+            with self.assertRaises(cold_store.ColdStoreError):
+                self.store.access_token()
+
+    def test_access_token_string_expires_in(self):
+        with self.stub_token(b'{"access_token": "tok", "expires_in": "3600"}'):
+            with self.assertRaises(cold_store.ColdStoreError):
+                self.store.access_token()
+
+    def test_access_token_null_expires_in(self):
+        with self.stub_token(b'{"access_token": "tok", "expires_in": null}'):
+            with self.assertRaises(cold_store.ColdStoreError):
+                self.store.access_token()
+
+    def test_access_token_happy_path_and_default_expiry(self):
+        with self.stub_token(b'{"access_token": "tok-1", "expires_in": 3600}'):
+            self.assertEqual(self.store.access_token(), "tok-1")
+        self.store._access_token = None
+        self.store._access_token_expires_at = 0
+        with self.stub_token(b'{"access_token": "tok-2"}'):
+            self.assertEqual(self.store.access_token(), "tok-2")
+
+    # -- auth_exchange ------------------------------------------------
+    def test_auth_exchange_non_json_body(self):
+        with self.stub_token(b"not json"):
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.auth_exchange("fake-code")
+        self.assertIn("token exchange", str(ctx.exception))
+
+    def test_auth_exchange_list_body(self):
+        with self.stub_token(b"[]"):
+            with self.assertRaises(cold_store.ColdStoreError):
+                self.store.auth_exchange("fake-code")
+
+    def test_auth_exchange_non_string_refresh_token_refused(self):
+        before = self.store.credentials_path.read_bytes()
+        with self.stub_token(b'{"refresh_token": 123}'):
+            with self.assertRaises(cold_store.ColdStoreError):
+                self.store.auth_exchange("fake-code")
+        # Nothing was written into credentials.json.
+        self.assertEqual(self.store.credentials_path.read_bytes(), before)
+
+    def test_auth_exchange_happy_path(self):
+        with self.stub_token(b'{"refresh_token": "new-refresh", "expires_in": 3600}'):
+            result = self.store.auth_exchange("fake-code")
+        self.assertEqual(result["stored"], "refresh_token")
+        creds = json.loads(self.store.credentials_path.read_text())
+        self.assertEqual(creds["refresh_token"], "new-refresh")
+
+
 class TestPack(ColdStoreTestBase):
     def test_pack_rows_offsets_and_frame_roundtrip(self):
         a = self.write_src("a.txt", b"hello cold store\n" * 40)
