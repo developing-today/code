@@ -4,6 +4,7 @@ import {
   ANTIGRAVITY_GEMINI_SERVICE_ID,
   GO_POPESDREW_SERVICE_ID,
   GO_DREWRYPOPE_SERVICE_ID,
+  canonicalProviderId,
   entriesWithPoolSplits,
   entryFromFileExport,
   entryFromTurso,
@@ -598,6 +599,7 @@ describe("serviceIdFor", () => {
     expect(serviceIdFor("codex")).toBe("openai.main");
     expect(serviceIdFor("deepseek")).toBe("deepseek");
     expect(serviceIdFor("meta")).toBe("meta");
+    expect(serviceIdFor("_muse")).toBe("meta");
     expect(serviceIdFor("opendesign")).toBe("opendesign");
     // The module's provider id is "command-code"; the pool (and the
     // OpenCode config provider) is "commandcode". Without the mapping
@@ -1066,5 +1068,72 @@ describe("own-key guards on quota-gather-map lookups (#2781)", () => {
       expect(typeof r.unit).toBe("string");
       expect(Number.isFinite(r.limit)).toBe(true);
     }
+  });
+});
+
+describe("canonicalProviderId (config-id alignment, #1823)", () => {
+  const TICK = "2026-10-27T05:00:00.000Z";
+
+  test("module spellings map to the config provider ids; others pass through", () => {
+    expect(canonicalProviderId("antigravity")).toBe("_antigravity");
+    expect(canonicalProviderId("claude")).toBe("_claude");
+    expect(canonicalProviderId("command-code")).toBe("_commandcode");
+    expect(canonicalProviderId("meta")).toBe("_muse");
+    expect(canonicalProviderId("_antigravity")).toBe("_antigravity");
+    expect(canonicalProviderId("opendesign")).toBe("opendesign");
+    expect(canonicalProviderId("codex")).toBe("codex");
+  });
+
+  test("entryFromResult emits the canonical id and keeps the pool service id", () => {
+    const ag = entryFromResult({ ...OK_RESULT, providerId: "antigravity" }, TICK);
+    expect(ag.providerId).toBe("_antigravity");
+    expect(ag.serviceId).toBe("_antigravity");
+    const claude = entryFromResult({ ...OK_RESULT, providerId: "claude" }, TICK);
+    expect(claude.providerId).toBe("_claude");
+    expect(claude.serviceId).toBe("anthropic:claude-pro");
+    const cc = entryFromResult({ ...OK_RESULT, providerId: "command-code" }, TICK);
+    expect(cc.providerId).toBe("_commandcode");
+    expect(cc.serviceId).toBe("_commandcode");
+    const meta = entryFromResult({ ...OK_RESULT, providerId: "meta" }, TICK);
+    expect(meta.providerId).toBe("_muse");
+    expect(meta.serviceId).toBe("meta");
+  });
+
+  test("a module-spelled Antigravity entry splits into the renamed pool rows", () => {
+    const entry = entryFromResult(
+      {
+        providerId: "antigravity",
+        providerName: "Antigravity",
+        ok: true,
+        configured: true,
+        fetchedAt: Date.parse(TICK),
+        usage: {
+          models: {
+            "gemini-2.5-pro": {
+              windows: { weekly: { usedPercent: 40, windowSeconds: 604_800, resetAt: 1793438427299 } },
+            },
+            "claude-sonnet": {
+              windows: { weekly: { usedPercent: 90, windowSeconds: 604_800, resetAt: 1793438427299 } },
+            },
+          },
+        },
+      },
+      TICK,
+    );
+    const splits = entriesWithPoolSplits([entry]);
+    expect(splits.map((e) => e.serviceId)).toEqual([
+      "_antigravity",
+      ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID,
+      ANTIGRAVITY_GEMINI_SERVICE_ID,
+    ]);
+  });
+
+  test("retention matches across the rename boundary and re-stamps the canonical id", () => {
+    const prevEntry = { ...entryFromResult(OK_RESULT, TICK), providerId: "claude" };
+    expect(lastKnownEntries([prevEntry], "claude")).toHaveLength(1);
+    expect(lastKnownEntries([prevEntry], "_claude")).toHaveLength(1);
+    const retained = markRetained([prevEntry], "2026-10-27T06:00:00.000Z");
+    expect(retained[0].providerId).toBe("_claude");
+    expect(retained[0].retainedFromFailedTick).toBe("2026-10-27T06:00:00.000Z");
   });
 });

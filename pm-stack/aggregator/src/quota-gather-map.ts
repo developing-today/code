@@ -102,12 +102,40 @@ export function serviceIdFor(providerId: string): string {
     case "deepseek":
       return "deepseek";
     case "meta":
+    case "_muse":
       return "meta";
     case "opendesign":
       return "opendesign";
     default:
       return providerId;
   }
+}
+
+/**
+ * Canonical provider ids for snapshot entries. The quota module answers
+ * in its own spellings; the snapshot contract speaks the OpenCode config
+ * provider ids — the router matches quota readings by exact provider id
+ * (quota-driven skip re-admission), so an entry published under a module
+ * spelling never reaches the provider it describes. The fleet-built
+ * providers were renamed to leading-underscore config ids in the fork
+ * (#1823, 2026-11-07): antigravity -> _antigravity, the claude-code door
+ * (module: "claude") -> _claude, commandcode (module: "command-code")
+ * -> _commandcode, and the muse-direct door (module: "meta", the Muse
+ * Code High Usage reading) -> _muse. Normalize here, at the one mapping
+ * point every gathered result passes through. Pool/service ids are a
+ * separate contract and stay put: serviceIdFor carries the dual-spelling
+ * cases (both "claude" and "_claude" land on anthropic:claude-pro, and
+ * "_muse" keeps the "meta" pool).
+ */
+const CANONICAL_PROVIDER_IDS: Readonly<Record<string, string>> = {
+  antigravity: "_antigravity",
+  claude: "_claude",
+  "command-code": "_commandcode",
+  meta: "_muse",
+};
+
+export function canonicalProviderId(providerId: string): string {
+  return CANONICAL_PROVIDER_IDS[providerId] ?? providerId;
 }
 
 export const GATHERER_SOURCE = "opencode-quota";
@@ -282,7 +310,7 @@ export function entryFromFileExport(
   opts: { fileMtimeIso: string | null; stale: boolean },
 ): QuotaCurrentEntry {
   const entry: QuotaCurrentEntry = {
-    providerId: "meta",
+    providerId: canonicalProviderId("meta"),
     providerName: "Meta",
     serviceId: "meta",
     state: "error",
@@ -372,10 +400,11 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
     if (Number.isFinite(fetchedDate.getTime())) measuredAt = fetchedDate.toISOString();
   }
   const state: QuotaCurrentEntry["state"] = result.ok ? "ok" : result.configured ? "error" : "unconfigured";
+  const providerId = canonicalProviderId(result.providerId);
   const entry: QuotaCurrentEntry = {
-    providerId: result.providerId,
-    providerName: result.providerName ?? result.providerId,
-    serviceId: serviceIdFor(result.providerId),
+    providerId,
+    providerName: result.providerName ?? providerId,
+    serviceId: serviceIdFor(providerId),
     state,
     measuredAt,
     source: GATHERER_SOURCE,
@@ -834,7 +863,8 @@ export async function mapWithConcurrency<T, R>(
  * never retained.
  */
 export function lastKnownEntries(prev: readonly QuotaCurrentEntry[], providerId: string): QuotaCurrentEntry[] {
-  return prev.filter((e) => e.providerId === providerId && e.state === "ok");
+  const wanted = canonicalProviderId(providerId);
+  return prev.filter((e) => canonicalProviderId(e.providerId) === wanted && e.state === "ok");
 }
 
 /**
@@ -845,5 +875,9 @@ export function lastKnownEntries(prev: readonly QuotaCurrentEntry[], providerId:
  * instead of it reading as fresh until the freshness bound lapses.
  */
 export function markRetained(entries: readonly QuotaCurrentEntry[], failedTickIso: string): QuotaCurrentEntry[] {
-  return entries.map((e) => ({ ...e, retainedFromFailedTick: failedTickIso }));
+  return entries.map((e) => ({
+    ...e,
+    providerId: canonicalProviderId(e.providerId),
+    retainedFromFailedTick: failedTickIso,
+  }));
 }
