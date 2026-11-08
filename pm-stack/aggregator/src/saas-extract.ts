@@ -725,7 +725,7 @@ export function extractSaasServices(doc: string): SaasService[] {
       sourceClass: "manual",
       sourceNote: "quota-view.md Part (b) — local-record snapshot; no live checks performed",
       sources: {
-        quotaViewSection: spec.heading.source.replace(/^\^/, "").replace(/\$$/, ""),
+        quotaViewSection: spec.heading.source.replace(/^\^/, "").replace(/\$$/, "").replace(/\\(.)/g, "$1"),
         trackerRow: row?.[0] ?? null,
         baselineDoc: "evidence-and-interpretation-baseline-2026-10-20.md (~/workspace/ai-subscriptions/)",
       },
