@@ -25,6 +25,7 @@ import json
 import os
 import re
 import sys
+from urllib.parse import urlsplit
 
 CLASSES = {"systemd", "launchd", "cloudflare", "sandbox", "container"}
 RESTART_POLICIES = {
@@ -61,7 +62,7 @@ def validate(registry):
         return ["registry: no service definitions"]
     for name, defn in sorted(registry.items()):
         where = f"service {name!r}"
-        if not NAME_RE.match(name):
+        if not NAME_RE.fullmatch(name):
             errors.append(f"{where}: name must match {NAME_RE.pattern}")
         if not isinstance(defn, dict):
             errors.append(f"{where}: definition must be an object")
@@ -108,6 +109,11 @@ def validate(registry):
             errors.append(
                 f"{where}: secrets must be a list of secret names (names only, never values)"
             )
+        elif (
+            "secrets" in defn
+            and len(set(defn["secrets"])) != len(defn["secrets"])
+        ):
+            errors.append(f"{where}: secrets must not repeat a secret name")
         if "user" in defn and not (isinstance(defn["user"], str) and defn["user"]):
             errors.append(f"{where}: user must be a non-empty string")
         if "ports" in defn:
@@ -130,11 +136,23 @@ def validate(registry):
             )
         if "healthCheck" in defn and defn["healthCheck"] is not None:
             hc = defn["healthCheck"]
-            if not (
-                isinstance(hc, str)
-                and (hc.startswith("http://") or hc.startswith("https://"))
-            ):
-                errors.append(f"{where}: healthCheck must be an http(s) URL or null")
+            try:
+                parsed = urlsplit(hc) if isinstance(hc, str) else None
+                hostname = parsed.hostname if parsed is not None else None
+                if parsed is not None:
+                    # Accessing .port also rejects malformed/out-of-range ports.
+                    parsed.port
+                valid_url = (
+                    parsed is not None
+                    and parsed.scheme in {"http", "https"}
+                    and bool(hostname)
+                )
+            except ValueError:
+                valid_url = False
+            if not valid_url:
+                errors.append(
+                    f"{where}: healthCheck must be an http(s) URL with a host or null"
+                )
         if "targets" in defn and not (
             isinstance(defn["targets"], list)
             and defn["targets"]
@@ -143,6 +161,11 @@ def validate(registry):
             errors.append(
                 f"{where}: targets must be a non-empty list of host/class names"
             )
+        elif (
+            "targets" in defn
+            and len(set(defn["targets"])) != len(defn["targets"])
+        ):
+            errors.append(f"{where}: targets must not repeat a target")
         if "class" in defn and not (
             isinstance(defn["class"], str) and defn["class"] in CLASSES
         ):
