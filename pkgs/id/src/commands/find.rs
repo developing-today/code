@@ -1051,7 +1051,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn test_download_output_path_dash_name_is_not_the_stdout_sentinel() {
         // A match-derived "-" must name a file, not the stdout sentinel;
         // only an explicit user-supplied "-" means stdout.

@@ -1888,7 +1888,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn test_parse_rejects_zero_result_limits() {
         // #3059: explicit zero limits are errors at the REPL boundary.
         assert!(parse_find_args(&["q", "--first", "0"], "tag").is_err());
