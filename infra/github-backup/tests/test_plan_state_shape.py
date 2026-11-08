@@ -65,6 +65,52 @@ class ValidatePlanTests(unittest.TestCase):
         self.assertEqual(entries, [])
         self.assertEqual(len(problems), 2)
 
+    def test_wrong_shape_reference_is_named_and_neutralized(self):
+        # Issue #6834: a list/dict reference is unhashable in
+        # clone_all's scheduler and manifest's family grouping; an
+        # int reference crashes manifest's mixed-type anchor sort.
+        for bad in (["a/b"], {"repo": "a/b"}, 123, True):
+            entries, problems = ghb_common.validate_plan(
+                [{"repo": "a/b", "reference": bad}]
+            )
+            self.assertEqual(len(entries), 1)
+            self.assertIsNone(entries[0]["reference"])
+            self.assertEqual(len(problems), 1)
+            self.assertIn("entry 0", problems[0])
+            self.assertIn("'reference'", problems[0])
+
+    def test_wrong_shape_branch_and_parent_are_neutralized(self):
+        # A non-string branch crashes manifest head_sha for a present
+        # mirror; parent is copied into MANIFEST.json verbatim.
+        entries, problems = ghb_common.validate_plan(
+            [{"repo": "a/b", "branch": 7, "parent": ["x/y"]},
+             {"repo": "c/d", "branch": ["main"], "parent": {"x": 1}}]
+        )
+        self.assertEqual(len(entries), 2)
+        for entry in entries:
+            self.assertIsNone(entry["branch"])
+            self.assertIsNone(entry["parent"])
+        self.assertEqual(len(problems), 4)
+        self.assertIn("'branch'", problems[0])
+        self.assertIn("'parent'", problems[1])
+
+    def test_string_and_null_fields_pass_unchanged(self):
+        plan = [
+            {"repo": "a/b", "reference": "c/d", "branch": "main",
+             "parent": "x/y"},
+            {"repo": "c/d", "reference": None, "branch": None,
+             "parent": None},
+            {"repo": "e/f"},
+        ]
+        entries, problems = ghb_common.validate_plan(plan)
+        self.assertEqual(entries, plan)
+        self.assertEqual(problems, [])
+
+    def test_validate_plan_does_not_mutate_input(self):
+        plan = [{"repo": "a/b", "reference": ["c/d"]}]
+        ghb_common.validate_plan(plan)
+        self.assertEqual(plan[0]["reference"], ["c/d"])
+
     def test_plan_top_level_object_is_single_named_problem(self):
         entries, problems = ghb_common.validate_plan({"repo": "a/b"})
         self.assertEqual(entries, [])
@@ -252,6 +298,57 @@ class ManifestShapeTests(unittest.TestCase):
             self.assertIsNone(manifest["mirrors"]["a/b"]["last_fetch"])
             self.assertIn("a/b", err)
             self.assertIn("c/d", err)
+
+    def test_build_with_wrong_shape_reference_branch_parent(self):
+        # Issue #6834: pre-fix the int reference wrote a bogus
+        # "## anchor: 123" family (or crashed the mixed-type sort
+        # next to a string anchor) and the list reference raised an
+        # unhashable TypeError in families.setdefault.
+        with tempfile.TemporaryDirectory() as root:
+            manifest, err = self.run_build(
+                root,
+                [
+                    {"repo": "a/b", "reference": 123},
+                    {"repo": "c/d", "reference": "a/b"},
+                    {"repo": "e/f", "reference": ["a/b"]},
+                    {"repo": "g/h", "branch": ["main"], "parent": {"x": 1}},
+                ],
+                {},
+            )
+            self.assertEqual(
+                sorted(manifest["mirrors"]), ["a/b", "c/d", "e/f", "g/h"]
+            )
+            self.assertIsNone(manifest["mirrors"]["a/b"]["reference"])
+            self.assertIsNone(manifest["mirrors"]["e/f"]["reference"])
+            self.assertIsNone(manifest["mirrors"]["g/h"]["default_branch"])
+            self.assertIsNone(manifest["mirrors"]["g/h"]["parent"])
+            with open(os.path.join(root, "FAMILIES.md")) as f:
+                families = f.read()
+            self.assertIn("## anchor: a/b", families)
+            self.assertNotIn("123", families)
+            for field in ("'reference'", "'branch'", "'parent'"):
+                self.assertIn(field, err)
+
+    def test_build_with_wrong_shape_branch_and_present_mirror(self):
+        # head_sha concatenates "refs/heads/" + branch — only reached
+        # for present mirrors, so patch valid_mirror on.
+        with tempfile.TemporaryDirectory() as root:
+            write_json(
+                root, "plan.json", [{"repo": "a/b", "branch": ["main"]}]
+            )
+            write_json(root, "state.json", {})
+            with (
+                patch.object(manifest_mod, "load_config", return_value={}),
+                patch.object(manifest_mod, "valid_mirror", return_value=True),
+                patch.object(manifest_mod, "disk_kb", return_value=0),
+                contextlib.redirect_stderr(io.StringIO()) as err,
+            ):
+                manifest_mod.build(root)
+            with open(os.path.join(root, "MANIFEST.json")) as f:
+                manifest = json.load(f)
+            self.assertIsNone(manifest["mirrors"]["a/b"]["head"])
+            self.assertIsNone(manifest["mirrors"]["a/b"]["default_branch"])
+            self.assertIn("'branch'", err.getvalue())
 
     def test_build_with_state_top_level_list(self):
         with tempfile.TemporaryDirectory() as root:
