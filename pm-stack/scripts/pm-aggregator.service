@@ -1,0 +1,10 @@
+[Unit]
+Description=PM Aggregator
+
+[Service]
+Type=simple
+ExecStart=/home/user/.local/bin/ready-for-agent --version
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
