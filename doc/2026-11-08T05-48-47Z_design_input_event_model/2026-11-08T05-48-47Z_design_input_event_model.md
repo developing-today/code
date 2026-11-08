@@ -1,6 +1,6 @@
 # Input event model for relayed apps (touch, mouse, hover)
 
-**Request:** issue [#1831](https://github.com/developing-today/code/issues/1831) (Drew, 2026-10-28), slice S1 of the split recorded by triage task 7753 and re-verified by triage task 11974. This design is the gate slice: it defines the input event model only. Extending the accepted-interface definitions is S2, the Android proof-of-concept app is S3, and the dynamic-Roc stretch is S4; all three stay on issue #1831 and are sequenced after this design lands. Recorded before implementation, as required by [`DOCUMENTATION_PROTOCOL.md`](../../docs/DOCUMENTATION_PROTOCOL.md).
+**Request:** issue [#1831](https://github.com/developing-today/code/issues/1831) (Drew, 2026-10-28), slice S1 of the split recorded by triage task 7753 and re-verified by triage task 11974. This design is the gate slice: it defines the input event model only. Extending the accepted-interface definitions is S2, the Android proof-of-concept app is S3, and the dynamic-Roc stretch is S4; all three stay on issue #1831 and are sequenced after this design lands. Recorded before implementation, as required by [`DOCUMENTATION_PROTOCOL.md`](../DOCUMENTATION_PROTOCOL.md).
 
 ## Intent
 
@@ -14,22 +14,23 @@ Four producer environments are in scope. Every rule in this design is stated per
 |---|---|---|
 | `native` | Desktop/native shell | Mouse (touchscreen laptops report through the same pointer path) |
 | `web` | Browser/Wasm shell, including the #1826 phone peer page | Mouse, touch, or stylus, via the browser |
-| `tui` | Terminal shell | Terminal mouse reporting (SGR 1006 or legacy X10) |
+| `tui` | Terminal shell | Terminal mouse reporting: SGR encoding (DECSET 1006) with button-event tracking (DECSET 1002), which reports press, release, and motion while a button is held. A terminal offering only press-only reporting (X10 / DECSET 9 / 1000) cannot carry `release` or `drag`: the producer refuses those events for that session with reason `no_tracking_mode` (see the refusal semantics below) instead of approximating them. |
 | `android` | The S3 native Android app | Multi-touch touchscreen |
 
 ## The common core
 
-The core is the set every environment must be able to produce, because the relay subset — minimally click, ideally drag and scroll — is built from it. Coordinates are in the target surface's cell grid (the world screen is a cell grid; producers map device pixels to cells at the edge, so the model never carries pixels). Every event carries a `pointer_id`; v1 guarantees only the primary pointer (see Decisions).
+The core is the set every environment must be able to produce, because the relay subset — minimally click, ideally drag and scroll — is built from it, with one named exception: `long_press` is core only where the producer has a timing source, and the `tui` environment is that exception (refused `no_timing_source`, per the refusal table) — an app must not assume `long_press` on `tui`. Coordinates are in the target surface's cell grid (the world screen is a cell grid; producers map device pixels to cells at the edge, so the model never carries pixels). Every event carries a `pointer_id`; v1 guarantees only the primary pointer (see Decisions). A `pointer_id` is unique only within its producing connection: when journaling, the shell namespaces it with the connection's identity, and press/release pairing during replay is always scoped to that (connection, `pointer_id`) pair, so two connections can never cross-pair each other's events.
 
 | Event | Meaning |
 |---|---|
 | `press` | Pointer contact/button down at a cell (`button: primary` in the core) |
-| `release` | Pointer contact/button up at a cell; carries the hold duration `held_duration_ms` (milliseconds between press and release) and whether it satisfied the producer's click threshold (`is_click: bool`) |
-| `drag` | `press`, a sequence of cell moves, and `release`, delivered as one gesture with its path |
+| `release` | Pointer contact/button up at a cell; carries which button was released (`button: primary` or `secondary`, matching its `press`), the hold duration `held_duration_ms` (milliseconds between press and release), and whether it satisfied the producer's click threshold (`is_click: bool`). A producer that cannot identify the released button refuses `secondary_press` with reason `button_identity_unavailable` rather than emitting an ambiguous `release`. |
+| `cancel` | The pointer stream for an open `press` was interrupted (browser `pointercancel`, producer disconnect, OS gesture takeover). Journaled like any activation event; it ends the gesture, is never a click, and triggers host cleanup of the pressed state. When a producer disconnects with a press still open, the host synthesizes `cancel` for that pointer so no pressed state can leak into replay. |
+| `drag` | Delivered on the wire as `press`, a sequence of incremental `drag_move` events (one per cell change, in order), and `release` — the gesture is the sequence, reconstructed in order, so an app can render live feedback during the gesture instead of only at release. Each `drag_move` is its own shell-contract frame, so the contract's 1 MiB frame limit bounds a single move, never the whole path; a producer whose move buffer overflows coalesces consecutive moves (keeping the latest cell) rather than buffering an unbounded path. |
 | `scroll` | Wheel or pan delta at a cell (`dx`, `dy` in cell units) |
 | `long_press` | A `press` held in place past the long-press threshold (500 ms default, the Android platform default), synthesized by the producer and delivered as its own event |
 
-A click is not a separate wire event: it is the semantic an app derives from `press` + `release` on the same cell within the producer's click threshold (default 250 ms, the web standard pointer threshold). To preserve deterministic replay without relying on wall-clock timing between journaled events, `release` explicitly carries the producer-measured hold duration (`held_duration_ms`) and the resolved click classification (`is_click`). Every replay consumer therefore observes identical timing and derives the same click semantic deterministically.
+A click is not a separate wire event: it is the semantic an app derives from `press` + `release` on the same cell within the producer's click threshold (default 250 ms — a project default, not a web standard: Pointer Events leaves click timing to the implementation, device, and platform, and a browser may accept a longer hold as a click where this model does not). The classification bands are exhaustive: a stationary release with `held_duration_ms` at or above the click threshold but below the long-press threshold is a plain `release` with `is_click: false` — a deliberate slow press, not a click and not a `long_press`; an app that wants tap semantics consumes `release` itself and treats `is_click` as a convenience derivation, never the only signal. To preserve deterministic replay without relying on wall-clock timing between journaled events, `release` explicitly carries the producer-measured hold duration (`held_duration_ms`) and the resolved click classification (`is_click`). Every replay consumer therefore observes identical timing and derives the same click semantic deterministically.
 
 ## Per-environment extras
 
@@ -62,7 +63,7 @@ These are the S3 app's contract, not assumptions it may re-decide: if the PoC fi
 
 ### Decision 3 — activation events are journaled; hover is ephemeral
 
-`press`, `release`, `drag`, `scroll`, and `long_press` are shell-contract class `event`: journaled and replayed like keyboard `Input`, in sequence order. `long_press` is synthesized by the producer precisely so replay never needs a wall clock; similarly, `release` records `held_duration_ms` and `is_click` so click derivation during replay is deterministic without wall-clock dependence. `hover_enter`, `hover_leave`, and `hover_move` are class `ephemeral`: connection-local presentation context, never journaled and never seen by other sessions — the same boundary the keyboard-parity design drew for resize and focus (one participant's pointer position must not rewrite shared world state).
+`press`, `release`, `cancel`, `drag` (as its `press` / `drag_move` / `release` sequence), `scroll`, and `long_press` are shell-contract class `event`: journaled and replayed like keyboard `Input`, in sequence order. `long_press` is synthesized by the producer precisely so replay never needs a wall clock; similarly, `release` records `held_duration_ms` and `is_click` so click derivation during replay is deterministic without wall-clock dependence. `hover_enter`, `hover_leave`, and `hover_move` are class `ephemeral`: connection-local presentation context, never journaled and never seen by other sessions — the same boundary the keyboard-parity design drew for resize and focus (one participant's pointer position must not rewrite shared world state).
 
 ### Decision 4 — v1 is single-pointer; the model is not
 
@@ -75,6 +76,7 @@ An event an environment cannot produce, or an app did not declare, is **refused 
 | Event | `native` | `web` | `tui` | `android` |
 |---|---|---|---|---|
 | `press` / `release` | supported | supported | supported | supported |
+| `cancel` | supported (producer- or host-synthesized) | supported (producer- or host-synthesized) | supported (producer- or host-synthesized) | supported (producer- or host-synthesized) |
 | `drag` | supported | supported | supported | supported |
 | `scroll` | supported | supported | supported (buttons 4/5) | supported (pan/fling) |
 | `long_press` | supported (producer-synthesized) | supported (producer-synthesized) | refused `no_timing_source` | supported |
@@ -85,9 +87,11 @@ An event an environment cannot produce, or an app did not declare, is **refused 
 
 A second refusal class applies in every environment: an event the target app did not declare in its interface (S2) is refused `not_declared_by_app`, whatever the environment could produce.
 
+Refusals are per-event answers, so they exist only for gestures the producer could observe. A gesture the environment consumes without reporting it at all (a terminal that swallows a right-click for its own menu and reports nothing) produces no event and can produce no refusal — there is nothing to answer. That unobservability is disclosed up front instead: the environment's declared capabilities (the S2 interface work) state which events it cannot report, so an app learns before any gesture that, e.g., `secondary_press` on a given terminal is unobservable, rather than expecting a per-event `not_reported_by_terminal` that can only be returned when the terminal reported enough to identify the gesture.
+
 ## How issue #1826 consumes this model
 
-Issue #1826 (browser/Wasm peer page for phone runs) does not get a phone-specific event set. The peer page is a `web`-environment producer of exactly this model: it speaks the same shell-contract frames, follows the web column of every table above (tap on the phone's browser is `press`/`release` via Pointer Events; hover is refused there as on any touch-only web device; right click follows Decision 1). The native Android app (S3) and the #1826 page therefore relay the same events into the same apps and differ only in their environment column — one model, two phone peers, no duplicated hover/web semantics to drift apart.
+Issue #1826 (browser/Wasm peer page for phone runs) does not get a phone-specific event set. The peer page is a `web`-environment producer of exactly this model: it speaks the same shell-contract frames, follows the web column of every table above (tap on the phone's browser is `press`/`release` via Pointer Events; hover is refused there as on any touch-only web device; right click follows Decision 1). Touch-gesture ownership on the peer page is explicit: the page sets `touch-action: none` on the app's surface, so the browser does not take over pan/zoom gestures that belong to the app; where the browser or OS still interrupts the stream (scroll chaining at a surface edge, OS-level gestures), the producer emits `cancel` and the gesture ends explicitly — the stream is never silently truncated. The native Android app (S3) and the #1826 page therefore relay the same events into the same apps and differ only in their environment column — one model, two phone peers, no duplicated hover/web semantics to drift apart.
 
 ## S2 handoff (what the follow-on implements)
 
