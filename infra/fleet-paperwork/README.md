@@ -8,11 +8,11 @@ through a personal user token has two failure modes, both observed live on
 2026-11-01:
 
 1. **Secondary rate limits are per-actor.** A burst of ~322 `gh issue create`
-   calls tripped the *user's* secondary rate limit; content creation for the
+   calls tripped the _user's_ secondary rate limit; content creation for the
    account was then blocked outright (HTTP 403) even though nothing was wrong
    with the requests.
 2. **Silent non-creation.** While limited, `gh issue create` twice returned
-   exit 0 with empty output and created *nothing*. A later audit found one
+   exit 0 with empty output and created _nothing_. A later audit found one
    batch issue missing precisely because its creation had been "confirmed"
    from the filer's own lists instead of from GitHub readback.
 
@@ -21,7 +21,7 @@ through a personal user token has two failure modes, both observed live on
 - It authenticates as the **`developing.today` GitHub App** (ID 5454422,
   permissions: contents write, issues write, metadata read, pull requests
   write — the write permissions were accepted on both installations and
-  verified at token level on 2026-11-03). An App *installation* token is a
+  verified at token level on 2026-11-03). An App _installation_ token is a
   separate actor from any user token, with its own rate-limit bucket, so
   fleet paperwork no longer competes with — or gets benched by — a human's
   interactive `gh` usage. That separation is also why pull requests are now
@@ -83,14 +83,14 @@ Same flow the pm-stack services already use (see `../../pm-stack`):
 python3 fleet_paperwork.py check --repo developing-today/code
 
 # Create (deduped by exact title, verified by readback).
-python3 fleet_paperwork.py create --repo developing-today/opencode \
+python3 fleet_paperwork.py create --repo developing-today-forks/opencode \
   --title "Preserved branch: … — decision needed (merge / cherry-pick / drop)" \
   --label priority/low --body-file body.md
 
 # Comment / close (also verified).
-python3 fleet_paperwork.py comment --repo developing-today/opencode \
+python3 fleet_paperwork.py comment --repo developing-today-forks/opencode \
   --issue 1203 --body-file comment.md
-python3 fleet_paperwork.py close --repo developing-today/opencode --issue 1203
+python3 fleet_paperwork.py close --repo developing-today-forks/opencode --issue 1203
 
 # Generic access: print an installation token (stdout only — every
 # diagnostic goes to stderr, so the capture is clean), then drive gh or

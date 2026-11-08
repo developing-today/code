@@ -82,10 +82,12 @@ def b64url(data: bytes) -> str:
 # Credential + token flow
 # --------------------------------------------------------------------------
 
+
 def sops_extract(sops_path: str, key: str) -> str:
     out = subprocess.run(
         ["sops", "-d", "--extract", f'["{key}"]', sops_path],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if out.returncode != 0:
         die(f"sops extract of {key!r} from {sops_path} failed: {out.stderr.strip()}")
@@ -104,8 +106,9 @@ def app_jwt(app_id: str, key_b64: str) -> str:
         die("github_private_key_base64 did not base64-decode")
     now = int(time.time())
     header = b64url(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
-    payload = b64url(json.dumps(
-        {"iat": now - 60, "exp": now + 540, "iss": app_id}).encode())
+    payload = b64url(
+        json.dumps({"iat": now - 60, "exp": now + 540, "iss": app_id}).encode()
+    )
     signing_input = f"{header}.{payload}".encode()
     tmpdir = tempfile.mkdtemp(prefix="fleet-paperwork-")
     keyfile = os.path.join(tmpdir, "key.pem")
@@ -115,10 +118,13 @@ def app_jwt(app_id: str, key_b64: str) -> str:
         os.chmod(keyfile, 0o600)
         sig = subprocess.run(
             ["openssl", "dgst", "-sha256", "-sign", keyfile],
-            input=signing_input, capture_output=True,
+            input=signing_input,
+            capture_output=True,
         )
         if sig.returncode != 0:
-            die(f"openssl JWT signing failed: {sig.stderr.decode(errors='replace').strip()}")
+            die(
+                f"openssl JWT signing failed: {sig.stderr.decode(errors='replace').strip()}"
+            )
     finally:
         try:
             os.unlink(keyfile)
@@ -131,7 +137,9 @@ def app_jwt(app_id: str, key_b64: str) -> str:
     return f"{header}.{payload}.{b64url(sig.stdout)}"
 
 
-def http_raw(method: str, path: str, token: str, data: bytes | None = None) -> tuple[int, str]:
+def http_raw(
+    method: str, path: str, token: str, data: bytes | None = None
+) -> tuple[int, str]:
     """One HTTP call that reports HTTP errors instead of dying on them.
 
     Returns (status, raw body text). Transport failures (DNS, TLS, refused)
@@ -156,7 +164,9 @@ def http_raw(method: str, path: str, token: str, data: bytes | None = None) -> t
     raise AssertionError("unreachable")
 
 
-def http(method: str, path: str, token: str, body: dict | None = None) -> tuple[int, dict]:
+def http(
+    method: str, path: str, token: str, body: dict | None = None
+) -> tuple[int, dict]:
     url = path if path.startswith("http") else API + path
     data = json.dumps(body).encode() if body is not None else None
     status, raw = http_raw(method, path, token, data)
@@ -187,15 +197,19 @@ class AppClient:
         for inst in self.installations():
             if inst.get("account", {}).get("login", "").lower() == owner.lower():
                 return inst
-        die(f"no installation of the app found for owner {owner!r} "
-            f"(installations: {[i.get('account', {}).get('login') for i in self.installations()]})")
+        die(
+            f"no installation of the app found for owner {owner!r} "
+            f"(installations: {[i.get('account', {}).get('login') for i in self.installations()]})"
+        )
         raise AssertionError("unreachable")
 
     def token_for(self, owner: str) -> str:
         inst = self.installation_for(owner)
         iid = inst["id"]
         if iid not in self._tokens:
-            _, data = http("POST", f"/app/installations/{iid}/access_tokens", self.jwt, {})
+            _, data = http(
+                "POST", f"/app/installations/{iid}/access_tokens", self.jwt, {}
+            )
             token = data.get("token")
             if not token:
                 die(f"installation token mint for installation {iid} returned no token")
@@ -207,19 +221,24 @@ class AppClient:
         token = self.token_for(owner)
         page, seen = 1, []
         while True:
-            _, data = http("GET", f"/installation/repositories?per_page=100&page={page}", token)
+            _, data = http(
+                "GET", f"/installation/repositories?per_page=100&page={page}", token
+            )
             seen += [r["full_name"] for r in data.get("repositories", [])]
             if len(seen) >= data.get("total_count", 0) or not data.get("repositories"):
                 break
             page += 1
         if repo not in seen:
-            die(f"repo {repo} is not in the app installation scope for {owner} "
-                f"(in scope: {sorted(seen)})")
+            die(
+                f"repo {repo} is not in the app installation scope for {owner} "
+                f"(in scope: {sorted(seen)})"
+            )
 
 
 # --------------------------------------------------------------------------
 # Ledger + pacing
 # --------------------------------------------------------------------------
+
 
 def ledger_path() -> Path:
     return Path(os.environ.get("FLEET_PAPERWORK_LEDGER", DEFAULT_LEDGER)).expanduser()
@@ -250,7 +269,7 @@ def pace(pace_secs: float) -> None:
 def ledger_append(action: str, repo: str, number: str, detail: str) -> None:
     path = ledger_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
     with path.open("a") as fh:
         fh.write(f"{ts}\t{action}\t{repo}\t{number}\t{detail}\n")
 
@@ -259,21 +278,38 @@ def ledger_append(action: str, repo: str, number: str, detail: str) -> None:
 # Dedupe
 # --------------------------------------------------------------------------
 
+
 def find_by_exact_title(client: AppClient, repo: str, title: str) -> dict | None:
     """Search-API lookup, filtered to byte-exact title equality (the search
-    itself matches title+body text, so the filter is what makes it a dedupe)."""
+    itself matches title+body text, so the filter is what makes it a dedupe).
+
+    Issues only, on two layers (#6697): the query carries `type:issue` AND
+    the filter skips items with a `pull_request` key, because the search
+    index contains PRs and a same-titled PR is not an already-filed issue —
+    treating it as one made `create` exit 0 having filed nothing. The scan
+    pages through the matches (the Search API serves at most 1000 results)
+    so an exact-title issue past the first page is still found."""
     token = client.token_for(repo.split("/")[0])
-    q = urllib.parse.quote(f'repo:{repo} "{title}"')
-    _, data = http("GET", f"/search/issues?q={q}&per_page=20", token)
-    for item in data.get("items", []):
-        if item.get("title") == title:
-            return item
+    q = urllib.parse.quote(f'repo:{repo} type:issue "{title}"')
+    for page in range(1, 11):
+        _, data = http(
+            "GET", f"/search/issues?q={q}&per_page=100&page={page}", token
+        )
+        items = data.get("items", [])
+        for item in items:
+            if "pull_request" in item:
+                continue
+            if item.get("title") == title:
+                return item
+        if len(items) < 100:
+            return None
     return None
 
 
 # --------------------------------------------------------------------------
 # Commands
 # --------------------------------------------------------------------------
+
 
 def read_body(args) -> str:
     if args.body_file:
@@ -288,8 +324,10 @@ def cmd_check(args) -> int:
     client = AppClient(args.sops)
     print(f"app id {client.app_id} ({APP_SLUG_HINT})")
     for inst in client.installations():
-        print(f"installation {inst['id']}: {inst.get('account', {}).get('login')} "
-              f"permissions={inst.get('permissions')}")
+        print(
+            f"installation {inst['id']}: {inst.get('account', {}).get('login')} "
+            f"permissions={inst.get('permissions')}"
+        )
     if args.repo:
         client.assert_repo_in_scope(args.repo)
         print(f"{args.repo}: in installation scope")
@@ -303,32 +341,39 @@ def cmd_create(args) -> int:
     existing = find_by_exact_title(client, args.repo, title)
     if existing is not None:
         if args.no_dedupe:
-            print(f"note: exact-title issue already exists: #{existing['number']} "
-                  f"({existing['html_url']}); --no-dedupe set, creating another")
+            print(
+                f"note: exact-title issue already exists: #{existing['number']} "
+                f"({existing['html_url']}); --no-dedupe set, creating another"
+            )
         else:
-            print(f"already filed: {args.repo}#{existing['number']} "
-                  f"{existing['html_url']} (dedupe hit, nothing created)")
+            print(
+                f"already filed: {args.repo}#{existing['number']} "
+                f"{existing['html_url']} (dedupe hit, nothing created)"
+            )
             return 0
     body = read_body(args)
     payload: dict = {"title": title, "body": body}
     if args.label:
         payload["labels"] = args.label
     if args.dry_run:
-        print(f"dry-run: would POST /repos/{args.repo}/issues title={title!r} "
-              f"labels={args.label or []} body={len(body)} chars")
+        print(
+            f"dry-run: would POST /repos/{args.repo}/issues title={title!r} "
+            f"labels={args.label or []} body={len(body)} chars"
+        )
         return 0
     pace(args.pace)
     token = client.token_for(args.repo.split("/")[0])
     _, created = http("POST", f"/repos/{args.repo}/issues", token, payload)
     number = created.get("number")
     if not number:
-        die(f"create in {args.repo} returned no issue number (response keys: "
-            f"{sorted(created) if isinstance(created, dict) else type(created)})")
+        die(
+            f"create in {args.repo} returned no issue number (response keys: "
+            f"{sorted(created) if isinstance(created, dict) else type(created)})"
+        )
     # Verify by readback — an unverified create counts as a failure.
     _, got = http("GET", f"/repos/{args.repo}/issues/{number}", token)
     if got.get("title") != title or got.get("number") != number:
-        die(f"readback mismatch for {args.repo}#{number}: "
-            f"title={got.get('title')!r}")
+        die(f"readback mismatch for {args.repo}#{number}: title={got.get('title')!r}")
     ledger_append("create", args.repo, str(number), title)
     print(f"created+verified: {args.repo}#{number} {created.get('html_url')}")
     return 0
@@ -339,13 +384,19 @@ def cmd_comment(args) -> int:
     client.assert_repo_in_scope(args.repo)
     body = read_body(args)
     if args.dry_run:
-        print(f"dry-run: would POST comment on {args.repo}#{args.issue} "
-              f"({len(body)} chars)")
+        print(
+            f"dry-run: would POST comment on {args.repo}#{args.issue} "
+            f"({len(body)} chars)"
+        )
         return 0
     pace(args.pace)
     token = client.token_for(args.repo.split("/")[0])
-    _, comment = http("POST", f"/repos/{args.repo}/issues/{args.issue}/comments",
-                      token, {"body": body})
+    _, comment = http(
+        "POST",
+        f"/repos/{args.repo}/issues/{args.issue}/comments",
+        token,
+        {"body": body},
+    )
     cid = comment.get("id")
     if not cid:
         die(f"comment on {args.repo}#{args.issue} returned no comment id")
@@ -353,8 +404,10 @@ def cmd_comment(args) -> int:
     if got.get("id") != cid or got.get("body") != body:
         die(f"comment readback mismatch on {args.repo}#{args.issue} (comment {cid})")
     ledger_append("comment", args.repo, str(args.issue), f"comment {cid}")
-    print(f"commented+verified: {args.repo}#{args.issue} comment {cid} "
-          f"{comment.get('html_url')}")
+    print(
+        f"commented+verified: {args.repo}#{args.issue} comment {cid} "
+        f"{comment.get('html_url')}"
+    )
     return 0
 
 
@@ -413,19 +466,26 @@ def cmd_close(args) -> int:
     http("PATCH", f"/repos/{args.repo}/issues/{args.issue}", token, {"state": "closed"})
     _, got = http("GET", f"/repos/{args.repo}/issues/{args.issue}", token)
     if got.get("state") != "closed":
-        die(f"close readback mismatch for {args.repo}#{args.issue}: "
-            f"state={got.get('state')!r}")
+        die(
+            f"close readback mismatch for {args.repo}#{args.issue}: "
+            f"state={got.get('state')!r}"
+        )
     ledger_append("close", args.repo, str(args.issue), current.get("title", ""))
     print(f"closed+verified: {args.repo}#{args.issue}")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="fleet-paperwork", description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--sops", default=os.environ.get(
-        "FLEET_PAPERWORK_SOPS", DEFAULT_SOPS),
-        help=f"sops file holding the app key (default: {DEFAULT_SOPS})")
+    ap = argparse.ArgumentParser(
+        prog="fleet-paperwork",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument(
+        "--sops",
+        default=os.environ.get("FLEET_PAPERWORK_SOPS", DEFAULT_SOPS),
+        help=f"sops file holding the app key (default: {DEFAULT_SOPS})",
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("check", help="read-only: app, installations, repo scope")
@@ -452,18 +512,24 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(fn=cmd_comment)
 
-    p = sub.add_parser("token", help="print the installation token for a "
-                                     "repo's owner (stdout only)")
+    p = sub.add_parser(
+        "token", help="print the installation token for a repo's owner (stdout only)"
+    )
     p.add_argument("--repo", required=True)
     p.set_defaults(fn=cmd_token)
 
     p = sub.add_parser("api", help="one arbitrary REST call as the app")
     p.add_argument("--repo", required=True)
-    p.add_argument("--method", required=True, type=str.upper,
-                   help="HTTP method — required for every call, so a write "
-                        "can never happen by default")
-    p.add_argument("--path", required=True,
-                   help="REST path, e.g. /repos/owner/name/pulls")
+    p.add_argument(
+        "--method",
+        required=True,
+        type=str.upper,
+        help="HTTP method — required for every call, so a write "
+        "can never happen by default",
+    )
+    p.add_argument(
+        "--path", required=True, help="REST path, e.g. /repos/owner/name/pulls"
+    )
     p.add_argument("--input", help="file holding the JSON request body")
     p.set_defaults(fn=cmd_api)
 

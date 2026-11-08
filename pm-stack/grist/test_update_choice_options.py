@@ -6,6 +6,7 @@ Run: python3 -m unittest test_update_choice_options -v
 
 import importlib.util
 import io
+import json
 import os
 import pathlib
 import threading
@@ -145,6 +146,81 @@ class ApiTimeout(unittest.TestCase):
             server.shutdown()
             server.server_close()
             server_thread.join(timeout=1)
+
+
+class MergeChoicesShape(unittest.TestCase):
+    """#6588: a stored shape the merge does not understand is refused
+    by name -- never shredded, coerced, or crashed on."""
+
+    def test_string_choices_refused_not_shredded(self):
+        wo = {"choices": "code"}
+        with self.assertRaises(_mod.WidgetOptionsError) as raised:
+            merge_choices(wo, ["id"])
+        self.assertIn("not a list", str(raised.exception))
+        self.assertEqual(wo, {"choices": "code"})
+
+    def test_dict_choices_refused(self):
+        with self.assertRaises(_mod.WidgetOptionsError):
+            merge_choices({"choices": {"code": True}}, ["id"])
+
+    def test_non_object_widget_options_refused(self):
+        for value in ("justastring", ["code"], 42):
+            with self.subTest(value=value):
+                with self.assertRaises(_mod.WidgetOptionsError) as raised:
+                    merge_choices(value, ["x"])
+                self.assertIn("not a JSON object", str(raised.exception))
+
+    def test_non_string_choice_entries_refused(self):
+        with self.assertRaises(_mod.WidgetOptionsError) as raised:
+            merge_choices({"choices": [1, None, True]}, ["id"])
+        self.assertIn("entry 0 is not a string", str(raised.exception))
+
+    def test_null_choices_still_means_no_choices(self):
+        merged, added = merge_choices({"choices": None}, ["a"])
+        self.assertEqual(merged["choices"], ["a"])
+        self.assertEqual(added, ["a"])
+
+
+class ShapeFailureCli(unittest.TestCase):
+    """#6588 at the CLI boundary: a shape failure is a clean exit 1
+    on stderr, and no PATCH is ever sent."""
+
+    def run_with_stored(self, widget_options_json):
+        patches = []
+
+        def fake_api(base, key, method, path, body=None):
+            if method == "PATCH":
+                patches.append(body)
+                return None
+            return {"columns": [{"id": "Area", "fields": {"widgetOptions": widget_options_json}}]}
+
+        stderr = io.StringIO()
+        with patch.object(_mod, "api", fake_api), patch.dict(
+                os.environ, {"GRIST_API_KEY": "test"}), redirect_stderr(stderr):
+            exit_code = _mod.run([
+                "--doc", "doc", "--table", "Roadmap", "--column", "Area",
+                "--add", "id",
+            ])
+        return exit_code, stderr.getvalue(), patches
+
+    def test_string_choices_exit_1_and_no_patch(self):
+        exit_code, stderr, patches = self.run_with_stored(json.dumps({"choices": "code"}))
+        self.assertEqual(exit_code, 1)
+        self.assertIn("not a list", stderr)
+        self.assertNotIn("Traceback", stderr)
+        self.assertEqual(patches, [])
+
+    def test_non_object_widget_options_exit_1_and_no_patch(self):
+        exit_code, stderr, patches = self.run_with_stored(json.dumps("justastring"))
+        self.assertEqual(exit_code, 1)
+        self.assertIn("not a JSON object", stderr)
+        self.assertEqual(patches, [])
+
+    def test_invalid_json_widget_options_exit_1_and_no_patch(self):
+        exit_code, stderr, patches = self.run_with_stored("{not json")
+        self.assertEqual(exit_code, 1)
+        self.assertIn("not valid JSON", stderr)
+        self.assertEqual(patches, [])
 
 
 if __name__ == "__main__":

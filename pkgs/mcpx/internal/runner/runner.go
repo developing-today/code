@@ -141,6 +141,12 @@ type Options struct {
 	// ImportsOnDynamic selects what a computed dynamic import does:
 	// "warn", "fail" or "ignore" (script.importsOnDynamic).
 	ImportsOnDynamic string
+	// ImportsOnMissing controls unresolved package handling.
+	ImportsOnMissing string
+	// ImportsCrossProject controls whether foreign manifests stay isolated.
+	ImportsCrossProject string
+	// ImportsNetwork controls registry lookups for undeclared packages.
+	ImportsNetwork string
 	// ImportsTimeout bounds the graph computation.
 	ImportsTimeout time.Duration
 	Stdout, Stderr interface{ Write([]byte) (int, error) }
@@ -304,7 +310,7 @@ func npmrcReferencedVars(npmrc []byte) []string {
 			continue
 		}
 		name := text[start:j]
-		if c := name[0]; !(c == '_' || ('A' <= c && c <= 'Z') || ('a' <= c && c <= 'z')) {
+		if c := name[0]; c != '_' && ('A' > c || c > 'Z') && ('a' > c || c > 'z') {
 			continue
 		}
 		if !seen[name] {
@@ -647,7 +653,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			return nil, err
 		}
 		for _, w := range rep.Warnings() {
-			fmt.Fprintln(warnSink(opts), "mcpx:", w.String())
+			_, _ = fmt.Fprintln(warnSink(opts), "mcpx:", w.String())
 		}
 	}
 
@@ -687,16 +693,24 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				// or node run still serves as the graph oracle.
 				denoBin = found
 			}
+			resolveOpts := preflight.ResolveOptions{
+				Missing:      preflight.MissingMode(opts.ImportsOnMissing),
+				CrossProject: preflight.CrossProjectMode(opts.ImportsCrossProject),
+				Network:      opts.ImportsNetwork != "off",
+			}
+			if opts.Deps != nil {
+				resolveOpts.Explicit = append([]string(nil), opts.Deps.Packages...)
+			}
 			rep = preflight.CheckImportsResolved(ctx, denoBin, scriptPath,
 				preflight.ImportsMode(mode),
 				preflight.DynamicImportMode(opts.ImportsOnDynamic), timeout,
-				append(append([]string{}, rt.ConfigArgs...), depsFlags...), execDir)
+				append(append([]string{}, rt.ConfigArgs...), depsFlags...), execDir, resolveOpts)
 		}
 		if err := rep.Err(); err != nil {
 			return nil, err
 		}
 		for _, w := range rep.Warnings() {
-			fmt.Fprintln(warnSink(opts), "mcpx:", w.String())
+			_, _ = fmt.Fprintln(warnSink(opts), "mcpx:", w.String())
 		}
 	}
 
@@ -748,7 +762,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		stderrDone = make(chan struct{})
 		go func() {
 			defer close(stderrDone)
-			defer pr.Close()
+			defer func() { _ = pr.Close() }()
 			_ = logging.Stream(pr, opts.Log, logging.StreamOptions{
 				Enrich:      opts.Enrich,
 				Passthrough: passthrough,
@@ -758,7 +772,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			})
 		}()
 		defer func() {
-			pw.Close()
+			_ = pw.Close()
 			<-stderrDone
 		}()
 	} else if opts.Stderr != nil {
@@ -788,10 +802,12 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		if cmd.Process != nil {
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 			select {
-			case <-waitCh:
+			case recvErr := <-waitCh:
+				_ = recvErr
 			case <-time.After(defaults.ShutdownGrace):
 				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-				<-waitCh
+				recvErr := <-waitCh
+				_ = recvErr
 			}
 		}
 		res.Duration = time.Since(start)
@@ -1003,9 +1019,9 @@ func writeIfChanged(path, content string) error {
 		return err
 	}
 	tmp := f.Name()
-	defer os.Remove(tmp)
+	defer func() { _ = os.Remove(tmp) }()
 	if _, err := f.WriteString(content); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	if err := f.Close(); err != nil {
@@ -1040,17 +1056,17 @@ func textScanSource(opts Options, scriptPath string) string {
 	return scan
 }
 
-// writeLauncher emits a shim that imports the user's module and calls its
-// entry point if it has one.
-//
-// The shim is written beside the script so its relative import resolves, and
-// so the generated client next to the script is the one both files see.
-// LauncherNone, given as the launcher, means no shim at all: the script is
+// LauncherNone given as the launcher means no shim at all: the script is
 // handed to the runtime untouched. Nothing is installed, nothing is captured,
 // nothing wraps the error. It is the escape hatch for a script that wants the
 // runtime and none of the harness.
 const LauncherNone = "none"
 
+// writeLauncher emits a shim that imports the user's module and calls its
+// entry point if it has one.
+//
+// The shim is written beside the script so its relative import resolves, and
+// so the generated client next to the script is the one both files see.
 func writeLauncher(workDir, scriptPath, export string, ph Phases, captureConsole bool, opts Options) (string, error) {
 	if strings.TrimSpace(opts.Launcher) == LauncherNone {
 		return "", nil

@@ -42,7 +42,7 @@ func TestSearchSemanticDimensionMismatchFallsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewVectorIndex: %v", err)
 	}
-	defer idx.Close()
+	defer func() { _ = idx.Close() }()
 
 	reg := &Registry{
 		testTools: []ToolInfo{

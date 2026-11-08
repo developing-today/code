@@ -354,8 +354,8 @@ fn label_html(label: &Label) -> String {
 }
 
 async fn invite_handler(uri: axum::http::Uri) -> Response {
-    let page = Invite::from_query(uri.query().unwrap_or(""))
-        .and_then(|invite| invite_page(&invite));
+    let page =
+        Invite::from_query(uri.query().unwrap_or("")).and_then(|invite| invite_page(&invite));
     match page {
         Ok(body) => respond(StatusCode::OK, &body, None),
         Err(error) => respond(

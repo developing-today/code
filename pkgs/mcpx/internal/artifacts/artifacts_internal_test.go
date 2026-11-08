@@ -20,7 +20,7 @@ func TestDeleteExpiredRechecksExpiryAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	m, err := s.Put(strings.NewReader("renewed"), PutOptions{Name: "a.txt"})
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +76,7 @@ func TestEnsureLastTouchedConcurrentOpeners(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if _, err := db.Exec(`CREATE TABLE artifacts (id TEXT PRIMARY KEY)`); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestTouchStaleReaderDoesNotRegressRenewal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	m, err := s.Put(strings.NewReader("hello"), PutOptions{Name: "a.txt"})
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +179,7 @@ func TestTouchShorterWindowDoesNotRegressLongerRenewal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	m, err := s.Put(strings.NewReader("hello"), PutOptions{Name: "a.txt"})
 	if err != nil {
 		t.Fatal(err)

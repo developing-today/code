@@ -15,6 +15,8 @@
 #
 #   ./apply-config.sh            apply config.json next to this script
 #   DRY_RUN=1 ./apply-config.sh  print the mutations it would send
+# DRY_RUN accepts only "1" or "true" (case-insensitive) as dry-run;
+# "0", "false", "no", empty, and unset apply the config for real.
 #
 # Overrides: RFA_CONFIG (config path), RFA_GRAPHQL_URL (endpoint),
 # RFA_REPOS_DIR (clone root, default ./repos next to the config).
@@ -35,7 +37,7 @@ with open(config_path) as f:
     config = json.load(f)
 url = os.environ.get("GRAPHQL_URL") or config.get("graphqlUrl") or "http://127.0.0.1:6056/graphql"
 repos_dir = os.environ["REPOS_DIR"]
-dry_run = bool(os.environ.get("DRY_RUN"))
+dry_run = os.environ.get("DRY_RUN", "").strip().lower() in {"1", "true"}
 
 def gql(query, variables=None):
     body = {"query": query}

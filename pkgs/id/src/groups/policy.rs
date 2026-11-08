@@ -74,7 +74,9 @@ pub enum RemoveMode {
     Revoke,
     /// Reissue the grants to a successor.
     Transfer(TransferOpts),
-    /// Retain prior grants under their original grantor.
+    /// Retain prior grants under their original grantor. A re-add starts clean:
+    /// pre-removal grants the account made or received do not revive when it is
+    /// re-added (issue #169); they must be re-issued.
     KeepPrior,
     /// Re-anchor grants at the group.
     ReassignToGroup,
@@ -214,6 +216,8 @@ pub enum Removal {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 pub enum Delegation {
     /// Legacy preference to keep grants made before a removal.
+    /// A re-add starts clean: pre-removal grants the account made or received do not revive
+    /// when it is re-added (issue #169); they must be re-issued.
     #[value(name = "keep_prior")]
     KeepPrior,
     /// Legacy preference to cascade a grant when its grantor loses the scope. The default.

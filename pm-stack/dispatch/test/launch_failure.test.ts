@@ -225,8 +225,8 @@ describe("compensateOrphanedIssue (#4917)", () => {
         throw new Error("github down");
       },
     };
-    await expect(
-      compensateOrphanedIssue(broken, "developing-today/code", 6, "enqueue", new Error("x")),
-    ).resolves.toBe("x");
+    await expect(compensateOrphanedIssue(broken, "developing-today/code", 6, "enqueue", new Error("x"))).resolves.toBe(
+      "x",
+    );
   });
 });

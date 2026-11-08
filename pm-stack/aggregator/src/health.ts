@@ -17,6 +17,7 @@
 // - In fixtures mode there are no live probes to make: every service
 //   reports "fixtures", which is also the degraded-state test fixture.
 import type { PendingCommentCounts } from "./comments.ts";
+import type { ConflictInbox } from "./conflicts.ts";
 import type { Config } from "./config.ts";
 import { unreportedCheckoutDrift, type CheckoutDrift } from "./checkout-drift.ts";
 import {
@@ -30,7 +31,13 @@ import {
 import type { GhItem, ProvenanceDetail, RefKey } from "./model.ts";
 import { PAGES } from "./pages.ts";
 import { buildServices, type ServiceDef } from "./topology.ts";
-import { fetchRfaState, rfaHealthDown, rfaHealthFacet, type RfaHealthFacet, type RfaState } from "./sources/ready-for-agent.ts";
+import {
+  fetchRfaState,
+  rfaHealthDown,
+  rfaHealthFacet,
+  type RfaHealthFacet,
+  type RfaState,
+} from "./sources/ready-for-agent.ts";
 
 /** Orchestration cadence: hourly; next run is an expectation, not a promise. */
 const ORCHESTRATION_CADENCE_MS = 3_600_000;
@@ -150,6 +157,15 @@ export function summarizeItemCoverage(items: Map<RefKey, GhItem>): ItemsCoverage
   return { resolvedLive, fixture, total, ratio: total ? resolvedLive / total : null };
 }
 
+/** The conflict-inbox count as the health surface carries it (#1282). */
+export interface ConflictsHealth {
+  total: number;
+  byClass: Array<{ classId: string; label: string; count: number }>;
+  /** Oldest live disagreement in whole days, or null when none is dated. */
+  oldestAgeDays: number | null;
+  generatedAt: string;
+}
+
 export interface HealthView {
   /** The aggregator process itself is up if it assembled this view. */
   status: "ok";
@@ -193,6 +209,10 @@ export interface HealthView {
   /** Dashboard comment loops (#1145): pending triage/posting counts,
    *  so an unworked comment queue is visible on /health. */
   comments: PendingCommentCounts;
+  /** Source-conflict inbox (#1282 slice 1): how many live disagreements the
+   *  facets report, so a growing conflict backlog is itself visible. Null
+   *  when the caller did not assemble the inbox (older call sites/tests). */
+  conflicts: ConflictsHealth | null;
   /** ready-for-agent harness facet (#1203): live GraphQL state —
    *  registered repositories, backend readiness, work-item counts —
    *  from src/sources/ready-for-agent.ts, not just the topology
@@ -286,7 +306,6 @@ function feedSections(feed: FleetFeed | null, now: number): FeedSectionHealth[] 
     section("attention", undefined, true),
     section("orchestration", feed.orchestration?.generatedAt, feed.orchestration !== undefined),
     section("dns", feed.dns?.generatedAt, feed.dns !== undefined),
-    section("julesSummary", undefined, feed.julesSummary !== undefined),
     section("registry", undefined, feed.registry !== undefined),
     section("projects", undefined, feed.projects !== undefined),
     section("coverage", undefined, feed.coverage !== undefined),
@@ -314,6 +333,9 @@ export interface HealthInputs {
   detail?: ProvenanceDetail;
   itemsCoverage?: ItemsCoverage | null;
   comments?: PendingCommentCounts;
+  /** Source-conflict inbox (#1282 slice 1) — counted on the stack health
+   *  surface so the backlog is visible where the stack's state already is. */
+  conflicts?: ConflictInbox | null;
 }
 
 export interface HealthDeps {
@@ -361,7 +383,11 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
                 detail: `feed generatedAt ${feed.generatedAt} is >60s in the future — never fresh`,
               }
             : feedAgeMs !== null && feedAgeMs >= FEED_STALE_MS
-              ? { state: "stale", ok: false, detail: `feed ${ageMsText(feedAgeMs)} — at or past the 5m freshness threshold` }
+              ? {
+                  state: "stale",
+                  ok: false,
+                  detail: `feed ${ageMsText(feedAgeMs)} — at or past the 5m freshness threshold`,
+                }
               : { state: "up", ok: true, detail: `feed ${feedAgeMs !== null ? ageMsText(feedAgeMs) : ""}`.trim() };
     } else if (def.probe === "section") {
       if (!diagnosis) {
@@ -481,5 +507,13 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
     facets: inputs.detail ?? null,
     itemsCoverage: inputs.itemsCoverage ?? null,
     comments: inputs.comments ?? { pendingMessages: 0, pendingGithub: 0, total: 0 },
+    conflicts: inputs.conflicts
+      ? {
+          total: inputs.conflicts.total,
+          byClass: inputs.conflicts.byClass,
+          oldestAgeDays: inputs.conflicts.oldestAgeDays,
+          generatedAt: inputs.conflicts.generatedAt,
+        }
+      : null,
   };
 }

@@ -87,9 +87,7 @@ describe("consistent not-found semantics over HTTP (#1211)", () => {
     const body = await item.text();
 
     expect(item.status).toBe(404);
-    expect(body).toContain(
-      `<code>&lt;img src=x onerror=&quot;alert(document.domain)&quot;&gt;&amp;</code>`,
-    );
+    expect(body).toContain(`<code>&lt;img src=x onerror=&quot;alert(document.domain)&quot;&gt;&amp;</code>`);
     expect(body).not.toContain("<img");
   });
 

@@ -234,3 +234,70 @@ describe("AutoSaveManager.onNewVersion vs a pending rate-limit retry (#2466)", (
     expect(mgr.state).toBe("idle");
   });
 });
+
+describe("AutoSaveManager cancel during an in-flight save (#2437)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("schedules no retry when a rate-limited save completes after cancel()", async () => {
+    const save = deferredSaveFn();
+    const mgr = new AutoSaveManager(save.fn);
+
+    mgr.saveNow();
+    await flush();
+    expect(save.calls).toBe(1);
+    expect(mgr.state).toBe("saving");
+
+    mgr.cancel();
+    expect(mgr.state).toBe("idle");
+    const indicatorWrites = vi.spyOn(mgr, "updateIndicator");
+
+    save.resolveNext({ ok: false, retryAfterMs: 200 });
+    await flush();
+    expect(mgr.state).toBe("idle"); // not "rate-limited" — the completion was dropped
+    expect(indicatorWrites).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(save.calls).toBe(1); // the retry never fired a save for the closed editor
+  });
+
+  it("runs no follow-up when an ok save with an edit during flight completes after cancel()", async () => {
+    const save = deferredSaveFn();
+    const mgr = new AutoSaveManager(save.fn);
+
+    mgr.saveNow();
+    await flush();
+    expect(save.calls).toBe(1);
+
+    mgr.onContentChange(); // edit during the flight — would normally coalesce a follow-up
+    mgr.cancel();
+
+    save.resolveNext({ ok: true });
+    await flush();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(save.calls).toBe(1); // no follow-up save after cancel
+    expect(mgr.state).toBe("idle");
+  });
+
+  it("runs no follow-up when a generically failing save with a coalesced edit completes after cancel()", async () => {
+    const save = deferredSaveFn();
+    const mgr = new AutoSaveManager(save.fn);
+
+    mgr.saveNow();
+    await flush();
+    expect(save.calls).toBe(1);
+
+    mgr.onContentChange();
+    mgr.cancel();
+
+    save.resolveNext({ ok: false });
+    await flush();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(save.calls).toBe(1); // the #1616 follow-up must not run for a cancelled manager
+    expect(mgr.state).toBe("idle"); // not "error"/"unsaved" — no state churn after cancel
+  });
+});

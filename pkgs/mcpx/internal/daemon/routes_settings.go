@@ -878,7 +878,7 @@ func (s *Server) handleAdaptersAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := req.Spec.Validate(); err != nil {
+	if err := req.Validate(); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -913,14 +913,14 @@ func (s *Server) handleAdaptersAdd(w http.ResponseWriter, r *http.Request) {
 	// (Codex review, PR #2565). A replacement edits the file that
 	// defines the adapter, like remove does.
 	path := files[0]
-	if existing, found, err := config.AdapterDefinedIn(files, req.Spec.Name); err != nil {
+	if existing, found, err := config.AdapterDefinedIn(files, req.Name); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	} else if found {
 		if !req.Replace {
 			writeErr(w, http.StatusConflict, fmt.Errorf(
 				"%s already declares adapter %q; remove it first or pick another name",
-				existing, req.Spec.Name))
+				existing, req.Name))
 			return
 		}
 		path = existing
@@ -941,19 +941,19 @@ func (s *Server) handleAdaptersAdd(w http.ResponseWriter, r *http.Request) {
 		// PR #2565). The adapter-generated exemption applies only to
 		// this adapter's own exact name, which a replace legitimately
 		// redefines.
-		want := config.SanitizeNamespace(req.Spec.Name)
+		want := config.SanitizeNamespace(req.Name)
 		for name, srv := range cfg.MCPServers {
 			if srv == nil || config.SanitizeNamespace(name) != want {
 				continue
 			}
-			if name == req.Spec.Name {
+			if name == req.Name {
 				if _, isAdapter := srv.Env["MCPX_ADAPTER_DECLARATION_SHA256"]; isAdapter {
 					continue
 				}
 			}
 			writeErr(w, http.StatusConflict, fmt.Errorf(
 				"%q resolves to namespace %q, already used by configured server %q; pick another adapter name",
-				req.Spec.Name, want, name))
+				req.Name, want, name))
 			return
 		}
 	}
@@ -967,7 +967,7 @@ func (s *Server) handleAdaptersAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"name": req.Spec.Name, "written": path, "added": added, "removed": removed,
+		"name": req.Name, "written": path, "added": added, "removed": removed,
 	})
 }
 

@@ -218,7 +218,7 @@ func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
 	if hc, ok := conn.(*handoffConn); ok {
 		conn = hc.Conn
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	uc, ok := conn.(*net.UnixConn)
 	if !ok || rw.Reader.Buffered() > 0 {
 		return
@@ -260,13 +260,13 @@ func (s *Server) handOver(c *net.UnixConn) error {
 	}
 	tcpDup, err := tl.file()
 	if err != nil {
-		unixDup.Close()
+		_ = unixDup.Close()
 		return err
 	}
 	// The successor holds its own copies once it has them, and the duplicates
 	// are only needed here for putting the listeners back.
-	defer unixDup.Close()
-	defer tcpDup.Close()
+	defer func() { _ = unixDup.Close() }()
+	defer func() { _ = tcpDup.Close() }()
 
 	if err := exchange(c, kindListener, takeoverListener{Network: "unix"}, unixDup); err != nil {
 		return err
@@ -499,7 +499,7 @@ func (s *Server) restoreHTTP(unixF, tcpF *os.File, passing []*handoffConn) error
 	tl, err := net.FileListener(tcpF)
 	if err != nil {
 		s.logger.Printf("takeover: restoring the tcp listener: %v", err)
-		ul.Close()
+		_ = ul.Close()
 		s.releasePassed(back)
 		return err
 	}
@@ -603,7 +603,7 @@ func (s *Server) TakeOver() (*Handover, error) {
 	}
 	uc := conn.(*net.UnixConn)
 	fail := func(err error) (*Handover, error) {
-		uc.Close()
+		_ = uc.Close()
 		return nil, err
 	}
 	_ = uc.SetDeadline(time.Now().Add(timeout))
@@ -617,7 +617,7 @@ func (s *Server) TakeOver() (*Handover, error) {
 	if err != nil {
 		return fail(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != takeoverMediaType {
 		return fail(fmt.Errorf("daemon refused takeover: %s", resp.Status))
 	}
@@ -703,7 +703,7 @@ func (s *Server) commitTakeover(uc *net.UnixConn, in *takeoverIn, endFd *os.File
 	fail := func(err error) (*Handover, error) {
 		in.close()
 		_ = sendFrame(uc, takeoverFrame{Kind: kindNack, Error: err.Error()}, nil)
-		uc.Close()
+		_ = uc.Close()
 		return nil, err
 	}
 	if in.state == nil || in.state.Endpoint == "" {
@@ -724,19 +724,19 @@ func (s *Server) commitTakeover(uc *net.UnixConn, in *takeoverIn, endFd *os.File
 	closeFile(tcpF)
 	delete(in.listeners, "tcp")
 	if err != nil {
-		ul.Close()
+		_ = ul.Close()
 		return fail(err)
 	}
 	if err := attachPipes(in); err != nil {
-		ul.Close()
-		tl.Close()
+		_ = ul.Close()
+		_ = tl.Close()
 		return fail(err)
 	}
 	ad, err := s.reg.Adopt(in.pools)
 	if err != nil {
 		closePipes(in.pools)
-		ul.Close()
-		tl.Close()
+		_ = ul.Close()
+		_ = tl.Close()
 		return fail(err)
 	}
 	// The predecessor closed its tsnet node before kindEnd (see
@@ -747,16 +747,16 @@ func (s *Server) commitTakeover(uc *net.UnixConn, in *takeoverIn, endFd *os.File
 	// daemon was configured for is the failure this prevents.
 	if err := s.listenTSNet(); err != nil {
 		ad.Abort()
-		ul.Close()
-		tl.Close()
+		_ = ul.Close()
+		_ = tl.Close()
 		return fail(fmt.Errorf("takeover: restoring the tsnet listener: %w", err))
 	}
 	if err := sendFrame(uc, takeoverFrame{Kind: kindCommit}, nil); err != nil {
 		ad.Abort()
-		ul.Close()
-		tl.Close()
+		_ = ul.Close()
+		_ = tl.Close()
 		in.close()
-		uc.Close()
+		_ = uc.Close()
 		return nil, err
 	}
 	_ = uc.SetDeadline(time.Time{})

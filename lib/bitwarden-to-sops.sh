@@ -367,7 +367,19 @@ if [ ! -f "$TARGET_FILE" ]; then
     fi
   done <<<"$PAIRS"
 
-  sops -e --filename-override "$TARGET_FILE" <(echo -n "$TMP_YAML") >"$TARGET_FILE"
+  # Encrypt to a temp file beside the target and rename it into place only
+  # after sops exits 0 with non-empty output (#6555). Writing with
+  # `>"$TARGET_FILE"` created the target before sops ran, so a failed first
+  # encryption left a zero-byte file behind; every later run then took the
+  # `sops set` update branch below instead of retrying this init branch.
+  # Temp-then-rename follows lib/bws-to-sops.sh.
+  TMP_ENC="$(mktemp "$(dirname "$TARGET_FILE")/.bitwarden-to-sops.XXXXXX")"
+  if ! sops -e --filename-override "$TARGET_FILE" <(echo -n "$TMP_YAML") >"$TMP_ENC" || [ ! -s "$TMP_ENC" ]; then
+    rm -f "$TMP_ENC"
+    echo "Error: initial SOPS encryption failed; $TARGET_FILE was not created." >&2
+    exit 1
+  fi
+  mv "$TMP_ENC" "$TARGET_FILE"
   echo "Created and encrypted $TARGET_FILE successfully."
 
 else

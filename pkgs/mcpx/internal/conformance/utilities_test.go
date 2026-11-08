@@ -561,7 +561,7 @@ func TestUtilitiesClient(t *testing.T) {
 		o := clientOpts()
 		o.Preference = mcpclient.ForceLegacy
 		if c, _ := mcpclient.NewWithOptions(ctx, p, o); c != nil {
-			c.Close()
+			_ = c.Close()
 		}
 		if n := len(p.sentMethod("notifications/cancelled")); n != 0 {
 			t.Errorf("cancelled its initialize")

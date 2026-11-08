@@ -48,6 +48,7 @@ func (p *Pool) Watch(ctx context.Context, rs config.ResolvedScope, uri string) (
 	p.watched[uri]++
 	p.watchKey = key
 	p.watchRoot = rs.Root
+	p.watchCwd = rs.Cwd
 	p.watchMu.Unlock()
 	if err := p.subscribeOn(ctx, lease.inst, uri); err != nil {
 		p.unwatch(uri)
@@ -151,6 +152,7 @@ func (p *Pool) monitor(in *Instance) {
 	wanted := len(p.watched) > 0
 	key := p.watchKey
 	root := p.watchRoot
+	cwd := p.watchCwd
 	p.watchMu.Unlock()
 	if closed || !wanted {
 		return
@@ -158,14 +160,14 @@ func (p *Pool) monitor(in *Instance) {
 	// Acquire starts the replacement, and start() subscribes it. A failure
 	// here is the pool's ordinary start failure, recorded as lastErr; the
 	// next caller that reaches this server retries it and resubscribes.
-	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: key, Root: root})
+	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: key, Root: root, Cwd: cwd})
 	if err == nil {
 		lease.Release()
 	}
 }
 
-func (in *Instance) hasSubscriptions() bool {
-	in.subMu.Lock()
-	defer in.subMu.Unlock()
-	return len(in.subscribed) > 0
+func (i *Instance) hasSubscriptions() bool {
+	i.subMu.Lock()
+	defer i.subMu.Unlock()
+	return len(i.subscribed) > 0
 }

@@ -54,7 +54,7 @@ func (c *keepAliveCaller) post(body string) (port string, reused bool, out strin
 	if err != nil {
 		return "", false, "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
 	if info.Conn != nil {
 		_, port, _ = net.SplitHostPort(info.Conn.LocalAddr().String())

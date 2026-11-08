@@ -384,10 +384,12 @@ in
         # The binary resolves client/ and node_modules/ relative to itself, so
         # wrap rather than symlink into bin/.
         makeWrapper "$out/libexec/t3/t3" "$out/bin/t3" \
-          --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath [
-            stdenv.cc.cc.lib
-            zlib
-          ]}"
+          --prefix LD_LIBRARY_PATH : "${
+            lib.makeLibraryPath [
+              stdenv.cc.cc.lib
+              zlib
+            ]
+          }"
         runHook postInstall
       '';
 

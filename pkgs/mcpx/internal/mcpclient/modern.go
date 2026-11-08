@@ -148,7 +148,7 @@ func (c *Client) elicitModeDeclared(mode string) bool {
 	case "", "form":
 		return true
 	case "url":
-		return h != nil && (c.Era == EraModern || spec.AtOrAfter("2025-11-25")(c.Negotiated))
+		return h != nil && (c.modernEra() == EraModern || spec.AtOrAfter("2025-11-25")(c.negotiatedVersion()))
 	}
 	return false
 }
@@ -614,9 +614,13 @@ func (c *Client) cancelled(method string, id int64, cause error) {
 // mirrorsHeaders reports whether this connection must mirror x-mcp-header
 // parameters: modern, over HTTP. stdio clients MAY ignore the annotations,
 // and a legacy revision never defined them.
+//
+// The atomic modern mirror, not c.Era: CallTool reaches this on the
+// caller's goroutine while a concurrent call's recovery (finishLegacy)
+// may be writing Era. That pair is the data race #2842 reproduced.
 func (c *Client) mirrorsHeaders() bool {
 	_, isHTTP := c.t.(*HTTPTransport)
-	return isHTTP && c.Era == EraModern
+	return isHTTP && c.modern.Load()
 }
 
 // Warning is something mcpx noticed about a server that is not an error.

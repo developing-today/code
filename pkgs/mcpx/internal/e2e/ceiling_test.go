@@ -98,7 +98,7 @@ func TestV1CannotRaiseAutonomyAboveTheCeiling(t *testing.T) {
 			t.Fatal(err)
 		}
 		b, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		var doc map[string]any
 		_ = json.Unmarshal(b, &doc)
 		if resp.StatusCode != http.StatusOK {
@@ -117,7 +117,7 @@ func TestV1CannotRaiseAutonomyAboveTheCeiling(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if !strings.Contains(string(b), `"value":"propose"`) {
 		t.Errorf("GET autonomy.max should report propose: %s", b)
 	}
@@ -134,7 +134,7 @@ func TestTheCeilingCannotBeRaisedAtRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	var put map[string]any
 	_ = json.Unmarshal(b, &put)
 	if put["applied"] != false || put["restartRequired"] != true {
@@ -263,7 +263,7 @@ func TestRepairCannotRaiseAutonomyAboveTheCeiling(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	var got callErrorDoc
 	if err := json.Unmarshal(b, &got); err != nil || resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status %d: %v\n%s", resp.StatusCode, err, b)

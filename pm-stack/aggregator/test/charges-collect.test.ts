@@ -3,7 +3,13 @@
 // and the packet's replay acceptance (one row per charge, rerun
 // adds nothing and re-surfaces nothing).
 import { describe, expect, test } from "bun:test";
-import { filterNewUnmatched, mergeChargeRows, parseChargeCandidates, unmatchedKey, extractCardMask } from "../src/charges-collect.ts";
+import {
+  filterNewUnmatched,
+  mergeChargeRows,
+  parseChargeCandidates,
+  unmatchedKey,
+  extractCardMask,
+} from "../src/charges-collect.ts";
 import { matchCharges, type ChargeCandidate } from "../src/charges-match.ts";
 import type { ChargeRow } from "../src/model.ts";
 

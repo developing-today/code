@@ -141,7 +141,7 @@ func Open(path string) (*DB, error) {
 		return nil, err
 	}
 	if err := db.Ping(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("opening %s: %w", path, err)
 	}
 	return &DB{db: db, path: path, cols: map[string]map[string]bool{}}, nil
@@ -172,7 +172,7 @@ func (d *DB) has(table, column string) bool {
 					set[name] = true
 				}
 			}
-			rows.Close()
+			_ = rows.Close()
 		}
 		d.cols[table] = set
 	}
@@ -345,7 +345,7 @@ func (d *DB) group(expr string, since, until time.Time, limit int) ([]Group, err
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Group
 	for rows.Next() {
 		var g Group
@@ -357,7 +357,7 @@ func (d *DB) group(expr string, since, until time.Time, limit int) ([]Group, err
 	return trim(out, limit), rows.Err()
 }
 
-// Busiest returns the sessions with the most messages.
+// Session is one opencode session row: identity, title, agent and model.
 type Session struct {
 	ID       string    `json:"id"`
 	Title    string    `json:"title"`
@@ -393,7 +393,7 @@ func (d *DB) Busiest(since, until time.Time, limit int) ([]Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Session
 	for rows.Next() {
 		var s Session
@@ -410,7 +410,7 @@ func (d *DB) Busiest(since, until time.Time, limit int) ([]Session, error) {
 	return out, rows.Err()
 }
 
-// Activity is a count per hour, for seeing when work happens.
+// Bucket is an hourly count of sessions and messages, for seeing when work happens.
 type Bucket struct {
 	When     time.Time `json:"when"`
 	Sessions int64     `json:"sessions"`
@@ -430,7 +430,7 @@ func (d *DB) Activity(since, until time.Time, limit int) ([]Bucket, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Bucket
 	for rows.Next() {
 		var ms, n int64

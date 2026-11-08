@@ -1,9 +1,9 @@
 # Modes
 
 "Mode" is three questions wearing one word, and most confusion about
-mcpx is two of them being answered at once. How does a *client* — the
+mcpx is two of them being answered at once. How does a _client_ — the
 CLI, a script, the plugin — reach a daemon? How does the daemon reach
-an upstream *server*? And in what form does mcpx itself run: a daemon
+an upstream _server_? And in what form does mcpx itself run: a daemon
 in the background, a process a host started, or no daemon at all?
 This page takes them in that order. The knobs themselves live on the
 [configuration page](./configuration.md); this page is about the
@@ -74,7 +74,7 @@ process and talks JSON-RPC down its pipes; there is nothing else a
 spawned process could offer. A server block with a `url` is spoken
 to over **Streamable HTTP** (the setting is `transport: "http"`,
 and it is filled in from the `url` when left blank). Replies from a
-Streamable HTTP server may *arrive* as a server-sent-events stream —
+Streamable HTTP server may _arrive_ as a server-sent-events stream —
 that is a property of the response, not a second transport.
 
 The `/v1` API also accepts `transport: "sse"` when adding a server.

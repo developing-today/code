@@ -303,6 +303,16 @@ type Server struct {
 	// means the standalone behaviour: a private in-memory store.
 	TaskStore *taskStore
 
+	// TaskRetention, when set, supplies the current tasks.ttl /
+	// tasks.maxAge retention settings and is consulted on every
+	// task-store access, so a /v1/settings change reaches MCP task
+	// traffic without an intervening /v1 task request (#6247). A
+	// function, because the settings are hot: a value copied here
+	// would never follow a change (the MaxCompletions pattern). The
+	// daemon wires it when it injects its store; nil keeps the
+	// store's construction-time configuration.
+	TaskRetention func() (ttl, maxAge time.Duration)
+
 	// TaskAudit, when set, is the audit seam a private task store
 	// (the TaskStore == nil path in tasks()) is wired with, so a
 	// standalone server's task lifecycle records reach a log instead
@@ -379,8 +389,16 @@ func (s *Server) WithExtras(extras []Extra) *Server {
 		// Notify comes along. Dropping it silently turned off every push
 		// capability the moment a single extra tool existed, and a client
 		// cannot detect a server that declared nothing.
-		Notify:             s.Notify,
-		Ask:                s.Ask,
+		Notify: s.Notify,
+		Ask:    s.Ask,
+		// The task-store wiring comes along (#6247): dropping it here
+		// silently gave the extras server a private store and a nil
+		// retention provider, so the production MCPServer() path —
+		// which builds extras after injecting the daemon's store —
+		// lost both the shared store (#1555) and retention refresh.
+		TaskStore:          s.TaskStore,
+		TaskRetention:      s.TaskRetention,
+		TaskAudit:          s.TaskAudit,
 		ExtrasOnly:         s.ExtrasOnly,
 		OwnInstructions:    s.OwnInstructions,
 		Instance:           s.Instance,
@@ -1379,7 +1397,6 @@ func malformedMeta(req request) *response {
 	return nil
 }
 
-// negotiate picks a protocol version.
 // Supported are the protocol versions mcpx actually implements, newest first.
 //
 // Both eras. The legacy revisions negotiate once through an initialize
@@ -1394,6 +1411,7 @@ func malformedMeta(req request) *response {
 // 2025-03-26 replaced it, and 2026-07-28 says new implementations SHOULD NOT
 // adopt it. A 2024-11-05 client speaking Streamable HTTP is served; one that
 // only knows HTTP+SSE is not.
+// negotiate picks a protocol version.
 var Supported = spec.Revisions
 
 // ModernLatest is the newest per-request-metadata revision mcpx serves.
@@ -2269,7 +2287,7 @@ func (s *Server) sessionFor(r *http.Request, req request) (*Conn, string) {
 		// A modern request is never bound to a legacy session: 2026-07-28
 		// has no sessions and says to ignore the header, and binding it
 		// would hand it that client's pending questions and version.
-		if c, ok := s.session(id); ok && !(modern && c.legacy) {
+		if c, ok := s.session(id); ok && (!modern || !c.legacy) {
 			return c, ""
 		}
 	}

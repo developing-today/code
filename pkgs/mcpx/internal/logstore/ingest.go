@@ -110,7 +110,7 @@ func (s *Store) ingestFile(path string, res *IngestResult) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err := f.Seek(start, io.SeekStart); err != nil {
 		return 0, err
 	}
@@ -119,12 +119,12 @@ func (s *Store) ingestFile(path string, res *IngestResult) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	stmt, err := tx.Prepare(insertSQL)
 	if err != nil {
 		return 0, err
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	rd := bufio.NewReaderSize(f, 128*1024)
 	offset := start
@@ -178,7 +178,7 @@ func fingerprint(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	line, err := bufio.NewReaderSize(f, 64*1024).ReadBytes('\n')
 	if err != nil || len(line) == 0 {
 		return "", nil
@@ -208,7 +208,7 @@ func (s *Store) renameFile(from, to string) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.Exec(`DELETE FROM files WHERE path = ?`, to); err != nil {
 		return err
 	}
@@ -226,7 +226,7 @@ func (s *Store) forget(path string) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.Exec(`DELETE FROM records WHERE file = ?`, path); err != nil {
 		return err
 	}

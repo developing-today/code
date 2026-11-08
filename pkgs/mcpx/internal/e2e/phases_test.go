@@ -18,7 +18,7 @@ func TestASnippetRunsItsBeforeAndOnSuccessPhases(t *testing.T) {
 	out := e.run("exec", "--before", `console.log("phase-before")`,
 		"--on-success", `console.log("phase-ok")`, `console.log("the-body")`)
 	b, body, ok := strings.Index(out, "phase-before"), strings.Index(out, "the-body"), strings.Index(out, "phase-ok")
-	if b < 0 || body < 0 || ok < 0 || !(b < body && body < ok) {
+	if b < 0 || body < 0 || ok < 0 || (b >= body || body >= ok) {
 		t.Fatalf("want before, body, onSuccess in that order:\n%s", out)
 	}
 }

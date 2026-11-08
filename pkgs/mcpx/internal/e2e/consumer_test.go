@@ -259,7 +259,7 @@ func TestCatalogHistoryIsServed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	var doc struct {
 		Tools   []string       `json:"tools"`
@@ -282,7 +282,7 @@ func TestDiagnoseOverTheSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	var doc struct {
 		Fatal       bool `json:"fatal"`

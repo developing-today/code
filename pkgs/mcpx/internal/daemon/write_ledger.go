@@ -177,7 +177,7 @@ func (l *WriteLedger) saveLocked(writes map[string]unknownWriteRecord) error {
 		return fmt.Errorf("create unknown-write ledger temp file: %w", err)
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("set unknown-write ledger permissions: %w", err)

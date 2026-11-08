@@ -55,7 +55,7 @@ use super::replication::{
     ReplicationCursor, ReplicationError, ReplicationKind, ReplicationTracker, SESSION_NONCE_BYTES,
     SignedReplicationEnvelope, advance_cursor, chain_base_cursor,
 };
-use super::{JournalEntry, MAX_JOURNAL_VERSION};
+use super::{JOURNAL_VERSION, JournalEntry, MAX_JOURNAL_VERSION};
 
 /// File name of the committed replica journal inside the receiver's
 /// directory: the exact JSONL bytes the writer's journal stores.
@@ -275,12 +275,17 @@ impl DurableReceiver {
     /// snapshot either matches the committed journal (and recommits
     /// identical bytes) or replaces it wholesale.
     pub fn begin_session(&mut self, session_nonce: [u8; SESSION_NONCE_BYTES]) {
-        self.session = Some(ReplicationTracker::new(
+        // A stored header version outside the supported range cannot be
+        // repaired by a fresh session: leave the session closed so every
+        // frame is refused with `NoSession` instead of pinning a tracker
+        // whose chain base no frame can continue.
+        self.session = ReplicationTracker::new(
             &self.world_id,
             self.pinned_source,
-            self.header_version.unwrap_or(1),
+            self.header_version.unwrap_or(JOURNAL_VERSION),
             session_nonce,
-        ));
+        )
+        .ok();
         self.session_started = false;
         self.staged = None;
     }

@@ -80,7 +80,7 @@ func upgradedServer(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(b), "repo") {
 		t.Fatalf("catalog history should record repo becoming required:\n%s", b)
@@ -108,7 +108,7 @@ func postCall(t *testing.T, c *http.Client, path, body string) (int, []byte) {
 	if err != nil {
 		t.Fatalf("POST %s: %v", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, b
 }
@@ -152,7 +152,7 @@ func TestARefusedCallCarriesTheSchemaChangeOverV1(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ = io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	var taskDoc callErrorDoc
 	if err := json.Unmarshal(b, &taskDoc); err != nil || !hasRepoChange(taskDoc.Diagnostics) {
 		t.Errorf("a task's failure should carry the same diagnostics (%v):\n%s", err, b)

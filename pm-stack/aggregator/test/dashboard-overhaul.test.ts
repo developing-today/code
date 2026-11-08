@@ -487,3 +487,16 @@ describe("attention sections (#1444)", () => {
     expect(sections.sessions).toContain('id="sessions"');
   });
 });
+
+describe("tier item with a non-GitHub ref (phase-b regression, 2026-11-05)", () => {
+  test("a goal-id ref renders as text, not a GitHub link, and does not throw", async () => {
+    const html = await page([{ ...BASE, ref: "goal_b647ff5c92f5" }]);
+    expect(html).toContain("Link the Citi accounts in Plaid");
+    expect(html).toContain("<code>goal_b647ff5c92f5</code>");
+    expect(html).not.toContain("github.com/goal_b647ff5c92f5");
+  });
+  test("a GitHub ref still links the card title", async () => {
+    const html = await page([{ ...BASE, ref: "developing-today/code#812" }]);
+    expect(html).toContain('href="https://github.com/developing-today/code/issues/812"');
+  });
+});

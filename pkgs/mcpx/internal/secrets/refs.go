@@ -708,7 +708,7 @@ func parseTarget(toks []lexToken, i int, out map[string]bool, angles []int) int 
 		// text spells a delimiter (the string "}", a template ",")
 		// is a property key, never structure — the same rule
 		// skipExpr follows.
-		for i < len(toks) && !(toks[i].kind == tPunct && toks[i].text == "}") {
+		for i < len(toks) && (toks[i].kind != tPunct || toks[i].text != "}") {
 			switch {
 			case toks[i].kind == tPunct && toks[i].text == ",":
 				i++
@@ -746,7 +746,7 @@ func parseTarget(toks []lexToken, i int, out map[string]bool, angles []int) int 
 		return i
 	case toks[i].text == "[":
 		i++
-		for i < len(toks) && !(toks[i].kind == tPunct && toks[i].text == "]") {
+		for i < len(toks) && (toks[i].kind != tPunct || toks[i].text != "]") {
 			if toks[i].kind == tPunct && toks[i].text == "," {
 				i++
 				continue
@@ -954,11 +954,11 @@ func typeAliasMask(toks []lexToken) []bool {
 				// itself sit at a statement boundary.
 				if i > 1 {
 					q := toks[i-2]
-					if !(q.kind == tPunct && (q.text == ";" || q.text == "{" || q.text == "}")) {
+					if q.kind != tPunct || (q.text != ";" && q.text != "{" && q.text != "}") {
 						continue
 					}
 				}
-			} else if !(p.kind == tPunct && (p.text == ";" || p.text == "{" || p.text == "}")) {
+			} else if p.kind != tPunct || (p.text != ";" && p.text != "{" && p.text != "}") {
 				continue
 			}
 		}
@@ -1120,7 +1120,7 @@ func skipDeclarator(toks []lexToken, i int, forHead bool, angles []int) int {
 			return i
 		}
 		if forHead && depth == 0 && t.kind == tIdent && (t.text == "in" || t.text == "of") &&
-			!(i > 0 && toks[i-1].text == ".") {
+			(i <= 0 || toks[i-1].text != ".") {
 			return i
 		}
 		if t.kind != tPunct {

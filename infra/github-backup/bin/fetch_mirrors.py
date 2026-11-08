@@ -13,14 +13,23 @@ import json, os, subprocess, sys, time
 from datetime import date, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ghb_common import load_config, backup_root, mirror_path, valid_mirror
+from ghb_common import load_config, backup_root, mirror_path, valid_mirror, load_plan, load_state, report_problems
 import manifest as manifest_mod
 
 COALESCE_S = 12 * 3600
 
 
 def record_failure_day(days, today):
-    """Keep only the trailing consecutive calendar-day failure streak."""
+    """Keep only the trailing consecutive calendar-day failure streak.
+
+    A non-list `days` is a malformed state entry (#6637): fail as a
+    single named error instead of escaping as a raw TypeError/KeyError
+    from the streak walk or the in-place writes below.
+    """
+    if not isinstance(days, list):
+        raise ValueError(
+            f"fail_days must be a list of ISO dates, got {type(days).__name__}"
+        )
     today_date = date.fromisoformat(today)
     start = len(days) - 1
     try:
@@ -47,6 +56,35 @@ def record_failure_day(days, today):
     days[:] = [today]
 
 
+def _repo_state(state, repo):
+    """The per-repo state dict, sanitized (#6637).
+
+    A pre-existing non-dict entry (or a non-list fail_days) is poison
+    from a wrong-shape state.json: report it, replace it with a clean
+    entry, and let the fetch for this repo — and every other repo —
+    proceed.
+    """
+    st = state.get(repo)
+    if not isinstance(st, dict):
+        if repo in state:
+            print(
+                f"github-backup: state entry for {repo!r} is "
+                f"{type(st).__name__}, expected an object — replaced",
+                file=sys.stderr,
+            )
+        st = {}
+        state[repo] = st
+    days = st.get("fail_days")
+    if days is not None and not isinstance(days, list):
+        print(
+            f"github-backup: 'fail_days' for {repo!r} is "
+            f"{type(days).__name__}, expected a list — reset to []",
+            file=sys.stderr,
+        )
+        st["fail_days"] = []
+    return st
+
+
 def fetch_repo(root, repo, state):
     path = mirror_path(root, repo)
     if not valid_mirror(path):
@@ -61,14 +99,14 @@ def fetch_repo(root, repo, state):
             env=env,
         )
     except subprocess.TimeoutExpired as e:
-        st = state.setdefault(repo, {})
+        st = _repo_state(state, repo)
         today = time.strftime("%Y-%m-%d")
         days = st.setdefault("fail_days", [])
         record_failure_day(days, today)
         st["last_error"] = f"fetch timed out after {e.timeout} seconds"
         return "fail"
     now = time.time()
-    st = state.setdefault(repo, {})
+    st = _repo_state(state, repo)
     if r.returncode == 0:
         st["last_fetch"] = now
         st["fail_days"] = []
@@ -81,7 +119,8 @@ def fetch_repo(root, repo, state):
 
 
 def iter_plan_repos(root):
-    plan = json.load(open(os.path.join(root, "plan.json")))
+    plan, problems = load_plan(root)
+    report_problems(problems)
     return [p["repo"] for p in plan]
 
 
@@ -89,7 +128,8 @@ def main(argv):
     cfg = load_config()
     root = backup_root(cfg)
     state_path = os.path.join(root, "state.json")
-    state = json.load(open(state_path)) if os.path.exists(state_path) else {}
+    state, problems = load_state(root)
+    report_problems(problems)
     log_path = os.path.join(root, "fetch.log")
     only = argv[1:]
     repos = only if only else iter_plan_repos(root)
@@ -113,7 +153,12 @@ def main(argv):
     with open(state_path, "w") as f:
         json.dump(state, f, indent=0)
     manifest_mod.build(root)
-    chronic = [r for r in repos if len((state.get(r) or {}).get("fail_days", [])) >= 3]
+    chronic = [
+        r
+        for r in repos
+        if isinstance((state.get(r) or {}).get("fail_days"), list)
+        and len(state[r]["fail_days"]) >= 3
+    ]
     print(json.dumps({"results": results, "chronic_failures": chronic}))
     return 1 if chronic else 0
 

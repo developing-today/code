@@ -60,7 +60,9 @@ function checked<T>(payload: GraphqlResponse<T>, what: string): T {
 }
 
 /** Parse the repositories query payload into the read model. */
-export function parseRfaRepositories(payload: GraphqlResponse<{ repositories: Record<string, unknown>[] }>): RfaRepository[] {
+export function parseRfaRepositories(
+  payload: GraphqlResponse<{ repositories: Record<string, unknown>[] }>,
+): RfaRepository[] {
   const data = checked(payload, "repositories");
   return data.repositories.map((r) => ({
     id: String(r.id),
@@ -73,7 +75,9 @@ export function parseRfaRepositories(payload: GraphqlResponse<{ repositories: Re
 }
 
 /** Parse the agentBackendStatuses query payload. */
-export function parseRfaBackends(payload: GraphqlResponse<{ agentBackendStatuses: Record<string, unknown>[] }>): RfaBackend[] {
+export function parseRfaBackends(
+  payload: GraphqlResponse<{ agentBackendStatuses: Record<string, unknown>[] }>,
+): RfaBackend[] {
   const data = checked(payload, "agentBackendStatuses");
   return data.agentBackendStatuses.map((b) => {
     const backend = (b.backend ?? {}) as Record<string, unknown>;
@@ -164,8 +168,7 @@ export type RfaFetch = (
 
 const defaultFetch: RfaFetch = async (url, init) => fetch(url, init);
 
-const REPOSITORIES_QUERY =
-  "{ repositories { id projectPath localPath paused mergePolicy defaultModel } }";
+const REPOSITORIES_QUERY = "{ repositories { id projectPath localPath paused mergePolicy defaultModel } }";
 const BACKENDS_QUERY = "{ agentBackendStatuses { kind reason backend { id } } }";
 const workItemsQuery = (repositoryId: string) =>
   `{ workItems(repositoryId: ${JSON.stringify(repositoryId)}) { issueNumber state statusLabel pullRequestNumber } }`;
@@ -200,9 +203,17 @@ export async function fetchRfaState(
   if (cachedFailure && now - cachedFailure.at < RFA_FAILURE_CACHE_MS) throw cachedFailure.error;
   try {
     const graphqlUrl = `${baseUrl.replace(/\/$/, "")}/graphql`;
-    const repositoriesPayload = await gql<{ repositories: Record<string, unknown>[] }>(fetcher, graphqlUrl, REPOSITORIES_QUERY);
+    const repositoriesPayload = await gql<{ repositories: Record<string, unknown>[] }>(
+      fetcher,
+      graphqlUrl,
+      REPOSITORIES_QUERY,
+    );
     const repositories = parseRfaRepositories(repositoriesPayload);
-    const backendsPayload = await gql<{ agentBackendStatuses: Record<string, unknown>[] }>(fetcher, graphqlUrl, BACKENDS_QUERY);
+    const backendsPayload = await gql<{ agentBackendStatuses: Record<string, unknown>[] }>(
+      fetcher,
+      graphqlUrl,
+      BACKENDS_QUERY,
+    );
     const workItemPayloads = [];
     for (const repo of repositories) {
       workItemPayloads.push({

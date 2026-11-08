@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   attentionSorted,
   buildAttention,
@@ -29,6 +31,8 @@ import {
   type SessionFeedEntry,
 } from "../src/model.ts";
 import type { HealthView } from "../src/health.ts";
+import type { QueueView } from "../src/queue-view.ts";
+import type { AuditEvent } from "../src/events.ts";
 import {
   FIXTURE_ATTENTION,
   FIXTURE_BOARD,
@@ -61,6 +65,14 @@ describe("ref parsing", () => {
     );
     expect(refs.sort()).toEqual(["developing-today/code#752", "dezren39/nix#501"].sort());
   });
+  test("skips URLs with unsafe numbers while keeping valid refs", () => {
+    const refs = refsInText(
+      "bad https://github.com/developing-today/code/issues/99999999999999999999 " +
+        "bad https://github.com/developing-today/code/pull/9007199254740992 " +
+        "good https://github.com/developing-today/code/issues/123",
+    );
+    expect(refs).toEqual(["developing-today/code#123"]);
+  });
   test("refUrl builds issue vs pr paths", () => {
     expect(refUrl("developing-today/code#752", "pr")).toBe("https://github.com/developing-today/code/pull/752");
     expect(refUrl("developing-today/code#752")).toBe("https://github.com/developing-today/code/issues/752");
@@ -81,8 +93,8 @@ describe("execution strip", () => {
     expect(strip.merged.map((i) => i.ref)).toContain("developing-today/code#752");
     expect(strip.review.map((i) => i.ref)).toContain("developing-today/code#763");
     expect(strip.implementing.map((i) => i.ref)).toContain("developing-today/code#900");
-    // #762 is labelled ready-for-agent, so it counts as implementing.
-    expect(strip.implementing.map((i) => i.ref)).toContain("developing-today/code#762");
+    // The label alone is not evidence that the harness picked the issue up.
+    expect(strip.queued.map((i) => i.ref)).toContain("developing-today/code#762");
   });
   test("records unresolved refs", () => {
     const strip = executionStrip([{ ref: "nowhere/repo#9999", relation: "tracks" }], items);
@@ -252,7 +264,7 @@ describe("fixture source", () => {
     expect(board.length).toBeGreaterThan(0);
     expect(rows.length).toBe(23); // the real Grist seed (grew 16 → 23 with the cluster/id rows)
     const crossRepo = board.find((b) => b.id.includes("aggregator"));
-    expect(crossRepo?.links.some((l) => l.ref.startsWith("developing-today/openchamber"))).toBe(true);
+    expect(crossRepo?.links.some((l) => l.ref.startsWith("developing-today-forks/openchamber"))).toBe(true);
   });
 });
 
@@ -288,9 +300,73 @@ describe("render smoke (fixtures)", () => {
     );
     expect(html).toContain("Linked issues / PRs");
     expect(html).toContain("Activity stream");
-    expect(html).toContain("developing-today/openchamber#210");
+    expect(html).toContain("developing-today-forks/openchamber#210");
     expect(html).not.toContain("Planning notes");
     expect(html).not.toContain("PM-stack design & phase plan");
+  });
+  test("item page shows explicit harness dispatch state with provenance", () => {
+    const item = FIXTURE_BOARD[0];
+    const html = renderItem(item.title, item.id, item.links, items, [], fixtureSource().provenance(), {
+      dashComments: [],
+      formRef: item.id,
+      formOpts: { identities: [] },
+      sessions: [],
+      dispatchStates: [
+        {
+          ref: "developing-today/code#762",
+          state: "not picked up",
+          provenance: { source: "ready-for-agent fixture state", observedAt: "2026-11-04T00:00:00Z" },
+        },
+      ],
+    });
+    expect(html).toContain("ready-for-agent dispatch");
+    expect(html).toContain("not picked up");
+    expect(html).toContain("ready-for-agent fixture state checked 2026-11-04T00:00:00Z");
+  });
+  test("item activity reuses shared events and discloses unknown freshness and partial coverage", async () => {
+    const src = fixtureSource();
+    const item = FIXTURE_BOARD.find((b) => b.id.includes("aggregator")) as BoardItem;
+    const event: AuditEvent = {
+      version: 2,
+      id: "event-1",
+      at: "2026-11-03T10:00:00.000Z",
+      ingestedAt: "2026-11-03T10:00:01.000Z",
+      actor: "watchdog",
+      kind: "watchdog-event",
+      ref: "developing-today/openchamber#210",
+      summary: "source stale",
+      attribution: { confidence: "unknown", asserted: false },
+      source: { identity: "watchdog" },
+      prevHash: "0".repeat(64),
+      hash: "f".repeat(64),
+    };
+    const refs = allRefs([item]);
+    const html = renderItem(
+      item.title,
+      item.id,
+      item.links,
+      await src.items(refs),
+      await src.comments(refs),
+      src.provenance(),
+      {
+        dashComments: [],
+        formRef: item.id,
+        formOpts: { identities: [] },
+        sessions: [],
+        activity: {
+          events: [event],
+          globalHref: "/events?ref=developing-today%2Fopenchamber%23210",
+          gaps: [],
+          coverage: [],
+        },
+      },
+    );
+    expect(html).toContain("watchdog-event");
+    expect(html).toContain("View these events in the global river");
+    expect(html).toContain("Freshness: unknown");
+    expect(html).toContain("not establish complete coverage");
+    expect(html).toContain("No known activity gaps");
+    expect(html).toContain('class="tblwrap"');
   });
   test("quota view renders pools and model-choice guidance", async () => {
     const src = fixtureSource();
@@ -298,6 +374,17 @@ describe("render smoke (fixtures)", () => {
     expect(html).toContain("Quota + throughput");
     expect(html).toContain("Headroom for a new session");
     expect(html).toContain("Antigravity");
+  });
+  test("fresh manual refresh renders a neutral refreshing marker", async () => {
+    const src = fixtureSource();
+    const html = renderQuota(await src.quota(), src.provenance(), await src.usage(), undefined, {
+      stale: false,
+      refreshing: true,
+      triggered: true,
+      lastTriggerAt: "2026-11-03T14:00:00.000Z",
+    });
+    expect(html).toContain("refreshing — the quota gatherer is running; reload for updated data");
+    expect(html).not.toContain("quotas were stale");
   });
   test("attention view renders the tiered needs-you page", async () => {
     const src = fixtureSource();
@@ -359,6 +446,40 @@ describe("freshness chips (#1138)", () => {
     expect(html).not.toContain("registry · live");
   });
 
+  test("Today surfaces QueueView next-up rows and marks stale queue inputs", async () => {
+    const src = fixtureSource();
+    const today = deriveToday(FIXTURE_BOARD, FIXTURE_ROADMAP, items, null);
+    const attention = buildAttention(await src.attention(), null);
+    const queue: QueueView = {
+      generatedAt: "2026-11-01T12:00:00Z",
+      inProgress: [],
+      blocked: [],
+      doneRecently: [],
+      nextUp: [
+        {
+          id: "next-1",
+          title: "Ship the dashboard",
+          repo: "developing-today/code",
+          status: "queued",
+          source: "project pool",
+          why: "today horizon pick",
+          blockedBy: ["developing-today/code#42"],
+        },
+      ],
+    };
+    const quota = await src.quota();
+    const coverage = await src.coverage();
+    const html = renderTodayBody(today, attention, quota, coverage, null, false, queue, true);
+    expect(html).toContain('class="today-next-up"');
+    expect(html).toContain("Ship the dashboard");
+    expect(html).toContain("today horizon pick");
+    expect(html).toContain("developing-today/code#42");
+    expect(html).toContain('class="badge stale" title="Queue inputs are stale or unavailable; see /health">stale inputs</span>');
+
+    const fresh = renderTodayBody(today, attention, quota, coverage, null, false, queue, false);
+    expect(fresh).not.toContain("stale inputs");
+  });
+
   test("Today system strip shows cached health, freshness, quota errors, and fail-soft unknowns", async () => {
     const src = fixtureSource();
     const today = deriveToday(FIXTURE_BOARD, FIXTURE_ROADMAP, items, null);
@@ -406,7 +527,10 @@ describe("freshness chips (#1138)", () => {
     expect(html).toContain("quota reads OK");
     expect(html).toContain('href="/health"');
     expect(html).toContain('href="/quota"');
-    expect(html).toContain("@media (max-width: 480px)");
+    // Phase C: page CSS is the external /assets/app.css build now; the
+    // 480px today-strip rule lives in its source (src/ui.css).
+    expect(html).toContain('href="/assets/app.css"');
+    expect(readFileSync(join(import.meta.dir, "..", "src", "ui.css"), "utf8")).toContain("@media (max-width: 480px)");
     const fragmentBody = renderTodayBody(today, attention, quota, await src.coverage(), healthy);
     expect(fragmentBody).toContain("stack 2/2 up");
 

@@ -54,7 +54,7 @@ func (v ValidationResult) Summary() string {
 	if len(v.Questions) > 0 {
 		sb.WriteString("\nClarifying questions:\n")
 		for _, q := range v.Questions {
-			sb.WriteString(fmt.Sprintf("  ? [%s] %s\n", q.Field, q.Question))
+			fmt.Fprintf(&sb, "  ? [%s] %s\n", q.Field, q.Question)
 		}
 	}
 	return strings.TrimSpace(sb.String())
@@ -516,7 +516,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				// defeat the property-name guards below (Codex
 				// P2 on #1659: {class : 1}).
 				nextSig := nextSignificant(chars, i)
-				if isExprKeyword(lastIdent) && !(lastIdentPrev == '.' && lastIdentDotRun < 3) && lastIdentPrev != '#' {
+				if isExprKeyword(lastIdent) && (lastIdentPrev != '.' || lastIdentDotRun >= 3) && lastIdentPrev != '#' {
 					prevSig = 'o'
 				}
 				if (lastIdent == "in" || lastIdent == "of" || lastIdent == "instanceof") && lastIdentPrev != '.' && lastIdentPrev != '#' && identPrevSig == 'x' {
@@ -605,7 +605,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 						// applies across the line break.
 						asyncFunctionExprPosition = false
 					}
-					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev, prevIdentDotRun) || (prevIdent == "extends" && prevIdentPrev != '.' && prevIdentPrev != '#' && inClassHeritage) || (asyncFunctionModifier && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "extends" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3) && inClassHeritage) || (asyncFunctionModifier && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "new" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3)) || asyncFunctionExprPosition {
+					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev, prevIdentDotRun) || (prevIdent == "extends" && prevIdentPrev != '.' && prevIdentPrev != '#' && inClassHeritage) || (asyncFunctionModifier && prevIdentPrev != '#' && (prevIdentPrev != '.' || prevIdentDotRun >= 3) && prevPrevIdent == "extends" && prevPrevIdentPrev != '#' && (prevPrevIdentPrev != '.' || prevPrevIdentDotRun >= 3) && inClassHeritage) || (asyncFunctionModifier && prevIdentPrev != '#' && (prevIdentPrev != '.' || prevIdentDotRun >= 3) && prevPrevIdent == "new" && prevPrevIdentPrev != '#' && (prevPrevIdentPrev != '.' || prevPrevIdentDotRun >= 3)) || asyncFunctionExprPosition {
 						funcClassFrames = append(funcClassFrames, pendingBodyFrame{stackDepth: len(stack), arrayDepth: arrayDepth})
 					} else {
 						expectDeclBody = true
@@ -752,7 +752,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				// clear the outer frame (Codex P2 on #3334).
 				keptFrames := funcClassFrames[:0]
 				for _, fr := range funcClassFrames {
-					if !(fr.parenDepth == 0 && len(stack) <= fr.stackDepth) {
+					if fr.parenDepth != 0 || len(stack) > fr.stackDepth {
 						keptFrames = append(keptFrames, fr)
 					}
 				}
@@ -798,7 +798,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// not a token, and must not clear it: yield /*\n*/
 			// async keeps the candidacy, because the break inside
 			// the comment still immediately follows yield.
-			if !(ch == '/' && i+1 < n && (chars[i+1] == '/' || chars[i+1] == '*')) {
+			if ch != '/' || i+1 >= n || (chars[i+1] != '/' && chars[i+1] != '*') {
 				restrictedKeywordPending = ""
 			}
 		}
@@ -1322,7 +1322,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// conditional-expression openers: counting them makes
 			// a later statement colon look like a ternary branch
 			// (Codex P2 on #1659: switch (obj?.x) { case 1: ... }).
-			if !(i+1 < n && (chars[i+1] == '?' || (chars[i+1] == '.' && !(i+2 < n && unicode.IsDigit(chars[i+2]))))) && !(i > 0 && chars[i-1] == '?') {
+			if (i+1 >= n || (chars[i+1] != '?' && (chars[i+1] != '.' || (i+2 < n && unicode.IsDigit(chars[i+2]))))) && (i <= 0 || chars[i-1] != '?') {
 				// The second '?' of '??' is excluded by the
 				// previous-character check: when it is scanned,
 				// the lookahead above no longer sees the pair
@@ -1418,7 +1418,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// (Codex P2 on #1659).
 			kept := funcClassFrames[:0]
 			for _, fr := range funcClassFrames {
-				if !(fr.parenDepth == 0 && len(stack) <= fr.stackDepth) {
+				if fr.parenDepth != 0 || len(stack) > fr.stackDepth {
 					kept = append(kept, fr)
 				}
 			}
@@ -1542,7 +1542,7 @@ func isControlKeyword(kw string) bool {
 // input, or after ';', '{' or '}' — makes the keyword a declaration
 // instead, whose closing brace returns to expression position.
 func isExprPositionStart(prev rune, prevIdent string, prevIdentPrev rune, prevIdentDotRun int) bool {
-	if !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevIdentPrev != '#' && isExprKeyword(prevIdent) {
+	if (prevIdentPrev != '.' || prevIdentDotRun >= 3) && prevIdentPrev != '#' && isExprKeyword(prevIdent) {
 		return true
 	}
 	switch prev {
@@ -1678,7 +1678,7 @@ func onlyTriviaBetween(chars []rune, start, end int) bool {
 				continue
 			case '*':
 				i += 2
-				for i+1 < end && !(chars[i] == '*' && chars[i+1] == '/') {
+				for i+1 < end && (chars[i] != '*' || chars[i+1] != '/') {
 					i++
 				}
 				if i+1 >= end {
@@ -1713,7 +1713,7 @@ func nextSignificant(chars []rune, from int) rune {
 		}
 		if c == '/' && j+1 < n && chars[j+1] == '*' {
 			j += 2
-			for j+1 < n && !(chars[j] == '*' && chars[j+1] == '/') {
+			for j+1 < n && (chars[j] != '*' || chars[j+1] != '/') {
 				j++
 			}
 			j++

@@ -936,7 +936,7 @@ pub async fn cmd_find_matches(
         send.write_all(&req).await?;
         send.finish()?;
         let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
         let result = match resp {
@@ -1093,7 +1093,9 @@ mod tests {
             },
         ];
 
-        let error = plan_download_paths("out", &matches).unwrap_err().to_string();
+        let error = plan_download_paths("out", &matches)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("destination collision"), "{error}");
         assert!(error.contains("one/report.txt"), "{error}");
         assert!(error.contains("two/report.txt"), "{error}");
@@ -1416,7 +1418,6 @@ mod tests {
         assert!(result.contains("abcdef123456")); // Header should include hash prefix
         assert!(result.contains("lines:")); // Header should show line count
     }
-
 
     // Regression (#1787): lines = usize::MAX/2 + 1 must not overflow the
     // printers' doubling — saturating arithmetic prints short content once,

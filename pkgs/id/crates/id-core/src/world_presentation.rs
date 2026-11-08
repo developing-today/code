@@ -59,8 +59,10 @@ impl WorldSurface {
     }
 }
 
-/// A validated `text/1` document: UTF-8 lines, already wrapped to `width`
-/// columns. Serializes in exactly the guest document shape
+/// A validated `text/1` document: UTF-8 lines, wrapped to `width` columns
+/// except for the one-grapheme overhang documented on [`TextSurface::with_width`]
+/// (a single grapheme can be wider than `width` and is never split).
+/// Serializes in exactly the guest document shape
 /// (`kind: text, version, width, lines`), so a parsed text surface
 /// round-trips through [`parse_surface`].
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -89,6 +91,16 @@ impl TextSurface {
 
     /// Build a validated text surface, wrapping each line to `width`
     /// columns (capped at [`MAX_SCREEN_WIDTH`]) on grapheme boundaries.
+    ///
+    /// Wrapping keeps every stored line within `width` columns with one
+    /// documented exception: a single grapheme that is itself wider than
+    /// `width` is placed whole on its own line, because splitting it would
+    /// corrupt the character. Such a line exceeds `width` by at most the
+    /// width of that one grapheme (one column for a CJK or emoji grapheme at
+    /// `width` 1). Presenters that must hard-fit a viewport of `width` 1-2
+    /// should therefore clamp or blank the overhanging grapheme themselves
+    /// ([`ScreenSurface`] is the cell-precise alternative), rather than
+    /// assuming the stored lines are never wider than `width`.
     ///
     /// # Errors
     ///
@@ -126,9 +138,12 @@ impl TextSurface {
 
 /// Wrap one logical line to `width` display columns. Breaks prefer the last
 /// space that fits; a word longer than `width` is hard-wrapped on grapheme
-/// boundaries so no output line ever exceeds `width` columns (zero-width
-/// graphemes attach to the preceding column). A line that already fits is
-/// returned unchanged, so conforming documents round-trip exactly.
+/// boundaries, so no output line exceeds `width` columns except when a single
+/// grapheme is itself wider than `width`: that grapheme is never split, so it
+/// occupies a line of its own that is wider than `width` by the grapheme's
+/// width (zero-width graphemes attach to the preceding column). A line that
+/// already fits is returned unchanged, so conforming documents round-trip
+/// exactly.
 fn wrap_text_line(line: &str, width: usize) -> Vec<String> {
     if UnicodeWidthStr::width(line) <= width {
         return vec![line.to_owned()];
@@ -231,9 +246,12 @@ impl ScreenSurface {
     /// Crop a screen to a connection-local viewport without changing world state.
     /// Cropping through the second column of a wide glyph replaces that partial
     /// glyph with a blank cell so the returned grid remains valid.
+    /// A zero viewport dimension is treated as 1, so the returned grid
+    /// always satisfies the same 1..=MAX dimension invariant as
+    /// `from_cells` (a detached or resizing terminal can report 0).
     pub fn fit(&self, width: usize, height: usize) -> Self {
-        let width = width.min(usize::from(self.width));
-        let height = height.min(usize::from(self.height));
+        let width = width.min(usize::from(self.width)).max(1);
+        let height = height.min(usize::from(self.height)).max(1);
         let mut cells = Vec::with_capacity(width * height);
         for y in 0..height {
             let start = y * usize::from(self.width);
@@ -1036,11 +1054,10 @@ mod tests {
 
     #[test]
     fn text_parses_and_round_trips() {
-        let parsed = parse_surface(
-            r#"{"kind":"text","version":1,"lines":["hello","wide 界 line"]}"#,
-        )
-        .unwrap()
-        .unwrap();
+        let parsed =
+            parse_surface(r#"{"kind":"text","version":1,"lines":["hello","wide 界 line"]}"#)
+                .unwrap()
+                .unwrap();
         let WorldSurface::Text(text) = &parsed else {
             panic!("expected a text surface");
         };
@@ -1064,20 +1081,55 @@ mod tests {
         let text = TextSurface::with_width(4, vec!["abcdefghij".to_owned()]).unwrap();
         assert_eq!(text.lines, ["abcd", "efgh", "ij"]);
         let text = TextSurface::with_width(3, vec!["ab界cd".to_owned()]).unwrap();
-        assert!(text
-            .lines
-            .iter()
-            .all(|line| UnicodeWidthStr::width(line.as_str()) <= 3));
+        assert!(
+            text.lines
+                .iter()
+                .all(|line| UnicodeWidthStr::width(line.as_str()) <= 3)
+        );
         assert_eq!(text.lines.concat(), "ab界cd");
 
         // The default is 80 and any requested width is capped like a screen.
         let text = TextSurface::with_width(10_000, vec!["x".repeat(200)]).unwrap();
         assert_eq!(usize::from(text.width), MAX_SCREEN_WIDTH);
-        assert!(text
+        assert!(
+            text.lines
+                .iter()
+                .all(|line| UnicodeWidthStr::width(line.as_str()) <= MAX_SCREEN_WIDTH)
+        );
+        assert!(TextSurface::with_width(0, vec!["x".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn text_wrapping_keeps_an_unsplittable_grapheme_whole() {
+        // A grapheme wider than the requested width is never split: it takes
+        // its own line, and that line is wider than the width by exactly the
+        // grapheme's width (the documented one-grapheme exception).
+        let text = TextSurface::with_width(1, vec!["界".to_owned()]).unwrap();
+        assert_eq!(usize::from(text.width), 1);
+        assert_eq!(text.lines, ["界"]);
+        assert_eq!(UnicodeWidthStr::width(text.lines[0].as_str()), 2);
+
+        // The same grapheme at the width it needs fits exactly, with no
+        // exception: the line is within the width.
+        let text = TextSurface::with_width(2, vec!["界".to_owned()]).unwrap();
+        assert_eq!(text.lines, ["界"]);
+        let widths: Vec<usize> = text
             .lines
             .iter()
-            .all(|line| UnicodeWidthStr::width(line.as_str()) <= MAX_SCREEN_WIDTH));
-        assert!(TextSurface::with_width(0, vec!["x".to_owned()]).is_err());
+            .map(|line| UnicodeWidthStr::width(line.as_str()))
+            .collect();
+        assert!(widths.iter().all(|width| *width <= 2));
+
+        // Text around the wide grapheme still wraps normally, and only the
+        // lone over-wide grapheme may exceed the width.
+        let text = TextSurface::with_width(1, vec!["a界b".to_owned()]).unwrap();
+        assert_eq!(text.lines, ["a", "界", "b"]);
+        let widths: Vec<usize> = text
+            .lines
+            .iter()
+            .map(|line| UnicodeWidthStr::width(line.as_str()))
+            .collect();
+        assert_eq!(widths, [1, 2, 1]);
     }
 
     #[test]
@@ -1138,6 +1190,27 @@ mod tests {
         assert_eq!(cropped.cells[0].symbol, " ");
         assert_eq!(cropped.cells[0].columns, 1);
         assert!(cropped.render_ansi().is_some());
+    }
+
+    #[test]
+    fn test_fit_treats_a_zero_viewport_dimension_as_one() {
+        let screen = grid(4, 2, " ");
+        for (requested, expected) in [((0, 2), (1, 2)), ((4, 0), (4, 1)), ((0, 0), (1, 1))] {
+            let fitted = screen.fit(requested.0, requested.1);
+            assert_eq!(
+                (usize::from(fitted.width), usize::from(fitted.height)),
+                expected,
+                "fit{requested:?}"
+            );
+            assert_eq!(fitted.cells.len(), expected.0 * expected.1);
+            assert!(fitted.render_ansi().is_some(), "fit{requested:?}");
+        }
+    }
+
+    #[test]
+    fn test_fit_to_the_source_dimensions_is_the_identity() {
+        let screen = grid(4, 2, "x");
+        assert_eq!(screen.fit(4, 2), screen);
     }
 
     #[test]

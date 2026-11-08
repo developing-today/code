@@ -197,6 +197,26 @@ test('initialize negotiates ACP v1 and advertises prompt capabilities', async (t
   assert.equal(init.agentInfo.name, 'opencode-acp-adapter');
 });
 
+test('a JSON null line on stdin is ignored and the adapter keeps answering (#6919)', async (t) => {
+  const { acp } = await setup(t, textEvents());
+  // `null` is valid JSON but not a message object; before the fix its
+  // destructure in dispatch threw and the process exited (code 1), so
+  // every later request went unanswered. Other non-object JSON values
+  // (42, "hi", true) were already harmless no-ops.
+  acp.child.stdin.write('null\n');
+  acp.child.stdin.write('42\n');
+  await sleep(150);
+  assert.equal(acp.child.exitCode, null, 'adapter still running after a null line');
+  const again = await Promise.race([
+    acp.request('initialize', { protocolVersion: 1, clientCapabilities: {} }),
+    sleep(3000).then(() => {
+      throw new Error('adapter did not answer initialize after a null line');
+    }),
+  ]);
+  assert.equal(again.protocolVersion, 1);
+  assert.equal(again.agentInfo.name, 'opencode-acp-adapter');
+});
+
 test('session/new creates the session on the shared serve with cwd as directory', async (t) => {
   const { stub, acp } = await setup(t, textEvents());
   const result = await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });

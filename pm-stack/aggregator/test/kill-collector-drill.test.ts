@@ -28,6 +28,7 @@ import { join } from "node:path";
 const DRILL = join(import.meta.dir, "..", "scripts", "kill-collector-drill.sh");
 
 interface Scenario {
+  host?: string;
   interruptStop?: boolean; // stub systemctl stop sends TERM to the drill, then fails
   timerActive: boolean;
   healthPlan: string[]; // per health-channel call: fresh | stale | fail
@@ -50,6 +51,8 @@ function runDrill(scn: Scenario) {
     writeFileSync(path, body);
     chmodSync(path, 0o755);
   };
+
+  writeExe(join(bin, "hostname"), `#!/bin/sh\nprintf '%s\\n' "${scn.host ?? "amd"}"\n`);
 
   writeExe(
     join(bin, "systemctl"),
@@ -145,6 +148,13 @@ function expectNoStart(log: string) {
 }
 
 describe("kill-collector drill: refusals touch nothing (#2865)", () => {
+  test("non-laptop host -> refuse before any systemctl call", () => {
+    const r = runDrill({ host: "sandbox", timerActive: true, healthPlan: ["fresh"] });
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain("must run on laptop host 'amd'");
+    expect(r.systemctlLog.trim()).toBe("");
+  });
+
   test("collector timer inactive -> refuse, no systemctl start", () => {
     const r = runDrill({ timerActive: false, healthPlan: ["fresh"] });
     expect(r.status).toBe(1);

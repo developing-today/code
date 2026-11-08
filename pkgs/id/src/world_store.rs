@@ -1192,6 +1192,52 @@ mod tests {
     }
 
     #[test]
+    fn write_lease_entries_survive_jsonl_reopen_with_epoch_intact() {
+        // Design #2819 phase 2 (#3804): lease entries appended to a
+        // fresh (version 1) journal bump its header to version 7 on
+        // first write, and a reopen + replay rebuilds the same lease:
+        // holder, monotonic epoch, term, and transition history.
+        use crate::world::{
+            JOURNAL_VERSION_WRITE_LEASE, JournalEntry as Entry, WorldCore, WorldJournal,
+            WorldLimits,
+        };
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let (mut journal, _) = FileJournal::open(&path, "w").unwrap();
+        journal
+            .append(&Entry::LeaseHandedOff {
+                from: "do".to_owned(),
+                to: "native-1".to_owned(),
+                epoch: 1,
+                expires_at_ms: Some(30_000),
+            })
+            .unwrap();
+        journal
+            .append(&Entry::LeaseRenewed {
+                holder: "native-1".to_owned(),
+                epoch: 1,
+                expires_at_ms: 40_000,
+            })
+            .unwrap();
+        drop(journal);
+
+        let (_journal, entries) = FileJournal::open(&path, "w").unwrap();
+        assert!(matches!(
+            entries[0],
+            Entry::Created {
+                version: JOURNAL_VERSION_WRITE_LEASE,
+                ..
+            }
+        ));
+        let restored = WorldCore::restore("w", WorldLimits::default(), entries).unwrap();
+        let lease = restored.core.write_lease();
+        assert_eq!(lease.holder.as_deref(), Some("native-1"));
+        assert_eq!(lease.epoch, 1);
+        assert_eq!(lease.expires_at_ms, Some(40_000));
+        assert_eq!(lease.transitions().count(), 2);
+    }
+
+    #[test]
     fn replication_snapshot_repairs_an_unterminated_torn_tail() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("journal.jsonl");
@@ -2087,6 +2133,7 @@ mod tests {
             caps_ceiling: None,
             schedules: None,
             transfers: None,
+            lease: None,
             snapshot: "s".to_owned(),
             events: Vec::new(),
             admin_history: None,

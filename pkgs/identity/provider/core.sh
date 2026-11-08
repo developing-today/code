@@ -373,20 +373,87 @@ parseHttpRequest() {
 
 }
 
+
+# resolve_static_path <request-path>
+#
+# Resolve a /static/... request path to the canonical filesystem path it
+# may be served from, confined to the canonical static root (./static,
+# relative to the provider's working directory). The requested path is
+# percent-decoded (%XX only; "+" is a literal in a path), normalized, and
+# fully resolved with every symlink followed, and the result must stay
+# beneath the resolved static root — a bare string-prefix check on the
+# un-resolved path is not sufficient (issue #6180: /static/../../.env
+# disclosed pkgs/identity/.env, which holds TURSO_AUTH_TOKEN).
+#
+# stdout: the resolved absolute path (only on success)
+# return: 0 = a regular file inside the static root
+#         1 = the path escapes the static root (traversal or symlink)
+#         2 = not found / not a regular file / no static root
+resolve_static_path() {
+  local request_path="$1"
+  local rel="${request_path#/static/}"
+
+  # Percent-decode %XX sequences only.
+  local decoded="" i hex byte
+  for ((i = 0; i < ${#rel}; i++)); do
+    if [[ ${rel:i:1} == "%" && ${rel:i+1:2} =~ ^[0-9A-Fa-f]{2}$ ]]; then
+      hex="${rel:i+1:2}"
+      printf -v byte '%b' "\\x$hex"
+      decoded+="$byte"
+      i=$((i + 2))
+    else
+      decoded+="${rel:i:1}"
+    fi
+  done
+
+  local root
+  root="$(cd -- ./static 2>/dev/null && pwd -P)" || return 2
+  [[ -n $root ]] || return 2
+
+  # Lexical normalization first: collapses "." and ".." segments, so a
+  # traversal that climbs out of the root is an escape even when the
+  # target does not exist.
+  local lexical
+  lexical="$(realpath -m -- "$root/$decoded")" || return 2
+  if [[ $lexical != "$root" && $lexical != "$root/"* ]]; then
+    return 1
+  fi
+
+  # The file must exist as a regular file; resolve it fully so a symlink
+  # inside the root that points outside the root is also an escape.
+  [[ -f $lexical ]] || return 2
+  local resolved
+  resolved="$(realpath -- "$lexical")" || return 2
+  if [[ $resolved != "$root/"* ]]; then
+    return 1
+  fi
+  [[ -f $resolved ]] || return 2
+  printf '%s\n' "$resolved"
+}
+
 writeHttpResponse() {
   if [[ $REQUEST_PATH == "/static/"* ]]; then
-    FILE_PATH=".${REQUEST_PATH}"
-
-    if [[ ! -f $FILE_PATH ]]; then
+    local FILE_PATH
+    FILE_PATH="$(resolve_static_path "$REQUEST_PATH")"
+    case $? in
+    0)
+      ;;
+    1)
+      respond 403 Forbidden
+      end_headers
+      return
+      ;;
+    *)
       respond 404 Not Found
       end_headers
       return
-    fi
+      ;;
+    esac
     respond 200 OK
     if [[ $REQUEST_PATH == *".css" ]]; then
       header Content-Type "text/css"
     else
-      header Content-Type "$(file -b --mime-type $FILE_PATH)"
+      header Content-Type "$(file -b --mime-type "$FILE_PATH")"
     fi
     end_headers
     cat "$FILE_PATH"
@@ -591,5 +658,10 @@ export -f findCatchAllRoutes
 export -f matchRoute
 export -f save_session
 
-parseHttpRequest
-writeHttpResponse
+# Run the request handler only when executed as the per-connection
+# script (start.sh runs ./core.sh); when sourced (tests), only the
+# functions above are loaded.
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  parseHttpRequest
+  writeHttpResponse
+fi

@@ -33,6 +33,7 @@ func Registry() []Setting {
 	s = append(s, protoMessagesSettings()...)
 	s = append(s, protoTasksSettings()...)
 	s = append(s, upstreamSettings()...)
+	s = append(s, proxySettings()...)
 	s = append(s, envSettings()...)
 	s = append(s, presetSettings()...)
 	s = append(s, specSettings()...)
@@ -348,26 +349,42 @@ func scriptSettings() []Setting {
 			Long: srcLong,
 		},
 		{
-			Path: "script.typecheck", Commands: runCommands, Kind: KindEnum, Default: "off",
-			Scope: ScopeClient,
-			Enum:  []string{"off", "on", "strict"},
-			Name:  "Type check",
-			Short: "check the generated program before running it",
-			Long: "Resolves and checks every import without executing anything. Costs " +
-				"a second or two on a cold module cache, which is why it is off by " +
-				"default rather than on.",
+			Path: "script.check", PathAliases: []string{"script.typecheck"},
+			Commands: runCommands, Kind: KindEnum, Default: "off",
+			Scope:       ScopeClient,
+			Enum:        []string{"off", "types", "strict"},
+			EnumAliases: map[string][]string{"types": {"on"}},
+			FlagAliases: []string{"script-typecheck", "typecheck"},
+			EnvAliases:  []string{"MCPX_SCRIPT_TYPECHECK"},
+			Name:        "Script check",
+			Short:       "check the generated program before running it",
+			Long: "types resolves imports and checks types; strict also checks " +
+				"declaration files. Checking is off by default. Type checking is " +
+				"currently supported by Deno. The old " +
+				"script.typecheck path, MCPX_SCRIPT_TYPECHECK variable, --script-typecheck " +
+				"flag and --typecheck flag remain accepted; the old value on means types.",
 		},
 		{
 			Path: "script.imports", Commands: runCommands, Kind: KindEnum, Default: "report",
 			Scope: ScopeClient,
-			Enum:  []string{"off", "report"},
+			Enum:  []string{"off", "report", "prepare"},
 			Name:  "Import graph",
 			Short: "resolve the script's import graph before running it",
-			Long: "Computes the static import graph with deno info and reports " +
-				"every unresolved specifier, with its source span, before a " +
-				"single server starts -- instead of the first one failing when " +
-				"the runtime loads it. Report only: nothing is installed. " +
-				"Default report; off disables the stage entirely.",
+			Long: "Computes the static import graph with deno info and resolves " +
+				"unresolved packages before a single server starts. report lists " +
+				"the dependency set; prepare requests the later materialisation " +
+				"stage. Nothing is installed by the resolve stage. Default report; " +
+				"off disables the pipeline entirely.",
+		},
+		{
+			Path: "script.importsOnMissing", Commands: runCommands, Kind: KindEnum, Default: "fail",
+			Scope: ScopeClient,
+			Enum:  []string{"fail", "warn", "install"},
+			Name:  "Missing imports",
+			Short: "how to handle a package absent from the dependency set",
+			Long: "fail stops on a missing package, warn reports it and continues, " +
+				"and install includes the pinned package in the dependency set for " +
+				"the prepare stage. Install does not modify a project manifest.",
 		},
 		{
 			Path: "script.importsOnDynamic", Commands: runCommands, Kind: KindEnum, Default: "warn",
@@ -378,6 +395,26 @@ func scriptSettings() []Setting {
 			Long: "A computed import() or require() is the one edge a static " +
 				"graph cannot decide. warn names the script and the span and " +
 				"lets the run proceed; fail stops it; ignore stays silent.",
+		},
+		{
+			Path: "script.importsCrossProject", Commands: runCommands, Kind: KindEnum, Default: "isolate",
+			Scope: ScopeClient,
+			Enum:  []string{"isolate", "merge", "ignore"},
+			Name:  "Cross-project imports",
+			Short: "how to handle a file edge into another project's manifest",
+			Long: "isolate keeps the imported project's manifest as a distinct " +
+				"dependency subset; merge combines it with the entry project's set; " +
+				"ignore omits the foreign subset. Default isolate.",
+		},
+		{
+			Path: "script.importsNetwork", Commands: runCommands, Kind: KindEnum, Default: "on",
+			Scope: ScopeClient,
+			Enum:  []string{"off", "on"},
+			Name:  "Import resolution network",
+			Short: "allow registry lookups when a package has no declared version",
+			Long: "on may query the npm registry to pin an otherwise undeclared " +
+				"package to its current latest version and announces that choice. " +
+				"off refuses to guess a version. Default on.",
 		},
 		{
 			Path: "script.env", Commands: runCommands, Kind: KindList, Default: "", Repeatable: true,

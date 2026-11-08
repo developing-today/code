@@ -451,11 +451,7 @@ fn same_file(a: &Path, b: &Path) -> bool {
 /// treating the conversion as absent would let `prepare()` pass its
 /// never-replace guard, and overwriting would destroy the occupant's
 /// only write-ahead record.
-fn canonical_occupant_error(
-    conversion_id: u128,
-    canonical: &Path,
-    occupant_id: u128,
-) -> io::Error {
+fn canonical_occupant_error(conversion_id: u128, canonical: &Path, occupant_id: u128) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
         format!(

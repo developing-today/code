@@ -20,7 +20,7 @@ func TestListAndCallWithGrantedLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load echo with log grant: %v", err)
 	}
-	defer src.Close(ctx)
+	defer func() { _ = src.Close(ctx) }()
 
 	tools, err := src.ListTools(ctx)
 	if err != nil {

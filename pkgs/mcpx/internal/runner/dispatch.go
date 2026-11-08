@@ -1,3 +1,4 @@
+// Package runner executes scripts: interpreter dispatch, launchers and the run lifecycle.
 // Interpreter dispatch for non-TypeScript scripts (#2167, parts 1-3 of
 // #1919).
 //
@@ -588,7 +589,7 @@ func fileFirstLine(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	line, err := bufio.NewReader(io.LimitReader(f, 8192)).ReadString('\n')
 	if err != nil && line == "" {
 		return "", err
@@ -999,7 +1000,7 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 		stderrDone = make(chan struct{})
 		go func() {
 			defer close(stderrDone)
-			defer pr.Close()
+			defer func() { _ = pr.Close() }()
 			_ = logging.Stream(pr, opts.Log, logging.StreamOptions{
 				Enrich:      opts.Enrich,
 				Passthrough: passthrough,
@@ -1011,16 +1012,16 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 		// The notice rides the same stream as the script's own stderr,
 		// ahead of anything the script prints.
 		if notice != "" {
-			fmt.Fprintln(pw, notice)
+			_, _ = fmt.Fprintln(pw, notice)
 		}
 		defer func() {
-			pw.Close()
+			_ = pw.Close()
 			<-stderrDone
 		}()
 	} else if opts.Stderr != nil {
 		cmd.Stderr = opts.Stderr
 		if notice != "" {
-			fmt.Fprintln(opts.Stderr, notice)
+			_, _ = fmt.Fprintln(opts.Stderr, notice)
 		}
 	} else {
 		cmd.Stderr = os.Stderr
@@ -1049,10 +1050,12 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 		if cmd.Process != nil {
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 			select {
-			case <-waitCh:
+			case recvErr := <-waitCh:
+				_ = recvErr
 			case <-time.After(defaults.ShutdownGrace):
 				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-				<-waitCh
+				recvErr := <-waitCh
+				_ = recvErr
 			}
 		}
 		res.Duration = time.Since(start)

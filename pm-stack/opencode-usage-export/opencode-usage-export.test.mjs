@@ -4,15 +4,70 @@
 // live managed-instance store carries (probed 2026-11-02, task 6610).
 // Run: node --test pm-stack/opencode-usage-export/
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import os, { tmpdir } from "node:os";
+import path, { dirname, join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { run } from "./opencode-usage-export.mjs";
 
 const NOW = Date.parse("2026-11-02T18:00:00Z");
 const HOUR = 3600000;
+const EXPORTER_PATH = fileURLToPath(new URL("./opencode-usage-export.mjs", import.meta.url));
+
+test("CLI: runs main via direct, file and directory symlinks", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-usage-export-entrypoint-"));
+  const links = path.join(home, "links");
+  fs.mkdirSync(links);
+  const fileLink = path.join(links, "export.mjs");
+  const dirLink = path.join(links, "export-dir");
+  fs.symlinkSync(EXPORTER_PATH, fileLink);
+  fs.symlinkSync(path.dirname(EXPORTER_PATH), dirLink, "dir");
+  const env = { ...process.env, HOME: path.join(home, "empty-home") };
+
+  try {
+    for (const [name, entry] of [
+      ["direct", EXPORTER_PATH],
+      ["file-symlink", fileLink],
+      ["directory-symlink", path.join(dirLink, path.basename(EXPORTER_PATH))],
+    ]) {
+      const outDir = path.join(home, name);
+      const result = spawnSync(process.execPath, [entry, "--out-dir", outDir], {
+        env,
+        encoding: "utf8",
+        timeout: 10000,
+      });
+      assert.equal(result.status, 3, `${name}: ${result.stderr || result.stdout}`);
+      assert.deepEqual(JSON.parse(result.stdout), { status: "store-missing", exitCode: 3 });
+      const doc = JSON.parse(fs.readFileSync(path.join(outDir, "latest.json"), "utf8"));
+      assert.equal(doc.status, "store-missing");
+    }
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("importing opencode-usage-export.mjs as a library does not run main", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-usage-export-import-"));
+  try {
+    const result = spawnSync(process.execPath, [
+      "--input-type=module", "-e", `await import(${JSON.stringify(pathToFileURL(EXPORTER_PATH).href)});`,
+    ], {
+      env: { ...process.env, HOME: home },
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "");
+    assert.equal(fs.existsSync(path.join(home, "atlas", "opencode-usage-export")), false);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
 
 function makeStore(path, { sessions = [], messages = [] } = {}) {
   return (async () => {
@@ -155,4 +210,86 @@ test("no candidate exists: store-missing failure document, exit 3", async () => 
   assert.equal(exitCode, 3);
   assert.equal(doc.status, "store-missing");
   assert.equal(doc.sessions, undefined);
+});
+
+test("junk --window-hours: invalid-argument failure document, no ok document, exit 2", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir, "--window-hours", "banana"] });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--window-hours/);
+  assert.equal(doc.sessions, undefined);
+  const latest = JSON.parse(await readFile(join(outDir, "latest.json"), "utf8"));
+  assert.equal(latest.status, "invalid-argument");
+});
+
+test("missing --window-hours value: invalid-argument failure document, exit 2", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir, "--window-hours"] });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--window-hours/);
+  assert.equal(doc.sessions, undefined);
+});
+
+test("negative --window-hours: invalid-argument failure document, exit 2", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir, "--window-hours", "-5"] });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--window-hours/);
+});
+
+test("junk --fresh-hours: invalid-argument (not store-stale) failure document, exit 2", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir, "--fresh-hours", "banana"] });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--fresh-hours/);
+  assert.equal(doc.sessions, undefined);
+});
+
+test("valid positive --window-hours / --fresh-hours behave as before", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), {
+    sessions: [
+      { id: "ses_recent", updated: NOW - 2 * HOUR },
+      { id: "ses_old", updated: NOW - 48 * HOUR },
+    ],
+  });
+  const { exitCode, doc } = await run({
+    home, now: NOW,
+    argv: ["--out-dir", outDir, "--window-hours", "6", "--fresh-hours", "12"],
+  });
+  assert.equal(exitCode, 0);
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.windowHours, 6);
+  assert.equal(doc.sessions.length, 1);
+  assert.equal(doc.sessions[0].id, "ses_recent");
+});
+test("wrong-shape state.json is treated as no previous state (#6915)", async () => {
+  // Valid JSON of the wrong shape must not wedge the tick (null used to
+  // throw a raw TypeError -> read-failed on every tick) and must not
+  // fabricate a `moved` report (a non-string storePath used to surface
+  // as moved.from). The tick proceeds as a normal ok export and rewrites
+  // state.json in the correct shape, so the state self-heals.
+  for (const content of ["null", "[]", '"just a string"', "5", JSON.stringify({ storePath: 123 }), JSON.stringify({ storePath: "" })]) {
+    const { home, outDir } = await fakeHome();
+    await makeStore(defaultDb(home), {
+      sessions: [{ id: "ses_live", cost: 1 }],
+      messages: [assistantMsg("ses_live", { cost: 1 })],
+    });
+    await writeFile(join(outDir, "state.json"), content);
+    const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir] });
+    assert.equal(exitCode, 0, `state.json=${content}`);
+    assert.equal(doc.status, "ok", `state.json=${content}`);
+    assert.equal(doc.moved, null, `state.json=${content}`);
+    assert.equal(doc.sessions.length, 1, `state.json=${content}`);
+    const state = JSON.parse(await readFile(join(outDir, "state.json"), "utf8"));
+    assert.equal(state.storePath, defaultDb(home), `state.json=${content}`);
+  }
 });

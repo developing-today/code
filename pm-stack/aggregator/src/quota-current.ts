@@ -19,6 +19,7 @@
 //   fresh ok entry wins over an error entry; otherwise the newest
 //   entry decides the surfaced state.
 import { poolState } from "./derive.ts";
+import { isProviderAuthAlert, reevaluateProviderAuth } from "./provider-auth-alerts.ts";
 import { lifecycleForEntry, safeProviderReason } from "./credential-lifecycle.ts";
 import { computeChoices } from "./quota-guidance.ts";
 import type {
@@ -119,9 +120,17 @@ export function parseQuotaCurrent(doc: unknown): QuotaCurrentFile | null {
       windows: windows.values,
     };
   });
+  // #6671: the optional providerAuth section is isolated at this
+  // boundary like the provider list — a non-array value is dropped
+  // and malformed rows are filtered, so one bad section can never
+  // throw in the overlay and suppress the unrelated quota data.
+  const providerAuth = Array.isArray(doc.providerAuth)
+    ? doc.providerAuth.filter(isProviderAuthAlert)
+    : undefined;
   return {
     ...doc,
     providers: validProviders,
+    providerAuth,
     sanitized: { droppedProviders: providers.dropped, droppedWindows },
   } as unknown as QuotaCurrentFile;
 }
@@ -224,6 +233,14 @@ function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState
   pool.windows = windows;
   pool.state = poolState(pool);
   delete pool.wallLiftsAt;
+  // Pass-through (Drew, 2026-11-03): the displayed numbers are now the
+  // live read's, so the base pool's note — dated steward prose written
+  // against older numbers — must not ride along and outrank the read.
+  // The read carries no prose note of its own; its planLabel shows as
+  // the pool's plan and its freshness stamps the measurement. A pool
+  // whose read did NOT land (error/stale/balance-only) keeps its dated
+  // note, which still describes the dated values on display.
+  delete pool.note;
   return true;
 }
 
@@ -315,6 +332,20 @@ function summarize(file: QuotaCurrentFile, nowMs: number): GathererSummary {
 }
 
 /**
+ * Gatherer serviceIds that never become quota pools of their own:
+ * "turso" is a SaaS usage row (its display surface is the SaaS cards,
+ * via overlayTursoUsage), and "antigravity" / "opencode-go" are the
+ * COMBINED account rows whose pool-level rendering is their split
+ * rows (_antigravity.gemini / _antigravity.claude-gpt — pre-rename:
+ * antigravity-direct.gemini / antigravity-direct.claude-gpt — and
+ * opencode-go.drewrypope / opencode-go.popesdrew, produced by
+ * entriesWithPoolSplits in quota-gather-map.ts). Synthesizing pools
+ * for them would double-render the same read. Every OTHER serviceId
+ * the read reports renders as a pool — see the synthesis below.
+ */
+const NON_POOL_SERVICE_IDS: ReadonlySet<string> = new Set(["turso", "antigravity", "_antigravity", "opencode-go"]);
+
+/**
  * Overlay a parsed quota-current document onto a quota view. Pure:
  * the input view is not mutated; pools are copied when changed.
  */
@@ -344,12 +375,52 @@ export function overlayQuotaCurrent(view: QuotaView, file: QuotaCurrentFile, now
     return pool;
   });
 
-  const out: QuotaView = { ...view, pools, gatherer: summarize(file, nowMs) };
+  // Unmapped-pool pass-through (Drew, 2026-11-03 — "the dashboard
+  // should not be doing any of that"): a gatherer entry whose
+  // serviceId matches no pool in the base view used to be silently
+  // dropped here — that key mismatch is how the OpenDesign read
+  // vanished in the morning of 2026-11-03, and the commandcode read
+  // (serviceId "command-code" until quota-gather-map learned the
+  // config name) never landed at all. The board is a straight display
+  // of the OpenCode quota read: any reported pool the base view does
+  // not know renders under the id the read reported, with the read's
+  // own provider/plan labels and freshness. Only the documented
+  // non-pool rows (NON_POOL_SERVICE_IDS) are exempt.
+  const knownIds = new Set(pools.map((p) => p.id));
+  const synthesized: QuotaPool[] = [];
+  for (const serviceId of [...byService.keys()].sort()) {
+    if (knownIds.has(serviceId) || NON_POOL_SERVICE_IDS.has(serviceId)) continue;
+    const entries = byService.get(serviceId)!;
+    const newest = [...entries].sort(newestFirst(nowMs))[0];
+    const pool: QuotaPool = {
+      id: serviceId,
+      provider: newest.providerName,
+      plan: newest.planLabel ?? "",
+      state: "healthy",
+      windows: [],
+    };
+    const freshOk = entries.filter((e) => entryState(e, nowMs) === "ok").sort(newestFirst(nowMs));
+    if (freshOk.length > 0) {
+      if (applyEntry(pool, freshOk[0], "ok")) anyFreshWindows = true;
+      const rows = credentialRows(entries, nowMs);
+      if (rows) pool.credentials = rows;
+    } else {
+      applyEntry(pool, newest, entryState(newest, nowMs));
+    }
+    synthesized.push(pool);
+  }
+  const allPools = [...pools, ...synthesized];
+
+  const out: QuotaView = { ...view, pools: allPools, gatherer: summarize(file, nowMs) };
+  // #6671: keeper alerts ride the same overlay; malformed rows are
+  // dropped at this boundary like every other gatherer field.
+  if (Array.isArray(file.providerAuth))
+    out.providerAuth = reevaluateProviderAuth(file.providerAuth.filter(isProviderAuthAlert), now);
   const credentialLifecycle = file.providers
     .filter((entry) => entry.credentialWatch === true)
     .map((entry) => lifecycleForEntry(entry, now));
   if (credentialLifecycle.length) out.credentialLifecycle = credentialLifecycle;
-  if (anyFreshWindows) out.choices = computeChoices(pools, nowMs);
+  if (anyFreshWindows) out.choices = computeChoices(allPools, nowMs);
   return out;
 }
 
@@ -366,7 +437,9 @@ const TURSO_WINDOW_META: Record<string, { label: string; unit: UsageUnit; limit:
  * Apply the gatherer's Turso entry (#1049) to the SaaS services —
  * the usage() counterpart of overlayQuotaCurrent, with the same
  * semantics: a fresh ok read replaces the Turso card's metrics,
- * measuredAt, and cycle end; an error or stale read leaves the
+ * measuredAt, and cycle end — except metrics the fresh read does
+ * not carry, which stay as stale-marked dated values (#6227); an
+ * error or stale read leaves the
  * card's dated values standing and adds a dated conflict flag, so
  * the failure is loud without faking a fresh zero. Services without
  * a Turso card, and files without a Turso entry, pass through
@@ -399,6 +472,19 @@ export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFil
       });
     }
     if (metrics.length === 0) return services;
+    // A partial fresh read must not silently erase the card's last
+    // dated values (#6227): metrics the fresh entry does not carry
+    // stay on the card, marked stale with the stamp they were read
+    // at, instead of vanishing until a complete read returns. They
+    // are evidence of the last measured state, never of recovery.
+    const freshIds = new Set(metrics.map((m) => m.id));
+    for (const m of svc.metrics) {
+      if (freshIds.has(m.id)) continue;
+      metrics.push({
+        ...m,
+        note: `stale: last measured ${svc.measuredAt}; absent from the fresh gatherer read at ${entry.measuredAt}`,
+      });
+    }
     const resetsAt = entry.windows.find((w) => w.resetsAt)?.resetsAt ?? null;
     out[idx] = {
       ...svc,

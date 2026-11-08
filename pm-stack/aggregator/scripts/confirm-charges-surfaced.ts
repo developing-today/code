@@ -8,7 +8,21 @@ import { unmatchedKey } from "../src/charges-collect.ts";
 import type { UnmatchedCharge } from "../src/charges-match.ts";
 import { isFiniteNumber, isRecord } from "../src/validate.ts";
 
-const feedPath = process.argv[2];
+const args = process.argv.slice(2);
+// Exactly one positional argument is the whole contract. Any extra or
+// flag-like token is a usage error (exit 2) raised here, before the feed
+// is read or the surfaced state is touched: an ignored second feed path
+// would leave that feed's delivered charges unconfirmed, so they would
+// re-alert forever (#7555; the rejectUnknownArgs contract of the sibling
+// scripts, e.g. #7097/#7332).
+if (args.length > 1 || (args[0]?.startsWith("--") ?? false)) {
+  const unexpected = args.find((a) => a.startsWith("--")) ?? args[1] ?? args[0];
+  console.error(
+    `confirm-charges-surfaced: unexpected argument ${JSON.stringify(unexpected)}; usage: confirm-charges-surfaced.ts <delivered-feed>`,
+  );
+  process.exit(2);
+}
+const feedPath = args[0];
 if (!feedPath) throw new Error("usage: confirm-charges-surfaced.ts <delivered-feed>");
 const statePath =
   process.env.CHARGES_SURFACED_STATE_PATH ??

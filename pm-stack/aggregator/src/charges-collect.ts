@@ -11,6 +11,13 @@
 // Everything here is pure except the state the collector itself
 // passes in/out; file IO lives in collect-fleet-feed.ts, following
 // the same split as charges-match.ts (decisions here, state there).
+//
+// The charges contract (#3161) as it applies here: identity is the
+// shared rule stated in charges-match.ts — sameCharge below is its
+// hand-fed-vs-auto form — and delivery means surfaced keys are
+// persisted only for charges in a feed that was successfully
+// published, so an unmatched charge counts as shown only once it
+// was actually delivered.
 
 import {
   DEDUPE_WINDOW_DAYS,
@@ -119,6 +126,17 @@ function containsTokenSequence(tokens: string[], sequence: string[]): boolean {
   return false;
 }
 
+/**
+ * The shared identity rule (#3161), hand-fed-vs-auto form: the two
+ * rows are the same charge only when amounts are equal, dates fall
+ * inside the dedupe window, and the merchant identity holds at
+ * token boundaries — token-sequence containment in either
+ * direction over the alias-expanded label token sequences (which
+ * preserves the documented METAPAY / "Meta PAYG spill" merge while
+ * excluding substring lookalikes). An empty normalized label never
+ * matches, and conflicting known card masks veto the merge;
+ * agreement or absence of a payment method does not block it.
+ */
 function sameCharge(handFed: ChargeRow, auto: ChargeRow): boolean {
   if (handFed.amountUsd !== auto.amountUsd) return false;
   if (daysBetween(handFed.at, auto.at) > DEDUPE_WINDOW_DAYS) return false;

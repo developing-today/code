@@ -123,7 +123,7 @@ func TestAScriptsQuestionsReachAModernClientAsInputRequired(t *testing.T) {
 	disc := mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": 1,
 		"method": "server/discover", "params": map[string]any{"_meta": meta}})
 	session := disc.Header.Get("Mcp-Session-Id")
-	disc.Body.Close()
+	_ = disc.Body.Close()
 
 	src := `const a = await tools.ask.need_repo({});
 const b = await tools.ask.need_repo({});
@@ -137,7 +137,7 @@ console.log("first", a, "second", b);`
 		resp := mcpPost(t, ep, session, map[string]any{"jsonrpc": "2.0", "id": id,
 			"method": "tools/call", "params": params})
 		last = decodeJSON(t, resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		result, _ := last["result"].(map[string]any)
 		if result == nil || result["resultType"] != "input_required" {
 			break

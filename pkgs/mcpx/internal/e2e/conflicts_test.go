@@ -60,7 +60,7 @@ func sockDo(t *testing.T, c *http.Client, method, path string, body any, header 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(resp.Body)
 	var out map[string]any
 	if err := json.Unmarshal(raw, &out); err != nil {

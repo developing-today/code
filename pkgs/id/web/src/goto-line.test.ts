@@ -309,6 +309,32 @@ describe("dialog input interaction", () => {
     expect(dialog.style.display).not.toBe("none");
   });
 
+  it.each([
+    ["", "Enter a line number."],
+    ["2.0", "Enter a whole number."],
+    ["999", "Enter a line between 1 and 3."],
+  ])("explains invalid input %j and clears the error when corrected", (value, message) => {
+    const { view, container } = createViewWithGotoLine("first\nsecond\nthird");
+    views.push(view);
+    containers.push(container);
+
+    triggerGotoLine(view);
+    const input = container.querySelector<HTMLInputElement>(".goto-line-input")!;
+    const error = container.querySelector<HTMLElement>("#goto-line-error")!;
+    expect(input.getAttribute("aria-describedby")).toBe("goto-line-error");
+
+    input.value = value;
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(error.textContent).toBe(message);
+    expect(error.getAttribute("role")).toBe("alert");
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+
+    input.value = "2";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(error.textContent).toBe("");
+    expect(input.hasAttribute("aria-invalid")).toBe(false);
+  });
+
   it("Enter with line 1 moves cursor to the first line start", () => {
     const { view, container } = createViewWithGotoLine("first\nsecond");
     views.push(view);

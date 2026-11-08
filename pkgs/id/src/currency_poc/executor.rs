@@ -292,12 +292,40 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
     /// `Submitted` record the recovery scanner reconciles by lookup —
     /// it never resubmits blindly, and idempotent IDs make even a
     /// resubmission safe.
+    ///
+    /// Terminal states are final (#4678): a `Posted` record is already
+    /// in the ledger, and an `Abandoned` record carries the recovery
+    /// scanner's deliberate decision not to resubmit. Submitting either
+    /// would silently reverse that decision and move funds, so both
+    /// are refused before any state write or ledger call. This also
+    /// makes an identical `execute()` retry against a terminal record
+    /// fail explicitly instead of resurrecting the conversion.
     pub fn submit(&mut self, record: &mut IntentRecord) -> Result<()> {
+        if matches!(record.state, IntentState::Posted | IntentState::Abandoned) {
+            bail!(
+                "submit: conversion {} is already {:?}; refusing to submit a terminal intent",
+                record.conversion_id,
+                record.state
+            );
+        }
         record.state = IntentState::Submitted;
         self.store
             .put(record)
             .context("intent state persist (Submitted) failed")?;
         let results = self.backend.create_transfers(&record.legs);
+        // #4669: the trait contract is one result per leg. zip()
+        // stops at the shorter side, so a short vector would leave
+        // legs unexamined and still advance to Posted — refuse here,
+        // before any per-leg verdict, and stay Submitted for the
+        // recovery scanner.
+        if results.len() != record.legs.len() {
+            bail!(
+                "conversion {}: backend returned {} results for {} legs \u{2014} refusing to mark Posted on a short result vector",
+                record.conversion_id,
+                results.len(),
+                record.legs.len()
+            );
+        }
         for (leg, result) in record.legs.iter().zip(results.iter()) {
             match result {
                 Ok(()) | Err(TransferError::Exists) => {}

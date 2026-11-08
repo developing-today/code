@@ -1,8 +1,8 @@
 // The usage snapshot store (hub design §4): append-only history for
 // usage metrics, one JSONL file per month (`usage-YYYY-MM.jsonl`) in a
 // durable directory beside the comments/registry stores. Writers are
-// the owning jobs (fleet-feed collector, stewardship-cycle, the Jules
-// keeper) and the one-shot backfill script; the aggregator only reads.
+// the owning jobs (fleet-feed collector, stewardship-cycle) and the
+// one-shot backfill script; the aggregator only reads.
 //
 // Retention (§6, #1117): raw monthly files are kept for 13 months,
 // then compacted in place into monthly rollup files

@@ -2,6 +2,7 @@
 // timeline lanes, and the unified comment stream. No I/O here.
 import type { SectionDiagnosis } from "./feed.ts";
 import type { Comment, GhItem, Link, RefKey, RoadmapRow } from "./model.ts";
+import { parseIsoDate } from "./validate.ts";
 
 export interface ExecutionStrip {
   /** Draft PRs, and open issues already dispatched or in progress. */
@@ -18,7 +19,7 @@ export interface ExecutionStrip {
   unknown: RefKey[];
 }
 
-const IMPLEMENTING_LABELS = new Set(["status:in-progress", "in-progress", "ready-for-agent"]);
+const IMPLEMENTING_LABELS = new Set(["status:in-progress", "in-progress"]);
 
 export function executionStrip(links: Link[], items: Map<RefKey, GhItem>): ExecutionStrip {
   const strip: ExecutionStrip = {
@@ -503,14 +504,20 @@ export function sessionRoots(entries: TieredEntry[]): TieredEntry[] {
 
 const YMD = /^(\d{4})-(\d{2})-(\d{2})/;
 
+// ⚡ Bolt: Intl.DateTimeFormat construction is expensive (~29µs) and this
+// formatter's options never change, so build it once at module load instead
+// of on every chicagoYmd() call (several per dashboard render / digest run).
+// Formatters are stateless for format() calls, so sharing one is safe.
+const CHICAGO_YMD_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/Chicago",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
 /** "2026-10-25" in America/Chicago for an instant. */
 export function chicagoYmd(now = new Date()): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Chicago",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(now);
+  return CHICAGO_YMD_FORMATTER.format(now);
 }
 
 export function addDaysYmd(ymd: string, n: number): string {
@@ -940,6 +947,16 @@ export const FRESHNESS_FUTURE_TOLERANCE_MS = 86_400_000; // 1 day
 /** A card is stale when its freshest read is older than its cadence (§1.1). */
 export function freshness(measuredAt: string | null, cadenceDays: number, now = new Date()): Freshness {
   if (!measuredAt) return { stale: true, ageDays: null };
+  // #5102: Date.parse is lenient — impossible dates roll (2026-02-30
+  // becomes Mar 2) and non-ISO strings parse ("March 2, 2026"), so a
+  // malformed stamp aged as fresh. Parse strictly via parseIsoDate,
+  // the sibling gates' helper: a stamp that is not a real ISO date
+  // has honestly unknown age. Its instant matches what Date.parse
+  // produced for valid stamps (date-only is UTC midnight; a naive
+  // datetime is read as UTC, not host-local).
+  const parsed = parseIsoDate(measuredAt);
+  if (!parsed) return { stale: true, ageDays: null };
+  const t = parsed.getTime();
   // Date-only stamps age by calendar day (a read dated yesterday is
   // 1 day old all day today); datetimes age by elapsed whole days.
   // The calendar is Chicago's, the timezone every other calendar
@@ -948,8 +965,6 @@ export function freshness(measuredAt: string | null, cadenceDays: number, now = 
   // stale -- from 19:00 Chicago onward, when UTC had rolled over and
   // Chicago had not.
   if (measuredAt.length <= 10) {
-    const t = Date.parse(`${measuredAt}T00:00:00Z`);
-    if (Number.isNaN(t)) return { stale: true, ageDays: null };
     const startOfToday = Date.parse(`${chicagoYmd(now)}T00:00:00Z`);
     // A date-only stamp more than the tolerance past today's Chicago
     // midnight is a future stamp, not a fresh one (#1568): without
@@ -959,8 +974,6 @@ export function freshness(measuredAt: string | null, cadenceDays: number, now = 
     const ageDays = Math.max(0, Math.round((startOfToday - t) / 86_400_000));
     return { stale: ageDays > cadenceDays, ageDays };
   }
-  const t = Date.parse(measuredAt);
-  if (Number.isNaN(t)) return { stale: true, ageDays: null };
   if (t - now.getTime() > FRESHNESS_FUTURE_TOLERANCE_MS) return { stale: true, ageDays: null };
   const ageDays = Math.max(0, Math.floor((now.getTime() - t) / 86_400_000));
   return { stale: ageDays > cadenceDays, ageDays };

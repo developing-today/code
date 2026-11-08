@@ -27,6 +27,10 @@ export class AutoSaveManager {
   private saveInFlight = false;
   /** A save was requested while one was in flight or a retry was pending; run one follow-up. */
   private followUpRequested = false;
+  /** Set by cancel(): the owner closed the editor and dropped this
+   * manager, so a save completing afterwards must schedule nothing —
+   * no retry, no follow-up, no indicator writes (#2437). */
+  private disposed = false;
 
   constructor(saveFn: () => Promise<SaveResult>) {
     this.saveFn = saveFn;
@@ -111,8 +115,11 @@ export class AutoSaveManager {
     this.triggerSave();
   }
 
-  /** Clean up all timers (called when editor closes) */
+  /** Clean up all timers (called when editor closes). Disposes the
+   * manager: a save already in flight may still resolve, but its
+   * completion is dropped by onSaveResult (#2437). */
   cancel(): void {
+    this.disposed = true;
     if (this.debounceTimer !== null) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
@@ -132,6 +139,11 @@ export class AutoSaveManager {
 
   /** Execute the save and handle the result, serialized against other saves */
   private async triggerSave(): Promise<void> {
+    if (this.disposed) {
+      // Cancelled while a timer callback or completion was still
+      // queued: this manager is dropped, so never start a save (#2437).
+      return;
+    }
     if (this.saveInFlight) {
       // Coalesce into exactly one follow-up once the in-flight save settles.
       this.followUpRequested = true;
@@ -169,6 +181,12 @@ export class AutoSaveManager {
 
   /** Transition state based on save outcome */
   private onSaveResult(result: SaveResult, startGeneration: number): void {
+    if (this.disposed) {
+      // The editor closed while this save was in flight: its completion
+      // must not schedule a retry or follow-up, flip state, or write
+      // the (now another document's) save indicator (#2437).
+      return;
+    }
     if (result.ok) {
       if (this.followUpRequested || this.editGeneration !== startGeneration) {
         // Edits arrived after this save started (or a save was requested

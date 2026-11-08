@@ -18,6 +18,14 @@ export class Limiter {
       return Response.json({ success: false });
     }
     await this.storage.put({ count: count + 1, windowStart });
+    // Bound the state's lifetime (#5739): when the window closes, the alarm
+    // deletes the stored counters, so dormant keys do not persist forever.
+    // A later request in a new window re-arms it on its next successful take.
+    await this.storage.setAlarm(windowStart + windowMs);
     return Response.json({ success: true });
+  }
+
+  async alarm() {
+    await this.storage.deleteAll();
   }
 }

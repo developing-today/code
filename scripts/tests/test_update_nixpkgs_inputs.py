@@ -188,18 +188,24 @@ class TestDiscoverInputs(unittest.TestCase):
                 self.assertEqual(discover(lock_data, "nixos-unstable"), ["unstable"])
                 self.assertEqual(discover(lock_data, "nixos-24.11"), ["stable"])
 
-    def test_current_flake_lock_keeps_the_four_intended_inputs(self):
-        lock_data = json.loads((ROOT / "flake.lock").read_text())
-        expected = [
-            "nixpkgs-25",
-            "nixpkgs-master",
-            "nixpkgs-stable",
-            "nixpkgs-unstable",
-        ]
+    def test_current_flake_locks_expose_only_their_direct_nixpkgs_inputs(self):
+        # The root flake intentionally dropped the master/stable inputs (#3327);
+        # nixpkgs-unstable follows fleet/nixpkgs and is not independently updated.
+        # The id sub-flake has its own direct nixpkgs input. Keep both lock graphs
+        # explicit so a valid change to one cannot make this test lie about the other.
+        flake_locks = {
+            "root": (ROOT / "flake.lock", ["nixpkgs-25"]),
+            "pkgs/id": (ROOT / "pkgs" / "id" / "flake.lock", ["nixpkgs"]),
+        }
 
-        for label, script_dir in COPIES.items():
-            with self.subTest(copy=label):
-                self.assertEqual(self._discover(script_dir, lock_data), expected)
+        for copy_label, script_dir in COPIES.items():
+            discover = runpy.run_path(str(script_dir / "update-nixpkgs-inputs.py"))[
+                "discover_inputs"
+            ]
+            for flake_label, (lock_path, expected) in flake_locks.items():
+                with self.subTest(copy=copy_label, flake=flake_label):
+                    lock_data = json.loads(lock_path.read_text())
+                    self.assertEqual(discover(lock_data, None), expected)
 
 
 class ScriptTree:
@@ -373,9 +379,6 @@ class TestWrapperContract(unittest.TestCase):
     def test_pkgs_id_copy(self):
         self._check_copy("pkgs/id", COPIES["pkgs/id"])
 
-
-if __name__ == "__main__":
-    unittest.main()
 
 import contextlib
 import http.server
@@ -678,3 +681,7 @@ class TestHttpsContext(unittest.TestCase):
                 ctx = mod["https_context"]()
                 self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
                 self.assertTrue(ctx.check_hostname)
+
+
+if __name__ == "__main__":
+    unittest.main()

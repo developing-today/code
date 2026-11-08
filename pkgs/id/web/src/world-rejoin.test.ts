@@ -200,7 +200,7 @@ describe("world page rejoin (ghost WebSocket, #1461)", () => {
       expect(fetchMock).toHaveBeenCalledOnce();
       const [url, options] = fetchMock.mock.calls[0];
       expect(String(url)).not.toContain("admin-secret");
-      expect((options?.headers as Record<string, string>)["x-world-admin-token"]).toBe("admin-secret");
+      expect((options?.headers as Record<string, string> | undefined)?.["x-world-admin-token"]).toBe("admin-secret");
       expect(q("[data-world-view]").textContent).toContain("No program is installed");
       expect(q<HTMLFormElement>("[data-world-chat-form]").hidden).toBe(true);
       expect(q<HTMLFormElement>("[data-world-input-form]").hidden).toBe(true);

@@ -53,26 +53,29 @@ impl GroupLog {
     ///
     /// Fails if the file cannot be read, or a complete line is not an event.
     pub fn open(path: &Path) -> Result<Self> {
-        let text = match std::fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == ErrorKind::NotFound => Vec::new(),
             Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
         };
         let mut events = Vec::new();
         let mut kept = 0;
-        for (number, line) in text.split_inclusive('\n').enumerate() {
-            if !line.ends_with('\n') {
+        for (number, line) in bytes.split_inclusive(|byte| *byte == b'\n').enumerate() {
+            if !line.ends_with(b"\n") {
                 tracing::warn!(
                     "group log {}: dropping torn final entry at byte {kept}",
                     path.display()
                 );
                 break;
             }
-            if line.trim().is_empty() {
+            let text = std::str::from_utf8(line).with_context(|| {
+                format!("{}: line {} is not an event", path.display(), number + 1)
+            })?;
+            if text.trim().is_empty() {
                 kept += line.len();
                 continue;
             }
-            match serde_json::from_str::<Event>(line.trim_end()) {
+            match serde_json::from_str::<Event>(text.trim_end()) {
                 Ok(event) => {
                     events.push(event);
                     kept += line.len();
@@ -84,7 +87,7 @@ impl GroupLog {
                 }
             }
         }
-        if kept < text.len() {
+        if kept < bytes.len() {
             OpenOptions::new()
                 .write(true)
                 .open(path)
@@ -544,19 +547,24 @@ mod tests {
         let mut log = GroupLog::open(&path).unwrap();
         let created = log.record(OWNER, None, create_body()).unwrap();
         drop(log);
-        let good = std::fs::read_to_string(&path).unwrap();
-        // A crash mid-append leaves a partial event, no trailing newline.
+        let good = std::fs::read(&path).unwrap();
+        // A crash after the first byte of a multibyte name leaves invalid
+        // UTF-8 in the unterminated final event.
         let mut torn = good.clone();
-        torn.push_str("{\"id\":\"f00");
+        torn.extend_from_slice(b"{\"name\":\"Jos");
+        torn.push(0xc3); // First byte of "é".
         std::fs::write(&path, torn).unwrap();
 
-        let reopened = GroupLog::open(&path).unwrap();
+        let mut reopened = GroupLog::open(&path).unwrap();
         assert_eq!(reopened.events().len(), 1);
         let projection = reopened.projection().unwrap();
         assert!(projection.group(&created.event).is_some());
         // The torn bytes are truncated, so the next append is not glued
         // onto them and replays cleanly on the next open.
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), good);
+        assert_eq!(std::fs::read(&path).unwrap(), good);
+        reopened.record(OWNER, None, create_body()).unwrap();
+        drop(reopened);
+        assert_eq!(GroupLog::open(&path).unwrap().events().len(), 2);
     }
 
     #[test]

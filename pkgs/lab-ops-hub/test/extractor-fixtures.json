@@ -201,5 +201,96 @@
     "title": "",
     "links": 0,
     "text": "a"
+  },
+  {
+    "name": "reported case: script markup inside textarea is literal text, not a script element",
+    "html": "<textarea><script></textarea><p>Article body</p>",
+    "title": "",
+    "links": 0,
+    "text": "<script> Article body"
+  },
+  {
+    "name": "textarea content is RCDATA: entities decoded, markup literal, contributes body text",
+    "html": "<textarea>Tom &amp; Jerry <b>not bold</b></textarea><p>after</p>",
+    "title": "",
+    "links": 0,
+    "text": "Tom & Jerry <b>not bold</b> after"
+  },
+  {
+    "name": "iframe content is raw text: anchors inside do not count, markup is literal text",
+    "html": "<p>before</p><iframe><a href=\"/x\">frame link</a> frame text</iframe><p>after</p>",
+    "title": "",
+    "links": 0,
+    "text": "before <a href=\"/x\">frame link</a> frame text after"
+  },
+  {
+    "name": "xmp content is raw text: anchors inside do not count, markup is literal text",
+    "html": "<p>before</p><xmp><a href=\"/x\">xmp link</a> xmp text</xmp><p>after</p>",
+    "title": "",
+    "links": 0,
+    "text": "before <a href=\"/x\">xmp link</a> xmp text after"
+  },
+  {
+    "name": "noembed content is raw text: markup inside is literal text",
+    "html": "<p>before</p><noembed><p>embed text</p></noembed><p>after</p>",
+    "title": "",
+    "links": 0,
+    "text": "before <p>embed text</p> after"
+  },
+  {
+    "name": "noframes content is raw text: markup inside is literal text",
+    "html": "<p>before</p><noframes><p>frames text</p></noframes><p>after</p>",
+    "title": "",
+    "links": 0,
+    "text": "before <p>frames text</p> after"
+  },
+  {
+    "name": "raw-text content is verbatim: entities are not decoded inside iframe",
+    "html": "<iframe>a &amp; b</iframe><p>x</p>",
+    "title": "",
+    "links": 0,
+    "text": "a &amp; b x"
+  },
+  {
+    "name": "unclosed textarea: the unterminated RCDATA tail is dropped, as the container's feed-only Extractor leaves it unflushed",
+    "html": "<p>before</p><textarea>never closed",
+    "title": "",
+    "links": 0,
+    "text": "before"
+  },
+  {
+    "name": "unclosed iframe: the unterminated raw-text tail is dropped, as the container's feed-only Extractor leaves it unflushed",
+    "html": "<p>before</p><iframe>never closed <p>lost</p>",
+    "title": "",
+    "links": 0,
+    "text": "before"
+  },
+  {
+    "name": "raw-text end tag with trailing attributes still closes the region",
+    "html": "<iframe>one</iframe foo><p>x</p>",
+    "title": "",
+    "links": 0,
+    "text": "one x"
+  },
+  {
+    "name": "HTML5 named and semicolonless numeric references match container extraction",
+    "html": "<title>&Alpha; &AMP;</title><p>&rarr; &#65 &amp B</p>",
+    "title": "Α &",
+    "links": 0,
+    "text": "→ A & B"
+  },
+  {
+    "name": "ambiguous ampersands use the longest legacy HTML5 reference",
+    "html": "<p>&amp B &notanentity; &doesnotexist;</p>",
+    "title": "",
+    "links": 0,
+    "text": "& B ¬anentity; &doesnotexist;"
+  },
+  {
+    "name": "multi-codepoint HTML5 named reference is preserved",
+    "html": "<p>&NotEqualTilde;</p>",
+    "title": "",
+    "links": 0,
+    "text": "≂̸"
   }
 ]

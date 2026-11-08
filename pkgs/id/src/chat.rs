@@ -39,8 +39,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 
+use crate::text::sanitize_chat;
 use crate::waiting::AuthorKey;
-use crate::world::sanitize_chat;
 
 /// The kind of a `chat.message.v1` event, as the header's `kind` names it.
 pub const CHAT_MESSAGE_KIND: &str = "chat.message.v1";
@@ -166,7 +166,10 @@ impl ChatMessage {
     /// # Errors
     ///
     /// Returns [`ChatError::Text`] for empty, oversize, or unsanitized text,
-    /// [`ChatError::Links`] for too many links, and the failing link's error otherwise.
+    /// [`ChatError::Links`] for too many links or a link repeated in full (kind, hash,
+    /// author, and hint), and the failing link's error otherwise. Two links that agree on
+    /// kind, hash, and author but differ in hint name different retrieval places, so they
+    /// are not repeats.
     pub fn check(&self) -> Result<(), ChatError> {
         if self.text.is_empty() {
             return Err(ChatError::Text("the text is empty".to_owned()));
@@ -178,15 +181,20 @@ impl ChatMessage {
             )));
         }
         if sanitize_chat(&self.text) != self.text {
-            return Err(ChatError::Text(
-                "the text is not sanitized".to_owned(),
-            ));
+            return Err(ChatError::Text("the text is not sanitized".to_owned()));
         }
         if self.links.len() > MAX_LINKS {
             return Err(ChatError::Links(format!(
                 "the message carries {} links, it must carry at most {MAX_LINKS}",
                 self.links.len()
             )));
+        }
+        for (index, link) in self.links.iter().enumerate() {
+            if self.links[..index].contains(link) {
+                return Err(ChatError::Links(format!(
+                    "link {index} repeats an earlier link, a message names each link once"
+                )));
+            }
         }
         for link in &self.links {
             link.check()?;
@@ -201,7 +209,7 @@ pub enum ChatError {
     /// The text is empty, longer than [`MAX_TEXT_BYTES`], or not sanitized.
     #[error("{0}")]
     Text(String),
-    /// The message carries more than [`MAX_LINKS`] links.
+    /// The message carries more than [`MAX_LINKS`] links or repeats a link.
     #[error("{0}")]
     Links(String),
     /// A link hint is longer than [`MAX_HINT_BYTES`].
@@ -249,8 +257,11 @@ pub fn project(records: impl IntoIterator<Item = ChatRecord>) -> Vec<ChatRecord>
     let mut pending: HashMap<[u8; 32], usize> = HashMap::new();
     for record in by_id.values() {
         let mut parents = 0;
-        let mut parent_ids: Vec<[u8; 32]> =
-            record.after.iter().map(|parent| *parent.as_bytes()).collect();
+        let mut parent_ids: Vec<[u8; 32]> = record
+            .after
+            .iter()
+            .map(|parent| *parent.as_bytes())
+            .collect();
         if let Some(backlink) = &record.backlink {
             parent_ids.push(*backlink.as_bytes());
         }
@@ -319,7 +330,10 @@ mod tests {
         ChatRecord {
             id: Hash::digest(&[id]),
             author: author(id),
-            after: after.iter().map(|parent| Hash::digest(&[*parent])).collect(),
+            after: after
+                .iter()
+                .map(|parent| Hash::digest(&[*parent]))
+                .collect(),
             backlink: None,
             message: ChatMessage::new(text, Vec::new()).unwrap(),
         }
@@ -343,6 +357,32 @@ mod tests {
     }
 
     #[test]
+    fn test_message_refuses_a_repeated_link() {
+        let link = ChatLink {
+            kind: ChatLinkKind::Blob,
+            hash: Hash::digest(b"attachment"),
+            author: author(1),
+            hint: None,
+        };
+        assert!(matches!(
+            ChatMessage::new("hello", vec![link.clone(), link.clone()]),
+            Err(ChatError::Links(_))
+        ));
+
+        let raw = ChatMessage {
+            text: "hello".to_owned(),
+            links: vec![link.clone(), link.clone()],
+        };
+        assert!(matches!(raw.check(), Err(ChatError::Links(_))));
+
+        let hinted = ChatLink {
+            hint: Some("relay".to_owned()),
+            ..link.clone()
+        };
+        ChatMessage::new("hello", vec![link, hinted]).unwrap();
+    }
+
+    #[test]
     fn test_decoded_message_must_be_sanitized() {
         let raw = ChatMessage {
             text: "has\u{7}control".to_owned(),
@@ -353,8 +393,9 @@ mod tests {
 
     #[test]
     fn test_link_kinds_are_only_blob_and_event() {
-        let parsed: Result<ChatLink, _> =
-            serde_json::from_str(r#"{"kind":"file","hash":"0000000000000000000000000000000000000000000000000000000000000000","author":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"hint":null}"#);
+        let parsed: Result<ChatLink, _> = serde_json::from_str(
+            r#"{"kind":"file","hash":"0000000000000000000000000000000000000000000000000000000000000000","author":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"hint":null}"#,
+        );
         assert!(parsed.is_err());
     }
 

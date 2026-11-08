@@ -602,10 +602,12 @@ native_call_deadline_ms = 0",
     fn test_minimum_profile_bounds_are_accepted() {
         // #3015: the boundary-valid values (one Wasm page, 16 MiB native)
         // sit exactly on the floors and must parse.
-        let manifest = parse("[profile]
+        let manifest = parse(
+            "[profile]
 wasm_memory_bytes = 65536
-native_memory_bytes = 16777216")
-            .unwrap();
+native_memory_bytes = 16777216",
+        )
+        .unwrap();
         assert_eq!(manifest.profile.wasm_memory_bytes, Some(65_536));
         assert_eq!(manifest.profile.native_memory_bytes, Some(16_777_216));
     }

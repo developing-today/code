@@ -76,6 +76,46 @@ var foreignPrefixes = []string{
 	"examples/servers/",
 }
 
+// protocolMethods are MCP method identifiers, not repository paths. The
+// protocol this module implements names its operations `tools/call` and
+// `tools/list`, plus the `tools/list_changed` notification, and the
+// documentation cites them in backticks exactly the way it cites files.
+// `tools` is also a real top-level directory here (it holds the
+// docs-history tool), so the top-level check cannot tell a method from a
+// path: every one of the 147 references this guard once reported was one
+// of these names (#5211). Named as whole identifiers rather than as a
+// `tools/` prefix, so a genuine path under that directory --
+// `tools/docs-history` is one -- is still checked; the other protocol
+// namespaces are covered as well, so a future top-level directory named
+// after one of them does not reopen the same hole.
+var protocolMethods = map[string]bool{
+	"tools/call":             true,
+	"tools/list":             true,
+	"tools/list_changed":     true,
+	"prompts/get":            true,
+	"prompts/list":           true,
+	"prompts/list_changed":   true,
+	"resources/list":         true,
+	"resources/read":         true,
+	"resources/subscribe":    true,
+	"resources/unsubscribe":  true,
+	"resources/list_changed": true,
+	"resources/updated":      true,
+	"roots/list":             true,
+	"roots/list_changed":     true,
+	"sampling/createMessage": true,
+	"elicitation/create":     true,
+	"completion/complete":    true,
+	"logging/setLevel":       true,
+	"tasks/list":             true,
+	"tasks/get":              true,
+	"tasks/cancel":           true,
+	"tasks/result":           true,
+	"tasks/update":           true,
+	"subscriptions/listen":   true,
+	"server/discover":        true,
+}
+
 // TestEveryDocumentationLinkResolves fails on a relative link or a backticked
 // repository path that names a file that is not there.
 func TestEveryDocumentationLinkResolves(t *testing.T) {
@@ -172,7 +212,7 @@ func referencesIn(doc string, tops map[string]bool) []reference {
 			// `pkgs/mcpx/...` is how a document addresses this tree from the
 			// outer nix repository; the same file, named from further out.
 			p = strings.TrimPrefix(p, "pkgs/mcpx/")
-			if !tops[strings.Split(p, "/")[0]] || isForeign(p) {
+			if !tops[strings.Split(p, "/")[0]] || isForeign(p) || isProtocolMethod(p) {
 				continue
 			}
 			out = append(out, reference{path: p, raw: m[0], line: i + 1})
@@ -188,6 +228,10 @@ func isExternal(s string) bool {
 		}
 	}
 	return false
+}
+
+func isProtocolMethod(p string) bool {
+	return protocolMethods[p]
 }
 
 func isForeign(p string) bool {
@@ -243,4 +287,38 @@ func topLevelNames(root string) (map[string]bool, error) {
 		out[e.Name()] = true
 	}
 	return out, nil
+}
+
+// TestReferencesInSkipsProtocolMethods pins the #5211 distinction at the
+// extraction level: method identifiers are not references, while a real
+// path that merely shares their namespace still is. Every registered
+// method is exercised with its own namespace in tops -- otherwise a
+// non-`tools` case would be discarded by the top-level-name check
+// regardless of whether the exclusion works, and the registry could rot
+// untested (Codex review on the #5211 PR).
+func TestReferencesInSkipsProtocolMethods(t *testing.T) {
+	for method := range protocolMethods {
+		ns, _, _ := strings.Cut(method, "/")
+		tops := map[string]bool{ns: true}
+		if got := referencesIn("See `"+method+"`.", tops); len(got) != 0 {
+			t.Errorf("referencesIn(%q) = %v, want no references", method, got)
+		}
+		// A non-method in the same namespace is still a path claim: the
+		// exclusion is whole identifiers, never a namespace prefix.
+		bogus := ns + "/frobnicate"
+		if got := referencesIn("See `"+bogus+"`.", tops); len(got) != 1 || got[0].path != bogus {
+			t.Errorf("referencesIn(%q) = %v, want the one reference", bogus, got)
+		}
+	}
+	tops := map[string]bool{"tools": true, "internal": true}
+	doc := "Call `tools/call` after `tools/list`; expect `tools/list_changed`.\n" +
+		"The tool itself is `tools/docs-history`, and `internal/cli/root.go` is a file."
+	var paths []string
+	for _, r := range referencesIn(doc, tops) {
+		paths = append(paths, r.path)
+	}
+	want := []string{"tools/docs-history", "internal/cli/root.go"}
+	if strings.Join(paths, ",") != strings.Join(want, ",") {
+		t.Errorf("referencesIn = %v, want %v", paths, want)
+	}
 }

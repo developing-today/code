@@ -25,9 +25,14 @@ describe("charge service catalog", () => {
     expect(result.unmatchedSaas.map((row) => row.merchant)).toContain("PADDLE MYSTERY");
   });
 
-  test("deduplicates providers and respects filtered pools", () => {
-    const catalog = chargeServiceCatalog([], extractQuotaPools("", new Date(), new Set(["claude-code"])));
+  test("deduplicates providers; every rendered pool contributes its provider", () => {
+    // Pass-through (Drew, 2026-11-03): this was "respects filtered
+    // pools" under #1114 — it passed a disabled set containing
+    // claude-code and expected Anthropic gone from the catalog. Pool
+    // assembly no longer filters, so the catalog, derived from the
+    // rendered pools, includes Anthropic (as the first test expects).
+    const catalog = chargeServiceCatalog([], extractQuotaPools(""));
     expect(catalog.filter((entry) => entry.name === "OpenCode Go")).toHaveLength(1);
-    expect(catalog.some((entry) => entry.name === "Anthropic")).toBe(false);
+    expect(catalog.some((entry) => entry.name === "Anthropic")).toBe(true);
   });
 });

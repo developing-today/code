@@ -48,7 +48,6 @@ done
 # Small, irreplaceable things only. Missing paths are skipped silently -- not
 # every agent is signed in on every machine.
 CANDIDATES=(
-  "$HOME/.config/jules/api-key"
   "$HOME/.local/share/opencode/auth.json"
   "$HOME/.config/opencode/auth.json"
   "$HOME/.config/opencode/opencode.jsonc"
@@ -94,13 +93,21 @@ fi
 # awk/grep/sed, so no filter pipeline may assume them.
 PREV=""
 while IFS= read -r name; do
-  if [[ "$name" == "$STAMP" ]]; then
+  if [[ $name == "$STAMP" ]]; then
     break
   fi
   PREV="$name"
-done < <({ find "$ROOT" -mindepth 1 -maxdepth 1 -type d -not -name "$STAMP" -printf '%f\n'; printf '%s\n' "$STAMP"; } | LC_ALL=C sort -u)
+done < <({
+  find "$ROOT" -mindepth 1 -maxdepth 1 -type d -not -name "$STAMP" -printf '%f\n'
+  printf '%s\n' "$STAMP"
+} | LC_ALL=C sort -u)
 
-if [ -n "$PREV" ] && diff -rq "$ROOT/$PREV" "$DEST" >/dev/null 2>&1; then
+if [ -n "$PREV" ] &&
+  diff -rq "$ROOT/$PREV" "$DEST" >/dev/null 2>&1 &&
+  diff -q \
+    <(find "$ROOT/$PREV" -type f -printf '%m %P\n' | LC_ALL=C sort) \
+    <(find "$DEST" -type f -printf '%m %P\n' | LC_ALL=C sort) \
+    >/dev/null 2>&1; then
   rm -rf "$DEST"
   echo "agent-backup: no change since $PREV" >&2
   exit 0
@@ -111,7 +118,7 @@ fi
 NEWEST="$(find "$ROOT" -mindepth 1 -maxdepth 1 -type d -not -name "$STAMP" -printf '%f\n' |
   LC_ALL=C sort | tail -n1 || true)"
 
-if [ -z "$NEWEST" ] || [[ "$STAMP" > "$NEWEST" ]]; then
+if [ -z "$NEWEST" ] || [[ $STAMP > $NEWEST ]]; then
   ln -sfn "$STAMP" "$ROOT/latest"
 fi
 echo "agent-backup: snapshot $STAMP ($copied files)" >&2

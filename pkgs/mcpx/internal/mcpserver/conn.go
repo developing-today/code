@@ -480,13 +480,6 @@ func (c *Conn) deliver(id int64, result json.RawMessage, rerr *rpcError) bool {
 	return true
 }
 
-// isReply reports whether a frame is a response rather than a request: an id
-// and no method. The client's own recvLoop had this bug in reverse, and it
-// cost a release of silent elicitation failures.
-func isReply(req request) bool {
-	return len(req.ID) > 0 && req.Method == ""
-}
-
 // replyOf reads the result or error from a response frame.
 func replyOf(raw []byte) (int64, json.RawMessage, *rpcError, bool) {
 	var f struct {
@@ -598,14 +591,14 @@ func (q Question) Sendable(p Peer) bool {
 		// (string[] to string) and the upstream would reject the
 		// elicited answer. Unsendable questions stay with the broker
 		// via sendableTo (#2078).
-		return p.CanElicit(q.Mode) && !(q.carriesMultiSelect() && !AtLeast(p.Version, "2025-11-25"))
+		return p.CanElicit(q.Mode) && (!q.carriesMultiSelect() || AtLeast(p.Version, "2025-11-25"))
 	case "sampling/createMessage":
 		// A tools-carrying question goes only to a client that declared
 		// sampling.tools. It is refused whole, never stripped and
 		// degraded: the upstream asked for a tool loop, and a plain
 		// completion is not the answer to that question. Unsendable
 		// questions stay with the broker via sendableTo.
-		return p.CanSample() && !(q.carriesSamplingTools() && !p.CanSampleTools())
+		return p.CanSample() && (!q.carriesSamplingTools() || p.CanSampleTools())
 	case "roots/list":
 		return p.Declared("roots")
 	}

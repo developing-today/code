@@ -40,7 +40,7 @@ func TestFileSinkRotatesOnLineCountAsWellAsOnSize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sink.Close()
+	defer func() { _ = sink.Close() }()
 
 	day := time.Now().Truncate(time.Hour)
 	for i := 0; i < 5; i++ {
@@ -61,7 +61,7 @@ func TestFileSinkRotatesOnceTheOldestRecordExceedsMaxAge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sink.Close()
+	defer func() { _ = sink.Close() }()
 
 	// Every record has to fall on the same local calendar day, or the daily
 	// trigger rotates the file and the age limit is not what is being
@@ -90,7 +90,7 @@ func TestTwoRotationsInOneSecondKeepBothFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sink.Close()
+	defer func() { _ = sink.Close() }()
 
 	day := time.Now().Truncate(time.Hour)
 	for i := 0; i < 3; i++ {
@@ -112,7 +112,7 @@ func TestReopeningAFileCountsWhatIsAlreadyInIt(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		first.Write(at(day, i), nil)
 	}
-	first.Close()
+	_ = first.Close()
 
 	// A restart must not reset the count, or a daemon cycling often enough
 	// would never rotate at all.
@@ -120,7 +120,7 @@ func TestReopeningAFileCountsWhatIsAlreadyInIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer second.Close()
+	defer func() { _ = second.Close() }()
 	second.Write(at(day, 3), nil)
 	second.Write(at(day, 4), nil)
 	if got := len(jsonlFiles(t, dir)); got != 2 {
@@ -134,7 +134,7 @@ func TestRotationThresholdsComeFromTheEmbeddedDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sink.Close()
+	defer func() { _ = sink.Close() }()
 	day := time.Now().Truncate(time.Hour)
 	sink.Write(at(day, 0), nil)
 	if got := len(jsonlFiles(t, dir)); got != 1 {

@@ -114,11 +114,16 @@ export async function uploadImageFile(file: File): Promise<UploadResponse> {
 // ============================================================================
 
 const imageUploadKey = new PluginKey<DecorationSet>("imageUpload");
+const uploadLifetimes = new WeakMap<EditorView, UploadLifetime>();
 
 interface PlaceholderAction {
   type: "add" | "remove";
   id: string;
   pos?: number;
+}
+
+interface UploadLifetime {
+  active: boolean;
 }
 
 function createPlaceholderWidget(): HTMLElement {
@@ -142,6 +147,18 @@ export function createImageUploadPlugin(schema: Schema): Plugin | null {
 
   return new Plugin<DecorationSet>({
     key: imageUploadKey,
+
+    view(view) {
+      // A plugin instance can be shared by multiple EditorViews, so upload
+      // lifetime belongs to each individual view rather than the plugin.
+      const lifetime: UploadLifetime = { active: true };
+      uploadLifetimes.set(view, lifetime);
+      return {
+        destroy() {
+          lifetime.active = false;
+        },
+      };
+    },
 
     state: {
       init(): DecorationSet {
@@ -185,7 +202,7 @@ export function createImageUploadPlugin(schema: Schema): Plugin | null {
 
         event.preventDefault();
 
-        startImageUploadBatch(view, accepted, view.state.selection.from);
+        startImageUploadBatch(view, accepted, view.state.selection.from, uploadLifetimes.get(view));
 
         return true;
       },
@@ -204,7 +221,7 @@ export function createImageUploadPlugin(schema: Schema): Plugin | null {
         const pos = view.posAtCoords(coords);
         const insertPos = pos ? pos.pos : view.state.selection.from;
 
-        startImageUploadBatch(view, accepted, insertPos);
+        startImageUploadBatch(view, accepted, insertPos, uploadLifetimes.get(view));
 
         return true;
       },
@@ -221,10 +238,15 @@ export function createImageUploadPlugin(schema: Schema): Plugin | null {
  * failed upload resolves its step without inserting, so the survivors
  * keep their relative order.
  */
-function startImageUploadBatch(view: EditorView, files: File[], insertPos: number): void {
+function startImageUploadBatch(
+  view: EditorView,
+  files: File[],
+  insertPos: number,
+  lifetime: UploadLifetime | undefined,
+): void {
   let insertionGate: Promise<void> = Promise.resolve();
   for (const file of files) {
-    insertionGate = handleImageUpload(view, file, insertPos, insertionGate);
+    insertionGate = handleImageUpload(view, file, insertPos, insertionGate, lifetime);
   }
 }
 
@@ -241,6 +263,7 @@ function handleImageUpload(
   file: File,
   insertPos: number,
   insertionGate: Promise<void>,
+  lifetime: UploadLifetime | undefined,
 ): Promise<void> {
   const id = `upload-${Math.random().toString(36).slice(2, 10)}`;
 
@@ -264,6 +287,11 @@ function handleImageUpload(
     // Insert strictly after every earlier batch member's step (#1323).
     await insertionGate;
 
+    // The upload may outlive closeEditor() and EditorView.destroy(). In
+    // that case its placeholder disappeared with the view, so do no more
+    // editor work.
+    if (lifetime && !lifetime.active) return;
+
     if (outcome.ok) {
       try {
         // Find where to insert (placeholder position may have shifted).
@@ -286,9 +314,13 @@ function handleImageUpload(
           alt: outcome.result.name || fileName,
         });
         insertTr.insert(pos, imageNode);
+        if (lifetime && !lifetime.active) return;
         view.dispatch(insertTr);
         return;
       } catch (err) {
+        // A dispatch that races with teardown is not an insertion failure
+        // worth reporting; the destroyed view no longer owns this upload.
+        if (lifetime && !lifetime.active) return;
         // Distinct from an upload failure: the upload succeeded, the
         // document insert failed. Never surface this as "Upload
         // failed" and never let it escape as an unhandled rejection
@@ -298,8 +330,10 @@ function handleImageUpload(
     }
 
     // Upload failed or insertion failed: remove only the placeholder.
+    if (lifetime && !lifetime.active) return;
     const removeTr = view.state.tr;
     removeTr.setMeta(imageUploadKey, { type: "remove", id } satisfies PlaceholderAction);
+    if (lifetime && !lifetime.active) return;
     view.dispatch(removeTr);
   })();
 }

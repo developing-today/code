@@ -30,17 +30,17 @@ var ScriptsDirName = ScriptsDirNames[0]
 // ScriptExt is the extension a named script must carry on disk.
 const ScriptExt = ".ts"
 
-// scriptSearchDirs returns the ordered list of directories that can hold named
-// scripts: every `.mcpx/scripts` from the working directory up to the
-// filesystem root (nearest wins, so a repo overrides a parent), then the user
-// directory. It mirrors how the config file is discovered, so a project can
-// keep its scripts and its server list together.
 // ScriptExtensions are tried in order for a name given without one. The
 // order is deliberate: a project holding both foo.ts and foo.js is almost
 // always compiling one into the other, and the source is what someone means
 // to run. ".py" is last because it is a different language rather than a
 // different compilation of the same one: a name with both foo.ts and foo.py
 // is TypeScript's by default, the way every run without a language is.
+// scriptSearchDirs returns the ordered list of directories that can hold named
+// scripts: every `.mcpx/scripts` from the working directory up to the
+// filesystem root (nearest wins, so a repo overrides a parent), then the user
+// directory. It mirrors how the config file is discovered, so a project can
+// keep its scripts and its server list together.
 var ScriptExtensions = []string{".ts", ".mts", ".js", ".mjs", ".py"}
 
 // scriptPath resolves the configured search path, splicing the built-in list
@@ -438,7 +438,7 @@ func scriptSummary(path string) string {
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	buf := make([]byte, 4096)
 	n, _ := f.Read(buf)
 	for _, line := range strings.Split(string(buf[:n]), "\n") {

@@ -6,9 +6,10 @@
 #   whatever staging produced — a dataset member deleted/renamed at
 #   the source silently shrank the backup set with every check green.
 #   The script now declares the expected set once (EXPECTED_SET):
-#   7 aggregator state files + 2 meta-quota-export files are REQUIRED,
-#   db-dumps is required when the DB dump step ran (optional when it
-#   did not), and the snapshots tree + 3 journal logs are OPTIONAL.
+#   10 aggregator state files are REQUIRED, meta-quota-export files are
+#   OPTIONAL, and db-dumps is required when the DB dump step ran
+#   (optional when it did not). The snapshots tree + 2 journal logs are
+#   OPTIONAL.
 #   manifest.json records every member's status, and the verify step
 #   fails the run — naming the member, before any upload, cursor
 #   unchanged — when a required member is missing.
@@ -62,6 +63,7 @@ STUB
 
 { printf '#!%s\n' "$BASH"; cat <<'STUB'
 echo "stub journal line"
+printf '%s\n' "$*" >>"$HOME/.journalctl-calls"
 exit 0
 STUB
 } >"$BIN/journalctl"
@@ -120,7 +122,8 @@ setup_home() {
     "$RUN_HOME/atlas/meta-quota-export"
   local f
   for f in actions.json comments.json fleet-feed.json quota-current.json \
-    registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json; do
+    registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json \
+    events.json coverage-snapshot.json aa-last-good.json; do
     printf '{}\n' >"$RUN_HOME/.local/state/pm-aggregator/$f"
   done
   printf '{}\n' >"$RUN_HOME/atlas/meta-quota-export/latest.json"
@@ -198,6 +201,7 @@ assert_member deleted-required aggregator/registry.json required missing
 
 # --- missing-optional completes and is recorded -------------------------------
 setup_home missing-optional
+rm -rf "$RUN_HOME/atlas/meta-quota-export"
 run_backup missing-optional
 if [[ "$RC" -eq 0 ]]; then
   ok "missing-optional: script exited 0"
@@ -212,16 +216,22 @@ fi
 assert_member missing-optional aggregator/snapshots optional missing
 assert_member missing-optional db-dumps optional missing
 assert_member missing-optional aggregator/actions.json required present
-assert_member missing-optional meta-quota-export/history.jsonl required present
+assert_member missing-optional meta-quota-export/latest.json optional missing
+assert_member missing-optional meta-quota-export/history.jsonl optional missing
 assert_member missing-optional journals/pm-aggregator.log optional present
+if grep -q -- 'meta-quota-export.service' "$RUN_HOME/.journalctl-calls"; then
+  fail "missing-optional: retired meta-quota-export journal was queried"
+else
+  ok "missing-optional: retired meta-quota-export journal was not queried"
+fi
 if manifest_json missing-optional | python3 -c '
 import json, sys
 m = json.load(sys.stdin)
-sys.exit(0 if len(m.get("expected", [])) == 14 else 1)
+sys.exit(0 if len(m.get("expected", [])) == 19 else 1)
 '; then
-  ok "missing-optional: manifest lists all 14 expected members"
+  ok "missing-optional: manifest lists all 19 expected members"
 else
-  fail "missing-optional: manifest expected list is not the full 14-member set"
+  fail "missing-optional: manifest expected list is not the full 19-member set"
 fi
 
 # --- dump step ran but produced no dir: conditionally required ----------------
@@ -249,6 +259,8 @@ else
   fail "dump-ran-with-dir: expected exit 0, got $RC; log: $(cat "$TMP_ROOT/dump-ran-with-dir.log")"
 fi
 assert_member dump-ran-with-dir db-dumps required present
+assert_member dump-ran-with-dir meta-quota-export/latest.json optional present
+assert_member dump-ran-with-dir meta-quota-export/history.jsonl optional present
 
 if (( failures > 0 )); then
   echo "pm-dashboard-backup manifest tests: $failures failure(s)" >&2

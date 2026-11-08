@@ -1,0 +1,43 @@
+[
+  {
+    "id": "PVTI_contract_1",
+    "databaseId": 901,
+    "url": "https://github.com/orgs/example-owner/projects/4?pane=issue&itemId=901",
+    "projectUrl": "https://github.com/orgs/example-owner/projects/4",
+    "ref": "example-owner/example-repo#2401",
+    "repo": "example-owner/example-repo",
+    "number": 2401,
+    "issueUrl": "https://github.com/example-owner/example-repo/issues/2401",
+    "title": "Example Project item 1",
+    "state": "open",
+    "contentKind": "issue",
+    "status": "Todo",
+    "area": null,
+    "horizon": "Month",
+    "kind": "Epic",
+    "labels": ["epic"],
+    "author": "example-user",
+    "updatedAt": "2026-10-27T03:00:00Z"
+  },
+  {
+    "id": "PVTI_contract_2",
+    "databaseId": 902,
+    "url": "https://github.com/orgs/example-owner/projects/4?pane=issue&itemId=902",
+    "projectUrl": "https://github.com/orgs/example-owner/projects/4",
+    "ref": "example-owner/example-repo#2402",
+    "repo": "example-owner/example-repo",
+    "number": 2402,
+    "issueUrl": "https://github.com/example-owner/example-repo/issues/2402",
+    "title": "Example Project item 2",
+    "state": "open",
+    "contentKind": "issue",
+    "status": "Todo",
+    "area": null,
+    "horizon": "Month",
+    "kind": "Task",
+    "labels": [],
+    "author": "example-user",
+    "updatedAt": "2026-10-27T03:00:00Z",
+    "parentRef": "example-owner/example-repo#2401"
+  }
+]

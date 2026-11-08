@@ -4,7 +4,7 @@
 - Status: **design** — no implementation is included in this change.
 - Issue: [#4630](https://github.com/developing-today/code/issues/4630), "id(world-replication): a journal whose Checkpoint line exceeds 256 KiB can never be replicated — split_entry_payload refuses the single entry and send_snapshot dies before the first frame".
 - Parent design: [#806](https://github.com/developing-today/code/issues/806) / `doc/2026-11-01_design_id806.md` (F12.13 journal replication), whose §4 contract this record extends without changing the wire.
-- Admission contract: [#4592](https://github.com/developing-today/code/issues/4592) and its phase 3 [#4593](https://github.com/developing-today/code/issues/4593) — *a verified cursor covers only a restorable chain*.
+- Admission contract: [#4592](https://github.com/developing-today/code/issues/4592) and its phase 3 [#4593](https://github.com/developing-today/code/issues/4593) — _a verified cursor covers only a restorable chain_.
 - Evidence baseline: `origin/main` at `e7510b90a`, worktree `~/git/fleet/6557-4630-oversized-entry-replication`, 2026-11-03.
 
 ## Decision to make
@@ -18,14 +18,14 @@ replicated in v1". A compacted `JournalEntry::Checkpoint` is one such entry, and
 `split_entry_payload` before the first frame, so the whole feed dies.
 
 The task 6557 packet-defect block was right: the v1 envelope has no continuation
-mechanism, so *how* to make oversized checkpoints replicable is a contract choice.
+mechanism, so _how_ to make oversized checkpoints replicable is a contract choice.
 This note evaluates the three candidates named in #4630's acceptance, against the
 v1 envelope/cursor/hash-chain contract, `ReplicationTracker::accept`, and #4592's
 receiver-admission contract, and picks one.
 
 **Recommendation:** bound the checkpoint **at write time** (mechanism c) by emitting
-it as a sequence of bounded entries, with a part size *below the existing 256 KiB
-payload bound*. Every entry the writer produces then fits one v1 replication frame,
+it as a sequence of bounded entries, with a part size _below the existing 256 KiB
+payload bound_. Every entry the writer produces then fits one v1 replication frame,
 no wire-version bump is needed, no receiver upgrade is needed, and the v1 invariant
 ("a payload is a sequence of complete journal entries; the cursor is entries
 absorbed") stays exactly true. Fragmentation (a) is rejected as a permanent
@@ -70,7 +70,7 @@ moves the cliff and cannot bound a checkpoint.
   what makes a checkpoint-only fix sufficient.
 - **Journal version contract:** `JOURNAL_VERSION`=1, current
   `MAX_JOURNAL_VERSION`=5 (`world/mod.rs:984-1019`); new entry kinds require a
-  header-version bump *before* the entry is written, so an older binary refuses at
+  header-version bump _before_ the entry is written, so an older binary refuses at
   the header check (`:1021-1060`), never mid-read.
 
 ## Options
@@ -119,7 +119,7 @@ test asserting a maximal payload still fits one transport frame.
   a guarantee with "no silent remainder".
 - **Contract cost (low):** the written grammar is unchanged (still complete-entry
   payloads, same cursor).
-- **Compatibility (medium, and subtle):** no envelope-version bump is *format*-legal,
+- **Compatibility (medium, and subtle):** no envelope-version bump is _format_-legal,
   but the constant is a receiver-side limit too (`accept`, `:735`): a sender that
   uses the extra headroom sends frames every existing v1 receiver rejects as
   `PayloadTooLarge`. There is no capability negotiation in v1, so raising the
@@ -136,7 +136,7 @@ test asserting a maximal payload still fits one transport frame.
 Make compaction emit the checkpoint as a **sequence of bounded entries**: the
 scalars stay on `Checkpoint`; the variable-size payloads move to preceding part
 entries, mirroring the existing pattern where `CapsCeiling`, `ScheduleSet`,
-`Isolation`, `ExecutionProfile` and transfer state are emitted *before* the
+`Isolation`, `ExecutionProfile` and transfer state are emitted _before_ the
 `Checkpoint` that summarizes them (`core.rs:1063-1200`):
 
 - `CheckpointSnapshotPart { sequence, part_index, part_count, bytes }` — the program
@@ -153,7 +153,7 @@ entries, mirroring the existing pattern where `CapsCeiling`, `ScheduleSet`,
   today. Compaction emits parts and never a single oversized checkpoint.
 
 - **Totality: yes, for every journal this writer produces** — because the writer
-  chooses the split. The one residual case is a journal *already on disk* whose
+  chooses the split. The one residual case is a journal _already on disk_ whose
   `Checkpoint` was written before this change (see "Residual" below).
 - **Contract cost (low, and only at the journal layer):** the replication wire,
   cursor, hash chain, `accept`, and #4592's admission argument are untouched: payloads
@@ -172,7 +172,7 @@ entries, mirroring the existing pattern where `CapsCeiling`, `ScheduleSet`,
 
 **Stage 1 — land (c) with `MAX_CHECKPOINT_PART_BYTES = 192 * 1024`.**
 
-192 KiB is deliberately *below* the existing 256 KiB `MAX_REPLICATION_PAYLOAD_BYTES`,
+192 KiB is deliberately _below_ the existing 256 KiB `MAX_REPLICATION_PAYLOAD_BYTES`,
 leaving room for JSON framing of the part's scalar fields, so:
 
 - no change to `MAX_REPLICATION_PAYLOAD_BYTES`, no envelope-version bump, no
@@ -216,7 +216,7 @@ The only entries not covered by that sentence are:
 
 1. a `Checkpoint` written by a binary older than this change, on a journal that has
    not been re-compacted since (Stage 2 gives it an actionable path); and
-2. a journal written by a *different* writer implementation that violates the bound —
+2. a journal written by a _different_ writer implementation that violates the bound —
    out of scope, and the receiver still refuses it exactly as today.
 
 No other entry kind can violate the bound: chat ≤ 2 KiB, input ≤ 16 KiB (≤ ~32 KiB

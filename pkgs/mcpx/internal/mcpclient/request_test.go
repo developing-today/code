@@ -14,14 +14,11 @@ import (
 // capableTransport is a legacy server that declares what the test tells it
 // to and answers whatever it is asked.
 type capableTransport struct {
-	caps  map[string]any
-	in    chan []byte
-	mu    sync.Mutex
-	seen  []string
-	close bool
-	// asked is a request the server sends the client, once, on the first
-	// tools/call.
-	asked  string
+	caps   map[string]any
+	in     chan []byte
+	mu     sync.Mutex
+	seen   []string
+	close  bool
 	answer chan json.RawMessage
 	// version is the protocolVersion initialize answers; 2025-11-25 when
 	// empty.
@@ -132,7 +129,7 @@ func dial(t *testing.T, f mcpclient.Transport) *mcpclient.Client {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { c.Close() })
+	t.Cleanup(func() { _ = c.Close() })
 	return c
 }
 

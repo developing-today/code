@@ -182,9 +182,7 @@ export async function buildNeedsDrewCensus(
           const res = await fetchPage(needsDrewSearchUrl(repo, label, page));
           if (!res.ok) {
             const j = res.json as { status?: unknown; error?: unknown } | null;
-            throw new Error(
-              typeof j?.status === "number" ? `HTTP ${j.status}` : String(j?.error ?? "fetch failed"),
-            );
+            throw new Error(typeof j?.status === "number" ? `HTTP ${j.status}` : String(j?.error ?? "fetch failed"));
           }
           const payload = res.json as { total_count?: unknown; items?: unknown; incomplete_results?: unknown };
           if (typeof payload?.total_count === "number") total = payload.total_count;

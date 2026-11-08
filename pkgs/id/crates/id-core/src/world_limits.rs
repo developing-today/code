@@ -48,7 +48,8 @@ pub const JOURNAL_ENTRY_OVERHEAD_BYTES: u64 = 64;
 /// payload length plus the fixed structural allowance.
 #[must_use]
 pub fn journal_entry_charge(serialized_len: usize) -> u64 {
-    u64::try_from(serialized_len).unwrap_or(u64::MAX)
+    u64::try_from(serialized_len)
+        .unwrap_or(u64::MAX)
         .saturating_add(JOURNAL_ENTRY_OVERHEAD_BYTES)
 }
 
@@ -308,22 +309,17 @@ pub struct WorldExecutionProfile {
 }
 
 impl WorldExecutionProfile {
-    /// Validate values and resolve them beneath the server's hard limits.
+    /// Validate the requested bounds on their own.
     ///
-    /// A request may lower a bound or inherit it, but can never raise the
-    /// server ceiling. The Wasm module-size cap is always taken from `hard`.
+    /// Every bound that is set must be positive and at or above its floor:
+    /// Wasm memory at least one Wasm page, native address space at least
+    /// 16 MiB, and every other bound nonzero. A bound left as `None`
+    /// inherits the server ceiling and is always valid.
     ///
-    /// # Errors
-    ///
-    /// A requested bound of zero or a value that cannot be represented on
-    /// this host.
-    /// Validate the requested bounds on their own: every bound that is set
-    /// must be positive and at or above its floor.  inherits the
-    /// server ceiling and is always valid.
-    ///
-    /// This is the single source of truth for the bound checks: []
-    /// runs it against the live profile at apply time, and the world
-    /// manifest validator runs it at parse time, so a manifest can never
+    /// This is the single source of truth for the bound checks:
+    /// [`Self::resolve`] runs it against the live profile at apply time,
+    /// and the world manifest validator (`WorldManifest::validate`, in the
+    /// parent `id` crate) runs it at parse time, so a manifest can never
     /// accept bounds that apply would later refuse (#3015).
     ///
     /// # Errors
@@ -359,6 +355,21 @@ impl WorldExecutionProfile {
         Ok(())
     }
 
+    /// Resolve these requested bounds beneath the server's hard limits.
+    ///
+    /// Every bound may lower the server ceiling or inherit it, but never
+    /// raise it: a set value is clamped to the corresponding `hard` limit
+    /// and a `None` value takes the ceiling. The Wasm module-size cap is
+    /// always taken from `hard` (the profile cannot request it).
+    ///
+    /// Calls [`Self::validate`] first, so an invalid requested bound is
+    /// refused here exactly as the world manifest validator refuses it at
+    /// parse time (#3015).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`Self::validate`]'s errors, and fails when a resolved
+    /// bound cannot be represented on this host.
     pub fn resolve(self, hard: RuntimeLimits) -> Result<RuntimeLimits> {
         self.validate()?;
 
@@ -367,9 +378,11 @@ impl WorldExecutionProfile {
         // them beneath the budget lands with the enforcement charge sites
         // (Phase 3), so a configured budget never silently shrinks guest
         // limits before the ledger exists to account for it.
-        let total_memory_bytes = self.total_memory_bytes.map_or(hard.total_memory_bytes, |value| {
-            value.min(hard.total_memory_bytes)
-        });
+        let total_memory_bytes = self
+            .total_memory_bytes
+            .map_or(hard.total_memory_bytes, |value| {
+                value.min(hard.total_memory_bytes)
+            });
         #[cfg(feature = "sandbox")]
         let sandbox = {
             let hard_memory = u64::try_from(hard.sandbox.memory_bytes)?;
@@ -654,10 +667,7 @@ mod tests {
     fn an_empty_profile_inherits_the_server_total_budget() {
         let hard = RuntimeLimits::default();
         let effective = WorldExecutionProfile::default().resolve(hard).unwrap();
-        assert_eq!(
-            effective.total_memory_bytes,
-            hard.total_memory_bytes
-        );
+        assert_eq!(effective.total_memory_bytes, hard.total_memory_bytes);
     }
 
     #[test]
@@ -669,10 +679,7 @@ mod tests {
         }
         .resolve(hard)
         .unwrap();
-        assert_eq!(
-            lowered.total_memory_bytes,
-            hard.total_memory_bytes / 2
-        );
+        assert_eq!(lowered.total_memory_bytes, hard.total_memory_bytes / 2);
         let raised = WorldExecutionProfile {
             total_memory_bytes: Some(u64::MAX),
             ..Default::default()
@@ -700,14 +707,8 @@ mod tests {
         #[cfg(feature = "sandbox")]
         {
             assert_eq!(effective.sandbox.fuel, hard.sandbox.fuel);
-            assert_eq!(
-                effective.sandbox.memory_bytes,
-                hard.sandbox.memory_bytes
-            );
-            assert_eq!(
-                effective.sandbox.message_bytes,
-                hard.sandbox.message_bytes
-            );
+            assert_eq!(effective.sandbox.memory_bytes, hard.sandbox.memory_bytes);
+            assert_eq!(effective.sandbox.message_bytes, hard.sandbox.message_bytes);
         }
     }
 

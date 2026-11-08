@@ -32,6 +32,8 @@ const health: HealthView = {
   facets: null,
   itemsCoverage: null,
   comments: { pendingMessages: 0, pendingGithub: 0, total: 0 },
+  conflicts: null,
+  rfa: { state: "fixtures", detail: "fixtures mode — no live harness read", repositories: [], backends: [] },
 };
 
 const data: OverviewData = {
@@ -400,5 +402,100 @@ describe("overview Codex fixes (PR 2424 review)", () => {
     };
     const summary = deriveOverview({ ...data, board: [...blocked, running] });
     expect(summary.inProgress.map((i) => i.title)).toEqual(["One", "Running thing"]);
+  });
+});
+
+describe("overview reconciledInProgress ref guards (#6205)", () => {
+  const withLinedUp = (linedUp: unknown[]): OverviewData => ({
+    ...data,
+    pool: [],
+    board: [],
+    orchestration: {
+      version: 1,
+      generatedAt: "2026-10-29T00:00:00Z",
+      runId: "orch-6205",
+      provenance: { sources: [] },
+      tiers: { needsDrew: [], needsOrchestrator: [] },
+      dependencies: [],
+      goals: [
+        {
+          goalId: null,
+          goal: "test goal",
+          momentum: "moving",
+          summary: "test",
+          linedUp,
+          progressedSinceLastRun: [],
+          stalled: [],
+          gaps: [],
+        },
+      ],
+      actions: [],
+    } as unknown as OrchestrationSection,
+  });
+  const task = (over: Record<string, unknown>) => ({
+    title: "Lined-up work",
+    status: "in-progress",
+    horizon: "today",
+    horizonWhy: "test",
+    ...over,
+  });
+
+  test("a goal-id task.ref does not throw and yields no row for it", () => {
+    const d = withLinedUp([task({ ref: "goal_a243772844c3" as RefKey })]);
+    expect(() => deriveOverview(d)).not.toThrow();
+    const summary = deriveOverview(d);
+    expect(summary.inProgress.map((i) => i.ref)).not.toContain(
+      "goal_a243772844c3",
+    );
+    expect(summary.inProgress).toEqual([]);
+  });
+
+  test("a bare numeric task.ref does not throw and yields no row for it", () => {
+    const d = withLinedUp([task({ ref: "812" as RefKey })]);
+    expect(() => deriveOverview(d)).not.toThrow();
+    expect(deriveOverview(d).inProgress).toEqual([]);
+  });
+
+  test("an unsafe-integer title mention does not throw", () => {
+    const d = withLinedUp([
+      task({ title: "Fix developing-today/code#99999999999999999999 now" }),
+    ]);
+    expect(() => deriveOverview(d)).not.toThrow();
+    expect(deriveOverview(d).inProgress).toEqual([]);
+  });
+
+  test("a valid task.ref still yields an in-progress row with its GitHub URL", () => {
+    const d = withLinedUp([
+      task({ ref: "developing-today/code#123" as RefKey }),
+    ]);
+    const summary = deriveOverview(d);
+    const row = summary.inProgress.find(
+      (i) => i.ref === "developing-today/code#123",
+    );
+    expect(row?.signals).toEqual(["active-session"]);
+    expect(row?.url).toBe("https://github.com/developing-today/code/issues/123");
+  });
+
+  test("a valid plain title mention still yields an in-progress row", () => {
+    const d = withLinedUp([
+      task({ title: "Work on developing-today/code#124 today" }),
+    ]);
+    const summary = deriveOverview(d);
+    const row = summary.inProgress.find(
+      (i) => i.ref === "developing-today/code#124",
+    );
+    expect(row?.signals).toEqual(["active-session"]);
+    expect(row?.url).toBe("https://github.com/developing-today/code/issues/124");
+  });
+
+  test("invalid refs do not suppress valid rows in the same goal", () => {
+    const d = withLinedUp([
+      task({ ref: "goal_a243772844c3" as RefKey, title: "Goal work" }),
+      task({ ref: "developing-today/code#125" as RefKey, title: "Real work" }),
+    ]);
+    const summary = deriveOverview(d);
+    expect(summary.inProgress.map((i) => i.ref)).toEqual([
+      "developing-today/code#125",
+    ]);
   });
 });

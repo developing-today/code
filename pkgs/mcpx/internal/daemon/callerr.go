@@ -104,7 +104,14 @@ func (r *Registry) repairAutonomy(ctx context.Context) string {
 // finding as data, for a caller that would rather act on a field than parse
 // a sentence -- which is also what a repair step needs to start from.
 type CallErrorBody struct {
-	Error       string                `json:"error"`
+	Error string `json:"error"`
+	// Code is the machine-readable kind of a daemon-side refusal
+	// (#6116): "confirmation_required" when the confirmation gate
+	// refused a call nobody confirmed, "write_policy_denied" when
+	// the write policy refused it. Empty for every other failure --
+	// a tool that ran and failed carries Upstream instead -- so a
+	// caller can branch on the gate without parsing Error's text.
+	Code        string                `json:"code,omitempty"`
 	Diagnostics []diagnose.Diagnostic `json:"diagnostics,omitempty"`
 	// Upstream is the JSON-RPC error the server answered with, when the
 	// failure was one. A relay needs the code and data, not the sentence:
@@ -227,6 +234,14 @@ func callDiagnostics(err error) []diagnose.Diagnostic {
 
 func callErrorBody(err error) CallErrorBody {
 	body := CallErrorBody{Error: err.Error(), Diagnostics: callDiagnostics(err)}
+	var notConfirmed ErrNotConfirmed
+	var writeDenied ErrWriteDenied
+	switch {
+	case errors.As(err, &notConfirmed):
+		body.Code = "confirmation_required"
+	case errors.As(err, &writeDenied):
+		body.Code = "write_policy_denied"
+	}
 	if code, msg, ok := upstreamFault(err); ok {
 		body.Upstream = &UpstreamError{Code: code, Message: msg, Data: upstreamData(err)}
 	}

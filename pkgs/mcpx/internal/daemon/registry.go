@@ -50,7 +50,15 @@ type Registry struct {
 	paths Paths
 	hash  string
 
-	mu sync.RWMutex
+	// reloadMu serializes configuration swaps with asynchronous cleanup from
+	// earlier swaps. A cleanup must not remove sessions created by a later
+	// reload that re-adds the same server name.
+	reloadMu sync.Mutex
+	// pendingSessionCleanup protects persisted records until the removed
+	// pool has drained and can terminate them with its last live config.
+	// Access is serialized by reloadMu.
+	pendingSessionCleanup map[string]int
+	mu                    sync.RWMutex
 	// pools may be shared between names; views never are. A view carries the
 	// per-name presentation -- namespace, tool subset, prelude, profiles --
 	// that must not follow the shared process.
@@ -1555,6 +1563,14 @@ func (r *Registry) Warm(ctx context.Context, force bool) map[string]error {
 		if blocker, _ := r.blocked(p.Config()); blocker != nil {
 			continue
 		}
+		// A caller-scoped server (its definition references
+		// ${mcpx.root}/${mcpx.cwd}) cannot start from this background
+		// pass, which has no caller: defer it to the first
+		// caller-backed refresh rather than recording a guaranteed
+		// rootless-start failure as its error (PR #5135).
+		if p.CallerScoped() {
+			continue
+		}
 		wg.Add(1)
 		go func(p *pool.Pool) {
 			defer wg.Done()
@@ -1633,7 +1649,6 @@ func (r *Registry) Namespaces(prof config.Profile) []NamespaceInfo {
 	return out
 }
 
-// ToolInfo describes one tool for search results.
 // TermScore is one term's contribution to a search hit's Score: the field
 // it matched and the points that field's tier awards (#1923, --explain).
 type TermScore struct {
@@ -1642,6 +1657,7 @@ type TermScore struct {
 	Points int    `json:"points"`
 }
 
+// ToolInfo describes one tool for search results.
 type ToolInfo struct {
 	Namespace string `json:"namespace"`
 	Server    string `json:"server"`
@@ -2201,6 +2217,7 @@ func failureStatus(err error) int {
 	var hidden HiddenTool
 	var secret SecretRequired
 	var denied ErrWriteDenied
+	var notConfirmed ErrNotConfirmed
 	var argDenied ErrArgumentRuleDenied
 	var unknownOutcome ErrUnknownOutcome
 	switch {
@@ -2210,6 +2227,13 @@ func failureStatus(err error) int {
 	case errors.As(err, &denied):
 		// The write policy refused the call: a permission answer, not
 		// a bad request and not an upstream failure.
+		return http.StatusForbidden
+	case errors.As(err, &notConfirmed):
+		// The confirmation gate refused the call (#6116): nobody
+		// confirmed it -- in a headless session, nobody could. That
+		// is a permission answer like the write policy's, not an
+		// upstream failure; answering 502 here made the gate
+		// indistinguishable from a tool that ran and broke.
 		return http.StatusForbidden
 	case errors.As(err, &secret):
 		// A conflict with the state of the daemon, not a fault in the request
@@ -2416,7 +2440,7 @@ func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, to
 		// Not asked by the write policy: the destructive floor still
 		// gets its say. Under ask the policy already asked once, and
 		// asking twice about one call would be noise, not consent.
-		if err := r.confirmDestructive(ctx, p, effTool, cc); err != nil {
+		if err := r.confirmDestructive(ctx, p, server, effTool, cc); err != nil {
 			return config.ResolvedScope{}, "", nil, err
 		}
 	}
@@ -2577,12 +2601,6 @@ func (r *Registry) GetPrompt(ctx context.Context, server, name string, args map[
 		return nil, err
 	}
 	return p.GetPrompt(ctx, r.resolvedFor(p, cc), name, args)
-}
-
-// keyFor resolves a server's scope key; resolvedFor is the full
-// resolution, for callers that also pass the root to the pool.
-func (r *Registry) keyFor(p *pool.Pool, cc config.CallContext) string {
-	return r.resolvedFor(p, cc).Key
 }
 
 // resolvedFor resolves a server's scope and records the association so

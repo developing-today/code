@@ -38,7 +38,7 @@ var implementedEffectProbes = map[string]string{
 	"script.interpreter":         "TestScriptInterpreterIsReachableFromTheEnvironment",
 	"script.env":                 "TestScriptEnvIsReachableFromTheEnvironment",
 	"script.captureConsole":      "TestScriptCaptureConsoleOffDropsConsoleOutput",
-	"script.typecheck":           "TestScriptTypecheckOnRefusesATypeError",
+	"script.check":               "TestScriptTypecheckOnRefusesATypeError",
 	"logging.file":               "TestLoggingFileOffWritesNoDurableLog",
 	"plumbing.strictUnknownKeys": "TestStrictUnknownKeysRefusesATypo",
 	"paths.state":                "TestStateDirectoryIsReachableAsASetting",
@@ -52,6 +52,8 @@ var implementedEffectProbes = map[string]string{
 	"deps.manifest":              "TestDepsManifestNamesTheManifestResolutionReads",
 	"deps.packages":              "TestDepsPackagesPinContradictingTheManifestFailsTheRun",
 	"paths.deps":                 "TestPathsDepsExtendsManifestDiscovery",
+	"proxy.timeout":              "TestProxyUpstreamTimeoutIsReachableFromTheEnvironment",
+	"tasks.maxAge":               "TestTasksMaxAgeIsReachableFromEnvironment",
 }
 
 // effectProbeFuncs anchors every declared probe name to the actual
@@ -65,6 +67,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestLoggingFileOffWritesNoDurableLog":                   TestLoggingFileOffWritesNoDurableLog,
 	"TestOutputJSONIsReachableFromTheEnvironment":            TestOutputJSONIsReachableFromTheEnvironment,
 	"TestPathsConfigFileChangesWhichConfigLoads":             TestPathsConfigFileChangesWhichConfigLoads,
+	"TestProxyUpstreamTimeoutIsReachableFromTheEnvironment":  TestProxyUpstreamTimeoutIsReachableFromTheEnvironment,
 	"TestPoolDefaultsAreReachableFromTheEnvironment":         TestPoolDefaultsAreReachableFromTheEnvironment,
 	"TestRegistryLimitReachesTheCLI":                         TestRegistryLimitReachesTheCLI,
 	"TestRegistryPageSizeChangesWhatTheCLIAsksFor":           TestRegistryPageSizeChangesWhatTheCLIAsksFor,
@@ -80,6 +83,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestDepsManifestNamesTheManifestResolutionReads":        TestDepsManifestNamesTheManifestResolutionReads,
 	"TestDepsPackagesPinContradictingTheManifestFailsTheRun": TestDepsPackagesPinContradictingTheManifestFailsTheRun,
 	"TestPathsDepsExtendsManifestDiscovery":                  TestPathsDepsExtendsManifestDiscovery,
+	"TestTasksMaxAgeIsReachableFromEnvironment":              TestTasksMaxAgeIsReachableFromEnvironment,
 }
 
 func TestEffectProbeDeclarationsMatchTheProbesThatExist(t *testing.T) {

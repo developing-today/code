@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -23,8 +24,9 @@ import (
 )
 
 const (
-	host = "localhost"
-	port = 23234
+	host                = "localhost"
+	port                = 23234
+	recipientQueueDepth = 16
 )
 
 // sender is the subset of tea.Program used for broadcast. Keeping the
@@ -34,24 +36,119 @@ type sender interface {
 	Send(tea.Msg)
 }
 
+// recipientQueue serializes delivery to one program. It keeps at most
+// recipientQueueDepth messages queued behind the single in-flight Send.
+type recipientQueue struct {
+	program sender
+	queue   chan tea.Msg
+	stopped chan struct{}
+	mu      sync.Mutex
+	closed  bool
+}
+
+func newRecipientQueue(p sender) *recipientQueue {
+	r := &recipientQueue{
+		program: p,
+		queue:   make(chan tea.Msg, recipientQueueDepth),
+		stopped: make(chan struct{}),
+	}
+	go r.run()
+	return r
+}
+
+func (r *recipientQueue) enqueue(msg tea.Msg) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return false
+	}
+	select {
+	case r.queue <- msg:
+		return true
+	default:
+		// A stalled recipient is pruned rather than allowing its backlog or
+		// blocked Send goroutines to grow with room traffic.
+		r.closed = true
+		close(r.stopped)
+		return false
+	}
+}
+
+func (r *recipientQueue) stop() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.closed {
+		r.closed = true
+		close(r.stopped)
+	}
+}
+
+func (r *recipientQueue) run() {
+	for {
+		select {
+		case <-r.stopped:
+			return
+		default:
+		}
+
+		select {
+		case <-r.stopped:
+			return
+		case msg := <-r.queue:
+			select {
+			case <-r.stopped:
+				return
+			default:
+			}
+			r.program.Send(msg)
+		}
+	}
+}
+
 // app contains a wish server and the registry of running programs.
 // The registry is guarded by mu: sessions register on connect and are
 // pruned when their program ends, so dead sessions neither accumulate
 // nor receive fan-out traffic.
 type app struct {
 	*ssh.Server
-	mu    sync.RWMutex
-	progs []sender
+	mu         sync.RWMutex
+	sendMu     sync.Mutex
+	progs      []sender
+	dispatches map[sender]*recipientQueue
 }
 
-// send dispatches a message to all running programs.
+// register adds a running program and its ordered delivery worker.
+func (a *app) register(p sender) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.dispatches == nil {
+		a.dispatches = make(map[sender]*recipientQueue)
+	}
+	if _, exists := a.dispatches[p]; exists {
+		return
+	}
+	a.progs = append(a.progs, p)
+	a.dispatches[p] = newRecipientQueue(p)
+}
+
+// send enqueues a message for each running program in a single broadcast
+// order. A recipient can have one in-flight Send and at most
+// recipientQueueDepth queued messages; a full queue prunes that recipient.
 func (a *app) send(msg tea.Msg) {
+	a.sendMu.Lock()
+	defer a.sendMu.Unlock()
+
 	a.mu.RLock()
-	progs := make([]sender, len(a.progs))
-	copy(progs, a.progs)
+	progs := append([]sender(nil), a.progs...)
+	dispatches := make([]*recipientQueue, len(progs))
+	for i, p := range progs {
+		dispatches[i] = a.dispatches[p]
+	}
 	a.mu.RUnlock()
-	for _, p := range progs {
-		go p.Send(msg)
+	for i, dispatch := range dispatches {
+		if dispatch == nil || !dispatch.enqueue(msg) {
+			a.remove(progs[i])
+		}
 	}
 }
 
@@ -59,12 +156,18 @@ func (a *app) send(msg tea.Msg) {
 // unknown program is a no-op.
 func (a *app) remove(p sender) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	var dispatch *recipientQueue
 	for i, q := range a.progs {
 		if q == p {
 			a.progs = append(a.progs[:i], a.progs[i+1:]...)
-			return
+			dispatch = a.dispatches[p]
+			delete(a.dispatches, p)
+			break
 		}
+	}
+	a.mu.Unlock()
+	if dispatch != nil {
+		dispatch.stop()
 	}
 }
 
@@ -88,22 +191,40 @@ func newApp() *app {
 	return a
 }
 
-func (a *app) Start() {
-	var err error
-	done := make(chan os.Signal, 1)
-	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
-	log.Printf("Starting SSH server on %s:%d", host, port)
+func runServer(serve func() error, shutdown func(context.Context) error, done <-chan os.Signal, timeout time.Duration) error {
+	serveErr := make(chan error, 1)
 	go func() {
-		if err = a.ListenAndServe(); err != nil {
-			log.Fatalln(err)
-		}
+		serveErr <- serve()
 	}()
 
-	<-done
-	log.Println("Stopping SSH server")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer func() { cancel() }()
-	if err := a.Shutdown(ctx); err != nil {
+	select {
+	case err := <-serveErr:
+		if err != nil && !errors.Is(err, ssh.ErrServerClosed) {
+			return err
+		}
+		return nil
+	case <-done:
+		log.Println("Stopping SSH server")
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		if err := shutdown(ctx); err != nil {
+			return err
+		}
+
+		err := <-serveErr
+		if err != nil && !errors.Is(err, ssh.ErrServerClosed) {
+			return err
+		}
+		return nil
+	}
+}
+
+func (a *app) Start() {
+	done := make(chan os.Signal, 1)
+	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(done)
+	log.Printf("Starting SSH server on %s:%d", host, port)
+	if err := runServer(a.ListenAndServe, a.Shutdown, done, 30*time.Second); err != nil {
 		log.Fatalln(err)
 	}
 }
@@ -118,9 +239,7 @@ func (a *app) ProgramHandler(s ssh.Session) *tea.Program {
 	model.id = s.User()
 
 	p := tea.NewProgram(model, tea.WithOutput(s), tea.WithInput(s))
-	a.mu.Lock()
-	a.progs = append(a.progs, p)
-	a.mu.Unlock()
+	a.register(p)
 	go func() {
 		p.Wait()
 		a.remove(p)
