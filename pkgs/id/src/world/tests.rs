@@ -2079,13 +2079,13 @@ mod tests {
         );
     }
 
-    fn issued_entry(scopes: u8) -> JournalEntry {
+    fn issued_entry_for(participant_id: u64, scopes: u8) -> JournalEntry {
         let secret = "ef".repeat(32);
-        let digest = hex_encode(&token_digest(&format!("1.{secret}")));
+        let digest = hex_encode(&token_digest(&format!("{participant_id}.{secret}")));
         JournalEntry::Issued {
             participant: Participant {
-                id: 1,
-                display_name: "ann".to_owned(),
+                id: participant_id,
+                display_name: format!("ann-{participant_id}"),
             },
             digest,
             scopes,
@@ -2095,6 +2095,251 @@ mod tests {
             used: 0,
             subject: None,
         }
+    }
+
+    fn issued_entry(scopes: u8) -> JournalEntry {
+        issued_entry_for(1, scopes)
+    }
+
+    fn restore_author_entries(entries: Vec<JournalEntry>) -> anyhow::Result<RestoredWorld> {
+        WorldCore::restore(
+            "restore-authors",
+            WorldLimits::default(),
+            std::iter::once(JournalEntry::Created {
+                world_id: "restore-authors".to_owned(),
+                version: JOURNAL_VERSION,
+            })
+            .chain(entries),
+        )
+    }
+
+    fn committed_event(sequence: u64, participant_id: u64, kind: WorldEventKind) -> JournalEntry {
+        JournalEntry::Committed {
+            event: WorldEvent {
+                sequence,
+                participant_id,
+                kind,
+            },
+        }
+    }
+
+    fn checkpoint_event(sequence: u64, events: Vec<WorldEvent>) -> JournalEntry {
+        JournalEntry::Checkpoint {
+            sequence,
+            module_hash: "module".to_owned(),
+            seed: 0,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            transfers: None,
+            snapshot: "snapshot".to_owned(),
+            events,
+            admin_history: None,
+            lease: None,
+            open_presence: None,
+        }
+    }
+
+    #[test]
+    fn restore_refuses_committed_events_from_never_issued_participants() {
+        for kind in [
+            WorldEventKind::Input(b"ghost".to_vec()),
+            WorldEventKind::Chat("ghost".to_owned()),
+        ] {
+            let error = restore_author_entries(vec![committed_event(1, 99, kind)]).unwrap_err();
+            assert!(
+                error.to_string().contains("before it was issued"),
+                "error explains the missing prior issuance: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn restore_refuses_checkpoint_events_from_never_issued_participants() {
+        let error = restore_author_entries(vec![checkpoint_event(
+            1,
+            vec![WorldEvent {
+                sequence: 1,
+                participant_id: 99,
+                kind: WorldEventKind::Input(b"ghost".to_vec()),
+            }],
+        )])
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("before it was issued"),
+            "error explains the missing prior issuance: {error}"
+        );
+    }
+
+    #[test]
+    fn restore_refuses_events_from_participants_issued_later() {
+        let error = restore_author_entries(vec![
+            committed_event(1, 2, WorldEventKind::Input(b"late".to_vec())),
+            issued_entry_for(2, WorldScopes::GUEST.bits()),
+        ])
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("before it was issued"),
+            "error explains the missing prior issuance: {error}"
+        );
+    }
+
+    #[test]
+    fn restore_refuses_committed_events_after_author_revocation() {
+        let error = restore_author_entries(vec![
+            issued_entry(WorldScopes::GUEST.bits()),
+            JournalEntry::Revoked {
+                participant_id: 1,
+                by: None,
+            },
+            committed_event(1, 1, WorldEventKind::Chat("after revoke".to_owned())),
+        ])
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("after revocation"),
+            "error explains the earlier revocation: {error}"
+        );
+    }
+
+    #[test]
+    fn restore_refuses_input_and_chat_without_the_matching_scope() {
+        for (kind, scope_name) in [
+            (WorldEventKind::Input(b"move".to_vec()), "INPUT"),
+            (WorldEventKind::Chat("hello".to_owned()), "CHAT"),
+        ] {
+            let error = restore_author_entries(vec![
+                issued_entry(WorldScopes::JOIN.bits()),
+                committed_event(1, 1, kind),
+            ])
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("without {scope_name} scope")),
+                "error explains the missing scope: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn restore_refuses_checkpoint_events_without_the_matching_scope() {
+        let error = restore_author_entries(vec![
+            issued_entry(WorldScopes::JOIN.bits()),
+            checkpoint_event(
+                1,
+                vec![WorldEvent {
+                    sequence: 1,
+                    participant_id: 1,
+                    kind: WorldEventKind::Chat("unauthorized".to_owned()),
+                }],
+            ),
+        ])
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("without CHAT scope"),
+            "error explains the missing scope: {error}"
+        );
+    }
+
+    #[test]
+    fn restore_accepts_host_chat_and_committed_content_before_later_revocation() {
+        let host_chat = restore_author_entries(vec![committed_event(
+            1,
+            0,
+            WorldEventKind::Chat("host".to_owned()),
+        )])
+        .unwrap();
+        assert!(matches!(
+            host_chat.core.events.back().map(|event| &event.kind),
+            Some(WorldEventKind::Chat(text)) if text == "host"
+        ));
+
+        let restored = restore_author_entries(vec![
+            issued_entry(WorldScopes::GUEST.bits()),
+            committed_event(1, 1, WorldEventKind::Chat("before revoke".to_owned())),
+            JournalEntry::Revoked {
+                participant_id: 1,
+                by: None,
+            },
+        ])
+        .unwrap();
+        assert!(matches!(
+            restored.core.events.back().map(|event| &event.kind),
+            Some(WorldEventKind::Chat(text)) if text == "before revoke"
+        ));
+    }
+
+    #[test]
+    fn checkpoint_restore_keeps_valid_history_from_later_revoked_participant() {
+        let mut core = world(8);
+        let (participant, token) = core
+            .issue_capability("Ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        core.input(&token, b"before revoke").unwrap();
+        assert_eq!(core.revoke_tree(participant.id), vec![participant.id]);
+        core.active_module_hash = Some("module".to_owned());
+
+        let entries = core.checkpoint_entries("snapshot".to_owned()).unwrap();
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert!(matches!(
+            restored.core.events.back(),
+            Some(WorldEvent {
+                participant_id,
+                kind: WorldEventKind::Input(input),
+                ..
+            }) if *participant_id == participant.id && input.as_slice() == b"before revoke"
+        ));
+    }
+
+    #[test]
+    fn restore_accepts_friend_delegated_history_without_directory_state() {
+        // Codex P1 on PR #4518: restore runs before the directory loads,
+        // so scope validation must use the recorded capability chain.
+        // A participant delegated by a parent with a different subject
+        // (the friend-delegation shape) has zero effective scopes under
+        // an empty directory; its valid history must still restore.
+        let secret = "ef".repeat(32);
+        let issued_with =
+            |id: u64, scopes: u8, parent: Option<u64>, subject: &str| JournalEntry::Issued {
+                participant: Participant {
+                    id,
+                    display_name: format!("delegate-{id}"),
+                },
+                digest: hex_encode(&token_digest(&format!("{id}.{secret}"))),
+                scopes,
+                parent,
+                expires_at: None,
+                uses: None,
+                used: 0,
+                subject: Some(subject.to_owned()),
+            };
+        let delegated_scopes = WorldScopes::JOIN.0 | WorldScopes::INPUT.0 | WorldScopes::CHAT.0;
+        let entries = vec![
+            issued_with(1, WorldScopes::ALL.bits(), None, "subject-a"),
+            issued_with(2, delegated_scopes, Some(1), "subject-b"),
+            committed_event(1, 2, WorldEventKind::Input(b"hello".to_vec())),
+            committed_event(2, 2, WorldEventKind::Chat("hi".to_owned())),
+        ];
+        let restored = restore_author_entries(entries).unwrap();
+        assert!(
+            restored.core.capabilities.get(&2).is_some(),
+            "delegated participant restores"
+        );
+
+        let checkpoint = vec![
+            issued_with(1, WorldScopes::ALL.bits(), None, "subject-a"),
+            issued_with(2, delegated_scopes, Some(1), "subject-b"),
+            checkpoint_event(
+                1,
+                vec![WorldEvent {
+                    sequence: 1,
+                    participant_id: 2,
+                    kind: WorldEventKind::Input(b"kept".to_vec()),
+                }],
+            ),
+        ];
+        restore_author_entries(checkpoint).unwrap();
     }
 
     fn restore_with_scopes(scopes: u8) -> anyhow::Result<RestoredWorld> {
