@@ -158,6 +158,32 @@ function initWorld(): void {
       (participant) =>
         isRecord(participant) && isFiniteNumber(participant.id) && typeof participant.display_name === "string",
     );
+  // Fetch-boundary shape validation (#7831): the host-view and invite
+  // handlers must fail closed through their own error vocabulary on a
+  // wrong-shape 200 instead of leaking a raw TypeError (host view) or
+  // persisting a bogus capability (invite). Oracles: HostViewResponse
+  // and invite_handler in pkgs/id/src/web/world_ws.rs.
+  type HostViewResult = {
+    snapshot?: NonNullable<WorldFrame["snapshot"]> | null;
+    view?: string | null;
+    surface?: ScreenSurface | null;
+    records_sequence: number;
+    records: Record<string, unknown>;
+    next_after: string | null;
+  };
+  const isHostViewResult = (value: unknown): value is HostViewResult =>
+    isRecord(value) &&
+    isFiniteNumber(value.records_sequence) &&
+    isRecord(value.records) &&
+    (value.next_after === null || typeof value.next_after === "string") &&
+    (value.snapshot === undefined || value.snapshot === null || isWorldSnapshot(value.snapshot)) &&
+    (value.view === undefined || value.view === null || typeof value.view === "string");
+  const isInviteResult = (value: unknown): value is { capability: string; display_name: string } =>
+    isRecord(value) &&
+    typeof value.capability === "string" &&
+    value.capability.length > 0 &&
+    typeof value.display_name === "string" &&
+    value.display_name.length > 0;
   const isWorldEvent = (value: unknown): value is NonNullable<WorldFrame["event"]> => {
     if (
       !isRecord(value) ||
@@ -430,14 +456,11 @@ function initWorld(): void {
           throw new Error(response.status === 401 ? "Host authorization denied" : "Host view unavailable");
         }
         if (generation !== hostViewGeneration || !hostMode) return;
-        const result = (await response.json()) as {
-          snapshot?: NonNullable<WorldFrame["snapshot"]>;
-          view?: string | null;
-          surface?: ScreenSurface | null;
-          records_sequence: number;
-          records: Record<string, unknown>;
-          next_after: string | null;
-        };
+        const rawResult: unknown = await response.json();
+        if (!isHostViewResult(rawResult)) {
+          throw new Error("Host view unavailable");
+        }
+        const result = rawResult;
         if (recordsSequence !== null && recordsSequence !== result.records_sequence) {
           throw new Error("World records changed while paging; refresh the host view");
         }
@@ -563,7 +586,11 @@ function initWorld(): void {
       if (!response.ok) {
         throw new Error(response.status === 401 ? "Admin token refused" : `Invite failed (${response.status})`);
       }
-      const result = (await response.json()) as { capability: string; display_name: string };
+      const rawResult: unknown = await response.json();
+      if (!isInviteResult(rawResult)) {
+        throw new Error("Invite failed");
+      }
+      const result = rawResult;
       showCapability(result.capability);
       admin.value = "";
       setStatus("Invite created. Copy it or join this browser.", "good");
