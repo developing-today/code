@@ -373,3 +373,80 @@ test('malformed credential state file warns on stderr and sends no auth header',
   await acp.waitFor(() => acp.stderr().includes('not valid JSON') || null, 'stderr warning');
   assert.ok(acp.stderr().includes(authFile), 'warning names the state file');
 });
+
+// ---------------------------------------------------------------------------
+// #6939: --server is validated at startup. A missing (trailing), empty,
+// flag-like, or non-URL value — and any unknown argument — fails
+// fast with a usage error naming the flag (exit 2) before the event
+// stream starts, instead of silently dialling the default serve or
+// looping forever on 'Failed to parse URL'.
+// ---------------------------------------------------------------------------
+
+function runAdapterExpectUsageError(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [path.join(binDir, 'opencode-acp-adapter.mjs'), ...args], {
+      env: {
+        ...process.env,
+        OPENCODE_SERVER_PASSWORD: '',
+        OPENCODE_ACP_SERVER: '',
+        OPENCODE_AUTH_FILE: path.join(binDir, 'nonexistent-auth-fixture.json'),
+      },
+    });
+    let stderr = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`adapter did not exit for args ${JSON.stringify(args)}; stderr so far: ${stderr}`));
+    }, 5000);
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, stderr });
+    });
+  });
+}
+
+test('trailing --server fails fast with a usage error naming --server (#6939)', async () => {
+  const { code, stderr } = await runAdapterExpectUsageError(['--server']);
+  assert.equal(code, 2);
+  assert.match(stderr, /--server/);
+  assert.match(stderr, /usage: opencode-acp-adapter/);
+});
+
+test('--server= fails fast with a usage error naming --server (#6939)', async () => {
+  const { code, stderr } = await runAdapterExpectUsageError(['--server=']);
+  assert.equal(code, 2);
+  assert.match(stderr, /--server/);
+});
+
+test('flag-like --server value fails fast naming the flag and the value (#6939)', async () => {
+  const { code, stderr } = await runAdapterExpectUsageError(['--server', '--bogus-flag']);
+  assert.equal(code, 2);
+  assert.match(stderr, /--server/);
+  assert.match(stderr, /--bogus-flag/);
+});
+
+test('non-URL --server value fails fast naming --server and the value (#6939)', async () => {
+  const { code, stderr } = await runAdapterExpectUsageError(['--server', 'not-a-url']);
+  assert.equal(code, 2);
+  assert.match(stderr, /--server/);
+  assert.match(stderr, /not-a-url/);
+});
+
+test('non-http(s) --server value fails fast naming --server (#6939)', async () => {
+  const { code, stderr } = await runAdapterExpectUsageError(['--server=ftp://127.0.0.1:9']);
+  assert.equal(code, 2);
+  assert.match(stderr, /--server/);
+});
+
+test("unknown argument (typo'd --sever) fails fast naming the argument (#6939)", async () => {
+  const { code, stderr } = await runAdapterExpectUsageError(['--sever', 'http://127.0.0.1:9']);
+  assert.equal(code, 2);
+  assert.match(stderr, /--sever/);
+});
