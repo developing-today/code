@@ -1659,6 +1659,16 @@ impl WorldActor {
                 // Refuse before touching the replacement program: installs
                 // are writer authority.
                 if let Err(error) = self.check_writable() {
+                    // The writability refusal is a processed administrative
+                    // outcome and belongs in the audit trail, like the
+                    // refusals whose writability checks run inside the
+                    // recorded result below: emit exactly one record for it.
+                    self.audit_admin_result(
+                        installed_by.map_or_else(|| "admin".to_owned(), |id| format!("participant:{id}")),
+                        "InstallProgram",
+                        serde_json::json!({"module_hash": module_hash, "seed": seed, "installed_by": installed_by}),
+                        false,
+                    );
                     let _ = reply.send(Err(error));
                     return;
                 }
@@ -1797,22 +1807,20 @@ impl WorldActor {
             }
             WorldCommand::ExecutionProfileInfo { reply } => {
                 let profile = self.core.execution_profile;
-                self.audit_admin_result(
-                    "admin",
-                    "ExecutionProfileInfo",
-                    serde_json::json!({"profile": format!("{profile:?}")}),
-                    true,
-                );
+                // No audit record, for the same reason as Metrics below:
+                // the execution profile is readable by any joined
+                // participant holding a capability (the session layer's
+                // ExecutionProfileInfo frame), so an admin audit record
+                // would misattribute a participant read.
                 let _ = reply.send(profile);
             }
             WorldCommand::ManifestState { reply } => {
                 let state = (self.core.active_seed, self.core.schedules.clone());
-                self.audit_admin_result(
-                    "admin",
-                    "ManifestState",
-                    serde_json::json!({"active_seed": state.0, "schedules": state.1.clone()}),
-                    true,
-                );
+                // No audit record, for the same reason as Metrics below:
+                // the session layer's WorldState frame accepts a
+                // participant capability (only the seed is withheld from
+                // non-admin callers there), so an admin audit record
+                // would misattribute a participant read.
                 let _ = reply.send(state);
             }
             WorldCommand::AdminScheduleAt { id, at_ms, reply } => {

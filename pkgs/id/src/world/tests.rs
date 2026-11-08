@@ -7412,6 +7412,50 @@ mod audit_tests {
     }
 
     #[test]
+    fn install_program_writability_refusal_is_audited_once() {
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
+        let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
+        actor.read_only = true;
+
+        futures_lite::future::block_on(async {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::InstallProgram {
+                    module_hash: "deadbeef".to_owned(),
+                    seed: 7,
+                    provenance: None,
+                    installed_by: None,
+                    trust: None,
+                    program: Box::new(FirstUseProgram),
+                    reply,
+                })
+                .await;
+            let error = response.await.unwrap().unwrap_err();
+            assert!(
+                format!("{error:#}").contains("read-only"),
+                "the refusal is the writability check: {error:#}"
+            );
+        });
+
+        let captured = records.lock().unwrap().clone();
+        let install_records: Vec<_> = captured
+            .iter()
+            .filter(|record| record["action"] == "InstallProgram")
+            .collect();
+        assert_eq!(
+            install_records.len(),
+            1,
+            "one writability refusal must emit exactly one audit record: {captured:?}"
+        );
+        assert_eq!(install_records[0]["outcome"], "refused");
+        assert_eq!(install_records[0]["parameters"]["module_hash"], "deadbeef");
+    }
+
+    #[test]
     fn participant_readable_queries_emit_no_admin_audit_record() {
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
@@ -7428,6 +7472,16 @@ mod audit_tests {
             let (reply, response) = tokio::sync::oneshot::channel();
             actor.handle(WorldCommand::CapsInfo { reply }).await;
             response.await.unwrap().unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::ExecutionProfileInfo { reply })
+                .await;
+            let _profile = response.await.unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor.handle(WorldCommand::ManifestState { reply }).await;
+            let _state = response.await.unwrap();
         });
 
         let captured = records.lock().unwrap().clone();
