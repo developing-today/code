@@ -195,6 +195,7 @@ pub mod event_store;
 pub mod event_sync;
 pub mod fileops;
 pub mod frames;
+pub mod serve_proxy;
 pub mod groups;
 pub mod helpers;
 pub mod hosted_binding;
