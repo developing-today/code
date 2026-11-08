@@ -97,7 +97,7 @@ UUID_LANE = re.compile(
 )
 
 
-def is_candidate(row):
+def is_candidate(row, ledger_lookup=None):
     """A claimed task is a claimant candidate iff the opencode execution
     lane was assigned (progress.lane, stamped by assign_repo_task_lane
     since migration 0021), no session is bound yet, and the claiming
@@ -106,17 +106,31 @@ def is_candidate(row):
     launch for one would double-execute; they are registered in
     agent.lanes under their scheduled-task UUIDs, while Muse shift
     lanes use short ids (code-a, opencode-a, ...) and legacy claims
-    carry no lane id at all."""
+    carry no lane id at all.
+
+    A row whose progress.session_id was cleared (#5508) is decided by
+    the lane ledger, not by the progress marker: every correct
+    binding-clear path stamps session_cleared, so the marker alone
+    cannot distinguish a stale ledger binding (the #5508 case) from a
+    cleanly cleared task that is ready to launch again. ledger_lookup
+    is the injected read (task id -> ledger dict, or None when the
+    ledger is unreadable); it defaults to the repo-queue lane verb."""
     prog = row.get("progress") or {}
     if prog.get("lane") != "opencode" or prog.get("session_id"):
         return False
-    # A prior terminal/recovery path recorded the old session in
-    # session_cleared but the task row no longer has a current binding.
-    # Older versions cleared only progress while leaving the lane-ledger
-    # row bound, so this state is ambiguous: do not offer it for another
-    # launch. Surface it through is_stale_binding for reconciliation.
-    if is_stale_binding(row):
-        return False
+    # A cleared progress.session_id with a live ledger binding is the
+    # #5508 defect: re-offering it makes the claimant create a session
+    # that bind then rejects. A cleared progress.session_id with NO
+    # ledger binding is a cleanly cleared task and stays launchable.
+    if _has_cleared_session(prog):
+        lookup = ledger_lookup if ledger_lookup is not None else fetch_lane_ledger
+        ledger = lookup(row.get("id"))
+        if ledger is None:
+            # Unreadable ledger: fail closed. A task we cannot prove
+            # unbound must not be launched twice.
+            return False
+        if ledger.get("session_id"):
+            return False
     # The claiming lane must have RECORDED its yield (instruction
     # section 1b: checkpoint stage "handed_off"). Assignment alone is
     # not a handoff: lanes on pre-1b instructions assign and then work
@@ -137,22 +151,61 @@ def is_candidate(row):
     return True
 
 
-def is_stale_binding(row):
-    """True when progress records a cleared session but no current binding.
+def _has_cleared_session(prog):
+    """True when progress records a prior session that was cleared (#5508).
 
-    The claimant cannot infer from a cleared progress.session_id whether
-    the separate lane-ledger binding was cleared too. Treat the durable
-    session_cleared marker as an ambiguous possible stale binding and
-    surface it for reconciliation rather than risk a duplicate launch.
-    """
-    prog = row.get("progress") or {}
+    Every correct binding-clear path (claim_repo_task, expire_leases,
+    park_task, fail_repo_task, revalidate_parked_tasks) stamps this
+    marker, so it says "a session existed and was cleared", never "the
+    lane ledger is still bound"."""
     cleared = prog.get("session_cleared")
-    return (
-        prog.get("lane") == "opencode"
-        and not prog.get("session_id")
-        and isinstance(cleared, dict)
-        and bool(cleared.get("session_id"))
-    )
+    return isinstance(cleared, dict) and bool(cleared.get("session_id"))
+
+
+def is_stale_binding(row, ledger_lookup=None):
+    """True when progress records a cleared session AND the lane ledger
+    still carries a binding for the task (#5508).
+
+    The ledger is the authority: progress.session_id and the ledger
+    binding are cleared together by correct paths, so a cleared
+    progress with a bound ledger is the stale state the claimant used
+    to re-offer forever. An unreadable ledger is classified as stale
+    too — the claimant must not launch what it cannot prove unbound."""
+    prog = row.get("progress") or {}
+    if prog.get("lane") != "opencode" or prog.get("session_id"):
+        return False
+    if not _has_cleared_session(prog):
+        return False
+    lookup = ledger_lookup if ledger_lookup is not None else fetch_lane_ledger
+    ledger = lookup(row.get("id"))
+    if ledger is None:
+        return True
+    return bool(ledger.get("session_id"))
+
+
+def fetch_lane_ledger(task_id):
+    """Read one task's lane-ledger row via `repo-queue lane <task_id>`.
+
+    Returns the ledger dict, or None when the task has no ledger row or
+    the read fails (both are "unreadable" for classification: the
+    claimant fails closed rather than guess). Read-only by
+    construction — the lane verb is a SELECT."""
+    if task_id is None:
+        return None
+    try:
+        result = subprocess.run(
+            [str(REPO_QUEUE_CMD), "lane", str(task_id)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=str(PRIMARY_CLONE),
+        )
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def parse_lease_ms(value):

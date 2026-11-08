@@ -10,6 +10,8 @@ import {
   fetchFollowingValidatedRedirects,
   MAX_CRAWL_BODY_BYTES,
   parseJsonObjectBody,
+  parseFormDataBody,
+  parseUploadFile,
   parseCrawlResult,
   parseAiSummaryResult,
   readResponseTextCapped,
@@ -1061,4 +1063,46 @@ test("isMachineNameConflict recognises only the machines.name UNIQUE violation (
   assert.equal(isMachineNameConflict(new Error("UNIQUE constraint failed")), false);
   assert.equal(isMachineNameConflict("UNIQUE constraint failed: machines.name"), true);
   assert.equal(isMachineNameConflict(null), false);
+});
+
+test("parseFormDataBody rejects a non-multipart body (#7087)", async () => {
+  // A JSON, plain-text, or empty body used to make req.formData() throw a
+  // raw TypeError out of POST /api/files, answered 500 with internal text.
+  for (const init of [
+    { body: JSON.stringify({ file: "x" }), headers: { "content-type": "application/json" } },
+    { body: "hello", headers: { "content-type": "text/plain" } },
+    {},
+  ]) {
+    const r = await parseFormDataBody(new Request("https://probe/api/files", { method: "POST", ...init }));
+    assert.equal(r.ok, false, JSON.stringify(init));
+    if (!r.ok) assert.match(r.error, /multipart form body required/);
+  }
+});
+
+test("parseFormDataBody accepts a multipart body (#7087)", async () => {
+  const fd = new FormData();
+  fd.append("file", new File(["hello"], "note.txt", { type: "text/plain" }));
+  const r = await parseFormDataBody(new Request("https://probe/api/files", { method: "POST", body: fd }));
+  assert.equal(r.ok, true);
+});
+
+test("parseUploadFile rejects a missing or non-file 'file' field (#7087)", () => {
+  // A text field named 'file' comes back from FormData.get as a string;
+  // the route's bare cast used to hide that until file.arrayBuffer()
+  // crashed with a raw TypeError (500).
+  for (const value of [null, undefined, "just a string", 42, {}, { name: "x" }, { name: 7, arrayBuffer: async () => new ArrayBuffer(0) }]) {
+    const parsed = parseUploadFile(value);
+    assert.equal(parsed.ok, false, String(value));
+    if (!parsed.ok) assert.match(parsed.error, /multipart field 'file'/);
+  }
+});
+
+test("parseUploadFile passes a real File through with its name and type (#7087)", async () => {
+  const parsed = parseUploadFile(new File(["hello world"], "note.txt", { type: "text/plain" }));
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) {
+    assert.equal(parsed.values.name, "note.txt");
+    assert.equal(parsed.values.type, "text/plain");
+    assert.equal(new TextDecoder().decode(await parsed.values.arrayBuffer()), "hello world");
+  }
 });

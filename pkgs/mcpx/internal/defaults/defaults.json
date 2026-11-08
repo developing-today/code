@@ -107,6 +107,9 @@
   "resolve": {
     "dialTimeout": "200ms"
   },
+  "preflight": {
+    "npmTimeout": "5s"
+  },
   "elicit": {
     "ttl": "120s",
     "maxAge": "30m",

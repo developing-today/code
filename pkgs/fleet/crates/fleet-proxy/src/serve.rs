@@ -603,10 +603,13 @@ fn handle_request(broker: &Broker, frame: &serde_json::Value) -> serde_json::Val
     }
 }
 
-/// Lenient request parsing, mirroring the Python's dict access:
+/// Request parsing, mirroring the Python's dict access:
 /// `method`/`path` are required (their absence is the KeyError the
-/// Python handler turns into a 502), everything else has the same
-/// defaults the Python applies (`port` 4799, body/token_file None).
+/// Python handler turns into a 502), and the remaining fields take
+/// the same defaults the Python applies (body/token_file None, an
+/// absent `port` defaults downstream) -- except `port`, which is
+/// strict at this boundary (#6516): a present-but-unusable port is
+/// refused, never silently defaulted.
 fn parse_request(frame: &serde_json::Value) -> Result<Request, String> {
     let method = frame
         .get("method")
@@ -633,10 +636,7 @@ fn parse_request(frame: &serde_json::Value) -> Result<Request, String> {
         ));
     }
     let body = frame.get("body").filter(|b| !b.is_null()).cloned();
-    let port = frame
-        .get("port")
-        .and_then(|v| v.as_u64())
-        .and_then(|p| u16::try_from(p).ok());
+    let port = parse_port(frame)?;
     let token_file = frame
         .get("token_file")
         .and_then(|v| v.as_str())
@@ -648,6 +648,43 @@ fn parse_request(frame: &serde_json::Value) -> Result<Request, String> {
         port,
         token_file,
     })
+}
+
+/// The frame's `port`, strictly. Absent -- or null, mirroring how
+/// `body` treats null -- means no port was named: the caller's
+/// default applies downstream (`Broker::do_request` substitutes
+/// PORT_LAPTOP_AGENT). A port that is present but unusable -- a
+/// string, a float, a bool/container, a negative, zero, or above
+/// 65535 -- is refused here at the frame boundary (#6516): the
+/// lenient chain this replaces collapsed every one of those shapes
+/// to None, and None became the default port, silently rerouting
+/// the request to a service the caller never named. Method/path
+/// already refuse malformed shapes at this boundary (#5750); the
+/// port now does too. The error names the shape that arrived, and
+/// `handle_request` wraps it in the standard 502 broker frame; no
+/// connection is opened for a refused port.
+fn parse_port(frame: &serde_json::Value) -> Result<Option<u16>, String> {
+    let Some(value) = frame.get("port").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let Some(n) = value.as_u64().filter(|_| value.is_u64()) else {
+        let shape = if value.is_string() {
+            format!("string {value}")
+        } else if value.is_f64() {
+            format!("non-integer number {value}")
+        } else if value.is_i64() {
+            format!("negative number {value}")
+        } else {
+            format!("{value}")
+        };
+        return Err(format!("request \"port\" {shape} is not an integer port"));
+    };
+    if n == 0 || n > u64::from(u16::MAX) {
+        return Err(format!(
+            "request \"port\" {n} is outside the usable port range 1..=65535"
+        ));
+    }
+    Ok(Some(n as u16))
 }
 
 fn serve_session(broker: &Broker, mut stream: UnixStream) {
@@ -1299,5 +1336,94 @@ mod tests {
         // Shape: "<ISO-8601 UTC> fleet proxy serve start …".
         let stamp = line.split(' ').next().unwrap();
         assert!(stamp.ends_with('Z') && stamp.contains('T'), "{line}");
+    }
+
+    fn frame_with_port(port: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"method": "GET", "path": "/health", "port": port})
+    }
+
+    #[test]
+    fn parse_request_absent_port_means_the_default() {
+        // No "port" key at all: None, which do_request turns into
+        // PORT_LAPTOP_AGENT (4799) -- the absent-port route.
+        let req = parse_request(&serde_json::json!({"method": "GET", "path": "/health"}))
+            .unwrap();
+        assert_eq!(req.port, None);
+        // An explicit null is absent too, mirroring `body`.
+        let req = parse_request(&frame_with_port(serde_json::Value::Null)).unwrap();
+        assert_eq!(req.port, None);
+    }
+
+    #[test]
+    fn parse_request_valid_port_is_kept() {
+        let req = parse_request(&frame_with_port(serde_json::json!(4801))).unwrap();
+        assert_eq!(req.port, Some(4801));
+        let req = parse_request(&frame_with_port(serde_json::json!(65535))).unwrap();
+        assert_eq!(req.port, Some(65535));
+    }
+
+    #[test]
+    fn parse_request_refuses_present_but_invalid_ports() {
+        // Every shape the pre-fix chain silently collapsed to the
+        // 4799 default (#6516): out of range, negative, float,
+        // string, zero, and a bool. Each must be refused at the
+        // frame boundary with an error naming the port field, so
+        // handle_request answers the 502 broker frame and no
+        // connection is ever opened.
+        for bad in [
+            serde_json::json!(70000),
+            serde_json::json!(-1),
+            serde_json::json!(4801.5),
+            serde_json::json!("4801"),
+            serde_json::json!(0),
+            serde_json::json!(true),
+        ] {
+            let err = parse_request(&frame_with_port(bad.clone()))
+                .expect_err("present-but-invalid port must be refused");
+            assert!(
+                err.contains("\"port\""),
+                "error must name the port field, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_request_port_matches_the_shape_model_on_generated_values() {
+        use proptest::prelude::*;
+        // Oracle: the #6516 acceptance rules stated as a model over
+        // the JSON value. Null yields None (absent: the 4799 default
+        // applies downstream); an integer in 1..=65535 is preserved;
+        // every other shape -- out-of-range or negative integers,
+        // floats, strings, bools, containers -- is refused.
+        fn model(value: &serde_json::Value) -> Result<Option<u16>, ()> {
+            match value {
+                serde_json::Value::Null => Ok(None),
+                serde_json::Value::Number(n) => match n.as_u64() {
+                    Some(u) if n.is_u64() && (1..=65535).contains(&u) => {
+                        Ok(Some(u as u16))
+                    }
+                    _ => Err(()),
+                },
+                _ => Err(()),
+            }
+        }
+        let shapes = prop_oneof![
+            (1u64..=65535).prop_map(|n| serde_json::json!(n)),
+            Just(serde_json::json!(0)),
+            (65536u64..=u64::MAX).prop_map(|n| serde_json::json!(n)),
+            (-1_000_000i64..=-1).prop_map(|n| serde_json::json!(n)),
+            (-1e6f64..=1e6).prop_map(|f| serde_json::json!(f)),
+            any::<String>().prop_map(|s| serde_json::json!(s)),
+            any::<bool>().prop_map(|b| serde_json::json!(b)),
+            Just(serde_json::json!([])),
+            Just(serde_json::json!({})),
+            Just(serde_json::Value::Null),
+        ];
+        proptest!(|(value in shapes)| {
+            let got = parse_request(&frame_with_port(value.clone()))
+                .map(|req| req.port)
+                .map_err(|_| ());
+            prop_assert_eq!(got, model(&value), "port value: {}", value);
+        });
     }
 }
