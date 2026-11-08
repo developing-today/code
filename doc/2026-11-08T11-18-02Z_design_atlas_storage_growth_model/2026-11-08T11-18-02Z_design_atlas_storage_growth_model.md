@@ -52,16 +52,25 @@ the finding #6061 was filed from:
 M_s = A_s × (1 − ρ_s) × (1 + α) + β_s
 ```
 
-Steady-state stored bytes for the class, once retention is binding:
+Steady-state stored bytes for the class, once retention is binding.
+The ground truth is the **referenced span set**: every span any retained
+version references must remain stored, including spans introduced before
+the retention window. So the estimator is one full version footprint
+(the newest version resolves only if all its spans are present) plus
+the marginal bytes of each additional retained version:
 
 ```
-S_s = F_s × V̄_s × M_s
+S_s = F_s × [ A_s × (1 + α) + (V̄_s − 1) × M_s ]
 ```
+
+Using `V̄_s × M_s` alone would understate the footprint exactly when
+reuse is high: at `V̄_s = 1` it predicts `M_s` per file, while resolving
+that one version requires its full `A_s × (1 + α)`.
 
 split by tier by the class's hot window `H_s` (days) and cold window:
 
 ```
-hot_s  = F_s × min(V̄_s, λ_s × H_s) × M_s        (latest versions, plus every version younger than H_s)
+hot_s  = F_s × [ A_s × (1 + α) + max(0, min(V̄_s, λ_s × H_s) − 1) × M_s ]
 cold_s = S_s − hot_s                            (rustfs tier, per the 2026-11-04 storage ruling)
 ```
 
@@ -88,7 +97,7 @@ a step function reported as current count + planned shards, per #6019).
 | Input | Source | Notes |
 |---|---|---|
 | `λ_s`, `A_s` | ingest ledger (#6058), aggregated per class per day | versions landed and their full sizes, whether or not spans were reused |
-| `ρ_s` | ledger fields `chunks_reused / (chunks_new + chunks_reused)` per class | #6058 owns the ledger schema — per batch `(chunks_new, chunks_reused, tokens_embedded, model, $)` — this model consumes the aggregates; it does not add ledger fields |
+| `ρ_s` | **byte-weighted** reuse from the ledger aggregates: `bytes_reused / (bytes_reused + bytes_new)` per class, where the byte sums are over span bytes | #6058 owns the ledger schema — per batch `(chunks_new, chunks_reused, tokens_embedded, model, $)` — but those fields are chunk *counts*, and a count ratio is not the byte fraction §2 requires when span sizes vary (the offset-matching design under #6028 allows variable-size spans and split subspans). The §7 aggregation therefore sums span bytes alongside the counts; the count ratio is never used as `ρ_s` |
 | storage delta, write volume | #6019's per-run cost accounting | the ground truth the model's `S_s` is reconciled against (§5, step 4) |
 | `α` | measured once per embedding model/index build: (vector + index bytes) ÷ content bytes | re-measured when the model or index changes; not a per-batch ledger concern |
 | `β_s` | manifest row size × spans per version, from #6028's span format | small next to `A_s × (1 − ρ_s)` except for tiny, heavily-edited files; kept explicit so that case is visible |
@@ -110,8 +119,9 @@ One append-mostly log class: `F = 2,000` files, `λ = 1` version/day,
   had the version been stored whole with its index. Reuse is worth
   ~18× on this class; that is why `ρ_s` is a model input and not a
   constant.
-- At `V̄ = 90` retained versions: `S ≈ 2,000 × 90 × 18 KB ≈ 3.2 GB`,
-  of which the 14-day hot window is ≈ 0.5 GB.
+- At `V̄ = 90` retained versions: `S ≈ 2,000 × (320 KB + 89 × 18 KB)
+  ≈ 3.8 GB`, of which the 14-day hot window (the full newest version
+  plus 13 marginal versions per file) is ≈ 1.1 GB.
 - The same class at the conservative v1 assumption `ρ = 0` (§5) projects
   `M ≈ 322 KB` and would hit a 10 GB envelope line in ~16 days of
   arrivals — the conservative projection is supposed to look alarming;
@@ -177,12 +187,18 @@ and their derivation only.
 
 ### 5.4 Reconciliation
 
-Each cycle, projected `S_s` is compared with the measured storage delta
-(#6019 accounting). A miss of more than 25% in either direction is a
-calibration defect to be explained in the cycle report (wrong `ρ_s`,
-unmodelled metadata, staging leakage into corpus storage) — not
-silently absorbed by refitting. Two consecutive unexplained misses
-freeze default changes for that class until the cause is found.
+Each cycle, the comparison is like-for-like over the same interval:
+the projected **change** in `S_s` across the cycle against the measured
+storage delta (#6019 accounting) for that same interval — or, where an
+absolute footprint is reconstructed from the accounting, projected
+`S_s` against that absolute figure. A total must never be compared
+with a delta: a correctly predicted corpus with zero net growth would
+otherwise register a miss every cycle. A miss of more than 25% in
+either direction on the like-for-like comparison is a calibration
+defect to be explained in the cycle report (wrong `ρ_s`, unmodelled
+metadata, staging leakage into corpus storage) — not silently absorbed
+by refitting. Two consecutive unexplained misses freeze default
+changes for that class until the cause is found.
 
 ## 6. Guardrails
 
