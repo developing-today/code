@@ -119,6 +119,49 @@ function argValue(flag: string): string | undefined {
   return value;
 }
 
+// Unknown or duplicated arguments are usage errors, never silently
+// ignored (#7301): argv was probed token-by-token by argValue() /
+// includes("--skip-gmail") only, so a typo'd --strat fell through to
+// the default current-month period and overwrote the candidates file
+// for the wrong period, a joined --start=... did the same, a typo'd
+// --skip-gmal ran the Gmail read anyway, and a duplicate --start
+// silently let the first win — all exit 0. Mirrors rejectUnknownArgs
+// in post-alert.ts (#7289) / generate-digest.ts (#7097). Runs first
+// in main(), before any connector call or file write. Known flags
+// stay accepted in staged mode too — their values remain ignored
+// there per the staged-manifest contract; only unknown, joined, or
+// duplicated tokens are refused.
+const VALUE_FLAGS = ["--start", "--end", "--out"];
+const STANDALONE_FLAGS = ["--skip-gmail"];
+function rejectUnknownArgs(): void {
+  const args = process.argv.slice(2);
+  const seen = new Set<string>();
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i] as string;
+    if (VALUE_FLAGS.includes(token)) {
+      if (seen.has(token)) {
+        console.error(`producer: duplicate ${token} (usage: [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--out <path>] [--skip-gmail])`);
+        process.exit(2);
+      }
+      seen.add(token);
+      i++; // skip the value; argValue() validates it
+      continue;
+    }
+    if (STANDALONE_FLAGS.includes(token)) {
+      if (seen.has(token)) {
+        console.error(`producer: duplicate ${token} (usage: [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--out <path>] [--skip-gmail])`);
+        process.exit(2);
+      }
+      seen.add(token);
+      continue;
+    }
+    console.error(
+      `producer: unknown argument ${JSON.stringify(token)} (usage: [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--out <path>] [--skip-gmail])`,
+    );
+    process.exit(2);
+  }
+}
+
 function isoDay(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
@@ -410,8 +453,11 @@ async function gmailCandidates(
 }
 
 async function main(): Promise<void> {
-  // Parse values before any connector call or file write. Staged periods
-  // come from their manifest, so --start/--end remain ignored there.
+  // Reject unknown arguments before anything is parsed, queried, or
+  // written (#7301); then parse values before any connector call or
+  // file write. Staged periods come from their manifest, so
+  // --start/--end remain ignored there.
+  rejectUnknownArgs();
   const outArg = argValue("--out");
   const explicitStart = INPUTS_DIR ? undefined : argValue("--start");
   const explicitEnd = INPUTS_DIR ? undefined : argValue("--end");

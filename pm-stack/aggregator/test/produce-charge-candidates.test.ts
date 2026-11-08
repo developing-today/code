@@ -400,3 +400,52 @@ describe("live mode CLI validation (#3333)", () => {
     expect(readFileSync(h.gmailCalls, "utf8")).toContain("gmail +triage");
   });
 });
+
+// #7301: unknown, misspelled, joined, or duplicated arguments must be
+// usage errors before any side effect — argv was probed token-by-token
+// only, so a typo'd --strat silently produced the default current-month
+// period, a joined --start=... did the same, and a typo'd --skip-gmal
+// ran the Gmail read anyway, all exit 0.
+describe("live mode unknown arguments (#7301)", () => {
+  test("an unknown token is a usage error before any side effect", () => {
+    expectCliUsageError(
+      (h) => ["--skip-gmail", "--bogus", "--start", "2026-09-01", "--end", "2026-09-30", "--out", h.out],
+      'unknown argument "--bogus"',
+    );
+  });
+
+  test("a typo'd --strat is a usage error, not the default period", () => {
+    expectCliUsageError(
+      (h) => ["--skip-gmail", "--strat", "2026-09-01", "--end", "2026-12-31", "--out", h.out],
+      'unknown argument "--strat"',
+    );
+  });
+
+  test("a joined --start=... is a usage error, not the default period", () => {
+    expectCliUsageError(
+      (h) => ["--skip-gmail", "--start=2026-09-01", "--end", "2026-12-31", "--out", h.out],
+      'unknown argument "--start=2026-09-01"',
+    );
+  });
+
+  test("a typo'd --skip-gmal is a usage error, not a Gmail read", () => {
+    expectCliUsageError(
+      (h) => ["--skip-gmal", "--start", "2026-09-01", "--end", "2026-09-30", "--out", h.out],
+      'unknown argument "--skip-gmal"',
+    );
+  });
+
+  test("a duplicate --start is a usage error, not first-wins", () => {
+    expectCliUsageError(
+      (h) => ["--skip-gmail", "--start", "2026-09-01", "--start", "2026-10-01", "--end", "2026-12-31", "--out", h.out],
+      "duplicate --start",
+    );
+  });
+
+  test("a duplicate --skip-gmail is a usage error", () => {
+    expectCliUsageError(
+      (h) => ["--skip-gmail", "--skip-gmail", "--start", "2026-09-01", "--end", "2026-09-30", "--out", h.out],
+      "duplicate --skip-gmail",
+    );
+  });
+});
