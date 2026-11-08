@@ -76,7 +76,7 @@ describe("roadmap Horizon contract (#1207)", () => {
   });
 
   test("unavailable live Grist remains explicitly reported while fixtures stay available", async () => {
-    const source = liveSource(loadConfig({ ...process.env, GRIST_API_KEY: "", PM_PROJECTOR_URL: "off" }));
+    const source = liveSource(loadConfig({ ...process.env, PM_AGG_SOURCE: "live", GRIST_API_KEY: "", PM_PROJECTOR_URL: "off" }));
     const rows = await source.roadmap();
     expect(rows.length).toBeGreaterThan(0);
     expect(source.provenance().roadmap).toContain("grist unreachable");

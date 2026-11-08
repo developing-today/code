@@ -98,9 +98,9 @@ export function laneFor(horizon: string): Lane {
   if (/^later$/i.test(h)) return { key: "later", label: "Later", order: 1e6 + 2 };
   if (/^ongoing$/i.test(h)) return { key: "ongoing", label: "Ongoing", order: 1e6 + 3 };
   if (h === "" || /^unscheduled$/i.test(h)) {
-    return { key: "unscheduled", label: "Unscheduled", order: 1e6 + 4 };
+    return { key: "unscheduled", label: "Unscheduled", order: 1e6 + 5 };
   }
-  return { key: `other:${h}`, label: h, order: 1e6 + 1 };
+  return { key: `other:${h}`, label: h, order: 1e6 + 4 };
 }
 
 function quarterLane(year: number, quarter: number): Lane {
