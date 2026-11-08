@@ -10,6 +10,43 @@ const validFeed = {
   popular_tags: [{ label: "topic:rust", timestamp: 1_800_000_000_000_000, occurrences: 4 }],
 };
 
+function malformedFeeds(): unknown[] {
+  const arrayFields = ["recent", "popular", "recent_tags", "popular_tags"] as const;
+  const malformed: unknown[] = [null, [], "abc", {}];
+
+  for (const field of arrayFields) {
+    const { [field]: _omitted, ...withoutArray } = validFeed;
+    malformed.push(withoutArray);
+    for (const invalid of [null, {}, "items"]) {
+      malformed.push({ ...validFeed, [field]: invalid });
+    }
+
+    const isDocumentList = field === "recent" || field === "popular";
+    const validItem = isDocumentList ? validFeed.recent[0] : validFeed.popular_tags[0];
+    const wrongTypedItem = isDocumentList
+      ? { ...validFeed.recent[0], name: null }
+      : { ...validFeed.popular_tags[0], label: null };
+    malformed.push(
+      { ...validFeed, [field]: [null] },
+      { ...validFeed, [field]: [wrongTypedItem] },
+      { ...validFeed, [field]: [validItem, null] },
+    );
+  }
+
+  malformed.push(
+    { ...validFeed, recent: [{ ...validFeed.recent[0], updated_at: "now" }] },
+    { ...validFeed, recent: [{ ...validFeed.recent[0], tag_count: "1" }] },
+    { ...validFeed, recent: [{ ...validFeed.recent[0], tags: [1] }] },
+    { ...validFeed, recent_tags: [{ ...validFeed.recent_tags[0], subject: 1 }] },
+    { ...validFeed, recent_tags: [{ ...validFeed.recent_tags[0], timestamp: "now" }] },
+    { ...validFeed, popular_tags: [{ ...validFeed.popular_tags[0], occurrences: null }] },
+    { ...validFeed, scope: null },
+    { ...validFeed, popularity_metric: 1 },
+  );
+
+  return malformed;
+}
+
 afterEach(() => {
   document.body.innerHTML = "";
   initHome();
@@ -55,62 +92,40 @@ describe("home feed validation (#7811)", () => {
   });
 
   it("rejects malformed feed bodies, arrays, and item fields", () => {
-    const malformedFeeds: unknown[] = [null, [], "abc", {}];
-    const arrayFields = ["recent", "popular", "recent_tags", "popular_tags"] as const;
-
-    for (const field of arrayFields) {
-      for (const invalid of [null, {}, "items"]) {
-        malformedFeeds.push({ ...validFeed, [field]: invalid });
-      }
-    }
-
-    malformedFeeds.push(
-      { ...validFeed, recent: [null] },
-      { ...validFeed, recent: [{ ...validFeed.recent[0], name: null }] },
-      { ...validFeed, recent: [{ ...validFeed.recent[0], updated_at: "now" }] },
-      { ...validFeed, recent: [{ ...validFeed.recent[0], tag_count: "1" }] },
-      { ...validFeed, recent: [{ ...validFeed.recent[0], tags: [1] }] },
-      { ...validFeed, recent_tags: [null] },
-      { ...validFeed, recent_tags: [{ ...validFeed.recent_tags[0], label: 1 }] },
-      { ...validFeed, recent_tags: [{ ...validFeed.recent_tags[0], subject: 1 }] },
-      { ...validFeed, recent_tags: [{ ...validFeed.recent_tags[0], timestamp: "now" }] },
-      { ...validFeed, popular_tags: [{ ...validFeed.popular_tags[0], occurrences: null }] },
-      { ...validFeed, scope: null },
-      { ...validFeed, popularity_metric: 1 },
-    );
-
-    for (const feed of malformedFeeds) {
+    for (const feed of malformedFeeds()) {
       expect(parseHomeFeed(feed)).toBeNull();
     }
   });
 
-  it("keeps the last rendered lists and shows a clean message for a malformed response", async () => {
+  it("keeps the last rendered lists and shows a clean message for every malformed response", async () => {
     const visibility = Object.getOwnPropertyDescriptor(document, "visibilityState");
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
-    document.body.innerHTML = `
-      <section data-home-app>
-        <ol data-home-recent><li>last recent</li></ol>
-        <ol data-home-popular><li>last popular</li></ol>
-        <ol data-home-recent-tags><li>last recent tag</li></ol>
-        <ol data-home-popular-tags><li>last popular tag</li></ol>
-        <p data-home-updated>Previously updated.</p>
-      </section>`;
-    const lists = Array.from(document.querySelectorAll("[data-home-app] ol"));
-    const previousMarkup = lists.map((list) => list.innerHTML);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ ...validFeed, recent: [{ ...validFeed.recent[0], tags: "wrong type" }] }),
-      }),
-    );
 
     try {
-      initHome();
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      for (const malformedFeed of malformedFeeds()) {
+        document.body.innerHTML = `
+          <section data-home-app>
+            <ol data-home-recent><li>last recent</li></ol>
+            <ol data-home-popular><li>last popular</li></ol>
+            <ol data-home-recent-tags><li>last recent tag</li></ol>
+            <ol data-home-popular-tags><li>last popular tag</li></ol>
+            <p data-home-updated>Previously updated.</p>
+          </section>`;
+        const lists = Array.from(document.querySelectorAll("[data-home-app] ol"));
+        const previousMarkup = lists.map((list) => list.innerHTML);
+        vi.stubGlobal(
+          "fetch",
+          vi.fn().mockResolvedValue({ ok: true, json: async () => malformedFeed }),
+        );
 
-      expect(lists.map((list) => list.innerHTML)).toEqual(previousMarkup);
-      expect(document.querySelector("[data-home-updated]")?.textContent).toBe("Feed is temporarily unavailable.");
+        initHome();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(lists.map((list) => list.innerHTML)).toEqual(previousMarkup);
+        expect(document.querySelector("[data-home-updated]")?.textContent).toBe(
+          "Feed is temporarily unavailable.",
+        );
+      }
     } finally {
       if (visibility) Object.defineProperty(document, "visibilityState", visibility);
       else Reflect.deleteProperty(document, "visibilityState");
