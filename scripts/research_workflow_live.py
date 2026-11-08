@@ -469,10 +469,10 @@ def resolve_command(args, root, config, package):
         document = c.contained(package, concept["path"])
         text = document.read_text(encoding="utf-8")
         for block in c.RESOLUTION.findall(c.unfenced(text)):
-            entry = json.loads(block)
-            if not isinstance(entry, dict):
+            scanned = json.loads(block)
+            if not isinstance(scanned, dict):
                 fail(f"{document}: resolution block must be a JSON object")
-            if entry.get("note") == key:
+            if scanned.get("note") == key:
                 fail(f"{key} already has a disposition in {concept['path']}")
     content = receipt_text(note, entry).encode("utf-8")
     if receipt.parent.is_symlink():
