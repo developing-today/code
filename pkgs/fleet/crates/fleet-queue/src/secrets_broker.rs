@@ -542,6 +542,7 @@ fn url_decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{State, fetch_through_with, parse_list_entries, resolve_list_id, url_decode};
+    use proptest::prelude::*;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, RwLock};
@@ -701,5 +702,68 @@ mod tests {
         let non_string = serde_json::json!([{"id": 7, "key": "alpha"}]);
         assert!(resolve_list_id(&non_string, "alpha").is_err());
         assert!(resolve_list_id(&serde_json::json!({"not": "array"}), "alpha").is_err());
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// PBT (#6568, testing doctrine): the strict list parser
+        /// succeeds iff every generated entry has string `id` and
+        /// `key` fields, and on success the output is exactly those
+        /// pairs in order. Oracle: the well-formedness predicate
+        /// recomputed from the generated payload itself.
+        #[test]
+        fn parse_list_entries_succeeds_iff_every_entry_is_well_formed(
+            entries in proptest::collection::vec(
+                (0u8..3, 0u8..3, "[a-z]{0,6}", "[a-z]{0,6}"),
+                0..12,
+            )
+        ) {
+            let list = serde_json::Value::Array(
+                entries
+                    .into_iter()
+                    .map(|(id_kind, key_kind, id_s, key_s)| {
+                        let mut obj = serde_json::Map::new();
+                        match id_kind {
+                            1 => {
+                                obj.insert("id".to_string(), serde_json::json!(id_s));
+                            }
+                            2 => {
+                                obj.insert("id".to_string(), serde_json::json!(42));
+                            }
+                            _ => {}
+                        }
+                        match key_kind {
+                            1 => {
+                                obj.insert("key".to_string(), serde_json::json!(key_s));
+                            }
+                            2 => {
+                                obj.insert("key".to_string(), serde_json::json!(true));
+                            }
+                            _ => {}
+                        }
+                        serde_json::Value::Object(obj)
+                    })
+                    .collect(),
+            );
+            let expected: Option<Vec<(String, String)>> = list
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| {
+                    match (
+                        s.get("id").and_then(|v| v.as_str()),
+                        s.get("key").and_then(|v| v.as_str()),
+                    ) {
+                        (Some(i), Some(k)) => Some((i.to_string(), k.to_string())),
+                        _ => None,
+                    }
+                })
+                .collect();
+            match expected {
+                Some(pairs) => prop_assert_eq!(parse_list_entries(&list).unwrap(), pairs),
+                None => prop_assert!(parse_list_entries(&list).is_err()),
+            }
+        }
     }
 }
