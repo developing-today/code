@@ -48,7 +48,7 @@ func initializeParamsWithRoot(t *testing.T, root string) map[string]any {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	mu.Lock()
 	defer mu.Unlock()
 	return init

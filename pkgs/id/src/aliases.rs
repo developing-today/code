@@ -186,6 +186,7 @@ mod tests {
             subject,
             name: name.to_owned(),
             value: value.map(str::to_owned),
+            scope: crate::tag_claims::TagScope::Shared,
         }
     }
 

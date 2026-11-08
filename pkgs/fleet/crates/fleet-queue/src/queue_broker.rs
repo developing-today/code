@@ -15,9 +15,16 @@
 //!      QUEUE_BROKER_TOKEN_FILE (default ~/.config/queue-broker/token),
 //!      QUEUE_BROKER_SECRETS_URL (default http://100.99.113.103:4800),
 //!      QUEUE_BROKER_SECRETS_TOKEN_FILE (default ~/.config/secrets-broker/token).
+//!
+//! Backend (#6741): QUEUE_BROKER_BACKEND=postgres (default; the
+//! Supabase PostgREST path above) or =turso — the queue core on the
+//! dedicated Turso DB `fleet-queue` (crate::turso_queue), selected by
+//! QUEUE_BROKER_TURSO_URL / QUEUE_BROKER_TURSO_TOKEN_FILE. The
+//! production default does not flip with the code; cutover is
+//! doc/fleet/queue-turso-cutover.md.
 
-use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use fleet_secrets::{Resolver, SecretError, SecretSource, SecretValue};
 use serde_json::{Value, json};
@@ -25,10 +32,48 @@ use tiny_http::{Header, Response, Server, StatusCode};
 
 const PILOT_REPO: &str = "developing-today/code";
 
+/// #6450 posture (Drew ruling 2026-11-06): broker-side health cache
+/// TTL — inside the recorded 10-15 s band. Simultaneous lane gate
+/// calls collapse to one `repo_queue_health` view read per TTL
+/// window instead of one read per lane.
+const HEALTH_CACHE_TTL: Duration = Duration::from_secs(12);
+
+/// #6450 posture: enqueue pacing token bucket — a burst allowance,
+/// then a sustained refill rate. A producer burst of N tasks now
+/// spreads over ~(N - burst) / refill seconds against agent.tasks
+/// instead of landing inside a single second while claims are in
+/// flight (the 12:22Z burst that preceded the 12:23Z window).
+/// Single enqueues are unaffected while the bucket holds tokens.
+const ENQUEUE_BURST: f64 = 20.0;
+const ENQUEUE_REFILL_PER_SEC: f64 = 20.0;
+
 #[derive(Clone)]
 struct Creds {
     key: String,
     base: String, // project URL, no trailing slash
+}
+
+/// One cached `/health` read: the rows of the `repo_queue_health`
+/// view for one queue filter (the key), and when they were fetched.
+struct HealthCacheEntry {
+    key: String,
+    at: Instant,
+    rows: Value,
+}
+
+/// Token-bucket state for enqueue pacing (see ENQUEUE_BURST).
+struct EnqueueGate {
+    tokens: f64,
+    last: Instant,
+}
+
+impl EnqueueGate {
+    fn new() -> Self {
+        Self {
+            tokens: ENQUEUE_BURST,
+            last: Instant::now(),
+        }
+    }
 }
 
 struct State {
@@ -36,6 +81,12 @@ struct State {
     secrets_token: String,
     creds: RwLock<Option<Creds>>,
     agent: ureq::Agent,
+    health_cache: RwLock<Option<HealthCacheEntry>>,
+    enqueue_gate: Mutex<EnqueueGate>,
+    failure_events_path: Option<std::path::PathBuf>,
+    /// #6741: Some when QUEUE_BROKER_BACKEND=turso; dispatch routes
+    /// every verb except /validate + /healthz to the Turso backend.
+    turso: Option<crate::turso_queue::TursoBackend>,
 }
 
 struct BErr {
@@ -164,8 +215,10 @@ impl State {
         self.fetch_creds()
     }
 
-    /// One PostgREST request. Returns (parsed body, content-range).
-    fn postgrest(
+    /// One PostgREST request (a single credential-refresh cycle).
+    /// Returns (parsed body, content-range). The retry posture lives
+    /// in the `postgrest` wrapper below.
+    fn postgrest_once(
         &self,
         method: &str,
         path: &str,
@@ -245,6 +298,129 @@ impl State {
         ))
     }
 
+    /// PostgREST with the #6450 posture backoff (crate::backoff):
+    /// 57014 / PGRST002-class failures retry under the shared
+    /// policy. A final failure of that class is also the standing
+    /// capture's trigger: it is appended to the failure-events file
+    /// for the capture job to mine (arm (a) of the #6450 ruling).
+    fn postgrest(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        count_exact: bool,
+    ) -> Result<(Value, Option<String>), BErr> {
+        let mut attempt: u32 = 0;
+        loop {
+            match self.postgrest_once(method, path, body, count_exact) {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    if !crate::backoff::is_retryable(&e.msg) {
+                        return Err(e);
+                    }
+                    if attempt + 1 >= crate::backoff::MAX_ATTEMPTS {
+                        self.record_failure_event(path, &e.msg, attempt + 1);
+                        return Err(e);
+                    }
+                    let slept = crate::backoff::sleep_after_failure(attempt);
+                    crate::log::info(
+                        "queue-broker",
+                        &format!(
+                            "postgrest {path} 57014-class failure (attempt {}): {}; backing off {}ms",
+                            attempt + 1,
+                            trim(&e.msg, 160),
+                            slept.as_millis()
+                        ),
+                    );
+                    attempt += 1;
+                }
+            }
+        }
+    }
+
+    /// Append one failure-window record for the standing capture.
+    /// Best-effort: a logging failure never fails a request.
+    fn record_failure_event(&self, path: &str, msg: &str, attempts: u32) {
+        crate::log::info(
+            "queue-broker",
+            &format!(
+                "failure window: postgrest {path} exhausted backoff after {attempts} attempts: {}",
+                trim(msg, 200)
+            ),
+        );
+        let Some(file) = &self.failure_events_path else {
+            return;
+        };
+        let ts_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let health_age_ms = self
+            .health_cache
+            .read()
+            .unwrap()
+            .as_ref()
+            .map(|e| e.at.elapsed().as_millis() as u64);
+        let line = json!({
+            "ts_epoch": ts_epoch,
+            "path": path,
+            "attempts": attempts,
+            "error": trim(msg, 300),
+            "health_cache_age_ms": health_age_ms,
+        });
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(file)
+        {
+            use std::io::Write;
+            let _ = writeln!(f, "{line}");
+        }
+    }
+
+    /// The cached health rows for `key` when fresher than the TTL,
+    /// with their age in milliseconds.
+    fn health_cache_get(&self, key: &str) -> Option<(Value, u64)> {
+        let guard = self.health_cache.read().unwrap();
+        let entry = guard.as_ref()?;
+        if entry.key != key {
+            return None;
+        }
+        let age = entry.at.elapsed();
+        if age > HEALTH_CACHE_TTL {
+            return None;
+        }
+        Some((entry.rows.clone(), age.as_millis() as u64))
+    }
+
+    fn health_cache_put(&self, key: &str, rows: Value) {
+        *self.health_cache.write().unwrap() = Some(HealthCacheEntry {
+            key: key.to_string(),
+            at: Instant::now(),
+            rows,
+        });
+    }
+
+    /// #6450 posture: pace the enqueue RPC through the token bucket
+    /// (burst ENQUEUE_BURST, refilled at ENQUEUE_REFILL_PER_SEC).
+    fn pace_enqueue(&self) {
+        loop {
+            let wait = {
+                let mut g = self.enqueue_gate.lock().unwrap();
+                let now = Instant::now();
+                let elapsed = now.duration_since(g.last).as_secs_f64();
+                g.tokens = (g.tokens + elapsed * ENQUEUE_REFILL_PER_SEC).min(ENQUEUE_BURST);
+                g.last = now;
+                if g.tokens >= 1.0 {
+                    g.tokens -= 1.0;
+                    return;
+                }
+                Duration::from_secs_f64((1.0 - g.tokens) / ENQUEUE_REFILL_PER_SEC)
+            };
+            std::thread::sleep(wait.min(Duration::from_millis(100)));
+        }
+    }
+
     fn rpc(&self, fn_name: &str, args: Value) -> Result<Value, BErr> {
         let (v, _) = self.postgrest("POST", &format!("rpc/{fn_name}"), Some(&args), false)?;
         Ok(v)
@@ -267,6 +443,16 @@ fn quote(s: &str, safe: &str) -> String {
         }
     }
     out
+}
+
+/// The `/list` limit, validated before it is interpolated into the
+/// PostgREST path (#6419): an out-of-range value from any client is
+/// rejected with the same usage error the client itself raises
+/// (design #6448 Phase 3: reject, not clamp). Absent means the
+/// existing default of 20.
+fn list_limit(req: &Value) -> Result<i64, String> {
+    let raw = req.get("limit").and_then(|l| l.as_i64());
+    crate::client::list_limit_or_default(raw)
 }
 
 fn ok(fields: Value) -> Value {
@@ -325,6 +511,11 @@ fn verb_with_execution(st: &State, fn_name: &str, args: Value, req: &Value) -> V
 }
 
 fn dispatch(st: &State, path: &str, req: &Value) -> Value {
+    if let Some(t) = &st.turso {
+        if path != "/validate" && path != "/healthz" {
+            return crate::turso_queue::dispatch(t, path, req);
+        }
+    }
     match path {
         "/validate" => {
             let packet = req.get("packet").cloned().unwrap_or(Value::Null);
@@ -373,6 +564,7 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
                 "p_not_before": task.get("not_before"),
                 "p_max_attempts": task.get("max_attempts"),
             });
+            st.pace_enqueue();
             match st.rpc(rpc_name, args) {
                 Ok(row) if !row.is_null() => {
                     ok(json!({"row": row, "rpc": rpc_name, "warnings": warnings}))
@@ -491,7 +683,10 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
         ),
         "/list" => {
             let queue = req.get("queue").and_then(|q| q.as_str()).unwrap_or("");
-            let limit = req.get("limit").and_then(|l| l.as_i64()).unwrap_or(20);
+            let limit = match list_limit(req) {
+                Ok(limit) => limit,
+                Err(e) => return fail(2, e),
+            };
             // `rich` adds the claim/binding fields the on-laptop
             // opencode claimant's poll.py needs (it reads through the
             // broker since the binary-direct migration retired the
@@ -534,10 +729,29 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             if let Some(q) = req.get("queue").and_then(|q| q.as_str()) {
                 path += &format!("&queue=eq.{}", quote(q, ""));
             }
+            let cache_key = req
+                .get("queue")
+                .and_then(|q| q.as_str())
+                .unwrap_or("*")
+                .to_string();
+            if let Some((rows, age_ms)) = st.health_cache_get(&cache_key) {
+                return ok(json!({
+                    "project_netloc": netloc,
+                    "project_source": "bitwarden",
+                    "rows": rows,
+                    "cache": {"hit": true, "age_ms": age_ms, "ttl_ms": HEALTH_CACHE_TTL.as_millis() as u64},
+                }));
+            }
             match st.postgrest("GET", &path, None, false) {
-                Ok((rows, _)) => ok(
-                    json!({"project_netloc": netloc, "project_source": "bitwarden", "rows": rows}),
-                ),
+                Ok((rows, _)) => {
+                    st.health_cache_put(&cache_key, rows.clone());
+                    ok(json!({
+                        "project_netloc": netloc,
+                        "project_source": "bitwarden",
+                        "rows": rows,
+                        "cache": {"hit": false, "ttl_ms": HEALTH_CACHE_TTL.as_millis() as u64},
+                    }))
+                }
                 Err(e) => fail(e.exit, e.msg),
             }
         }
@@ -625,7 +839,10 @@ fn handle_request(
 pub fn run() -> i32 {
     let bind =
         std::env::var("QUEUE_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4801".to_string());
-    let home = std::env::var("HOME").expect("HOME unset");
+    let home = crate::home::from_env().unwrap_or_else(|error| {
+        eprintln!("queue-broker: {error}");
+        std::process::exit(2);
+    });
     let token_file = std::env::var("QUEUE_BROKER_TOKEN_FILE")
         .unwrap_or_else(|_| format!("{home}/.config/queue-broker/token"));
     let token = crate::token_file::load_token_file(&token_file).unwrap_or_else(|e| {
@@ -647,11 +864,75 @@ pub fn run() -> i32 {
         .timeout_global(Some(Duration::from_secs(90)))
         .build()
         .into();
+    let failure_events_path = std::env::var("QUEUE_BROKER_FAILURE_EVENTS")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(format!(
+                "{home}/.local/state/queue-broker/failure-events.jsonl"
+            ))
+        });
+    if let Some(dir) = failure_events_path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+
+    // #6741 backend selection: Postgres stays the default; the
+    // Turso backend is opt-in per broker process until the cutover
+    // runbook flips the unit env.
+    let turso = if std::env::var("QUEUE_BROKER_BACKEND")
+        .map(|v| v.eq_ignore_ascii_case("turso"))
+        .unwrap_or(false)
+    {
+        let url = std::env::var("QUEUE_BROKER_TURSO_URL")
+            .unwrap_or_else(|_| crate::turso_queue::DEFAULT_TURSO_URL.to_string());
+        let token = match std::env::var("QUEUE_BROKER_TURSO_TOKEN_FILE") {
+            Ok(f) => crate::token_file::load_token_file(&f).unwrap_or_else(|e| {
+                crate::log::info("queue-broker", &e);
+                std::process::exit(3);
+            }),
+            Err(_) => {
+                let resolver = Resolver::new(vec![Box::new(DirectSecrets {
+                    url: secrets_url.clone(),
+                    token: secrets_token.clone(),
+                    agent: agent.clone(),
+                })]);
+                resolver
+                    .resolve(crate::turso_queue::TURSO_TOKEN_SECRET_NAME)
+                    .map(|v| v.expose().to_string())
+                    .unwrap_or_else(|e| {
+                        crate::log::info(
+                            "queue-broker",
+                            &format!("turso backend token resolve failed: {e}"),
+                        );
+                        std::process::exit(3);
+                    })
+            }
+        };
+        let backend = crate::turso_queue::TursoBackend::new(url, token, agent.clone());
+        backend.ensure_schema().unwrap_or_else(|e| {
+            crate::log::info(
+                "queue-broker",
+                &format!("turso backend schema ensure failed: {e}"),
+            );
+            std::process::exit(3);
+        });
+        crate::log::info(
+            "queue-broker",
+            &format!("queue backend: turso ({})", backend.url()),
+        );
+        Some(backend)
+    } else {
+        None
+    };
+
     let state = Arc::new(State {
         secrets_url,
         secrets_token,
         creds: RwLock::new(None),
         agent,
+        health_cache: RwLock::new(None),
+        enqueue_gate: Mutex::new(EnqueueGate::new()),
+        failure_events_path: Some(failure_events_path),
+        turso,
     });
 
     let server = Server::http(&bind).unwrap_or_else(|e| {
@@ -726,4 +1007,26 @@ pub fn run() -> i32 {
     }
     // incoming_requests() ends only when the server stops.
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_limit_rejects_out_of_range_before_the_postgrest_path() {
+        // #6419: the broker interpolated the limit unchecked, so a
+        // client that skipped validation (or a raw caller) could send
+        // 0, negatives, or an unbounded value straight to PostgREST.
+        for bad in [0, -1, 501, i64::MAX] {
+            let err = list_limit(&json!({"limit": bad}))
+                .err()
+                .expect("out-of-range limit must be rejected");
+            assert!(err.contains("--limit"), "error names the flag: {err}");
+        }
+        assert_eq!(list_limit(&json!({"limit": 1})), Ok(1));
+        assert_eq!(list_limit(&json!({"limit": 500})), Ok(500));
+        // Absent limit keeps the existing default of 20.
+        assert_eq!(list_limit(&json!({})), Ok(20));
+    }
 }

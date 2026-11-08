@@ -134,28 +134,28 @@ func NewStdio(opts StdioOptions) (*StdioTransport, error) {
 	}
 	outR, outW, err := os.Pipe()
 	if err != nil {
-		stdinR.Close()
-		stdinW.Close()
+		_ = stdinR.Close()
+		_ = stdinW.Close()
 		return nil, err
 	}
 	errR, errW, err := os.Pipe()
 	if err != nil {
-		stdinR.Close()
-		stdinW.Close()
-		outR.Close()
-		outW.Close()
+		_ = stdinR.Close()
+		_ = stdinW.Close()
+		_ = outR.Close()
+		_ = outW.Close()
 		return nil, err
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdinR, outW, errW
 	startErr := cmd.Start()
 	// The child holds its own copies; ours must go, or EOF never arrives.
-	stdinR.Close()
-	outW.Close()
-	errW.Close()
+	_ = stdinR.Close()
+	_ = outW.Close()
+	_ = errW.Close()
 	if startErr != nil {
-		stdinW.Close()
-		outR.Close()
-		errR.Close()
+		_ = stdinW.Close()
+		_ = outR.Close()
+		_ = errR.Close()
 		return nil, fmt.Errorf("start %s: %w", opts.Command, startErr)
 	}
 
@@ -346,8 +346,8 @@ func (t *StdioTransport) Close() error {
 			<-waitOrTimeout(t.exited, defaults.StdioKillWait)
 		}
 	}
-	t.outR.Close()
-	t.errR.Close()
+	_ = t.outR.Close()
+	_ = t.errR.Close()
 	return nil
 }
 

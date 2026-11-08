@@ -637,7 +637,10 @@ pub fn select_best_signal(report: &EvalReport, metric: Metric) -> Result<String>
     let mut best: Option<(&SignalReport, f64)> = None;
     for signal in &report.signals {
         let value = metric.of(&signal.overall);
-        if best.is_none_or(|(_, best_value)| value > best_value) {
+        if best.is_none_or(|(best_signal, best_value)| {
+            value > best_value
+                || (value == best_value && signal.signal.as_str() < best_signal.signal.as_str())
+        }) {
             best = Some((signal, value));
         }
     }
@@ -793,6 +796,60 @@ mod tests {
             select_best_signal(&dev, Metric::Ndcg10).unwrap(),
             "dense".to_owned()
         );
+    }
+
+    fn report_with_scores(scores: &[(&str, f64)]) -> EvalReport {
+        EvalReport {
+            format: REPORT_FORMAT.to_owned(),
+            split: Split::Dev,
+            signals: scores
+                .iter()
+                .map(|(signal, ndcg10)| SignalReport {
+                    signal: (*signal).to_owned(),
+                    queries_total: 0,
+                    queries_scored: 0,
+                    overall: MetricMeans {
+                        ndcg10: *ndcg10,
+                        recall100: 0.0,
+                        recall1000: 0.0,
+                        mrr10: 0.0,
+                    },
+                    per_class: BTreeMap::new(),
+                    per_query: Vec::new(),
+                })
+                .collect(),
+        }
+    }
+
+    // Oracle: these report fixtures have explicit metric values. Equal
+    // scores must select the lexicographically smallest signal regardless
+    // of report order or JSON round-tripping; a strict winner still wins.
+    #[test]
+    fn selection_ties_use_lexicographic_order_for_any_report_order() {
+        let reverse = report_with_scores(&[("zeta", 0.5), ("alpha", 0.5)]);
+        assert_eq!(
+            select_best_signal(&reverse, Metric::Ndcg10).unwrap(),
+            "alpha"
+        );
+
+        let serialized = serde_json::to_string(&reverse).unwrap();
+        let deserialized: EvalReport = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(
+            select_best_signal(&deserialized, Metric::Ndcg10).unwrap(),
+            "alpha"
+        );
+
+        let sorted = report_with_scores(&[("alpha", 0.5), ("zeta", 0.5)]);
+        assert_eq!(
+            select_best_signal(&sorted, Metric::Ndcg10).unwrap(),
+            "alpha"
+        );
+
+        let strict = report_with_scores(&[("zeta", 0.6), ("alpha", 0.5)]);
+        assert_eq!(select_best_signal(&strict, Metric::Ndcg10).unwrap(), "zeta");
+
+        let empty = report_with_scores(&[]);
+        assert!(select_best_signal(&empty, Metric::Ndcg10).is_err());
     }
 
     // Oracle: the format rules in the module docs, one violation each.

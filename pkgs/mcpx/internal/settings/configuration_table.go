@@ -12,7 +12,7 @@ import (
 // generated region from a single place (#4909). The rendering is
 // unchanged.
 
-// settingsTable renders every setting, grouped by the first segment of its
+// ConfigurationTable renders every setting, grouped by the first segment of its
 // path, which is how someone looks one up: they know the area, not the leaf.
 func ConfigurationTable(all []Setting) string {
 	groups := map[string][]Setting{}
