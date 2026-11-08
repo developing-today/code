@@ -74,7 +74,16 @@ provisioning is a separate, controlled operation: it may fetch the pinned
 public model artifact and ONNX Runtime before processing secret data, but
 must not include corpus text, token IDs, or content-derived request metadata.
 The inference worker runs from local artifacts and needs no model-provider
-network access.
+network access. Enforce that property in the service sandbox, not only by
+convention: run the inference worker in a systemd network namespace
+(`PrivateNetwork=yes`) with `RestrictAddressFamilies=AF_UNIX`, no network
+capabilities, and no IP allow-list. The worker uses local files and Unix
+sockets only. If a deployment needs IP networking for any reason, secret
+ingestion stays disabled until an equivalent outbound-deny policy is
+independently verified. Model provisioning runs as a separate unit with
+network access but no mount or read permission for secret staging/corpus
+paths; it installs and hash-verifies artifacts before the inference unit is
+started.
 
 The local output vector is also secret-tier data: it stays in the secret
 staging/promotion path and secret vector store, retains the same tier
@@ -104,6 +113,12 @@ classification boundary or the existing pre-merge tier filter.
   service is inside the fleet trust boundary and the caller is authorized
   for the secret tier. Prefer a local library/worker call over the generic
   HTTP embedding route.
+- Verify the egress control as part of the shadow gate: from the worker's
+  actual service namespace, attempts to open IPv4/IPv6 sockets, resolve a
+  public hostname, and connect to an external canary must fail. Verify
+  local file and Unix-socket operation still works. A host firewall rule
+  alone is insufficient if the worker can be reconfigured to bypass it;
+  if isolation cannot be demonstrated, do not enable secret jobs.
 
 ### 3.3 Existing boundary to preserve / close before using the HTTP route
 
@@ -226,7 +241,12 @@ per-tier results. If the golden set contains secret-tier examples, execute
 and retain that evaluation on the fleet host only; publish aggregate metrics
 and non-sensitive identifiers, never the examples. Quality failure blocks
 secret-tier retrieval and is escalated through #6060's decision record,
-not “fixed” by a different model in this tier.
+not “fixed” by a different model in this tier. Use #6046's published metric
+definitions, baseline, sample requirements, and numeric regression
+thresholds for the pass/fail decision; do not substitute a subjective
+“acceptable” judgment or invent a competing threshold here. If #6046 has not
+yet settled those criteria, that is an activation blocker: the golden-set
+work must settle them before secret retrieval is enabled.
 
 ## 6. Operational home and service shape
 
@@ -287,7 +307,15 @@ reviewable:
 
 1. Implement the secret-aware local staging aggregator and all-or-nothing
    generation promotion; require explicit `Tier::Secret` authorization and
-   preserve the #6021 classification boundary.
+   preserve the #6021 classification boundary. At promotion, record the
+   mandated `embedding_model` identity (model ID, pipeline version, and
+   dimensions) in the shard manifest and refuse a missing or mismatched
+   identity. This is the secret-ingest portion of #6060's M2/M6 contract:
+   coordinate with its manifest/consumer and promotion follow-ons (#7646
+   and #7648), rather than creating a second provenance scheme. Query traces
+   must carry the same per-candidate model provenance under #6027 / #6060 M5
+   (follow-on #7647). Until the promotion assertion is in place, no secret
+   generation is promoted or made searchable.
 2. Add a reproducible local benchmark/report harness for token-length
    buckets, batch sizes, throughput, RSS, and burst drain. Keep raw secret
    inputs and outputs out of CI and public artifacts.
@@ -295,7 +323,9 @@ reviewable:
    under the secret-tier data boundary; publish only aggregate results.
 4. Add operational service configuration on the approved execution host,
    with pinned local artifacts, bounded jobs, body-log suppression, health
-   checks, and fail-closed pause/retry behavior.
+   checks, fail-closed pause/retry behavior, and a systemd network sandbox
+   that denies IP networking to the inference worker. Keep network-enabled
+   provisioning separate and unable to read secret staging/corpus paths.
 
 The exact implementation issue split, service memory limit, final batch
 budget, and numeric ingest-freshness target are intentionally deferred
