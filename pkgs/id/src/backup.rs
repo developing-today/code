@@ -40,7 +40,7 @@
 //!   No rotation flag is introduced here — that representation belongs
 //!   to #2380.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
@@ -56,6 +56,19 @@ const ENVELOPE_MAGIC: &[u8; 5] = b"IDKEY";
 /// Envelope version byte offset and expected v1 value.
 const ENVELOPE_VERSION_OFFSET: usize = 5;
 const ENVELOPE_VERSION_V1: u8 = 1;
+/// Envelope KDF/cipher byte offsets and expected v1 values, mirroring
+/// `key_envelope`'s header layout.
+const ENVELOPE_KDF_OFFSET: usize = 6;
+const ENVELOPE_KDF_ARGON2ID: u8 = 1;
+const ENVELOPE_CIPHER_OFFSET: usize = 7;
+const ENVELOPE_CIPHER_XCHACHA20_POLY1305: u8 = 1;
+/// KDF parameter bounds, mirroring `key_envelope`'s decrypt-path checks.
+const MIN_MEMORY_KIB: u32 = 19_456;
+const MAX_MEMORY_KIB: u32 = 262_144;
+const MIN_ITERATIONS: u32 = 2;
+const MAX_ITERATIONS: u32 = 10;
+const MIN_LANES: u32 = 1;
+const MAX_LANES: u32 = 4;
 
 /// Per-identity download budget from the #5033 decision: 10 per hour,
 /// 50 per day, per `H(pub)`.
@@ -405,7 +418,7 @@ pub struct RestoreReceipt {
 pub struct BackupStore {
     entries: HashMap<[u8; 32], BackupEntry>,
     bound_devices: HashMap<[u8; 32], Vec<[u8; 32]>>,
-    restore_pending: HashSet<[u8; 32]>,
+    restore_pending: HashMap<[u8; 32], u64>,
 }
 
 fn validate_envelope(envelope: &[u8]) -> Result<(), BackupError> {
@@ -420,6 +433,30 @@ fn validate_envelope(envelope: &[u8]) -> Result<(), BackupError> {
     if envelope[ENVELOPE_VERSION_OFFSET] != ENVELOPE_VERSION_V1 {
         return Err(BackupError::MalformedEnvelope(
             "unsupported envelope version",
+        ));
+    }
+    // Mirror the remaining structural checks in key_envelope::decrypt:
+    // an upload the decrypt path would reject for its header must not
+    // be stored, or it would replace a working backup with one no
+    // passphrase can restore (Codex review on PR #7658).
+    if envelope[ENVELOPE_KDF_OFFSET] != ENVELOPE_KDF_ARGON2ID {
+        return Err(BackupError::MalformedEnvelope("unsupported envelope KDF"));
+    }
+    if envelope[ENVELOPE_CIPHER_OFFSET] != ENVELOPE_CIPHER_XCHACHA20_POLY1305 {
+        return Err(BackupError::MalformedEnvelope(
+            "unsupported envelope cipher",
+        ));
+    }
+    let memory_kib = u32::from_le_bytes(envelope[8..12].try_into().unwrap());
+    let iterations = u32::from_le_bytes(envelope[12..16].try_into().unwrap());
+    let lanes = u32::from_le_bytes(envelope[16..20].try_into().unwrap());
+    if !(MIN_MEMORY_KIB..=MAX_MEMORY_KIB).contains(&memory_kib)
+        || !(MIN_ITERATIONS..=MAX_ITERATIONS).contains(&iterations)
+        || !(MIN_LANES..=MAX_LANES).contains(&lanes)
+        || memory_kib < lanes.saturating_mul(8)
+    {
+        return Err(BackupError::MalformedEnvelope(
+            "envelope KDF parameters are outside the supported range",
         ));
     }
     Ok(())
@@ -565,7 +602,7 @@ impl BackupStore {
             })
             .collect();
         if !notifications.is_empty() {
-            self.restore_pending.insert(hash);
+            self.restore_pending.insert(hash, restore_epoch);
         }
         Ok(RestoreReceipt {
             envelope,
@@ -624,10 +661,24 @@ impl BackupStore {
         }
     }
 
-    /// Confirm the restore notifications for an identity were
-    /// delivered; the restored key becomes authoritative.
-    pub fn confirm_restore_notifications(&mut self, public_key: &[u8; 32]) -> bool {
-        self.restore_pending.remove(&key_hash(public_key))
+    /// Confirm the restore notifications for the restore at
+    /// `restore_epoch` were delivered; the restored key becomes
+    /// authoritative. A confirmation naming an older epoch does NOT
+    /// clear a newer restore's pending notifications (Codex review
+    /// on PR #7658): the caller must name the epoch its notifications
+    /// belong to, exactly as carried on each DeviceNotification.
+    pub fn confirm_restore_notifications(
+        &mut self,
+        public_key: &[u8; 32],
+        restore_epoch: u64,
+    ) -> bool {
+        let hash = key_hash(public_key);
+        if self.restore_pending.get(&hash) == Some(&restore_epoch) {
+            self.restore_pending.remove(&hash);
+            true
+        } else {
+            false
+        }
     }
 
     /// Whether the identity's key may be treated as authoritative
@@ -636,7 +687,7 @@ impl BackupStore {
     pub fn is_authoritative(&self, public_key: &[u8; 32]) -> bool {
         let hash = key_hash(public_key);
         matches!(self.entries.get(&hash), Some(BackupEntry::Live(_)))
-            && !self.restore_pending.contains(&hash)
+            && !self.restore_pending.contains_key(&hash)
     }
 
     /// The live record for an identity, if one exists.
@@ -930,9 +981,55 @@ mod tests {
         assert_eq!(receipt.notifications[0].device_public_key, [42; 32]);
         assert_eq!(receipt.notifications[0].restore_epoch, 1);
         assert!(!store.is_authoritative(&public));
-        assert!(store.confirm_restore_notifications(&public));
+        assert!(store.confirm_restore_notifications(&public, 1));
         assert!(store.is_authoritative(&public));
         assert_eq!(store.record(&public).unwrap().restore_epoch(), 1);
+    }
+
+    /// Oracle: Codex review on PR #7658 — a stale confirmation for
+    /// restore epoch 1 must not clear restore epoch 2's pending
+    /// notifications; only the current epoch's confirmation restores
+    /// authority.
+    #[test]
+    fn stale_restore_confirmation_does_not_clear_newer_restore() {
+        let (mut store, _s, public, _e) = uploaded_store();
+        store.bind_device(&public, [42; 32]);
+        let first = store.download_for_restore(&public, 5_000).unwrap();
+        assert_eq!(first.restore_epoch, 1);
+        let second = store.download_for_restore(&public, 6_000).unwrap();
+        assert_eq!(second.restore_epoch, 2);
+        assert!(!store.is_authoritative(&public));
+        assert!(!store.confirm_restore_notifications(&public, 1));
+        assert!(!store.is_authoritative(&public));
+        assert!(store.confirm_restore_notifications(&public, 2));
+        assert!(store.is_authoritative(&public));
+    }
+
+    /// Oracle: Codex review on PR #7658 — a correctly signed envelope
+    /// whose header the decrypt path would reject (bad KDF/cipher id,
+    /// out-of-range KDF parameters) must be refused at upload, so it
+    /// cannot replace a working backup with an unrestorable one.
+    #[test]
+    fn upload_rejects_envelope_headers_decrypt_would_reject() {
+        let (signing, public, secret) = identity(11);
+        let envelope = envelope_for(&secret);
+        let mut store = BackupStore::new();
+        for mutate in [
+            |e: &mut Vec<u8>| e[6] = 9,                                      // KDF id
+            |e: &mut Vec<u8>| e[7] = 9,                                      // cipher id
+            |e: &mut Vec<u8>| e[8..12].copy_from_slice(&1u32.to_le_bytes()), // memory too low
+            |e: &mut Vec<u8>| e[12..16].copy_from_slice(&99u32.to_le_bytes()), // iterations too high
+            |e: &mut Vec<u8>| e[16..20].copy_from_slice(&0u32.to_le_bytes()),  // lanes too low
+        ] {
+            let mut bad = envelope.clone();
+            mutate(&mut bad);
+            let sig = sign_upload(&signing, &bad, 1);
+            assert!(matches!(
+                store.upload(&public, &bad, 1, &sig, 0),
+                Err(BackupError::MalformedEnvelope(_))
+            ));
+        }
+        assert!(store.record(&public).is_none());
     }
 
     /// Oracle: the delete acceptance item — a signed delete removes
