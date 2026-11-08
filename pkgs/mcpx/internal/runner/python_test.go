@@ -218,3 +218,68 @@ func TestScriptLanguage(t *testing.T) {
 		}
 	}
 }
+
+// TestEffectiveScriptLanguage is the explicit-selection rule (#1917
+// remainder): a valid explicit language beats detection, auto/empty
+// leaves detection in charge, and javascript names the TypeScript target.
+func TestEffectiveScriptLanguage(t *testing.T) {
+	cases := []struct {
+		file, source, explicit, want string
+	}{
+		{"", "print(1)\n", "python", codegen.Python.Name},
+		{"report.ts", "", "python", codegen.Python.Name},
+		{"report.py", "", "typescript", codegen.TypeScript.Name},
+		{"report.py", "", "javascript", codegen.TypeScript.Name},
+		{"report.py", "", "auto", codegen.Python.Name},
+		{"report.py", "", "", codegen.Python.Name},
+		{"", "export default () => 1\n", "", ""},
+	}
+	for _, c := range cases {
+		if got := EffectiveScriptLanguage(c.file, c.source, c.explicit); got != c.want {
+			t.Errorf("EffectiveScriptLanguage(%q, %q, %q) = %q, want %q", c.file, c.source, c.explicit, got, c.want)
+		}
+	}
+	if _, err := NormalizeLanguage("cobol"); err == nil {
+		t.Error("NormalizeLanguage(cobol) must error, not fall back silently")
+	}
+}
+
+// TestExplicitPythonLanguageRunsInlineSnippet is the --language python
+// acceptance case: an inline snippet with no shebang and no extension
+// runs under Python with the Python client installed, purely because the
+// caller named the language.
+func TestExplicitPythonLanguageRunsInlineSnippet(t *testing.T) {
+	requirePython(t)
+	module, globals := pythonFixture(t, nil)
+	work := t.TempDir()
+	src := "import json\n" +
+		"from mcpx_client import tools\n" +
+		"print(json.dumps(tools.Demo.fancy_name(x=\"explicit\")))\n"
+	var stdout, stderr bytes.Buffer
+	res, err := Run(context.Background(), Options{
+		Source:   src,
+		Language: "python",
+		WorkDir:  work,
+		Clients:  pythonClients(module, globals),
+		Stdout:   &stdout,
+		Stderr:   &stderr,
+	})
+	if err != nil {
+		t.Fatalf("explicit-python snippet failed: %v\nstderr:\n%s", err, stderr.String())
+	}
+	if !strings.HasSuffix(res.Script, ".py") {
+		t.Errorf("an explicit-python snippet's file should carry .py, got %q", res.Script)
+	}
+	if got := strings.TrimSpace(stdout.String()); got != `{"greeting": "hello, world"}` {
+		t.Fatalf("stdout = %q, want the unwrapped result", got)
+	}
+}
+
+// TestExplicitLanguageRejectsUnknown proves an unknown explicit language
+// is an error before any run starts, never a silent TypeScript fallback.
+func TestExplicitLanguageRejectsUnknown(t *testing.T) {
+	_, err := Run(context.Background(), Options{Source: "print(1)\n", Language: "cobol"})
+	if err == nil || !strings.Contains(err.Error(), "cobol") {
+		t.Fatalf("Run with language cobol: err = %v, want a naming error", err)
+	}
+}

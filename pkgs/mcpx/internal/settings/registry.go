@@ -236,6 +236,19 @@ func scriptSettings() []Setting {
 				"basename is one of the three. See docs/runtimes.md.",
 		},
 		{
+			Path: "script.language", Commands: runCommands, Kind: KindEnum, Default: "auto",
+			Scope:       ScopeClient,
+			Enum:        []string{"auto", "typescript", "javascript", "python"},
+			FlagAliases: []string{"language"},
+			Name:        "Script language", Short: "language a script is written in: auto, typescript, javascript or python",
+			Long: "auto detects from the shebang, then the file extension, as before. " +
+				"python runs the script under the machine's Python with the generated " +
+				"Python client installed; typescript and javascript run under " +
+				"script.runtime with the TypeScript client. An explicit --language " +
+				"flag or the /v1/exec language option beats this setting for one " +
+				"run; a shebang or script.interpreter dispatch still beats both.",
+		},
+		{
 			Path: "script.runtimes", Commands: runCommands, Kind: KindString, Default: "",
 			Scope: ScopeClient,
 			Name:  "Declared runtimes",

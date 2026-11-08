@@ -102,6 +102,7 @@ func execOps() []Op {
 // and a generated schema would carry field names and no reasons.
 const execOptionsSchema = `{"type":"object","properties":{
 "runtime":{"type":"string","enum":["auto","deno","bun","node"]},
+"language":{"type":"string","enum":["auto","typescript","javascript","python"],"description":"script language; auto detects from shebang then extension (#1917)"},
 "timeout":{"type":"string","description":"a duration such as 30s; default from settings"},
 "permissions":{"type":"string","description":"sandbox profile: all, net, read, read-net, strict, or raw runtime flags"},
 "placeholders":{"type":"object","additionalProperties":true,"description":"values for @names a launcher template refers to"},
