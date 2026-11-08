@@ -69,6 +69,74 @@ fn build_fixture_db(tag: &str) -> PathBuf {
     db
 }
 
+/// Build the isolated DNS-source fixture for code#2469. Its toy vector
+/// proves the local vector-search path returns the named source chunk;
+/// it is not production embedding or corpus-ingestion evidence.
+fn build_dns_fixture_db() -> (PathBuf, Json) {
+    let dir = std::env::temp_dir().join(format!("atlas-core-dns-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let db = dir.join("dns-fixture.db");
+    let _ = std::fs::remove_file(&db);
+    let sql = std::fs::read_to_string(fixtures_dir().join("dns-search-corpus.sql"))
+        .expect("read DNS corpus SQL");
+    let spec: Json = serde_json::from_str(
+        &std::fs::read_to_string(fixtures_dir().join("dns-search-spec.json"))
+            .expect("read DNS search spec"),
+    )
+    .expect("parse DNS search spec");
+    let con = rusqlite::Connection::open(&db).expect("open DNS fixture DB");
+    con.execute_batch(&sql).expect("load DNS corpus SQL");
+    for (cid, vec) in spec["vectors"].as_object().expect("spec vectors") {
+        let mut blob = Vec::new();
+        for x in vec.as_array().expect("vector array") {
+            blob.extend_from_slice(&(x.as_f64().expect("vector value") as f32).to_le_bytes());
+        }
+        con.execute(
+            "INSERT INTO vec_snowflake_m_v2_768_f32 (chunk_id, vec) VALUES (?, ?)",
+            rusqlite::params![cid.parse::<i64>().expect("chunk id"), blob],
+        )
+        .expect("insert DNS vector");
+    }
+    drop(con);
+    (db, spec)
+}
+
+#[test]
+fn dns_config_source_is_retrievable_by_vector_search_fixture() {
+    let (db, spec) = build_dns_fixture_db();
+    let be = LocalBackend::new(db.to_str().unwrap(), None, DEFAULT_VEC_TABLE, 0)
+        .expect("DNS fixture backend");
+    let query_vector: Vec<f32> = spec["query_vector"]
+        .as_array()
+        .expect("query vector")
+        .iter()
+        .map(|x| x.as_f64().expect("query vector value") as f32)
+        .collect();
+    let query = spec["query"].as_str().expect("query text");
+    let mut options = SearchOptions::new(query);
+    options.mode = SearchMode::Vector;
+    options.k = 1;
+    let got = run_search(
+        &be,
+        &FixedEmbedder { raw: query_vector },
+        &default_filters(),
+        &options,
+    )
+    .expect("DNS vector search");
+    let first = &got["results"][0];
+    assert_eq!(
+        first["session"]["title"], spec["expected_source"],
+        "query should retrieve the named DNS source"
+    );
+    assert!(
+        first["text"]
+            .as_str()
+            .expect("result text")
+            .contains(spec["expected_record"].as_str().expect("record text")),
+        "retrieved source should contain the known DNS record"
+    );
+}
+
 fn filters(
     kinds: &[&str],
     topics: &[&str],
