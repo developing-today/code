@@ -4642,8 +4642,47 @@ fn strip_end_list_separators(doc: &Value, output: &str) -> String {
     let mut in_fence = false;
     let mut fence_char = '`';
     let mut fence_len = 0usize;
+    // Codex review, PR #3258: raw HTML blocks are literal content too.
+    // A backtick-only line inside one (e.g. a <div> wrapping a ``` line)
+    // is not a fence opener, and a separator-looking line inside the
+    // block is authored HTML, not renderer markup. Track HTML block
+    // state (CommonMark: the block runs until a blank line; an HTML
+    // comment block runs until its --> closer) and exclude its lines
+    // from both fence tracking and separator counting.
+    let mut in_html = false;
+    let mut html_is_comment = false;
     let mut is_separator: Vec<bool> = Vec::with_capacity(lines.len());
     for line in &lines {
+        let html_probe = line.trim_start_matches(['>', ' ']).trim();
+        if in_html {
+            is_separator.push(false);
+            if html_is_comment {
+                if html_probe.contains("-->") {
+                    in_html = false;
+                    html_is_comment = false;
+                }
+            } else if html_probe.is_empty() {
+                in_html = false;
+            }
+            continue;
+        }
+        if !in_fence && !is_separator_line(line) {
+            let second = html_probe.chars().nth(1);
+            let opens_html = html_probe.starts_with('<')
+                && second.is_some_and(|c| c.is_ascii_alphabetic() || matches!(c, '/' | '!' | '?'));
+            if opens_html {
+                is_separator.push(false);
+                if html_probe.starts_with("<!--") {
+                    if !html_probe[4..].contains("-->") {
+                        in_html = true;
+                        html_is_comment = true;
+                    }
+                } else {
+                    in_html = true;
+                }
+                continue;
+            }
+        }
         // Codex review, PR #3258: a fence can open immediately after a
         // list marker (a list item whose first block is a code block
         // renders as `- ``` `): strip any list-marker prefixes (bullet,
@@ -4794,9 +4833,15 @@ fn collect_boundary_kinds(node: &Value, out: &mut Vec<(String, String, bool, boo
             // previous list does not itself render ordered, the boundary
             // must keep a blank line or the second list's first line
             // reparses as a lazy continuation of the previous item.
+            // The empty-item guard (below) applies only across
+            // different rendered list families: within one family the
+            // two runs reparse as a single list, where an empty sibling
+            // item needs no blank - keeping one would loosen the merged
+            // list and break the save fixpoint (Codex review, PR #3258).
             let needs_blank = (matches!(ordered_start(child), Some(start) if start != 1)
                 && ordered_start(prev).is_none())
-                || list_starts_with_empty_item(child);
+                || (list_starts_with_empty_item(child)
+                    && renders_ordered(prev) != renders_ordered(child));
             out.push((
                 list_kind(prev).unwrap_or_default().to_string(),
                 kind.to_string(),
@@ -7217,6 +7262,76 @@ mod tests {
         assert!(
             out.starts_with("- a\n1. b"),
             "the real boundary separator dropped: {out:?}"
+        );
+    }
+
+    #[test]
+    fn test_end_list_separator_not_confused_by_raw_html_blocks() {
+        // Codex review on PR #3258 (P2): raw HTML blocks containing
+        // backtick-only lines must not be read as code fences. The
+        // first div's ``` line used to open a phantom fence that hid
+        // the real separator, the second div's ``` closed it, and the
+        // authored <!-- end list --> inside the second div was then
+        // counted (and dropped) as the renderer separator.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "code_block", "attrs": {"params": "html", "htmlBlock": true}, "content": [{"type": "text", "text": "<div>\n```\n</div>"}]},
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]}
+                ]},
+                {"type": "ordered_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]},
+                {"type": "code_block", "attrs": {"params": "html", "htmlBlock": true}, "content": [{"type": "text", "text": "<div>\n```\n<!-- end list -->\n</div>"}]}
+            ]
+        });
+        let out = strip_end_list_separators(
+            &doc,
+            "<div>\n```\n</div>\n\n- a\n\n<!-- end list -->\n\n1. b\n\n<div>\n```\n<!-- end list -->\n</div>\n",
+        );
+        assert_eq!(
+            out.matches("<!-- end list -->").count(),
+            1,
+            "only the authored HTML comment remains: {out:?}"
+        );
+        assert!(
+            out.contains("- a\n1. b"),
+            "the real boundary separator dropped: {out:?}"
+        );
+        assert!(
+            out.contains("<div>\n```\n<!-- end list -->\n</div>"),
+            "the raw HTML block survives verbatim: {out:?}"
+        );
+    }
+
+    #[test]
+    fn test_empty_item_blank_guard_not_applied_within_same_list_family() {
+        // Codex review on PR #3258 (P2): a tight task run followed by a
+        // tight bullet run beginning with an empty item renders as ONE
+        // bullet-family list on reparse; the empty item is a sibling,
+        // not an interruption, so no blank is kept when their separator
+        // drops - keeping one would loosen the merged list and break
+        // the save fixpoint.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "task_list", "attrs": {"tight": true}, "content": [
+                    {"type": "task_list_item", "attrs": {"checked": false}, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]}
+                ]},
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": []}]},
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]}
+            ]
+        });
+        let out = strip_end_list_separators(
+            &doc,
+            "- [ ] a\n\n<!-- end list -->\n\n- \n- b\n",
+        );
+        assert_eq!(
+            out, "- [ ] a\n- \n- b\n",
+            "no blank kept between same-family runs: {out:?}"
         );
     }
 
