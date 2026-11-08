@@ -2057,12 +2057,161 @@ fn verb_fail(t: &TursoBackend, req: &Value) -> Value {
     }
 }
 
+/// Completion gating (Drew's triage doctrine, #7016; the
+/// completion-without-evidence defect, 2026-11-07): what a task's
+/// completion must carry depends on its class, derived from the
+/// packet kind in its payload.
+#[derive(Debug, PartialEq)]
+enum CompletionClass {
+    /// Work that produces an artifact: completion requires an
+    /// evidence reference recorded on the task.
+    Fix,
+    /// Triage annotates and validates; it never completes the
+    /// issue. Completion re-enqueues the follow-on by default.
+    Triage,
+    /// No packet kind (hand-built rows, legacy tasks): ungated, so
+    /// the gate never breaks non-packet work.
+    Ungated,
+}
+
+fn completion_class(payload: &Value) -> CompletionClass {
+    match payload.get("kind").and_then(|k| k.as_str()) {
+        Some("small_fix") | Some("ci_investigation") | Some("pr_shepherd") => {
+            CompletionClass::Fix
+        }
+        Some("triage") => CompletionClass::Triage,
+        _ => CompletionClass::Ungated,
+    }
+}
+
+/// The evidence reference on a completion result, if it carries
+/// one: a merged PR, a commit, or a verified-closure note, under
+/// any of the field names the fleet's completion notes use.
+fn evidence_ref(result: &Value) -> Option<Value> {
+    for key in [
+        "evidence",
+        "pr_url",
+        "pr",
+        "merged_pr",
+        "commit",
+        "commit_sha",
+        "verified_closure",
+    ] {
+        match result.get(key) {
+            Some(Value::String(s)) if !s.trim().is_empty() => {
+                return Some(json!({key: s}));
+            }
+            Some(Value::Array(a)) if !a.is_empty() => {
+                return Some(json!({key: a}));
+            }
+            Some(v @ Value::Object(_)) => return Some(json!({key: v})),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// What a triage completion does with its issue (doctrine exits:
+/// invalid is the only no-evidence-free exit, and both exits still
+/// require the validation evidence on the record).
+#[derive(Debug, PartialEq)]
+enum TriageOutcome {
+    FollowOn,
+    ExitInvalid,
+    ExitAlreadySolved,
+}
+
+/// The broker-side completion gate. Err = the completion is
+/// rejected and the task stays claimed.
+fn gate_completion(
+    class: &CompletionClass,
+    result: &Value,
+) -> Result<Option<TriageOutcome>, String> {
+    match class {
+        CompletionClass::Ungated => Ok(None),
+        CompletionClass::Fix => {
+            if evidence_ref(result).is_none() {
+                return Err(
+                    "complete_task: fix-class completion requires an evidence \
+                     reference on the result (merged PR, commit, or \
+                     verified-closure note); the task remains claimed"
+                        .to_string(),
+                );
+            }
+            Ok(None)
+        }
+        CompletionClass::Triage => {
+            let outcome = result
+                .get("triage_outcome")
+                .and_then(|v| v.as_str())
+                .unwrap_or("follow_on");
+            match outcome {
+                "follow_on" => Ok(Some(TriageOutcome::FollowOn)),
+                "invalid" => {
+                    // The validation note is the evidence for this
+                    // exit; a bare verdict is not enough.
+                    let noted = evidence_ref(result).is_some()
+                        || matches!(
+                            result.get("triage_note"),
+                            Some(Value::String(s)) if !s.trim().is_empty()
+                        );
+                    if !noted {
+                        return Err(
+                            "complete_task: triage exit 'invalid' requires the \
+                             validation evidence on the result (evidence or \
+                             triage_note); the task remains claimed"
+                                .to_string(),
+                        );
+                    }
+                    Ok(Some(TriageOutcome::ExitInvalid))
+                }
+                "already_solved" => {
+                    if evidence_ref(result).is_none() {
+                        return Err(
+                            "complete_task: triage exit 'already_solved' requires \
+                             an evidence reference on the result (merged PR, \
+                             commit, or verified-closure note); the task \
+                             remains claimed"
+                                .to_string(),
+                        );
+                    }
+                    Ok(Some(TriageOutcome::ExitAlreadySolved))
+                }
+                other => Err(format!(
+                    "complete_task: unknown triage_outcome {other:?} \
+                     (follow_on | invalid | already_solved)"
+                )),
+            }
+        }
+    }
+}
+
+/// The follow-on fix key for a triage key: same family shape with
+/// the family swapped triage -> fix. None for keys with no fix
+/// counterpart (maintenance, pr families).
+fn follow_on_key(triage_key: &str) -> Option<String> {
+    if triage_key.contains(":triage:") && triage_key.contains(":issue:") {
+        Some(triage_key.replacen(":triage:", ":fix:", 1))
+    } else {
+        None
+    }
+}
+
 fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     let row = match claimed_by(t, task_id, &worker, "complete_task") {
         Ok(r) => r,
         Err(v) => return v,
+    };
+    // The completion gate runs BEFORE any mutation: a rejected
+    // completion leaves the task claimed by its worker.
+    let payload = row.get("payload").cloned().unwrap_or(json!({}));
+    let class = completion_class(&payload);
+    let gate_result = req.get("result").cloned().unwrap_or(json!({}));
+    let triage_outcome = match gate_completion(&class, &gate_result) {
+        Ok(o) => o,
+        Err(e) => return fail(2, e),
     };
     // Terminal transitions keep the session binding (migration 0023
     // header): on a done row it is the execution record.
@@ -2090,8 +2239,125 @@ fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
             "completed",
             &json!({"via": "complete_task_turso"}),
         )?;
+        // Triage doctrine (#7016): a triage completion is not the
+        // issue being done — the issue goes back in the queue as a
+        // fix follow-on unless triage exited it (invalid /
+        // already_solved, gated above). The follow-on dedupes
+        // against any live fix task for the same key; a terminal
+        // predecessor links via progress like an enqueue revive.
+        let mut follow_on_id: Option<i64> = None;
+        if triage_outcome == Some(TriageOutcome::FollowOn) {
+            let queue = row
+                .get("queue")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let triage_key = row
+                .get("dedupe_key")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            match follow_on_key(&triage_key) {
+                Some(fix_key) => {
+                    let existing = t.query_objs(
+                        &format!(
+                            "SELECT {TASK_COLS} FROM tasks \
+                             WHERE queue = ? AND dedupe_key = ? ORDER BY id ASC"
+                        ),
+                        &[Arg::Text(queue.clone()), Arg::Text(fix_key.clone())],
+                        &TASK_JSON_COLS,
+                    )?;
+                    let (live, terminal) = dedupe_partition(&existing);
+                    let fid = if let Some(live_row) = live {
+                        live_row.get("id").and_then(|v| v.as_i64()).unwrap_or(0)
+                    } else {
+                        let mut fpayload = payload.clone();
+                        if let Some(obj) = fpayload.as_object_mut() {
+                            obj.insert("kind".to_string(), json!("small_fix"));
+                            obj.insert(
+                                "triage_follow_on".to_string(),
+                                json!({"from_task": task_id, "at": now_iso()}),
+                            );
+                        }
+                        let fprogress = match &terminal {
+                            Some(pred) => json!({
+                                "triage_source_task": task_id,
+                                "revived_from": {
+                                    "task_id": pred.get("id").cloned().unwrap_or(Value::Null),
+                                    "status": pred.get("status").cloned().unwrap_or(Value::Null),
+                                    "via": "triage_completion_follow_on",
+                                },
+                            }),
+                            None => json!({"triage_source_task": task_id}),
+                        };
+                        let ins = t.exec(
+                            "INSERT INTO tasks (queue, title, body, payload, dedupe_key, \
+                               priority, status, max_attempts, progress, result, \
+                               created_at, updated_at) \
+                             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, '{}', ?, ?)",
+                            &[
+                                Arg::Text(queue.clone()),
+                                arg_str(row.get("title").and_then(|v| v.as_str())),
+                                arg_str(row.get("body").and_then(|v| v.as_str())),
+                                Arg::Text(fpayload.to_string()),
+                                Arg::Text(fix_key.clone()),
+                                row.get("priority")
+                                    .and_then(|v| v.as_i64())
+                                    .map(Arg::Int)
+                                    .unwrap_or(Arg::Null),
+                                Arg::Int(
+                                    fpayload
+                                        .get("max_attempts")
+                                        .and_then(|v| v.as_i64())
+                                        .unwrap_or(4),
+                                ),
+                                Arg::Text(fprogress.to_string()),
+                                Arg::Text(now_iso()),
+                                Arg::Text(now_iso()),
+                            ],
+                        )?;
+                        let new_id = ins.last_insert_rowid.unwrap_or(0);
+                        event(
+                            t,
+                            Some(&worker),
+                            Some(new_id),
+                            "enqueued",
+                            &json!({
+                                "via": "triage_completion_follow_on",
+                                "source_task": task_id, "dedupe_key": fix_key,
+                            }),
+                        )?;
+                        new_id
+                    };
+                    follow_on_id = Some(fid);
+                    event(
+                        t,
+                        Some(&worker),
+                        Some(task_id),
+                        "triage_follow_on_enqueued",
+                        &json!({"follow_on_task_id": fid, "dedupe_key": fix_key}),
+                    )?;
+                }
+                None => {
+                    event(
+                        t,
+                        Some(&worker),
+                        Some(task_id),
+                        "triage_follow_on_skipped",
+                        &json!({
+                            "reason": "dedupe key has no fix-family counterpart",
+                            "dedupe_key": triage_key,
+                        }),
+                    )?;
+                }
+            }
+        }
         let row = get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))?;
-        verb_with_execution(t, req, row)
+        let mut envelope = verb_with_execution(t, req, row)?;
+        if let (Some(obj), Some(fid)) = (envelope.as_object_mut(), follow_on_id) {
+            obj.insert("follow_on_task_id".to_string(), json!(fid));
+        }
+        Ok(envelope)
     })();
     match work {
         Ok(v) => v,
@@ -2455,5 +2721,89 @@ mod tests {
         let out = merge_obj(&json!({"a": 1, "b": 2}), &json!({"b": 3, "c": 4}));
         assert_eq!(out, json!({"a": 1, "b": 3, "c": 4}));
         assert_eq!(merge_obj(&json!(null), &json!({"a": 1})), json!({"a": 1}));
+    }
+
+    #[test]
+    fn completion_gate_fix_class_requires_evidence() {
+        let fix = CompletionClass::Fix;
+        assert!(gate_completion(&fix, &json!({})).is_err());
+        assert!(gate_completion(&fix, &json!({"note": "did stuff"})).is_err());
+        assert!(gate_completion(&fix, &json!({"evidence": ""})).is_err());
+        assert!(gate_completion(&fix, &json!({"evidence": []})).is_err());
+        assert!(gate_completion(
+            &fix,
+            &json!({"pr_url": "https://github.com/developing-today/code/pull/1"})
+        )
+        .is_ok());
+        assert!(gate_completion(&fix, &json!({"commit": "abc123"})).is_ok());
+        assert!(gate_completion(
+            &fix,
+            &json!({"verified_closure": "closed by #1, verified on the issue"})
+        )
+        .is_ok());
+        assert!(gate_completion(&fix, &json!({"evidence": ["artifact"]})).is_ok());
+    }
+
+    #[test]
+    fn completion_gate_triage_doctrine() {
+        let triage = CompletionClass::Triage;
+        // Default: the issue goes back in the queue as a follow-on.
+        assert_eq!(
+            gate_completion(&triage, &json!({})).unwrap(),
+            Some(TriageOutcome::FollowOn)
+        );
+        assert_eq!(
+            gate_completion(&triage, &json!({"triage_outcome": "follow_on"})).unwrap(),
+            Some(TriageOutcome::FollowOn)
+        );
+        // Invalid is an exit only with the validation evidence.
+        assert!(gate_completion(&triage, &json!({"triage_outcome": "invalid"})).is_err());
+        assert_eq!(
+            gate_completion(
+                &triage,
+                &json!({"triage_outcome": "invalid", "triage_note": "not a real issue: duplicate of #1"})
+            )
+            .unwrap(),
+            Some(TriageOutcome::ExitInvalid)
+        );
+        // Already-solved needs a real evidence reference.
+        assert!(
+            gate_completion(&triage, &json!({"triage_outcome": "already_solved"})).is_err()
+        );
+        assert_eq!(
+            gate_completion(
+                &triage,
+                &json!({"triage_outcome": "already_solved", "pr_url": "https://x/pull/2"})
+            )
+            .unwrap(),
+            Some(TriageOutcome::ExitAlreadySolved)
+        );
+        assert!(
+            gate_completion(&triage, &json!({"triage_outcome": "done"})).is_err()
+        );
+    }
+
+    #[test]
+    fn completion_class_and_follow_on_key() {
+        assert_eq!(
+            completion_class(&json!({"kind": "small_fix"})),
+            CompletionClass::Fix
+        );
+        assert_eq!(
+            completion_class(&json!({"kind": "triage"})),
+            CompletionClass::Triage
+        );
+        assert_eq!(completion_class(&json!({})), CompletionClass::Ungated);
+        // Ungated completions never gate, whatever the result.
+        assert_eq!(gate_completion(&CompletionClass::Ungated, &json!({})).unwrap(), None);
+        assert_eq!(
+            follow_on_key("repo-health:v1:triage:developing-today/code:issue:787"),
+            Some("repo-health:v1:fix:developing-today/code:issue:787".to_string())
+        );
+        // Maintenance triage keys have no fix counterpart.
+        assert_eq!(
+            follow_on_key("repo-health:v1:maintenance:developing-today/code:weekly:2026-W44"),
+            None
+        );
     }
 }
