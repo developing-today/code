@@ -402,10 +402,23 @@ fn count_periods(tz: Tz, window: &Window, now: i64) -> Result<((i64, i64), (i64,
             if length <= 0 {
                 return Err(EvalError::OutOfRange);
             }
-            let index = (now - custom.anchor).div_euclid(length);
-            let start = custom.anchor + index * length;
-            let end = start + length;
-            Ok(((start, end), (start - length, start)))
+            // Checked arithmetic (#7766): the anchor is any i64 a body
+            // can carry (Period::check rejects only a zero length), so
+            // the plain operators overflow — a panic in debug builds,
+            // a silently wrapped (wrong or end-before-start) window in
+            // release. An unrepresentable window is OutOfRange, the
+            // same ruling the Day/Week branches get from the calendar.
+            let index = now
+                .checked_sub(custom.anchor)
+                .ok_or(EvalError::OutOfRange)?
+                .div_euclid(length);
+            let start = custom
+                .anchor
+                .checked_add(index.checked_mul(length).ok_or(EvalError::OutOfRange)?)
+                .ok_or(EvalError::OutOfRange)?;
+            let end = start.checked_add(length).ok_or(EvalError::OutOfRange)?;
+            let previous_start = start.checked_sub(length).ok_or(EvalError::OutOfRange)?;
+            Ok(((start, end), (previous_start, start)))
         }
     }
 }
