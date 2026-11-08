@@ -20,6 +20,15 @@ let
   definitions = import ./services.nix {
     fleet = fleetPkgs.fleet;
     mcpx = callPackage ../mcpx/package.nix { };
+    # The existing Cloudflare deploy apps (issue #5767, phase 1) — the
+    # same callPackage expressions lib/default.nix uses for the
+    # id-mail-deploy / pkarr-deploy / developing-today-backup-deploy
+    # flake apps, so the registry references the identical derivations.
+    idMailDeploy = callPackage ../../nixos/services/id-mail/worker/deploy.nix { };
+    pkarrDeploy = callPackage ../../pkgs/pkarr-worker/deploy.nix {
+      cf = callPackage ../cf { };
+    };
+    developingTodayBackupDeploy = callPackage ../../infra/github-backup/deploy.nix { };
   };
   jsonDefinitions = lib.mapAttrs (name: defn: defn // { package = "${defn.package}"; }) definitions;
 in

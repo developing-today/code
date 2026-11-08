@@ -74,6 +74,17 @@ impl WebSecurity {
     }
 }
 
+/// Apply the security guard to a completed router tree.
+///
+/// Public router constructors call this once before returning, so embedders
+/// cannot accidentally receive the unguarded route tree.
+pub(super) fn protect(router: axum::Router, security: WebSecurity) -> axum::Router {
+    router.layer(axum::middleware::from_fn_with_state(
+        Arc::new(security),
+        guard,
+    ))
+}
+
 /// Strip an optional `:port` from a `Host`/`Origin` authority and lower-case it.
 fn host_only(authority: &str) -> String {
     let a = authority.trim().to_lowercase();

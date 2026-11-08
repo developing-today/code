@@ -125,6 +125,13 @@ selections, top-level defaults, and agent model/fallback fields. Disabled
 providers are still checked: disabling a seat today must not make a later
 re-enable silently restore metered exposure.
 
+It also runs the `opencode-go.*` seating-guard regression fixtures
+(`bin/check-opencode-go-seating.test.mjs`) on pull requests using Node 24.
+Those fixtures use a synthetic SQLite store and pin the exact-id credential
+and post-config-change successful-attempt assertions; CI never attempts to
+read the laptop's live OpenCode database. The live-store check is the hourly
+`opencode-go-seating-guard.timer` on the laptop.
+
 An explicitly approved one-off use must carry a standalone comment directly
 above that specific selection, with a non-empty reason:
 
