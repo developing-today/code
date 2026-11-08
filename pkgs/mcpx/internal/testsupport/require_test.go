@@ -88,3 +88,53 @@ func TestMissingRequired(t *testing.T) {
 		t.Error("with MCPX_TEST_REQUIRE unset, nothing is missing-required")
 	}
 }
+
+// TestRequireListCaseIsInsignificantEverywhere pins #6904: the one parser
+// lower-cases every entry, so a spelling that works for a runtime binary
+// means the same thing for a real server. Before the shared parser,
+// MCPX_TEST_REQUIRE=RealSoftware demanded a binary named "realsoftware"
+// (failing a missing runtime) while demanding no real server at all.
+func TestRequireListCaseIsInsignificantEverywhere(t *testing.T) {
+	for _, raw := range []string{"RealSoftware", "REALSOFTWARE", "realsoftware", " Real , * "} {
+		parsed := parseRequireList(raw)
+		if !parsed.demandsRealServer("mcp-server-time") {
+			t.Errorf("%q should demand every real server", raw)
+		}
+	}
+	for _, tc := range []struct{ raw, binary string }{{"NODE", "node"}, {" Node ,BUN ", "node"}, {" Node ,BUN ", "bun"}} {
+		if !parseRequireList(tc.raw).demandsBinary(tc.binary) {
+			t.Errorf("%q should demand %q", tc.raw, tc.binary)
+		}
+	}
+	if got := parseRequireList("RealSoftware"); got.demandsBinary("realsoftware") {
+		t.Error("a subset label is not a runtime binary name")
+	}
+	if got := parseRequireList("*"); got.demandsBinary("*") {
+		t.Error("the wildcard is not a runtime binary name")
+	}
+}
+
+// TestRequiredBinariesExcludesLabelsAndWildcard pins that the label and
+// wildcard spellings never leak into the PATH check as binary names.
+func TestRequiredBinariesExcludesLabelsAndWildcard(t *testing.T) {
+	t.Setenv("MCPX_TEST_REQUIRE", "realsoftware,real,*,deno")
+	got := RequiredBinaries()
+	if len(got) != 1 || !got["deno"] {
+		t.Errorf("want only deno as a binary, got %v", got)
+	}
+}
+
+// TestMissingRequiredBinariesIsTheSuiteLevelCheck pins the enforcement
+// that #6904 found missing: every listed binary is checked against PATH,
+// whether or not a test happens to pass it to RequireBinary.
+func TestMissingRequiredBinariesIsTheSuiteLevelCheck(t *testing.T) {
+	t.Setenv("MCPX_TEST_REQUIRE", "go,mcpx-no-such-binary-5584,realsoftware")
+	got := MissingRequiredBinaries()
+	if len(got) != 1 || got[0] != "mcpx-no-such-binary-5584" {
+		t.Errorf("want the absent binary named and the present one not, got %v", got)
+	}
+	t.Setenv("MCPX_TEST_REQUIRE", "")
+	if got := MissingRequiredBinaries(); len(got) != 0 {
+		t.Errorf("with MCPX_TEST_REQUIRE unset nothing is missing, got %v", got)
+	}
+}
