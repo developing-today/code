@@ -47,7 +47,7 @@ Main execution script that implements the 6-step process:
 Candidate discovery and system state reporting:
 
 - **get_candidates()**: Discovers unbound opencode-lane tasks from all four queues
-- **get_stuck_bound()**: Identifies bound tasks with stuck sessions (placeholder implementation)
+- **get_stuck_bound()**: Identifies bound tasks whose sessions meet the fail-closed stale-session preconditions; the claimant must still verify zero messages before recovery
 - **get_active_root_session_count()**: Queries OpenCode server for active session count
 - Outputs JSON with candidates, stuck_bound list, and cap_room
 
@@ -67,6 +67,10 @@ The system operates in two modes, controlled by `~/.local/state/opencode-claiman
 - **live**: Full execution including session creation, binding, and prompt delivery.
 
 If the mode file doesn't exist or is unreadable, defaults to `shadow`.
+These are the intended semantics; `claimant.py:launch_step()` currently does
+not enforce the shadow-mode no-mutation rule (#7366), and prompt delivery is
+not implemented (#7356). Do not treat a shadow fire as a safety guarantee
+until those follow-ups land.
 
 ## Queues
 
@@ -79,9 +83,11 @@ The claimant monitors four queues:
 ## Concurrency Cap
 
 - **36 active root sessions** across the fleet
-- Monitored via OpenCode server API (`GET /api/session`)
-- Only root sessions without terminal markers count toward cap
-- Cap room = 36 - active_count
+- Monitored via `GET /api/session?limit=N` and `GET /api/session/active`
+- Root sessions in the active set count; otherwise recent roots without a
+  terminal marker count for the 30-minute active window
+- Cap room is `36 - active_count`; unknown/incomplete reads make it unknown
+  and block launches
 
 ## Recovery Rules (#4758, Phase 3 of #4912)
 
@@ -108,6 +114,91 @@ When attempts exhausted:
 1. For zero-message sessions: delete then fail task terminally
 2. For gone sessions: fail task terminally
 3. Use `repo-queue fail` with execution record containing session_id
+
+## #4912 Session Contract and Call Inventory
+
+This inventory covers the OpenCode-server operations in `poll.py` and the
+reads/writes prescribed by `prompt.md`. It distinguishes what the contract
+requires from what the current claimant actually verifies; a documented
+operation is not evidence that its implementation is complete.
+
+### Contract rules
+
+1. **Judge one session per id; fail closed on incomplete collections.** A
+   per-session decision must use that session's own record, not a truncated
+   list. When a collection is necessary, accept it as complete only when the
+   response proves completeness. `poll.py` escalates the `/api/session` limit
+   through 1,000, 10,000, and 100,000; a response equal to every requested
+   limit becomes unknown (`None`), never a partial cap or a "gone" verdict.
+   An unreadable active-session set likewise makes `cap_room` unknown.
+2. **Verify session creation before binding.** Create with
+   `location: {directory: ...}`, then verify the response's
+   `location.directory` equals the requested repo primary before the atomic
+   task bind. Missing/mismatched location is a creation failure: do not bind
+   or prompt, and remove the misplaced session before retrying.
+3. **Give every bound state one disposition.** A live/progressing binding is
+   retained; an unknown or incomplete read is never absence or zero messages;
+   an expired-lease gone session is atomically cleared/retried while attempts
+   remain; an expired-lease never-prompted session is deleted and verified
+   before retry/failure; exhausted attempts fail with the session id in the
+   execution record. The table below records the prompt's full state model and
+   implementation gaps.
+
+### Bound-state table
+
+| Observed state | Contract disposition | Current implementation / follow-up |
+|---|---|---|
+| Unbound, `lane=opencode`, yielded at `handed_off` or `launch_failed` | Re-read the task and launch only while it remains claimed, unbound, and under the cap. | `poll.py:is_candidate()` checks the lane, binding, yield stage, and OpenChamber lane id. `claimant.py` re-polls before create. Queue-read reliability remains open: #7325/#7375, #7355, #7349. |
+| Bound session is active, recent, progressing, or has a terminal marker | Keep the exact binding; never launch a second session. Queue terminal verbs remain the worker's responsibility. | `poll.py:is_stuck_bound()` rejects active ids, recent activity, terminal markers, and unexpired leases. `claimant.py:supervision_step()` does not use that classifier and can treat a terminal session as a recovery candidate; see #7367 and #7356 for the claimant's related supervision/launch gaps. |
+| Bound session is absent, but its lease has not expired | Keep the binding and wait; do not relaunch over the lease. | Required by `prompt.md` step 1. `claimant.py:supervision_step()` does not check lease expiry before recovery. Tracked with the supervision contract gaps in #7367/#7356; add an explicit regression test before relying on this path. |
+| Bound session is absent, lease expired, attempts remain | Verify absence per id, then atomically compare-and-clear both task and lane-ledger bindings using the old session id; the next fire may launch it. | `prompt.md` step 1d specifies this. Current `supervision_step()` instead funnels the read through unauthenticated `curl` and treats any response without an `id` as absent; distinguish HTTP 404 from auth/transport/5xx unknown per #7367. |
+| Bound session is present, root, nonterminal, inactive, silent for at least 30 minutes, and lease expired | Read messages. Any message/activity/active membership keeps the binding; an unavailable or incomplete read is unknown. Only verified zero messages may proceed. | `poll.py:is_stuck_bound()` applies the list/active-set/lease/activity gates. `prompt.md` steps 1a–1b require the per-id message read. Current message count is based on parsed response length and has no page-size completeness check; see #7356 and the completeness contract in #6622. |
+| Verified zero-message session, attempts remain | Delete the exact session and verify the delete effect first; then atomically compare-and-clear the binding, recording the old id and consuming one attempt. | `prompt.md` step 1b–1c. Current delete checks only `curl`'s process return code, not HTTP success or effect; #7367. |
+| Verified zero-message session, attempts exhausted | Delete and verify first, then terminally fail as the task worker with the old session id in `--execution`. | Required by `prompt.md` step 1e. Current `supervision_step()` skips exhausted rows rather than issuing the terminal fail; claimant follow-up #7356/#7367. |
+| Gone session, attempts exhausted | Verify absence, then terminally fail with the old session id in `--execution`. | Required by `prompt.md` step 1e; current per-id read conflates a non-session response with absence. See #7367. |
+| Queue, session-list, active-set, or message read unavailable/incomplete | Preserve bindings; launch nothing on an unknown cap or task state. Do not report unreadable queue as an empty queue. | Session-list and active-set failures block the cap in `poll.py`. The queue CLI's table/chunked output currently parses as empty rows, which hides unreadable from empty; see #7325/#7375 and #7355. `prompt.md` explicitly treats incomplete session/message reads as unknown. |
+
+### Server-call inventory
+
+| Call and source | Contract disposition | Evidence / current gap |
+|---|---|---|
+| `GET /api/session?limit=N` — `poll.py:257–277`; used for cap roots and session lookup for bound tasks | Collection read: escalate limits and fail closed at equality; never infer absence from a partial list. | Implemented with `(1000, 10000, 100000)` and covered by `test_poll.py` equality/escalation cases. Phase 1 #4757 is closed. Per-entry `time` shape is still dereferenced unchecked; #6868 tracks it and #3069 records the broader overlap. |
+| `GET /api/session/active` — `poll.py:280–289` | Active ids are required to classify roots; unreadable or unrecognized response means unknown cap, not zero active sessions. | Implemented as `None` on an unrecognized response, which propagates to `cap_room: null`. The endpoint's own completeness/page-size behavior is not documented in this repo; treat a future bounded/truncated response as unknown, not complete. General completeness work is tracked by #6622. |
+| `GET /api/session/{id}` — `prompt.md` steps 1 and 5; used by `claimant.py:217–245` | Judge the bound session per id. A verified 404 may mean gone; auth, transport, server, malformed-body, or incomplete responses mean unknown and leave the binding unchanged. | Prompt names the per-id decision, but current curl call has no auth/status check and maps any body without an `id` to absent. Follow-up #7367. |
+| `GET /api/session/{id}/messages` — `prompt.md` steps 1a and 5; `claimant.py:251–268` | Only a complete per-id message read can prove zero. Any message means keep bound; unavailable/incomplete means unknown. | Current implementation counts the parsed body but does not establish page completeness or validate a response envelope. Prompt delivery/reconciliation work is tracked by #7356; read completeness belongs to #6622. |
+| `DELETE /api/session/{id}` — `prompt.md` steps 1b, 4b, 4c; `claimant.py:279–307, 445–472` | Delete the exact newly-created or verified-empty session; verify HTTP success/effect before clearing a binding or recording a retry. On unknown delete result, keep the binding. | Current code treats curl exit status 0 as deletion success and does not verify the result. Follow-up #7367. |
+| `POST /api/session` — `prompt.md` step 4b; `claimant.py:410–452` | Use the v2 `location` and `model` objects; verify returned `location.directory` before binding. | Body shape and verify-before-bind ordering are present; Phase 2 #4870 is closed. The request is unauthenticated and does not validate the v2 `{data: ...}` envelope before reading `id`/`location`; follow-up #7367. |
+| Prompt/message write to the bound session — `prompt.md` steps 4d and 5 | Send only after bind; on an uncertain send, reconcile that same session and never create a competing session. | Prompt requires the write but does not name its endpoint. `claimant.py:479–494` only constructs a string; it does not send it. Follow-up #7356. |
+
+### Queue-read disposition: `limit=500`
+
+The 500-row queue read is **not exempt** from the completeness rule. The broker's
+`list` accepts up to 500 rows, but its current response does not provide a
+trusted count/truncation signal (`count_exact=false`, no `Content-Range`, no
+pagination). Therefore exactly 500 returned rows cannot prove the read was
+complete: treat equality as **unknown and fail closed**, not as the whole
+claimed-task set. `poll.py` currently omits `--limit` (the CLI default is 20),
+so this is a disposition of the proposed 500-row read, not evidence that the
+current poll consumes 500 rows. The current CLI read is independently broken:
+`list` prints a table/chunked response while `poll.py` parses JSON and converts
+that failure to `[]`; it can report unreadable as empty. Track the complete
+read and machine-output fixes in #7355 and #7325/#7375; `--worker` read-verb
+compatibility is #7349. The 500/equality rule is also within the general
+pagination contract in #6622.
+
+The contract's scope is the `poll.py` and `prompt.md` surface. `claimant.py`
+implementation gaps are included above only where they execute a prescribed
+server call, so the inventory does not misstate prompt requirements as
+implemented behavior.
+
+The import/reachability defect originally filed as #6865 is closed by merged
+PR #7290: the current caller can execute its `subprocess`/`curl` paths, but
+that does not establish successful HTTP behavior. The unauthenticated calls,
+response-status handling, and prompt-delivery gaps are tracked separately by
+#7367 and #7356. The malformed `session.time` shape dereferences in
+`is_active_root()`, `is_stuck_bound()`, and `_stuck_entry()` remain tracked by
+#6868 and overlap the broader parsed-shape audit #3069; they are not treated as
+evidence that a server read is complete or valid.
 
 ## Hard Rules
 
@@ -168,13 +259,16 @@ Logs written to `~/.local/state/opencode-claimant/fires.jsonl`:
 ## Dependencies
 
 - Python 3.8+
-- `requests` library (for OpenCode server API calls)
-- `repo-queue` CLI at `~/fleet-brokers/bin/repo-queue`
+- Python standard library; `claimant.py` currently shells out to `curl` for
+  OpenCode-server calls
+- `repo-queue` CLI at `~/.local/bin/repo-queue`
 - OpenCode server running at `http://127.0.0.1:13420`
 
 ## Testing
 
-The implementation follows the deterministic specification in `claimant.py`. To test:
+The intended deterministic specification is in `prompt.md`; use tests as the
+oracle for safety properties. A manual shadow fire is not currently proof of
+read-only behavior because of #7366. To inspect a fire:
 
 1. Ensure mode is set to `shadow` for safe testing
 2. Run `python3 pm-stack/opencode-claimant/claimant.py`
@@ -183,15 +277,21 @@ The implementation follows the deterministic specification in `claimant.py`. To 
 
 ## Known Limitations
 
-- `get_stuck_bound()` in poll.py is a placeholder - full implementation requires OpenCode server API access
-- Session prompt delivery in `launch_step()` is documented but not fully implemented (would use session API)
-- Error handling assumes server API is available and responsive
+- The prompt's server-call contract is not fully implemented: queue reads,
+  auth/status validation, deletion verification, message-read completeness,
+  and prompt delivery have open follow-ups listed in the inventory above.
+- `/api/session/active` completeness is not evidenced here; keep cap decisions
+  unknown if that endpoint is ever shown to return a bounded/truncated set.
 
 ## Implementation Status
 
-✅ **SLICE 1 COMPLETE** - All requirements met and verified
+**Contract audit documented; runtime contract is not fully satisfied.** The
+server-call inventory above records the implemented checks and open gaps.
+Follow-ups include queue-read completeness/format (#7355, #7325/#7375),
+server-call authentication and response validation (#7367), shadow-mode
+enforcement (#7366), and prompt delivery/reconciliation (#7356).
 
-Slice 2 (#3026): Parallel-run gate implementation (future work)
+Slice 2 (#3026): Parallel-run gate implementation (separate work)
 Slice 3+: Additional features and optimizations (future work)
 
 ## References
