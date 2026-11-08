@@ -221,6 +221,97 @@ code=$?
 assert_exit "comment mentions of #[ignore] are ignored" 0 "$code"
 assert_contains "comment-mention fixture counted" "$out" "covers all 1"
 
+# --- Codex round 2 on PR #4272: comment-close code, same-line attrs ----
+out="$(
+  cat <<'EOF' | run_guard
+/* a block comment that starts here
+   and ends on this line */ #[ignore = "gate"]
+fn uncovered_after_block_comment_gate() {}
+
+#[test]
+#[ignore = "gate"]
+fn covered_full_sweep_has_no_failures_gate() {}
+EOF
+)"
+code=$?
+assert_exit "code after a block comment closes is processed" 1 "$code"
+assert_contains "test after block comment named" "$out" "uncovered_after_block_comment_gate"
+
+out="$(
+  cat <<'EOF' | run_guard
+#[test] #[ignore = "gate"]
+fn uncovered_same_line_attrs_gate() {}
+
+#[test]
+#[ignore = "gate"]
+fn covered_full_sweep_has_no_failures_gate() {}
+EOF
+)"
+code=$?
+assert_exit "same-line #[test] #[ignore] is enumerated" 1 "$code"
+assert_contains "same-line test named" "$out" "uncovered_same_line_attrs_gate"
+
+# --- generated invariant coverage (PBT-style; testing doctrine) --------
+# Oracle: generated names are known by construction. For every generated
+# declaration shape, an ignored test whose name contains no split filter
+# MUST be named by a failing guard -- it can never silently disappear --
+# and one whose name contains a filter MUST pass with its count intact.
+gen_i=0
+for gen_vis in "" "pub " "pub(crate) "; do
+  for gen_async in "" "async "; do
+    for gen_layout in sep same; do
+      for gen_parity in 0 1; do
+        gen_i=$((gen_i + 1))
+        case $((gen_i % 3)) in
+          0) gen_comment="// generated: #[ignore] in a comment is not an attribute" ;;
+          1) gen_comment="/* generated: #[ignore] in a block comment */" ;;
+          *) gen_comment="" ;;
+        esac
+        case $((gen_i % 2)) in
+          0) gen_reason='"gate"' ;;
+          *) gen_reason='r#"gate"#' ;;
+        esac
+        if [ $((gen_i % 2)) -eq 0 ]; then gen_indent="    "; else gen_indent=""; fi
+        if [ "$gen_parity" -eq 0 ]; then gen_name="gen_uncovered_${gen_i}_gate"; gen_want=1; else gen_name="gen_covered_${gen_i}_full_sweep_has_no_failures_gate"; gen_want=0; fi
+        out="$(
+          {
+            [ -n "$gen_comment" ] && printf '%s\n' "$gen_comment"
+            [ -n "$gen_indent" ] && printf '%s\n' "mod gen_mod_${gen_i} {"
+            if [ "$gen_layout" = same ]; then
+              printf '%s%s\n' "$gen_indent" "#[test] #[ignore = $gen_reason]"
+            else
+              printf '%s%s\n%s%s\n' "$gen_indent" "#[test]" "$gen_indent" "#[ignore = $gen_reason]"
+            fi
+            printf '%s%s%sfn %s() {}\n' "$gen_indent" "$gen_vis" "$gen_async" "$gen_name"
+            [ -n "$gen_indent" ] && printf '%s\n' "}"
+          } | run_guard
+        )"
+        code=$?
+        assert_exit "generated case $gen_i exit (vis='$gen_vis' async='$gen_async' layout=$gen_layout parity=$gen_parity)" "$gen_want" "$code"
+        if [ "$gen_want" -eq 1 ]; then assert_contains "generated case $gen_i named" "$out" "$gen_name"; else assert_contains "generated case $gen_i counted" "$out" "covers all 1"; fi
+      done
+    done
+  done
+done
+
+# --- Codex round 2 on PR #4272: escaped char literal ends at its quote --
+out="$(
+  cat <<'EOF' | run_guard
+const TEXT: &str = { let _ = '\\'; "hello
+world" };
+
+#[test]
+#[ignore = "gate"]
+fn uncovered_after_char_literal_gate() {}
+
+#[test]
+#[ignore = "gate"]
+fn covered_full_sweep_has_no_failures_gate() {}
+EOF
+)"
+code=$?
+assert_exit "escaped char literal does not desync the lexer" 1 "$code"
+assert_contains "test after char literal and multiline string is named" "$out" "uncovered_after_char_literal_gate"
 if [ "$failures" -ne 0 ]; then
   echo "$failures check-crash-gate-coverage test(s) FAILED" >&2
   exit 1

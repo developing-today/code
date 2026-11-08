@@ -142,7 +142,7 @@ if ! ignored_raw="$(
         }
         if (c == sq) {
           if (substr(line, i + 1, 1) == "\\") {
-            j = i + 2
+            j = i + 3
             while (j <= n && substr(line, j, 1) != sq) { if (substr(line, j, 1) == "\\") j++; j++ }
             code_text = code_text "0"; i = j + 1; continue
           }
@@ -164,9 +164,10 @@ if ! ignored_raw="$(
     {
       prev_file = FILENAME
       scan($0)
-      if (began_str || began_blk) next
+      if (began_str) next
       t = code_text
       sub(/^[[:space:]]*/, "", t)
+      if (began_blk && t == "") next
       if (pending) {
         if (t == "") next
         if (t ~ /^#\[/) next
@@ -180,7 +181,7 @@ if ! ignored_raw="$(
         pending = 0
         next
       }
-      if (t ~ /^#\[ignore([^A-Za-z0-9_]|$)/) pending = 1
+      if (t ~ /#\[ignore([^A-Za-z0-9_]|$)/) pending = 1
     }
     END {
       if (pending) drift(FILENAME " (end of file)")
