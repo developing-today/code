@@ -65,12 +65,13 @@ The offset-embed model needs three things the chunk store cannot express:
 
 ## 2. Proposal in one paragraph
 
-Intern the *embedded text* once (`span_text`, content-addressed by
-SHA-256 of the exact bytes), intern the *embedded window* once
-(`span_windows`, keyed by SHA-256 of the span plus its recorded
-neighbours), attach vectors only to `(window_hash, embedder_id)`
-(`span_embeddings`) — so a reused span costs one manifest row and zero
-vectors — and record a source object's version
+Intern the *span text* once (`span_text`, content-addressed by SHA-256
+of the exact span bytes), intern each *embedded window* once
+(`span_windows`, keyed by SHA-256 of the exact span-plus-neighbours
+window bytes), and attach vectors only to `(window_hash, embedder_id)`
+(`span_embeddings`). A repeated span reuses its text snapshot; it reuses
+its vector only when the full embedded window is byte-identical. Record a
+source object's version
 as an ordered manifest of span references (`source_versions` +
 `version_spans`) whose overlap, head/tail match provenance and
 **per-reference** context (`span_contexts`) are explicit columns. Keep
@@ -99,10 +100,11 @@ nothing in the tables below is repository-specific.
 
 ## 4. Schema
 
-Seven tables in the Atlas core tier (`span_text`, `span_windows`,
+Nine core tables in the Atlas tier: `span_text`, `span_windows`,
 `embedders`, `span_embeddings`, `source_objects`, `source_versions`,
-`version_spans`, plus the per-reference `span_contexts` and provenance
-`span_occurrences`). DDL is SQLite/libSQL dialect, as the
+`version_spans`, `span_contexts`, and `span_occurrences`. The per-store
+`span_index` and `legacy_chunk_map` mappings are additional. DDL is
+SQLite/libSQL dialect, as the
 publish files use today. Applied once per version
 (`_schema_version`), never edited in place — the same rule
 `atlas_stage_v1.sql` states.
@@ -329,8 +331,8 @@ its own window, which is what the ranking means).
 
 ## 5. Identity rules
 
-1. **Content-addressed text is the only global identity.** `text_hash`
-   and `content_hash` are the values that cross stores.
+1. **Content-addressed bytes are global identities.** `text_hash`,
+   `window_hash`, and `content_hash` cross stores; integer ids do not.
 2. **Integer ids never leave their store.** `version_id`, `span_uid`,
    and legacy `chunk_id` are local.
 3. **No id reuse, ever.** A retired version keeps its `version_id`; a
@@ -469,7 +471,7 @@ JSON text — default JSON text, matching `session_labels.topics`.
 
 ## 10. Go/no-go
 
-**GO** on the seven-table schema and the
+**GO** on the nine core tables and the
 migration phases as written. The parts that are *not* decided here and
 must land before implementation starts: #6036's thresholds (they do not
 change the tables), #6039's overlap numbers (they change defaults, not
