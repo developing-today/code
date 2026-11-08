@@ -110,3 +110,151 @@ export function terminalBytesForKey(event: KeyEventLike): Uint8Array | null {
   withEscape.set(text, 1);
   return withEscape;
 }
+
+// ---------------------------------------------------------------------------
+// Slice C of issue #787: the additive rich (kitty) browser encoder.
+//
+// `kittyBytesForKey` is the browser counterpart of the Roc rich decoder
+// `Key.parse_events` (kitty-disambiguate-v1 profile, Slice A). It is NOT
+// wired into the UI: `world.ts` keeps using the legacy
+// `terminalBytesForKey` above until Slice F selects this encoder through
+// an explicit per-connection keyboard option. The legacy encoder and its
+// behaviour are unchanged.
+//
+// The encoding goal is parity of *decoded events*, not byte identity with
+// a terminal: every byte string produced here decodes under
+// `Key.parse_events` to the logical key event the browser reported.
+//
+// - Unmodified keys keep the legacy plain bytes, which already decode to
+//   the same events — except Escape: a bare ESC byte is `EventUnknown`
+//   for the active decoder (it never guesses with a timeout), so Escape
+//   is sent as CSI-u `ESC [ 27 u`, which decodes to `NamedEscape`.
+// - Any modified key carries its modifiers explicitly, in the standard
+//   xterm modifier parameter (see `modifierParameter`):
+//   - Escape, Tab, Enter, and Backspace use CSI-u with their kitty key
+//     codes (27, 9, 13, 127). This is what makes Escape vs Alt and
+//     Tab vs Ctrl+i / Enter vs Ctrl+m unambiguous: Ctrl+i is
+//     `ESC [ 105 ; 5 u` (the letter), Ctrl+Tab is `ESC [ 9 ; 5 u`.
+//   - CSI-letter keys (arrows, Home, End) keep `CSI 1 ; <mod> <letter>`.
+//   - CSI-tilde keys (Delete, PageUp, PageDown) keep `CSI <code> ; <mod> ~`.
+//   - Shift+Tab is CSI-u `ESC [ 9 ; <mod> u`, not the `CSI Z` family: the
+//     rich decoder accepts plain `ESC [ Z` (Shift only) but rejects a
+//     parameterised `CSI 1 ; <mod> Z` as Unknown.
+// - Modified printable keys use CSI-u with the *unshifted base* scalar as
+//   the key code (lowercase letter, or the digit/punctuation a shifted
+//   symbol sits on), mirroring what a kitty terminal sends. The decoder
+//   re-applies Shift to the scalar and drops Shift from the modifier set,
+//   so Ctrl+Shift+i (browser key `I`) sent as `ESC [ 105 ; 6 u` decodes
+//   to scalar `I` with [Control] — the same event a terminal produces.
+//   Shift alone is not encoded this way: the browser key already IS the
+//   shifted scalar (`A`, `!`), and plain text decodes to exactly that
+//   scalar with Shift consumed, per the design's normalization policy.
+// - AltGr (Ctrl+Alt producing a non-letter printable, e.g. `€`) stays
+//   plain text, exactly as in the legacy encoder: the browser key is the
+//   composed character, not a command chord. Ctrl+Alt with an ASCII
+//   letter IS a command chord (AltGr letters arrive as the composed
+//   character, not the letter) and uses CSI-u.
+// - Meta/OS shortcuts and Dead/Process/Unidentified keys stay excluded,
+//   and a modified key that is not a single scalar (multi-scalar
+//   committed text) is not fabricated into a physical key: it returns
+//   null instead of guessing.
+// ---------------------------------------------------------------------------
+
+/** Kitty CSI-u key codes for the named keys that have no CSI letter/tilde form. */
+const kittyNamedCodes: Record<string, number> = {
+  Escape: 27,
+  Tab: 9,
+  Enter: 13,
+  Backspace: 127,
+};
+
+/**
+ * The unshifted base key for a shifted symbol: the digit/punctuation a
+ * kitty terminal reports as the key code while Shift appears only in the
+ * modifier parameter. This is the inverse of the table the Roc decoder
+ * uses to re-apply Shift (`normalize_shift` in Key.roc).
+ */
+const shiftedSymbolBases: Record<string, string> = {
+  "!": "1",
+  "@": "2",
+  "#": "3",
+  $: "4",
+  "%": "5",
+  "^": "6",
+  "&": "7",
+  "*": "8",
+  "(": "9",
+  ")": "0",
+  _: "-",
+  "+": "=",
+  "{": "[",
+  "}": "]",
+  "|": "\\",
+  ":": ";",
+  '"': "'",
+  "<": ",",
+  ">": ".",
+  "?": "/",
+  "~": "`",
+};
+
+/** The scalar a kitty terminal would name for this key event's key. */
+function kittyBaseScalar(key: string, shiftKey: boolean): string {
+  if (/^[a-z]$/iu.test(key)) return key.toLowerCase();
+  if (shiftKey && Object.hasOwn(shiftedSymbolBases, key)) return shiftedSymbolBases[key];
+  return key;
+}
+
+/**
+ * Encode a browser key as kitty-disambiguate-v1 bytes that
+ * `Key.parse_events` decodes to the same logical event. Returns null for
+ * the same exclusions as the legacy encoder, and for modified input that
+ * is not a single scalar or a known special key. Inert in this slice:
+ * nothing calls this yet (see the Slice C note above).
+ */
+export function kittyBytesForKey(event: KeyEventLike): Uint8Array | null {
+  if (event.metaKey || event.key === "Unidentified" || event.key === "Dead" || event.key === "Process") {
+    return null;
+  }
+
+  if (Object.hasOwn(Object.prototype, event.key)) return null;
+
+  const encode = (text: string) => new TextEncoder().encode(text);
+  const modified = event.ctrlKey || event.altKey || event.shiftKey;
+
+  const special = Object.hasOwn(specialKeys, event.key) ? specialKeys[event.key] : undefined;
+  if (special) {
+    if (!modified) {
+      // Bare ESC is ambiguous/unknown to the active decoder; every other
+      // unmodified special's legacy bytes already decode to its event.
+      return event.key === "Escape" ? encode("\x1b[27u") : encode(special.plain);
+    }
+    const mod = modifierParameter(event);
+    const namedCode = Object.hasOwn(kittyNamedCodes, event.key) ? kittyNamedCodes[event.key] : undefined;
+    if (namedCode !== undefined) return encode(`\x1b[${namedCode};${mod}u`);
+    if (special.csiTilde !== undefined) return encode(`\x1b[${special.csiTilde};${mod}~`);
+    if (special.csiLetter !== undefined) return encode(`\x1b[1;${mod}${special.csiLetter}`);
+    return null;
+  }
+
+  const key = event.key;
+  const codePoints = Array.from(key);
+  const printable =
+    key.length === 1 || codePoints.length === 1 || (codePoints.length > 1 && /[^\p{L}\p{N}]/u.test(key));
+  if (!printable || key.length === 0) return null;
+
+  // Unmodified and Shift-only printable input is already the resulting
+  // scalar; plain UTF-8 decodes to that scalar with Shift consumed.
+  if (!event.ctrlKey && !event.altKey) return encode(key);
+
+  // AltGr: Ctrl+Alt whose browser key is a composed non-letter character
+  // is text input, not a command chord — preserve it as plain text.
+  if (event.ctrlKey && event.altKey && !/^[a-z]$/iu.test(key)) return encode(key);
+
+  // Modified single-scalar input: CSI-u over the unshifted base scalar.
+  if (codePoints.length !== 1) return null;
+  const base = kittyBaseScalar(key, event.shiftKey);
+  const code = base.codePointAt(0);
+  if (code === undefined || code < 32) return null;
+  return encode(`\x1b[${code};${modifierParameter(event)}u`);
+}
