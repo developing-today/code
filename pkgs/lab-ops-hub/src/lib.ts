@@ -255,6 +255,32 @@ export function parseCrawlResult(value: unknown): Validated<CrawlResult> {
   return { ok: true, values: body as CrawlResult };
 }
 
+// --- Workers AI summary result validation (#7037) ---------------------------
+// The Workers AI result is a cross-service response with its own release
+// cadence, so it is validated before use like the container crawl result
+// above (#7018). The summarize route used to consume it under a bare cast
+// (`as { response?: string }`) and trim whatever it found: a result with
+// no usable response ({} or a bare string) silently stored an EMPTY
+// summary and reported success, erasing any previous summary, and a null
+// result or a non-string response crashed the route with a raw TypeError.
+// A malformed result must read as an upstream failure instead, so the
+// route can answer 502 and write nothing.
+
+export function parseAiSummaryResult(value: unknown): Validated<{ summary: string }> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, error: "AI summary result must be a JSON object" };
+  }
+  const response = (value as Record<string, unknown>).response;
+  if (typeof response !== "string") {
+    return { ok: false, error: "AI summary result field response must be a string" };
+  }
+  const summary = response.trim();
+  if (summary === "") {
+    return { ok: false, error: "AI summary result field response must not be empty" };
+  }
+  return { ok: true, values: { summary } };
+}
+
 export type ManualFetcher = (url: string) => Promise<Response>;
 
 // Keep this policy in sync with container/app.py's _ValidatingRedirectHandler:

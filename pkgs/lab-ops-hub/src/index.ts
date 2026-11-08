@@ -15,6 +15,7 @@ import {
   validateNoteBody,
   validateTaskBody,
   parseCrawlResult,
+  parseAiSummaryResult,
   fileResponseForKey,
 } from "./lib";
 
@@ -333,13 +334,19 @@ export default {
           .first<{ body: string }>();
         if (!note) return json({ error: "note not found" }, 404);
         ctx.waitUntil(logUsage(env, "ai_request", "summarize"));
-        const ai = (await env.AI.run("@cf/meta/llama-3.2-3b-instruct", {
+        const ai: unknown = await env.AI.run("@cf/meta/llama-3.2-3b-instruct", {
           messages: [
             { role: "system", content: "Summarise in one or two sentences. Plain text only." },
             { role: "user", content: note.body.slice(0, 4000) },
           ],
-        })) as { response?: string };
-        const summary = (ai.response ?? "").trim();
+        });
+        // The AI result crosses a service boundary, so validate its
+        // shape before anything is stored (#7037): a malformed result
+        // is an upstream failure (502), never a silently stored empty
+        // summary and never a raw TypeError.
+        const parsed = parseAiSummaryResult(ai);
+        if (!parsed.ok) return json({ error: `AI returned a malformed summary result: ${parsed.error}` }, 502);
+        const summary = parsed.values.summary;
         await env.DB.prepare("UPDATE notes SET summary=?1 WHERE id=?2").bind(summary, sumMatch[1]).run();
         ctx.waitUntil(logUsage(env, "d1_write", "note-summary"));
         return json({ ok: true, summary });
