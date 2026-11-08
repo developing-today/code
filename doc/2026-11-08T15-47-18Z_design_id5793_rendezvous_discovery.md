@@ -99,10 +99,13 @@ make a directory prove that no newer revision exists.
    check.
 3. Among signature-valid envelopes, the highest revision wins. Identical
    envelopes at the same revision are replicas. Two different, valid payloads
-   at the same revision are signer equivocation: reject both as new data,
-   report the conflict, and use only a previously verified cached envelope if
-   that envelope is still unexpired. If the highest revision is expired, do
-   not fall back to a lower revision.
+   at the same revision are signer equivocation: reject both as new data and
+   report the conflict. The conflicting signatures still establish that
+   revision as the minimum acceptable revision. A previously verified cached
+   envelope may be used only if it is unexpired and its revision meets the
+   client's persisted revision floor; otherwise return
+   discovery-unavailable. If the highest revision is expired, do not fall
+   back to a lower revision.
 4. Clients persist the highest verified revision per subject. A lower
    revision is never accepted after a higher one has been seen, even if the
    higher revision is now expired. An expired highest revision is not dialed
@@ -179,8 +182,9 @@ timeouts and user-visible latency targets remain with #5797.
 4. All configured mirrors receive the same signed envelope. Providers do
    not invent revisions, merge fields, or replace tombstones.
 5. The highest verified revision is monotonic per subject. Equal-revision
-   disagreement fails closed; expired or lower revisions never roll a
-   client's known state back.
+   disagreement fails closed and raises the revision floor; cached fallback
+   must satisfy that floor as well as expiry. Expired or lower revisions never
+   roll a client's known state back.
 6. An offer is used only while its signed validity interval is current. A
    cached offer is fallback only while unexpired; no valid offer means
    discovery unavailable, not peer offline.
