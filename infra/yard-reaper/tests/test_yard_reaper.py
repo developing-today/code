@@ -8,6 +8,7 @@ tip, or scratch tree with zero keep-set files) and every liveness
 gate (claimed task/issue, process cwd, 4h idle) is clear.
 """
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -15,6 +16,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / "bin/yard_reaper.py"
 spec = importlib.util.spec_from_file_location("yard_reaper", SCRIPT)
@@ -275,6 +277,81 @@ class PrimaryDiscoveryTests(unittest.TestCase):
             time.time() - 4 * 3600,
         )
         self.assertNotIn("task-7", {e.path.name for e in entries})
+
+
+
+
+class MainApplyTests(unittest.TestCase):
+    """End-to-end apply on a synthetic yard (oracle: an eligible
+    entry is moved to trash, a keep-set entry is untouched, and the
+    summary reports both). Liveness sources are mocked out -- the
+    point is the apply loop itself."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.yard = base / "fleet"
+        self.yard.mkdir()
+        self.state = base / "state"
+        self.trash = base / "trash"
+        self.primary = base / "primary"
+        self.primary.mkdir()
+        subprocess.run(
+            ["git", "init", str(self.primary)],
+            check=True, capture_output=True,
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_apply_reaps_eligible_and_keeps_authored(self):
+        junk = self.yard / "probe-junk"
+        junk.mkdir()
+        (junk / "blob.bin").write_bytes(b"x" * 32)
+        precious = self.yard / "probe-notes"
+        precious.mkdir()
+        (precious / "notes.md").write_text("authored")
+        old = time.time() - 10 * 3600
+        for d in (junk, precious):
+            for p in d.rglob("*"):
+                os.utime(p, (old, old))
+            os.utime(d, (old, old))
+
+        class FakeSource:
+            name = "fake"
+
+            def claims(self):
+                return set(), set()
+
+            def states(self, ids):
+                return {}
+
+        argv = [
+            "yard_reaper.py",
+            "--fleet-root", str(self.yard),
+            "--primary", str(self.primary),
+            "--state-dir", str(self.state),
+            "--trash-dir", str(self.trash),
+            "--cap-gib", "1000000",
+            "--apply",
+        ]
+        with mock.patch.object(reaper, "load_claims_source", return_value=FakeSource()), \
+                mock.patch.object(reaper, "open_pr_branches", return_value=set()), \
+                mock.patch.object(sys, "argv", argv):
+            rc = reaper.main()
+        self.assertEqual(rc, 0)
+        self.assertFalse(junk.exists())
+        self.assertTrue(precious.exists())
+        trashed = list(self.trash.rglob("probe-junk"))
+        self.assertEqual(len(trashed), 1)
+        logs = list((self.state / "runs").glob("*.jsonl"))
+        self.assertEqual(len(logs), 1)
+        events = [json.loads(line) for line in open(logs[0])]
+        kinds = [e["event"] for e in events]
+        self.assertIn("reap-start", kinds)
+        self.assertIn("reaped", kinds)
+        summary = [e for e in events if e["event"] == "summary"][0]
+        self.assertEqual(summary["entries_reaped"], ["probe-junk"])
 
 
 if __name__ == "__main__":
