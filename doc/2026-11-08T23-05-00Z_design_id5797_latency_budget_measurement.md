@@ -535,7 +535,7 @@ A run artifact is a directory containing:
 
 ```
 manifest.json      # commit, fixture versions+hashes, profile params, workloads, host specs, clock skew
-samples/*.jsonl    # one record per sample: cell, tier, profile, workload, metric, monotonic start/end, bytes, logical/wire frame sizes, frame counts, outcome, error_class, traffic_class, selection_reason, retry_count, backoff_ms, keepalive_interval_ms, keepalive_misses (N/A fields are null)
+samples/*.jsonl    # one record per sample: cell, tier, profile, workload, metric, monotonic start/end, bytes, logical/wire frame sizes, frame counts, outcome, error_class, traffic_class, candidate_sequence/attempt_index, known_good_hit, selection_reason, retry_count, backoff_ms, keepalive_interval_ms, keepalive_misses (N/A fields are null)
 summary.json       # per cell: n, p50/p95/p99/max, CI, pass/fail/unmeasured/inconclusive, gate ids
 report.md          # human-readable matrix: every LB id × profile × cell, plus allocation overruns
 ```
