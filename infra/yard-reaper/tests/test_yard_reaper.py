@@ -193,5 +193,66 @@ class YardEntryTests(unittest.TestCase):
         self.assertEqual(found["nested-b"].protected, "clone-unlanded-state")
 
 
+
+
+class PrimaryDiscoveryTests(unittest.TestCase):
+    """Multi-primary registration (#7093): the yard holds worktrees
+    of several primaries; a worktree of ANY primary is registered
+    and must never be classified as a yard entry."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.git_root = base / "git"
+        self.yard = self.git_root / "fleet"
+        self.yard.mkdir(parents=True)
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        self.env = env
+        self.primary = self.git_root / "somerepo"
+        subprocess.run(
+            ["git", "init", str(self.primary)],
+            check=True, env=env, capture_output=True,
+        )
+        (self.primary / "a.txt").write_text("x")
+        subprocess.run(["git", "-C", str(self.primary), "add", "."], check=True, env=env)
+        subprocess.run(
+            ["git", "-C", str(self.primary), "commit", "-m", "seed"],
+            check=True, env=env, capture_output=True,
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_discovers_primary_by_dotgit_dir(self):
+        found = reaper.discover_primaries(self.git_root)
+        self.assertIn(self.primary.resolve(), [p.resolve() for p in found])
+        self.assertNotIn(self.yard.resolve(), [p.resolve() for p in found])
+
+    def test_linked_worktree_of_nondefault_primary_is_registered(self):
+        wt = self.yard / "task-7"
+        subprocess.run(
+            ["git", "-C", str(self.primary), "worktree", "add", str(wt)],
+            check=True, env=self.env, capture_output=True,
+        )
+        branches = reaper.all_worktree_branches(self.git_root)
+        self.assertIn(wt.resolve(), {p.resolve() for p in branches})
+        entries = reaper.discover_entries(
+            self.yard,
+            {p.resolve() for p in branches},
+            set(),
+            set(),
+            set(),
+            [],
+            time.time() - 4 * 3600,
+        )
+        self.assertNotIn("task-7", {e.path.name for e in entries})
+
+
 if __name__ == "__main__":
     unittest.main()

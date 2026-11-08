@@ -276,6 +276,39 @@ def active_process_cwds(proc_root: Path = Path("/proc")) -> list[Path]:
     return result
 
 
+def discover_primaries(git_root: Path) -> list[Path]:
+    """Every primary checkout under git_root.
+
+    A primary is a checkout whose .git is a directory; linked
+    worktrees have .git as a file. The yard holds worktrees of
+    MANY primaries (code, opencode, openchamber, nix, ...), so the
+    registered set is only correct when every primary contributes
+    it -- the janitor needed just one primary because its targets
+    all belonged to that primary's repo shape; whole-entry
+    classification cannot assume that (#7093).
+    """
+    primaries = []
+    if not git_root.is_dir():
+        return primaries
+    for child in sorted(git_root.iterdir()):
+        if child.is_symlink() or not child.is_dir():
+            continue
+        if (child / ".git").is_dir():
+            primaries.append(child)
+    return primaries
+
+
+def all_worktree_branches(git_root: Path) -> dict[Path, str | None]:
+    """Registered worktree -> branch across every primary."""
+    merged: dict[Path, str | None] = {}
+    for primary in discover_primaries(git_root):
+        try:
+            merged.update(worktree_branches(primary))
+        except (OSError, subprocess.SubprocessError):
+            continue  # one unreadable primary must not blind the scan
+    return merged
+
+
 def worktree_branches(primary: Path) -> dict[Path, str | None]:
     proc = subprocess.run(
         ["git", "-C", str(primary), "worktree", "list", "--porcelain"],
@@ -768,6 +801,11 @@ def discover_entries(
                 Entry(resolved, 0, 0, "held", protected="examination-hold")
             )
             continue
+        # A linked worktree of a primary the (possibly partial)
+        # registered set missed still carries branch state; only a
+        # checkout whose branch is unregistered AND which has no
+        # .git file is out of the worktree-reaper's world. .git as a
+        # FILE means linked worktree: never classify it here.
         is_clone = (entry / ".git").is_dir()
         size, newest, keep, files = classify_entry_files(entry)
         task_id = task_id_from(entry.name) or dir_task_id(entry.name)
@@ -1022,7 +1060,7 @@ def main() -> int:
     log = args.state_dir / "runs" / f"yard-run-{run_id}-{os.getpid()}.jsonl"
     try:
         # Snapshot every independent liveness source before producing a plan.
-        branches = worktree_branches(args.primary)
+        branches = all_worktree_branches(args.primary.parent)
         source = load_claims_source(args.queue_helper)
         claimed, claimed_issues = source.claims()
         prs = open_pr_branches()
@@ -1061,7 +1099,18 @@ def main() -> int:
             cwds,
             now - args.idle_hours * 3600,
         )
-        yard_total = sum(e.bytes for e in entries if e.kind != "held")
+        target_paths = {t.path.resolve() for t in targets}
+        target_bytes_by_path = {t.path.resolve(): t.bytes for t in targets}
+        yard_total = 0
+        for e in entries:
+            if e.kind == "held":
+                continue
+            overlap = sum(
+                size
+                for tp, size in target_bytes_by_path.items()
+                if tp == e.path or tp.is_relative_to(e.path)
+            )
+            yard_total += max(0, e.bytes - overlap)
         eligible_entries = sorted(
             (e for e in entries if e.protected is None),
             key=lambda e: (e.newest_mtime, str(e.path)),
@@ -1205,7 +1254,7 @@ def main() -> int:
                         f"task {target.task_id} is no longer terminal; stopping"
                     )
             if target.reason == "worktree-gone":
-                current_branches = worktree_branches(args.primary)
+                current_branches = all_worktree_branches(args.primary.parent)
                 if target.task_id in {
                     task_id_from(branch or "") for branch in current_branches.values()
                 }:
@@ -1220,7 +1269,7 @@ def main() -> int:
                 raise SafetyError(f"task {target.task_id} gained an open PR; stopping")
             worktree_root = worktree_root_for_target(resolved)
             if worktree_root is not None and owner_changed(
-                target, worktree_branches(args.primary)
+                target, all_worktree_branches(args.primary.parent)
             ):
                 raise SafetyError(
                     f"owning worktree changed branch/task since plan; stopping before {path}"
