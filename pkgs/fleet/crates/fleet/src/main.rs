@@ -8,7 +8,9 @@
 //! repo-queue client and the queue-broker / secrets-broker serve
 //! roles run for real below; step 3 (#5431) the proxy domain; step 4
 //! (#5432) the dispatch thin client; step 6 (#5554) the secrets verb;
-//! step 5 (#5433) the search client domain. A compiled-in domain that has
+//! step 5 (#5433) the search client domain, with its serve role
+//! (`fleet serve search`, the Atlas service) following in #5604. A
+//! compiled-in domain that has
 //! not landed yet answers with the "not implemented yet" form of
 //! the stub — but the *surface* is complete and honest: every
 //! variant renders the full registry, and every missing capability
@@ -76,6 +78,9 @@ fn compiled_capabilities() -> CapabilitySet {
     }
     if cfg!(feature = "dispatch") {
         caps.insert(Capability::Dispatch);
+    }
+    if cfg!(feature = "dispatch-test") {
+        caps.insert(Capability::DispatchTest);
     }
     if cfg!(feature = "laptop-agent") {
         caps.insert(Capability::LaptopAgent);
@@ -361,13 +366,11 @@ fn print_domain_help(surface: &Surface, d: &Domain) {
         CapState::Available => match d.name {
             "queue" => "included in this build",
             "dispatch" => "included in this build",
+            "dispatch-test" => "included in this build",
             "secrets" => "included in this build",
             "search" => "included in this build",
             "proxy" => "included in this build",
-            "serve" => {
-                "included in this build (queue-broker and secrets-broker roles; \
-                 the search role lands in a later step)"
-            }
+            "serve" => "included in this build (queue-broker, secrets-broker and search roles)",
             _ => "included in this build (implementation lands in a later step of epic #5412)",
         },
         CapState::NotInBuild => {
@@ -404,13 +407,19 @@ fn required_capability(d: &Domain, args: &[String]) -> Result<Capability, i32> {
                 )),
             }
         }
+        // `search serve` (and so the standalone `atlas-search serve`
+        // argv0 spelling) is the same service role as `serve search`
+        // (#5604); every other search argument is the client surface.
+        "search" if args.first().map(|s| s.as_str()) == Some("serve") => {
+            Ok(Capability::SearchServe)
+        }
         "proxy" => {
             let sub = args.first().map(|s| s.as_str());
             match sub {
                 Some("serve") => Ok(Capability::ProxyServe),
-                Some("connect") | Some("init") => Ok(Capability::ProxyConnect),
+                Some("connect") | Some("init") | Some("ssh") => Ok(Capability::ProxyConnect),
                 _ => Err(usage_error(
-                    "'fleet proxy' needs a command: serve, connect, or init",
+                    "'fleet proxy' needs a command: serve, connect, init, or ssh",
                 )),
             }
         }
@@ -436,13 +445,53 @@ fn wants_domain_help(d: &Domain, args: &[String]) -> bool {
     d.name == "serve" && args.get(1).is_some_and(|a| is_help_flag(a))
 }
 
+/// A broker role is a complete invocation: the broker entry point has
+/// no argument parser, so reject a trailing argument rather than silently
+/// starting the daemon with it discarded.
+fn broker_argument_error(d: &Domain, args: &[String]) -> Option<String> {
+    if d.name != "serve" {
+        return None;
+    }
+    let role = args.first()?.as_str();
+    if !matches!(role, "queue-broker" | "secrets-broker") {
+        return None;
+    }
+    args.get(1)
+        .map(|extra| format!("unexpected argument '{extra}' for 'fleet serve {role}'"))
+}
+/// The arguments after the role name when this invocation is the
+/// search service role, in either spelling: `serve search ...` or
+/// `search serve ...` (the `atlas-search serve` argv0 route).
+#[cfg(feature = "search-serve")]
+fn search_serve_tail<'a>(d: &Domain, args: &'a [String]) -> Option<&'a [String]> {
+    let first = args.first().map(|s| s.as_str());
+    match (d.name, first) {
+        ("serve", Some("search")) | ("search", Some("serve")) => Some(&args[1..]),
+        _ => None,
+    }
+}
+
 /// Run one domain invocation (also the argv0-alias landing pad).
 fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) -> i32 {
+    // The search role takes real flags, so its own usage answers
+    // `--help` wherever the role is actually usable; elsewhere the
+    // flag falls through to the registry's domain help below.
+    #[cfg(feature = "search-serve")]
+    if let Some(tail) = search_serve_tail(d, args)
+        && tail.first().is_some_and(|a| is_help_flag(a))
+        && surface.cap_state(Capability::SearchServe, d.name) == CapState::Available
+    {
+        println!("{}", fleet_search::serve::SERVE_USAGE);
+        return EXIT_OK;
+    }
     // Domain help is registry data: always available, even where the
     // domain itself is not (§3).
     if wants_domain_help(d, args) {
         print_domain_help(surface, d);
         return EXIT_OK;
+    }
+    if let Some(message) = broker_argument_error(d, args) {
+        return usage_error(&message);
     }
     let cap = match required_capability(d, args) {
         Ok(c) => c,
@@ -490,11 +539,25 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
             if d.name == "serve" && args.first().map(|s| s.as_str()) == Some("secrets-broker") {
                 return fleet_queue::secrets_broker::run();
             }
+            // #5604: the Atlas service role, rehomed from the
+            // atlas-search bin crate. Runs in the foreground; the
+            // atlas user unit's ExecStart is `fleet serve search`.
+            #[cfg(feature = "search-serve")]
+            if let Some(tail) = search_serve_tail(d, args) {
+                return fleet_search::serve::run(tail);
+            }
             // Step 4 (#5432): the dispatch domain runs for real — a
             // thin client over pm-stack's pm-dispatch service.
             #[cfg(feature = "dispatch")]
             if d.name == "dispatch" {
                 return fleet_dispatch::run(&surface.config, args);
+            }
+            // The dispatch-test domain (developing-today/code#6580):
+            // explicit-dispatch CI test over GitHub Actions + the
+            // Turso jobs store (full build only).
+            #[cfg(feature = "dispatch-test")]
+            if d.name == "dispatch-test" {
+                return fleet_dispatch_test::run(&surface.config, args);
             }
             // Step 6 (#5554): the secrets domain runs for real —
             // the fleet-secrets resolver chain as a verb.
@@ -532,6 +595,17 @@ Run the session proxy (the broker) in the foreground, binding the
 broker socket from fleet config (FLEET_BROKER_SOCKET / broker_socket).
 
 Takes no arguments.";
+
+const PROXY_SSH_USAGE: &str = "\
+Usage: fleet proxy ssh -- [ssh args...]
+
+Run system OpenSSH through the fleet proxy as a recovery path. The destination,
+identity, host-key policy, timeouts, keepalives, and ControlMaster settings are
+pinned by fleet. SSH options go after `--`; an optional remote command may follow
+the fixed destination. The fleet proxy credential stays in the environment and
+is sent only by the CONNECT relay.
+
+The inner SSH destination is fixed; do not pass an SSH `--` separator.";
 
 /// What the arguments after `fleet proxy serve` ask for. The serve
 /// leaf takes no arguments at all (`fleet_proxy::serve::run` is
@@ -615,7 +689,182 @@ fn run_proxy(surface: &Surface, args: &[String]) -> i32 {
             }
         }
         Some("init") => run_init_call(surface, &args[1..]),
+        Some("ssh") => run_proxy_ssh(&args[1..], config),
         _ => unreachable!("required_capability rejects other proxy commands first"),
+    }
+}
+
+/// Split SSH's option prefix from its optional remote command. The fleet
+/// supplies the destination between these parts so callers cannot redirect
+/// the recovery command to an arbitrary host. Options (including their
+/// separate operands) remain byte-for-byte argument values, not shell text.
+fn split_ssh_options_and_command(args: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
+    // Operand-bearing ssh option characters, per ssh(1) -- including
+    // `P` (tag), which a whole-argument table lookup missed along
+    // with every clustered form such as `-vL` (#6679).
+    const OPTIONS_WITH_OPERANDS: &[char] = &[
+        'B', 'b', 'c', 'D', 'E', 'e', 'F', 'I', 'i', 'J', 'L', 'l', 'm', 'O', 'o', 'P', 'p', 'Q',
+        'R', 'S', 'W', 'w',
+    ];
+
+    let mut options = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--" {
+            return Err("the SSH destination is fixed; do not pass a second '--'".to_string());
+        }
+        if !arg.starts_with('-') || arg == "-" {
+            return Ok((options, args[index..].to_vec()));
+        }
+        options.push(arg.clone());
+        index += 1;
+        // Walk the option cluster character by character: a
+        // non-operand character continues the cluster, and an
+        // operand-bearing character consumes the rest of the
+        // cluster as its operand -- or, when it is the cluster's
+        // last character, the next argument. Everything after the
+        // operand belongs to the next argument, never this cluster.
+        let cluster = &arg[1..];
+        let mut operand_char = None;
+        for (offset, ch) in cluster.char_indices() {
+            if OPTIONS_WITH_OPERANDS.contains(&ch) {
+                if offset + ch.len_utf8() == cluster.len() {
+                    operand_char = Some(ch);
+                }
+                break;
+            }
+        }
+        if let Some(ch) = operand_char {
+            let operand = args
+                .get(index)
+                .ok_or_else(|| format!("SSH option -{ch} in {arg} needs an argument"))?;
+            if operand == "--" {
+                return Err(format!(
+                    "SSH option -{ch} in {arg} needs an argument before '--'"
+                ));
+            }
+            options.push(operand.clone());
+            index += 1;
+        }
+    }
+    Ok((options, Vec::new()))
+}
+
+fn shell_quote_executable(path: &std::path::Path) -> Result<String, String> {
+    let path = path.to_str().ok_or_else(|| {
+        "fleet executable path is not valid UTF-8 for OpenSSH ProxyCommand".to_string()
+    })?;
+    Ok(shell_quote(path))
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn build_proxy_ssh_argv(
+    executable: &std::path::Path,
+    config: &fleet_config::Config,
+    ssh_args: &[String],
+) -> Result<Vec<std::ffi::OsString>, String> {
+    build_proxy_ssh_argv_with_home(
+        executable,
+        config,
+        &fleet_config::Config::home_dir(),
+        ssh_args,
+    )
+}
+
+fn build_proxy_ssh_argv_with_home(
+    executable: &std::path::Path,
+    config: &fleet_config::Config,
+    home: &std::path::Path,
+    ssh_args: &[String],
+) -> Result<Vec<std::ffi::OsString>, String> {
+    // OpenSSH expands a literal `~` from the passwd database, not
+    // from $HOME, so the recovery paths are resolved from Fleet's
+    // $HOME-based home before the arguments are built (#6680) --
+    // the same construction fleet-search's client uses.
+    let known_hosts = home.join(".ssh/known_hosts_laptop");
+    let identity = home.join(".ssh/id_ed25519");
+    let control_path = home.join(".ssh/cm-%r@%h:%p");
+    let (options, command) = split_ssh_options_and_command(ssh_args)?;
+    let target_host = config.target_host();
+    let proxy_command = format!(
+        "ProxyCommand={} proxy connect --stdio --host {} --port %p",
+        shell_quote_executable(executable)?,
+        shell_quote(target_host)
+    );
+    let mut argv = vec![
+        "-o".into(),
+        "StrictHostKeyChecking=yes".into(),
+        "-o".into(),
+        format!("HostName={target_host}").into(),
+        "-o".into(),
+        "User=user".into(),
+        "-o".into(),
+        format!("UserKnownHostsFile={}", known_hosts.display()).into(),
+        "-o".into(),
+        "IdentitiesOnly=yes".into(),
+        "-i".into(),
+        identity.into(),
+        "-o".into(),
+        "ConnectTimeout=60".into(),
+        "-o".into(),
+        "ConnectionAttempts=3".into(),
+        "-o".into(),
+        "ServerAliveInterval=15".into(),
+        "-o".into(),
+        "ServerAliveCountMax=8".into(),
+        "-o".into(),
+        "ControlMaster=auto".into(),
+        "-o".into(),
+        format!("ControlPath={}", control_path.display()).into(),
+        "-o".into(),
+        "ControlPersist=3600".into(),
+        "-o".into(),
+        proxy_command.into(),
+    ];
+    argv.extend(options.into_iter().map(std::ffi::OsString::from));
+    argv.push(format!("user@{target_host}").into());
+    argv.extend(command.into_iter().map(std::ffi::OsString::from));
+    Ok(argv)
+}
+
+fn run_proxy_ssh(tail: &[String], config: &fleet_config::Config) -> i32 {
+    if tail.first().is_some_and(|arg| is_help_flag(arg)) {
+        println!("{PROXY_SSH_USAGE}");
+        return EXIT_OK;
+    }
+    if tail.first().map(String::as_str) != Some("--") {
+        return usage_error(&format!(
+            "'fleet proxy ssh' expects `--` before SSH arguments\n\n{PROXY_SSH_USAGE}"
+        ));
+    }
+    let executable = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("fleet: cannot locate its executable for ProxyCommand: {error}");
+            return EXIT_UNAVAILABLE;
+        }
+    };
+    let argv = match build_proxy_ssh_argv(&executable, config, &tail[1..]) {
+        Ok(argv) => argv,
+        Err(error) => return usage_error(&format!("{error}\n\n{PROXY_SSH_USAGE}")),
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let error = std::process::Command::new("ssh").args(argv).exec();
+        eprintln!("fleet: cannot execute system ssh: {error}");
+        EXIT_UNAVAILABLE
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = argv;
+        eprintln!("fleet: recovery SSH via system OpenSSH is supported on Unix only");
+        EXIT_UNAVAILABLE
     }
 }
 
@@ -827,6 +1076,104 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "search-serve")]
+    #[test]
+    fn search_serve_is_one_role_in_both_spellings() {
+        // `fleet serve search ...` and `atlas-search serve ...` (the
+        // argv0 route into the search domain) are the same role, and
+        // both need the search-serve capability, not the client's.
+        let serve = domain("serve").unwrap();
+        let search = domain("search").unwrap();
+        let a = args(&["search", "--config", "x"]);
+        let b = args(&["serve", "--config", "x"]);
+        assert_eq!(search_serve_tail(serve, &a), Some(&a[1..]));
+        assert_eq!(search_serve_tail(search, &b), Some(&b[1..]));
+        assert_eq!(
+            required_capability(serve, &a).ok(),
+            Some(Capability::SearchServe)
+        );
+        assert_eq!(
+            required_capability(search, &b).ok(),
+            Some(Capability::SearchServe)
+        );
+        // Everything else under `search` stays the client surface; the
+        // other serve roles are not the search role.
+        for client in [
+            &["q"][..],
+            &["get-chunk", "1"][..],
+            &["search", "q"][..],
+            &[][..],
+        ] {
+            assert_eq!(search_serve_tail(search, &args(client)), None);
+            assert_eq!(
+                required_capability(search, &args(client)).ok(),
+                Some(Capability::Search)
+            );
+        }
+        assert_eq!(search_serve_tail(serve, &args(&["queue-broker"])), None);
+        assert_eq!(search_serve_tail(search, &args(&["search"])), None);
+    }
+
+    #[test]
+    fn broker_roles_reject_trailing_args_through_serve_and_argv0_aliases() {
+        let serve = domain("serve").expect("serve domain exists");
+        let surface = Surface::new(None, fleet_config::Config::default());
+
+        for role in ["queue-broker", "secrets-broker"] {
+            let trailing = args(&[role, "--bogus-junk", "extra"]);
+            let expected = format!("unexpected argument '--bogus-junk' for 'fleet serve {role}'");
+            assert_eq!(
+                broker_argument_error(serve, &trailing).as_deref(),
+                Some(expected.as_str()),
+                "the first unexpected argument should be named"
+            );
+            assert_eq!(
+                run_domain(&surface, serve, &trailing, "fleet"),
+                EXIT_USAGE,
+                "fleet serve {role} must reject extras before starting the daemon"
+            );
+
+            // The argv0 alias dispatch prepends its implied role and then
+            // uses run_domain; exercise that same route without invoking run().
+            let route = alias_route(role).expect("broker alias is registered");
+            let routed_domain = domain(route.domain).expect("alias route has a domain");
+            let mut routed = Vec::new();
+            if let Some(implied) = route.implied_arg {
+                routed.push(implied.to_string());
+            }
+            routed.push("--bogus-junk".to_string());
+            assert_eq!(
+                broker_argument_error(routed_domain, &routed).as_deref(),
+                Some(expected.as_str())
+            );
+            assert_eq!(
+                run_domain(&surface, routed_domain, &routed, role),
+                EXIT_USAGE,
+                "{role} alias must reject extras before starting the daemon"
+            );
+
+            // A bare role must retain the run path. Do not call run_domain
+            // here: the real daemon intentionally blocks waiting for work.
+            assert_eq!(broker_argument_error(serve, &args(&[role])), None);
+        }
+
+        assert_eq!(
+            broker_argument_error(serve, &args(&["search", "subcommand"])),
+            None,
+            "the serve search role owns its own arguments"
+        );
+        for role in ["queue-broker", "secrets-broker"] {
+            for flag in ["--help", "-h", "help"] {
+                assert!(wants_domain_help(serve, &args(&[role, flag])));
+                assert_eq!(
+                    run_domain(&surface, serve, &args(&[role, flag]), "fleet"),
+                    EXIT_OK,
+                    "broker help must return before argument rejection or daemon startup"
+                );
+            }
+        }
+    }
+
     #[test]
     fn proxy_serve_args_classify_help_and_reject_strays() {
         // Bare serve runs the broker; the argv0 alias route
@@ -873,6 +1220,145 @@ mod tests {
                 "proxy init {flag} must succeed"
             );
         }
+    }
+
+    #[test]
+    fn proxy_ssh_uses_connect_capability_and_explicit_separator() {
+        let proxy = domain("proxy").expect("proxy domain exists");
+        assert_eq!(
+            required_capability(proxy, &args(&["ssh"])),
+            Ok(Capability::ProxyConnect)
+        );
+        assert_eq!(
+            run_proxy_ssh(&args(&["--help"]), &fleet_config::Config::default()),
+            EXIT_OK
+        );
+        assert_eq!(
+            run_proxy_ssh(&args(&[]), &fleet_config::Config::default()),
+            EXIT_USAGE
+        );
+        assert_eq!(
+            run_proxy_ssh(
+                &args(&["-L", "1234:localhost:22"]),
+                &fleet_config::Config::default()
+            ),
+            EXIT_USAGE
+        );
+    }
+
+    #[test]
+    fn proxy_ssh_builds_pinned_argv_and_preserves_remote_arguments() {
+        let ssh_args = args(&[
+            "-L",
+            "127.0.0.1:2222:localhost:22",
+            "-o",
+            "LogLevel=ERROR",
+            "bash",
+            "-s",
+            "echo; touch /tmp/not-interpolated",
+        ]);
+        let executable = std::path::Path::new("/tmp/fleet path/fleet'bin");
+        // A Fleet home that is not the passwd home: the recovery
+        // paths must come from Fleet's home, never a literal `~`
+        // (OpenSSH would expand that from the passwd database).
+        let home = std::path::Path::new("/fleet-home");
+        let argv = build_proxy_ssh_argv_with_home(
+            executable,
+            &fleet_config::Config::default(),
+            home,
+            &ssh_args,
+        )
+        .expect("valid SSH argv");
+        let strings: Vec<&str> = argv.iter().map(|arg| arg.to_str().unwrap()).collect();
+        for setting in [
+            "StrictHostKeyChecking=yes",
+            "HostName=100.99.113.103",
+            "User=user",
+            "UserKnownHostsFile=/fleet-home/.ssh/known_hosts_laptop",
+            "IdentitiesOnly=yes",
+            "ConnectTimeout=60",
+            "ConnectionAttempts=3",
+            "ServerAliveInterval=15",
+            "ServerAliveCountMax=8",
+            "ControlMaster=auto",
+            "ControlPath=/fleet-home/.ssh/cm-%r@%h:%p",
+            "ControlPersist=3600",
+        ] {
+            assert!(
+                strings.windows(2).any(|pair| pair == ["-o", setting]),
+                "missing fixed SSH option {setting}"
+            );
+        }
+        assert!(strings.contains(&"/fleet-home/.ssh/id_ed25519"));
+        assert!(
+            strings.iter().all(|arg| !arg.contains('~')),
+            "no literal ~ may reach OpenSSH: {strings:?}"
+        );
+        assert!(strings.iter().any(|arg| {
+            *arg == "ProxyCommand='/tmp/fleet path/fleet'\\''bin' proxy connect --stdio --host '100.99.113.103' --port %p"
+        }));
+        assert!(strings.contains(&"-L"));
+        assert!(strings.contains(&"127.0.0.1:2222:localhost:22"));
+        let target = strings
+            .iter()
+            .position(|arg| *arg == "user@100.99.113.103")
+            .expect("fixed destination");
+        assert_eq!(strings[target + 1], "bash");
+        assert_eq!(strings[target + 2], "-s");
+        assert_eq!(strings[target + 3], "echo; touch /tmp/not-interpolated");
+    }
+
+    #[test]
+    fn proxy_ssh_splits_clustered_options_and_operands() {
+        // Clustered forwarding: `-vL` walks v (flag) then L
+        // (operand-bearing, last in cluster) so the next argument is
+        // L's operand and the command starts after it (#6679).
+        let (options, command) = split_ssh_options_and_command(&args(&[
+            "-vL",
+            "127.0.0.1:2222:localhost:22",
+            "bash",
+            "-s",
+        ]))
+        .expect("clustered -vL splits");
+        assert_eq!(options, args(&["-vL", "127.0.0.1:2222:localhost:22"]));
+        assert_eq!(command, args(&["bash", "-s"]));
+
+        // `-P` takes an operand (tag) even though the old
+        // whole-argument table omitted it.
+        let (options, command) =
+            split_ssh_options_and_command(&args(&["-P", "mytag", "uptime"])).expect("-P splits");
+        assert_eq!(options, args(&["-P", "mytag"]));
+        assert_eq!(command, args(&["uptime"]));
+
+        // Attached operand: the rest of the cluster is the operand,
+        // so no following argument is consumed.
+        let (options, command) =
+            split_ssh_options_and_command(&args(&["-L127.0.0.1:2222:localhost:22", "uptime"]))
+                .expect("attached -L splits");
+        assert_eq!(options, args(&["-L127.0.0.1:2222:localhost:22"]));
+        assert_eq!(command, args(&["uptime"]));
+
+        // A clustered operand-bearing option with nothing after it
+        // is an error, not a silent command start.
+        assert!(
+            split_ssh_options_and_command(&args(&["-vL"]))
+                .unwrap_err()
+                .contains("needs an argument")
+        );
+    }
+
+    #[test]
+    fn proxy_ssh_rejects_missing_option_operands_and_second_separator() {
+        assert!(
+            split_ssh_options_and_command(&args(&["-p"]))
+                .unwrap_err()
+                .contains("needs an argument")
+        );
+        assert!(
+            split_ssh_options_and_command(&args(&["--", "other-host"]))
+                .unwrap_err()
+                .contains("destination is fixed")
+        );
     }
 
     #[test]

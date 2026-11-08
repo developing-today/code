@@ -1,4 +1,8 @@
 //! Python-compatible JSON rendering for the CLI's output.
+//! Source of the verbatim copy in pkgs/fleet's fleet-search crate,
+//! ported in fleet step 5 (#5433): the output-parity contract lives
+//! in these writers, so mirror every change there. Drift guard:
+//! .github/scripts/check-fleet-search-parity.sh (#5920).
 //!
 //! The Python prints envelopes with
 //! `json.dumps(out, indent=1, ensure_ascii=False)` and renders a

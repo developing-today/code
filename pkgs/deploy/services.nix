@@ -10,7 +10,13 @@
 #
 # `class` names the activation class of design §4 that renders the
 # service (systemd / launchd / cloudflare / sandbox / container).
-{ fleet, mcpx }:
+{
+  fleet,
+  mcpx,
+  idMailDeploy,
+  pkarrDeploy,
+  developingTodayBackupDeploy,
+}:
 {
   queue-broker = {
     package = fleet;
@@ -28,7 +34,7 @@
     user = "user";
     ports = [ 4801 ];
     restart = "on-failure";
-    healthCheck = "http://100.99.113.103:4801/health";
+    healthCheck = "http://100.99.113.103:4801/healthz";
     targets = [ "laptop" ];
     class = "systemd";
   };
@@ -84,5 +90,61 @@
       "darwin"
     ];
     class = "systemd";
+  };
+
+  # Cloudflare Workers — issue #5767, phase 1: the three Workers that
+  # already deploy through flake apps (`nix run .#<name>-deploy`, see
+  # lib/default.nix apps) are absorbed as registry targets. For a
+  # cloudflare target the definition's package/entryPoint names the
+  # existing deploy app — the one-shot command a later activation slice
+  # runs to deploy the Worker — not the Worker bundle itself (the
+  # bundle-as-flake-package conversion is a later #5767 phase). The
+  # apps' behavior is unchanged: each resolves its Cloudflare
+  # credentials impurely at deploy time (sops cloudflare_account_id,
+  # Bitwarden via bws, inside its own deploy script), so the registry
+  # definition names no secrets of its own. Workers listen on the
+  # Cloudflare edge, so there are no local ports and no local health
+  # endpoint; `restart = "no"` because a deploy app is a one-shot
+  # command, not a daemon.
+  id-mail = {
+    package = idMailDeploy;
+    entryPoint = "bin/id-mail-deploy";
+    args = [ ];
+    environment = { };
+    secrets = [ ]; # resolved by the deploy app itself at deploy time
+    user = "user";
+    ports = [ ];
+    restart = "no";
+    healthCheck = null;
+    targets = [ "cloudflare" ];
+    class = "cloudflare";
+  };
+
+  pkarr = {
+    package = pkarrDeploy;
+    entryPoint = "bin/pkarr-deploy";
+    args = [ ];
+    environment = { };
+    secrets = [ ]; # resolved by the deploy app itself at deploy time
+    user = "user";
+    ports = [ ];
+    restart = "no";
+    healthCheck = null;
+    targets = [ "cloudflare" ];
+    class = "cloudflare";
+  };
+
+  developing-today-backup = {
+    package = developingTodayBackupDeploy;
+    entryPoint = "bin/developing-today-backup-deploy";
+    args = [ ];
+    environment = { };
+    secrets = [ ]; # resolved by the deploy app itself at deploy time
+    user = "user";
+    ports = [ ];
+    restart = "no";
+    healthCheck = null;
+    targets = [ "cloudflare" ];
+    class = "cloudflare";
   };
 }

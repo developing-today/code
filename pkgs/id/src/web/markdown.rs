@@ -5924,9 +5924,9 @@ mod tests {
             let link_text = para_content
                 .iter()
                 .find(|n| {
-                    n["marks"].as_array().is_some_and(|m| {
-                        m.iter().any(|mark| mark["type"] == "link")
-                    })
+                    n["marks"]
+                        .as_array()
+                        .is_some_and(|m| m.iter().any(|mark| mark["type"] == "link"))
                 })
                 .unwrap_or_else(|| panic!("no link mark for {md}"));
             // The link text survives; only the target is neutralized.
@@ -5964,9 +5964,9 @@ mod tests {
         let para_content = doc["content"][0]["content"].as_array().unwrap();
         assert!(
             para_content.iter().all(|n| {
-                n["marks"].as_array().is_none_or(|marks| {
-                    marks.iter().all(|mark| mark["type"] != "link")
-                })
+                n["marks"]
+                    .as_array()
+                    .is_none_or(|marks| marks.iter().all(|mark| mark["type"] != "link"))
             }),
             "tab-obfuscated destination produced a link mark: {para_content:?}"
         );
@@ -5979,7 +5979,10 @@ mod tests {
         // directions.
         for (md, expected_href) in [
             ("[a](http://example.com)", "http://example.com"),
-            ("[a](https://example.com/x?y=1)", "https://example.com/x?y=1"),
+            (
+                "[a](https://example.com/x?y=1)",
+                "https://example.com/x?y=1",
+            ),
             ("[a](HTTPS://example.com)", "HTTPS://example.com"),
             ("[a](mailto:me@example.com)", "mailto:me@example.com"),
             ("[a](notes.md)", "notes.md"),
@@ -9016,6 +9019,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn test_footnote_multi_paragraph_definition_fixpoint() {
         // #1031: a two-paragraph footnote definition must keep its
         // paragraph boundary — the flat #945 shape fused the two

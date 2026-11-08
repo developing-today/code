@@ -231,6 +231,43 @@ pub(super) fn resolve(
 /// be in its set. A fold that cannot judge the set (it reports an error) gates nothing: the
 /// membership verdict stands rather than the store refusing every event it holds.
 fn fold_projection(nodes: &[Node]) -> Option<Projection> {
+    match fold_projection_checked(nodes) {
+        Ok(projection) => projection,
+        Err(error) => {
+            // #6979: a fold error is NOT an empty bridged set. The empty set
+            // (no operation bridged) returns Ok(None) and stays silent; a set
+            // that bridged and then failed to fold must be observable,
+            // because the policy gate in `resolve` is skipped for it and the
+            // membership verdict stands in its place. Surface the error at
+            // error level, then keep the documented fallback.
+            tracing::error!(
+                "groups fold failed for a bridged set; the group policy gate \
+                 is skipped and the membership verdict stands: {error}"
+            );
+            None
+        }
+    }
+}
+
+/// The fold over the bridged operations, with the fold's error kept:
+/// `Ok(None)` when no operation bridged (the empty bridged set),
+/// `Ok(Some(_))` when the fold judged the set, and `Err(_)` when the bridged
+/// set could not be folded.
+///
+/// Reachability of the error through [`resolve`]: `resolve` runs
+/// [`causal_order`] over the stored nodes before calling
+/// [`fold_projection`], and that rejects dependency cycles and absent
+/// dependencies in the stored graph; the bridged map dedupes event IDs, and
+/// [`bridged_after`] only names bridged events that are in the set. The pure
+/// set-shape `FoldError` cases (cycle, missing dependency, duplicate ID)
+/// are therefore not known to reach the fold through `resolve` today; they
+/// ARE reachable at this function's own boundary, because bridged `after`
+/// links are a contraction of the stored graph — pass-through nodes
+/// (excluded ones included) can make a bridged event name itself, as the
+/// regression test demonstrates. The membership-internal and unsettled
+/// cases are excluded by no check `resolve` runs. In every case the error
+/// must not be silently conflated with the empty bridged set.
+fn fold_projection_checked(nodes: &[Node]) -> Result<Option<Projection>, crate::groups::FoldError> {
     let position: HashMap<Hash, usize> = nodes
         .iter()
         .enumerate()
@@ -246,7 +283,7 @@ fn fold_projection(nodes: &[Node]) -> Option<Projection> {
         }
     }
     if bridged.is_empty() {
-        return None;
+        return Ok(None);
     }
     let bridged_ids: HashSet<Hash> = bridged.keys().copied().collect();
     let mut events: Vec<GroupEvent> = Vec::with_capacity(bridged.len());
@@ -257,7 +294,7 @@ fn fold_projection(nodes: &[Node]) -> Option<Projection> {
         event.after = bridged_after(node, nodes, &position, &bridged_ids);
         events.push(event);
     }
-    crate::groups::fold(&events).ok()
+    crate::groups::fold(&events).map(Some)
 }
 
 /// The bridged operations `node` causally follows: walk its `after` links through every stored
@@ -619,5 +656,122 @@ mod tests {
         let ids: Vec<Hash> = order.iter().map(|&index| nodes[index].id).collect();
         let expected: Vec<Hash> = (0..64u8).map(|n| Hash::digest([n])).collect();
         assert_eq!(ids, expected);
+    }
+
+    /// A bridged create whose only causal path back to a bridged event runs
+    /// through a pass-through node that names the create itself: the bridged
+    /// contraction makes the create name itself as its own dependency, and
+    /// the fold refuses the set with a cycle (#6979 fixture).
+    fn self_naming_bridged_set() -> Vec<Node> {
+        let author: AuthorKey = [9; 32];
+        let create = Node {
+            id: Hash::digest([41]),
+            author,
+            group: None,
+            after: vec![Hash::digest([42])],
+            action: Some(GroupAction::Create {
+                initial_members: vec![(
+                    GroupMember::Individual(AuthId::Key(author)),
+                    p2panda_auth::Access::manage(),
+                )],
+            }),
+            excluded: false,
+        };
+        let pass_through = Node {
+            id: Hash::digest([42]),
+            author,
+            group: None,
+            after: vec![Hash::digest([41])],
+            action: None,
+            excluded: true,
+        };
+        vec![create, pass_through]
+    }
+
+    /// #6979: an empty bridged set, a foldable bridged set, and a bridged set
+    /// the fold refuses are three distinguishable outcomes at the checked
+    /// boundary — the error is not folded into the empty-set `None`.
+    #[test]
+    fn test_fold_projection_checked_distinguishes_error_from_empty() {
+        // No operation bridges: the empty bridged set.
+        let empty = [node(1, &[]), node(2, &[1])];
+        assert_eq!(fold_projection_checked(&empty), Ok(None));
+
+        // A lone bridged create folds.
+        let author: AuthorKey = [9; 32];
+        let create = Node {
+            id: Hash::digest([43]),
+            author,
+            group: None,
+            after: Vec::new(),
+            action: Some(GroupAction::Create {
+                initial_members: vec![(
+                    GroupMember::Individual(AuthId::Key(author)),
+                    p2panda_auth::Access::manage(),
+                )],
+            }),
+            excluded: false,
+        };
+        assert!(matches!(fold_projection_checked(&[create]), Ok(Some(_))));
+
+        // The self-naming bridged set makes the fold report its error.
+        assert_eq!(
+            fold_projection_checked(&self_naming_bridged_set()),
+            Err(crate::groups::FoldError::Cycle)
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct BufferWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for BufferWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BufferWriter {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn captured_fold_log(nodes: &[Node]) -> String {
+        use tracing_subscriber::layer::SubscriberExt;
+        let writer = BufferWriter::default();
+        let buffer = writer.0.clone();
+        let layer = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(writer);
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = fold_projection(nodes);
+        });
+        String::from_utf8(buffer.lock().unwrap().clone()).unwrap()
+    }
+
+    /// #6979: the observable signal. A fold error logs at error level naming
+    /// the failure; the empty bridged set — the case the error used to be
+    /// conflated with — logs nothing.
+    #[test]
+    fn test_fold_projection_logs_fold_errors_but_not_the_empty_set() {
+        let log = captured_fold_log(&self_naming_bridged_set());
+        assert!(
+            log.contains("groups fold failed") && log.contains("cycle"),
+            "fold error must be surfaced in the log, got: {log}"
+        );
+
+        let empty = [node(1, &[]), node(2, &[1])];
+        let log = captured_fold_log(&empty);
+        assert!(
+            !log.contains("groups fold failed"),
+            "the empty bridged set must stay silent, got: {log}"
+        );
     }
 }

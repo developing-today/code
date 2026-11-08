@@ -350,7 +350,16 @@ jobs:
       - name: Dispatch the fix via pm-dispatch (new tracking issue)
         id: dispatch-start
         if: always() && steps.outcome.outputs.result == 'failure' && steps.failure-issue.outputs.number == ''
-        uses: developing-today/code/.github/actions/pm-dispatch-start@main
+        # Loaded from this checkout (the job already checked out main
+        # above) rather than as a remote developing-today/code/.github/
+        # actions/...@main reference: the remote form made the runner
+        # download the whole repo as an action archive during Set up
+        # job, which failed with a missing _staging/code-<sha>/archive
+        # file on every run (issue #5142; same failure and fix as
+        # #4742 / #4867 in pm-scheduled.yml and main-broken.yml). A
+        # local action path is resolved from the workspace and needs
+        # no action-repository download.
+        uses: ./.github/actions/pm-dispatch-start
         with:
           title: ${{ steps.dispatch-prompt.outputs.title }}
           prompt: ${{ steps.dispatch-prompt.outputs.prompt }}
@@ -360,7 +369,16 @@ jobs:
       - name: Queue a fresh fix task via pm-dispatch (existing tracking issue)
         id: dispatch-queue
         if: always() && steps.outcome.outputs.result == 'failure' && steps.failure-issue.outputs.number != ''
-        uses: developing-today/code/.github/actions/pm-dispatch-queue@main
+        # Loaded from this checkout (the job already checked out main
+        # above) rather than as a remote developing-today/code/.github/
+        # actions/...@main reference: the remote form made the runner
+        # download the whole repo as an action archive during Set up
+        # job, which failed with a missing _staging/code-<sha>/archive
+        # file on every run (issue #5142; same failure and fix as
+        # #4742 / #4867 in pm-scheduled.yml and main-broken.yml). A
+        # local action path is resolved from the workspace and needs
+        # no action-repository download.
+        uses: ./.github/actions/pm-dispatch-queue
         with:
           title: ${{ steps.dispatch-prompt.outputs.title }}
           prompt: ${{ steps.dispatch-prompt.outputs.prompt }}

@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - "pm-stack/external-comms/**"
+      - "pm-stack/opencode-claimant/**"
       - "pm-stack/opencode-usage-export/**"
       - "pm-stack/cloudflare-export/**"
       - "pm-stack/supabase-export/**"
@@ -12,6 +13,7 @@ on:
   pull_request:
     paths:
       - "pm-stack/external-comms/**"
+      - "pm-stack/opencode-claimant/**"
       - "pm-stack/opencode-usage-export/**"
       - "pm-stack/cloudflare-export/**"
       - "pm-stack/supabase-export/**"
@@ -83,7 +85,7 @@ jobs:
       - name: Test claimant and grist Python suites
         run: |
           fail=0
-          for t in pm-stack/opencode-claimant/test_poll.py pm-stack/grist/test_update_choice_options.py; do
+          for t in pm-stack/opencode-claimant/test_poll.py pm-stack/opencode-claimant/test_claimant.py pm-stack/grist/test_update_choice_options.py; do
             if [ ! -f "$t" ]; then
               echo "::error::Missing suite file $t — the pm-stack Python suites were not run in full."
               fail=1
@@ -93,12 +95,13 @@ jobs:
             exit 1
           fi
           python3 -m unittest pm-stack/opencode-claimant/test_poll.py || fail=1
+          python3 -m unittest pm-stack/opencode-claimant/test_claimant.py || fail=1
           python3 -m unittest discover -s pm-stack/grist -p 'test_*.py' || fail=1
           if [ "$fail" -ne 0 ]; then
             echo "::error::pm-stack Python suites: at least one suite failed (see above)."
             exit 1
           fi
-          echo "pm-stack Python suites: test_poll.py + grist discovery passed."
+          echo "pm-stack Python suites: test_poll.py + test_claimant.py + grist discovery passed."
 
       # Python suite for #6217: pm-stack/external-comms/
       # test_push_quarantine.py (6 tests, the pinning suite for the

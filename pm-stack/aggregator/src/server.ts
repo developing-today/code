@@ -65,6 +65,7 @@ import {
   type RoadmapReconciliation,
 } from "./roadmap-reconcile.ts";
 import type { Comment, DashComment, GhItem, ProjectPoolItem, QuotaView, RefKey, UsageView } from "./model.ts";
+import { isValidRef } from "./model.ts";
 import { buildEpicRollups } from "./epics.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
@@ -135,11 +136,51 @@ import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
 import { buildQueueView, queueInputsStale } from "./queue-view.ts";
+import { dashboardResponseWithinDeadline } from "./assembly-deadline.ts";
+import { dispatchStateFor, fetchRfaState, RFA_NOT_PICKED_UP } from "./sources/ready-for-agent.ts";
 
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
 const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
 const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
+
+async function readyAgentDispatchStates(items: Map<RefKey, GhItem>) {
+  const targets = [...items.values()].filter((item) =>
+    item.labels.some((label) => label.toLowerCase() === "ready-for-agent") && /#\d+$/.test(item.ref),
+  );
+  if (!targets.length) return [];
+  const observedAt = new Date().toISOString();
+  if (cfg.source !== "live") {
+    // #4969 (Codex on PR #5283): fixtures mode must never read the live
+    // harness — deterministic fixture dispatch data, mirroring the
+    // health.ts fixtures boundary. The canned set has no picked-up
+    // work item, so every labelled fixture item is honestly
+    // "not picked up".
+    return targets.map((item) => ({
+      ref: item.ref,
+      state: RFA_NOT_PICKED_UP,
+      provenance: { source: "ready-for-agent", observedAt, repository: item.ref.split("#")[0], mode: "fixtures" },
+    }));
+  }
+  try {
+    const state = await fetchRfaState(cfg.readyForAgent.baseUrl);
+    return targets.map((item) => {
+      const match = /^(.*)#(\d+)$/.exec(item.ref);
+      if (!match) return null;
+      return {
+        ref: item.ref,
+        state: dispatchStateFor(state, match[1], Number(match[2])) || RFA_NOT_PICKED_UP,
+        provenance: { source: "ready-for-agent", observedAt, repository: match[1] },
+      };
+    }).filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+  } catch {
+    return targets.map((item) => ({
+      ref: item.ref,
+      state: "unavailable",
+      provenance: { source: "ready-for-agent", observedAt, repository: item.ref.split("#")[0], error: "harness read failed" },
+    }));
+  }
+}
 
 /** #1220: the coverage snapshot behind the /projects panel — computed
  * from the feed's items + the Project pool, rotated weekly by
@@ -464,7 +505,7 @@ function emptyQuotaView(): QuotaView {
   return { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } };
 }
 function emptyUsageView(): UsageView {
-  return { services: [], payg: [], charges: [], attention: [], domains: null, subscriptions: [], history: {} };
+  return { services: [], uninstrumentedServices: [], payg: [], charges: [], attention: [], domains: null, subscriptions: [], history: {} };
 }
 
 async function boardContext() {
@@ -516,10 +557,27 @@ async function roadmapContext() {
 }
 
 async function searchContext(query: string) {
-  const [board, rows] = await Promise.all([source.board(), source.roadmap()]);
-  const refs = [...new Set([...allRefs(board), ...allRefs(rows)])];
+  // #1212 slice 2: registry, DNS, services, and tier items join the
+  // board/roadmap subjects. Each extra source fails soft (empty on
+  // error) so one broken source never takes search down with it.
+  const [board, rows, registry, dns, usage, orchestration] = await Promise.all([
+    source.board(),
+    source.roadmap(),
+    source.registry().catch(() => []),
+    source.dns().catch(() => null),
+    source.usage().catch(() => null),
+    source.orchestration().catch(() => null),
+  ]);
+  const tierItems = orchestration ? [...orchestration.tiers.needsDrew, ...orchestration.tiers.needsOrchestrator] : [];
+  // Codex P2 on PR #7331: refs carried only by the slice-2 sources
+  // (registry taskRefs, tier-item refs) join the resolution set, or
+  // their search badges always render unresolved even when the live
+  // pool/projector could resolve them.
+  const extraRefs = [...registry.flatMap((record) => record.taskRefs), ...tierItems.map((item) => item.ref)].filter(isValidRef);
+  const refs = [...new Set([...allRefs(board), ...allRefs(rows), ...extraRefs])];
   const items = await source.items(refs);
-  return { query, results: searchWork(board, rows, items, query), items };
+  const extras = { registry, dns, services: usage?.services ?? [], tierItems };
+  return { query, results: searchWork(board, rows, items, query, extras), items };
 }
 
 // #3321: watchdog gap-sync passes run whole and in observation
@@ -539,12 +597,16 @@ const enqueueWatchdogGapSync = createWatchdogGapSyncQueue();
 // registry age from the source's already-loaded feed.
 async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["diagnostics"]>>["orchestration"]) {
   if (cfg.source !== "live") return [];
-  const health = await healthContext(false);
+  const [health, projectAudit] = await Promise.all([
+    healthContext(false),
+    source.projectAudit ? source.projectAudit().catch(() => null) : Promise.resolve(null),
+  ]);
   const items = watchdogTierItems({
     now: Date.now(),
     feedAgeMs: health.feed.ageMs,
     feedGeneratedAt: health.feed.generatedAt,
     ...(diagnosis ? { orchestration: diagnosis } : {}),
+    projectAudit,
     ...(source.provenanceDetail ? { registryAgeMs: source.provenanceDetail().registry.ageMs } : {}),
     probes: health.services
       .filter((s) => WATCHDOG_PROBE_SERVICE_IDS.includes(s.def.id))
@@ -1640,10 +1702,11 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/api/projects.json") {
-    const [pool, census, poolAvailable] = await Promise.all([
+    const [pool, census, poolAvailable, audit] = await Promise.all([
       source.projects().catch(() => []),
       source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
       source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
+      source.projectAudit ? source.projectAudit().catch(() => null) : Promise.resolve(null),
     ]);
     const coverage = await coverageSnapshot(census, pool, poolAvailable);
     // #1279: the JSON twin of the brief panels on the pool cards — the
@@ -1663,6 +1726,7 @@ async function handler(req: Request): Promise<Response> {
       // Build with the full pool so a filtered-out blocker can still have
       // its state resolved, but only expose briefs for the visible items.
       briefs: Object.fromEntries([...briefs].filter(([ref]) => outRefs.has(ref))),
+      audit,
       coverage: coverage.current,
       coverageBaseline: coverage.baseline,
     });
@@ -1851,6 +1915,7 @@ async function handler(req: Request): Promise<Response> {
       attention: usage.attention,
       domains: usage.domains,
       subscriptions: usage.subscriptions,
+      uninstrumentedServices: usage.uninstrumentedServices,
     });
   }
   if (req.method === "POST" && path === "/api/quota/refresh") {
@@ -2127,12 +2192,15 @@ async function handler(req: Request): Promise<Response> {
     return json(body);
   }
 
+  const itemJsonMatch = /^\/api\/item\/(.+)\.json$/.exec(path);
   const itemMatch = /^\/item\/(.+)$/.exec(path);
-  if (itemMatch) {
+  const matchedItemPath = itemJsonMatch ?? itemMatch;
+  if (matchedItemPath) {
     // #2748: same guard as /discuss — JSON 400 on malformed encoding.
-    const id = decodePathSegment(itemMatch[1]);
+    const encodedId = matchedItemPath[1];
+    const id = decodePathSegment(encodedId);
     if (id === null) {
-      return json({ error: `malformed percent-encoding in path segment: ${itemMatch[1]}` }, 400);
+      return json({ error: `malformed percent-encoding in path segment: ${encodedId}` }, 400);
     }
     const [board, rows] = await Promise.all([source.board().catch(() => []), source.roadmap().catch(() => [])]);
     const roadmapRow = rows.find((r) => r.subject === id);
@@ -2175,6 +2243,14 @@ async function handler(req: Request): Promise<Response> {
       // item page carries the status-request control for that pool item.
       const pooled = pool.find((p) => refs.includes(p.ref));
       const epicRollup = pooled?.kind === "Epic" ? buildEpicRollups(pool).get(pooled.ref) : undefined;
+      const dispatchStates = await readyAgentDispatchStates(items);
+      if (itemJsonMatch) {
+        return json({
+          subject,
+          linkedItems: [...items.values()],
+          dispatchStates,
+        });
+      }
       const extras = {
         dashComments,
         ...(roadmapRow ? { roadmapAnnotations } : {}),
@@ -2194,6 +2270,7 @@ async function handler(req: Request): Promise<Response> {
           : {}),
         ...(epicRollup ? { epicRollup } : {}),
         briefs,
+        ...(dispatchStates.length ? { dispatchStates } : {}),
         activity: {
           events: itemEvents,
           globalHref: `/events?${activityQuery.toString()}`,
@@ -2203,6 +2280,9 @@ async function handler(req: Request): Promise<Response> {
       };
       return html(renderItem(title, id, links, items, comments, prov(), extras));
     }
+    // #4969 (Codex on PR #5283): an unresolved /api/item/<id>.json id
+    // gets the structured JSON 404, not the HTML page response.
+    if (itemJsonMatch) return notFoundResponse(path);
     return html(
       `<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${esc(id)}</code></p>`,
       404,
@@ -2228,7 +2308,7 @@ async function fetchHandler(req: Request): Promise<Response> {
   // failure as an unsuccessful render.
   let res: Response;
   try {
-    res = await handler(req);
+    res = await dashboardResponseWithinDeadline(req, () => handler(req));
   } catch (err) {
     console.error(`aggregator: handler failed for ${req.method} ${req.url}:`, err);
     res = errorBoundaryResponse(new URL(req.url).pathname, err);
