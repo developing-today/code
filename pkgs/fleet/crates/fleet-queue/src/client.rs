@@ -967,7 +967,17 @@ fn cmd_enqueue(rest: &[String]) -> i32 {
     let skew = 10_000_000i64; // 10 s in micros
     let mut warnings: Vec<String> = Vec::new();
     let line;
-    if created.map(|c| c >= call_started - skew).unwrap_or(false) {
+    if let Some(pred) = resp.get("revived_from") {
+        // Broker-side revive (#6838): the key's prior task was
+        // terminal, so this enqueue created a fresh task linked to
+        // its predecessor.
+        line = format!(
+            "revived: new task {} (queue {q}, status {s}), predecessor task {} ({})",
+            fmt_cell(Some(&tid)),
+            fmt_cell(pred.get("task_id")),
+            fmt_cell(pred.get("status")),
+        );
+    } else if created.map(|c| c >= call_started - skew).unwrap_or(false) {
         line = format!(
             "enqueued new task {} (queue {q}, status {s})",
             fmt_cell(Some(&tid))
@@ -1405,6 +1415,26 @@ fn cmd_cancel(rest: &[String]) -> i32 {
     0
 }
 
+/// Revive a dead task in place (#6838): a failed task, or a queued
+/// task dead at cap (attempts exhausted), gets attempts=0 and a
+/// fresh not_before through the broker's /revive verb — the
+/// supported replacement for the monitor's direct-SQL resets.
+fn cmd_revive(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["worker", "reason", "not-before"], &[]);
+    reject_extra_pos("revive", &args, 1);
+    let mut body = json!({
+        "task_id": args.pos_i64(0, "task_id"),
+        "worker": opt_worker(&args),
+        "reason": args.get("reason").unwrap_or_default(),
+    });
+    if let Some(nb) = args.get("not-before") {
+        body["not_before"] = json!(nb);
+    }
+    let resp = unwrap_ok(call("/revive", &body));
+    print_json(&require_row(&resp, "revive_task"));
+    0
+}
+
 fn cmd_fail(rest: &[String]) -> i32 {
     let args = parse_args(rest, &["worker", "error", "reason-class", "execution"], &[]);
     reject_extra_pos("fail", &args, 1);
@@ -1646,7 +1676,7 @@ fn atomic_write_json(path: &str, obj: &Value) {
 pub fn run(args: &[String]) -> i32 {
     if args.is_empty() {
         eprint(
-            "usage: repo-queue <validate|list|enqueue|claim|lane|bind|heartbeat|checkpoint|park|block|cancel|fail|complete|health|signal|fallback> ...",
+            "usage: repo-queue <validate|list|enqueue|claim|lane|bind|heartbeat|checkpoint|park|block|cancel|fail|complete|revive|health|signal|fallback> ...",
         );
         return 2;
     }
@@ -1667,6 +1697,7 @@ pub fn run(args: &[String]) -> i32 {
         "park" => cmd_park(rest),
         "block" => cmd_block(rest),
         "cancel" => cmd_cancel(rest),
+        "revive" => cmd_revive(rest),
         "fail" => cmd_fail(rest),
         "complete" => cmd_complete(rest),
         "health" => cmd_health(rest),

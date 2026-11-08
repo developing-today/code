@@ -1115,6 +1115,34 @@ fn req_bool(req: &Value, key: &str) -> Option<bool> {
 // Verbs
 // ---------------------------------------------------------------------------
 
+/// Statuses in which a task still owns its dedupe key: an enqueue
+/// that dedupe-matches one of these is a true duplicate and returns
+/// the live row. Terminal rows (done/cancelled/failed) do NOT block
+/// the key (#6838): PG's enqueue revived on dedupe-over-terminal,
+/// and the Turso port dropped that nuance (cutover doc deviation 6).
+pub const LIVE_STATUSES: [&str; 4] = ["queued", "claimed", "parked", "blocked"];
+pub const TERMINAL_STATUSES: [&str; 3] = ["done", "cancelled", "failed"];
+
+/// Partition the rows sharing one (queue, dedupe_key) into the live
+/// dedupe hit, if any, and the newest terminal predecessor, if any.
+/// Rows arrive ordered by id ASC, so the last terminal row seen is
+/// the most recent attempt — the one a revive links back to.
+fn dedupe_partition(rows: &[Value]) -> (Option<Value>, Option<Value>) {
+    let mut live: Option<Value> = None;
+    let mut terminal: Option<Value> = None;
+    for row in rows {
+        let status = row.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if LIVE_STATUSES.contains(&status) {
+            if live.is_none() {
+                live = Some(row.clone());
+            }
+        } else if TERMINAL_STATUSES.contains(&status) {
+            terminal = Some(row.clone());
+        }
+    }
+    (live, terminal)
+}
+
 fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
     let packet = req.get("packet").cloned().unwrap_or(Value::Null);
     let (errors, warnings) = validate_packet(&packet);
@@ -1132,18 +1160,22 @@ fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
     }
     let now = now_iso();
     let dedupe = task.get("dedupe_key").and_then(|v| v.as_str()).map(str::to_string);
-    let work = (|| -> Result<Value, TErr> {
+    let work = (|| -> Result<(Value, Option<Value>), TErr> {
+        let mut predecessor: Option<Value> = None;
         if let Some(dk) = &dedupe {
             let existing = t.query_objs(
                 &format!(
-                    "SELECT {TASK_COLS} FROM tasks WHERE queue = ? AND dedupe_key = ?"
+                    "SELECT {TASK_COLS} FROM tasks WHERE queue = ? AND dedupe_key = ? \
+                     ORDER BY id ASC"
                 ),
                 &[Arg::Text(queue.clone()), Arg::Text(dk.clone())],
                 &TASK_JSON_COLS,
             )?;
-            if let Some(row) = existing.into_iter().next() {
-                return Ok(row);
+            let (live, terminal) = dedupe_partition(&existing);
+            if let Some(row) = live {
+                return Ok((row, None));
             }
+            predecessor = terminal;
         }
         let ins = t.exec(
             "INSERT INTO tasks (queue, title, body, payload, dedupe_key, priority, \
@@ -1171,13 +1203,140 @@ fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             ],
         )?;
         let id = ins.last_insert_rowid.unwrap_or(0);
-        get_task(t, id).map(|r| r.unwrap_or(Value::Null))
+        // Revive-on-enqueue (#6838): the key's only prior row(s) are
+        // terminal, so this fresh task is a revival, not a first
+        // enqueue. Link it to its predecessor in progress (the audit
+        // chain) and leave an event on BOTH rows.
+        if let Some(pred) = &predecessor {
+            let pred_id = pred.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+            let link = json!({
+                "task_id": pred_id,
+                "status": pred.get("status").cloned().unwrap_or(Value::Null),
+                "completed_at": pred.get("completed_at").cloned().unwrap_or(Value::Null),
+                "revived_at": now_iso(),
+                "via": "enqueue_repo_task_turso",
+            });
+            t.exec(
+                "UPDATE tasks SET progress = ? WHERE id = ?",
+                &[
+                    Arg::Text(json!({"revived_from": link}).to_string()),
+                    Arg::Int(id),
+                ],
+            )?;
+            event(
+                t,
+                Some("enqueue_repo_task"),
+                Some(id),
+                "task_revived",
+                &json!({"predecessor": link, "dedupe_key": dedupe}),
+            )?;
+            event(
+                t,
+                Some("enqueue_repo_task"),
+                Some(pred_id),
+                "revived_by",
+                &json!({"successor_task_id": id, "dedupe_key": dedupe}),
+            )?;
+        }
+        let row = get_task(t, id).map(|r| r.unwrap_or(Value::Null))?;
+        Ok((row, predecessor))
     })();
     match work {
-        Ok(row) if !row.is_null() => ok(json!({
-            "row": row, "rpc": "enqueue_repo_task_turso", "warnings": warnings
-        })),
+        Ok((row, predecessor)) if !row.is_null() => {
+            let mut envelope = json!({
+                "row": row, "rpc": "enqueue_repo_task_turso", "warnings": warnings
+            });
+            if let Some(pred) = &predecessor {
+                envelope["revived_from"] = json!({
+                    "task_id": pred.get("id").cloned().unwrap_or(Value::Null),
+                    "status": pred.get("status").cloned().unwrap_or(Value::Null),
+                });
+            }
+            ok(envelope)
+        }
         Ok(_) => fail(5, "enqueue_repo_task_turso returned no row"),
+        Err(e) => terr(e),
+    }
+}
+
+/// Whether a task row may be revived by the /revive verb (#6838):
+/// a failed row can always be re-queued; a queued row only when it
+/// is dead at cap (attempts exhausted — the silent-zombie state
+/// #6463 censused). Anything else is live or terminal-done work the
+/// verb must not touch.
+fn revive_eligible(status: &str, attempts: i64, max_attempts: i64) -> Result<(), String> {
+    match status {
+        "failed" => Ok(()),
+        "queued" if attempts >= max_attempts => Ok(()),
+        "queued" => Err(format!(
+            "task is queued with attempts {attempts} < max_attempts {max_attempts}: \
+             not dead at cap, nothing to revive"
+        )),
+        other => Err(format!(
+            "task status {other} cannot be revived (only failed, or queued dead-at-cap)"
+        )),
+    }
+}
+
+/// The revive verb (#6838): reset a dead task in place — attempts
+/// back to 0, last_error cleared, status queued, due now (or at the
+/// caller's not_before) — with a `revived` audit event. This is the
+/// supported path the fleet monitor's dead-in-queue self-repair
+/// re-points to, replacing its direct SQL.
+fn verb_revive(t: &TursoBackend, req: &Value) -> Value {
+    let task_id = req_i64(req, "task_id").unwrap_or(0);
+    let worker = req_str(req, "worker").unwrap_or("fleet-queue-cli").to_string();
+    let reason = req_str(req, "reason").unwrap_or("").to_string();
+    let not_before = req_str(req, "not_before")
+        .map(str::to_string)
+        .unwrap_or_else(now_iso);
+    let work = (|| -> Result<Value, String> {
+        let Some(row) = get_task(t, task_id).map_err(|e| e)? else {
+            return Err(format!("revive_task: task {task_id} does not exist"));
+        };
+        let status = row
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let attempts = row.get("attempts").and_then(|v| v.as_i64()).unwrap_or(0);
+        let max_attempts = row
+            .get("max_attempts")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(4);
+        revive_eligible(&status, attempts, max_attempts)
+            .map_err(|e| format!("revive_task: task {task_id}: {e}"))?;
+        t.exec(
+            "UPDATE tasks SET status = 'queued', attempts = 0, last_error = NULL, \
+               not_before = ?, worker_id = NULL, lease_until = NULL, \
+               updated_at = ? WHERE id = ?",
+            &[
+                Arg::Text(not_before.clone()),
+                Arg::Text(now_iso()),
+                Arg::Int(task_id),
+            ],
+        )
+        .map_err(|e| e)?;
+        event(
+            t,
+            Some(&worker),
+            Some(task_id),
+            "revived",
+            &json!({
+                "reason": reason, "previous_status": status,
+                "previous_attempts": attempts, "not_before": not_before,
+                "via": "revive_task_turso",
+            }),
+        )
+        .map_err(|e| e)?;
+        get_task(t, task_id)
+            .map(|r| r.unwrap_or(Value::Null))
+            .map_err(|e| e)
+    })();
+    match work {
+        Ok(row) if !row.is_null() => ok(json!({"row": row})),
+        Ok(_) => fail(5, format!("revive_task: task {task_id} does not exist")),
+        Err(e) if e.starts_with("revive_task:") => fail(5, e),
         Err(e) => terr(e),
     }
 }
@@ -2111,6 +2270,7 @@ fn verb_signal_count(t: &TursoBackend, req: &Value) -> Value {
 pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
     match path {
         "/enqueue" => verb_enqueue(t, req),
+        "/revive" => verb_revive(t, req),
         "/claim" => verb_claim(t, req),
         "/lane" => verb_lane(t, req),
         "/bind" => verb_bind(t, req),
@@ -2236,6 +2396,42 @@ mod tests {
         // event_seen releases when the event exists for the task.
         assert_eq!(revalidate_outcome(Some("event_seen"), None, None, true), "released");
         assert_eq!(revalidate_outcome(Some("event_seen"), None, None, false), "confirmed");
+    }
+
+    #[test]
+    fn dedupe_partition_live_hit_wins_and_terminal_is_newest() {
+        let rows = vec![
+            json!({"id": 1, "status": "done"}),
+            json!({"id": 2, "status": "cancelled"}),
+        ];
+        let (live, terminal) = dedupe_partition(&rows);
+        assert!(live.is_none());
+        // The newest terminal row is the revive predecessor.
+        assert_eq!(terminal.unwrap().get("id"), Some(&json!(2)));
+        let rows = vec![
+            json!({"id": 1, "status": "done"}),
+            json!({"id": 3, "status": "parked"}),
+            json!({"id": 4, "status": "failed"}),
+        ];
+        let (live, terminal) = dedupe_partition(&rows);
+        assert_eq!(live.unwrap().get("id"), Some(&json!(3)));
+        assert_eq!(terminal.unwrap().get("id"), Some(&json!(4)));
+        let (live, terminal) = dedupe_partition(&[]);
+        assert!(live.is_none() && terminal.is_none());
+    }
+
+    #[test]
+    fn revive_eligibility_matches_6838() {
+        // Failed rows can always be re-queued.
+        assert!(revive_eligible("failed", 4, 4).is_ok());
+        assert!(revive_eligible("failed", 1, 4).is_ok());
+        // Queued rows only when dead at cap (the #6463 zombie state).
+        assert!(revive_eligible("queued", 4, 4).is_ok());
+        assert!(revive_eligible("queued", 3, 4).is_err());
+        // Live work and done work are untouchable.
+        assert!(revive_eligible("claimed", 4, 4).is_err());
+        assert!(revive_eligible("done", 4, 4).is_err());
+        assert!(revive_eligible("cancelled", 4, 4).is_err());
     }
 
     #[test]
