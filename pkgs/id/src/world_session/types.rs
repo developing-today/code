@@ -64,16 +64,22 @@ pub trait SessionIo: Send {
 }
 
 /// Tunables for [`run_session_with`].
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct SessionConfig {
     /// How long a peer may take to send its first frame.
     pub join_timeout: Duration,
+    /// The server blob store documents are served from, when the
+    /// transport holds one the world service does not (the SSH shell
+    /// receives the store directly; D1-040 decision 7). Falls back to
+    /// the world service's own blob store when `None`.
+    pub documents_store: Option<Store>,
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             join_timeout: Duration::from_secs(10),
+            documents_store: None,
         }
     }
 }
@@ -109,6 +115,19 @@ pub(crate) enum ClientFrame {
     /// Ask for a read-only doc ticket to replicate the records peer-to-peer.
     RecordsTicket {
         capability: String,
+    },
+    /// Page the server blob store's public document names (D1-040).
+    Documents {
+        capability: String,
+        /// Only names starting with this prefix.
+        prefix: Option<String>,
+        /// Continue after this name (exclusive).
+        after: Option<String>,
+    },
+    /// Read one public document from the server blob store (D1-040).
+    Document {
+        capability: String,
+        name: String,
     },
     DownloadModule {
         capability: String,
@@ -348,6 +367,20 @@ pub(crate) enum ServerFrame<'a> {
     /// A read-only iroh-docs ticket for the records document.
     RecordsTicket {
         ticket: String,
+    },
+    /// One page of public document names, in sorted order. No
+    /// `sequence`: the listing is a point-in-time snapshot of the
+    /// blob store's tag set, which has no sequence to report (D1-040).
+    Documents {
+        names: Vec<String>,
+        /// Present when more names follow; pass as `after` to continue.
+        next_after: Option<String>,
+    },
+    /// One public document: its UTF-8 text, byte size, and name.
+    Document {
+        name: String,
+        size: u64,
+        text: String,
     },
     ModuleBegin {
         module_hash: String,

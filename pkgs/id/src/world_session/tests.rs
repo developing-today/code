@@ -1115,6 +1115,7 @@ mod tests {
             service(None),
             SessionConfig {
                 join_timeout: Duration::from_millis(50),
+                documents_store: None,
             },
         );
         let frame = peer.next().await.unwrap();
@@ -1645,6 +1646,206 @@ mod tests {
             .await;
         let reply = joined.next().await.unwrap();
         assert_eq!(reply["type"], "event");
+    }
+
+    async fn put_document(store: &iroh_blobs::api::Store, name: &str, bytes: Vec<u8>) {
+        let outcome = store.blobs().add_bytes(bytes).await.unwrap();
+        store.tags().set(name, outcome.hash).await.unwrap();
+    }
+
+    async fn documents_service() -> (WorldService, iroh_blobs::api::Store) {
+        use iroh_blobs::store::mem::MemStore;
+        let store: iroh_blobs::api::Store = MemStore::new().into();
+        put_document(&store, "guide.md", b"# guide\nhello".to_vec()).await;
+        put_document(&store, "notes.txt", b"plain notes".to_vec()).await;
+        put_document(&store, "zzz.md", b"last".to_vec()).await;
+        put_document(&store, ".internal.md", b"hidden".to_vec()).await;
+        put_document(&store, "evil\nname.md", b"injection".to_vec()).await;
+        put_document(&store, "binary.txt", vec![0xff, 0x00]).await;
+        put_document(&store, "big.txt", vec![b'x'; MAX_DOCUMENT_BYTES + 1]).await;
+        (service(None).with_blob_store(store.clone()), store)
+    }
+
+    #[tokio::test]
+    async fn documents_are_listed_read_and_refused_over_a_session() {
+        let (svc, store) = documents_service().await;
+        let (_, token) = svc
+            .world()
+            .issue("ann".to_owned(), WorldScopes::GUEST)
+            .await
+            .unwrap();
+
+        // Listing: sorted public names only, prefix-filtered on request.
+        let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "documents",
+            "capability": token.expose(),
+        }))
+        .await;
+        let reply = peer.next().await.unwrap();
+        assert_eq!(reply["type"], "documents");
+        let names: Vec<String> = serde_json::from_value(reply["names"].clone()).unwrap();
+        assert!(reply["next_after"].is_null());
+        // The store also holds the `auto-*` temp tags `add_bytes` leaves
+        // behind; the documents this test planted must appear in sorted
+        // order, and non-public names must not appear at all.
+        let planted: Vec<&str> = names
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !name.starts_with("auto-"))
+            .collect();
+        assert_eq!(
+            planted,
+            ["big.txt", "binary.txt", "guide.md", "notes.txt", "zzz.md"]
+        );
+        assert!(!names.iter().any(|name| name == ".internal.md"));
+        assert!(!names.iter().any(|name| name.contains("evil")));
+
+        // Parity: the frame-served listing renders exactly the names the
+        // shell-local listing renders, in the same order.
+        let rendered = list_public_documents(&store, None).await.unwrap();
+        let rendered_names: Vec<&str> = rendered.lines().skip(1).take(names.len()).collect();
+        assert_eq!(
+            rendered_names,
+            names.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+
+        // `after` is exclusive; `prefix` filters.
+        peer.say(serde_json::json!({
+            "type": "documents",
+            "capability": token.expose(),
+            "after": "guide.md",
+        }))
+        .await;
+        let reply = peer.next().await.unwrap();
+        let names: Vec<String> = serde_json::from_value(reply["names"].clone()).unwrap();
+        assert_eq!(names, ["notes.txt", "zzz.md"]);
+        peer.say(serde_json::json!({
+            "type": "documents",
+            "capability": token.expose(),
+            "prefix": "no",
+        }))
+        .await;
+        let reply = peer.next().await.unwrap();
+        let names: Vec<String> = serde_json::from_value(reply["names"].clone()).unwrap();
+        assert_eq!(names, ["notes.txt"]);
+
+        // Reading one document returns name, byte size, and text.
+        peer.say(serde_json::json!({
+            "type": "document",
+            "capability": token.expose(),
+            "name": "guide.md",
+        }))
+        .await;
+        let reply = peer.next().await.unwrap();
+        assert_eq!(reply["type"], "document");
+        assert_eq!(reply["name"], "guide.md");
+        assert_eq!(reply["size"], 13);
+        assert_eq!(reply["text"], "# guide\nhello");
+
+        // Refusals ride the error path with the shell's own words.
+        for (name, message) in [
+            ("missing.md", "document not found"),
+            (
+                ".internal.md",
+                "document name must be a public .txt, .md, or .markdown tag",
+            ),
+            (
+                "guide.png",
+                "document name must be a public .txt, .md, or .markdown tag",
+            ),
+            ("binary.txt", "document is not valid UTF-8 text"),
+            ("big.txt", "document exceeds the 64 KiB SSH viewing limit"),
+        ] {
+            let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+            peer.say(serde_json::json!({
+                "type": "document",
+                "capability": token.expose(),
+                "name": name,
+            }))
+            .await;
+            let reply = peer.next().await.unwrap();
+            assert_eq!(reply["type"], "error", "case {name}");
+            assert_eq!(reply["message"], message, "case {name}");
+        }
+
+        // A bad capability is join denied, for both frames.
+        for frame in [
+            serde_json::json!({"type": "documents", "capability": "bogus"}),
+            serde_json::json!({"type": "document", "capability": "bogus", "name": "guide.md"}),
+        ] {
+            let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+            peer.say(frame).await;
+            let reply = peer.next().await.unwrap();
+            assert_eq!(reply["type"], "error");
+            assert_eq!(reply["message"], "join denied");
+        }
+
+        // A joined session can list and read with its session capability.
+        let mut joined = Peer::connect(svc, SessionConfig::default());
+        joined
+            .say(serde_json::json!({"type":"join","capability": token.expose()}))
+            .await;
+        assert_eq!(joined.next().await.unwrap()["type"], "snapshot");
+        joined
+            .say(serde_json::json!({"type":"documents","capability": token.expose()}))
+            .await;
+        let reply = joined.next().await.unwrap();
+        assert_eq!(reply["type"], "documents");
+        joined
+            .say(serde_json::json!({"type":"document","capability": token.expose(),"name":"notes.txt"}))
+            .await;
+        let reply = joined.next().await.unwrap();
+        assert_eq!(reply["type"], "document");
+        assert_eq!(reply["text"], "plain notes");
+    }
+
+    #[test]
+    fn document_pages_account_for_json_escaping_and_bounded_selection_never_skips() {
+        // Names of 197 raw bytes carrying 190 double quotes serialize to
+        // ~390 bytes each; a raw-byte budget would overrun the frame.
+        let names: Vec<String> = (0..3800)
+            .map(|i| format!("doc-{i:04}-{}", "\"".repeat(190)))
+            .collect();
+        let (page, next_after) = document_names_page(&names).unwrap();
+        let used: usize = page.iter().map(|name| document_name_wire_size(name)).sum();
+        assert!(used <= MAX_RECORDS_PAGE_BYTES, "serialized page budget");
+        assert_eq!(next_after.as_deref(), page.last().map(String::as_str));
+
+        // The bounded selector, fed the whole set, returns the same first
+        // page as the unbounded walk, and its cursor continues correctly.
+        let mut selector = DocumentPageSelector::default();
+        for name in &names {
+            selector.push(name.clone());
+        }
+        let (selected, selected_after) = selector.finish().unwrap();
+        assert_eq!(selected, page);
+        assert_eq!(selected_after, next_after);
+
+        // Many small names (2.2 MB worth): selection still matches the
+        // sorted walk, even fed in reverse order.
+        let small: Vec<String> = (0..200_000).map(|i| format!("n-{i:06}")).collect();
+        let (walk_page, walk_after) = document_names_page(&small).unwrap();
+        let mut selector = DocumentPageSelector::default();
+        for name in small.iter().rev() {
+            selector.push(name.clone());
+        }
+        let (selected, selected_after) = selector.finish().unwrap();
+        assert_eq!(selected, walk_page);
+        assert_eq!(selected_after, walk_after);
+    }
+
+    #[test]
+    fn document_name_pages_break_on_the_byte_budget_with_an_exclusive_cursor() {
+        let names: Vec<String> = (0..2000)
+            .map(|i| format!("doc-{i:04}-{}", "x".repeat(500)))
+            .collect();
+        let (page, next_after) = document_names_page(&names).unwrap();
+        assert!(!page.is_empty());
+        assert!(page.len() < names.len());
+        assert_eq!(next_after.as_deref(), page.last().map(String::as_str));
+        let used: usize = page.iter().map(|name| name.len() + 1).sum();
+        assert!(used <= MAX_RECORDS_PAGE_BYTES);
     }
 
     fn memory_hub(
