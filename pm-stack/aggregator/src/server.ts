@@ -10,7 +10,7 @@ import { stat } from "node:fs/promises";
 import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
-import { ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
+import { ACTION_STATES, ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
 import {
   checkActionAgainstItem,
   effectiveNeedsOrder,
@@ -1352,10 +1352,19 @@ async function handler(req: Request): Promise<Response> {
     const object = url.searchParams.get("object");
     const kind = url.searchParams.get("kind");
     const state = url.searchParams.get("state");
+    // #4620: state=all is the explicit all-history read (audit and
+    // retrospective consumers). It must not fall through to the literal
+    // state filter, which silently returned an empty list while the
+    // store held applied/rejected history — a false zero. Any other
+    // value that is not a real action state is a 400, never an empty
+    // list, so a mistyped filter cannot masquerade as "no history".
+    if (state && state !== "all" && !ACTION_STATES.has(state)) {
+      return json({ error: `state must be one of: all, ${[...ACTION_STATES].join(", ")}` }, 400);
+    }
     let list = await actionsStore.all();
     if (object) list = list.filter((a) => a.objectRef === object);
     if (kind) list = list.filter((a) => a.kind === kind);
-    if (state) list = list.filter((a) => a.state === state);
+    if (state && state !== "all") list = list.filter((a) => a.state === state);
     return json({ actions: list, pending: await actionsStore.pendingCounts() });
   }
 
