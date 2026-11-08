@@ -38,7 +38,11 @@ QUEUES = [
     "repo-health-nix-pilot",
 ]
 
-REPO_QUEUE_CMD = Path.home() / "fleet-brokers" / "bin" / "repo-queue"
+# Packaged fleet binary via its repo-queue argv0 alias
+# (~/.local/bin/repo-queue -> ~/.local/bin/fleet); the hand-built
+# ~/fleet-brokers/bin tree was retired by the code#5362 cutover
+# (task 12731).
+REPO_QUEUE_CMD = Path.home() / ".local" / "bin" / "repo-queue"
 PRIMARY_CLONE = Path.home() / "git" / "code"
 
 # Concurrency cap
