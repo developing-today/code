@@ -2348,6 +2348,11 @@ mod tests {
         world.update(1, b"inc").unwrap();
     }
 
+    fn drive_text_counter(world: &mut WorldInstance) {
+        world.update(1, b"inc").unwrap();
+        world.update(1, b"inc").unwrap();
+    }
+
     fn drive_tic_tac_toe(world: &mut WorldInstance) {
         for (participant, cell) in [(1u64, "0"), (2, "3"), (1, "1"), (2, "4"), (1, "2")] {
             world.update(participant, cell.as_bytes()).unwrap();
@@ -2436,12 +2441,17 @@ mod tests {
         crowd_territory(world, 8, 14);
     }
 
-    fn examples() -> [Example; 8] {
+    fn examples() -> [Example; 9] {
         [
             Example {
                 name: "roc-counter",
                 wasm: include_bytes!("../examples/roc-counter/counter.wasm"),
                 drive: drive_counter,
+            },
+            Example {
+                name: "roc-text-counter",
+                wasm: include_bytes!("../examples/roc-text-counter/text-counter.wasm"),
+                drive: drive_text_counter,
             },
             Example {
                 name: "tic-tac-toe",
@@ -2614,6 +2624,14 @@ mod tests {
         ("territory-full", GuestCall::Wants, 100_000), // baseline 3375
         ("territory-full", GuestCall::Snapshot, 100_000), // baseline 12801
         ("territory-full", GuestCall::Restore, 100_000), // baseline 32317
+        ("roc-text-counter", GuestCall::Init, 100_000), // baseline 1203
+        ("roc-text-counter", GuestCall::Update, 100_000), // baseline 3594
+        ("roc-text-counter", GuestCall::View, 100_000), // baseline 1424
+        ("roc-text-counter", GuestCall::Layout, 100_000), // baseline 1428
+        ("roc-text-counter", GuestCall::Records, 100_000), // baseline 1746
+        ("roc-text-counter", GuestCall::Wants, 100_000), // baseline 717
+        ("roc-text-counter", GuestCall::Snapshot, 100_000), // baseline 888
+        ("roc-text-counter", GuestCall::Restore, 100_000), // baseline 3307
     ];
 
     #[test]
