@@ -124,6 +124,7 @@ class TestSupervisionStep(unittest.TestCase):
         "status": "claimed",
         "attempts": 1,
         "max_attempts": 5,
+        "lease_until": "2000-01-01T00:00:00Z",
         "progress": {"lane": "opencode", "session_id": "ses_gone"},
     }
 
@@ -151,17 +152,23 @@ class TestSupervisionStep(unittest.TestCase):
             recovered = claimant.supervision_step(mode)
         return recovered, calls
 
-    def test_gone_zero_message_session_is_recovered(self):
+    def test_gone_session_is_recovered_via_gone_session_path(self):
+        # prompt.md step 1d (Codex round-6): a positively-gone session
+        # with an expired lease recovers through the gone-session
+        # discriminator - no message read from the deleted session and
+        # no DELETE are required or attempted.
         recovered, calls = self.run_supervision()
         self.assertEqual(
             recovered,
-            [{"task_id": 555, "session_id": "ses_gone", "reason": "zero_message"}],
+            [{"task_id": 555, "session_id": "ses_gone", "reason": "gone_session"}],
         )
         bind_calls = [a for a in calls if "bind" in [str(x) for x in a]]
         self.assertEqual(len(bind_calls), 1)
         flat = [str(x) for x in bind_calls[0]]
         self.assertIn("555", flat)
-        self.assertIn(claimant.LAUNCHED_BY_RECOVERY_ZERO_MESSAGE, flat)
+        self.assertIn(claimant.LAUNCHED_BY_RECOVERY_GONE_SESSION, flat)
+        self.assertFalse(any("/message" in str(x) for a in calls for x in a))
+        self.assertFalse(any("DELETE" in [str(x) for x in a] for a in calls))
 
     def test_shadow_mode_recovers_nothing(self):
         recovered, calls = self.run_supervision(mode="shadow")
@@ -548,6 +555,7 @@ class TestCodexRound4(unittest.TestCase):
 
     def run_supervision_exhausted(self, task, session_rc, session_body="", fake_poll=None, delete_rc=0):
         calls = []
+        state = {"deleted": False}
         def fake_run(argv, **kwargs):
             calls.append(argv)
             argv_s = [str(a) for a in argv]
@@ -556,10 +564,15 @@ class TestCodexRound4(unittest.TestCase):
                 rows = [task] if queue == "repo-health-code-pilot" else []
                 return Result(0, json.dumps({"rows": rows}))
             if "DELETE" in argv_s:
-                return Result(delete_rc)
+                if delete_rc == 0:
+                    state["deleted"] = True
+                    return Result(0, "\n200")
+                return Result(delete_rc, "error\n500")
             if any("/message" in a for a in argv_s):
                 return Result(0, "[]")
             if any("api/session" in a for a in argv_s):
+                if state["deleted"]:
+                    return Result(0, "\n404")  # deletion took effect
                 if session_rc == 0:
                     return Result(0, session_body + "\n200")
                 return Result(0, "\n404")  # positively verified absence
@@ -829,6 +842,157 @@ class TestCodexRound5(unittest.TestCase):
         self.assertTrue(prompt_bodies)
         self.assertTrue(any("new-worker" in x for x in prompt_bodies))
         self.assertFalse(any("old-worker" in x for x in prompt_bodies))
+
+
+class TestCodexRound6(unittest.TestCase):
+    """Regression tests for the three Codex round-6 findings on
+    PR #6990 (2026-11-08T03:53Z, review of a08b164ffb): gone sessions
+    recover via their own path gated on lease expiry (prompt.md 1d),
+    an exhausted task is terminally failed only after a VERIFIED
+    delete (prompt.md 1b), and a live fire holds a single-instance
+    lock across supervision, cap measurement, and launch."""
+
+    def run_supervision(self, task, message_rc=0, delete_mode="ok", fake_poll=None):
+        calls = []
+        state = {"deleted": False}
+        session = {"id": "ses_x", "time": {"created": 0, "updated": 0}}
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            argv_s = [str(a) for a in argv]
+            if "list" in argv_s:
+                queue = argv_s[argv_s.index("--queue") + 1]
+                rows = [task] if queue == "repo-health-code-pilot" else []
+                return Result(0, json.dumps({"rows": rows}))
+            if "DELETE" in argv_s:
+                if delete_mode == "http500":
+                    return Result(22, "server error\n500")
+                state["deleted"] = True
+                return Result(0, "\n200")
+            if any("/message" in a for a in argv_s):
+                return Result(message_rc, "[]" if message_rc == 0 else "")
+            if any("api/session" in a for a in argv_s):
+                sid = task["progress"]["session_id"]
+                if sid == "ses_gone":
+                    return Result(0, "\n404")
+                if state["deleted"] and delete_mode != "still_present":
+                    return Result(0, "\n404")
+                return Result(0, json.dumps(session) + "\n200")
+            return Result(0)
+
+        patches = [patch.object(claimant.subprocess, "run", side_effect=fake_run)]
+        if fake_poll is not None:
+            patches.append(patch.object(claimant, "_load_poll_module",
+                                        return_value=fake_poll))
+        for pt in patches:
+            pt.start()
+        try:
+            recovered = claimant.supervision_step("live")
+        finally:
+            for pt in patches:
+                pt.stop()
+        return recovered, calls
+
+    @staticmethod
+    def bind_calls(calls):
+        return [[str(x) for x in a] for a in calls if "bind" in [str(x) for x in a]]
+
+    @staticmethod
+    def fail_calls(calls):
+        return [[str(x) for x in a] for a in calls if "fail" in [str(x) for x in a]]
+
+    GONE = {"id": 555, "status": "claimed", "attempts": 1, "max_attempts": 5,
+            "lease_until": "2000-01-01T00:00:00Z",
+            "progress": {"lane": "opencode", "session_id": "ses_gone"}}
+
+    def test_gone_session_recovers_even_when_message_endpoint_fails(self):
+        recovered, calls = self.run_supervision(dict(self.GONE), message_rc=7)
+        self.assertEqual(
+            recovered,
+            [{"task_id": 555, "session_id": "ses_gone", "reason": "gone_session"}])
+        binds = self.bind_calls(calls)
+        self.assertEqual(len(binds), 1)
+        self.assertIn(claimant.LAUNCHED_BY_RECOVERY_GONE_SESSION, binds[0])
+        self.assertFalse(any("/message" in str(x) for a in calls for x in a))
+
+    def test_gone_session_with_unexpired_lease_is_left_bound(self):
+        task = dict(self.GONE, lease_until="2999-01-01T00:00:00Z")
+        recovered, calls = self.run_supervision(task)
+        self.assertEqual(recovered, [])
+        self.assertEqual(self.bind_calls(calls), [])
+
+    def test_gone_session_without_a_readable_lease_is_left_bound(self):
+        task = dict(self.GONE)
+        del task["lease_until"]
+        recovered, calls = self.run_supervision(task)
+        self.assertEqual(recovered, [])
+        self.assertEqual(self.bind_calls(calls), [])
+
+    EXHAUSTED_STUCK = {"id": 777, "status": "claimed", "attempts": 5,
+                       "max_attempts": 5, "worker_id": "repo-worker-code",
+                       "lease_until": "2000-01-01T00:00:00Z",
+                       "progress": {"lane": "opencode", "session_id": "ses_x"}}
+
+    class StuckPoll:
+        @staticmethod
+        def fetch_sessions():
+            return [{"id": "ses_x", "time": {"created": 0, "updated": 0}}]
+
+        @staticmethod
+        def fetch_active_ids():
+            return set()
+
+        @staticmethod
+        def is_stuck_bound(row, sess, active_ids, now_ms):
+            return True
+
+    def test_exhausted_delete_http_error_never_terminally_fails(self):
+        recovered, calls = self.run_supervision(
+            dict(self.EXHAUSTED_STUCK), delete_mode="http500",
+            fake_poll=self.StuckPoll)
+        self.assertEqual(recovered, [])
+        self.assertEqual(self.fail_calls(calls), [])
+
+    def test_exhausted_delete_unverified_never_terminally_fails(self):
+        # DELETE claims success but the session is still present on the
+        # verification read: deletion is NOT established, no fail.
+        recovered, calls = self.run_supervision(
+            dict(self.EXHAUSTED_STUCK), delete_mode="still_present",
+            fake_poll=self.StuckPoll)
+        self.assertEqual(recovered, [])
+        self.assertEqual(self.fail_calls(calls), [])
+
+    def test_exhausted_verified_delete_then_terminal_fail(self):
+        recovered, calls = self.run_supervision(
+            dict(self.EXHAUSTED_STUCK), delete_mode="ok",
+            fake_poll=self.StuckPoll)
+        self.assertEqual(recovered, [])
+        fails = self.fail_calls(calls)
+        self.assertEqual(len(fails), 1)
+        self.assertIn("repo-worker-code", fails[0])
+
+    def test_main_exits_without_work_when_lock_is_held(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as d:
+            state = Path(d)
+            holder = open(state / "claimant.lock", "a+")
+            fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                with patch.object(claimant, "STATE_DIR", state), \
+                     patch.object(claimant, "FIRES_FILE", state / "fires.jsonl"), \
+                     patch.object(claimant, "read_mode", return_value="live"), \
+                     patch.object(claimant, "supervision_step",
+                                  return_value=[]) as supervision, \
+                     patch.object(claimant, "gate_step",
+                                  return_value=True) as gate:
+                    rc = claimant.main()
+            finally:
+                holder.close()
+            self.assertEqual(rc, 0)
+            supervision.assert_not_called()
+            gate.assert_not_called()
+            entry = json.loads((state / "fires.jsonl").read_text().splitlines()[-1])
+            self.assertEqual(entry["skips"], [{"reason": "single_instance_lock_held"}])
 
 
 if __name__ == "__main__":

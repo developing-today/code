@@ -164,6 +164,50 @@ def _fetch_session(session_id: str):
     return "present", session
 
 
+def _delete_session_verified(session_id: str) -> bool:
+    """Delete a session and POSITIVELY verify the deletion took effect.
+
+    Returns True only when the DELETE answers a success HTTP status
+    (--fail-with-body makes an HTTP error a non-zero curl exit, so a
+    500/403 can no longer masquerade as success - Codex round-6 on
+    PR #6990) AND a follow-up read positively reports the session
+    absent (HTTP 404 via _fetch_session). Any other outcome - transport
+    failure, HTTP error, session still present, state unknown - is
+    False: the caller must fail closed and leave the binding untouched
+    (prompt.md step 1b verified-delete prerequisite).
+    """
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["curl", "-s", "--fail-with-body", "-m", "5", "-X", "DELETE",
+             *_curl_auth_args(), "-w", "\n%{http_code}",
+             f"{_session_base()}/api/session/{session_id}"],
+            capture_output=True, text=True)
+    except Exception:
+        return False
+    if r.returncode != 0:
+        return False
+    out = r.stdout or ""
+    body, sep, code = out.rpartition("\n")
+    if sep and code.strip().isdigit() and code.strip() not in ("200", "204", "404"):
+        return False
+    state, _session = _fetch_session(session_id)
+    return state == "absent"
+
+
+def _lease_expired(task, prog) -> bool:
+    """True only when the task's lease_until positively parses and is
+    in the past. An unreadable or missing lease is never 'expired'
+    (poll.py parse_lease_ms doctrine, reused here for prompt.md
+    step 1d)."""
+    value = task.get("lease_until") or (prog or {}).get("lease_until")
+    try:
+        lease_ms = _load_poll_module().parse_lease_ms(value)
+    except Exception:
+        return False
+    return lease_ms is not None and lease_ms <= int(time.time() * 1000)
+
+
 def _http_get(url: str, timeout: int = 10) -> Optional[Dict]:
     """Helper to make HTTP GET requests using urllib."""
     try:
@@ -359,16 +403,35 @@ def supervision_step(mode: str) -> List[Dict]:
                         # Check task attempts and lease
                         session_absent = session_state == "absent"
                         if task.get("attempts", 0) < task.get("max_attempts", 5):
-                            # Verify zero messages first (supported
-                            # v2 endpoint; an inconclusive read is an
-                            # unknown state, never a recovery signal)
-                            parsed_messages = _read_session_messages(session_id)
-                            if isinstance(parsed_messages, list) and len(parsed_messages) == 0:
-                                recovery_candidates.append({
-                                    "task_id": task["id"],
-                                    "session_id": session_id,
-                                    "reason": "zero_message"
-                                })
+                            if session_absent:
+                                # Gone session (prompt.md step 1d;
+                                # Codex round-6 on PR #6990): absence
+                                # is already positively verified (HTTP
+                                # 404), so recovery must NOT require a
+                                # message read from the deleted session
+                                # - an unavailable message endpoint
+                                # cannot block it, and the session must
+                                # not be routed through the zero-message
+                                # deletion path. The one gate is lease
+                                # expiry: until the lease expires, leave
+                                # the binding for the watchdog to see.
+                                if _lease_expired(task, prog):
+                                    recovery_candidates.append({
+                                        "task_id": task["id"],
+                                        "session_id": session_id,
+                                        "reason": "gone_session"
+                                    })
+                            else:
+                                # Verify zero messages first (supported
+                                # v2 endpoint; an inconclusive read is an
+                                # unknown state, never a recovery signal)
+                                parsed_messages = _read_session_messages(session_id)
+                                if isinstance(parsed_messages, list) and len(parsed_messages) == 0:
+                                    recovery_candidates.append({
+                                        "task_id": task["id"],
+                                        "session_id": session_id,
+                                        "reason": "zero_message"
+                                    })
                         else:
                             # Attempts exhausted (prompt.md step 1e;
                             # README "Exhausted Attempts"; Codex
@@ -409,36 +472,39 @@ def supervision_step(mode: str) -> List[Dict]:
         session_id = candidate["session_id"]
         
         try:
-            # Delete the zero-message session
-            delete_result = subprocess.run(
-                ["curl", "-s", "-m", "5", "-X", "DELETE", *_curl_auth_args(),
-                 f"{_session_base()}/api/session/{session_id}"],
-                capture_output=True,
-                text=True
-            )
-            
-            if delete_result.returncode == 0:
-                # Attempt recovery via atomic bind operation
-                bind_result = subprocess.run(
-                    [
-                        str(REPO_QUEUE_CMD),
-                        "bind", str(task_id),
-                        "--worker", "opencode-claimant",
-                        "--session-id", session_id,
-                        "--launched-by", LAUNCHED_BY_RECOVERY_ZERO_MESSAGE
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-                
-                if bind_result.returncode == 0:
-                    print(f"Recovered task {task_id}: deleted zero-message session {session_id}")
-                    # Task is now unbound and eligible for next fire
-                else:
-                    print(f"Failed to recover task {task_id}: {bind_result.stderr}")
+            if candidate["reason"] == "gone_session":
+                # Absence already positively verified; there is no
+                # session left to delete. Bind directly with the
+                # gone-session recovery discriminator (prompt.md 1d).
+                launched_by = LAUNCHED_BY_RECOVERY_GONE_SESSION
             else:
-                print(f"Failed to delete session {session_id} for task {task_id}")
+                launched_by = LAUNCHED_BY_RECOVERY_ZERO_MESSAGE
+                # Delete the zero-message session, with the deletion
+                # itself verified, before touching the task (prompt.md
+                # step 1b). An unverified delete leaves the binding
+                # exactly as it is.
+                if not _delete_session_verified(session_id):
+                    print(f"Failed to verify deletion of session {session_id} for task {task_id}; leaving bound")
+                    continue
+            # Attempt recovery via atomic bind operation
+            bind_result = subprocess.run(
+                [
+                    str(REPO_QUEUE_CMD),
+                    "bind", str(task_id),
+                    "--worker", "opencode-claimant",
+                    "--session-id", session_id,
+                    "--launched-by", launched_by
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if bind_result.returncode == 0:
+                print(f"Recovered task {task_id}: session {session_id} ({candidate['reason']})")
+                # Task is now unbound and eligible for next fire
+            else:
+                print(f"Failed to recover task {task_id}: {bind_result.stderr}")
         except Exception as e:
             print(f"Error during recovery of task {task_id}: {e}")
     
@@ -451,14 +517,12 @@ def supervision_step(mode: str) -> List[Dict]:
         session_id = candidate["session_id"]
         try:
             if candidate["reason"] == "zero_message_exhausted":
-                delete_result = subprocess.run(
-                    ["curl", "-s", "-m", "5", "-X", "DELETE", *_curl_auth_args(),
-                     f"{_session_base()}/api/session/{session_id}"],
-                    capture_output=True,
-                    text=True
-                )
-                if delete_result.returncode != 0:
-                    print(f"Failed to delete exhausted zero-message session {session_id} for task {task_id}; leaving bound")
+                # Verified delete first (prompt.md step 1b; Codex
+                # round-6 on PR #6990): an HTTP error from DELETE or a
+                # session that survives it must never proceed to the
+                # terminal fail - the binding stays untouched.
+                if not _delete_session_verified(session_id):
+                    print(f"Failed to verify deletion of exhausted zero-message session {session_id} for task {task_id}; leaving bound")
                     continue
             execution = json.dumps({
                 "lane": "opencode",
@@ -908,10 +972,56 @@ Finish with: complete, park, block, or fail --execution '{{...}}'
     return launched, skips
 
 
+def _acquire_single_instance_lock():
+    """Acquire the claimant's single-instance lock (prompt.md
+    EXECUTION: fires run under a single-instance lock).
+
+    Returns an open file object holding an exclusive non-blocking
+    flock on STATE_DIR/claimant.lock, or None when another instance
+    holds it (or it cannot be taken - fail closed: two overlapping
+    live fires could otherwise measure the same cap room and spend it
+    twice, exceeding the session cap even with atomic binds; Codex
+    round-6 on PR #6990). The caller holds the returned handle for
+    the whole fire - supervision, cap measurement, and launch - and
+    closes it at the end; closing (or process exit) releases it.
+    """
+    try:
+        import fcntl
+        ensure_state_dir()
+        handle = open(STATE_DIR / "claimant.lock", "a+")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.close()
+            return None
+        return handle
+    except Exception:
+        return None
+
+
 def main():
     """Main entry point for the claimant/executor."""
     mode = read_mode()
-    
+
+    lock_handle = _acquire_single_instance_lock()
+    if lock_handle is None:
+        print("Another claimant fire already holds the single-instance lock; exiting without supervising, measuring cap, or launching.")
+        try:
+            log_fire(mode, [], [], 0, [{"reason": "single_instance_lock_held"}])
+        except Exception:
+            pass
+        return 0
+    try:
+        return _main_locked(mode)
+    finally:
+        try:
+            lock_handle.close()
+        except Exception:
+            pass
+
+
+def _main_locked(mode):
+    """Main fire body, executed under the single-instance lock."""
     print(f"OpenCode claimant starting in {mode} mode")
     
     # Step 1: Supervision (always runs in live mode)
