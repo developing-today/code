@@ -90,6 +90,7 @@ describe("end-to-end webhook + read model", () => {
       const pr = { number: 7, title: "PR", created_at: "2026-01-01", updated_at: "2026-01-01" };
       const repository = { full_name: "example/repo" };
       const comment = { id: 42, created_at: "2026-01-01", body: "body" };
+      const review = { ...comment, state: "approved", submitted_at: "2026-01-02" };
       let delivery = 0;
       const send = async (event: string, payload: object) => {
         const body = JSON.stringify(payload);
@@ -98,7 +99,7 @@ describe("end-to-end webhook + read model", () => {
         expect(res.status).toBe(200);
       };
       await send("issue_comment", { repository, issue: pr, comment, action: "created" });
-      await send("pull_request_review", { repository, pull_request: pr, review: comment, action: "submitted" });
+      await send("pull_request_review", { repository, pull_request: pr, review, action: "submitted" });
       await send("pull_request_review_comment", { repository, pull_request: pr, comment, action: "created" });
       let rows = await local.execute("SELECT kind, deleted FROM pmp_comments ORDER BY kind");
       expect(rows.rows.map((r) => [r.kind, r.deleted])).toEqual([

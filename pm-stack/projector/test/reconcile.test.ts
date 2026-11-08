@@ -3,8 +3,15 @@ import { createClient, type Client } from "@libsql/client";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrate, getItems, getComments, getSyncCursor, upsertItem } from "../src/store";
-import { fromIssueOrPr } from "../src/projector";
+import {
+  migrate,
+  getItems,
+  getComments,
+  getSyncCursor,
+  upsertItem,
+  upsertComment,
+} from "../src/store";
+import { applyEvent, fromIssueOrPr, type ProjectorStore } from "../src/projector";
 import { listResource, type GitHubAuth } from "../src/github";
 import { reconcileRepos } from "../src/reconcile";
 
@@ -263,5 +270,86 @@ describe("reconcileRepos reviews stream per-PR guard (#2745)", () => {
     expect((await getComments(db, [`${repo}#1`])).map((c) => c.id)).toEqual(["101"]);
     expect((await getComments(db, [`${repo}#3`])).map((c) => c.id)).toEqual(["103"]);
     expect(await getSyncCursor(db, repo, "reviews")).toBe("2026-10-06T00:00:00Z");
+  });
+});
+
+describe("webhook and reconcile review rows (#3087)", () => {
+  const repo = "developing-today/review-timestamp-roundtrip";
+  const prNumber = 41;
+  const submittedAt = "2026-10-02T03:04:05Z";
+
+  const review = (state: string, body: string) => ({
+    id: 3087001,
+    body,
+    user: { login: "reviewer" },
+    state,
+    submitted_at: submittedAt,
+    html_url: `https://github.com/${repo}/pull/${prNumber}#pullrequestreview-3087001`,
+    commit_id: "abc123",
+  });
+
+  const reconcileReview = async (row: ReturnType<typeof review>) => {
+    const fetchFn = (async (url: string) => {
+      if (url.includes(`/repos/${repo}/pulls/${prNumber}/reviews`)) return jsonRes([row]);
+      if (url.includes(`/repos/${repo}/pulls?`)) return jsonRes([{ number: prNumber }]);
+      return jsonRes([]);
+    }) as unknown as typeof fetch;
+    await reconcileRepos(db, { PM_REPOS: repo, GITHUB_TOKEN: "test-token" }, fetchFn);
+  };
+
+  const webhookStore: ProjectorStore = {
+    async upsertItem(row) { await upsertItem(db, row); },
+    async upsertComment(row) { await upsertComment(db, row); },
+    async markCommentDeleted() {},
+    async deleteItem() {},
+    async recordPush() {},
+  };
+
+  const webhook = async (state: string, body: string) => {
+    await applyEvent(webhookStore, "pull_request_review", {
+      action: "submitted",
+      repository: { full_name: repo },
+      pull_request: {
+        number: prNumber,
+        title: "review timestamp test",
+        state: "open",
+        html_url: `https://github.com/${repo}/pull/${prNumber}`,
+        created_at: "2026-10-01T00:00:00Z",
+        updated_at: "2026-10-01T00:00:00Z",
+      },
+      review: review(state, body),
+    });
+  };
+
+  const stored = async () => {
+    const [row] = await getComments(db, [`${repo}#${prNumber}`]);
+    return row;
+  };
+
+  test("uses the same submitted timestamp in either writer order and keeps redelivery stable", async () => {
+    // Webhook first, then reconciliation: the real store's monotonic guard
+    // must accept the matching source timestamp rather than reject it as old.
+    await webhook("approved", "LGTM");
+    const webhookFirst = await stored();
+    expect(webhookFirst.created_at).toBe(submittedAt);
+    expect(webhookFirst.source_updated_at).toBe(submittedAt);
+    expect(webhookFirst.submitted_at).toBe(submittedAt);
+    await reconcileReview(review("APPROVED", "LGTM"));
+    const afterReconcile = await stored();
+    expect(afterReconcile.created_at).toBe(submittedAt);
+    expect(afterReconcile.source_updated_at).toBe(submittedAt);
+    expect(afterReconcile.review_state).toBe("approved");
+
+    // Reconciliation first, then an edited/dismissed webhook delivery: the
+    // source timestamp stays fixed while the review state still advances.
+    await reconcileReview(review("APPROVED", "LGTM"));
+    const beforeRedelivery = await stored();
+    await webhook("dismissed", "withdrawn");
+    const afterRedelivery = await stored();
+    expect(beforeRedelivery.created_at).toBe(submittedAt);
+    expect(afterRedelivery.created_at).toBe(beforeRedelivery.created_at);
+    expect(afterRedelivery.source_updated_at).toBe(submittedAt);
+    expect(afterRedelivery.review_state).toBe("dismissed");
+    expect(afterRedelivery.body).toBe("withdrawn");
   });
 });

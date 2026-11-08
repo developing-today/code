@@ -107,8 +107,14 @@ function commentCommon(
   repo: string,
   ref: string,
   kind: CommentRow["kind"],
-): Omit<CommentRow, "fetched_at"> {
-  const createdAt = iso(c.created_at) ?? iso(c.updated_at) ?? new Date().toISOString();
+): Omit<CommentRow, "fetched_at"> | null {
+  // GitHub review objects use submitted_at as their source timestamp. In
+  // particular, webhook review payloads do not carry created_at/updated_at;
+  // falling back to delivery time poisons the store's monotonic upsert guard.
+  const createdAt = kind === "review"
+    ? iso(c.submitted_at)
+    : (iso(c.created_at) ?? iso(c.updated_at));
+  if (!createdAt) return null;
   const updatedAt = iso(c.updated_at);
   return {
     id: String(c.id),
@@ -123,11 +129,25 @@ function commentCommon(
     line: null,
     diff_hunk: null,
     review_state: null,
-    submitted_at: null,
+    submitted_at: kind === "review" ? iso(c.submitted_at) : null,
     commit_id: null,
     deleted: 0,
     source_updated_at: kind === "review" ? createdAt : (updatedAt ?? createdAt),
   };
+}
+
+/** The shared canonical row constructor for webhook and reconcile reviews. */
+export function reviewCommentRow(
+  review: Record<string, any>,
+  repo: string,
+  ref: string,
+): Omit<CommentRow, "fetched_at"> | null {
+  const row = commentCommon(review, repo, ref, "review");
+  if (!row) return null;
+  row.updated_at = null;
+  row.review_state = iso(review.state)?.toLowerCase() ?? null;
+  row.commit_id = iso(review.commit_id);
+  return row;
 }
 
 /** Canonical repo name "owner/repo" from an event's repository object. */
@@ -234,20 +254,23 @@ export async function applyEvent(
       // tombstones, not item markers — skipping the tombstone here
       // would let an in-flight reconcile resurrect the deleted comment.
       if (event === "issue_comment" && payload.action === "deleted") {
-        await store.markCommentDeleted(
-          commentCommon(comment, repo, itemRef(repo, issue.number), "issue_comment"),
-        );
-        wrote = true;
+        const row = commentCommon(comment, repo, itemRef(repo, issue.number), "issue_comment");
+        if (row) {
+          await store.markCommentDeleted(row);
+          wrote = true;
+        }
       }
       return;
     }
     await store.upsertItem(itemRow);
     addRef(itemRef(repo, issue.number));
     const row = commentCommon(comment, repo, itemRef(repo, issue.number), "issue_comment");
-    if (event === "issue_comment" && payload.action === "deleted") {
-      await store.markCommentDeleted(row);
-    } else {
-      await store.upsertComment(row);
+    if (row) {
+      if (event === "issue_comment" && payload.action === "deleted") {
+        await store.markCommentDeleted(row);
+      } else {
+        await store.upsertComment(row);
+      }
     }
     hot(`issue_comment:${comment.id}`, {
       ref: itemRef(repo, issue.number),
@@ -307,11 +330,8 @@ export async function applyEvent(
         await store.upsertItem(itemRow);
         addRef(itemRef(repo, pr.number));
         const ref = itemRef(repo, pr.number);
-        const base = commentCommon(review, repo, ref, "review");
-        base.review_state = iso(review.state);
-        base.submitted_at = iso(review.submitted_at) ?? base.created_at;
-        base.commit_id = iso(review.commit_id);
-        await store.upsertComment(base);
+        const reviewRow = reviewCommentRow(review, repo, ref);
+        if (reviewRow) await store.upsertComment(reviewRow);
         hot(`review:${review.id}`, {
           ref,
           actor: iso(review.user?.login) ?? senderLogin,
@@ -329,6 +349,7 @@ export async function applyEvent(
         const itemRow = fromIssueOrPr(repo, pr, "pr");
         const ref = itemRef(repo, pr.number);
         const base = commentCommon(comment, repo, ref, "review_comment");
+        if (!base) break;
         base.path = iso(comment.path);
         base.line = typeof comment.line === "number" ? comment.line : null;
         base.diff_hunk = iso(comment.diff_hunk);

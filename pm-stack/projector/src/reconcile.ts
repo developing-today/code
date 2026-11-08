@@ -3,7 +3,7 @@
 // an upsert keyed by a repo-qualified ID, and a monotonic guard prevents stale
 // overwrites. Cursors (repo, stream) make each poll incremental.
 import type { Client } from "@libsql/client";
-import { fromIssueOrPr } from "./projector";
+import { fromIssueOrPr, reviewCommentRow } from "./projector";
 import * as store from "./store";
 import { apiTokenFor, listResource, type GitHubAuth } from "./github";
 
@@ -146,28 +146,11 @@ async function reconcileStream(
         );
         for (const r of reviews) {
           const ref = `${repo}#${pr.number}`;
-          const createdAt = r.submitted_at ?? r.created_at ?? null;
-          if (!createdAt) continue;
-          await store.upsertComment(db, {
-            id: String(r.id),
-            ref,
-            kind: "review",
-            author: r.user?.login ?? null,
-            body: typeof r.body === "string" ? r.body : null,
-            created_at: createdAt,
-            updated_at: null,
-            url: r.html_url ?? null,
-            path: null,
-            line: null,
-            diff_hunk: null,
-            review_state: r.state ?? null,
-            submitted_at: r.submitted_at ?? null,
-            commit_id: r.commit_id ?? null,
-            deleted: 0,
-            source_updated_at: createdAt,
-          });
+          const row = reviewCommentRow(r, repo, ref);
+          if (!row) continue;
+          await store.upsertComment(db, row);
           await mark(1);
-          const u = r.submitted_at ?? r.created_at;
+          const u = row.source_updated_at;
           if (typeof u === "string" && (!cursor || u > cursor)) cursor = u;
         }
       } catch (e) {

@@ -199,6 +199,9 @@ describe("projector: PR + review + review comment (PR-interior)", () => {
     expect(review?.kind).toBe("review");
     expect(review?.review_state).toBe("approved");
     expect(review?.commit_id).toBe("abc123");
+    expect(review?.created_at).toBe("2026-10-25T01:00:00Z");
+    expect(review?.submitted_at).toBe("2026-10-25T01:00:00Z");
+    expect(review?.source_updated_at).toBe("2026-10-25T01:00:00Z");
 
     await applyEvent(store, "pull_request_review_comment", {
       action: "created",
@@ -221,6 +224,67 @@ describe("projector: PR + review + review comment (PR-interior)", () => {
     expect(rc?.path).toBe("src/foo.ts");
     expect(rc?.line).toBe(42);
     expect(rc?.source_updated_at).toBe("2026-10-25T01:12:00Z");
+  });
+
+  test("review redelivery keeps submitted time and can update review state", async () => {
+    const { store, comments } = fakeStore();
+    const pr = {
+      number: 202,
+      title: "PR",
+      state: "open",
+      html_url: "https://github.com/developing-today/code/pull/202",
+      created_at: "2026-10-25T00:00:00Z",
+      updated_at: "2026-10-25T00:00:00Z",
+    };
+    const payload = (state: string, body: string) => ({
+      action: "submitted",
+      repository: { full_name: "developing-today/code" },
+      pull_request: pr,
+      review: {
+        id: 502,
+        state,
+        body,
+        user: { login: "reviewer" },
+        submitted_at: "2026-10-25T01:00:00Z",
+        commit_id: "abc123",
+      },
+    });
+
+    await applyEvent(store, "pull_request_review", payload("approved", "LGTM"));
+    const originalCreatedAt = comments.get("502")?.created_at;
+    await applyEvent(store, "pull_request_review", payload("dismissed", "withdrawn"));
+
+    expect(comments.get("502")?.created_at).toBe(originalCreatedAt);
+    expect(comments.get("502")?.created_at).toBe("2026-10-25T01:00:00Z");
+    expect(comments.get("502")?.source_updated_at).toBe("2026-10-25T01:00:00Z");
+    expect(comments.get("502")?.review_state).toBe("dismissed");
+    expect(comments.get("502")?.body).toBe("withdrawn");
+  });
+
+  test("does not invent timestamps for comments or unsubmitted reviews", async () => {
+    const { store, comments } = fakeStore();
+    const pr = {
+      number: 203,
+      title: "PR",
+      state: "open",
+      html_url: "https://github.com/developing-today/code/pull/203",
+      created_at: "2026-10-25T00:00:00Z",
+      updated_at: "2026-10-25T00:00:00Z",
+    };
+
+    await applyEvent(store, "pull_request_review", {
+      repository: { full_name: "developing-today/code" },
+      pull_request: pr,
+      review: { id: 503, state: "PENDING", created_at: "2026-10-25T01:00:00Z" },
+    });
+    await applyEvent(store, "issue_comment", {
+      repository: { full_name: "developing-today/code" },
+      issue: { number: 204, created_at: "2026-10-25T00:00:00Z", updated_at: "2026-10-25T00:00:00Z" },
+      comment: { id: 504, body: "missing timestamps" },
+    });
+
+    expect(comments.has("503")).toBe(false);
+    expect(comments.has("504")).toBe(false);
   });
 });
 
@@ -285,12 +349,12 @@ describe("projector: comment deletion + push", () => {
         created_at: "2026-10-25T00:00:00Z",
         updated_at: "2026-10-25T00:00:00Z",
       },
-      comment: { id: 700 },
+      comment: { id: 700, created_at: "2026-10-25T01:00:00Z" },
     });
     expect(deleted).toEqual([["700", "issue_comment"]]);
     await applyEvent(store, "pull_request_review_comment", {
       action: "deleted", repository: { full_name: "developing-today/code" },
-      pull_request: { number: 300 }, comment: { id: 700 },
+      pull_request: { number: 300 }, comment: { id: 700, created_at: "2026-10-25T01:00:00Z" },
     });
     expect(deleted[1]).toEqual(["700", "review_comment"]);
   });
@@ -307,7 +371,7 @@ describe("projector: comment deletion + push", () => {
         created_at: "2026-10-25T00:00:00Z",
         updated_at: "2026-10-25T00:00:00Z",
       },
-      comment: { id: 703 },
+      comment: { id: 703, created_at: "2026-10-25T01:00:00Z" },
     });
     expect(deleted).toContainEqual(["703", "review_comment"]);
   });
