@@ -500,6 +500,30 @@ export function parseRef(key: RefKey): GhRef {
  *  number. Boundary validators and store-load gates route through this
  *  instead of re-checking the shape with a local regex whose \d+ group
  *  admits numbers parseRef (and refUrl) then throw on. */
+/**
+ * The ref contract (#6242, closing inventory #6243) — the disposition
+ * rules that live beside the validity rule above:
+ * 1. One validity rule: isValidRef is the only ref-validity test in
+ *    the aggregator and the projector. No local regex or shape check
+ *    re-derives it. parseRef keeps throwing: it is the internal
+ *    assertion behind the typed RefKey promise for refs the code
+ *    constructs itself.
+ * 2. Drop the ref, keep the item (stored / feed data): at the
+ *    consumption step beside each gate, a ref field or edge that
+ *    fails isValidRef is removed and the element survives without
+ *    it. Direct user POSTs whose ref is the subject (comments /
+ *    actions) keep the #4952 reject behaviour instead.
+ * 3. Producers mint only valid refs: every scrape or derivation
+ *    that creates a ref routes candidates through isValidRef; a raw
+ *    ref scrape that skips the filter is a defect per se.
+ * 4. Rendering and deriving never throw on a ref: stored/feed refs
+ *    reach refUrl only through a safe-link treatment — valid ->
+ *    anchor, invalid -> plain text (visible, never silently gone);
+ *    derive paths treat an invalid edge as absent.
+ * 5. Drops are observable: every rule-2/3 drop leaves a trace (a log
+ *    line or a provenance/count note at the consuming source).
+ * The per-site closing inventory against these rules is recorded on
+ * issue #6243 (Phase 4 of #6242). */
 export function isValidRef(value: unknown): value is RefKey {
   if (typeof value !== "string") return false;
   try {
