@@ -877,6 +877,23 @@ export class EventsStore {
       }
     }
     const known = new Set(this.events.map((e) => e.id));
+    // An outbox record can already be archived (#3322 Codex
+    // re-review, PR #7665): a backup copies the outbox first, then
+    // the running store can flush and archive that record before
+    // the hot file and archive are copied. Deduping only against
+    // the hot stream would append a twin that can survive count
+    // retention and leave one stable id in both histories with
+    // different hashes — include archived ids, as recordSerialized
+    // does for direct replays.
+    try {
+      for (const e of await this.listArchived()) if (e?.id) known.add(e.id);
+    } catch (err) {
+      console.error(
+        `[events] WARNING: could not check the archive while flushing the retry outbox for ${this.file} ` +
+          `(${err instanceof Error ? err.message : String(err)}); proceeding with hot-stream dedupe only — ` +
+          `the archive failure is reported via health().`,
+      );
+    }
     const fresh = pending.filter((e) => !known.has(e.id));
     if (fresh.length > 0) {
       // Merged unpruned: the persist below chains (hash-stamps) the

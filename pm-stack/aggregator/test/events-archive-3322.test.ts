@@ -384,6 +384,31 @@ describe("audit archive retention — Codex round-2 regressions (#3322, PR #7665
     expect(reloadedHealth.historyGap.present).toBe(false);
   });
 
+  test("flushing an outbox record that is already archived does not append a twin", async () => {
+    // PR #7665 Codex round-3 finding 4506491811: a backup copies the
+    // outbox first; the running store can then flush and archive the
+    // record before the hot file + archive are copied. On restore,
+    // flushOutbox must dedupe against archived ids too, not only
+    // the hot stream.
+    const dir = tmpDir("agg-events-archive-outbox-twin-");
+    const file = join(dir, "events.json");
+    const archivedRecord = stampChain([{ at: iso(60 * 60 * 1000), summary: "already archived", id: "evt_archived_1" }])[0];
+    await writeEventsFile(file, stampChain([{ at: iso(30 * 60 * 1000), summary: "hot record", id: "evt_hot_1" }]));
+    await mkdir(join(dir, "events.json.archive"), { recursive: true });
+    await writeFile(
+      join(dir, "events.json.archive", "events-archive-2026-09.json"),
+      JSON.stringify({ version: 1, archivedAt: new Date().toISOString(), records: [archivedRecord] }, null, 2),
+    );
+    const store = new EventsStore(file);
+    await writeFile(store.outboxFile, `${JSON.stringify(archivedRecord)}\n`);
+    await store.record({ ...base, summary: "trigger append" });
+    const hot = await store.list();
+    expect(hot.map((e) => e.id)).not.toContain(archivedRecord.id);
+    const archived = await store.listArchived();
+    expect(archived.filter((e) => e.id === archivedRecord.id)).toHaveLength(1);
+    expect(existsSync(store.outboxFile)).toBe(false);
+  });
+
   test("replaying a stable id that retention archived returns the archived record, never a twin", async () => {
     const dir = tmpDir("agg-events-archive-replay-");
     const file = join(dir, "events.json");
