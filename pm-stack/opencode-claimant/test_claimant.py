@@ -221,20 +221,80 @@ class TestCodexFindings(unittest.TestCase):
         self.assertEqual([s["reason"] for s in skips], ["session_create_no_id"])
         self.assertFalse(any("None" in str(a) for a in calls))
 
-    def test_prompt_failure_skips_and_does_not_bind(self):
+    # --- Codex round-2 on PR #6990 (2026-11-08T01:31Z) ---
+    def test_prompt_failure_after_bind_keeps_session_and_binding(self):
         launched, skips, calls = self.run_launch([candidate()], prompt_rc=1)
         self.assertEqual(launched, [])
         self.assertEqual(len(skips), 1)
-        self.assertTrue(skips[0]["reason"].startswith("prompt_failed"))
-        self.assertFalse(any("bind" in [str(x) for x in a] for a in calls))
+        self.assertEqual(skips[0]["reason"], "prompt_delivery_failed_bound")
+        self.assertEqual(skips[0]["session_id"], "ses_test1")
+        flat = [[str(x) for x in a] for a in calls]
+        # the bind DID happen (it precedes delivery now) ...
+        self.assertTrue(any("bind" in a for a in flat))
+        # ... and the bound session was NOT deleted on prompt failure
+        self.assertFalse(any("DELETE" in a for a in flat))
 
-    def test_prompt_is_sent_before_bind(self):
+    def test_prompt_http_error_counts_as_delivery_failure(self):
+        # curl --fail-with-body exits 22 on an HTTP error status; that
+        # must be treated as a failed delivery, never as success.
+        launched, skips, calls = self.run_launch([candidate()], prompt_rc=22)
+        self.assertEqual(launched, [])
+        self.assertEqual([s["reason"] for s in skips],
+                         ["prompt_delivery_failed_bound"])
+        flat = [[str(x) for x in a] for a in calls]
+        prompt_calls = [a for a in flat if any(x.endswith("/prompt") for x in a)]
+        self.assertTrue(prompt_calls)
+        for a in prompt_calls:
+            self.assertIn("--fail-with-body", a)
+
+    def test_bind_is_sent_before_prompt(self):
         _, _, calls = self.run_launch([candidate()])
         flat = [[str(x) for x in a] for a in calls]
+        bind_idx = next(i for i, a in enumerate(flat) if "bind" in a)
         prompt_idx = next(i for i, a in enumerate(flat)
                           if any(x.endswith("/prompt") for x in a))
-        bind_idx = next(i for i, a in enumerate(flat) if "bind" in a)
-        self.assertLess(prompt_idx, bind_idx)
+        self.assertLess(bind_idx, prompt_idx)
+
+    def test_prompt_resend_to_same_session_recovers(self):
+        calls = []
+        prompt_attempts = {"n": 0}
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            argv_s = [str(a) for a in argv]
+            if "bind" in argv_s:
+                return Result(0)
+            if any(a.endswith("/prompt") for a in argv_s):
+                prompt_attempts["n"] += 1
+                if prompt_attempts["n"] == 1:
+                    return Result(1, "", "transient")
+                return Result(0)
+            if any(a.endswith("/messages") for a in argv_s):
+                return Result(0, "[]")
+            if any("api/session" in a for a in argv_s):
+                return Result(0, json.dumps({
+                    "id": "ses_test1",
+                    "location": {"directory": str(claimant.PRIMARY_CLONE)}}))
+            return Result(0)
+
+        with patch.object(claimant, "run_poll",
+                          return_value={"candidates": [candidate()]}), \
+             patch.object(claimant.subprocess, "run", side_effect=fake_run):
+            launched, skips = claimant.launch_step("live", 1)
+        self.assertEqual(skips, [])
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(prompt_attempts["n"], 2)
+
+    def test_session_calls_use_configured_opencode_url(self):
+        with patch.object(claimant, "OPENCODE_URL", "http://example.test:9999"):
+            launched, skips, calls = self.run_launch([candidate()])
+        self.assertEqual(len(launched), 1)
+        flat = [[str(x) for x in a] for a in calls]
+        session_urls = [x for a in flat for x in a if "api/session" in x]
+        self.assertTrue(session_urls)
+        for u in session_urls:
+            self.assertTrue(u.startswith("http://example.test:9999"), u)
+        self.assertFalse(any("127.0.0.1:13420" in x for a in flat for x in a))
 
     def test_session_calls_carry_auth_header_when_credential_exists(self):
         with tempfile.TemporaryDirectory() as d:

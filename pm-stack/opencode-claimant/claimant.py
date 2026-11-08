@@ -113,6 +113,13 @@ def _curl_auth_args() -> List[str]:
     value = _auth_header_value()
     return ["-H", f"Authorization: {value}"] if value else []
 
+def _session_base() -> str:
+    """Base URL for session-API calls: the configured OPENCODE_URL
+    (discovery already reads through it via poll.py), never a
+    hard-coded default - mutations must address the same server
+    whose sessions were counted. (Codex round-2, PR #6990.)"""
+    return OPENCODE_URL.rstrip("/")
+
 
 def _http_get(url: str, timeout: int = 10) -> Optional[Dict]:
     """Helper to make HTTP GET requests using urllib."""
@@ -247,7 +254,7 @@ def supervision_step(mode: str) -> List[Dict]:
                         try:
                             session_response = subprocess.run(
                                 ["curl", "-s", "-m", "5", *_curl_auth_args(),
-                                 f"http://127.0.0.1:13420/api/session/{session_id}"],
+                                 f"{_session_base()}/api/session/{session_id}"],
                                 capture_output=True,
                                 text=True
                             )
@@ -307,7 +314,7 @@ def supervision_step(mode: str) -> List[Dict]:
                             try:
                                 messages_response = subprocess.run(
                                     ["curl", "-s", "-m", "5", *_curl_auth_args(),
-                                     f"http://127.0.0.1:13420/api/session/{session_id}/messages"],
+                                     f"{_session_base()}/api/session/{session_id}/messages"],
                                     capture_output=True,
                                     text=True
                                 )
@@ -338,7 +345,7 @@ def supervision_step(mode: str) -> List[Dict]:
             # Delete the zero-message session
             delete_result = subprocess.run(
                 ["curl", "-s", "-m", "5", "-X", "DELETE", *_curl_auth_args(),
-                 f"http://127.0.0.1:13420/api/session/{session_id}"],
+                 f"{_session_base()}/api/session/{session_id}"],
                 capture_output=True,
                 text=True
             )
@@ -503,7 +510,7 @@ def launch_step(mode: str, cap_room: int) -> tuple:
                              *_curl_auth_args(),
                              "-H", "Content-Type: application/json",
                              "-d", json.dumps(session_create_body),
-                             "http://127.0.0.1:13420/api/session"]
+                             f"{_session_base()}/api/session"]
                 
                 create_result = subprocess.run(
                     create_cmd,
@@ -533,7 +540,7 @@ def launch_step(mode: str, cap_room: int) -> tuple:
                 if session.get("location", {}).get("directory") != str(PRIMARY_CLONE):
                     # Wrong location - delete and skip
                     delete_cmd = ["curl", "-s", "-m", "5", "-X", "DELETE", *_curl_auth_args(),
-                                 f"http://127.0.0.1:13420/api/session/{session_id}"]
+                                 f"{_session_base()}/api/session/{session_id}"]
                     subprocess.run(delete_cmd, capture_output=True)
                     skips.append({
                         "task_id": task_id,
@@ -541,8 +548,8 @@ def launch_step(mode: str, cap_room: int) -> tuple:
                     })
                     continue
                 
-                # Step 4c: Build the worker prompt (delivery is 4d,
-                # binding is 4e - see below)
+                # Step 4b2: Build the worker prompt (binding is 4c,
+                # delivery is 4d - see below)
                 # The worker should use: repo-queue with --worker <worker_id> and the execution context
                 prompt = f"""
 Execute queue task {task_id}
@@ -555,39 +562,12 @@ Heartbeat while working to keep the claim lease alive.
 Finish with: complete, park, block, or fail --execution '{{...}}'
 """
                 
-                # Step 4d: Send the prompt BEFORE binding or recording
-                # success (dispatch's sendPrompt: POST
-                # /api/session/{id}/prompt with {"text": ...}). A task
-                # recorded as launched without a delivered prompt is
-                # bound to an empty session no worker will ever run,
-                # and discovery then excludes it for having a session.
-                # On delivery failure, delete the session and skip -
-                # nothing is bound, so the candidate stays eligible.
-                try:
-                    prompt_result = subprocess.run(
-                        ["curl", "-s", "-m", "10", "-X", "POST",
-                         *_curl_auth_args(),
-                         "-H", "Content-Type: application/json",
-                         "-d", json.dumps({"text": prompt}),
-                         f"http://127.0.0.1:13420/api/session/{session_id}/prompt"],
-                        capture_output=True,
-                        text=True
-                    )
-                    if prompt_result.returncode != 0:
-                        raise RuntimeError(
-                            f"prompt delivery failed: {prompt_result.stderr}")
-                except Exception as prompt_error:
-                    delete_cmd = ["curl", "-s", "-m", "5", "-X", "DELETE", *_curl_auth_args(),
-                                 f"http://127.0.0.1:13420/api/session/{session_id}"]
-                    subprocess.run(delete_cmd, capture_output=True)
-                    skips.append({
-                        "task_id": task_id,
-                        "reason": f"prompt_failed: {prompt_error}"
-                    })
-                    continue
-
-                # Step 4e: Bind the session (atomic operation), now
-                # that the prompt is delivered.
+                # Step 4c (prompt.md): Bind BEFORE sending the prompt
+                # or anything else that can interleave. The atomic
+                # bind arbitrates ownership: a bind error means
+                # someone else owns the launch - do not prompt this
+                # session. (Codex round-2 on PR #6990, finding
+                # bind-before-prompt.)
                 bind_result = subprocess.run(
                     [
                         str(REPO_QUEUE_CMD),
@@ -602,13 +582,73 @@ Finish with: complete, park, block, or fail --execution '{{...}}'
                 )
 
                 if bind_result.returncode != 0:
-                    # Bind failed - delete session and skip
+                    # Bind failed - delete our unbound session and skip
                     delete_cmd = ["curl", "-s", "-m", "5", "-X", "DELETE", *_curl_auth_args(),
-                                 f"http://127.0.0.1:13420/api/session/{session_id}"]
+                                 f"{_session_base()}/api/session/{session_id}"]
                     subprocess.run(delete_cmd, capture_output=True)
                     skips.append({
                         "task_id": task_id,
                         "reason": "bind_failed"
+                    })
+                    continue
+
+                # Step 4d: Send the worker prompt to the BOUND
+                # session (dispatch's sendPrompt: POST
+                # /api/session/{id}/prompt with {"text": ...}).
+                # --fail-with-body makes an HTTP error (400/500) a
+                # nonzero exit, so a failed delivery can never be
+                # recorded as success from the return code alone.
+                # (Codex round-2, prompt HTTP-check finding.)
+                def _deliver_prompt() -> bool:
+                    try:
+                        r = subprocess.run(
+                            ["curl", "-s", "--fail-with-body", "-m", "10", "-X", "POST",
+                             *_curl_auth_args(),
+                             "-H", "Content-Type: application/json",
+                             "-d", json.dumps({"text": prompt}),
+                             f"{_session_base()}/api/session/{session_id}/prompt"],
+                            capture_output=True,
+                            text=True
+                        )
+                        return r.returncode == 0
+                    except Exception:
+                        return False
+
+                delivered = _deliver_prompt()
+                if not delivered:
+                    # Reconcile against the bound session before any
+                    # resend (prompt.md step 5): the prompt may have
+                    # landed despite the error/lost response. Any
+                    # message in the session means the worker may be
+                    # executing - leave it to supervision. Only a
+                    # demonstrably empty session gets ONE resend, to
+                    # the SAME session.
+                    landed = False
+                    try:
+                        m = subprocess.run(
+                            ["curl", "-s", "-m", "5", *_curl_auth_args(),
+                             f"{_session_base()}/api/session/{session_id}/messages"],
+                            capture_output=True,
+                            text=True
+                        )
+                        if m.returncode == 0:
+                            parsed = json.loads(m.stdout or "[]")
+                            if isinstance(parsed, dict) and "data" in parsed:
+                                parsed = parsed["data"]
+                            landed = isinstance(parsed, list) and len(parsed) > 0
+                    except Exception:
+                        landed = False
+                    delivered = landed or _deliver_prompt()
+                if not delivered:
+                    # The binding stays as the record and the session
+                    # is NOT deleted: supervision and the
+                    # expired-lease recovery rule govern what happens
+                    # next. Never make the task launchable again
+                    # while this session may be alive.
+                    skips.append({
+                        "task_id": task_id,
+                        "session_id": session_id,
+                        "reason": "prompt_delivery_failed_bound"
                     })
                     continue
 
