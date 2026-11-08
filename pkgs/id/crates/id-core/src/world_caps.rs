@@ -1539,6 +1539,21 @@ mod tests {
         ] {
             assert!(parse_wants(bad).is_err(), "{bad:?}");
         }
+        // #6499 pins: an over-long cap and a control-character id hidden
+        // behind benign duplicates inside one request entry.
+        let long_cap = "x".repeat(MAX_NAME_BYTES + 1);
+        let hidden_cap = format!(r#"{{"requests":[{{"id":"r1","cap":"{long_cap}","cap":"ok"}}]}}"#);
+        assert!(parse_wants(&hidden_cap).is_err(), "{hidden_cap:?}");
+        let hidden_id = "{\"requests\":[{\"id\":\"a\\u0001b\",\"id\":\"ok\",\"cap\":\"x\"}]}";
+        assert!(parse_wants(hidden_id).is_err(), "{hidden_id:?}");
+        // #6499 pin: a whole non-conforming requests array hidden behind
+        // a duplicate top-level "requests" key.
+        let hidden_requests =
+            format!(r#"{{"requests":[{{"id":"r1","cap":"{long_cap}"}}],"requests":[]}}"#);
+        assert!(
+            parse_wants(&hidden_requests).is_err(),
+            "{hidden_requests:?}"
+        );
         // The 64-entry bound counted only the collapsed second array.
         let hidden = format!(
             r#"{{"subscribe":[{}],"subscribe":["players"]}}"#,
