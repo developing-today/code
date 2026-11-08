@@ -262,10 +262,10 @@ will parse.
 The only agent-specific addition is a **required provenance stamp**
 recorded with the submission: the agent/tool identity, the run or
 session identifier, and (where available) the model or version. The
-stamp is stored as provenance on the canonical JSON anchor, not as a
-KDL construct the agent must author — so an agent cannot forge or omit
-it by writing KDL differently, and a human upload simply carries a
-human author stamp.
+stamp is metadata associated with the canonical JSON anchor, not part
+of its canonical bytes and not a KDL construct the agent must author —
+so an agent cannot forge or omit it by writing KDL differently, and a
+human upload simply carries a human author stamp.
 
 ### 5.3 Untrusted agents
 
@@ -285,7 +285,7 @@ The trust gate (stage 5) evaluates **the author**, not the surface:
 | Verified agent (a known, approved tool identity) | accepted on validation success |
 | Unverified human | staged: canonical JSON anchor recorded, triples held for approval |
 | Unverified agent | staged, same as unverified human |
-| Rejected author | refused before stage 1 runs, with a clear reason |
+| Author disallowed by endpoint access control | refused before the ingest pipeline starts, with a clear reason; this is access control, not a different trust pipeline |
 
 Two invariants:
 
@@ -302,13 +302,14 @@ Two invariants:
   qualifier triples) — #5907. This record assumes only that a
   statement node exists and anchors its triples.
 - **Payload boundary** (what is attached rather than decomposed, and
-  how payloads render in KDL export) — #5908. Default until decided:
-  a payload renders as a reference node carrying its ID, never as
-  inline content.
+  how payloads render in KDL export) — #5908. This record does not
+  choose between an inline value and a reference node; the export must
+  follow #5908's eventual contract.
 - **Annotation syntax** for the fork's multiple/structured annotations
-  — #5753. Default until decided: single annotations only; a document
-  using multiple annotations is rejected at stage 1 with an actionable
-  error rather than silently narrowed.
+  — #5753. #5906's canonical JSON contract already carries multiple
+  annotations; this record does not choose parser implementation or
+  invent additional structured syntax. Stage 1 must not silently
+  discard annotations the chosen parser accepts.
 - **Revision linkage of an edited export** — #5907 (§3.3).
 - **Cross-statement re-composition for readability** — parent's open
   question (§3.3); default is no.
@@ -325,12 +326,13 @@ is open and blocked. This record does not depend on it because:
   particular parser crate. Stage 1 is "the validator", whichever crate
   satisfies #5753's fork decision.
 - The only #5753-shaped decision that reaches a surface is annotation
-  syntax, and §7 gives it a safe default (single annotations; reject
-  the rest with an actionable error).
+  syntax; #5906 already defines how multiple annotations are carried
+  in canonical JSON. The parser/fork choice can change the accepted
+  grammar without changing the three-front-door structure.
 
 If #5753 lands a different annotation model, the change is confined to
-stage 1's accepted grammar and the export renderer's annotation
-emission — neither of which alters the three-front-door structure.
+  stage 1's accepted grammar and the export renderer's annotation
+  emission — neither of which alters the three-front-door structure.
 
 ## 9. Where this record touches a parent decision
 
