@@ -1746,9 +1746,9 @@ mod tests {
                 name: "n".to_owned(),
             },
             CollabMessage::AuthOk {
-                client_id: 1,
-                name: "n".to_owned(),
-                token: "t".to_owned(),
+                client_id: "client-1".to_owned(),
+                name: Some("n".to_owned()),
+                token: Some("t".to_owned()),
             },
         ];
         for m in msgs {
