@@ -993,6 +993,25 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		}
 	}
 
+	// The runner's non-fatal preflight diagnostics -- a check warning
+	// under checkOnError=warn, an import noted rather than fatal -- are
+	// written to Stderr, and this service captures Stderr in the tail
+	// buffer it only surfaces on a non-zero exit. On a successful run
+	// the diagnostic would vanish, leaving the `warn` policy
+	// indistinguishable from `run` for a remote caller. Route each one
+	// through the result and the frame stream as well, so /v1 exec and
+	// MCP callers receive it either way (Codex review, PR #6111).
+	ropts.OnWarning = func(msg string) {
+		rec := LogRecord{
+			Time:    time.Now().Format(time.RFC3339Nano),
+			Level:   logging.LevelName(slog.LevelWarn),
+			Message: msg,
+			Attrs:   map[string]any{"stage": "preflight"},
+		}
+		res.Logs = append(res.Logs, rec)
+		emitFrame(Frame{Type: FrameLog, Level: rec.Level, Message: rec.Message, Attrs: rec.Attrs})
+	}
+
 	// Session release happens after every hook has run, not here: the
 	// daemon wires Release to stopping the session's caller-private
 	// instances, and an onSuccess/onError/suffix hook may still need the
