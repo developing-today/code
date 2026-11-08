@@ -1197,6 +1197,24 @@ impl WorldCore {
         })
     }
 
+    /// Scopes a participant capability chain records in the journal
+    /// itself: the intersection of every ancestor issued scope.
+    /// Unlike `effective_scopes`, this never consults the world
+    /// directory: friendship and ceilings are mutable current state,
+    /// and restore runs before the directory is loaded, so historical
+    /// events are judged against what the journal recorded when they
+    /// were committed (Codex P1 finding on PR #4518).
+    fn journaled_scopes(&self, participant_id: u64) -> Option<WorldScopes> {
+        self.capabilities.get(&participant_id)?;
+        let mut scopes = WorldScopes::ALL;
+        let mut current = Some(participant_id);
+        while let Some(record) = current.and_then(|id| self.capabilities.get(&id)) {
+            scopes = scopes.intersect(record.scopes.implied());
+            current = record.parent;
+        }
+        Some(scopes)
+    }
+
     /// Check that a journaled event could have been authored by the
     /// participant state rebuilt so far. For compacted checkpoint events,
     /// revocation timing is no longer represented: `checkpoint_entries`
@@ -1235,7 +1253,7 @@ impl WorldCore {
         };
         if let Some((scope, name)) = required_scope {
             ensure!(
-                self.effective_scopes(participant_id)
+                self.journaled_scopes(participant_id)
                     .is_some_and(|scopes| scopes.contains(scope)),
                 "journal event at sequence {} uses participant {participant_id} without {name} scope",
                 event.sequence

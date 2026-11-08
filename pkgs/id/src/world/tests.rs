@@ -2135,6 +2135,9 @@ mod tests {
             transfers: None,
             snapshot: "snapshot".to_owned(),
             events,
+            admin_history: None,
+            lease: None,
+            open_presence: None,
         }
     }
 
@@ -2289,6 +2292,55 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn restore_accepts_friend_delegated_history_without_directory_state() {
+        // Codex P1 on PR #4518: restore runs before the directory loads,
+        // so scope validation must use the recorded capability chain.
+        // A participant delegated by a parent with a different subject
+        // (the friend-delegation shape) has zero effective scopes under
+        // an empty directory; its valid history must still restore.
+        let secret = "ef".repeat(32);
+        let issued_with =
+            |id: u64, scopes: u8, parent: Option<u64>, subject: &str| JournalEntry::Issued {
+                participant: Participant {
+                    id,
+                    display_name: format!("delegate-{id}"),
+                },
+                digest: hex_encode(&token_digest(&format!("{id}.{secret}"))),
+                scopes,
+                parent,
+                expires_at: None,
+                uses: None,
+                used: 0,
+                subject: Some(subject.to_owned()),
+            };
+        let delegated_scopes = WorldScopes::JOIN.0 | WorldScopes::INPUT.0 | WorldScopes::CHAT.0;
+        let entries = vec![
+            issued_with(1, WorldScopes::ALL.bits(), None, "subject-a"),
+            issued_with(2, delegated_scopes, Some(1), "subject-b"),
+            committed_event(1, 2, WorldEventKind::Input(b"hello".to_vec())),
+            committed_event(2, 2, WorldEventKind::Chat("hi".to_owned())),
+        ];
+        let restored = restore_author_entries(entries).unwrap();
+        assert!(
+            restored.core.capabilities.get(&2).is_some(),
+            "delegated participant restores"
+        );
+
+        let checkpoint = vec![
+            issued_with(1, WorldScopes::ALL.bits(), None, "subject-a"),
+            issued_with(2, delegated_scopes, Some(1), "subject-b"),
+            checkpoint_event(
+                1,
+                vec![WorldEvent {
+                    sequence: 1,
+                    participant_id: 2,
+                    kind: WorldEventKind::Input(b"kept".to_vec()),
+                }],
+            ),
+        ];
+        restore_author_entries(checkpoint).unwrap();
+    }
 
     fn restore_with_scopes(scopes: u8) -> anyhow::Result<RestoredWorld> {
         WorldCore::restore(
