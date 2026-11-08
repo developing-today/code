@@ -117,9 +117,13 @@ test("an ok-but-null provider result retains the last good quota row", async () 
     }
 
     const output = JSON.parse(await readFile(currentPath, "utf8"));
-    const retained = output.providers.find((entry: { providerId: string }) => entry.providerId === "meta");
+    const retained = output.providers.find((entry: { providerId: string }) => entry.providerId === "_muse");
+    // The retained row carries the provider's current id: fleet-built
+    // providers were renamed to leading-underscore ids (#1823), so the
+    // meta row is providerId "_muse" (serviceId stays "meta").
     expect(retained).toMatchObject({
-      providerId: "meta",
+      providerId: "_muse",
+      serviceId: "meta",
       state: "ok",
       measuredAt,
       retainedFromFailedTick: output.generatedAt,
