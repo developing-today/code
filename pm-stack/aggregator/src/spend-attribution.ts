@@ -205,10 +205,12 @@ export function projectSpendAttribution(input: SpendAttributionInput): SpendAttr
 
   for (const group of collectRootGroups(input.sessions)) {
     const root = input.sessions.find((session) => session.id === group.rootSessionId);
-    const tokens = sumTokens(group.sessions.map((session) => session.tokens));
-    const providerID = root?.providerID ?? group.sessions[0]?.providerID ?? null;
-    const modelID = root?.modelID ?? group.sessions[0]?.modelID ?? null;
-    const binding = root ? bindingsBySession.get(root.id) : undefined;
+    // Consult the exact binding for the group root even when the root's own
+    // session row is outside the source window: the binding is keyed by the
+    // root session ID this group already carries, and discarding it would
+    // strand the whole group's usage as unattributed despite authoritative
+    // issue information being available (PR #5164 Codex finding).
+    const binding = bindingsBySession.get(group.rootSessionId);
     const issueRef = binding?.issueRef ?? resolveWorktreeIssue(root?.directory ?? null, input);
     const method: SpendAttributionMethod = binding ? "queue-binding" : issueRef ? "fleet-worktree" : "unattributed";
     const poolItem = issueRef ? poolByRef.get(issueRef) : undefined;
@@ -218,21 +220,42 @@ export function projectSpendAttribution(input: SpendAttributionInput): SpendAttr
     else if (!issueRef) reason = root?.directory && fleetIssueNumber(root.directory) !== null ? "no-worktree" : "no-binding";
     else if (!poolItem || (poolItem.parentRef && !poolByRef.has(poolItem.parentRef))) reason = "parent-left-pool";
 
-    const fact: SpendAttributionFact = {
-      attributionVersion: ATTRIBUTION_VERSION,
-      rootSessionId: group.rootSessionId,
-      sessionIds: group.sessions.map((session) => session.id).sort(),
-      providerID,
-      modelID,
-      tokens,
-      method,
-      issueRef,
-      epicRef: poolItem?.epicRef ?? (poolItem?.kind === "Epic" ? poolItem.ref : null),
-      projectId: issueRef ? input.projectByRef?.get(issueRef) ?? null : null,
-      reason,
-    };
-    facts.push(fact);
-    addFactTotals(fact, byIssue, byEpic, byProject, unattributedByReason);
+    // Usage facts are split by provider/model within the root group: a child
+    // session can run on a different provider or model from its root, and
+    // summing across that boundary would label one pool's consumption with
+    // another pool's identity, losing the per-pool accounting the design
+    // requires (doc/spend-rollups-design-1259.md, Units; PR #5164 Codex
+    // finding). Issue attribution stays with the root group for every
+    // provider/model subgroup.
+    const byProviderModel = new Map<string, SpendSession[]>();
+    for (const session of group.sessions) {
+      const key = `${session.providerID ?? ""}\u0000${session.modelID ?? ""}`;
+      const subgroup = byProviderModel.get(key) ?? [];
+      subgroup.push(session);
+      byProviderModel.set(key, subgroup);
+    }
+    const subgroups = [...byProviderModel.values()].sort((a, b) =>
+      `${a[0]!.providerID ?? ""}\u0000${a[0]!.modelID ?? ""}`.localeCompare(
+        `${b[0]!.providerID ?? ""}\u0000${b[0]!.modelID ?? ""}`,
+      ),
+    );
+    for (const subgroup of subgroups) {
+      const fact: SpendAttributionFact = {
+        attributionVersion: ATTRIBUTION_VERSION,
+        rootSessionId: group.rootSessionId,
+        sessionIds: subgroup.map((session) => session.id).sort(),
+        providerID: subgroup[0]!.providerID,
+        modelID: subgroup[0]!.modelID,
+        tokens: sumTokens(subgroup.map((session) => session.tokens)),
+        method,
+        issueRef,
+        epicRef: poolItem?.epicRef ?? (poolItem?.kind === "Epic" ? poolItem.ref : null),
+        projectId: issueRef ? input.projectByRef?.get(issueRef) ?? null : null,
+        reason,
+      };
+      facts.push(fact);
+      addFactTotals(fact, byIssue, byEpic, byProject, unattributedByReason);
+    }
   }
 
   const sourceTotals = sumTokens(input.sessions.map((session) => session.tokens));

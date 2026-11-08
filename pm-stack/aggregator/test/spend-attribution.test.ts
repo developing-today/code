@@ -151,6 +151,56 @@ describe("spend attribution projection", () => {
     expect(projection.reconciled).toBe(true);
   });
 
+  test("splits a root group by provider and model while keeping root issue attribution", () => {
+    const projection = projectSpendAttribution({
+      sourceStatus: "ok",
+      sessions: [
+        session({ id: "root", providerID: "openai", modelID: "gpt-test", tokens: tokens(1) }),
+        session({ id: "child", parentId: "root", providerID: "anthropic", modelID: "claude-test", tokens: tokens(2) }),
+      ],
+      bindings: [{ sessionId: "root", taskId: "1", issueRef: R(9) }],
+      pool: [item({ number: 9 })],
+    });
+    expect(projection.facts).toHaveLength(2);
+    expect(projection.facts[0]).toMatchObject({
+      providerID: "anthropic",
+      modelID: "claude-test",
+      sessionIds: ["child"],
+      issueRef: R(9),
+      method: "queue-binding",
+      tokens: tokens(2),
+    });
+    expect(projection.facts[1]).toMatchObject({
+      providerID: "openai",
+      modelID: "gpt-test",
+      sessionIds: ["root"],
+      issueRef: R(9),
+      method: "queue-binding",
+      tokens: tokens(1),
+    });
+    expect(projection.byIssue.get(R(9))).toEqual({ input: 3, output: 5, reasoning: 7, cacheRead: 9, cacheWrite: 11 });
+    expect(projection.sourceTotals).toEqual({ input: 3, output: 5, reasoning: 7, cacheRead: 9, cacheWrite: 11 });
+    expect(projection.reconciled).toBe(true);
+  });
+
+  test("consults the exact binding for a root outside the source window", () => {
+    const projection = projectSpendAttribution({
+      sourceStatus: "ok",
+      sessions: [session({ id: "child", parentId: "missing-root", tokens: tokens(5) })],
+      bindings: [{ sessionId: "missing-root", taskId: "7", issueRef: R(7) }],
+      pool: [item({ number: 7 })],
+    });
+    expect(projection.facts[0]).toMatchObject({
+      rootSessionId: "missing-root",
+      method: "queue-binding",
+      issueRef: R(7),
+      reason: "parent-left-pool",
+      tokens: tokens(5),
+    });
+    expect(projection.byIssue.get(R(7))).toEqual(tokens(5));
+    expect(projection.reconciled).toBe(true);
+  });
+
   test("represents missing or failed usage as unknown source-gap, not zero spend", () => {
     for (const sourceStatus of ["missing", "error"] as const) {
       const projection = projectSpendAttribution({ sourceStatus, sessions: [], bindings: [], pool: [] });
