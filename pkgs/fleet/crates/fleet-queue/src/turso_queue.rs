@@ -2517,6 +2517,35 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
     }
 }
 
+/// One queue's health row with every counter zeroed. The client
+/// renders the health table from these keys, so a field added here
+/// surfaces in the health table output with no client change.
+fn health_entry(queue: &str) -> Value {
+    json!({
+        "queue": queue, "queued": 0, "at_cap_queued": 0, "claimed": 0,
+        "parked": 0, "blocked": 0, "done": 0, "cancelled": 0,
+        "failed": 0, "total": 0, "oldest_queued_at": Value::Null,
+        "terminal_events_24h": 0, "terminal_events_7d": 0,
+    })
+}
+
+/// Fold per-queue at-cap queued counts (#6528) into health entries:
+/// tasks with status='queued' AND attempts >= max_attempts can never
+/// be claimed again (the claim query requires attempts <
+/// max_attempts), so a queue whose queued tasks are all at cap reads
+/// as dead-in-queue — health must name that instead of letting it
+/// look like ordinary backlog. Queues with no at-cap rows keep the
+/// zero default from health_entry.
+fn apply_at_cap_queued(by_queue: &mut Map<String, Value>, rows: &[Value]) {
+    for r in rows {
+        let q = r.get("queue").and_then(|v| v.as_str()).unwrap_or("");
+        let n = r.get("n").and_then(|v| v.as_i64()).unwrap_or(0);
+        if let Some(obj) = by_queue.get_mut(q).and_then(|e| e.as_object_mut()) {
+            obj.insert("at_cap_queued".to_string(), json!(n));
+        }
+    }
+}
+
 fn verb_health(t: &TursoBackend, req: &Value) -> Value {
     let queue_filter = req_str(req, "queue").map(str::to_string);
     let work = (|| -> Result<Value, TErr> {
@@ -2539,12 +2568,7 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
                 .unwrap_or("")
                 .to_string();
             let entry = by_queue.entry(q.clone()).or_insert_with(|| {
-                json!({
-                    "queue": q, "queued": 0, "claimed": 0, "parked": 0,
-                    "blocked": 0, "done": 0, "cancelled": 0, "failed": 0,
-                    "total": 0, "oldest_queued_at": Value::Null,
-                    "terminal_events_24h": 0, "terminal_events_7d": 0,
-                })
+                health_entry(&q)
             });
             let status = r
                 .get("status")
@@ -2566,6 +2590,20 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
                 }
             }
         }
+        // At-cap queued counts (#6528): the dead-in-queue alert
+        // class. Separate query because the status GROUP BY above
+        // cannot express the attempts >= max_attempts predicate.
+        let mut asql = "SELECT queue, COUNT(*) AS n FROM tasks \
+             WHERE status = 'queued' AND attempts >= max_attempts"
+            .to_string();
+        let mut aargs: Vec<Arg> = Vec::new();
+        if let Some(q) = &queue_filter {
+            asql += " AND queue = ?";
+            aargs.push(Arg::Text(q.clone()));
+        }
+        asql += " GROUP BY queue";
+        let arows = t.query_objs(&asql, &aargs, &[])?;
+        apply_at_cap_queued(&mut by_queue, &arows);
         // Terminal-event counters, the agent.repo_queue_health
         // view's terminal_events_24h/7d (#5690): events and tasks
         // share this database, so the JOIN the PG view did is a
@@ -2592,12 +2630,7 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
                 .unwrap_or("")
                 .to_string();
             let entry = by_queue.entry(q.clone()).or_insert_with(|| {
-                json!({
-                    "queue": q, "queued": 0, "claimed": 0, "parked": 0,
-                    "blocked": 0, "done": 0, "cancelled": 0, "failed": 0,
-                    "total": 0, "oldest_queued_at": Value::Null,
-                    "terminal_events_24h": 0, "terminal_events_7d": 0,
-                })
+                health_entry(&q)
             });
             if let Some(obj) = entry.as_object_mut() {
                 obj.insert(
@@ -2831,6 +2864,38 @@ mod tests {
         assert!(revive_eligible("claimed", 4, 4).is_err());
         assert!(revive_eligible("done", 4, 4).is_err());
         assert!(revive_eligible("cancelled", 4, 4).is_err());
+    }
+
+    #[test]
+    fn health_entry_defaults_at_cap_queued_to_zero() {
+        let e = health_entry("repo-health-code-pilot");
+        assert_eq!(e.get("at_cap_queued"), Some(&json!(0)));
+        assert_eq!(e.get("queued"), Some(&json!(0)));
+    }
+
+    #[test]
+    fn at_cap_fold_covers_zero_claimable_and_partial_queues() {
+        // Fixture for #6528 criterion 3: queue-dead has queued > 0
+        // with EVERY queued task at cap (zero claimable); queue-live
+        // has some at cap; queue-calm has none.
+        let mut by_queue: Map<String, Value> = Map::new();
+        for (q, queued) in [("queue-dead", 3), ("queue-live", 5), ("queue-calm", 2)] {
+            let mut e = health_entry(q);
+            e.as_object_mut().unwrap().insert("queued".to_string(), json!(queued));
+            by_queue.insert(q.to_string(), e);
+        }
+        let rows = vec![
+            json!({"queue": "queue-dead", "n": 3}),
+            json!({"queue": "queue-live", "n": 2}),
+        ];
+        apply_at_cap_queued(&mut by_queue, &rows);
+        let dead = &by_queue["queue-dead"];
+        assert_eq!(dead.get("queued"), Some(&json!(3)));
+        assert_eq!(dead.get("at_cap_queued"), Some(&json!(3)));
+        // at_cap == queued means nothing in this queue can be claimed.
+        assert_eq!(dead.get("at_cap_queued"), dead.get("queued"));
+        assert_eq!(by_queue["queue-live"].get("at_cap_queued"), Some(&json!(2)));
+        assert_eq!(by_queue["queue-calm"].get("at_cap_queued"), Some(&json!(0)));
     }
 
     #[test]
