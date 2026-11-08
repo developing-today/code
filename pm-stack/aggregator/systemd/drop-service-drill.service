@@ -1,0 +1,12 @@
+[Unit]
+Description=Chaos drill: drop one PM-stack component service and verify the stack notices (#1283, epic #1184)
+
+[Service]
+Type=oneshot
+# Runs on the laptop: the PM component services and the aggregator are
+# laptop user units since #3362/#3363. HOME/XDG_RUNTIME_DIR are the
+# invoking user's, so `systemctl --user` in the drill reaches
+# pm-projector.service.
+ExecStart=/home/user/git/code/pm-stack/aggregator/scripts/drop-service-drill.sh
+# Max signal wait (6 min) + probe-cache lag + restore confirmation margin.
+TimeoutStartSec=20min

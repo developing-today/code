@@ -1,0 +1,15 @@
+[Unit]
+Description=Weekly drop-a-service chaos drill (#1283, epic #1184)
+
+[Timer]
+# Friday early morning — a different quiet window from the
+# kill-collector drill's Sunday 04:17 slot and the age-feed drill's
+# Wednesday 03:43 slot, so the drills never contend for the stack in
+# the same maintenance window (the shared drill lock is the hard
+# interlock; the separated windows are the soft one).
+OnCalendar=Fri 04:07
+RandomizedDelaySec=15min
+Persistent=false
+
+[Install]
+WantedBy=timers.target
