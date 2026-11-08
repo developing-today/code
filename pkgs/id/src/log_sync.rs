@@ -975,6 +975,7 @@ mod tests {
                 note: None,
                 link: None,
                 checkpoint: None,
+                rotation: None,
             }
         }
         let create_body = encode_body(&GroupAction::Create {
