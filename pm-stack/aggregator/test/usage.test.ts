@@ -218,6 +218,24 @@ describe("saas extraction (Part b)", () => {
     ]);
   });
 
+  test("free-services tracker rows: escaped pipes stay inside their cell (Codex P2, PR #3939)", () => {
+    const doc = `
+| Service | What for | Status | Overage behavior | Guardrail notes |
+|---|---|---|---|---|
+| Webby | Web \\| worker hosting | checked 2026-10-29 | wall | Keep no payment method on file |
+`;
+    expect(extractUninstrumentedServices(doc)).toEqual([
+      {
+        name: "Webby",
+        whatFor: "Web | worker hosting",
+        status: "checked",
+        checkedAt: "2026-10-29",
+        overageBehavior: "wall",
+        guardrailNotes: "Keep no payment method on file",
+      },
+    ]);
+  });
+
   test("modal: monthly console read carries a dated used-credits value", () => {
     const view = VIEW.replace(
       "- **Usage / dates:** Percentage/pace unknown; monthly grant, exact reset/credit expiry date unknown.",

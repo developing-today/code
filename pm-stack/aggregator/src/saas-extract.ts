@@ -768,11 +768,29 @@ export function extractUninstrumentedServices(doc: string): UninstrumentedSaasSe
   const rows: UninstrumentedSaasService[] = [];
   let columns: Record<string, number> | null = null;
 
-  const cellsOf = (line: string): string[] =>
-    line
-      .split("|")
-      .slice(1, -1)
-      .map((cell) => cell.replace(/\\\|/g, "|").replace(/\*\*/g, "").trim());
+  const cellsOf = (line: string): string[] => {
+    // Split only on UNescaped pipes: a `\|` is cell content, not a
+    // delimiter — splitting on every `|` first shifts all later columns
+    // and the unescape afterwards cannot repair them (Codex P2, PR
+    // #3939). Backslash pairs are consumed while scanning so a `\\|`
+    // (escaped backslash, then a real delimiter) still splits.
+    const parts: string[] = [];
+    let current = "";
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === "\\" && i + 1 < line.length) {
+        current += ch + line[i + 1];
+        i++;
+      } else if (ch === "|") {
+        parts.push(current);
+        current = "";
+      } else {
+        current += ch;
+      }
+    }
+    parts.push(current);
+    return parts.slice(1, -1).map((cell) => cell.replace(/\\\|/g, "|").replace(/\*\*/g, "").trim());
+  };
 
   for (const line of doc.split(/\r?\n/)) {
     if (!line.trimStart().startsWith("|")) {
