@@ -2686,7 +2686,7 @@
         "autonomy": "rules"
       },
       "workhorse-weighted": {
-        "name": "Workhorse weighted - Luna #xhigh w2 only: last-tier fallback behind the Flash primary (Drew 2026-11-07)",
+        "name": "Workhorse weighted - Luna #xhigh w2 + Spark contributor #high w1: last-tier fallbacks behind the Flash primary (Drew 2026-11-07)",
         // The weighted half of workhorse's incremental structure: sessions
         // that fail over (or are demoted off) the Flash primary draw here
         // by weight. Not addressed by any agent directly.
@@ -2738,9 +2738,28 @@
         // 2026-11-09 17:04Z - the provider route's own weighting
         // and quota demotion shed the walled door, so the leg is
         // live tonight through openai.main.
-        "targets": ["openai-plan/gpt-6-luna#xhigh"],
+        // 2026-11-07 (Drew, direct order, minutes after the Luna
+        // seat above): Spark joins as the second member -
+        // _muse/muse-spark-1.3-contributor#high at weight 1.
+        // Effort is #high here, NOT the #xhigh of Spark's speed
+        // seat and its old workhorse-primary seat - #high is the
+        // effort Drew named for this stage. _muse is the sole
+        // enabled Meta door (there is no _meta provider id; live
+        // config governs). Known state at seating: the Meta
+        // weekly is 100% quota-walled until Mon 2026-11-09
+        // 00:00Z, so this leg sits quota-gated until the reset -
+        // quota demotion sheds it on its own and the stage serves
+        // through Luna tonight; the leg becomes live fallback
+        // capacity when the Meta weekly reopens.
+        "targets": [
+          "openai-plan/gpt-6-luna#xhigh",
+          "_muse/muse-spark-1.3-contributor#high"
+        ],
         "selection": "weighted",
-        "weights": { "openai-plan/gpt-6-luna": 2 },
+        "weights": {
+          "openai-plan/gpt-6-luna": 2,
+          "_muse/muse-spark-1.3-contributor": 1
+        },
         "autonomy": "rules"
       },
       "specialist": {
