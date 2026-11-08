@@ -122,7 +122,7 @@ The canonical schema lives here; #6000's semantics and #6017's presentation cons
 
 A registry entry describes an immutable **world release** (the artifact plus its transitive dependency closure), identified by the content-addressed identity of #5965 §2 and #5997 §2 (platform tree hash + source closure hash + DLL closure hash + compiler digest + target). It is *not* a per-world-row record: a world that republishes new code gets a new entry; a world restored from a checkpoint keeps its entry.
 
-Certification content (`requested`, `discovered_used`, `custom_platform`) is a property of the release and lives here. **Effective grants and runtime observations are not fields of this record**: they are properties of a *world instance* running the release (§4.2.1). Two worlds on one server can run the same release under different grants and ceilings — the ledger and ceiling are stored per `WorldCore` (`pkgs/id/src/world/core.rs:145-153`) and updated per world (`world/actor.rs:1769-1780`) — so a single release-keyed `effective_grant` would overwrite one worlds authority report with anothers.
+Certification content (`requested`, `discovered_used`, `custom_platform`) is a property of the release and lives here. **Effective grants and runtime observations are not fields of this record**: they are properties of a *world instance* running the release (§4.2.1). Two worlds on one server can run the same release under different grants and ceilings — the ledger and ceiling are stored per `WorldCore` (`pkgs/id/src/world/core.rs:145-153`) and updated per world (`world/actor.rs:1769-1780`) — so a single release-keyed `effective_grant` would overwrite one world's authority report with another's.
 
 ### 4.2 Shape
 
