@@ -427,7 +427,22 @@ test('endpoint.json is republished when failover changes the preferred target', 
 
   const endpointFile = path.join(stateDir, 'proxy-relay-failover-test', 'endpoint.json');
   const readRelayTo = () => JSON.parse(fs.readFileSync(endpointFile, 'utf8')).relayTo;
-  assert.equal(readRelayTo(), `127.0.0.1:${deadPort}`, 'startup endpoint names the first target');
+  // The relay publishes endpoint.json from its listen callback, just after
+  // its log line; on a loaded host the file can land a few ms after the log
+  // line reaches this process, so poll briefly instead of reading once.
+  // (Observed flaking ~50% on the fleet laptop, 2026-11-08, task 12671.)
+  const readRelayToEventually = async (want) => {
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      try {
+        const value = readRelayTo();
+        if (want === undefined || value === want) return value;
+      } catch { /* not published yet */ }
+      if (Date.now() >= deadline) return readRelayTo();
+      await delay(25);
+    }
+  };
+  assert.equal(await readRelayToEventually(), `127.0.0.1:${deadPort}`, 'startup endpoint names the first target');
 
   // Force a failover with a real forwarded request (dead target first).
   const forwarded = await within(fetch(`http://127.0.0.1:${relayPort}/proxied`, {
@@ -441,5 +456,5 @@ test('endpoint.json is republished when failover changes the preferred target', 
   }), 5000, 'local /health');
   const { preferredTarget } = await health.json();
   assert.equal(preferredTarget, livePort, '/health must report the live target after failover');
-  assert.equal(readRelayTo(), `127.0.0.1:${preferredTarget}`, 'endpoint.json relayTo must agree with /health after failover');
+  assert.equal(await readRelayToEventually(`127.0.0.1:${preferredTarget}`), `127.0.0.1:${preferredTarget}`, 'endpoint.json relayTo must agree with /health after failover');
 });
