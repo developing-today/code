@@ -1215,6 +1215,60 @@ class ResearchWorkflowTests(unittest.TestCase):
         )
         self.check(package, ok=True)
 
+    def test_profile_non_object_fails_with_named_diagnostic(self):
+        self.init()
+        profile_path = self.root / ".agents/research-workflow.json"
+        for bad in ([], "x", 42, None):
+            with self.subTest(bad=bad):
+                profile_path.write_text(json.dumps(bad), encoding="utf-8")
+                result = self.cli("check", "--repo-root", self.root, ok=False)
+                self.assertIn("profile must be a JSON object", result.stderr)
+                self.assertIn("research-workflow.json", result.stderr)
+
+    def test_state_non_object_fails_with_named_diagnostic(self):
+        package = self.init()
+        for bad in ([], "x", 42, None):
+            with self.subTest(bad=bad):
+                self.write_state(package, bad)
+                result = self.check(package, ok=False)
+                self.assertIn("workflow state must be a JSON object", result.stderr)
+
+    def test_check_package_rejects_wrong_shape_fields(self):
+        package = self.init()
+        original = self.state(package)
+        cases = [
+            ("transcript string", lambda s: s.update(transcript="transcript.txt"), "transcript"),
+            ("transcript missing sha256", lambda s: s.update(transcript={"path": "transcript.txt"}), "transcript"),
+            ("transcript missing", lambda s: s.pop("transcript"), "transcript"),
+            ("concepts object", lambda s: s.update(concepts={}), "concepts"),
+            ("concepts string entries", lambda s: s.update(concepts=["x"]), "concepts"),
+            ("concepts missing", lambda s: s.pop("concepts"), "concepts"),
+            ("dependencies missing", lambda s: s.pop("dependencies"), "dependencies"),
+            ("dependencies string", lambda s: s.update(dependencies="x"), "dependencies"),
+            ("dependencies string edge", lambda s: s.update(dependencies=["x"]), "dependencies"),
+        ]
+        for name, mutate, field in cases:
+            with self.subTest(name=name):
+                state = json.loads(json.dumps(original))
+                mutate(state)
+                self.write_state(package, state)
+                result = self.check(package, ok=False)
+                self.assertIn(field, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+        self.write_state(package, original)
+        self.check(package, ok=True)
+
+    def test_trigger_entry_non_object_fails_with_named_diagnostic(self):
+        package = self.init()
+        triggers = self.root / "docs/workflow-triggers.json"
+        self.profile["triggers"] = "docs/workflow-triggers.json"
+        self.write_profile()
+        for bad in (["intake"], [42], [None]):
+            with self.subTest(bad=bad):
+                triggers.write_text(json.dumps(bad), encoding="utf-8")
+                result = self.check(package, ok=False)
+                self.assertIn("Trigger fixture entries must be objects", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
