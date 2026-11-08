@@ -9,7 +9,7 @@ query can move. How much?
 
 **Answer in one line:** a lot, at every perturbation size measured —
 even a one-sentence boundary shift flips top-10 membership for
-6.9% of query/target pairs, and replacing one neighbor paragraph
+5.8% of query/target pairs, and replacing one neighbor paragraph
 flips 10.3–17.8%. The reuse-safety rule this justifies is at the
 bottom: **reuse only byte-identical windows; re-embed on any
 context change.**
@@ -27,9 +27,11 @@ context change.**
 - **Original window W0** = previous paragraph + target + next
   paragraph (blank-line joined) — the production chunk shape.
 - **Perturbations** (per target):
-  - `boundary_shift` — drop W0's first sentence; append the first
-    sentence of the paragraph after `next` when one exists
-    (49 of 50 targets).
+  - `boundary_shift` — drop the first sentence of the *previous*
+    paragraph only (the target paragraph stays byte-identical and
+    the blank-line window shape is preserved); append the first
+    sentence of the paragraph after `next` to the end of `next`
+    when one exists (49 of 50 targets).
   - `neighbor_replace_prev` / `neighbor_replace_next` — replace
     that neighbor with the target paragraph of another sampled
     message (deterministic donors, offsets +7 / +13).
@@ -43,7 +45,7 @@ context change.**
   attention-mask 0, CLS pooling, L2 normalize. Documents embedded
   prompt-free (production corpus mode); queries embedded with the
   production `query: ` prompt (`atlas-core` `embed.rs`
-  `QUERY_PROMPT`). Embedding 270 windows + 20 queries took 325 s
+  `QUERY_PROMPT`). Embedding 270 windows + 20 queries took 357 s
   on the laptop (16 threads).
 - **Queries:** fixed set of 20 from the golden query set v3
   (`~/atlas/v3/golden-queries-v3.json`, every 16th of 311) — the
@@ -62,7 +64,7 @@ the numbers below are its readback.
 
 | perturbation | median | p95 | mean | max |
 |---|---|---|---|---|
-| boundary_shift | 0.047 | 0.190 | 0.069 | 0.291 |
+| boundary_shift | 0.045 | 0.175 | 0.060 | 0.301 |
 | neighbor_replace_prev | 0.292 | 0.554 | 0.306 | 0.745 |
 | neighbor_replace_next | 0.121 | 0.360 | 0.147 | 0.438 |
 | target_alone | 0.168 | 0.478 | 0.208 | 0.618 |
@@ -71,7 +73,7 @@ the numbers below are its readback.
 
 | perturbation | median \|Δrank\| | p95 \|Δrank\| | max \|Δrank\| | top-10 flips |
 |---|---|---|---|---|
-| boundary_shift | 2 | 11 | 25 | 69 / 1000 (6.9%) |
+| boundary_shift | 2 | 10 | 22 | 58 / 1000 (5.8%) |
 | neighbor_replace_prev | 7 | 27 | 42 | 178 / 1000 (17.8%) |
 | neighbor_replace_next | 4 | 21 | 36 | 103 / 1000 (10.3%) |
 | target_alone | 5 | 19 | 39 | 119 / 1000 (11.9%) |
@@ -80,7 +82,7 @@ Notes on the shape of the numbers:
 
 - **No perturbation is rank-stable.** The smallest change measured
   — sliding the window boundary by one sentence — still has a p95
-  cosine drift of 0.190 and moves a target's rank by 11+ places
+  cosine drift of 0.175 and moves a target's rank by 10+ places
   (in a pool of only 50) for 5% of query/target pairs.
 - **The previous neighbor matters more than the next one**
   (median drift 0.292 vs 0.121 for a full replacement). The window's
@@ -89,12 +91,14 @@ Notes on the shape of the numbers:
 - **Removing all context (`target_alone`) drifts less than
   replacing the previous neighbor with foreign text** (median
   0.168 vs 0.292): wrong context is worse than no context.
-- Rank figures are measured in a 50-window pool, so absolute rank
-  movement is a *lower bound* for the production pool (~100k
-  chunks), where more near-neighbors compete for the same ranks.
-  The top-10 flip rate is the portable figure: it is the fraction
-  of (query, target) pairs whose top-10 membership changes when
-  only the target's window changes.
+- Rank and top-10 flip figures are measured in, and scoped to,
+  this 50-window candidate pool; a flip rate is a property of the
+  pool it was measured in, not a portable constant. The production
+  pool (~100k chunks) is far denser near the top, so the production
+  flip rate for a perturbed window will differ (more near-neighbors
+  compete for the same ten slots); the figures here establish the
+  mechanism and its size at pool scale 50, and the reuse rule below
+  is written to hold regardless of the exact production rate.
 
 ## Reuse-safety rule (for the span-schema design, #6035)
 
@@ -105,7 +109,8 @@ Notes on the shape of the numbers:
 > span must be re-embedded.** There is no measured "close enough"
 > context change: the gentlest perturbation tested (one sentence
 > of boundary shift) already flips top-10 membership ~1 time in
-> 14, and a single replaced neighbor flips it ~1 time in 6–10.
+> 17 (at pool scale 50), and a single replaced neighbor flips it
+> ~1 time in 6–10.
 > Context identity — not span identity alone — is the reuse key:
 > key stored vectors by the hash of the exact window text, and
 > treat a context-class change (neighbor added / removed /
@@ -124,3 +129,31 @@ Notes on the shape of the numbers:
 - One model (the pinned production model), one corpus. The rule
   is stated for this pipeline; another embedder would need its
   own measurement before inheriting it.
+
+## Corrections after Codex review (PR #7661)
+
+The first version of this experiment had three defects, all caught
+in Codex review of PR #7661 and fixed before merge:
+
+1. `boundary_shift` originally split the *whole window* into
+   sentences and dropped the first one — when the previous
+   paragraph had no terminal punctuation its first "sentence"
+   merged into the target's first sentence, so the shift could eat
+   into the target, and the window was rebuilt space-joined,
+   losing the blank-line shape. The construction now drops only
+   the previous paragraph's first sentence, keeps the target
+   byte-identical, and preserves the window shape.
+2. The model snapshot was selected as whichever HF cache snapshot
+   sorted last. It is now pinned to
+   `95c2741480856aa9666782eb4afe11959938017f` (the snapshot the
+   reported run used — verified the only snapshot in the cache),
+   and the script fails loudly if it is absent.
+3. The top-10 flip rates were described as "the portable figure".
+   They are pool-relative; the text above now scopes them to the
+   measured 50-window pool.
+
+The experiment was re-run end-to-end after the fixes. The
+`boundary_shift` row above is the corrected run's output; every
+other row reproduced the first run's numbers exactly (same seed,
+same inputs, deterministic embedder), which is the regression
+check that the fixes changed only what they were meant to change.

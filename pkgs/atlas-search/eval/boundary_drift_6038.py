@@ -40,7 +40,7 @@ Run (laptop only):
   LD_LIBRARY_PATH=<gcc-lib>:<zlib-lib> ~/atlas/v3-venv/bin/python \
       boundary_drift_6038.py --out results.json
 """
-import argparse, glob, json, random, re, sqlite3, sys, time
+import argparse, json, pathlib, random, re, sqlite3, sys, time
 import numpy as np
 
 SEED = 6038
@@ -97,7 +97,12 @@ def main():
     import onnxruntime as ort
     from transformers import AutoTokenizer
 
-    model_dir = sorted(glob.glob("/home/user/.cache/huggingface/hub/models--Snowflake--snowflake-arctic-embed-m-v2.0/snapshots/*"))[-1]
+    # Pinned snapshot (Codex review, PR #7661): the exact revision the
+    # reported run used; fail loudly instead of silently selecting
+    # whichever snapshot happens to sort last in a future cache.
+    model_dir = "/home/user/.cache/huggingface/hub/models--Snowflake--snowflake-arctic-embed-m-v2.0/snapshots/95c2741480856aa9666782eb4afe11959938017f"
+    if not pathlib.Path(model_dir).is_dir():
+        sys.exit(f"pinned model snapshot missing: {model_dir}")
     tok = AutoTokenizer.from_pretrained(model_dir)
     so = ort.SessionOptions(); so.intra_op_num_threads = 16; so.inter_op_num_threads = 2
     sess = ort.InferenceSession(model_dir + "/onnx/model.onnx", sess_options=so, providers=["CPUExecutionProvider"])
@@ -122,11 +127,13 @@ def main():
     for idx, (prev, tgt, nxt, after) in enumerate(sample):
         w0 = prev + "\n\n" + tgt + "\n\n" + nxt
         W0.append(w0)
-        sents = sentences(w0)
-        shifted = sents[1:]
+        prev_sents = sentences(prev)
+        shifted_prev = " ".join(prev_sents[1:])
+        next_part = nxt
         if after:
-            shifted = shifted + [sentences(after)[0]]; shift_extended += 1
-        pert["boundary_shift"].append(" ".join(shifted))
+            next_part = nxt + " " + sentences(after)[0]; shift_extended += 1
+        shifted_parts = [q for q in (shifted_prev, tgt, next_part) if q]
+        pert["boundary_shift"].append("\n\n".join(shifted_parts))
         pert["neighbor_replace_prev"].append(donors[(idx + 7) % N_TARGETS] + "\n\n" + tgt + "\n\n" + nxt)
         pert["neighbor_replace_next"].append(prev + "\n\n" + tgt + "\n\n" + donors[(idx + 13) % N_TARGETS])
         pert["target_alone"].append(tgt)
