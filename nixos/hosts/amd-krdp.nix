@@ -15,8 +15,11 @@
   # .service, preset-disabled upstream): the Remote Desktop page in System
   # Settings starts/stops/enables exactly this unit over D-Bus, so the
   # settings toggle and this declaration manage one and the same service
-  # instead of fighting. WantedBy plasma-workspace.target means it starts
-  # with the Plasma session and simply never runs in a non-Plasma one.
+  # instead of fighting. Start it in either the Plasma or Hyprland session;
+  # the latter is the AMD host's active desktop. Put KWallet in the user's
+  # profile as well so its D-Bus activation service is visible to the session
+  # and KRDP's first wallet request can start kwalletd6 without a competing
+  # hand-launched daemon.
   #
   # No secrets in this repo, by design:
   # - RDP usernames/passwords are NOT passed on the command line (they
@@ -38,7 +41,10 @@
   # Until step 2 is done the service runs but has no user that can log
   # in, which is the safe default.
   home-manager.users.user = {
-    home.packages = [ pkgs.kdePackages.krdp ];
+    home.packages = [
+      pkgs.kdePackages.krdp
+      pkgs.kdePackages.kwallet
+    ];
 
     systemd.user.services."app-org.kde.krdpserver" = {
       Unit = {
@@ -46,6 +52,7 @@
         After = [
           "plasma-xdg-desktop-portal-kde.service"
           "plasma-core.target"
+          "xdg-desktop-portal.service"
         ];
       };
       Service = {
@@ -53,7 +60,10 @@
         ExecStart = "${pkgs.kdePackages.krdp}/bin/krdpserver";
         Restart = "on-abnormal";
       };
-      Install.WantedBy = [ "plasma-workspace.target" ];
+      Install.WantedBy = [
+        "plasma-workspace.target"
+        "hyprland-session.target"
+      ];
     };
   };
 }
