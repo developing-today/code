@@ -385,13 +385,64 @@ export function epicGraph(
   }
   const edges = allEdges.filter((edge) => shownRefs.has(edge.from) && shownRefs.has(edge.to));
 
-  const cycleGroups: EpicGraphCycleGroup[] = (["dependency", "hierarchy"] as const).flatMap((kind) =>
-    cycleComponents(allRefs, allEdges, kind).map((members, index) => ({
-      kind,
-      name: `${kind === "dependency" ? "Dependency" : "Hierarchy"} cycle ${index + 1} (${members.length} items)`,
+  // Rank suppression and cycle warnings must use the same full-pool
+  // dependency SCCs. The one-hop graph still limits its nodes and edges,
+  // but a deeper cycle that affects this epic remains named and linked.
+  const poolDependencyEdges: EpicGraphEdge[] = [];
+  const poolHierarchyEdges: EpicGraphEdge[] = [];
+  for (const item of pool) {
+    if (isValidRef(item.parentRef) && byRef.has(item.parentRef)) {
+      poolHierarchyEdges.push({ from: item.parentRef, to: item.ref, type: "hierarchy" });
+    }
+    for (const blocker of safeRefs(item.blockedBy)) {
+      if (byRef.has(blocker)) poolDependencyEdges.push({ from: item.ref, to: blocker, type: "dependency" });
+    }
+    for (const blocked of safeRefs(item.blocks)) {
+      if (byRef.has(blocked)) poolDependencyEdges.push({ from: blocked, to: item.ref, type: "dependency" });
+    }
+  }
+  const fullDependencyCycles = cycleComponents(byRef.keys(), poolDependencyEdges, "dependency");
+  const cyclicDependencyRefs = new Set(fullDependencyCycles.flat());
+  const dependencyChildren = new Map<RefKey, RefKey[]>();
+  for (const edge of poolDependencyEdges) {
+    const children = dependencyChildren.get(edge.from) ?? [];
+    children.push(edge.to);
+    dependencyChildren.set(edge.from, children);
+  }
+  const dependencyReachable = new Set<RefKey>();
+  const stack = [...memberSet];
+  while (stack.length) {
+    const ref = stack.pop()!;
+    if (dependencyReachable.has(ref)) continue;
+    dependencyReachable.add(ref);
+    stack.push(...(dependencyChildren.get(ref) ?? []));
+  }
+  const relevantCycleRefs = new Set([...allRefs, ...dependencyReachable]);
+  const dependencyCycleGroups = fullDependencyCycles
+    .filter((members) => members.some((ref) => relevantCycleRefs.has(ref)))
+    .map((members, index) => ({
+      kind: "dependency" as const,
+      name: `Dependency cycle ${index + 1} (${members.length} items)`,
       members,
-    })),
-  );
+    }));
+  const fullHierarchyEdges = [...poolHierarchyEdges, ...allEdges.filter((edge) => edge.type === "hierarchy")];
+  const hierarchyRefs = new Set([...byRef.keys(), ...allRefs]);
+  const hierarchyRelevantRefs = new Set(allRefs);
+  const ancestorStack = [...allRefs];
+  while (ancestorStack.length) {
+    const item = byRef.get(ancestorStack.pop()!);
+    if (!item || !isValidRef(item.parentRef) || !byRef.has(item.parentRef) || hierarchyRelevantRefs.has(item.parentRef)) continue;
+    hierarchyRelevantRefs.add(item.parentRef);
+    ancestorStack.push(item.parentRef);
+  }
+  const hierarchyCycleGroups = cycleComponents(hierarchyRefs, fullHierarchyEdges, "hierarchy")
+    .filter((members) => members.some((ref) => hierarchyRelevantRefs.has(ref)))
+    .map((members, index) => ({
+      kind: "hierarchy" as const,
+      name: `Hierarchy cycle ${index + 1} (${members.length} items)`,
+      members,
+    }));
+  const cycleGroups: EpicGraphCycleGroup[] = [...dependencyCycleGroups, ...hierarchyCycleGroups];
 
   const diagnosticRows: EpicGraphEdgeDiagnostic[] = [];
   const diagnosticKeys = new Set<string>();
@@ -424,12 +475,12 @@ export function epicGraph(
 
   // Lay out the hierarchy condensation graph. A cycle is one layout group,
   // not an arbitrary member presented as its root.
-  const hierarchyComponents = stronglyConnectedComponents(shownRefs, edges, "hierarchy");
+  const hierarchyComponents = stronglyConnectedComponents(hierarchyRefs, fullHierarchyEdges, "hierarchy");
   const componentOf = new Map<RefKey, number>();
   hierarchyComponents.forEach((component, index) => component.forEach((ref) => componentOf.set(ref, index)));
   const componentChildren = new Map<number, Set<number>>(hierarchyComponents.map((_, index) => [index, new Set()]));
   const incoming = new Set<number>();
-  for (const e of edges) {
+  for (const e of fullHierarchyEdges) {
     if (e.type !== "hierarchy") continue;
     const parent = componentOf.get(e.from);
     const child = componentOf.get(e.to);
@@ -451,7 +502,9 @@ export function epicGraph(
   const visitComponent = (index: number, depth: number) => {
     if (visitedComponents.has(index)) return;
     visitedComponents.add(index);
-    for (const ref of hierarchyComponents[index]!) layout.set(ref, { depth, row: layout.size });
+    for (const ref of hierarchyComponents[index]!) {
+      if (shownRefs.has(ref)) layout.set(ref, { depth, row: layout.size });
+    }
     for (const child of [...componentChildren.get(index)!].sort((a, b) => byRefOrder(componentKey(a), componentKey(b)))) {
       visitComponent(child, depth + 1);
     }
@@ -468,19 +521,6 @@ export function epicGraph(
     });
   const blockedCount = members.filter((m) => m.state === "open" && unresolvedBlockersOf(m).length > 0).length;
 
-  // Use the full pool to identify dependency anomalies that affect the
-  // uncapped ranking. A cycle is not a positive "unblock" candidate.
-  const poolDependencyEdges: EpicGraphEdge[] = [];
-  for (const item of pool) {
-    for (const blocker of safeRefs(item.blockedBy)) {
-      if (byRef.has(blocker)) poolDependencyEdges.push({ from: item.ref, to: blocker, type: "dependency" });
-    }
-    for (const blocked of safeRefs(item.blocks)) {
-      if (byRef.has(blocked)) poolDependencyEdges.push({ from: blocked, to: item.ref, type: "dependency" });
-    }
-  }
-  const cyclicDependencyRefs = new Set(cycleComponents(byRef.keys(), poolDependencyEdges, "dependency").flat());
-  
   // Compute rankedBlocked with transitive downstream open work ranking
   const rankedBlocked = members
     .filter((m) => m.ref !== epicRef && m.state === "open" && !cyclicDependencyRefs.has(m.ref))

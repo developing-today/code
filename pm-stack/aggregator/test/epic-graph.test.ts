@@ -252,6 +252,54 @@ describe("epicGraph", () => {
     expect(graph.rankedBlocked.find((row) => row.ref === R(4))?.downstreamCount).toBe(0);
   });
 
+  test("full-pool dependency cycles that affect this epic are warned even beyond one hop", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), blockedBy: [R(3)] }),
+      item({ number: 3, blockedBy: [R(4)] }),
+      item({ number: 4, blockedBy: [R(2)] }),
+    ];
+    const graph = epicGraph(pool, R(1));
+    expect(graph.nodes.map((node) => node.ref)).not.toContain(R(4));
+    expect(graph.cycleGroups).toEqual([{ kind: "dependency", name: "Dependency cycle 1 (3 items)", members: [R(2), R(3), R(4)] }]);
+    expect(graph.rankedBlocked.some((row) => row.ref === R(2))).toBe(false);
+  });
+
+  test("full-pool hierarchy cycles stay grouped when a member is beyond one hop", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), parentRef: R(3) }),
+      item({ number: 3, parentRef: R(4) }),
+      item({ number: 4, parentRef: R(2) }),
+    ];
+    const graph = epicGraph(pool, R(1));
+    expect(graph.nodes.map((node) => node.ref)).not.toContain(R(4));
+    expect(graph.cycleGroups).toContainEqual({
+      kind: "hierarchy",
+      name: "Hierarchy cycle 1 (3 items)",
+      members: [R(2), R(3), R(4)],
+    });
+    expect(graph.nodes.find((node) => node.ref === R(2))?.depth).toBe(graph.nodes.find((node) => node.ref === R(3))?.depth);
+  });
+
+  test("hierarchy cycles farther up a member's parent chain still produce warning groups", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), parentRef: R(3) }),
+      item({ number: 3, parentRef: R(4) }),
+      item({ number: 4, parentRef: R(5) }),
+      item({ number: 5, parentRef: R(4) }),
+    ];
+    const graph = epicGraph(pool, R(1));
+    expect(graph.nodes.map((node) => node.ref)).not.toContain(R(4));
+    expect(graph.nodes.map((node) => node.ref)).not.toContain(R(5));
+    expect(graph.cycleGroups).toContainEqual({
+      kind: "hierarchy",
+      name: "Hierarchy cycle 1 (2 items)",
+      members: [R(4), R(5)],
+    });
+  });
+
   test("an acyclic dependency graph has no cycle warning groups", () => {
     const graph = epicGraph(fixturePool(), R(1));
     expect(graph.cycleGroups).toEqual([]);

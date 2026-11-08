@@ -160,8 +160,7 @@ function edgeNodes(
   relation: "blockedBy" | "blocks",
   diagnostics: ProjectPoolEdgeDiagnostic[],
 ): (GqlEdgeNode | null)[] {
-  if (connection === undefined) return [];
-  if (connection === null || connection.nodes == null) {
+  if (connection === undefined || connection === null || connection.nodes == null) {
     diagnostics.push({ relation, state: "unavailable", target: null });
     return [];
   }
@@ -172,8 +171,9 @@ function edgeNodes(
  * Draft items / items without a linked issue/PR are skipped: they
  * have no ref the dashboard can resolve or link to. Edge fields
  * (parent/blockedBy/blocks) map only for issues — PRs and drafts
- * never carry them, and items whose issue has no edges parse with
- * the fields absent. Epic membership (epicRef) is NOT resolved here:
+ * never carry them. Explicit empty connections mean no edge; omitted
+ * queried edge fields are retained as unavailable diagnostics.
+ * Epic membership (epicRef) is NOT resolved here:
  * it needs the whole pool (parents may sit on other pages), so
  * resolveEpicRefs runs over the aggregate after all pages parse. */
 export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): ProjectPoolItem[] {
@@ -187,7 +187,11 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
     const isPr = item.type === "PULL_REQUEST" || /\/pull\//.test(c.url);
     const rawState = (c.state ?? "OPEN").toUpperCase();
     const edgeDiagnostics: ProjectPoolEdgeDiagnostic[] = [];
-    const parentRef = !isPr && c.parent ? edgeRef(c.parent, "parent", edgeDiagnostics) : null;
+    let parentRef: RefKey | null = null;
+    if (!isPr) {
+      if (c.parent === undefined) edgeDiagnostics.push({ relation: "parent", state: "unavailable", target: null });
+      else if (c.parent) parentRef = edgeRef(c.parent, "parent", edgeDiagnostics);
+    }
     const blockedBy = !isPr
       ? edgeNodes(c.blockedBy, "blockedBy", edgeDiagnostics)
           .map((n) => edgeRef(n, "blockedBy", edgeDiagnostics))
