@@ -95,6 +95,29 @@ class YardEntryTests(unittest.TestCase):
         self.assertEqual(found["probe-z"].keep_files, 0)
         self.assertEqual(found["probe-z"].reason, "scratch-no-keep-set")
 
+
+    def test_keep_set_inside_package_cache_is_bulk(self):
+        d = self.root / "probe-cache"
+        c = d / "cache" / ".bun" / "install" / "cache" / "pkg@1.0" / "src"
+        c.mkdir(parents=True)
+        (c / "index.ts").write_text("vendored package source")
+        (d / "blob.bin").write_bytes(b"x" * 8)
+        age(d, 10)
+        found = self.by_name(self.discover())
+        self.assertEqual(found["probe-cache"].keep_files, 0)
+        self.assertEqual(found["probe-cache"].reason, "scratch-no-keep-set")
+
+    def test_authored_script_beside_cache_still_protects(self):
+        d = self.root / "probe-mixed"
+        c = d / "cache"
+        c.mkdir(parents=True)
+        (c / "lib.py").write_text("vendored")
+        (d / "prove.sh").write_text("#!/bin/sh\n# authored probe script")
+        age(d, 10)
+        found = self.by_name(self.discover())
+        self.assertEqual(found["probe-mixed"].protected, "holds-keep-set")
+        self.assertEqual(found["probe-mixed"].keep_files, 1)
+
     def test_recent_activity_protects(self):
         d = self.root / "probe-live"
         d.mkdir()

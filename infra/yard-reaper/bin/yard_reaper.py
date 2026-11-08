@@ -46,6 +46,17 @@ KEEP_SUFFIXES = {
 # never authored text wherever they sit inside target/-style bulk,
 # which the walk prunes before counting).
 FIXTURE_DIR_MARKERS = ("watcher-bench", "bench-fixture", "fixture")
+# Package caches and vendored trees are dependency bulk, not authored
+# text, wherever they sit: bun/npm/pip caches, vendored sources,
+# language toolchains. Provenance again: nothing a human authored
+# for the fleet lives under a cache or vendor path, and the first
+# real dry-run showed probe trees whose only "keep-set" files were
+# package sources inside cache/ trees (#7093 run 20261108T220620Z).
+BULK_DIR_NAMES = {
+    "target", "dist", "node_modules", ".git",
+    "cache", ".cache", "vendor", ".bun", ".npm", ".venv",
+    "__pycache__",
+}
 # Examination holds: entries another lane is actively examining are
 # never reaped, whatever their class. Exact top-level yard names.
 DENY_NAMES = {"7780-1931-slice1", "11081"}
@@ -662,9 +673,10 @@ def classify_entry_files(
 ) -> tuple[int, float, int, int]:
     """Walk an entry once: (bytes, newest_mtime, keep_files, total_files).
 
-    Keep-set counting prunes the bulk subtrees the target plan owns
-    (target/, dist/, node_modules/, .git internals): authored text
-    is never counted inside generated bulk. Fixture directories are
+    Keep-set counting prunes bulk subtrees (BULK_DIR_NAMES:
+    target/, dist/, node_modules/, .git internals, package caches,
+    vendored trees): authored text is never counted inside
+    generated bulk. Fixture directories are
     walked (their bulk counts toward size) but their files never
     count as keep-set. Symlinks are never followed; inode-deduped
     allocated bytes match target_stats accounting.
@@ -681,7 +693,7 @@ def classify_entry_files(
             child = root_path / name
             if child.is_symlink():
                 continue
-            if name in {"target", "dist", "node_modules", ".git"}:
+            if name in BULK_DIR_NAMES:
                 sub_bytes, sub_newest = target_stats(child)
                 total += sub_bytes
                 newest = max(newest, sub_newest)

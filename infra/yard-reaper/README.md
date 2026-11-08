@@ -37,10 +37,12 @@ each move.
 ## Keep-set heuristics (stated per #7093)
 
 - Keep suffixes: `.md .txt .sh .py .ts .js .json .yaml .yml .toml .log`.
-- Provenance beats extension: files inside `target/`, `dist/`,
-  `node_modules/`, or `.git/` never count as keep-set (generated
-  bulk), and neither do files under a directory whose name marks it
-  as bench-fixture bulk (`watcher-bench`, `bench-fixture`, `fixture`).
+- Provenance beats extension: files inside bulk subtrees
+  (`target/`, `dist/`, `node_modules/`, `.git/`, package caches —
+  `cache/`, `.cache/`, `.bun/`, `.npm/` — vendored trees `vendor/`,
+  `.venv/`, `__pycache__/`) never count as keep-set, and neither do
+  files under a directory whose name marks it as bench-fixture bulk
+  (`watcher-bench`, `bench-fixture`, `fixture`).
 - An entry holding even one keep-set file outside those places is
   protected as `holds-keep-set` and reported by name — extraction
   of its keep set (review → PR, per Drew's rule: preservation =
