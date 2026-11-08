@@ -24,12 +24,12 @@ The core is the set every environment must be able to produce, because the relay
 | Event | Meaning |
 |---|---|
 | `press` | Pointer contact/button down at a cell (`button: primary` in the core) |
-| `release` | Pointer contact/button up at a cell |
+| `release` | Pointer contact/button up at a cell; carries the hold duration `held_duration_ms` (milliseconds between press and release) and whether it satisfied the producer's click threshold (`is_click: bool`) |
 | `drag` | `press`, a sequence of cell moves, and `release`, delivered as one gesture with its path |
 | `scroll` | Wheel or pan delta at a cell (`dx`, `dy` in cell units) |
 | `long_press` | A `press` held in place past the long-press threshold (500 ms default, the Android platform default), synthesized by the producer and delivered as its own event |
 
-A click is not a separate wire event: it is the semantic an app derives from `press` + `release` on the same cell within the producer's click threshold. Naming it in the model (rather than on the wire) keeps replay deterministic — the journal records `press`/`release`, and every consumer derives the same click.
+A click is not a separate wire event: it is the semantic an app derives from `press` + `release` on the same cell within the producer's click threshold (default 250 ms, the web standard pointer threshold). To preserve deterministic replay without relying on wall-clock timing between journaled events, `release` explicitly carries the producer-measured hold duration (`held_duration_ms`) and the resolved click classification (`is_click`). Every replay consumer therefore observes identical timing and derives the same click semantic deterministically.
 
 ## Per-environment extras
 
@@ -62,7 +62,7 @@ These are the S3 app's contract, not assumptions it may re-decide: if the PoC fi
 
 ### Decision 3 — activation events are journaled; hover is ephemeral
 
-`press`, `release`, `drag`, `scroll`, and `long_press` are shell-contract class `event`: journaled and replayed like keyboard `Input`, in sequence order. `long_press` is synthesized by the producer precisely so replay never needs a wall clock. `hover_enter`, `hover_leave`, and `hover_move` are class `ephemeral`: connection-local presentation context, never journaled and never seen by other sessions — the same boundary the keyboard-parity design drew for resize and focus (one participant's pointer position must not rewrite shared world state).
+`press`, `release`, `drag`, `scroll`, and `long_press` are shell-contract class `event`: journaled and replayed like keyboard `Input`, in sequence order. `long_press` is synthesized by the producer precisely so replay never needs a wall clock; similarly, `release` records `held_duration_ms` and `is_click` so click derivation during replay is deterministic without wall-clock dependence. `hover_enter`, `hover_leave`, and `hover_move` are class `ephemeral`: connection-local presentation context, never journaled and never seen by other sessions — the same boundary the keyboard-parity design drew for resize and focus (one participant's pointer position must not rewrite shared world state).
 
 ### Decision 4 — v1 is single-pointer; the model is not
 
