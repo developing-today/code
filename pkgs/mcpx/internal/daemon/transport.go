@@ -39,7 +39,7 @@ func (t unixTransport) Listen() (net.Listener, error) {
 		return nil, fmt.Errorf("listen %s: %w", t.socket, err)
 	}
 	if err := os.Chmod(t.socket, defaults.PrivateMode); err != nil {
-		ln.Close()
+		_ = ln.Close()
 		return nil, err
 	}
 	return ln, nil
