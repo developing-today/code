@@ -26,7 +26,7 @@
 | Presentation kinds | Two, only: **asset presentation** (image / sprite / themed asset pack, with per-state assets) and **drawn presentation** (a target-side renderer registered in the override pack that implements the element's interaction contract) (§2.2) |
 | Semantics | The override changes **presentation only**. Role, accessible name, value, state, focus order, and the activation/event contract come from the semantic element and are identical with and without the override (§3) |
 | States | An override must cover **every** interaction state of the element (default, hover, focus, active, disabled, error where applicable), by an explicit per-state asset/renderer or a declared derivation; a partial override is a build-time error, not a runtime gap (§2.3) |
-| Fallback | Every override declares the **standard rendering as its fallback**; a missing asset or renderer falls back and warns at build time — an element never renders as nothing (§2.4) |
+| Fallback | Every override declares the **standard rendering as its fallback**; a missing asset, or a registered renderer that fails to load, falls back and warns at build time, and an unregistered renderer name is a build-time error (§2.2) — either way an element never renders as nothing (§2.4) |
 | Essential content | **Never in the asset.** Labels, values, and text live in the semantic layer; text baked into an image is decorative only (§3, invariant 5) |
 | Which targets | Custom-rendered targets (the GUI target, and the web target where the author declares it). **Native targets do not apply presentation overrides** to standard controls — they keep OS-standard controls per the parent; only content assets (icons, images that *are* content) carry over (§4) |
 | Conflict order | Instance binding beats kind+variant+state binding beats kind default; two bindings at the same specificity for one target are a build-time conflict error, never a silent pick (§2.5) |
@@ -95,7 +95,7 @@ shape, with the middle rendering now specified instead of sketched.
   override pack** — target-side code, never code carried in the content
   source — that draws the element inside its declared layout box and
   implements the element's full interaction contract (§3). Registration
-  is the gate: an unregistered renderer name is a build-time error.
+  is the gate: an unregistered renderer name is a build-time error. That is a *reference* error (the name is absent from the pack); it is distinct from a registered renderer that fails to load at build time, which is not an error — it exercises the fallback (§2.4).
 
 There is no third kind in v1. In particular there is no "inline custom
 markup" kind (§4, alternative 1).
@@ -116,8 +116,9 @@ functional defect, not a cosmetic one.
 
 `fallback: standard` is not a courtesy field: the renderer must be able
 to produce the standard rendering for every overridden element, the
-build warns whenever a fallback is exercised (missing asset, failed
-renderer registration), and conformance tests (§3) run every overridden
+build warns whenever a fallback is exercised (missing asset, or a registered renderer
+failing to load — never an unregistered name, which is the §2.2
+build-time error above), and conformance tests (§3) run every overridden
 element in both modes. An override with no possible standard rendering
 is not a valid override.
 
