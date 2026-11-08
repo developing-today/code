@@ -56,6 +56,26 @@ describe("applyCloudflareExport", () => {
     expect(cf.sourceNote).toContain("invoice-only");
   });
 
+  test("a negative used value is refused, like the Supabase overlay", () => {
+    const doc = freshDoc();
+    doc.metrics = [
+      { id: "workers-requests", used: -500, unit: "count", source: "cloudflare-graphql-analytics" },
+      { id: "kv-reads", used: 1420, unit: "count", source: "cloudflare-graphql-analytics" },
+    ];
+    const services = applyCloudflareExport(extractSaasServices(VIEW), doc, NOW);
+    const cf = services.find((s) => s.id === "cloudflare")!;
+    const byId = Object.fromEntries(cf.metrics.map((m) => [m.id, m]));
+    // The broken measurement keeps the prose/null fallback: no negative
+    // used and no negative percent derived from it.
+    expect(byId["workers-requests"].used).toBeNull();
+    expect(byId["workers-requests"].percent ?? 0).toBeGreaterThanOrEqual(0);
+    expect(byId["workers-requests"].note).not.toContain("Live via");
+    // Valid metrics in the same document still overlay.
+    expect(byId["kv-reads"].used).toBe(1420);
+    expect(byId["kv-reads"].percent).toBe(0);
+    expect(cf.sourceClass).toBe("api");
+  });
+
   test("stale export (>30 min) changes nothing", () => {
     const doc = freshDoc();
     doc.measuredAt = "2026-10-29T09:00:00.000Z";
@@ -74,6 +94,48 @@ describe("applyCloudflareExport", () => {
     }
   });
 
+  test("an impossible measuredAt date changes nothing — no Date.parse rollover (#5018)", () => {
+    // now is 2026-03-02T12:05Z: Date.parse("2026-02-30T12:00:00.000Z")
+    // rolls over to Mar 2 12:00 and would pass the freshness window.
+    const now = Date.parse("2026-03-02T12:05:00Z");
+    for (const bad of ["2026-02-30T12:00:00.000Z", "2026-04-31T12:00:00.000Z", "March 2, 2026 12:00 UTC"]) {
+      const doc = freshDoc();
+      doc.measuredAt = bad;
+      doc.cycleStart = "2026-03-01T00:00:00.000Z";
+      const services = applyCloudflareExport(extractSaasServices(VIEW), doc, now);
+      const cf = services.find((s) => s.id === "cloudflare")!;
+      expect(cf.metrics.find((m) => m.id === "workers-requests")!.used).toBeNull();
+      expect(cf.sourceClass).toBe("manual");
+      expect(cf.measuredAt).toBe("2026-10-20");
+    }
+  });
+
+  test("an impossible cycleStart changes nothing instead of rolling into the current month (#5018)", () => {
+    // 2026-02-30 rolls over to Mar 2 under Date.parse, which would pass
+    // the same-month check at a March `now`; the real-calendar gate
+    // refuses the document outright.
+    const now = Date.parse("2026-03-02T12:05:00Z");
+    const doc = freshDoc();
+    doc.measuredAt = "2026-03-02T12:00:00.000Z";
+    doc.cycleStart = "2026-02-30T00:00:00.000Z";
+    const services = applyCloudflareExport(extractSaasServices(VIEW), doc, now);
+    const cf = services.find((s) => s.id === "cloudflare")!;
+    expect(cf.metrics.find((m) => m.id === "workers-requests")!.used).toBeNull();
+    expect(cf.sourceClass).toBe("manual");
+  });
+
+  test("a leap-date measuredAt still overlays (#5018)", () => {
+    const now = Date.parse("2024-02-29T12:05:00Z");
+    const doc = freshDoc();
+    doc.measuredAt = "2024-02-29T12:00:00.000Z";
+    doc.cycleStart = "2024-02-01T00:00:00.000Z";
+    const services = applyCloudflareExport(extractSaasServices(VIEW), doc, now);
+    const cf = services.find((s) => s.id === "cloudflare")!;
+    expect(cf.metrics.find((m) => m.id === "workers-requests")!.used).toBe(75225);
+    expect(cf.sourceClass).toBe("api");
+    expect(cf.measuredAt).toBe("2024-02-29");
+  });
+
   test("previous cycle's document keeps the prose fallback at a month rollover", () => {
     const doc = freshDoc();
     doc.cycleStart = "2026-09-01T00:00:00.000Z";
@@ -81,6 +143,41 @@ describe("applyCloudflareExport", () => {
     const cf = services.find((s) => s.id === "cloudflare")!;
     expect(cf.metrics.find((m) => m.id === "workers-requests")!.used).toBeNull();
     expect(cf.sourceClass).toBe("manual");
+  });
+
+  test("alerts in a fresh export render loudly on the sourceNote (#2287)", () => {
+    const doc = freshDoc();
+    doc.alerts = [
+      {
+        kind: "workers-ai-neurons-day",
+        date: "2026-10-24",
+        totalNeurons: 3090000,
+        threshold: 50000,
+        topModels: [
+          { model: "@cf/deepseek-ai/deepseek-v4-pro-0813", neurons: 2990000 },
+          { model: "@cf/meta/llama-3.1-8b-instruct", neurons: 100000 },
+        ],
+      },
+    ];
+    const services = applyCloudflareExport(extractSaasServices(VIEW), doc, NOW);
+    const cf = services.find((s) => s.id === "cloudflare")!;
+    expect(cf.sourceNote).toContain("⚠ ALERT workers-ai-neurons-day");
+    expect(cf.sourceNote).toContain("2026-10-24");
+    expect(cf.sourceNote).toContain("3090000");
+    expect(cf.sourceNote).toContain("@cf/deepseek-ai/deepseek-v4-pro-0813");
+    // The pre-alert rendering is untouched apart from the appended alert.
+    expect(cf.sourceNote).toContain("invoice-only");
+  });
+
+  test("a document without alerts renders the sourceNote exactly as before (#2287)", () => {
+    const withEmpty = freshDoc();
+    withEmpty.alerts = [];
+    for (const doc of [freshDoc(), withEmpty]) {
+      const services = applyCloudflareExport(extractSaasServices(VIEW), doc, NOW);
+      const cf = services.find((s) => s.id === "cloudflare")!;
+      expect(cf.sourceNote).not.toContain("ALERT");
+      expect(cf.sourceNote).toContain("invoice-only");
+    }
   });
 
   test("a lower-bound metric carries the marker onto the card", () => {

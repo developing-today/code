@@ -48,15 +48,36 @@ async function reconcileStream(
     return null;
   };
 
-  if (stream === "issues" || stream === "prs") {
+  // The prs stream sources pulls-shaped data (#4528): the issues endpoint's
+  // PR objects carry no draft/merged/merged_at, so first-sight PRs
+  // materialized draft=0/merged=0 and the #4158 preservation logic pinned
+  // those false defaults forever. The pulls list carries the merge fields,
+  // so upserts from it store the truth on first sight and heal any legacy
+  // false-default rows on a later pass. The issues stream is unchanged.
+  if (stream === "prs") {
+    const pulls = await listResource<Record<string, any>>(
+      auth,
+      `repos/${repo}/pulls?per_page=100&state=all`,
+      fetchFn,
+    );
+    let cursor: string | null = null;
+    for (const pr of pulls) {
+      const row = fromIssueOrPr(repo, pr, "pr");
+      await store.upsertItem(db, row);
+      await mark(1);
+      const u = pr.updated_at ?? pr.created_at;
+      if (typeof u === "string" && (!cursor || u > cursor)) cursor = u;
+    }
+    return { repo, stream, written: written.n, cursor };
+  }
+
+  if (stream === "issues") {
     const path = `repos/${repo}/issues?${q}&filter=all`;
     const rows = await listResource<Record<string, any>>(auth, path, fetchFn);
     let cursor: string | null = null;
     for (const obj of rows) {
-      const isPr = Boolean(obj.pull_request);
-      if (stream === "prs" && !isPr) continue;
-      if (stream === "issues" && isPr) continue;
-      const row = fromIssueOrPr(repo, obj, isPr ? "pr" : "issue");
+      if (Boolean(obj.pull_request)) continue;
+      const row = fromIssueOrPr(repo, obj, "issue");
       await store.upsertItem(db, row);
       await mark(1);
       const u = obj.updated_at ?? obj.created_at;
@@ -79,6 +100,7 @@ async function reconcileStream(
       const ref = commentRef(repo, c);
       const createdAt = c.created_at ?? c.updated_at ?? null;
       if (!ref || !createdAt) continue;
+      const updatedAt = c.updated_at ?? null;
       await store.upsertComment(db, {
         id: String(c.id),
         ref,
@@ -86,7 +108,7 @@ async function reconcileStream(
         author: c.user?.login ?? null,
         body: typeof c.body === "string" ? c.body : null,
         created_at: createdAt,
-        updated_at: c.updated_at ?? null,
+        updated_at: updatedAt,
         url: c.html_url ?? null,
         path: c.path ?? null,
         line: typeof c.line === "number" ? c.line : null,
@@ -95,7 +117,7 @@ async function reconcileStream(
         submitted_at: null,
         commit_id: c.commit_id ?? null,
         deleted: 0,
-        source_updated_at: createdAt,
+        source_updated_at: updatedAt ?? createdAt,
       });
       await mark(1);
       const u = c.updated_at ?? c.created_at;

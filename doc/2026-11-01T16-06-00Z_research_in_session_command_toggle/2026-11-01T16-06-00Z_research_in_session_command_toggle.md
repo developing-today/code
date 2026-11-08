@@ -84,7 +84,7 @@ Consequences for the contract:
 
 ## The mode indicator
 
-While toggled, the user must be able to *see* they are talking to the
+While toggled, the user must be able to _see_ they are talking to the
 shell, not the world. Options:
 
 - A pinned bottom row belongs to D1-046 (split UI), which does not exist
@@ -104,7 +104,7 @@ Three exits from the toggled prompt, all parsed by the shared grammar:
 
 - the prefix again (`~` + Enter) — toggles back;
 - `/return` — an explicit verb, for discoverability;
-- `/quit` — still quits the *session*, as it does in command mode today;
+- `/quit` — still quits the _session_, as it does in command mode today;
   it must not silently degrade into "return".
 
 On return the guest needs a repaint: raw-mode guests render with a full
@@ -157,5 +157,5 @@ already decided above.
 - Tracker: #535 item D1-045. Prerequisite: #546 (closed).
 - Mode selection and raw path: `COMMAND_PREFIX`, `SshIo::recv` in
   `pkgs/id/src/world_ssh.rs`; shared line grammar: `pkgs/id/src/
-  commands/world.rs` (pump) and the `WorldLine` parsing in `world_ssh.rs`.
+commands/world.rs` (pump) and the `WorldLine` parsing in `world_ssh.rs`.
 - Successor that builds on this (and is gated behind it): D1-046 in #535.

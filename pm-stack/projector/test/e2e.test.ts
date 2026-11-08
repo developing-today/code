@@ -82,6 +82,43 @@ afterAll(() => {
 });
 
 describe("end-to-end webhook + read model", () => {
+  test("colliding webhook ids and deletes remain scoped through the server", async () => {
+    const local = createClient({ url: ":memory:" });
+    try {
+      await migrate(local);
+      const env = { GITHUB_WEBHOOK_SECRET: SECRET };
+      const pr = { number: 7, title: "PR", created_at: "2026-01-01", updated_at: "2026-01-01" };
+      const repository = { full_name: "example/repo" };
+      const comment = { id: 42, created_at: "2026-01-01", body: "body" };
+      let delivery = 0;
+      const send = async (event: string, payload: object) => {
+        const body = JSON.stringify(payload);
+        const sig = await hmacSha256Hex(new TextEncoder().encode(body), SECRET);
+        const res = await handleRequest(webhookReq(body, event, sig, `collision-${delivery++}`), local, env);
+        expect(res.status).toBe(200);
+      };
+      await send("issue_comment", { repository, issue: pr, comment, action: "created" });
+      await send("pull_request_review", { repository, pull_request: pr, review: comment, action: "submitted" });
+      await send("pull_request_review_comment", { repository, pull_request: pr, comment, action: "created" });
+      let rows = await local.execute("SELECT kind, deleted FROM pmp_comments ORDER BY kind");
+      expect(rows.rows.map((r) => [r.kind, r.deleted])).toEqual([
+        ["issue_comment", 0], ["review", 0], ["review_comment", 0],
+      ]);
+      await send("issue_comment", { repository, issue: pr, comment, action: "deleted" });
+      rows = await local.execute("SELECT kind, deleted FROM pmp_comments ORDER BY kind");
+      expect(rows.rows.map((r) => [r.kind, r.deleted])).toEqual([
+        ["issue_comment", 1], ["review", 0], ["review_comment", 0],
+      ]);
+      await send("pull_request_review_comment", { repository, pull_request: pr, comment, action: "deleted" });
+      rows = await local.execute("SELECT kind, deleted FROM pmp_comments ORDER BY kind");
+      expect(rows.rows.map((r) => [r.kind, r.deleted])).toEqual([
+        ["issue_comment", 1], ["review", 0], ["review_comment", 1],
+      ]);
+    } finally {
+      local.close();
+    }
+  });
+
   test("fixture sequence applies and produces registry + read-model rows", async () => {
     const env: ServerEnv = {
       GITHUB_WEBHOOK_SECRET: SECRET,
@@ -220,7 +257,107 @@ describe("end-to-end webhook + read model", () => {
     expect(prComments.comments.map((c: any) => c.kind).sort()).toEqual(["review", "review_comment"]);
 
     // -- duplicate webhook delivery is idempotent -----------------------------
+    const itemsBeforeDuplicate = await db.execute(
+      "SELECT COUNT(*) AS count FROM pmp_items WHERE ref = 'developing-today/code#754'",
+    );
     const dup = await sendFixture(db, env, "02-issue-opened.json", "delivery-2");
+    expect(dup.status).toBe(200);
     expect(await dup.json()).toEqual({ status: "duplicate" });
+    const itemsAfterDuplicate = await db.execute(
+      "SELECT COUNT(*) AS count FROM pmp_items WHERE ref = 'developing-today/code#754'",
+    );
+    expect((itemsAfterDuplicate.rows[0] as any).count).toBe((itemsBeforeDuplicate.rows[0] as any).count);
+  });
+
+  test("failed delivery can be retried without losing its first error audit", async () => {
+    const env: ServerEnv = {
+      GITHUB_WEBHOOK_SECRET: SECRET,
+      PM_PROJECTOR_API_TOKEN: TOKEN,
+      PM_REPOS: "developing-today/code,developing-today/openchamber",
+    };
+    const delivery = "delivery-retry-after-apply-failure";
+
+    // Force a real apply failure, then restore the missing table before retry.
+    await db.execute("DROP TABLE pmp_push_events");
+    const failed = await sendFixture(db, env, "01-push.json", delivery);
+    expect(failed.status).toBe(500);
+    expect(await failed.json()).toEqual({ error: "apply_failed" });
+    const firstError = await db.execute({
+      sql: "SELECT outcome, detail FROM pmp_delivery_errors WHERE delivery_id = ?",
+      args: [delivery],
+    });
+    expect(firstError.rows[0]).toMatchObject({ outcome: "error" });
+    expect((firstError.rows[0] as any).detail).toContain("no such table: pmp_push_events");
+
+    await migrate(db);
+    const retried = await sendFixture(db, env, "01-push.json", delivery);
+    expect(retried.status).toBe(200);
+    expect(((await retried.json()) as any).status).toBe("applied");
+    const currentDelivery = await db.execute({
+      sql: "SELECT outcome FROM pmp_deliveries WHERE delivery_id = ?",
+      args: [delivery],
+    });
+    expect((currentDelivery.rows[0] as any).outcome).toBe("applied");
+
+    // The original failure remains auditable, and the successful redelivery
+    // becomes the idempotency record for later deliveries.
+    const preservedError = await db.execute({
+      sql: "SELECT outcome, detail FROM pmp_delivery_errors WHERE delivery_id = ?",
+      args: [delivery],
+    });
+    expect((preservedError.rows[0] as any).outcome).toBe((firstError.rows[0] as any).outcome);
+    expect((preservedError.rows[0] as any).detail).toBe((firstError.rows[0] as any).detail);
+    const duplicate = await sendFixture(db, env, "01-push.json", delivery);
+    expect(duplicate.status).toBe(200);
+    expect(await duplicate.json()).toEqual({ status: "duplicate" });
+    const pushes = await db.execute({
+      sql: "SELECT COUNT(*) AS count FROM pmp_push_events WHERE delivery_id = ?",
+      args: [delivery],
+    });
+    expect((pushes.rows[0] as any).count).toBe(1);
+  });
+
+  test("invalid JSON redelivery remains a 400 and preserves its error audit", async () => {
+    const env: ServerEnv = {
+      GITHUB_WEBHOOK_SECRET: SECRET,
+      PM_PROJECTOR_API_TOKEN: TOKEN,
+      PM_REPOS: "developing-today/code,developing-today/openchamber",
+    };
+    const body = "{";
+    const delivery = "delivery-invalid-json-retry";
+    const signature = await hmacSha256Hex(new TextEncoder().encode(body), SECRET);
+    const sendInvalid = () => handleRequest(webhookReq(body, "issues", signature, delivery), db, env);
+
+    const first = await sendInvalid();
+    expect(first.status).toBe(400);
+    expect(await first.json()).toEqual({ error: "invalid_json" });
+    const second = await sendInvalid();
+    expect(second.status).toBe(400);
+    expect(await second.json()).toEqual({ error: "invalid_json" });
+
+    const audit = await db.execute({
+      sql: "SELECT outcome, detail FROM pmp_delivery_errors WHERE delivery_id = ?",
+      args: [delivery],
+    });
+    expect(audit.rows).toEqual([{ outcome: "error", detail: "invalid_json" }]);
+  });
+
+  test("migration backfills existing failed delivery rows into the error audit", async () => {
+    const delivery = "delivery-legacy-error-backfill";
+    await db.execute({
+      sql: `INSERT INTO pmp_deliveries (delivery_id, event, received_at, outcome, detail)
+            VALUES (?, 'issues', '2026-11-02T05:00:00Z', 'error', 'legacy failure')`,
+      args: [delivery],
+    });
+
+    await migrate(db);
+    await migrate(db);
+    const audit = await db.execute({
+      sql: "SELECT event, received_at, outcome, detail FROM pmp_delivery_errors WHERE delivery_id = ?",
+      args: [delivery],
+    });
+    expect(audit.rows).toEqual([
+      { event: "issues", received_at: "2026-11-02T05:00:00Z", outcome: "error", detail: "legacy failure" },
+    ]);
   });
 });

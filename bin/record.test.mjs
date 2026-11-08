@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   appendLine,
   normaliseInput,
@@ -191,6 +191,49 @@ test('CLI: argument, stdin, quarantine and unwritable all exit 0', () => {
     fs.readFileSync(quarantinePathFor(target), 'utf8'),
     'not json {{{\n'
   );
+});
+
+test('CLI: runs main via file symlink and via directory symlink (#2235)', () => {
+  // Regression: the entry-point guard compared the raw invoked path with
+  // the resolved module URL, so a symlinked invocation silently skipped
+  // main and recorded nothing while exiting 0.
+  const target = tmpTarget();
+  const env = { ...process.env, AI_RECORDINGS_FILE: target };
+  const linkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'record-link-'));
+
+  const fileLink = path.join(linkDir, 'record-link.mjs');
+  fs.symlinkSync(recordCli, fileLink);
+  const byFile = spawnSync(process.execPath, [fileLink, '{"kind":"via-file-symlink"}'], {
+    env,
+    encoding: 'utf8'
+  });
+  assert.equal(byFile.status, 0, byFile.stderr);
+
+  const dirLink = path.join(linkDir, 'bin-link');
+  fs.symlinkSync(binDir, dirLink, 'dir');
+  const byDir = spawnSync(process.execPath, [path.join(dirLink, 'record.mjs'), '{"kind":"via-dir-symlink"}'], {
+    env,
+    encoding: 'utf8'
+  });
+  assert.equal(byDir.status, 0, byDir.stderr);
+
+  const entries = readLines(target).map((line) => JSON.parse(line));
+  assert.deepEqual(
+    entries.map((entry) => entry.kind),
+    ['via-file-symlink', 'via-dir-symlink']
+  );
+});
+
+test('importing record.mjs as a library does not run main (#2235)', () => {
+  const target = tmpTarget();
+  const env = { ...process.env, AI_RECORDINGS_FILE: target };
+  const res = spawnSync(
+    process.execPath,
+    ['--input-type=module', '-e', `import ${JSON.stringify(pathToFileURL(recordCli).href)};`],
+    { env, encoding: 'utf8' }
+  );
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(fs.existsSync(target), false);
 });
 
 test('concurrent CLI appends produce only whole lines', async () => {

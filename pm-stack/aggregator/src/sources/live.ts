@@ -4,6 +4,7 @@
 // projection. Anything a reader cannot reach falls back to fixtures, and the
 // provenance strings say exactly which facet is live vs fixture-backed.
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import type { Config } from "../config.ts";
 import { applyBoardDonePolicy, isRetiredDoneTableTitle } from "../board-policy.ts";
@@ -12,17 +13,28 @@ import { isDnsSection } from "../dns.ts";
 import {
   diagnoseOrchestrationSection,
   feedAgeText,
+  FEED_STALE_MS,
   normalizeOrchestrationSection,
   orchestrationSectionProblem,
   loadFeed,
   coverageFromFeed,
   poolAvailableFromFeed,
   poolFromFeed,
+  projectAuditFromFeed,
   type FleetFeed,
   type SectionDiagnosis,
 } from "../feed.ts";
 import type { RepoCensus } from "../coverage.ts";
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
+import type { NewStreamEvent } from "../events.ts";
+import type { FreshnessInput } from "../freshness.ts";
+import {
+  kaneoChangeDeliveries,
+  maxUndatedSeqByCard,
+  type ActivityDelivery,
+  type KaneoCardSnapshot,
+} from "../activity.ts";
+import { isRecord } from "../validate.ts";
 import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
 import {
@@ -32,11 +44,14 @@ import {
   extractPaygLines,
   extractSaasServices,
   extractSubscriptions,
+  extractUninstrumentedServices,
 } from "../saas-extract.ts";
 import { mergeChargeRows } from "../charges-collect.ts";
 import type { CloudflareExportDoc, SupabaseExportDoc } from "../saas-extract.ts";
 import { poolItemToGhItem } from "../projects.ts";
+import { createNeedsDrewSweeper, type NeedsDrewCensus } from "../needs-drew.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
+import { assembleWorkItems } from "../work-items.ts";
 import { overlayQuotaCurrent, overlayTursoUsage, parseQuotaCurrent } from "../quota-current.ts";
 import { SnapshotStore } from "../snapshots.ts";
 import { gristDocUrl, kaneoTaskUrl } from "../service-links.ts";
@@ -65,6 +80,7 @@ import {
   type SessionRecord,
   type SourceCoverage,
   type UsageView,
+  isValidRef,
   parseRef,
   refsInText,
   refUrl,
@@ -113,13 +129,25 @@ interface KaneoColumn {
   tasks: KaneoTask[];
 }
 
-/** Kaneo project slug -> GitHub repo (pm-stack/kaneo-projects.json, Session H). */
-const KANEO_PROJECT_REPOS: Record<string, string> = {
-  code: "developing-today/code",
-  opencode: "developing-today/opencode",
-  openchamber: "developing-today/openchamber",
-  nix: "dezren39/nix",
-};
+/** Kaneo project slug -> GitHub repo, read authoritatively from
+ * pm-stack/kaneo-projects.json (#1201). Unknown slugs stay unmapped
+ * (repo "") — never guessed — so no invented repo-based refs appear.
+ * An unreadable registry degrades to the same empty map. */
+async function kaneoProjectRepos(cfg: Config): Promise<Record<string, string>> {
+  try {
+    const raw = await readFile(cfg.kaneo.projectsFile, "utf8");
+    const doc = JSON.parse(raw) as { projects?: { slug?: unknown; repository?: unknown }[] };
+    const map: Record<string, string> = {};
+    for (const p of doc.projects ?? []) {
+      if (typeof p?.slug === "string" && typeof p?.repository === "string" && p.repository.includes("/")) {
+        map[p.slug] = p.repository;
+      }
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
 
 async function kaneoProjects(
   cfg: Config,
@@ -132,18 +160,28 @@ async function kaneoProjects(
   if (!workspaceId) throw new Error("kaneo workspace empty");
   const proj = await getJson(`${cfg.kaneo.baseUrl}/api/project?workspaceId=${workspaceId}`, { Cookie: cookie });
   if (!proj.ok) throw new Error("kaneo project read failed");
+  // #1201: the registry is the only source of slug -> repo. Unknown
+  // slugs stay unmapped (repo "") instead of guessing a repo name.
+  const repos = await kaneoProjectRepos(cfg);
   return (proj.json as { id: string; slug: string; name: string }[]).map((p) => ({
     id: p.id,
     slug: p.slug,
     name: p.name,
-    repo: KANEO_PROJECT_REPOS[p.slug] ?? `developing-today/${p.slug}`,
+    repo: repos[p.slug] ?? "",
     workspaceId,
   }));
 }
 
-async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
+async function kaneoBoard(cfg: Config, cookie: string): Promise<{ items: BoardItem[]; complete: boolean }> {
   const projects = await kaneoProjects(cfg, cookie);
   const out: BoardItem[] = [];
+  // #3321 (Codex P2, PR #5141): a poll is only `complete` when every
+  // project page read succeeded. A failed page breaks that project's
+  // loop and serves what was read, but the result is partial: cards
+  // from the failed reads are missing, so the caller must not treat
+  // the result as a full snapshot (activity diffing / baseline
+  // replacement) until a complete poll lands.
+  let complete = true;
   // A task read that fails on every project is a failed fetch, not a
   // successfully empty board (Codex review, PR #2430): board() must
   // reach its catch path and serve fixtures with that provenance,
@@ -154,7 +192,10 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
     const all: KaneoColumn[] = [];
     for (let page = 1; ; page++) {
       const r = await getJson(`${cfg.kaneo.baseUrl}/api/task/tasks/${p.id}?page=${page}`, { Cookie: cookie });
-      if (!r.ok) break;
+      if (!r.ok) {
+        complete = false;
+        break;
+      }
       anyTaskPageRead = true;
       const body = r.json as { data?: { columns?: KaneoColumn[] }; pagination?: { totalPages: number } };
       const cols = body.data?.columns ?? [];
@@ -175,10 +216,22 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
         if (isRetiredDoneTableTitle(t.title)) continue;
         const links: Link[] = (t.externalLinks ?? [])
           .filter((l) => l.resourceType === "issue" || l.resourceType === "pull_request")
-          .map((l) => {
+          .flatMap((l) => {
+            // #1201: only a GitHub URL names a repo. A non-GitHub URL —
+            // or an unmapped project — yields no repo-based ref at all;
+            // refs are never invented from a guessed repo.
             const m = /github\.com\/([\w.-]+\/[\w.-]+)\//.exec(l.url);
-            const repo = m ? m[1] : p.repo;
-            return { ref: `${repo}#${l.externalId}`, relation: "tracks" as const };
+            if (!m) return [];
+            const ref = `${m[1]}#${l.externalId}` as RefKey;
+            // #6243 (ref contract rule 3): a producer mints only valid
+            // refs - an externalId parseRef would reject (unsafe integer,
+            // non-numeric) must not become a board link renderers throw
+            // on; the card survives, the drop is traced.
+            if (!isValidRef(ref)) {
+              console.error(`[board] WARNING: dropping Kaneo link with invalid ref ${JSON.stringify(ref)} for task ${t.id} (#6243)`);
+              return [];
+            }
+            return [{ ref, relation: "tracks" as const }];
           });
         out.push({
           // Registry subject: kaneo:<projectSlug>/<taskId> (Session J).
@@ -201,7 +254,7 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
     }
   }
   if (projects.length > 0 && !anyTaskPageRead) throw new Error("kaneo task reads failed for every project");
-  return applyBoardDonePolicy(out);
+  return { items: applyBoardDonePolicy(out), complete };
 }
 
 // --- Grist --------------------------------------------------------------
@@ -324,7 +377,11 @@ export function mapProjectorComment(row: ProjectorCommentRow): Comment {
     author: row.author ?? "",
     body: row.body ?? "",
     createdAt: row.created_at,
-    url: row.url ?? refUrl(row.ref, row.kind === "issue_comment" ? "issue" : "pr"),
+    // #6243 (ref contract rule 4): row.ref is stored projector data; the
+    // stored url wins, and the refUrl fallback fires only for a ref the
+    // shared rule accepts - an invalid stored ref yields no URL instead
+    // of throwing out of the map (cf. the #6211 read gate for links).
+    url: row.url ?? (isValidRef(row.ref) ? refUrl(row.ref, row.kind === "issue_comment" ? "issue" : "pr") : ""),
     path: row.path ?? undefined,
     line: row.line ?? undefined,
     reviewState: row.review_state ?? undefined,
@@ -396,12 +453,67 @@ export async function projectorComments(baseUrl: string, refs: RefKey[]): Promis
   return out;
 }
 
+/** The latest non-deleted comment per ref, from a list in any order. */
+export function latestPerRef(comments: Comment[]): Comment[] {
+  const byRef = new Map<RefKey, Comment>();
+  for (const c of comments) {
+    if (c.deleted) continue;
+    const cur = byRef.get(c.ref);
+    if (!cur || cur.createdAt < c.createdAt) byRef.set(c.ref, c);
+  }
+  return [...byRef.values()];
+}
+
+/**
+ * The latest comment for each ref, one projector read per ref (#1279).
+ * The bulk /comments read applies its row limit across every requested
+ * ref (projector default 500), so in a busy batch an item's latest
+ * comment can be truncated away entirely; a per-ref limit=1 read cannot
+ * be crowded out by other items' comments. Reads run with bounded
+ * concurrency against the local projector; any failed read fails the
+ * whole call (null), matching projectorComments' fail-soft contract.
+ */
+export async function projectorLatestComments(baseUrl: string, refs: RefKey[]): Promise<Comment[] | null> {
+  if (refs.length === 0) return [];
+  const out: Comment[] = [];
+  const CONCURRENCY = 16;
+  for (let i = 0; i < refs.length; i += CONCURRENCY) {
+    const batch = refs.slice(i, i + CONCURRENCY);
+    const results = await Promise.all(
+      batch.map(async (ref): Promise<Comment[] | null> => {
+        const r = await getJson(`${baseUrl}/comments?refs=${encodeURIComponent(ref)}&limit=1`);
+        if (!r.ok) return null;
+        return ((r.json as { comments?: ProjectorCommentRow[] }).comments ?? [])
+          .map(mapProjectorComment)
+          .filter((c) => !c.deleted);
+      }),
+    );
+    for (const rows of results) {
+      if (rows === null) return null;
+      if (rows.length) out.push(latestPerRef(rows)[0]);
+    }
+  }
+  return out;
+}
+
 /** Registry links for one subject (kaneo:/grist:/gh:), from GET /links. */
 export async function projectorLinks(baseUrl: string, subject: string): Promise<Link[]> {
   const r = await getJson(`${baseUrl}/links?subject=${encodeURIComponent(subject)}`);
   if (!r.ok) return [];
   const rows = (r.json as { links?: ProjectorLinkRow[] }).links ?? [];
-  return rows.map((row) => ({ ref: row.ref, relation: asRelation(row.relation) }));
+  // Stored rows bypass the projector's POST /links gate (legacy/seeded
+  // data), so the shared ref rule (#4952) is applied here at the read
+  // boundary (#6211): a ref parseRef rejects - an unsafe-integer number,
+  // or not owner/repo#N at all - must never reach a renderer, where
+  // refUrl would throw on it and 500 the page. The drop is logged so a
+  // bad registry row stays visible instead of silently vanishing.
+  return rows.flatMap((row) => {
+    if (!isValidRef(row.ref)) {
+      console.error(`[registry] WARNING: dropping projector link with invalid ref ${JSON.stringify(row.ref)} for subject ${subject} (#6211)`);
+      return [];
+    }
+    return [{ ref: row.ref, relation: asRelation(row.relation) }];
+  });
 }
 
 /**
@@ -437,9 +549,9 @@ async function enrichWithRegistryLinks<T extends { links: Link[] }>(
 /** Repo shorthands the orchestrator uses in linedUp titles. */
 const TITLE_REPO_ALIASES: Record<string, string> = {
   code: "developing-today/code",
-  opencode: "developing-today/opencode",
-  openchamber: "developing-today/openchamber",
-  nix: "dezren39/nix",
+  opencode: "developing-today-forks/opencode",
+  openchamber: "developing-today-forks/openchamber",
+  nix: "dezren39/darwin-nix",
 };
 
 /**
@@ -451,9 +563,15 @@ const TITLE_REPO_ALIASES: Record<string, string> = {
  * also carries queue/task numbers — so it is left unlinked rather
  * than guessed at.
  */
-export function titleRefs(title: string): RefKey[] {
+export function titleRefs(title: string, onInvalid?: (ref: string) => void): RefKey[] {
   const out: RefKey[] = [];
   const add = (ref: RefKey) => {
+    // #6243 (ref contract rule 2): a dropped candidate is traced, never
+    // silent - callers that own a trace surface pass onInvalid.
+    if (!isValidRef(ref)) {
+      onInvalid?.(ref);
+      return;
+    }
     if (!out.includes(ref)) out.push(ref);
   };
   for (const ref of refsInText(title)) add(ref);
@@ -479,6 +597,20 @@ export function titleRefs(title: string): RefKey[] {
   return out;
 }
 
+/**
+ * Event refs must be whitespace-free (validateStreamEvent in
+ * events.ts), but an orchestration action's target is free text the
+ * publisher chooses — "fleet queues" is a real published target
+ * (#4489 Codex P2). Forwarding it verbatim made emitEvent reject and
+ * permanently drop the action's event. Whitespace-free targets pass
+ * through unchanged; free-text targets are slugified so the action is
+ * preserved in the log instead of dropped.
+ */
+export const orchestrationActionRef = (target: string): string => {
+  const trimmed = target.trim();
+  return /\s/.test(trimmed) ? slugify(trimmed) : trimmed;
+};
+
 const slugify = (s: string): string =>
   s
     .toLowerCase()
@@ -495,14 +627,15 @@ const normTitle = (s: string): string =>
  * The synthetic in-flight entries for one orchestration section,
  * deduped against the board they will be merged into:
  * - a task whose GitHub ref (its own `ref`, or one its title carries)
- *   already appears in a Kaneo card's links is dropped — the Kaneo
- *   card is the record for that work. This is deliberately coarse:
- *   one shared ref drops the whole entry, even when its title names
- *   further refs no Kaneo card carries.
- * - a task whose title matches a Kaneo card's title is dropped.
+ *   already appears in a Kaneo card's links loses only that ref — the
+ *   Kaneo card is the record for that work. Unmatched refs stay linked
+ *   on the in-flight entry.
+ * - a ref-less task whose title matches a Kaneo card's title is dropped.
  * - repeats inside the section itself (the same task lined up under
  *   two goals, or twice under one) emit once, keyed by first ref,
  *   else by normalized title.
+ * Only parseRef-accepted refs participate; invalid candidates are logged
+ * and otherwise behave as absent.
  * Tasks with no ref anywhere still emit (title only, no GitHub link).
  */
 export function inFlightBoardItems(section: OrchestrationSection, existing: BoardItem[]): BoardItem[] {
@@ -510,37 +643,47 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
   const existingTitles = new Set(existing.map((b) => normTitle(b.title)));
   const emitted = new Set<string>();
   const out: BoardItem[] = [];
-  for (const goal of section.goals) {
-    for (const task of goal.linedUp) {
-      if (task.status !== "in-progress" && task.status !== "queued" && task.status !== "blocked") continue;
-      const refs: RefKey[] = [];
-      const add = (ref: RefKey) => {
-        if (!refs.includes(ref)) refs.push(ref);
-      };
-      if (task.ref) add(task.ref);
-      for (const ref of titleRefs(task.title)) add(ref);
-      if (refs.some((r) => existingRefs.has(r))) continue;
-      const titleKey = normTitle(task.title);
-      if (existingTitles.has(titleKey)) continue;
-      const key = refs[0] ?? titleKey;
-      if (emitted.has(key) || emitted.has(titleKey)) continue;
-      emitted.add(key);
-      emitted.add(titleKey);
-      out.push({
-        id: `orch:${slugify(goal.goal)}/${slugify(task.title)}`,
-        title: task.title,
-        repo: refs.length ? parseRef(refs[0]).repo : "",
-        source: "orchestrator",
-        status: "in-flight",
-        orchStatus: task.status,
-        goal: goal.goal,
-        blockedBy: task.blockedBy?.map((d) => `${d.task} (${d.status})`),
-        // The lane header dates the lane by the section that produced
-        // it; every synthetic entry carries that stamp.
-        updatedAt: section.generatedAt,
-        links: refs.map((ref) => ({ ref, relation: "tracks" as const })),
-      });
-    }
+  // #1206: identity, status, goal, and blockers come from the canonical
+  // work-item projection; this function only re-shapes them into
+  // BoardItems and dedupes against the Kaneo board they merge into.
+  for (const item of assembleWorkItems(section)) {
+    if (item.goal === undefined || !item.linedUpStatus) continue;
+    if (item.linedUpStatus !== "in-progress" && item.linedUpStatus !== "queued" && item.linedUpStatus !== "blocked")
+      continue;
+    const refs: RefKey[] = [];
+    const add = (ref: unknown) => {
+      if (!isValidRef(ref)) {
+        console.error(
+          `[board] WARNING: dropping invalid in-flight ref ${JSON.stringify(ref)} for task ${item.id}`,
+        );
+        return;
+      }
+      if (!refs.includes(ref)) refs.push(ref);
+    };
+    if (item.ref !== undefined && item.ref !== null && item.ref !== "") add(item.ref);
+    for (const ref of titleRefs(item.title, (bad) => add(bad))) add(ref);
+    const remainingRefs = refs.filter((ref) => !existingRefs.has(ref));
+    if (refs.length > 0 && remainingRefs.length === 0) continue;
+    const titleKey = normTitle(item.title);
+    if (refs.length === 0 && existingTitles.has(titleKey)) continue;
+    const key = remainingRefs[0] ?? titleKey;
+    if (emitted.has(key) || emitted.has(titleKey)) continue;
+    emitted.add(key);
+    emitted.add(titleKey);
+    out.push({
+      id: item.id,
+      title: item.title,
+      repo: remainingRefs.length ? parseRef(remainingRefs[0]).repo : "",
+      source: "orchestrator",
+      status: "in-flight",
+      orchStatus: item.linedUpStatus,
+      goal: item.goal,
+      blockedBy: item.blockers.length ? item.blockers.map((d) => `${d.task} (${d.status})`) : undefined,
+      // The lane header dates the lane by the section that produced
+      // it; every synthetic entry carries that stamp.
+      updatedAt: section.generatedAt,
+      links: remainingRefs.map((ref) => ({ ref, relation: "tracks" as const })),
+    });
   }
   return out;
 }
@@ -552,7 +695,6 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
  * watchdog threshold): a feed-backed facet older than this renders
  * its freshness chip as stale, however live its last read was.
  */
-const FEED_STALE_MS = 15 * 60_000;
 
 /**
  * The gatherer's Turso entry (#1049) overlaid onto usage() services,
@@ -570,7 +712,55 @@ async function tursoOverlay(cfg: Config, services: SaasService[]): Promise<SaasS
   return services;
 }
 
-export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<boolean> }): Source {
+/**
+ * One feed attention row safe to key by sessionId (#2427): isFleetFeed
+ * only checks that `attention` is an array, never its entries, so a
+ * null row throws on `.sessionId` here and rows without a string
+ * sessionId all collapse onto the same map key. Malformed rows are
+ * dropped at this consumer, before the dedupe insert — the gate stays
+ * structural (triage task 3640) and the collector's emitted shape is
+ * unchanged. Sibling sections are element-filtered the same way
+ * (registry via isSessionRecord, subscriptions via isSubscriptionRow).
+ */
+export function isFeedAttentionEntry(v: unknown): v is SessionFeedEntry {
+  return isRecord(v) && typeof v.sessionId === "string" && v.sessionId.length > 0;
+}
+
+export function liveSource(
+  cfg: Config,
+  opts?: {
+    standingAuto?: () => Promise<boolean>;
+    onEvent?: (event: NewStreamEvent) => void;
+    hasEvent?: (kind: string, ref: string) => Promise<boolean>;
+    // The handler's return is the ingestion acknowledgment (#3321,
+    // Codex P2 on PR #5141): `false`, or a result with failed > 0,
+    // means the deliveries are NOT durable and the board baseline
+    // must be retained so the next poll retries them. A handler
+    // returning void is treated as acknowledged (legacy callers).
+    onActivity?: (
+      deliveries: ActivityDelivery[],
+    ) =>
+      | Promise<boolean | { failed: number; failedIds?: string[] } | void>
+      | boolean
+      | { failed: number; failedIds?: string[] }
+      | void;
+    /** Separate invalidation sink (#3977); complete Kaneo snapshots are
+     *  keyed by a stable content fingerprint, never added to #1739/#3321. */
+    onFreshness?: (input: FreshnessInput) => Promise<unknown> | unknown;
+    // Kaneo polling-gap sink (#3321, Codex P2 on PR #5141): called
+    // with (source, gapFrom, failureTime) while polls are failing or
+    // partial, and with (source, gapFrom, null) on the first complete
+    // poll after a gap, so the server can record the missed interval
+    // as an activity gap and resolve it on recovery.
+    onSourceGap?: (source: string, from: string, to: string | null) => Promise<void> | void;
+    // Persisted ingestion seen-ids reader (#3321, Codex P2 on PR
+    // #5141): on the first complete poll the live source seeds its
+    // in-memory undated Kaneo sequence counters from the ids the
+    // ingestion store has already persisted, so a restart cannot
+    // reissue an undated delivery id that dedupe would discard.
+    seenActivityIds?: (source: string) => Promise<readonly string[]> | readonly string[];
+  },
+): Source {
   const fix = fixtureSource();
   const provenance: Provenance = {
     board: "fixtures",
@@ -591,6 +781,172 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
   // surfaces (Source.diagnostics) read it from here, never from a
   // null section, so absent/invalid/stale stay distinguishable.
   let lastOrchestrationDiagnosis: SectionDiagnosis = { state: "absent" };
+  // #3321: the previous board poll's Kaneo cards, for change diffing.
+  // In-memory on purpose: a restart re-baselines silently, and the
+  // ingestion store's persisted seen set is the durable dedupe.
+  let prevKaneoCards: Map<string, KaneoCardSnapshot> | null = null;
+  async function publishKaneoFreshness(board: readonly BoardItem[]): Promise<void> {
+    if (!opts?.onFreshness) return;
+    const cards = board
+      .filter((item) => item.source === "kaneo")
+      .map((item) => ({
+        id: item.id,
+        repo: item.repo,
+        title: item.title,
+        status: item.status,
+        priority: item.priority ?? null,
+        updatedAt: item.updatedAt ?? null,
+        kaneoUrl: item.kaneoUrl ?? null,
+        links: item.links.map((link) => `${link.relation}:${link.ref}`).sort(),
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const snapshot = JSON.stringify(cards);
+    const digest = createHash("sha256").update(snapshot).digest("hex");
+    const occurredAt = cards
+      .map((card) => card.updatedAt)
+      .filter((value): value is string => typeof value === "string" && Number.isFinite(Date.parse(value)))
+      .sort((a, b) => Date.parse(a) - Date.parse(b))
+      .at(-1);
+    try {
+      // Repeated complete polls use the same stable key. If the journal
+      // is unavailable, the next poll retries; no raw card payload is
+      // persisted and only canonical data is reread by consumers.
+      await opts.onFreshness({
+        eventId: `kaneo:${digest}`,
+        source: "kaneo",
+        scope: ["board"],
+        occurredAt: occurredAt ? new Date(occurredAt).toISOString() : null,
+        reason: "source-event",
+      });
+    } catch (err) {
+      console.error(`[freshness] WARNING: kaneo invalidation publish failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  // #3321: per-card ingested-transition counters (the `seq` on
+  // KaneoCardSnapshot), kept outside the snapshot map so a card that
+  // leaves the board and later reappears resumes its count instead
+  // of restarting at a colliding undated delivery id. A card's count
+  // only advances when its change delivery is acknowledged.
+  const kaneoCardSeq = new Map<string, number>();
+  // #3321: when the current Kaneo polling gap opened (first failed
+  // or partial poll), or null when polls are healthy.
+  let kaneoGapFrom: string | null = null;
+  async function noteKaneoGap(at: Date): Promise<void> {
+    if (!kaneoGapFrom) kaneoGapFrom = at.toISOString();
+    if (!opts?.onSourceGap) return;
+    try {
+      await opts.onSourceGap("kaneo", kaneoGapFrom, at.toISOString());
+    } catch (err) {
+      console.error(`[activity] WARNING: kaneo gap record failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  // #3321: whether this process has already sent a gap-recovery
+  // reconciliation. A gap recorded just before a restart is open in
+  // the persisted store but invisible to this process (kaneoGapFrom
+  // starts null), so the FIRST complete poll after startup reports
+  // recovery even with no in-memory gap — the server's sink resolves
+  // every open gap for the source — and later healthy polls do not
+  // repeat it (Codex P2, PR #5141).
+  let kaneoGapReconciled = false;
+  async function noteKaneoRecovered(): Promise<void> {
+    const from = kaneoGapFrom;
+    if (!from && kaneoGapReconciled) return;
+    kaneoGapReconciled = true;
+    kaneoGapFrom = null;
+    if (!opts?.onSourceGap) return;
+    try {
+      // On the startup reconciliation there is no in-memory gap, so
+      // `from` is empty; the sink resolves open gaps by source when
+      // `to` is null and does not use `from`.
+      await opts.onSourceGap("kaneo", from ?? "", null);
+    } catch (err) {
+      console.error(
+        `[activity] WARNING: kaneo gap recovery record failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  // #3321: seed the undated sequence counters from the ingestion
+  // store's persisted seen ids, once, before the first diff. The
+  // counters are in-memory; without this a restarted process starts
+  // them at zero and its next undated transition reuses an id the
+  // store already saw, so dedupe silently discards a genuine change
+  // (Codex P2, PR #5141). Seeding only ever raises a counter.
+  let kaneoSeqSeeded = false;
+  async function seedKaneoSeqFromPersisted(): Promise<void> {
+    if (kaneoSeqSeeded || !opts?.seenActivityIds) return;
+    try {
+      const ids = await opts.seenActivityIds("kaneo");
+      for (const [cardId, seq] of maxUndatedSeqByCard(ids)) {
+        if (seq > (kaneoCardSeq.get(cardId) ?? 0)) kaneoCardSeq.set(cardId, seq);
+      }
+      kaneoSeqSeeded = true;
+    } catch (err) {
+      console.error(
+        `[activity] WARNING: kaneo seq seeding from persisted seen ids failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  /** Advance the Kaneo baseline to `cards` (whose `seq` fields carry
+   *  the pre-change counters): bump the stored counter for every card
+   *  that appeared or changed status vs the old baseline, keep it for
+   *  unchanged cards. Only call once the change deliveries for this
+   *  transition are acknowledged durable — or when there were none. */
+  function advanceKaneoBaseline(cards: readonly KaneoCardSnapshot[], retain?: ReadonlySet<string>): void {
+    const next = new Map<string, KaneoCardSnapshot>();
+    for (const c of cards) {
+      // Partial ingestion failure (Codex P2, PR #5141): a card whose
+      // delivery was NOT acknowledged keeps its previous baseline
+      // entry (and its seq counter), so the next poll re-diffs exactly
+      // that card with the same stable delivery ids; acknowledged
+      // cards advance normally, so their later moves are never lost
+      // behind another card's retry.
+      if (retain?.has(c.id)) {
+        const before = prevKaneoCards?.get(c.id);
+        if (before) next.set(c.id, before);
+        continue;
+      }
+      const before = prevKaneoCards?.get(c.id);
+      const changed = !before || before.status !== c.status;
+      const seq = changed ? (c.seq ?? 0) + 1 : (c.seq ?? 0);
+      if (changed) kaneoCardSeq.set(c.id, seq);
+      next.set(c.id, { ...c, seq: kaneoCardSeq.get(c.id) ?? seq });
+    }
+    prevKaneoCards = next;
+  }
+  // #3321: serialize the whole diff -> ingest -> baseline-advance
+  // sequence across board() calls (Codex P2, PR #5141). board()
+  // callers (boardContext, searchContext, page renders) run
+  // concurrently; while one poll awaits its ingestion acknowledgment
+  // the shared baseline must not be read by a second poll, or that
+  // poll diffs against the pre-change baseline and derives
+  // deliveries for a transition that never happened (A->C instead
+  // of B->C). A failed step does not wedge the chain.
+  let kaneoIngestionChain: Promise<void> = Promise.resolve();
+  function enqueueKaneoIngestion(fn: () => Promise<void>): Promise<void> {
+    const run = kaneoIngestionChain.then(fn, fn);
+    kaneoIngestionChain = run.then(
+      () => {},
+      () => {},
+    );
+    return run;
+  }
+  // #3321: gap transitions take the SAME chain (Codex P2, PR #5141
+  // round 4). A failed or partial poll that notes its gap immediately
+  // can interleave with a complete poll already queued behind a
+  // blocked ingestion: the queued poll's recovery then resolves a
+  // gap that opened AFTER its successful observation, marking an
+  // ongoing outage backfilled with no successful poll since the
+  // failure. Queuing the gap behind the ingestion orders every
+  // gap/recovery transition by the poll that produced it.
+  function enqueueKaneoGap(at: Date): Promise<void> {
+    return enqueueKaneoIngestion(() => noteKaneoGap(at));
+  }
+  // #1739: the last orchestration run whose publish was recorded in
+  // the event log, plus its tier membership — a new runId is a publish
+  // step, and the tier diff between successive publishes is the
+  // tier-change stream.
+  let lastOrchEventRunId: string | null = null;
+  let lastOrchTierById = new Map<string, string>();
   // #1138: the merged registry total from the last registry() read —
   // the freshness chip counts THIS (the same number /sessions renders
   // in its header), never the per-read incoming batch.
@@ -633,6 +989,20 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
   // are read from its state file at request time (the port changes
   // across restarts). Mapped sessions are cached for 45 s (#890).
   let laptopCache: { value: MappedSessions; at: number } | null = null;
+  // #1226: the Needs-Drew label census hits the GitHub search API
+  // (8 queries per sweep). The sweeper caches for 5 minutes and shares
+  // one in-flight sweep between concurrent callers, so the three
+  // attention fragments rendering together do not each pay that cost or
+  // burn the search rate limit (#3970).
+  const needsDrewSweep = createNeedsDrewSweeper((url) => {
+    const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
+    const headers: Record<string, string> = {
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      ...(token ? { Authorization: "Bearer " + token } : {}),
+    };
+    return getJson(url, headers);
+  });
   async function laptopMapped(): Promise<MappedSessions | null> {
     if (laptopCache && Date.now() - laptopCache.at < 45_000) return laptopCache.value;
     const state = JSON.parse(await readFile(cfg.openchamberStateFile, "utf8")) as {
@@ -679,6 +1049,28 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
     const current = await loadRegistryStore();
     const merged = mergeRecords(current, incoming);
     const changed = merged.length !== current.length || merged.some((r, i) => r !== current[i]);
+    // #1739: the session registry merge is one of the event log's
+    // writers — a session entering the registry is a session outcome
+    // in the cross-stack stream. Fire-and-forget: the callback the
+    // server injects never throws into the merge (emitEvent swallows),
+    // and the merge itself never waits on the event write.
+    if (opts?.onEvent && changed) {
+      const known = new Set(current.map((r) => `${r.source}:${r.id}`));
+      for (const r of merged.filter((x) => !known.has(`${x.source}:${x.id}`))) {
+        try {
+          opts.onEvent({
+            actor: "aggregator",
+            kind: "session-outcome",
+            ref: `session:${r.source}:${r.id}`,
+            summary: `session ${r.label} (${r.agentLabel}) merged into the registry`.slice(0, 500),
+          });
+        } catch (err) {
+          console.error(
+            `[events] WARNING: session event callback failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    }
     registryStore = merged;
     if (changed) {
       // Serialized writes + unique temp path per write (#1509): the
@@ -703,8 +1095,106 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
   return {
     async board() {
       try {
-        const cookie = await kaneoCookie();
-        const board = await kaneoBoard(cfg, cookie);
+        // A failed Kaneo poll (auth or task reads) is an activity
+        // gap, not just a fixtures fallback (#3321, Codex P2 on
+        // PR #5141): record the missed interval via onSourceGap
+        // before rethrowing into the fixtures path below.
+        let cookie: string;
+        let kaneoResult: { items: BoardItem[]; complete: boolean };
+        try {
+          cookie = await kaneoCookie();
+          kaneoResult = await kaneoBoard(cfg, cookie);
+        } catch (err) {
+          await enqueueKaneoGap(new Date());
+          throw err;
+        }
+        const board = kaneoResult.items;
+        // #3321: Kaneo activity ingestion — diff this poll against the
+        // previous one and hand the changes to the server's ingestion
+        // hook. The first poll after start is a silent baseline (no
+        // deliveries): pre-start changes are not claimed as history,
+        // and dedupe lives in the ingestion store, so re-diffs of the
+        // same change never re-emit. Fire-and-forget like onEvent.
+        if (!kaneoResult.complete) {
+          // Partial poll (#3321, Codex P2 on PR #5141): cards from
+          // the failed reads are missing, so diffing would invent
+          // appearance events for them when the reads recover, and
+          // replacing the baseline would lose their last known
+          // state. Skip diffing AND baseline replacement, and record
+          // the poll as an activity gap; the next complete poll
+          // diffs against the preserved baseline.
+          console.error(
+            "[activity] WARNING: kaneo board poll was partial; activity diff skipped and baseline preserved",
+          );
+          await enqueueKaneoGap(new Date());
+        } else {
+          await enqueueKaneoIngestion(async () => {
+            await seedKaneoSeqFromPersisted();
+            await noteKaneoRecovered();
+            await publishKaneoFreshness(board);
+            try {
+              const cards: KaneoCardSnapshot[] = board
+                .filter((b) => b.source === "kaneo")
+                .map((b) => ({
+                  id: b.id,
+                  status: b.status,
+                  title: b.title,
+                  seq: kaneoCardSeq.get(b.id) ?? prevKaneoCards?.get(b.id)?.seq ?? 0,
+                  ...(b.updatedAt ? { updatedAt: b.updatedAt } : {}),
+                  ...(b.kaneoUrl ? { kaneoUrl: b.kaneoUrl } : {}),
+                }));
+              if (!prevKaneoCards) {
+                // First poll: silent baseline, no deliveries, and the
+                // seq counters do not advance (nothing was ingested).
+                prevKaneoCards = new Map(cards.map((c) => [c.id, c]));
+              } else if (opts?.onActivity) {
+                const deliveries = kaneoChangeDeliveries(prevKaneoCards, cards);
+                if (!deliveries.length) {
+                  advanceKaneoBaseline(cards);
+                } else {
+                  // Await the ingestion acknowledgment before
+                  // discarding the previous snapshot (Codex P2,
+                  // PR #5141): if the append failed, the baseline —
+                  // and the seq counters — stay put, so the next poll
+                  // re-diffs the same change with the same stable
+                  // delivery ids and the ingestion store can retry it
+                  // (deliveries it did persist dedupe as duplicates).
+                  const ack = await opts.onActivity(deliveries);
+                  const failed =
+                    ack === false ? deliveries.length : typeof ack === "object" && ack !== null ? (ack.failed ?? 0) : 0;
+                  const failedIds =
+                    typeof ack === "object" && ack !== null && Array.isArray(ack.failedIds) ? ack.failedIds : null;
+                  if (failed === 0) {
+                    advanceKaneoBaseline(cards);
+                  } else if (failedIds) {
+                    // Advance every acknowledged card; retain only the
+                    // failed deliveries' cards for retry (Codex P2,
+                    // PR #5141).
+                    const failedCards = new Set(
+                      deliveries.filter((d) => failedIds.includes(d.sourceId)).map((d) => d.ref),
+                    );
+                    console.error(
+                      `[activity] WARNING: ${failed} kaneo deliveries were not ingested; ` +
+                        "baseline retained for the failed cards only, so the next poll retries them",
+                    );
+                    advanceKaneoBaseline(cards, failedCards);
+                  } else {
+                    console.error(
+                      `[activity] WARNING: ${failed} kaneo deliveries were not ingested; ` +
+                        "board baseline retained so the next poll retries them",
+                    );
+                  }
+                }
+              } else {
+                advanceKaneoBaseline(cards);
+              }
+            } catch (err) {
+              console.error(
+                `[activity] WARNING: kaneo change diff failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          });
+        }
         // A successfully fetched board is live data even when the
         // done policy (#1146) filters it to empty: falling through to
         // fixtures would replace the real (empty) board with
@@ -821,6 +1311,13 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       const feed = await getFeed();
       return poolAvailableFromFeed(feed);
     },
+    async projectAudit() {
+      const feed = await getFeed();
+      return projectAuditFromFeed(feed);
+    },
+    async needsDrew(): Promise<NeedsDrewCensus | null> {
+      return needsDrewSweep();
+    },
     async coverageCensus(): Promise<RepoCensus[] | null> {
       const feed = await getFeed();
       return coverageFromFeed(feed);
@@ -834,6 +1331,16 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         }
       }
       return fix.comments(refs);
+    },
+    async latestComments(refs) {
+      if (cfg.projector.baseUrl) {
+        const live = await projectorLatestComments(cfg.projector.baseUrl, refs);
+        if (live) {
+          provenance.comments = "live (projector)";
+          return live;
+        }
+      }
+      return latestPerRef(await fix.comments(refs));
     },
     async quota() {
       // Slice 1 (#890): quota comes from the fleet feed file produced
@@ -851,8 +1358,22 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         provenance.quota = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
         view = feed.quota;
         const dropped = feed.quotaDropped;
-        if (dropped && dropped.pools + dropped.windows + dropped.burn > 0) {
-          provenance.quota += ` · sanitized at load: dropped ${dropped.pools} pool(s), ${dropped.windows} window(s), ${dropped.burn} burn segment(s) (#2429)`;
+        if (
+          dropped &&
+          dropped.pools +
+            dropped.credentials +
+            dropped.windows +
+            dropped.activeSessions +
+            dropped.burn +
+            dropped.poolFreshness +
+            dropped.burnTokensPerMin >
+            0
+        ) {
+          provenance.quota +=
+            ` · sanitized at load: dropped ${dropped.pools} pool(s), ${dropped.credentials} credential row(s), ` +
+            `${dropped.windows} window(s), ${dropped.activeSessions} active session(s), ` +
+            `${dropped.burn} burn segment(s), ${dropped.poolFreshness} pool freshness value(s), ` +
+            `${dropped.burnTokensPerMin} burn rate(s) (#2429/#3921/#4546)`;
         }
       } else {
         provenance.quota = "fixtures (no fleet feed file yet)";
@@ -863,12 +1384,24 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         const file = parseQuotaCurrent(JSON.parse(raw));
         if (file) {
           provenance.quota += ` · gatherer ${file.generatedAt}`;
+          const sanitized = file.sanitized;
+          if (sanitized && sanitized.droppedProviders + sanitized.droppedWindows > 0) {
+            provenance.quota += ` · sanitized quota-current: dropped ${sanitized.droppedProviders} provider(s), ${sanitized.droppedWindows} window(s)`;
+          }
           return overlayQuotaCurrent(view, file);
         }
       } catch {
         /* no gatherer file (or unreadable): base view stands */
       }
       return view;
+    },
+    async ingestSnapshots(): Promise<number> {
+      // The server's background writer tick is the landing step for
+      // collector-derived records carried by the feed. Keep this out of
+      // usage(): GETs must remain safe with a read-only snapshot store.
+      const feed = await getFeed();
+      if (!feed?.snapshots?.length) return 0;
+      return new SnapshotStore(cfg.snapshotsDir).append(feed.snapshots).catch(() => 0);
     },
     async usage(): Promise<UsageView> {
       // Usage & billing hub (design §3): feed sections first (the
@@ -877,13 +1410,15 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       // from the quota view + registry files; fixtures only when
       // neither exists. Snapshot history comes from the local store
       // (§4): the feed carries the writers' records (collector-derived
-      // plus the stewardship / check-usage outbox), and ingesting them
-      // here — append with dedupe — is the one write this reader makes.
+      // plus the stewardship / check-usage outbox); a background writer
+      // tick lands them into the local store. This reader only reads it.
       const feed = await getFeed();
+      const uninstrumentedServices =
+        feed?.uninstrumentedServices ??
+        (await readFile(cfg.freeServicesTrackerFile, "utf8")
+          .then(extractUninstrumentedServices)
+          .catch(() => []));
       const store = new SnapshotStore(cfg.snapshotsDir);
-      if (feed?.snapshots?.length) {
-        await store.append(feed.snapshots).catch(() => 0);
-      }
       const history = await store.byService().catch(() => ({}));
       const domains =
         feed?.dns && isDnsSection(feed.dns)
@@ -917,6 +1452,13 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       const chargesDroppedNote = feed?.chargesDropped
         ? ` · sanitized at load: dropped ${feed.chargesDropped} malformed charge row(s) (#2445)`
         : "";
+      const trackerRowsDroppedNote = feed?.uninstrumentedServicesDropped
+        ? ` · sanitized at load: dropped ${feed.uninstrumentedServicesDropped} malformed tracker row(s) (#1172)`
+        : "";
+      const saasDroppedNote = feed?.saasDropped
+        ? ` · sanitized at load: dropped ${feed.saasDropped} malformed SaaS service row(s) (#2451)`
+        : "";
+      const feedSanitizationNotes = saasDroppedNote + chargesDroppedNote + trackerRowsDroppedNote;
       const feedChargeFlags: AttentionFlag[] = (feed?.chargesAttention ?? []).map((u) => ({
         kind: "unmatched-charge",
         label: `${u.merchant} — unrecognized SaaS/AI charge`,
@@ -926,7 +1468,8 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       }));
       if (feed?.saas && feed.saas.length) {
         provenance.usage =
-          `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})` + chargesDroppedNote;
+          `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})` +
+          feedSanitizationNotes;
         // The Cloudflare live export overlays tracker prose on BOTH
         // service sources — a healthy fleet feed must not keep stale
         // prose values when a fresh export exists (Codex, PR #2228).
@@ -935,6 +1478,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           .catch(() => null);
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(feed.saas, cfExport), supabaseExport),
+          uninstrumentedServices,
           payg: feed.payg ?? [],
           charges: feedCharges,
           subscriptions: feed.subscriptions ?? [],
@@ -967,6 +1511,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         // evidence (the feed rows) takes precedence.
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(extractSaasServices(doc), cfExport), supabaseExport),
+          uninstrumentedServices,
           payg: extractPaygLines(doc, registryText),
           charges: mergeChargeRows(feedCharges, extractCharges(doc, registryText)),
           subscriptions: extractSubscriptions(doc),
@@ -974,7 +1519,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         partial.services = await tursoOverlay(cfg, partial.services);
         provenance.usage =
           "live (quota-view.md + provider registry, direct read — feed carries no hub sections yet)" +
-          chargesDroppedNote;
+          feedSanitizationNotes;
         return {
           ...partial,
           chargesNote: partial.charges.length
@@ -985,13 +1530,14 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           history,
         };
       } catch {
-        provenance.usage = "fixtures (no fleet feed hub sections and quota view unreadable)" + chargesDroppedNote;
+        provenance.usage = "fixtures (no fleet feed hub sections and quota view unreadable)" + feedSanitizationNotes;
         const fallback = await fix.usage();
         // #3124: even the fixtures fallback keeps the feed's charge
         // evidence when a feed exists — fixtures stand in for the
         // sections that are missing, not for the ones that arrived.
         return {
           ...fallback,
+          uninstrumentedServices,
           charges: feedCharges.length ? feedCharges : fallback.charges,
           chargesNote: feedCharges.length ? undefined : fallback.chargesNote,
           attention: [...fallback.attention, ...feedChargeFlags],
@@ -1008,7 +1554,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
 
       const feed = await getFeed();
       if (feed) {
-        for (const e of feed.attention) byId.set(e.sessionId, e);
+        for (const e of feed.attention) if (isFeedAttentionEntry(e)) byId.set(e.sessionId, e);
         parts.push(`sandbox via fleet feed (${feedAgeText(feed.generatedAt)})`);
       }
 
@@ -1053,6 +1599,59 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
             collection?.status === "error"
               ? `error — collector error: ${collection.error ?? "collection failed"}; serving embedded section ${section.runId}`
               : `live (orchestration section ${section.runId} · ${feedAgeText(section.generatedAt)})`;
+          // #1739: the orchestration publish step is an event-log
+          // writer. A new runId = a new publish: record the publish
+          // itself, the run's own published actions, and every item
+          // whose tier changed since the previous publish.
+          // Fire-and-forget — the injected callback never throws into
+          // this read and nothing here awaits an event write.
+          const tierById = new Map<string, string>();
+          for (const item of section.tiers.needsDrew) tierById.set(item.id, "needs-user");
+          for (const item of section.tiers.needsOrchestrator) tierById.set(item.id, "needs-orchestrator");
+          const publishRef = `orchestration:${section.runId}`;
+          const alreadyRecorded = opts?.hasEvent
+            ? await opts.hasEvent("orchestration-published", publishRef).catch(() => false)
+            : false;
+          if (opts?.onEvent && section.runId !== lastOrchEventRunId && !alreadyRecorded) {
+            opts.onEvent({
+              actor: "orchestrator",
+              kind: "orchestration-published",
+              ref: `orchestration:${section.runId}`,
+              summary:
+                `orchestration run ${section.runId} published: ` +
+                `${section.tiers.needsDrew.length} needs-user, ${section.tiers.needsOrchestrator.length} needs-orchestrator`,
+            });
+            for (const action of section.actions) {
+              opts.onEvent({
+                at: action.at,
+                actor: "orchestrator",
+                kind: action.kind,
+                ref: orchestrationActionRef(action.target),
+                summary: action.summary.slice(0, 500),
+              });
+            }
+            if (lastOrchEventRunId !== null) {
+              const allIds = new Set([...lastOrchTierById.keys(), ...tierById.keys()]);
+              for (const id of allIds) {
+                const prev = lastOrchTierById.get(id);
+                const tier = tierById.get(id);
+                if (prev !== tier) {
+                  opts.onEvent({
+                    actor: "orchestrator",
+                    kind: "tier-change",
+                    ref: id,
+                    summary: `tier ${prev ?? "—"} → ${tier ?? "—"} (run ${section.runId})`.slice(0, 500),
+                  });
+                }
+              }
+            }
+            lastOrchEventRunId = section.runId;
+            lastOrchTierById = tierById;
+          } else if (alreadyRecorded) {
+            // The durable publication event proves this run was already emitted.
+            lastOrchEventRunId = section.runId;
+            lastOrchTierById = tierById;
+          }
           // #1290: the per-item extension seam. The section gate above
           // never learns the extension fields; each tier item's
           // extensions are validated here, fail-soft (a malformed
@@ -1137,10 +1736,11 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       return null;
     },
     async registry(): Promise<SessionRecord[]> {
-      // Slice 3 (#906 §3): feed records (sandbox OpenCode + Jules +
+      // Slice 3 (#906 §3): feed records (sandbox OpenCode +
       // Muse launches) merged with the laptop server's live
       // sessions, accumulated into the durable store.
       const incoming: SessionRecord[] = [];
+      let droppedSessionElements = 0;
       const feed = await getFeed();
       if (feed?.registry) {
         for (const r of feed.registry) if (isSessionRecord(r)) incoming.push(r);
@@ -1148,6 +1748,8 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       try {
         const mapped = await laptopMapped();
         if (mapped) {
+          // Element-wise drops are surfaced, never swallowed (#2543).
+          droppedSessionElements = mapped.droppedElements;
           for (const e of mapped.entries) {
             incoming.push(recordFromSessionEntry(e, mapped.tokensBySession.get(e.sessionId)));
           }
@@ -1155,6 +1757,10 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       } catch {
         /* laptop part fails soft, like attention */
       }
+      const droppedNote =
+        droppedSessionElements > 0
+          ? ` · dropped ${droppedSessionElements} malformed OpenCode wire element(s) (#2543)`
+          : "";
       if (incoming.length > 0) {
         const merged = await mergeIntoRegistry(incoming);
         lastRegistryMergedCount = merged.length;
@@ -1163,12 +1769,12 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         // contribution labelled as what it is. (This string used to
         // headline the incoming batch, so one page carried two counts
         // for "records" with nothing explaining the difference.)
-        provenance.registry = `live (${merged.length} session records · ${incoming.length} from the latest feed · feed ${feed ? feedAgeText(feed.generatedAt) : "absent"})`;
+        provenance.registry = `live (${merged.length} session records · ${incoming.length} from the latest feed · feed ${feed ? feedAgeText(feed.generatedAt) : "absent"})${droppedNote}`;
         return merged;
       }
       const store = await loadRegistryStore();
       lastRegistryMergedCount = store.length;
-      provenance.registry = "store only (no live registry source reachable)";
+      provenance.registry = `store only (no live registry source reachable)${droppedNote}`;
       return store;
     },
     async coverage(): Promise<SourceCoverage[]> {
@@ -1192,19 +1798,6 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
             : laptopSeen === false
               ? "unreachable on the last read — laptop sessions may be missing"
               : "not read yet this process",
-      });
-      const j = feed?.julesSummary;
-      out.push({
-        source: "jules",
-        label: "Jules",
-        wired: Boolean(j),
-        detail: j
-          ? `via the keeper's state (jules-review) · ${j.tracked} tracked now · last keeper run ${j.at ?? "unknown"}${
-              j.total != null
-                ? ` · last run totals: ${j.total} sessions — ${j.completed ?? 0} completed, ${j.failed ?? 0} failed, ${j.inProgress ?? 0} in progress, ${j.awaitingFeedback ?? 0} awaiting feedback (completed runs are pruned by the keeper)`
-                : ""
-            }`
-          : "keeper state not in the feed — Jules sessions are not visible",
       });
       const claudeRecords = (feed?.registry ?? []).filter((r) => r.source === "claude-code");
       out.push({
@@ -1238,7 +1831,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         else if (text.startsWith("store only")) state = "live";
         else state = "fixtures";
         const feedBacked = text.includes("fleet feed");
-        if (state === "live" && feedBacked && feedAgeMs !== undefined && feedAgeMs > FEED_STALE_MS) {
+        if (state === "live" && feedBacked && feedAgeMs !== undefined && feedAgeMs >= FEED_STALE_MS) {
           state = "stale";
         }
         const out: ProvenanceFacet = { text, state };
@@ -1262,7 +1855,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           }
           if (feedAgeMs !== undefined) {
             out.ageMs = feedAgeMs;
-            if (out.state === "live" && feedAgeMs > FEED_STALE_MS) out.state = "stale";
+            if (out.state === "live" && feedAgeMs >= FEED_STALE_MS) out.state = "stale";
           }
         }
         return out;

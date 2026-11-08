@@ -26,12 +26,11 @@
 //   Project's single writer (#910), so it performs the Status write
 //   itself and its run log names "requested via dashboard, action
 //   da-…".
-// - kind "session" — routed by the action's sessionSource: the Jules
-//   keeper (jules-review) consumes source "jules" (answer only —
-//   poke/stop render disabled on Jules cards); the orchestration pass
-//   consumes the OpenCode sources ("opencode-sandbox",
-//   "opencode-laptop") for poke/answer/stop. Sources with no live
-//   control channel (claude-code, cron) render no enabled controls.
+// - kind "session" — routed by the action's sessionSource: the
+//   orchestration pass consumes the OpenCode sources
+//   ("opencode-sandbox", "opencode-laptop") for poke/answer/stop.
+//   Sources with no live control channel (claude-code, cron) render
+//   no enabled controls.
 // - kind "preference" — the orchestration pass: set-delegation-default
 //   records the standing auto toggle (#1290; Drew's 2026-10-27 decision
 //   is the initial record). The aggregator also reads these records to
@@ -64,7 +63,15 @@ import { isObjectRef, validateAuthor } from "./comments.ts";
 import type { ViewFilters } from "./views.ts";
 import { validateViewFilters, validateViewName } from "./views.ts";
 import type { DashAuthor, RefKey, SessionSource } from "./model.ts";
-import { isRecord } from "./validate.ts";
+import { isValidRef } from "./model.ts";
+import { isNonEmptyString, isRecord, parseIsoDate } from "./validate.ts";
+import {
+  archiveStoreBytes,
+  quarantineUnreadableStore,
+  quarantineWholeStore,
+  type InvalidStoreRecord,
+  type StoreArchive,
+} from "./store-recovery.ts";
 
 export type DashActionKind = "triage" | "status-request" | "session" | "preference";
 
@@ -118,8 +125,45 @@ export const VERBS_BY_KIND: Record<DashActionKind, readonly DashActionVerb[]> = 
   ],
   "status-request": ["request-status"],
   session: ["poke", "answer", "stop"],
-  preference: ["set-delegation-default", "set-needs-order", "save-view", "rename-view", "delete-view", "set-default-view"],
+  preference: [
+    "set-delegation-default",
+    "set-needs-order",
+    "save-view",
+    "rename-view",
+    "delete-view",
+    "set-default-view",
+  ],
 };
+
+const ACTION_KINDS = new Set<DashActionKind>(["triage", "status-request", "session", "preference"]);
+export const ACTION_STATES = new Set(["new", "applied", "rejected", "superseded"]);
+
+function actionRecordProblem(value: unknown): string | null {
+  if (!isRecord(value)) return "record must be an object";
+  if (!isNonEmptyString(value.id)) return "id must be a non-empty string";
+  if (!isObjectRef(value.objectRef)) return "objectRef must be a non-empty ref string";
+  if (typeof value.kind !== "string" || !ACTION_KINDS.has(value.kind as DashActionKind)) {
+    return "kind must be triage, status-request, session, or preference";
+  }
+  const kind = value.kind as DashActionKind;
+  if (typeof value.verb !== "string" || !VERBS_BY_KIND[kind].includes(value.verb as DashActionVerb)) {
+    return "verb must be supported for the action kind";
+  }
+  if (parseIsoDate(value.createdAt) === null) return "createdAt must be a valid ISO date/time string";
+  if (!isRecord(value.payload)) return "payload must be an object";
+  if (!validateAuthor(value.author)) return "author must have a supported kind, id, and label";
+  if (typeof value.state !== "string" || !ACTION_STATES.has(value.state)) {
+    return "state must be new, applied, rejected, or superseded";
+  }
+  // Pre-token audit rows remain readable; when a token exists it must be
+  // a string so dedupe comparisons have their intended semantics.
+  if (value.clientToken !== undefined && !isNonEmptyString(value.clientToken)) {
+    return "clientToken must be a non-empty string when present";
+  }
+  // Historical payloads are intentionally only required to be records;
+  // individual verbs tolerate older payload shapes at their consumers.
+  return null;
+}
 
 export interface DashActionPayload {
   /** snooze horizon (ISO). */
@@ -138,6 +182,9 @@ export interface DashActionPayload {
   mode?: "first-pass" | "auto" | "user";
   /** answer: the published option the user picked (one content verb). */
   optionId?: string;
+  /** Canonical survey question answered by an option shortcut. The server
+   *  resolves this from the current published item before storing. */
+  questionId?: string;
   /** answer: survey answers, keyed by the published question id. A
    *  multi-choice answer carries an array of option ids. */
   answers?: { questionId: string; value: string | string[] }[];
@@ -186,6 +233,8 @@ export interface DashAction {
   resultNote?: string;
   /** Id of the action this one replaces (undo = supersede). */
   supersedes?: string;
+  /** Existing answer action this rejected attempt duplicates. */
+  duplicateOf?: string;
 }
 
 export interface ActionsFile {
@@ -206,13 +255,54 @@ export interface NewAction {
   supersedes?: string;
 }
 
-const GH_REF = /^[\w.-]+\/[\w.-]+#\d+$/;
-const SESSION_SOURCES = new Set(["opencode-sandbox", "opencode-laptop", "jules", "claude-code", "cron"]);
+/** The question slots an answer action claims. Survey and option answers
+ *  claim their published question ids (an option with no resolved question
+ *  uses the reserved "$options" slot). A text-only answer claims the
+ *  reserved "$answer" slot, which duplicate detection treats as
+ *  pending-only (see add()): a session reply or free-text decision is a
+ *  conversation turn, not a published question, so once the previous turn
+ *  is applied the next one must be able to land. Persisted records can
+ *  carry malformed payload shapes (load() retains them; see the
+ *  malformed-payload test), so every extraction here is shape-guarded
+ *  exactly as cardState()'s is. */
+function answerQuestionIds(action: Pick<NewAction, "verb" | "payload">): string[] {
+  if (action.verb !== "answer" || !isRecord(action.payload)) return [];
+  const ids = new Set<string>();
+  if (Array.isArray(action.payload.answers)) {
+    for (const entry of action.payload.answers) {
+      if (isRecord(entry) && typeof entry.questionId === "string") ids.add(entry.questionId);
+    }
+  }
+  if (typeof action.payload.optionId === "string" && action.payload.optionId) {
+    ids.add(
+      typeof action.payload.questionId === "string" && action.payload.questionId
+        ? action.payload.questionId
+        : "$options",
+    );
+  }
+  if (typeof action.payload.text === "string" && action.payload.text && !ids.size) ids.add("$answer");
+  return [...ids];
+}
+
+const SESSION_SOURCES = new Set(["opencode-sandbox", "opencode-laptop", "claude-code", "cron"]);
+
+// Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7694, mirroring the #3178 guard in pm-dispatch
+// validate.ts): an astral character straddling the cap is dropped whole.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
 
 function cleanText(v: unknown, max: number): string | undefined {
   if (typeof v !== "string") return undefined;
   const t = v.trim();
-  return t === "" ? undefined : t.slice(0, max);
+  if (t === "") return undefined;
+  return capUnits(t, max);
 }
 
 /** Validate an untrusted POST body into a NewAction, or explain why not. */
@@ -271,11 +361,14 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
   }
   const optionId = cleanText(rawPayload.optionId, 200);
   if (optionId !== undefined) payload.optionId = optionId;
+  const questionId = cleanText(rawPayload.questionId, 200);
+  if (questionId !== undefined) payload.questionId = questionId;
   if (rawPayload.answers !== undefined) {
     if (!Array.isArray(rawPayload.answers) || rawPayload.answers.length > 50) {
       return { ok: false, error: "payload.answers must be an array of at most 50 {questionId, value}" };
     }
     const answers: { questionId: string; value: string | string[] }[] = [];
+    const seenQuestionIds = new Set<string>();
     for (const entry of rawPayload.answers) {
       if (typeof entry !== "object" || entry === null) {
         return { ok: false, error: "payload.answers entries must be {questionId, value}" };
@@ -298,6 +391,14 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
       if (q === undefined || v === undefined) {
         return { ok: false, error: "payload.answers entries need non-empty questionId and value" };
       }
+      // #4291: one action answers each question at most once — a
+      // repeated questionId (same or contradictory value) resolves
+      // differently per reader (cardState merges latest-wins, a raw
+      // payload consumer sees both), so reject it here.
+      if (seenQuestionIds.has(q)) {
+        return { ok: false, error: `payload.answers answers question "${q}" more than once` };
+      }
+      seenQuestionIds.add(q);
       answers.push({ questionId: q, value: v });
     }
     if (answers.length) payload.answers = answers;
@@ -340,7 +441,7 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
 
   let targetRef: RefKey | undefined;
   if (b.targetRef !== undefined) {
-    if (typeof b.targetRef !== "string" || !GH_REF.test(b.targetRef)) {
+    if (!isValidRef(b.targetRef)) {
       return { ok: false, error: "targetRef must be owner/repo#N" };
     }
     targetRef = b.targetRef;
@@ -414,7 +515,7 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
       return { ok: false, error: "request-status objectRef must be gh:<owner/repo#N>" };
     }
     targetRef ??= b.objectRef.slice(3);
-    if (!GH_REF.test(targetRef)) return { ok: false, error: "request-status target must be owner/repo#N" };
+    if (!isValidRef(targetRef)) return { ok: false, error: "request-status target must be owner/repo#N" };
   }
   if (kind === "session") {
     if (sessionId === undefined) return { ok: false, error: "session actions require sessionId" };
@@ -458,11 +559,15 @@ export function newClientToken(): string {
 
 export class ActionsStore {
   private actions: DashAction[] = [];
+  private fileExtras: Record<string, unknown> = {};
   private loadPromise: Promise<void> | null = null;
   private writeChain: Promise<void> = Promise.resolve();
   private writeSeq = 0;
 
-  constructor(private readonly file: string) {}
+  constructor(
+    private readonly file: string,
+    private readonly archive: StoreArchive = archiveStoreBytes,
+  ) {}
 
   // The load is memoized as a single promise (#1509): the old
   // loaded-flag version let concurrent first callers proceed before
@@ -480,12 +585,13 @@ export class ActionsStore {
     // original bytes to <file>.corrupt-<timestamp>, start empty, and
     // log loudly — the next persist then writes a fresh valid file and
     // never touches the quarantined copy.
-    let raw: string;
+    let raw: Buffer;
     try {
-      raw = await readFile(this.file, "utf8");
+      raw = await readFile(this.file);
     } catch (err) {
       if ((err as { code?: unknown })?.code === "ENOENT") {
         this.actions = []; // no store yet — the first write creates it
+        this.fileExtras = {};
         return;
       }
       // #2980: a non-ENOENT read failure (EACCES, a transient I/O error,
@@ -494,49 +600,66 @@ export class ActionsStore {
       // like the corrupt case below — quarantine the original bytes
       // before starting empty, and log loudly — so the next persist
       // cannot silently overwrite history the read never saw.
-      this.actions = [];
-      const quarantined = `${this.file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+      let quarantined: string;
       try {
-        await rename(this.file, quarantined);
-        console.error(
-          `[actions] WARNING: actions store ${this.file} could not be read (${err instanceof Error ? err.message : String(err)}); ` +
-            `quarantined the original bytes to ${quarantined} and started empty. ` +
-            `The quarantined file holds the prior audit history — do not delete it.`,
-        );
+        quarantined = await quarantineUnreadableStore(this.file);
       } catch (renameErr) {
-        console.error(
-          `[actions] WARNING: actions store ${this.file} could not be read (${err instanceof Error ? err.message : String(err)}) ` +
-            `and could not be quarantined (${renameErr instanceof Error ? renameErr.message : String(renameErr)}); starting empty — ` +
-            `the next persist will overwrite it, so copy it aside now to preserve the audit history.`,
+        throw new Error(
+          `[actions] refusing to continue because ${this.file} could not be read or quarantined: ${renameErr instanceof Error ? renameErr.message : String(renameErr)}`,
+          { cause: err },
         );
       }
+      this.actions = [];
+      this.fileExtras = {};
+      console.error(
+        `[actions] WARNING: actions store ${this.file} could not be read (${err instanceof Error ? err.message : String(err)}); ` +
+          `quarantined the original to ${quarantined} and started empty. The quarantined item holds the prior audit history — do not delete it.`,
+      );
       return;
     }
+
+    let parsed: unknown;
     try {
-      const parsed: unknown = JSON.parse(raw);
-      if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as ActionsFile).actions)) {
-        throw new Error("store file does not have the expected { actions: [...] } shape");
-      }
-      this.actions = (parsed as ActionsFile).actions.filter(
-        (a) => isRecord(a) && typeof a.id === "string" && isRecord(a.payload),
-      );
+      parsed = JSON.parse(raw.toString("utf8"));
     } catch (err) {
+      const quarantined = await quarantineWholeStore(this.file, raw, this.archive);
       this.actions = [];
-      const quarantined = `${this.file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
-      try {
-        await rename(this.file, quarantined);
-        console.error(
-          `[actions] WARNING: actions store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}); ` +
-            `quarantined the original bytes to ${quarantined} and started empty. ` +
-            `The quarantined file holds the prior audit history — do not delete it.`,
-        );
-      } catch (renameErr) {
-        console.error(
-          `[actions] WARNING: actions store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}) ` +
-            `and could not be quarantined (${renameErr instanceof Error ? renameErr.message : String(renameErr)}); starting empty — ` +
-            `the next persist will overwrite it, so copy it aside now to preserve the audit history.`,
-        );
-      }
+      this.fileExtras = {};
+      console.error(
+        `[actions] WARNING: actions store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}); quarantined original bytes to ${quarantined} and started empty.`,
+      );
+      return;
+    }
+    if (!isRecord(parsed) || !Array.isArray(parsed.actions)) {
+      const quarantined = await quarantineWholeStore(this.file, raw, this.archive);
+      this.actions = [];
+      this.fileExtras = {};
+      console.error(
+        `[actions] WARNING: actions store ${this.file} has the wrong envelope shape; quarantined original bytes to ${quarantined} and started empty.`,
+      );
+      return;
+    }
+
+    this.fileExtras = Object.fromEntries(
+      Object.entries(parsed).filter(([key]) => key !== "version" && key !== "actions"),
+    );
+    const valid: DashAction[] = [];
+    const invalid: InvalidStoreRecord[] = [];
+    parsed.actions.forEach((action, index) => {
+      const reason = actionRecordProblem(action);
+      if (reason) invalid.push({ index, reason });
+      else valid.push(action as DashAction);
+    });
+    this.actions = valid;
+    if (invalid.length > 0) {
+      const quarantined = await this.archive(this.file, raw, invalid);
+      console.error(
+        `[actions] WARNING: quarantined ${invalid.length} malformed record(s) from ${this.file}; ` +
+          `original bytes: ${quarantined}; index/reason diagnostics: ${quarantined}.diagnostics.json.`,
+      );
+      // Do not rewrite the active audit log until the original bytes and
+      // the per-record diagnostics are durable.
+      await this.persist();
     }
   }
 
@@ -544,7 +667,7 @@ export class ActionsStore {
   // CommentsStore.persist (#1509).
   private persist(): Promise<void> {
     const run = this.writeChain.then(async () => {
-      const data: ActionsFile = { version: 1, actions: this.actions };
+      const data = { ...this.fileExtras, version: 1 as const, actions: this.actions };
       await mkdir(dirname(this.file), { recursive: true });
       const tmp = `${this.file}.tmp-${process.pid}-${++this.writeSeq}`;
       await writeFile(tmp, JSON.stringify(data, null, 2));
@@ -587,12 +710,40 @@ export class ActionsStore {
    * still-new action in `supersedes` transitions it to "superseded" —
    * undo is a superseding action, never a delete; an already-applied
    * action stays in history and the newer action wins by recency in
-   * the effective-state derivation.
+   * the effective-state derivation. A distinct answer for an occupied
+   * question slot is itself persisted as rejected with `duplicateOf`
+   * pointing to the pending/applied answer that owns that slot. The
+   * text-only "$answer" slot is the exception: it dedupes only against
+   * still-pending answers, because a session (or free-text) reply is a
+   * conversation turn — once the previous turn is applied, the next
+   * reply is new work, not a duplicate (Codex P1 on PR #4024).
    */
-  async add(input: NewAction): Promise<{ action: DashAction; created: boolean }> {
+  async add(input: NewAction): Promise<{ action: DashAction; created: boolean; duplicateOf?: string }> {
     await this.load();
     const existing = this.actions.find((a) => a.clientToken === input.clientToken);
     if (existing) return { action: existing, created: false };
+    const questionIds = answerQuestionIds(input);
+    const publishedIds = questionIds.filter((questionId) => questionId !== "$answer");
+    const sameAnswerTarget = (candidate: DashAction) =>
+      candidate.objectRef === input.objectRef && candidate.verb === "answer";
+    const duplicate =
+      (publishedIds.length
+        ? this.actions.find(
+            (candidate) =>
+              sameAnswerTarget(candidate) &&
+              candidate.state !== "rejected" &&
+              candidate.state !== "superseded" &&
+              answerQuestionIds(candidate).some((questionId) => publishedIds.includes(questionId)),
+          )
+        : undefined) ??
+      (questionIds.includes("$answer")
+        ? this.actions.find(
+            (candidate) =>
+              sameAnswerTarget(candidate) &&
+              candidate.state === "new" &&
+              answerQuestionIds(candidate).includes("$answer"),
+          )
+        : undefined);
     const action: DashAction = {
       id: newActionId(),
       clientToken: input.clientToken,
@@ -605,16 +756,22 @@ export class ActionsStore {
       payload: input.payload,
       author: input.author,
       createdAt: new Date().toISOString(),
-      state: "new",
+      state: duplicate ? "rejected" : "new",
       ...(input.supersedes ? { supersedes: input.supersedes } : {}),
+      ...(duplicate
+        ? {
+            duplicateOf: duplicate.id,
+            resultNote: `Duplicate answer; existing action ${duplicate.id} is ${duplicate.state}.`,
+          }
+        : {}),
     };
     this.actions.push(action);
-    if (input.supersedes) {
+    if (!duplicate && input.supersedes) {
       const old = this.actions.find((a) => a.id === input.supersedes);
       if (old && old.state === "new") old.state = "superseded";
     }
     await this.persist();
-    return { action, created: true };
+    return { action, created: true, ...(duplicate ? { duplicateOf: duplicate.id } : {}) };
   }
 
   /**
@@ -626,16 +783,28 @@ export class ActionsStore {
     id: string,
     result: { outcome: "applied" | "rejected"; byRun: string; note?: string },
   ): Promise<DashAction | null> {
+    return (await this.markResultTransition(id, result))?.action ?? null;
+  }
+
+  /** Like markResult, but tells audit writers whether this call consumed
+   *  the action or merely observed an already-terminal record. */
+  async markResultTransition(
+    id: string,
+    result: { outcome: "applied" | "rejected"; byRun: string; note?: string },
+  ): Promise<{ action: DashAction; transitioned: boolean } | null> {
     await this.load();
     const a = this.actions.find((x) => x.id === id);
     if (!a) return null;
-    if (a.state !== "new") return a;
+    if (a.state !== "new") return { action: a, transitioned: false };
     a.state = result.outcome;
     a.appliedAt = new Date().toISOString();
-    a.appliedByRun = result.byRun.slice(0, 200);
-    if (result.note) a.resultNote = result.note.slice(0, 2_000);
+    // Same surrogate-safe cap as cleanText (#7711): a raw slice here stored
+    // a lone high surrogate in appliedByRun/resultNote whenever an astral
+    // character straddled the cap.
+    a.appliedByRun = capUnits(result.byRun, 200);
+    if (result.note) a.resultNote = capUnits(result.note, 2_000);
     await this.persist();
-    return a;
+    return { action: a, transitioned: true };
   }
 }
 

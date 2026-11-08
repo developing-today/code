@@ -14,7 +14,7 @@ This skill turns one request into a research package. The request can be anythin
 - a change log;
 - one stub per concept.
 
-One agent runs intake. Intake keeps everything; refining, merging and rejecting come at S2 and later. The layout and formats are in [records.md](/planning/workflow/records.md), the stages in [stages.md](/planning/workflow/stages.md), and the vocabulary (types, relations, priority, horizon) in [DEPENDENCIES.md](/planning/DEPENDENCIES.md).
+One agent runs intake. Intake keeps everything; refining, merging and rejecting come at S2 and later. The layout and formats are in [records.md](../../../planning/workflow/records.md), the stages in [stages.md](../../../planning/workflow/stages.md), and the vocabulary (types, relations, priority, horizon) in [DEPENDENCIES.md](../../../planning/DEPENDENCIES.md).
 
 ## Set up
 
@@ -123,7 +123,7 @@ If a command fails with `invalid choice` or an unknown flag, read [tool-fallback
 
 ## Parallelism and ownership
 
-Intake has one writer: you own the whole package until its PR merges. The range readers and explore subagents are read-only and return reports; they write nothing. Once the PR merges, each concept file belongs to the worker of its current stage. From then on, `main.md` and `design.md` change only through PRs, and `changes.md` only by appending a single line. The rules are in [collaboration.md](/planning/workflow/collaboration.md); this skill does not restate them.
+Intake has one writer: you own the whole package until its PR merges. The range readers and explore subagents are read-only and return reports; they write nothing. Once the PR merges, each concept file belongs to the worker of its current stage. From then on, `main.md` and `design.md` change only through PRs, and `changes.md` only by appending a single line. The rules are in [collaboration.md](../../../planning/workflow/collaboration.md); this skill does not restate them.
 
 ## Should load / should not load
 

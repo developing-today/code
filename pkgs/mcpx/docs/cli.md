@@ -71,6 +71,13 @@ was a snippet would replace a clear error with a baffling one.
 | 2    | an unknown command, an unknown global flag, or a settings conflict — including a contradiction in a config file, which is reported once, before dispatch                                                                                                                             |
 | 75   | `EX_TEMPFAIL`: a call stopped to ask a question (an elicitation). Not a failure, and not a cue to retry: the call continues as a task — answer with `mcpx elicit answer …`, then collect the original call's result with `mcpx task result <id>`. Retrying would start a second call |
 
+Task IDs are 128-bit unguessable bearer handles, not a separate permission
+check: anyone who learns an ID and can reach the daemon can retrieve that task.
+For MCP's legacy `tasks/list`, only tasks owned by the current identified
+connection are listed; an unbound task can be collected by ID but is not
+listed. Supply an identity when starting a legacy task that must appear in that
+connection's list.
+
 ### The man page and shell completions
 
 Both are generated from the same command declarations as

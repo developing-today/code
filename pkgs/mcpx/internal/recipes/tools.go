@@ -7,6 +7,8 @@ import (
 	"strings"
 )
 
+// ToolPrefix is the fixed namespace prefix for recipe tools.
+//
 // Recipe tools share one namespace, as adapter tools do: `<adapter>_<tool>`
 // is the rule for a producer that is not a server of its own, and a recipe
 // is the same shape -- one namespace, one tool per member. Recipes are not

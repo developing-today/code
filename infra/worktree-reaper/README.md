@@ -25,7 +25,7 @@ A tree is reaped only when **all** gates hold at decision time:
 | Gate | Proof |
 |---|---|
 | PUSHED | Branch tip is on origin: equal to `origin/<branch>`, an ancestor of it, contained in origin's default branch, or patch-equivalent to either (`git cherry`). Origin refs are refreshed first with a full-refspec fetch (`+refs/heads/*:refs/remotes/origin/* --prune`); if the fetch fails, that primary is skipped entirely (fail closed). Detached HEADs are **never** reaped in v1. |
-| CLEAN | `git status` shows no tracked changes and no untracked files beyond the generated-dirt allowlist (below). |
+| CLEAN | `git status` shows no tracked changes, no untracked files beyond the generated-dirt allowlist (below), and no ignored files beyond the ignored-dirt allowlist (`ignored_dirt_prefixes`/`ignored_dirt_files`, default `target/`, `node_modules/`). Ignored paths in a reaped tree are recorded by path (`ignored_paths`) before removal (#6734). |
 | QUIET | Last activity ≥ `quiet_hours` (default 6) ago, absolute epoch. Activity = newest working-tree file mtime (the tree's root `.git` entry excluded) max()ed with the HEAD reflog timestamp. |
 | UNOCCUPIED | A fresh `/proc` cwd scan shows no process inside the tree; re-scanned immediately before each removal. |
 | NOT DENIED | Not on the config denylist, not locked, and not the tree the running script lives in (install-tree self-protection). |

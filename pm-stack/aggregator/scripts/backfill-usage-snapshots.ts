@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
-// One-shot backfill for the usage snapshot store (hub design §4): seed
-// history from the dated observations already recorded in
-// quota-view.md and provider-quota-registry.md (2026-10-20 → today).
+// One-shot recovery/seed for the usage snapshot store (hub design §4):
+// normal live history lands via the server's background feed-ingest
+// writer tick. This script seeds history from dated observations already
+// recorded in quota-view.md and provider-quota-registry.md (2026-10-20 → today).
 // Each record keeps its ORIGINAL date and source class; the prose
 // stays the citation, snapshots are derived data. Fail-soft per fact:
 // a pattern that no longer matches is skipped with a warning, never
@@ -16,6 +17,13 @@
 // of CNY 44.64; that is a different observation with no dated source
 // line here, so no record is invented for it.
 //
+// NOTE (2026-11-03 config-name alignment): the service ids below are
+// the pool ids in use on these records' 2026-10-20..25 observation
+// dates (meta:high-usage, openai:codex, opencode-go:personal, ...).
+// They are kept verbatim on purpose: this seed writes HISTORY, and
+// the live rename starts new snapshot series under the config
+// provider ids rather than rewriting the old series.
+//
 // Usage: bun run scripts/backfill-usage-snapshots.ts [--dir <storeDir>]
 // Env: PM_AGG_SNAPSHOTS_DIR, QUOTA_VIEW_PATH, QUOTA_REGISTRY_PATH.
 import { readFile } from "node:fs/promises";
@@ -29,8 +37,43 @@ import type { SnapshotRecord } from "../src/model.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
-const dirArg = process.argv.indexOf("--dir");
-const storeDir = dirArg >= 0 ? process.argv[dirArg + 1] : (process.env.PM_AGG_SNAPSHOTS_DIR ?? join(PKG, "snapshots"));
+// Strict operator-argument contract (#6973): the only accepted forms are
+// no arguments or one documented separated `--dir <storeDir>`. Every other
+// token - an unknown or misspelled flag, a positional, the joined
+// `--dir=<path>` form, or a duplicate `--dir` - is a usage error (exit 2)
+// raised here, before any input is read or any store is written: a typo'd
+// `--dirr <dir>` used to fall through to the default store and seed the
+// rebuilt history there, exit 0. Mirrors rejectUnknownArgs in
+// append-usage-snapshots.ts (#6961) / compact-usage-snapshots.ts (#6967);
+// the `--dir` value guard itself is #3330.
+function parseStoreDirArg(): string | undefined {
+  const args = process.argv.slice(2);
+  let dir: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string;
+    if (arg === "--dir") {
+      if (dir !== undefined) {
+        console.error("backfill-usage-snapshots: duplicate --dir; the documented form is a single --dir <storeDir>");
+        process.exit(2);
+      }
+      const value: string | undefined = args[i + 1];
+      if (!value?.trim() || value.trimStart().startsWith("--")) {
+        console.error("backfill-usage-snapshots: --dir requires a directory value (not another option)");
+        process.exit(2);
+      }
+      dir = value;
+      i++;
+      continue;
+    }
+    console.error(
+      "backfill-usage-snapshots: unknown argument '" + arg + "' (usage: [--dir <storeDir>]); refusing to run, store untouched",
+    );
+    process.exit(2);
+  }
+  return dir;
+}
+const dirValue = parseStoreDirArg();
+const storeDir = dirValue ?? process.env.PM_AGG_SNAPSHOTS_DIR ?? join(PKG, "snapshots");
 const quotaViewPath =
   process.env.QUOTA_VIEW_PATH ??
   join(

@@ -1,0 +1,18 @@
+# TEST-ONLY harness config. The application worker (wrangler.toml) never
+# touches an unrestricted namespace; this harness exists because local
+# workerd does not implement jurisdiction restrictions at all (it throws
+# "Jurisdiction restrictions are not implemented in workerd"), so the
+# UserDO guard/bootstrap/isolation behaviour is exercised by addressing
+# the object directly from test code that supplies the internal routing
+# context itself. Nothing here is an application path.
+name = "id-hosted-worker-test"
+main = "src/test-harness.ts"
+compatibility_date = "2025-06-01"
+
+[[durable_objects.bindings]]
+name = "TEST_USERS"
+class_name = "UserDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["UserDO"]

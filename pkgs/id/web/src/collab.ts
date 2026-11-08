@@ -41,6 +41,9 @@ import { Step } from "prosemirror-transform";
 import { markCursorFresh, onInitReceived, removeCursor, setConnectionState, updateCursor } from "./cursors";
 import { type ContentMode, type EditorInstance, getSendableSteps, initEditor } from "./editor";
 import { closeImageBrowser } from "./image-browser";
+import { MAX_STEPS_MESSAGE_BYTES, MAX_STEPS_PER_MESSAGE, stepWireSize } from "./collab-step-budget";
+
+export { MAX_STEPS_MESSAGE_BYTES, MAX_STEPS_PER_MESSAGE, stepWireSize } from "./collab-step-budget";
 
 // Message type tags
 const MSG = {
@@ -59,28 +62,6 @@ const MSG = {
 // MessagePack encoder/decoder configured for array format
 const packr = new Packr({ useRecords: false, structuredClone: true });
 const unpackr = new Unpackr({ useRecords: false, structuredClone: true });
-
-/** Per-message step bound, mirroring the server MAX_STEPS_PER_MESSAGE
- * (pkgs/id/src/web/collab.rs). A single editor transaction can legitimately
- * exceed it - indenting N lines produces N steps (web/src/indent.ts) - so
- * the client sends at most this many steps per Steps message and flushes
- * the remainder as the server confirms each batch (see the Update handler),
- * instead of wedging the session on a rejected oversized batch. */
-export const MAX_STEPS_PER_MESSAGE = 1000;
-
-/** Wire-size budget for one Steps message, mirroring the server frame cap
- * MAX_FRAME_BYTES (1 MiB, pkgs/id/src/frames.rs) minus a reserve for the
- * MessagePack envelope ([tag, version, steps, clientID]). The step-count
- * cap alone cannot bound the wire size: 1,000 medium steps encode to far
- * more than 1 MiB, and the server refuses an over-limit message before
- * applying any of it (Codex P2 on PR #4051). */
-export const MAX_STEPS_MESSAGE_BYTES = 1024 * 1024 - 4096;
-
-/** Encoded size of one step on the wire (MessagePack, same Packr config
- * as the send path). */
-export function stepWireSize(step: unknown): number {
-  return packr.pack(step).byteLength;
-}
 
 /** The next batch of pending steps to send: at most MAX_STEPS_PER_MESSAGE
  * steps and at most MAX_STEPS_MESSAGE_BYTES of encoded steps, in order.
@@ -132,6 +113,18 @@ export type StatusCallback = (status: "connecting" | "connected" | "disconnected
  * @param onEditorReady - Callback when editor is initialized
  * @returns The collab connection
  */
+/**
+ * Build the collab WebSocket URL for a document (#2830). The docId goes
+ * into a single path segment, so it must be percent-encoded: a raw `/`
+ * breaks the single-segment route, a raw `#`/`?` truncates the URL
+ * (losing the query string), and a raw `%20` in a name is decoded by
+ * the server into a *different* file. The axum route percent-decodes
+ * the segment, so encoding here round-trips to the exact filename.
+ */
+export function buildCollabWsUrl(wsProtocol: string, host: string, docId: string): string {
+  return `${wsProtocol}//${host}/ws/collab/${encodeURIComponent(docId)}`;
+}
+
 export function initCollab(
   wsUrl: string,
   container: HTMLElement,
@@ -182,9 +175,27 @@ export function initCollab(
     if (onStatus) onStatus(status);
   };
 
+  // The server caps WebSocket messages at MAX_FRAME_BYTES (1 MiB;
+  // pkgs/id/src/frames.rs, applied as max_message_size in
+  // pkgs/id/src/web/collab.rs) and exceeding it closes the socket.
+  // On reconnect the INIT handler rebuilds the editor from server
+  // state, so one oversized STEPS message (e.g. a >1 MiB paste)
+  // would silently discard every unconfirmed local edit. Never send
+  // an over-cap message: dropping it keeps the socket — and the
+  // local document — alive, and the error status says why sync is
+  // stuck. Splitting oversized step batches is tracked separately.
+  const MAX_MESSAGE_BYTES = 1024 * 1024;
+
   // Encode and send a message (always uses currentWs)
   const send = (msgType: number, ...fields: unknown[]): void => {
     const data = packr.pack([msgType, ...fields]);
+    if (data.byteLength > MAX_MESSAGE_BYTES) {
+      console.error(
+        `[collab] not sending oversized message (type ${msgType}, ${data.byteLength} bytes > ${MAX_MESSAGE_BYTES} cap); local changes are preserved but cannot sync until they are smaller`,
+      );
+      updateStatus("error");
+      return;
+    }
     if (connected && currentWs && currentWs.readyState === WebSocket.OPEN) {
       currentWs.send(data);
     } else {
@@ -258,34 +269,50 @@ export function initCollab(
         );
         return;
       }
-      console.log(
-        "[collab] Sending",
-        batch.length,
-        "of",
-        sendable.steps.length,
-        "steps, version:",
-        sendable.version,
-      );
+      console.log("[collab] Sending", batch.length, "of", sendable.steps.length, "steps, version:", sendable.version);
       send(MSG.STEPS, sendable.version, batch, sendable.clientID);
     }
   };
 
   const handleMessage = (data: ArrayBuffer): void => {
-    let msg: unknown[];
+    let frame: unknown;
     try {
-      msg = unpackr.unpack(new Uint8Array(data)) as unknown[];
+      frame = unpackr.unpack(new Uint8Array(data));
     } catch (err) {
       console.error("[collab] Failed to decode MessagePack message:", err);
       return;
     }
-    const msgType = msg[0] as number;
+    if (!Array.isArray(frame)) {
+      console.error("[collab] Dropping malformed MessagePack frame: expected an array");
+      return;
+    }
+    const msg = frame as unknown[];
+    const msgType = msg[0];
+    if (typeof msgType !== "number" || !Number.isInteger(msgType)) {
+      console.error("[collab] Dropping malformed MessagePack frame: invalid message type");
+      return;
+    }
     console.log("[collab] handleMessage msgType:", msgType);
 
     switch (msgType) {
       case MSG.INIT: {
         // [0, version, doc, mode]
-        const version = msg[1] as number;
-        const doc = msg[2] as { type: string; content?: unknown[] };
+        const version = msg[1];
+        const doc = msg[2];
+        const docRecord =
+          doc !== null && typeof doc === "object" && !Array.isArray(doc) ? (doc as Record<string, unknown>) : null;
+        if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 0) {
+          console.error("[collab] Dropping malformed Init message: invalid version");
+          return;
+        }
+        if (
+          !docRecord ||
+          docRecord.type !== "doc" ||
+          (docRecord.content !== undefined && !Array.isArray(docRecord.content))
+        ) {
+          console.error("[collab] Dropping malformed Init message: invalid document");
+          return;
+        }
         const mode = ((msg[3] as string) || "raw") as ContentMode;
         documentMode = mode;
         console.log("[collab] Received Init, version:", version, "mode:", mode);
@@ -293,7 +320,7 @@ export function initCollab(
         if (!editorInstance) {
           // First connection — initialize the editor from scratch
           console.log("[collab] Initializing editor with server version:", version, "mode:", mode);
-          editorInstance = initEditor(container, doc, version, mode, sendCursor, filename);
+          editorInstance = initEditor(container, docRecord, version, mode, sendCursor, filename);
           myClientID = editorInstance.clientID;
           console.log("[collab] Our clientID:", myClientID);
 
@@ -316,7 +343,7 @@ export function initCollab(
           closeImageBrowser();
           editorInstance.view.destroy();
 
-          editorInstance = initEditor(container, doc, version, mode, sendCursor, filename);
+          editorInstance = initEditor(container, docRecord, version, mode, sendCursor, filename);
           myClientID = editorInstance.clientID;
           console.log("[collab] Reconnect: new clientID:", myClientID);
 
@@ -331,6 +358,10 @@ export function initCollab(
         // Start reconnect cleanup timer (will remove stale cursors after 1s)
         // Must be called after editor is initialized
         onInitReceived(editorInstance.view);
+        // A WebSocket opening is not enough to prove the collaboration
+        // session recovered: the server may accept and immediately drop it
+        // before sending Init. Reset only after the protocol is initialized.
+        reconnectAttempts = 0;
         break;
       }
 
@@ -530,7 +561,6 @@ export function initCollab(
       }
       console.log("[collab] Connected to", wsUrl);
       connected = true;
-      reconnectAttempts = 0;
       updateStatus("connected");
       if (editorInstance) {
         setConnectionState(editorInstance.view, "connected");
