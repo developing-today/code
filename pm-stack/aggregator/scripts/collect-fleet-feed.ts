@@ -66,6 +66,9 @@
 // USAGE_SNAPSHOT_OUTBOX_PATH (the §4 writers' outbox JSONL — stewardship
 // and check-usage append records there; each collection drains it into
 // the feed's snapshots field for the laptop store to ingest),
+// BURN_HISTORY_STATE_PATH (#3933: the collector's persisted
+// pool-window observations the burn history + measured rates are
+// derived from; beside the charges-surfaced state by default),
 // CHARGE_CANDIDATES_PATH / CHARGES_SURFACED_STATE_PATH (#1057: the
 // producer's candidates file and the collector's surfaced-once state),
 // SUPABASE_PROJECT_REF (else the Bitwarden supabase.muse-dev2.project-ref secret;
@@ -94,6 +97,7 @@ import type {
   AaSection,
   DnsSection,
   OrchestrationSection,
+  BurnSegment,
   QuotaPool,
   SessionFeedEntry,
   SessionRecord,
@@ -104,6 +108,12 @@ import { chargeServiceCatalog } from "../src/charges-catalog.ts";
 import { filterNewUnmatched, mergeChargeRows, parseChargeCandidates } from "../src/charges-collect.ts";
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
+import {
+  deriveBurnHistory,
+  mergeObservations,
+  observationsFromPools,
+  type PoolWindowObservation,
+} from "../src/burn-history.ts";
 import {
   extractCharges,
   extractPaygLines,
@@ -264,6 +274,7 @@ const quotaRegistryPath = process.env.QUOTA_REGISTRY_PATH ?? join(HIDDEN, "provi
 const snapshotOutboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN, "usage-snapshot-outbox.jsonl");
 const chargeCandidatesPath = process.env.CHARGE_CANDIDATES_PATH ?? join(HIDDEN, "charges-candidates.json");
 const chargesSurfacedStatePath = process.env.CHARGES_SURFACED_STATE_PATH ?? join(HIDDEN, "charges-surfaced-state.json");
+const burnHistoryStatePath = process.env.BURN_HISTORY_STATE_PATH ?? join(HIDDEN, "burn-history-state.json");
 const opencodeConfigPath = process.env.AA_OPENCODE_CONFIG_PATH ?? join(PKG, "..", "..", ".opencode", "opencode.jsonc");
 const opencodeRuntimeConfigPath =
   process.env.AA_OPENCODE_RUNTIME_CONFIG_PATH ?? join(HOME, ".local", "state", "opencode", "opencode-runtime.jsonc");
@@ -962,11 +973,50 @@ async function main(): Promise<void> {
   // instead of lying quietly. Fail-soft: any git problem becomes
   // state "unknown" with the reason, never a failed collection.
   const checkout = await computeCheckoutDrift(join(PKG, "..", ".."));
+
+  // --- historical burn + measured rate (#3933) -------------------------
+  // Persist this run's pool-window observations beside the
+  // charges-surfaced state, then derive completed reset-period
+  // segments and measured per-pool rates from the series
+  // (src/burn-history.ts). Fail-soft like every other section: no
+  // readable state = this run's observations only, which honestly
+  // yields no segments and no rates yet.
+  let burnSegments: BurnSegment[] = [];
+  try {
+    let priorObservations: PoolWindowObservation[] = [];
+    try {
+      const raw: unknown = JSON.parse(await readFile(burnHistoryStatePath, "utf8"));
+      if (Array.isArray(raw)) priorObservations = raw as PoolWindowObservation[];
+    } catch {
+      /* no state yet: history starts with this run */
+    }
+    const mergedObservations = mergeObservations(
+      priorObservations,
+      observationsFromPools(pools, now.toISOString()),
+      now.getTime(),
+    );
+    try {
+      await writeFile(burnHistoryStatePath, JSON.stringify(mergedObservations, null, 2));
+    } catch {
+      console.error("collector: burn-history state write failed; history restarts next run");
+    }
+    const derived = deriveBurnHistory(mergedObservations);
+    burnSegments = derived.segments;
+    for (const pool of pools) {
+      const rate = derived.burnTokensPerMin.get(pool.id);
+      if (rate !== undefined) pool.burnTokensPerMin = rate;
+    }
+    markSection("burnHistory", burnSegments.length || derived.burnTokensPerMin.size ? "ok" : "skipped");
+  } catch (err) {
+    console.error("collector: burn-history derivation failed; burn stays empty this run");
+    markSection("burnHistory", "error", err);
+  }
+
   const feed: FleetFeed = assembleCollectorFeed({
     generatedAt: now.toISOString(),
     checkout,
     meta: { sections: sectionStatuses },
-    quota: { pools, burn: [], choices: computeChoices(pools, now.getTime()) },
+    quota: { pools, burn: burnSegments, choices: computeChoices(pools, now.getTime()) },
     attention,
     ...(orchestration ? { orchestration } : {}),
     ...(dns ? { dns } : {}),
