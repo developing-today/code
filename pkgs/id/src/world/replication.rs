@@ -1580,6 +1580,57 @@ mod tests {
         assert_eq!(receiver.header_version(), 1);
     }
 
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+
+        #[test]
+        fn snapshot_versions_never_decrease_and_refusals_preserve_state(
+            versions in proptest::collection::vec(
+                JOURNAL_VERSION..=MAX_JOURNAL_VERSION,
+                1..12usize,
+            ),
+        ) {
+            // Property form of the #4487 invariant (oracle: the tracker
+            // state itself): over arbitrary snapshot-version sequences,
+            // the accepted header version is monotonically
+            // non-decreasing, and every refused (downgrade) snapshot
+            // leaves the complete tracker state — version, cursor, and
+            // last frame digest — exactly as it was.
+            let key = signing_key(1);
+            let mut receiver = tracker(&key);
+            let mut prev = [0u8; 32];
+            for version in versions {
+                let before_version = receiver.header_version();
+                let before_cursor = receiver.cursor();
+                let before_digest = receiver.last_frame_digest;
+                let frame = signed_snapshot(
+                    &key,
+                    version,
+                    prev,
+                    entry_payload_with_version(version),
+                );
+                match receiver.accept(&frame) {
+                    Ok(_) => {
+                        proptest::prop_assert!(version >= before_version);
+                        proptest::prop_assert_eq!(receiver.header_version(), version);
+                        prev = frame_digest(&frame);
+                    }
+                    Err(err) => {
+                        proptest::prop_assert!(version < before_version);
+                        proptest::prop_assert_eq!(
+                            err,
+                            ReplicationError::HeaderVersionChanged
+                        );
+                        proptest::prop_assert_eq!(receiver.header_version(), before_version);
+                        proptest::prop_assert_eq!(receiver.cursor(), before_cursor);
+                        proptest::prop_assert_eq!(receiver.last_frame_digest, before_digest);
+                    }
+                }
+                proptest::prop_assert!(receiver.header_version() >= before_version);
+            }
+        }
+    }
+
     /// A signed snapshot frame over `payload` on the version-`version`
     /// chain, with frame-chain digest `prev`.
     fn signed_snapshot(
