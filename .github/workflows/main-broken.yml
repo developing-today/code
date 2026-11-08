@@ -381,9 +381,14 @@ jobs:
               --search "flake-fix in:title Breakage-ID: $BID" --json number \
               --jq '.[].number' | grep -vx "${INUM:-0}" | head -n1 || true)
             if [ -z "$existing_fix" ]; then
+              # Distinct flake-fix label, NOT main-broken: the auxiliary
+              # issue body carries the Breakage-ID, so with the main-broken
+              # label it would match Identify's canonical-breakage lookup
+              # (label + ID search) and steal the breakage from the
+              # original issue (Codex finding, PR #7806).
               gh issue create --repo "$GH_REPO" \
                 --title "flake-fix: $WF - Breakage-ID: $BID" \
-                --label "kind/ci" --label "main-broken" \
+                --label "kind/ci" --label "flake-fix" \
                 --body "Third flake-suspect strike for Breakage-ID $BID (breakage issue #$INUM). The scout leg of the main-broken chain files this per the #2176 failure-triage design: diagnose and deflake the failing job(s) named in the scout notes on #$INUM." || true
             fi
           fi
