@@ -609,14 +609,38 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
         let after = &line[heredoc_start + 2..];
         // Check it's not <<< (here-string)
         if !after.starts_with('<') {
-            let delimiter = after.trim().to_owned();
-            if !delimiter.is_empty() {
+            let after = after.trim_start();
+            if !after.is_empty() {
+                let delimiter_end = after
+                    .char_indices()
+                    .find(|(_, ch)| ch.is_whitespace())
+                    .map(|(index, _)| index)
+                    .unwrap_or(after.len());
+                let raw_delimiter = &after[..delimiter_end];
+                let trailing = after[delimiter_end..].trim();
+                if !trailing.is_empty() {
+                    bail!("unexpected trailing text after heredoc delimiter: {trailing}");
+                }
+
+                let delimiter = raw_delimiter
+                    .strip_prefix('\'')
+                    .and_then(|value| value.strip_suffix('\''))
+                    .or_else(|| {
+                        raw_delimiter
+                            .strip_prefix('"')
+                            .and_then(|value| value.strip_suffix('"'))
+                    })
+                    .unwrap_or(raw_delimiter);
+                if delimiter.is_empty() {
+                    bail!("heredoc delimiter cannot be empty");
+                }
+
                 let original_line = line[..heredoc_start].trim().to_owned();
                 if has_trailing_placeholder(&original_line) {
                     return Err(trailing_placeholder_error());
                 }
                 return Ok(ReplInput::NeedMore {
-                    delimiter,
+                    delimiter: delimiter.to_owned(),
                     lines: Vec::new(),
                     original_line,
                 });
@@ -1001,6 +1025,30 @@ mod tests {
             }
             _ => panic!("expected NeedMore"),
         }
+    }
+
+    #[test]
+    fn test_preprocess_heredoc_single_quoted_delimiter() {
+        match preprocess_repl_line("put - name <<'EOF'").unwrap() {
+            ReplInput::NeedMore { delimiter, .. } => assert_eq!(delimiter, "EOF"),
+            _ => panic!("expected NeedMore"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_heredoc_double_quoted_delimiter() {
+        match preprocess_repl_line("put - name <<\"EOF\"").unwrap() {
+            ReplInput::NeedMore { delimiter, .. } => assert_eq!(delimiter, "EOF"),
+            _ => panic!("expected NeedMore"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_heredoc_refuses_trailing_tokens() {
+        let error = preprocess_repl_line("put - name <<EOF extra tokens")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("extra tokens"), "{error}");
     }
 
     #[test]
