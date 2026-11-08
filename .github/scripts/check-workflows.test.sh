@@ -127,6 +127,12 @@ EOF
 run_check "$TMP/bad-using-action/action.yml"
 expect_fail "action metadata with runs.using: banana"
 
+# Cases 7-11 exercise the PyYAML branch of the validator (per-runtime
+# fields and composite step shapes). The structural fallback is an
+# explicitly supported, reduced contract, and workflow-lint.yml
+# tolerates PyYAML being unavailable — so these cases run only
+# when PyYAML is importable, and are skipped (not failed) otherwise.
+if python3 -c 'import yaml' >/dev/null 2>&1; then
 # 7. A node action with no runs.main fails.
 mkdir -p "$TMP/node-no-main-action"
 cat >"$TMP/node-no-main-action/action.yml" <<'EOF'
@@ -188,5 +194,8 @@ runs:
 EOF
 run_check "$TMP/composite-no-shell-action/action.yml"
 expect_fail "composite run step without shell"
+else
+  echo "skip: PyYAML-branch contract cases (PyYAML unavailable; reduced fallback contract)"
+fi
 
 echo "check-workflows.test: all contract tests passed"
