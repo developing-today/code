@@ -426,5 +426,89 @@ class ProcScanFailClosedTests(unittest.TestCase):
             shutil.rmtree(root, ignore_errors=True)
 
 
+
+class FdOccupancyTests(unittest.TestCase):
+    """#6898: occupancy must see open fds and cmdline paths, not only cwds."""
+
+    def _wait_occupied(self, root, want=True):
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if wr.tree_occupied(root) == want:
+                return True
+            time.sleep(0.1)
+        return wr.tree_occupied(root) == want
+
+    def test_open_fd_in_tree_occupies_with_cwd_outside(self):
+        root = tempfile.mkdtemp(prefix="wtreaper-fd-")
+        holder = None
+        try:
+            held = os.path.join(root, "held.txt")
+            with open(held, "w") as fh:
+                fh.write("x")
+            # The path reaches the child via the environment, so its
+            # cmdline carries no reference to the tree: only the open
+            # fd can give it away. Its cwd is outside the tree.
+            holder = subprocess.Popen(
+                [sys.executable, "-c",
+                 "import os, time; fh = open(os.environ['WR_HELD']); time.sleep(60)"],
+                cwd="/", env={**os.environ, "WR_HELD": held})
+            self.assertTrue(self._wait_occupied(root),
+                            "a process holding an open file in the tree must occupy it")
+        finally:
+            if holder is not None:
+                holder.terminate()
+                holder.wait(timeout=10)
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_cmdline_path_in_tree_occupies(self):
+        root = tempfile.mkdtemp(prefix="wtreaper-cmdline-")
+        holder = None
+        try:
+            target = os.path.join(root, "mentioned.txt")
+            # The child never opens the file; the tree path appears
+            # only as an argv token in its cmdline.
+            holder = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)", target],
+                cwd="/")
+            self.assertTrue(self._wait_occupied(root),
+                            "a cmdline path inside the tree must occupy it")
+        finally:
+            if holder is not None:
+                holder.terminate()
+                holder.wait(timeout=10)
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_reap_tree_recheck_sees_fd_holder(self):
+        root = tempfile.mkdtemp(prefix="wtreaper-fd-reap-")
+        holder = None
+        try:
+            held = os.path.join(root, "held.txt")
+            with open(held, "w") as fh:
+                fh.write("x")
+            holder = subprocess.Popen(
+                [sys.executable, "-c",
+                 "import os, time; fh = open(os.environ['WR_HELD']); time.sleep(60)"],
+                cwd="/", env={**os.environ, "WR_HELD": held})
+            self.assertTrue(self._wait_occupied(root))
+            rec = {"tree": root, "branch": "queue/test", "action": "candidate"}
+            git_calls = []
+
+            def fake_run_git(*args, **kwargs):
+                git_calls.append(args)
+                return 0, "", ""
+
+            with mock.patch.object(wr, "run_git", fake_run_git), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                result = wr.reap_tree("/nonexistent-primary", rec, {})
+            self.assertFalse(result)
+            self.assertEqual(rec["reason"], "occupied-at-removal")
+            self.assertEqual(git_calls, [], "no git call may run while an fd holder lives")
+            self.assertTrue(os.path.isdir(root), "candidate tree must be retained")
+        finally:
+            if holder is not None:
+                holder.terminate()
+                holder.wait(timeout=10)
+            shutil.rmtree(root, ignore_errors=True)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
