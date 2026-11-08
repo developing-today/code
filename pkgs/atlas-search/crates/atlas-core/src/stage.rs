@@ -231,9 +231,15 @@ impl Registry {
         now: &str,
     ) -> Result<StagingUnit> {
         provision_staging_db(staging_db)?;
+        // Persist an absolute path: a relative one is only meaningful
+        // in the provisioning process's working directory, so a
+        // registry read from any other directory would resolve the
+        // unit's db_uri to a different (or nonexistent) database
+        // (Codex P2, PR #7365).
+        let db_path = absolute_path(staging_db);
         let unit = StagingUnit {
             unit_id: unit_id.to_string(),
-            db_uri: staging_db.to_string_lossy().into_owned(),
+            db_uri: db_path.to_string_lossy().into_owned(),
             owner: owner.to_string(),
             sensitivity,
             state: UnitState::Open,
@@ -241,7 +247,16 @@ impl Registry {
             created_at: now.to_string(),
             updated_at: now.to_string(),
         };
-        self.register(&unit)?;
+        // If registration fails, remove the just-provisioned database:
+        // leaving it behind would strand an unregistered staging DB
+        // that a retry can neither re-provision (the non-empty check
+        // refuses) nor recover through the CLI (Codex P2, PR #7365).
+        // Cleanup is best-effort; the registration error is the one
+        // the caller needs.
+        if let Err(e) = self.register(&unit) {
+            remove_staging_db(&db_path);
+            return Err(e);
+        }
         Ok(unit)
     }
 
@@ -355,6 +370,35 @@ fn row_to_unit(row: &rusqlite::Row<'_>) -> rusqlite::Result<StagingUnit> {
     })
 }
 
+/// Resolve `path` to an absolute path. The file exists by the time
+/// provisioning persists it, so canonicalize is the primary route;
+/// fall back to anchoring a relative path at the current directory.
+fn absolute_path(path: &Path) -> std::path::PathBuf {
+    if let Ok(p) = std::fs::canonicalize(path) {
+        return p;
+    }
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    match std::env::current_dir() {
+        Ok(cwd) => cwd.join(path),
+        Err(_) => path.to_path_buf(),
+    }
+}
+
+/// Best-effort removal of a staging database file and its SQLite
+/// sidecars (-wal / -shm / -journal). Errors are ignored on purpose:
+/// this runs while returning a registration error, and that error —
+/// not a cleanup failure — is what the caller must see.
+fn remove_staging_db(path: &Path) {
+    let _ = std::fs::remove_file(path);
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut sidecar = path.as_os_str().to_owned();
+        sidecar.push(suffix);
+        let _ = std::fs::remove_file(std::path::PathBuf::from(sidecar));
+    }
+}
+
 fn ensure_registry(conn: &Connection) -> Result<()> {
     conn.execute_batch(REGISTRY_V1_DDL)
         .map_err(|e| Error::backend(format!("registry: applying v1 DDL: {e}")))
@@ -363,4 +407,61 @@ fn ensure_registry(conn: &Connection) -> Result<()> {
 fn open(path: &Path) -> Result<Connection> {
     Connection::open(path)
         .map_err(|e| Error::backend(format!("staging: opening {}: {e}", path.display())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Oracle: the filesystem after a failed provision. When the
+    /// registry INSERT fails (here: the registry table is gone, the
+    /// deterministic stand-in for a lock timeout), the newly
+    /// provisioned staging DB must not be left behind — a retry of
+    /// the same provision command must be possible once the
+    /// transient failure clears (Codex P2, PR #7365).
+    #[test]
+    fn failed_registration_removes_the_new_staging_db() {
+        let dir =
+            std::env::temp_dir().join(format!("atlas-stage-unit-{}-regfail", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let conn = Connection::open_in_memory().expect("memory registry");
+        ensure_registry(&conn).expect("registry ddl");
+        conn.execute_batch("DROP TABLE staging_units")
+            .expect("drop registry table so register() fails");
+        let reg = Registry { conn };
+
+        let db = dir.join("unit.db");
+        let err = reg
+            .provision(
+                &db,
+                "task-12742",
+                "repo-worker-code",
+                Tier::Internal,
+                "2026-11-08T00:00:00Z",
+            )
+            .expect_err("provision must fail when registration fails");
+        assert!(
+            err.to_string().contains("registry: registering"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !db.exists(),
+            "a failed registration must not strand the provisioned staging DB"
+        );
+
+        // And the retry path works once registration can succeed:
+        // the same provision command against a healthy registry
+        // succeeds instead of dying on the non-empty check.
+        let reg2 = Registry::in_memory().expect("healthy registry");
+        reg2.provision(
+            &db,
+            "task-12742",
+            "repo-worker-code",
+            Tier::Internal,
+            "2026-11-08T00:00:00Z",
+        )
+        .expect("retry after cleanup must succeed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

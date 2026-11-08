@@ -164,3 +164,41 @@ fn state_transition_moves_a_unit_between_polls() {
         "moving an unknown unit must fail loudly"
     );
 }
+
+/// Oracle: the registry as read from another process. Provisioning
+/// with a relative `--db` path must persist an absolute db_uri —
+/// a relative one would resolve against whatever working directory
+/// later reads the registry (Codex P2, PR #7365).
+#[test]
+fn provision_persists_an_absolute_db_path() {
+    let rel = PathBuf::from(format!("atlas-stage-relative-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&rel);
+    let reg = Registry::in_memory().expect("registry");
+
+    let record = reg
+        .provision(
+            &rel.join("unit.db"),
+            "task-12742-rel",
+            "repo-worker-code",
+            Tier::Internal,
+            NOW,
+        )
+        .expect("provision with a relative path");
+
+    let db_path = PathBuf::from(&record.db_uri);
+    assert!(
+        db_path.is_absolute(),
+        "db_uri must be persisted absolute, got {}",
+        record.db_uri
+    );
+    assert!(
+        db_path.exists(),
+        "the persisted db_uri must name the provisioned DB"
+    );
+    let got = reg
+        .lookup("task-12742-rel")
+        .expect("lookup")
+        .expect("unit present");
+    assert_eq!(got.db_uri, record.db_uri);
+    let _ = std::fs::remove_dir_all(&rel);
+}
