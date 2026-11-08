@@ -110,7 +110,13 @@ const EXCLUDED_CATEGORIES = new Set(["Transfer", "Payment", "Interest", "Bank Fe
 
 function argValue(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
-  return i >= 0 ? process.argv[i + 1] : undefined;
+  if (i < 0) return undefined;
+  const value = process.argv[i + 1];
+  if (value === undefined || value.startsWith("--")) {
+    console.error(`producer: ${flag} requires a value${value === undefined ? "" : ` (got ${value})`}`);
+    process.exit(2);
+  }
+  return value;
 }
 
 function isoDay(d: Date): string {
@@ -404,9 +410,14 @@ async function gmailCandidates(
 }
 
 async function main(): Promise<void> {
+  // Parse values before any connector call or file write. Staged periods
+  // come from their manifest, so --start/--end remain ignored there.
+  const outArg = argValue("--out");
+  const explicitStart = INPUTS_DIR ? undefined : argValue("--start");
+  const explicitEnd = INPUTS_DIR ? undefined : argValue("--end");
   const now = new Date();
-  let start = argValue("--start") ?? isoDay(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)));
-  let end = argValue("--end") ?? isoDay(now);
+  let start = explicitStart ?? isoDay(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)));
+  let end = explicitEnd ?? isoDay(now);
   if (INPUTS_DIR) {
     // Staged mode: the fetcher's manifest period governs — the staged
     // payloads were fetched for exactly that window.
@@ -418,9 +429,22 @@ async function main(): Promise<void> {
     // otherwise unreal manifest period must fail the run here, not
     // surface as a written candidates file with period {}.
     ({ start, end } = stagedManifestPeriod(manifest));
+  } else {
+    if (explicitStart !== undefined && !isRealCalendarDate(explicitStart)) {
+      console.error(`producer: --start value ${JSON.stringify(explicitStart)} is not a real calendar date (expected YYYY-MM-DD)`);
+      process.exit(2);
+    }
+    if (explicitEnd !== undefined && !isRealCalendarDate(explicitEnd)) {
+      console.error(`producer: --end value ${JSON.stringify(explicitEnd)} is not a real calendar date (expected YYYY-MM-DD)`);
+      process.exit(2);
+    }
+    if (end < start) {
+      console.error(`producer: --start ${start} must be on or before --end ${end}`);
+      process.exit(2);
+    }
   }
   const outPath =
-    argValue("--out") ??
+    outArg ??
     process.env.CHARGE_CANDIDATES_PATH ??
     join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/charges-candidates.json");
 
