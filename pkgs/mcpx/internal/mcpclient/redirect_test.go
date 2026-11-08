@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -171,4 +173,47 @@ func TestSameHTTPOriginNormalizesSchemeHostAndDefaultPort(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHTTPTransportSameOriginRedirectLoopIsBounded(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.Redirect(w, r, "/loop", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	tr, err := NewHTTP(HTTPOptions{URL: srv.URL + "/loop", Headers: map[string]string{"X-API-Key": redirectTestAPIKey}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Abandon()
+
+	err = tr.Send(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	if err == nil || !strings.Contains(err.Error(), "stopped after 10 redirects") {
+		t.Fatalf("request error = %v, want the redirect-count bound", err)
+	}
+	if got := hits.Load(); got < 2 || got > maxRedirects+1 {
+		t.Fatalf("redirect loop reached the server %d times, want between 2 and %d", got, maxRedirects+1)
+	}
+}
+
+func TestDeleteSessionReportsRefusedCrossOriginRedirect(t *testing.T) {
+	target, seen := newRedirectTarget(t)
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+
+	tr, err := NewHTTP(HTTPOptions{URL: source.URL, Headers: map[string]string{"X-API-Key": redirectTestAPIKey}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr.Resume(HTTPHandoff{SessionID: "sess-redirect"})
+
+	err = tr.closeSession()
+	if err == nil || !strings.Contains(err.Error(), "http 307") {
+		t.Fatalf("closeSession = %v, want the unfollowed 307 reported as a termination failure", err)
+	}
+	assertRedirectTargetNotReached(t, seen)
 }

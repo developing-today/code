@@ -87,7 +87,16 @@ func sameHTTPOrigin(a, b *url.URL) bool {
 	return port(a) == port(b)
 }
 
+// maxRedirects mirrors the bound Go's default redirect policy applies
+// when CheckRedirect is nil. A custom policy replaces that default, so
+// it must retain the bound itself: without it a same-origin redirect
+// loop is followed forever.
+const maxRedirects = 10
+
 func refuseCrossOriginRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return errors.New("stopped after 10 redirects")
+	}
 	if len(via) > 0 && !sameHTTPOrigin(via[0].URL, req.URL) {
 		return http.ErrUseLastResponse
 	}
@@ -728,6 +737,12 @@ func (t *HTTPTransport) deleteSession(ctx context.Context) error {
 		return err
 	}
 	_ = resp.Body.Close()
+	if resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest {
+		// An unfollowed redirect (a refused cross-origin redirect above
+		// all) means the DELETE was never delivered: the session is
+		// still live upstream, so report it instead of success.
+		return fmt.Errorf("delete %s: http %d: redirect not followed", t.url, resp.StatusCode)
+	}
 	if resp.StatusCode >= http.StatusBadRequest && resp.StatusCode != http.StatusNotFound {
 		return fmt.Errorf("delete %s: http %d", t.url, resp.StatusCode)
 	}
