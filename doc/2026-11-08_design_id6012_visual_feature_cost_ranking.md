@@ -79,7 +79,7 @@ If the viewer has no explicit minimum, use the product default already establish
 
 The ranking system is a reason for asking #5970's resolver to substitute, not a second fallback system:
 
-1. Evaluate the primary feature against the target profile, world policy, and viewer threshold.
+1. Evaluate the primary feature against the target profile, world policy, and the viewer minimum (or a matching person exception).
 2. If the feature is unranked, incompatible, over a hard runtime limit, world-disabled, or below the viewer minimum, ask the #5970 resolver for the next candidate in its authored chain.
 3. Evaluate each candidate under the same world policy, profile compatibility, safety checks, and viewer/person gates. Display the first candidate that passes. Continue in the chain's declared order; do not invent a “nearest looking” substitute or skip a candidate based on an undocumented heuristic.
 4. Preserve #5970's terminal outcome. In particular, a rank rejection by itself does not authorize hiding. Hide only where the world policy/fallback chain explicitly says to hide; otherwise use the authored eligible fallback. If the chain does not specify an outcome for an exhausted chain, leave that as a parent-design question (already recorded on #6012) rather than inventing one here. In particular, this design does not adopt PR #7019's proposed unfiltered-base terminal outcome as settled until #5970 owners reconcile it.
