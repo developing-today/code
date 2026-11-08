@@ -45,7 +45,7 @@ swallowed.
 | OpenCode server API (sessions + burn attribution) | Live at the collection instant | Unreachable server = empty attention section, marked `error`, feed still publishes |
 | Quota gatherer (`quota-current.json`, keeper `check-usage`) | The keeper's own tick | Overlaid when present (#1151); absent file = stewardship reads stand alone |
 | Usage snapshot outbox (hub §4 writers) | Drained at every collection | Records ride the feed's `snapshots` field; the laptop store dedupes on (service, metric, ts, value) |
-| Burn-history observation state (#3933) | One observation per pool window appended at every collection | Persisted beside the charges-surfaced state (`burn-history-state.json`, `BURN_HISTORY_STATE_PATH` override); 35-day retention, capped per window; fail-soft — a lost state restarts history honestly empty |
+| Burn-history observation state (#3933) | One observation per pool window plus one live token total per pool appended at every collection | Persisted beside the configured charges-surfaced state (`burn-history-state.json` in `dirname(CHARGES_SURFACED_STATE_PATH)`, `BURN_HISTORY_STATE_PATH` override); 35-day retention, capped per window; fail-soft — a lost state restarts history honestly empty |
 
 The collector itself runs on the laptop as a user timer declared in
 the pm-stack NixOS module (the sandbox producer was retired
@@ -53,11 +53,19 @@ the pm-stack NixOS module (the sandbox producer was retired
 
 ## Measured-rate contract (#3933)
 
-- `burnTokensPerMin` is **measured, never estimated**: the token
-  delta between the two most recent observations of one tokens-unit
+- `burnTokensPerMin` is **measured, never estimated**. Two
+  derivations, both in `src/burn-history.ts`: (a) the token delta
+  between the two most recent observations of one tokens-unit
   window inside the same reset period, divided by the minutes
-  between them, and only when that pair is at most
-  `RATE_WINDOW_MS` (120 min) apart.
+  between them, only when that pair is at most `RATE_WINDOW_MS`
+  (120 min) apart; (b) the live derivation — the delta between a
+  pool's two most recent session-attribution token totals
+  (cumulative tokens of the sessions `poolBurn` attributes to the
+  pool at each collection). Today's quota sources emit only
+  percent/USD windows, so (b) is the derivation that fires live
+  and (a) is armed for the first tokens-unit window source. A
+  shrinking active set makes (b)'s delta negative and yields no
+  rate.
 - Pools without a qualifying pair **omit the field**. Fixture rates
   (`src/sources/fixtures.ts`) exist only in fixture data and never
   reach a live pool.

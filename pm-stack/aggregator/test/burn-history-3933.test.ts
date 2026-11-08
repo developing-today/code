@@ -6,12 +6,16 @@
 import { describe, expect, test } from "bun:test";
 import {
   deriveBurnHistory,
+  deriveMeasuredRatesFromPoolTokens,
   mergeObservations,
+  mergePoolTokenObservations,
   observationsFromPools,
+  MAX_OBSERVATIONS_PER_WINDOW,
   RATE_WINDOW_MS,
+  type PoolTokenObservation,
   type PoolWindowObservation,
 } from "../src/burn-history.ts";
-import { sanitizeQuotaView } from "../src/feed.ts";
+import { isBurnSegment, sanitizeQuotaView } from "../src/feed.ts";
 import type { QuotaPool, QuotaView } from "../src/model.ts";
 
 function obs(pool: string, used: number, at: string, resetsAt: string | null, unit = "tokens"): PoolWindowObservation {
@@ -96,6 +100,121 @@ describe("observationsFromPools + mergeObservations (collector mapping)", () => 
     const b = obs("claude", 200, T1, R1);
     const merged = mergeObservations([b], [a, b], Date.parse(T2));
     expect(merged).toEqual([a, b]);
+  });
+});
+
+describe("measured rates from live session-token attribution (PR #7354 Codex P2)", () => {
+  const tok = (pool: string, activeTokens: number, at: string): PoolTokenObservation => ({
+    pool,
+    provider: "meta",
+    activeTokens,
+    at,
+  });
+
+  test("rate is the delta of consecutive pool token totals over their minutes", () => {
+    const rates = deriveMeasuredRatesFromPoolTokens([tok("claude", 1000, T0), tok("claude", 1600, T1)]);
+    expect(rates.get("claude")).toBe(10);
+  });
+
+  test("shrinking active set, stale pair, and single read yield no rate", () => {
+    expect(deriveMeasuredRatesFromPoolTokens([tok("a", 900, T0), tok("a", 100, T1)]).size).toBe(0);
+    const stale = new Date(Date.parse(T0) + RATE_WINDOW_MS + 60000).toISOString();
+    expect(deriveMeasuredRatesFromPoolTokens([tok("a", 100, T0), tok("a", 200, stale)]).size).toBe(0);
+    expect(deriveMeasuredRatesFromPoolTokens([tok("a", 100, T0)]).size).toBe(0);
+    const merged = mergePoolTokenObservations([tok("a", 100, T0)], [tok("a", 100, T0)], Date.parse(T2));
+    expect(merged).toHaveLength(1);
+  });
+});
+
+// Property-based coverage (PR #7354 Codex P1; testing doctrine:
+// invariants + a generator + a decidable oracle). Generator: a
+// seeded PRNG (mulberry32) producing arbitrary observation series;
+// oracles: the feed's own isBurnSegment validator, hand recomputation
+// of the last-pair rate, and the merge/retention bounds themselves.
+describe("burn-history invariants over generated series", () => {
+  function mulberry32(seed: number) {
+    return () => {
+      seed |= 0;
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function genSeries(rand: () => number, pool: string, n: number): PoolWindowObservation[] {
+    const out: PoolWindowObservation[] = [];
+    let t = Date.parse("2026-10-01T00:00:00Z");
+    let used = 0;
+    let reset = "2026-10-01T05:00:00Z";
+    for (let i = 0; i < n; i++) {
+      t += Math.floor(rand() * 90 + 1) * 60000;
+      if (rand() < 0.25) {
+        // reset: schedule moves and usage restarts low
+        reset = new Date(t + 5 * 3600000).toISOString();
+        used = Math.floor(rand() * 50);
+      } else {
+        used += Math.floor(rand() * 500);
+      }
+      out.push(obs(pool, used, new Date(t).toISOString(), reset, rand() < 0.8 ? "tokens" : "usd"));
+    }
+    return out;
+  }
+
+  test("every derived segment passes the feed validator and respects period bounds", () => {
+    for (let seed = 1; seed <= 40; seed++) {
+      const rand = mulberry32(seed);
+      const series = genSeries(rand, "claude", 30);
+      const { segments } = deriveBurnHistory(series);
+      for (const seg of segments) {
+        expect(isBurnSegment(seg)).toBe(true);
+        const inPeriod = series.filter((o) => o.at >= seg.from && o.at <= seg.to);
+        expect(seg.tokens <= Math.max(...inPeriod.map((o) => o.used))).toBe(true);
+        expect(inPeriod.some((o) => o.used === seg.tokens && o.at === seg.to)).toBe(true);
+      }
+    }
+  });
+
+  test("per-window isolation: another pool's series never changes a pool's derivation", () => {
+    for (let seed = 100; seed < 120; seed++) {
+      const rand = mulberry32(seed);
+      const a = genSeries(rand, "a", 25);
+      const b = genSeries(rand, "b", 25);
+      const solo = deriveBurnHistory(a);
+      const mixed = deriveBurnHistory([...b, ...a]);
+      expect(mixed.segments.filter((s) => s.pool === "a")).toEqual(solo.segments);
+      expect(mixed.burnTokensPerMin.get("a")).toBe(solo.burnTokensPerMin.get("a"));
+    }
+  });
+
+  test("merge is idempotent, capped, and prunes past retention", () => {
+    const rand = mulberry32(7);
+    const now = Date.parse("2026-11-05T00:00:00Z");
+    const fresh = genSeries(rand, "claude", 40);
+    const once = mergeObservations([], fresh, now);
+    const twice = mergeObservations(once, fresh, now);
+    expect(twice).toEqual(once);
+    const many: PoolWindowObservation[] = [];
+    for (let i = 0; i < MAX_OBSERVATIONS_PER_WINDOW + 50; i++) {
+      many.push(obs("claude", i, new Date(Date.parse("2026-11-01T00:00:00Z") + i * 60000).toISOString(), R1));
+    }
+    expect(mergeObservations([], many, Date.parse("2026-11-02T00:00:00Z")).length).toBe(MAX_OBSERVATIONS_PER_WINDOW);
+    const old = obs("claude", 1, "2025-01-01T00:00:00Z", R1);
+    expect(mergeObservations([], [old], now)).toEqual([]);
+  });
+
+  test("a reset between the last pair always excludes the rate", () => {
+    for (let seed = 200; seed < 230; seed++) {
+      const rand = mulberry32(seed);
+      const series = genSeries(rand, "claude", 12).filter((o) => o.unit === "tokens");
+      if (series.length < 2) continue;
+      const last = series[series.length - 1]!;
+      const withReset: PoolWindowObservation[] = [
+        ...series.slice(0, -1),
+        { ...last, used: 1, resetsAt: "2027-01-01T00:00:00Z" },
+      ];
+      expect(deriveBurnHistory(withReset).burnTokensPerMin.has("claude")).toBe(false);
+    }
   });
 });
 

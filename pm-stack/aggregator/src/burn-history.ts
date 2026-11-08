@@ -22,6 +22,18 @@
 // without supporting observations yield nothing. Segments exist
 // only for tokens-unit windows for the same reason — BurnSegment
 // .tokens must be tokens, not a relabelled percent or dollar.
+//
+// Live token source (Codex review on PR #7354): today's quota
+// sources emit only percent ("other", limit 100) or USD windows —
+// extractQuotaPools and the gatherer's percent windows alike — so
+// window-derived rates/segments stay honestly empty until a
+// tokens-unit window source exists. The collector's one real
+// measured token stream is OpenCode session attribution
+// (poolBurn over tokensBySession): PoolTokenObservation carries
+// the per-pool sum of active sessions' cumulative tokens at each
+// collection, and deriveMeasuredRatesFromPoolTokens turns
+// consecutive sums into the measured rate. A shrinking active set
+// makes the delta negative and yields no rate — never a guess.
 import type { BurnSegment, QuotaPool } from "./model.ts";
 
 /** One pool window as observed at one collection instant. */
@@ -137,6 +149,73 @@ export interface BurnHistory {
   segments: BurnSegment[];
   /** pool id -> measured tokens/min (only pools with a real pair). */
   burnTokensPerMin: Map<string, number>;
+}
+
+/** One pool's live token total at one collection instant: the sum
+ * of cumulative tokens over the sessions attributed to the pool
+ * right now (the collector's poolBurn attribution). */
+export interface PoolTokenObservation {
+  pool: string;
+  provider: string;
+  activeTokens: number;
+  at: string;
+}
+
+export function mergePoolTokenObservations(
+  prior: PoolTokenObservation[],
+  fresh: PoolTokenObservation[],
+  nowMs: number,
+): PoolTokenObservation[] {
+  const byKey = new Map<string, PoolTokenObservation>();
+  for (const o of [...prior, ...fresh]) {
+    if (!o || typeof o.pool !== "string") continue;
+    if (!Number.isFinite(o.activeTokens) || o.activeTokens < 0) continue;
+    const t = Date.parse(o.at);
+    if (!Number.isFinite(t) || nowMs - t > OBSERVATION_RETENTION_MS) continue;
+    byKey.set(`${o.pool}${o.at}`, o);
+  }
+  const groups = new Map<string, PoolTokenObservation[]>();
+  for (const o of byKey.values()) {
+    const list = groups.get(o.pool) ?? [];
+    list.push(o);
+    groups.set(o.pool, list);
+  }
+  const out: PoolTokenObservation[] = [];
+  for (const list of groups.values()) {
+    list.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+    out.push(...list.slice(-MAX_OBSERVATIONS_PER_WINDOW));
+  }
+  out.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.pool.localeCompare(b.pool));
+  return out;
+}
+
+/** Measured tokens/min from pool token totals: the delta between
+ * the two most recent totals, at most RATE_WINDOW_MS apart and
+ * non-negative. Sessions that ended between reads remove their
+ * tokens from the total, so a negative delta (or a stale pair)
+ * yields no rate for that pool. */
+export function deriveMeasuredRatesFromPoolTokens(
+  observations: PoolTokenObservation[],
+): Map<string, number> {
+  const groups = new Map<string, PoolTokenObservation[]>();
+  for (const o of observations) {
+    const list = groups.get(o.pool) ?? [];
+    list.push(o);
+    groups.set(o.pool, list);
+  }
+  const rates = new Map<string, number>();
+  for (const [pool, series] of groups) {
+    const sorted = [...series].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+    const prev = sorted[sorted.length - 2];
+    const last = sorted[sorted.length - 1];
+    if (!prev || !last || prev === last) continue;
+    const dtMs = Date.parse(last.at) - Date.parse(prev.at);
+    const delta = last.activeTokens - prev.activeTokens;
+    if (dtMs > 0 && dtMs <= RATE_WINDOW_MS && delta >= 0) {
+      rates.set(pool, delta / (dtMs / 60000));
+    }
+  }
+  return rates;
 }
 
 export function deriveBurnHistory(observations: PoolWindowObservation[]): BurnHistory {
