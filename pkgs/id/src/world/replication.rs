@@ -768,6 +768,15 @@ impl ReplicationTracker {
         }
         match envelope.kind {
             ReplicationKind::Snapshot => {
+                // A snapshot may rebase at its own version or bump the
+                // header, but never downgrade it (#4487): rebasing onto a
+                // lower header version would silently roll the replica
+                // back and re-admit old-version tails. Tail and Terminal
+                // frames already refuse any version change; a downgrade
+                // is the one change a snapshot must refuse too.
+                if envelope.header_version < self.header_version {
+                    return Err(ReplicationError::HeaderVersionChanged);
+                }
                 // A snapshot rebases the chain: its before-cursor must be
                 // the base for its own header version, whatever the
                 // current chain is (first sync, compaction, header bump).
@@ -1522,6 +1531,104 @@ mod tests {
             receiver.accept(&stale_bytes),
             Err(ReplicationError::HeaderVersionChanged)
         );
+    }
+
+    #[test]
+    fn snapshot_with_a_lower_header_version_is_refused() {
+        // Regression test for #4487: after a header bump, a snapshot on
+        // the OLD chain must not rebase the receiver back down — that
+        // silently rolls the replica back and re-admits old-version
+        // tails. The refusal leaves the tracker state untouched.
+        let key = signing_key(1);
+        let mut receiver = tracker(&key);
+        let bump = signed_snapshot(&key, 2, [0; 32], entry_payload_with_version(2));
+        receiver.accept(&bump).unwrap();
+        assert_eq!(receiver.header_version(), 2);
+        let cursor_at_bump = receiver.cursor();
+
+        let downgrade = signed_snapshot(
+            &key,
+            1,
+            frame_digest(&bump),
+            entry_payload_with_version(1),
+        );
+        assert_eq!(
+            receiver.accept(&downgrade),
+            Err(ReplicationError::HeaderVersionChanged)
+        );
+        assert_eq!(receiver.header_version(), 2);
+        assert_eq!(receiver.cursor(), cursor_at_bump);
+    }
+
+    #[test]
+    fn snapshot_at_the_current_header_version_still_rebases() {
+        // The downgrade guard must not break the equal-version rebase
+        // (first sync / compaction): a same-version snapshot after tails
+        // is still accepted.
+        let key = signing_key(1);
+        let mut receiver = tracker(&key);
+        let first = signed_tail(
+            &key,
+            chain_base_cursor(WORLD, &source_of(&key), 1),
+            [0; 32],
+            entry_payload(),
+        );
+        receiver.accept(&first).unwrap();
+        let rebase = signed_snapshot(&key, 1, frame_digest(&first), entry_payload());
+        let accepted = receiver.accept(&rebase).unwrap();
+        assert_eq!(accepted.kind, ReplicationKind::Snapshot);
+        assert_eq!(receiver.header_version(), 1);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+
+        #[test]
+        fn snapshot_versions_never_decrease_and_refusals_preserve_state(
+            versions in proptest::collection::vec(
+                JOURNAL_VERSION..=MAX_JOURNAL_VERSION,
+                1..12usize,
+            ),
+        ) {
+            // Property form of the #4487 invariant (oracle: the tracker
+            // state itself): over arbitrary snapshot-version sequences,
+            // the accepted header version is monotonically
+            // non-decreasing, and every refused (downgrade) snapshot
+            // leaves the complete tracker state — version, cursor, and
+            // last frame digest — exactly as it was.
+            let key = signing_key(1);
+            let mut receiver = tracker(&key);
+            let mut prev = [0u8; 32];
+            for version in versions {
+                let before_version = receiver.header_version();
+                let before_cursor = receiver.cursor();
+                let before_digest = receiver.last_frame_digest;
+                let frame = signed_snapshot(
+                    &key,
+                    version,
+                    prev,
+                    entry_payload_with_version(version),
+                );
+                match receiver.accept(&frame) {
+                    Ok(_) => {
+                        proptest::prop_assert!(version >= before_version);
+                        proptest::prop_assert_eq!(receiver.header_version(), version);
+                        prev = frame_digest(&frame);
+                    }
+                    Err(err) => {
+                        proptest::prop_assert!(version < before_version);
+                        proptest::prop_assert_eq!(
+                            err,
+                            ReplicationError::HeaderVersionChanged
+                        );
+                        proptest::prop_assert_eq!(receiver.header_version(), before_version);
+                        proptest::prop_assert_eq!(receiver.cursor(), before_cursor);
+                        proptest::prop_assert_eq!(receiver.last_frame_digest, before_digest);
+                    }
+                }
+                proptest::prop_assert!(receiver.header_version() >= before_version);
+            }
+        }
     }
 
     /// A signed snapshot frame over `payload` on the version-`version`
