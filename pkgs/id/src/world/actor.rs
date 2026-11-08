@@ -1904,12 +1904,10 @@ impl WorldActor {
             }
             WorldCommand::IsolationInfo { reply } => {
                 let isolation = self.core.isolation();
-                self.audit_admin_result(
-                    "admin",
-                    "IsolationInfo",
-                    serde_json::json!({"isolation": format!("{isolation:?}")}),
-                    true,
-                );
+                // No audit record, for the same reason as Metrics below:
+                // the isolation is readable without any caller identity
+                // (the handle's isolation() takes no authority), so an
+                // admin audit record would falsify the audit actor.
                 let _ = reply.send(isolation);
             }
             WorldCommand::SetCrossWorldWrite {
@@ -1956,12 +1954,11 @@ impl WorldActor {
             }
             WorldCommand::PolicyInfo { reply } => {
                 let policy = self.core.policy();
-                self.audit_admin_result(
-                    "admin",
-                    "PolicyInfo",
-                    serde_json::json!({"policy": format!("{policy:?}")}),
-                    true,
-                );
+                // No audit record, for the same reason as Metrics below:
+                // the policy is read by the cross-world gate on every
+                // access check and by any handle holder, with no caller
+                // identity, so an admin audit record would falsify the
+                // audit actor and flood the trail.
                 let _ = reply.send(policy);
             }
             WorldCommand::Metrics { reply } => {

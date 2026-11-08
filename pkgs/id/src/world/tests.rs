@@ -7482,6 +7482,14 @@ mod audit_tests {
             let (reply, response) = tokio::sync::oneshot::channel();
             actor.handle(WorldCommand::ManifestState { reply }).await;
             let _state = response.await.unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor.handle(WorldCommand::IsolationInfo { reply }).await;
+            let _isolation = response.await.unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor.handle(WorldCommand::PolicyInfo { reply }).await;
+            let _policy = response.await.unwrap();
         });
 
         let captured = records.lock().unwrap().clone();
