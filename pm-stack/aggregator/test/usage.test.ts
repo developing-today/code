@@ -171,6 +171,7 @@ describe("saas extraction (Part b)", () => {
     expect(t.sources?.trackerRow).toBe("Turso");
     expect(t.sources?.baselineDoc).toContain("evidence-and-interpretation-baseline-2026-10-20.md");
     expect(byId.get("fly-io")!.sources?.trackerRow).toBeNull();
+    expect(byId.get("fly-io")!.sources?.quotaViewSection).toBe("### Fly.io");
   });
 
   test("modal: monthly console read carries a dated used-credits value", () => {
