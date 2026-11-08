@@ -623,12 +623,12 @@ mod tests {
             .unwrap()
     }
 
-    /// Sign an envelope the production signer refuses to sign (an
-    /// over-bound payload), replicating the signing-bytes contract so
-    /// the frame still passes signature verification and reaches the
-    /// check under test. If the contract changes, this helper's frames
-    /// fail verification and the tests say so loudly.
-    fn sign_unbounded(envelope: ReplicationEnvelope, key: &SigningKey) -> Vec<u8> {
+    /// Sign an envelope the production signer refuses to sign, replicating
+    /// the signing-bytes contract so the frame still passes signature
+    /// verification and reaches the receiver check under test. If the
+    /// contract changes, this helper's frames fail verification and the
+    /// tests say so loudly.
+    fn sign_invalid(envelope: ReplicationEnvelope, key: &SigningKey) -> Vec<u8> {
         use crate::world::replication::REPLICATION_DOMAIN;
         let signing_bytes = postcard::to_allocvec(&(
             REPLICATION_DOMAIN,
@@ -789,7 +789,9 @@ mod tests {
             ReplicationEnvelope::snapshot(WORLD, source, 1, NONCE2, [0; 32], payload.clone())
                 .unwrap();
         envelope.payload[10] ^= 0x01;
-        let error = receiver.accept_frame(&sign(envelope, &key)).unwrap_err();
+        let error = receiver
+            .accept_frame(&sign_invalid(envelope, &key))
+            .unwrap_err();
         assert_eq!(
             error.to_string(),
             ReplicationError::PayloadDigestMismatch.to_string()
@@ -892,7 +894,9 @@ mod tests {
             journal_payload(future),
         )
         .unwrap();
-        let error = receiver.accept_frame(&sign(envelope, &key)).unwrap_err();
+        let error = receiver
+            .accept_frame(&sign_invalid(envelope, &key))
+            .unwrap_err();
         assert_eq!(
             error.to_string(),
             ReplicationError::UnsupportedJournalVersion(future).to_string()
@@ -916,7 +920,9 @@ mod tests {
         let envelope =
             ReplicationEnvelope::snapshot(WORLD, source, 0, NONCE, [0; 32], journal_payload(0))
                 .unwrap();
-        let error = receiver.accept_frame(&sign(envelope, &key)).unwrap_err();
+        let error = receiver
+            .accept_frame(&sign_invalid(envelope, &key))
+            .unwrap_err();
         assert_eq!(
             error.to_string(),
             ReplicationError::UnsupportedJournalVersion(0).to_string()
@@ -947,7 +953,7 @@ mod tests {
             payload: oversized,
         };
         let error = receiver
-            .accept_frame(&sign_unbounded(envelope, &key))
+            .accept_frame(&sign_invalid(envelope, &key))
             .unwrap_err();
         assert_eq!(
             error.to_string(),
