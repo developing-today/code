@@ -27,11 +27,35 @@ limit="${PROD_LINES_LIMIT:-2500}"
 # Allowance is lines of production code, not total lines.
 grandfather_allowance() {
   case "$1" in
+  src/cli.rs)
+    # Baseline allowance 2026-11-08 at 2,817 production lines (Codex P1
+    # baseline disposition on PR #7187: explicit allowances at exact
+    # current counts so the guard lands as a ratchet). The F11.10 split
+    # that shrinks it is tracked in #1438. Any growth fails.
+    printf '2817|F11.10 split tracked in #1438 — allowance must only shrink'
+    return 0
+    ;;
+  src/directory.rs)
+    # Baseline allowance 2026-11-08 at 2,610 production lines (Codex P1
+    # baseline disposition on PR #7187, as above); the F11.10 split
+    # that shrinks it is tracked in #1438. Any growth fails.
+    printf '2610|F11.10 split tracked in #1438 — allowance must only shrink'
+    return 0
+    ;;
+  src/web/routes.rs)
+    # Baseline allowance 2026-11-08 at 2,890 production lines (Codex P1
+    # baseline disposition on PR #7187, as above); the F11.10 split
+    # that shrinks it is tracked in #1438. Any growth fails.
+    printf '2890|F11.10 split tracked in #1438 — allowance must only shrink'
+    return 0
+    ;;
   src/web/markdown.rs)
-    # Grandfathered 2026-11-03 at 5,312 production lines (10,140 total,
-    # first #[cfg(test)] at line 5,313); the F11.10 split that shrinks
-    # it is tracked in #1438 (queue task 6599). Any growth fails.
-    printf '5312|F11.10 split tracked in #1438 — allowance must only shrink'
+    # Grandfathered 2026-11-03 at 5,312 production lines; baseline
+    # re-established 2026-11-08 at 6,232 production lines (growth landed
+    # on main before the guard merged; Codex P1 baseline disposition on
+    # PR #7187). The F11.10 split that shrinks it is tracked in #1438
+    # (queue task 6599). Any growth fails.
+    printf '6232|F11.10 split tracked in #1438 — allowance must only shrink'
     return 0
     ;;
   esac

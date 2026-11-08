@@ -70,10 +70,10 @@ check_fail 3 'new over-limit file fails' 'src/grown.rs has 5 production lines (l
 # Grandfathered markdown.rs at its allowance passes; one line more fails.
 reset_tree
 mkdir -p "$tmp/src/web"
-awk 'BEGIN { for (i = 0; i < 5312; i++) print "x" }' >"$tmp/src/web/markdown.rs"
+awk 'BEGIN { for (i = 0; i < 6232; i++) print "x" }' >"$tmp/src/web/markdown.rs"
 check_pass 2500 'grandfather at allowance passes'
 printf 'one more line\n' >>"$tmp/src/web/markdown.rs"
-check_fail 2500 'grandfather growth fails' 'grandfathered file grew: 5313 production lines (allowance 5312'
+check_fail 2500 'grandfather growth fails' 'grandfathered file grew: 6233 production lines (allowance 6232'
 
 # Empty scan is a broken scan, not a pass.
 reset_tree
