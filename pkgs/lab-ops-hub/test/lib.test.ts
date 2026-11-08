@@ -10,6 +10,7 @@ import {
   fetchFollowingValidatedRedirects,
   MAX_CRAWL_BODY_BYTES,
   parseJsonObjectBody,
+  parseCrawlResult,
   readResponseTextCapped,
   uploadKey,
   validateCrawlUrl,
@@ -981,6 +982,46 @@ test("crawlArchiveKey: same-millisecond derivations with distinct uniques never 
     assert.match(k, /^crawls\/1730000000000-.+\.json$/);
     assert.ok(!seen.has(k), k);
     seen.add(k);
+  }
+});
+
+test("parseCrawlResult passes a well-formed container result through unchanged (#7018)", () => {
+  const result = { title: "T", excerpt: "E", links: 3, status_code: 200, text: "hello" };
+  const parsed = parseCrawlResult(result);
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) assert.deepEqual(parsed.values, result);
+  // Absent optional fields are fine: the route binds ?? null for them.
+  assert.equal(parseCrawlResult({}).ok, true);
+  assert.equal(parseCrawlResult({ title: "only a title" }).ok, true);
+});
+
+test("parseCrawlResult rejects non-object container bodies (#7018)", () => {
+  // A JSON null used to 500 the route on result.title (after the R2
+  // archive write); a JSON string was archived spread by character index
+  // and stored as an all-null crawls row reported as success.
+  for (const body of [null, "hello", 42, true, [1, 2, 3]]) {
+    const parsed = parseCrawlResult(body);
+    assert.equal(parsed.ok, false, JSON.stringify(body));
+  }
+});
+
+test("parseCrawlResult rejects wrong-typed container fields (#7018)", () => {
+  // Object values used to throw the raw D1 bind TypeError as a 500;
+  // wrong-typed scalars (numeric title, string links/status_code) bound
+  // as-is into the crawls row.
+  for (const body of [
+    { links: { bad: 1 } },
+    { title: ["T"] },
+    { title: 123 },
+    { excerpt: null },
+    { text: 42 },
+    { links: "3" },
+    { status_code: "200" },
+    { links: Number.NaN },
+  ]) {
+    const parsed = parseCrawlResult(body);
+    assert.equal(parsed.ok, false, JSON.stringify(body));
+    if (!parsed.ok) assert.match(parsed.error, /crawl result/);
   }
 });
 
