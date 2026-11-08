@@ -5,8 +5,11 @@
 **Programme:** epic [#2056](https://github.com/developing-today/code/issues/2056)
 **Siblings:** #5884 (setup ceremony), #5885 (keyless feasibility), #5886 (variant a),
 #5887 (variant b), #5889 (variant d), #5890 (identity management UX)
-**Status:** v1 decision record. Design only — no implementation is authorised by
-this record alone, and implementation timing is a separate decision per the filing.
+**Status:** v1.1 decision record (2026-11-08). This revision fixes a key-derivation
+mismatch identified in PR review and updates the fresh #5885 coordination finding; it
+does not change the selected code format, entropy, threshold, or recovery flow. Design
+only — no implementation is authorised by this record alone, and implementation
+timing is a separate decision per the filing.
 
 Verified at `origin/main` `a80d206752` (2026-11-08). Prior art read:
 `doc/2026-10-29T11-28-18Z_investigation_key_recovery_hosted/` (#2060),
@@ -78,14 +81,29 @@ stronger than the 64-bit (GitHub) and 26-bit (Google backup codes) conventions i
 replaces.
 
 ```
-seed_i      = CSPRNG(16 bytes)  -> 20 base32 chars (100 bits used, 28 spare)
-recovery_sk = HKDF-SHA256(seed_i, salt = identity_id, info = "id-recovery-key-v1" || slot_i)
+seed_bytes = CSPRNG(13 bytes); seed_bytes[0] &= 0x0f
+             -> exactly 100 random bits (the four high bits are zero)
+seed_i     = OS2IP(seed_bytes)  // big-endian unsigned integer
+code_i     = encode_crockford_base32(seed_i, exactly 100 bits) -> 20 chars
+recovery_sk = HKDF-SHA256(seed_bytes, salt = identity_id,
+                          info = ASCII("id-recovery-key-v1") || uint8(slot_i))
 commitment_i = SHA-256(recovery_pk_i)
 ```
 
+**The derivation consumes exactly the bits the code carries.** Generate 13 bytes and
+clear the high four bits, leaving exactly 100 random bits. Interpret the result as a
+big-endian 100-bit integer; `I2OSP(..., 13)` is its 13-byte big-endian form with those
+four high bits fixed to zero. Encode exactly those 100 bits as 20 Crockford symbols.
+At redemption, decode the 20 symbols to the same integer and perform the same 13-byte
+conversion before HKDF. Thus the same seed reaches HKDF at setup and redemption, and
+no bit outside the printed code influences the key. (An earlier draft drew a fresh
+128-bit seed and used it for HKDF while printing only 100 bits; the other 28 bits could
+not be recovered from the code, so redemption could never match the published
+commitment. This revision records the necessary invariant: all derivation entropy must
+be carried by the code, and any padding must be fixed, not sampled.)
+
 Domain separation by `slot_i` means a code from slot 3 can never validate against slot 7,
-and an HKDF mismatch is a failed recovery, not a silent one. The spare 28 bits exist so
-the printed form is a clean character count, not because they carry security.
+and an HKDF mismatch is a failed recovery, not a silent one.
 
 ### 3.3 Storage form — the commitment set
 
@@ -344,14 +362,17 @@ locked out forever" teaches fear, not custody.
 - **#5890 (identity management UX).** Consumes §7 verbatim (no paraphrase), the "you have
   ten unused codes" surface, and the regeneration entry point. #5890 owns where these
   live and how migration is presented; the rules stay here.
-- **#5885 (keyless feasibility), checked fresh 2026-11-08T10:00Z.** It is OPEN and
-  triaged with no landed decision record, so its result cannot be assumed in either
-  direction. Its bearing: a positive keyless-custody result changes who holds the
-  everyday key and how login works, but **does not obsolete this record** — the recovery
-  commitment set is independent of the everyday key's custody, and precommitted codes
-  would remain the only path when no party can hold a key. If #5885 instead concludes
-  password-derived keys are the norm, the per-code 100 bits remain the right figure
-  precisely because codes must not inherit a password's entropy.
+- **#5885 (keyless feasibility), re-checked fresh 2026-11-08.** It is OPEN and now has
+  a decision record in its 2026-11-08T12:23:36Z comment. It recommends a random ID
+  signing key generated and held client-side; OIDC as account authentication/pointer or
+  augmented PAKE (such as OPAQUE) for password login; and no server-held unwrapped key
+  or key capable of decrypting a backup. It explicitly allows an independently
+  authorised recovery mechanism. This result **does not obsolete this record**: these
+  codes are that explicit recovery authority, work independently of everyday login, and
+  let a client recover after losing the device-held key without giving the authorizer
+  key custody. Redemption and key derivation must therefore remain client-side; neither
+  OIDC nor password authentication alone substitutes for a code or surviving key. The
+  chosen 100-bit code entropy is also independent of password entropy.
 - **#5886 / #5887 / #5889 (variants a, b, d).** Each must state what recovery and
   revocation mean in its own variant, consuming §8 rather than redesigning it.
 
