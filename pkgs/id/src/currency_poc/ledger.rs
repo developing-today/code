@@ -85,6 +85,14 @@ pub enum AccountError {
     ExistsWithDifferentFields,
     /// `ledger` must be non-zero.
     LedgerMustNotBeZero,
+    /// An account ID must be non-zero.
+    IdMustNotBeZero,
+    /// An account ID must not be `u128::MAX`.
+    IdMustNotBeIntMax,
+    /// The two mutually exclusive account guard flags were both set.
+    FlagsAreMutuallyExclusive,
+    /// TigerBeetle returned a status this adapter does not model.
+    UnsupportedStatus,
 }
 
 /// Per-transfer failures (subset of TigerBeetle's result codes).
@@ -118,6 +126,24 @@ pub enum TransferError {
     LedgerMismatch,
     DebitsMustNotExceedCredits,
     CreditsMustNotExceedDebits,
+    /// A transfer ID must be non-zero.
+    IdMustNotBeZero,
+    /// A transfer ID must not be `u128::MAX`.
+    IdMustNotBeIntMax,
+    /// A debit account ID must be non-zero.
+    DebitAccountIdMustNotBeZero,
+    /// A debit account ID must not be `u128::MAX`.
+    DebitAccountIdMustNotBeIntMax,
+    /// A credit account ID must be non-zero.
+    CreditAccountIdMustNotBeZero,
+    /// A credit account ID must not be `u128::MAX`.
+    CreditAccountIdMustNotBeIntMax,
+    /// The debit account has been closed.
+    DebitAccountAlreadyClosed,
+    /// The credit account has been closed.
+    CreditAccountAlreadyClosed,
+    /// TigerBeetle returned a status this adapter does not model.
+    UnsupportedStatus,
 }
 
 /// The ledger operations the conversion executor needs.
