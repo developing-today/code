@@ -361,6 +361,44 @@ describe("dashboard actions validation", () => {
     expect(v({ objectRef: "has space" }).ok).toBe(false);
   });
 
+  test("caps never split a surrogate pair (#7694)", () => {
+    // reason cap 2000: 1999 units + an astral character straddling the cap.
+    const straddle = validateNewAction({
+      ...base,
+      verb: "dismiss",
+      payload: { reason: "x".repeat(1999) + "\u{1F600}" + "tail" },
+    });
+    expect(straddle.ok).toBe(true);
+    if (straddle.ok) {
+      const reason = (straddle.value.payload as { reason?: string }).reason ?? "";
+      expect(reason.length).toBe(1999);
+      expect(reason.endsWith("x")).toBe(true);
+    }
+    // A pair that fits exactly inside the cap is kept whole.
+    const fits = validateNewAction({
+      ...base,
+      verb: "dismiss",
+      payload: { reason: "x".repeat(1998) + "\u{1F600}" },
+    });
+    expect(fits.ok).toBe(true);
+    if (fits.ok) {
+      const reason = (fits.value.payload as { reason?: string }).reason ?? "";
+      expect(reason.length).toBe(2000);
+      expect(reason.endsWith("\u{1F600}")).toBe(true);
+    }
+    // Small cap, same rule: optionId cap 200.
+    const opt = validateNewAction({
+      ...base,
+      verb: "answer",
+      payload: { optionId: "o".repeat(199) + "\u{1F600}" + "tail" },
+    });
+    expect(opt.ok).toBe(true);
+    if (opt.ok) {
+      const optionId = (opt.value.payload as { optionId?: string }).optionId ?? "";
+      expect(optionId.length).toBe(199);
+    }
+  });
+
   test("status-request: gh object, status required, targetRef derived", () => {
     const ok = validateNewAction({
       clientToken: "ct-valid-token-2",
