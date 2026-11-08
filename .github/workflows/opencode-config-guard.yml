@@ -2,7 +2,7 @@ name: opencode-config-guard
 
 # CI tier policy: see .github/ci-policy.md
 on:
-  merge_group:
+  pull_request:
   workflow_dispatch:
 
 permissions:
