@@ -136,6 +136,8 @@ impl Chains {
             link: None,
             checkpoint: None,
             rotation: None,
+
+            chat: None,
         };
         let event = sign(&key(who), seq, backlink, None, ext).unwrap();
         self.last.insert(who, (seq, event.id));
@@ -174,6 +176,8 @@ impl Chains {
             link: None,
             checkpoint: None,
             rotation: None,
+
+            chat: None,
         };
         let event = sign(&key(who), seq, backlink, None, ext).unwrap();
         self.last.insert(who, (seq, event.id));
@@ -210,6 +214,8 @@ impl Chains {
             }),
             checkpoint: None,
             rotation: None,
+
+            chat: None,
         };
         let event = sign(&key(who), seq, backlink, None, ext).unwrap();
         self.last.insert(who, (seq, event.id));

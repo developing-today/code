@@ -12,14 +12,16 @@
 //! projected timeline cut by the group policy's history rule (see
 //! [`crate::chat::visible_history`] for the exact semantics of each rule).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use p2panda_auth::group::{GroupAction, GroupMember};
 use p2panda_core::Hash;
 use redb::{ReadableDatabase, ReadableTable};
 
 use super::resolve::{self, author_of};
-use super::{ACTIONS, APPLIED, EVENTS, EventStore, FORKS, PROOF_HEADERS, StoreError, corrupt, decode_stored};
+use super::{
+    ACTIONS, APPLIED, EVENTS, EventStore, FORKS, PROOF_HEADERS, StoreError, corrupt, decode_stored,
+};
 use crate::chat::{CHAT_MESSAGE_KIND, ChatRecord, project, visible_history};
 use crate::groups::policy::{History, Policy};
 use crate::membership::AuthId;
@@ -39,13 +41,39 @@ impl EventStore {
         let events = txn.open_table(EVENTS)?;
         let applied_table = txn.open_table(APPLIED)?;
 
-        let mut records = Vec::new();
+        let mut applied_events = Vec::new();
         for row in events.iter()? {
             let (_position, bytes) = row?;
             let event = decode_stored(bytes.value())?;
             if applied_table.get(event.id.as_bytes().as_slice())?.is_none() {
                 continue;
             }
+            applied_events.push(event);
+        }
+
+        // Chat projection only receives chat records. Preserve causal paths that
+        // pass through other event kinds by adding reachable chat ancestors to
+        // each record's projection frontier.
+        let chat_ids: HashSet<Hash> = applied_events
+            .iter()
+            .filter_map(|event| {
+                let ext = &event.header.extensions;
+                (ext.kind == CHAT_MESSAGE_KIND && ext.group == Some(*group)).then_some(event.id)
+            })
+            .collect();
+        let causal_parents: HashMap<Hash, Vec<Hash>> = applied_events
+            .iter()
+            .map(|event| {
+                let mut parents = event.header.extensions.after.clone();
+                if let Some(backlink) = event.header.backlink {
+                    parents.push(backlink);
+                }
+                (event.id, parents)
+            })
+            .collect();
+
+        let mut records = Vec::new();
+        for event in applied_events {
             let ext = &event.header.extensions;
             if ext.kind != CHAT_MESSAGE_KIND || ext.group != Some(*group) {
                 continue;
@@ -53,10 +81,34 @@ impl EventStore {
             let Some(message) = ext.chat.clone() else {
                 return Err(corrupt("a stored chat event carries no message".to_owned()));
             };
+            let mut ancestors = HashSet::new();
+            let mut stack = causal_parents.get(&event.id).cloned().unwrap_or_default();
+            let mut chat_ancestors = Vec::new();
+            while let Some(parent) = stack.pop() {
+                if !ancestors.insert(parent) {
+                    continue;
+                }
+                if chat_ids.contains(&parent) {
+                    // The projection follows chat-to-chat links transitively, so
+                    // retain only the nearest chat ancestor on each causal path.
+                    chat_ancestors.push(parent);
+                    continue;
+                }
+                if let Some(parents) = causal_parents.get(&parent) {
+                    stack.extend(parents.iter().copied());
+                }
+            }
+            chat_ancestors.sort_by_key(|ancestor| *ancestor.as_bytes());
+            let mut after = ext.after.clone();
+            for ancestor in chat_ancestors {
+                if Some(ancestor) != event.header.backlink && !after.contains(&ancestor) {
+                    after.push(ancestor);
+                }
+            }
             records.push(ChatRecord {
                 id: event.id,
                 author: author_of(&event),
-                after: ext.after.clone(),
+                after,
                 backlink: event.header.backlink,
                 message,
             });
@@ -141,7 +193,12 @@ impl EventStore {
             parents.insert(item.event.id, event_parents);
         }
         let join = join_event(&stored, &resolved.applied, reader, &parents);
-        Ok(visible_history(timeline, &policy.history, join.as_ref(), &parents))
+        Ok(visible_history(
+            timeline,
+            &policy.history,
+            join.as_ref(),
+            &parents,
+        ))
     }
 }
 
@@ -154,18 +211,16 @@ fn join_event(
     reader: &AuthorKey,
     parents: &HashMap<Hash, Vec<Hash>>,
 ) -> Option<Hash> {
-    let names_reader = |member: &GroupMember<AuthId>| {
-        matches!(member, GroupMember::Individual(AuthId::Key(key)) if key == reader)
-    };
+    let names_reader = |member: &GroupMember<AuthId>| matches!(member, GroupMember::Individual(AuthId::Key(key)) if key == reader);
     let mut candidates: Vec<Hash> = Vec::new();
     for item in stored {
         if !applied.contains(&item.event.id) {
             continue;
         }
         let joined = match &item.action {
-            Some(GroupAction::Create { initial_members }) => {
-                initial_members.iter().any(|(member, _)| names_reader(member))
-            }
+            Some(GroupAction::Create { initial_members }) => initial_members
+                .iter()
+                .any(|(member, _)| names_reader(member)),
             Some(GroupAction::Add { member, .. }) => names_reader(member),
             _ => false,
         };
@@ -237,6 +292,10 @@ mod tests {
             document: None,
             removes: None,
             chat: None,
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
         (event, body)
@@ -259,12 +318,23 @@ mod tests {
             document: None,
             removes: None,
             chat: Some(ChatMessage::new(text, Vec::new()).unwrap()),
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
 
     /// A store holding a channel created by Alice with Bob as a member.
-    fn channel() -> (tempfile::TempDir, EventStore, SigningKey, SigningKey, Hash, Hash) {
+    fn channel() -> (
+        tempfile::TempDir,
+        EventStore,
+        SigningKey,
+        SigningKey,
+        Hash,
+        Hash,
+    ) {
         let (dir, mut store) = open();
         let (alice, bob) = (key(41), key(42));
         let create = GroupAction::Create {
@@ -286,7 +356,14 @@ mod tests {
     fn test_chat_records_convert_stored_events_and_bind_to_the_group() {
         let (_dir, mut store, alice, bob, group, create_id) = channel();
 
-        let first = chat_event(&alice, 1, Some(create_id), vec![], group, "hello from alice");
+        let first = chat_event(
+            &alice,
+            1,
+            Some(create_id),
+            vec![],
+            group,
+            "hello from alice",
+        );
         store.ingest(&first.bytes, 0).unwrap();
         let second = chat_event(&bob, 0, None, vec![create_id], group, "hello from bob");
         store.ingest(&second.bytes, 0).unwrap();
@@ -373,6 +450,69 @@ mod tests {
             store_a.chat_timeline(&group, &author(&carol)),
             Err(StoreError::NotMember)
         ));
+    }
+
+    #[test]
+    fn test_chat_records_keep_causal_order_across_a_non_chat_event() {
+        // Alice writes, records a non-chat event, then writes again. Her second chat
+        // event names the non-chat event as its backlink, so the two messages are only
+        // causally ordered through it.
+        let (_dir, mut store, alice, _bob, group, create_id) = channel();
+        let first = chat_event(&alice, 1, Some(create_id), vec![], group, "first");
+        store.ingest(&first.bytes, 0).unwrap();
+
+        let intervening = sign(
+            &alice,
+            2,
+            Some(first.id),
+            None,
+            ChainExt {
+                kind: "message".to_owned(),
+                group: None,
+                after: Vec::new(),
+                tag: None,
+                document: None,
+                removes: None,
+                chat: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
+            },
+        )
+        .unwrap();
+        store.ingest(&intervening.bytes, 0).unwrap();
+        assert!(store.event_applied(&intervening.id).unwrap());
+
+        let second = chat_event(&alice, 3, Some(intervening.id), vec![], group, "second");
+        store.ingest(&second.bytes, 0).unwrap();
+
+        let timeline = store.chat_timeline(&group, &author(&alice)).unwrap();
+        let texts: Vec<&str> = timeline.iter().map(|r| r.message.text.as_str()).collect();
+        assert_eq!(texts, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn test_chat_from_a_non_member_does_not_apply() {
+        // An outsider signs a chat event naming the channel group, with the group's
+        // create in its causal past, and delivers it directly to the store. The local
+        // send path's membership check cannot stop a received event, so resolution
+        // must: the event does not apply and never reaches a member's timeline
+        // (Codex P1 on PR #3965).
+        let (_dir, mut store, alice, _bob, group, create_id) = channel();
+        let carol = key(43);
+        let forged = chat_event(
+            &carol,
+            0,
+            None,
+            vec![create_id],
+            group,
+            "forged from outside",
+        );
+        store.ingest(&forged.bytes, 0).unwrap();
+        assert!(!store.event_applied(&forged.id).unwrap());
+        let timeline = store.chat_timeline(&group, &author(&alice)).unwrap();
+        assert!(timeline.is_empty());
     }
 
     #[test]

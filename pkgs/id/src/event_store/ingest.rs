@@ -1574,6 +1574,8 @@ mod tests {
                 },
             }),
             rotation: None,
+
+            chat: None,
         };
         let y0 = sign(&y, 0, None, None, ext).unwrap();
         assert_eq!(ingest(&mut store, &y0), Ingest::Waiting { id: y0.id });
@@ -1632,6 +1634,8 @@ mod tests {
                 },
             }),
             rotation: None,
+
+            chat: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }

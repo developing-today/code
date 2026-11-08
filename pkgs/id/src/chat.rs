@@ -38,9 +38,10 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
+use unicode_normalization::{UnicodeNormalization, is_nfc};
 
-use crate::text::sanitize_chat;
 use crate::groups::policy::History;
+use crate::text::sanitize_chat;
 use crate::waiting::AuthorKey;
 
 /// The kind of a `chat.message.v1` event, as the header's `kind` names it.
@@ -111,6 +112,9 @@ impl ChatLink {
                 hint.len()
             )));
         }
+        if self.hint.as_deref().is_some_and(|hint| !is_nfc(hint)) {
+            return Err(ChatError::Hint("the hint is not NFC".to_owned()));
+        }
         Ok(())
     }
 
@@ -152,10 +156,17 @@ impl ChatMessage {
     /// Returns [`ChatError::Text`] when the sanitized text is empty or too long, and the
     /// failing link's error when a link is refused.
     pub fn new(text: &str, links: Vec<ChatLink>) -> Result<Self, ChatError> {
-        let message = Self {
-            text: sanitize_chat(text),
-            links,
-        };
+        let text = sanitize_chat(text).nfc().collect();
+        let links = links
+            .into_iter()
+            .map(|mut link| {
+                if let Some(hint) = &mut link.hint {
+                    *hint = hint.nfc().collect();
+                }
+                link
+            })
+            .collect();
+        let message = Self { text, links };
         message.check()?;
         Ok(message)
     }
@@ -174,6 +185,9 @@ impl ChatMessage {
     pub fn check(&self) -> Result<(), ChatError> {
         if self.text.is_empty() {
             return Err(ChatError::Text("the text is empty".to_owned()));
+        }
+        if !is_nfc(&self.text) {
+            return Err(ChatError::Text("the text is not NFC".to_owned()));
         }
         if self.text.len() > MAX_TEXT_BYTES {
             return Err(ChatError::Text(format!(
@@ -452,7 +466,10 @@ pub fn visible_history(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use p2panda_core::SigningKey;
+
     use super::*;
+    use crate::chain::{ChainExt, decode, sign};
 
     fn author(seed: u8) -> AuthorKey {
         [seed; 32]
@@ -509,7 +526,8 @@ mod tests {
         let full = visible_history(timeline.clone(), &History::Full, Some(&join), &parents);
         assert_eq!(full.len(), 3);
 
-        let from_join = visible_history(timeline.clone(), &History::FromJoin, Some(&join), &parents);
+        let from_join =
+            visible_history(timeline.clone(), &History::FromJoin, Some(&join), &parents);
         let texts: Vec<&str> = from_join.iter().map(|r| r.message.text.as_str()).collect();
         assert_eq!(texts, vec!["after the join", "chained"]);
 
@@ -642,5 +660,83 @@ mod tests {
         let timeline = project(vec![second, first]);
         let texts: Vec<&str> = timeline.iter().map(|r| r.message.text.as_str()).collect();
         assert_eq!(texts, vec!["first from seven", "second from seven"]);
+    }
+
+    fn chat_ext(message: ChatMessage) -> ChainExt {
+        ChainExt {
+            kind: CHAT_MESSAGE_KIND.to_owned(),
+            group: None,
+            after: Vec::new(),
+            tag: None,
+            document: None,
+            removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
+            chat: Some(message),
+        }
+    }
+
+    fn decode_round_trip(message: ChatMessage) -> ChatMessage {
+        let event = sign(
+            &SigningKey::from_bytes(&[7; 32]),
+            0,
+            None,
+            None,
+            chat_ext(message),
+        )
+        .unwrap();
+        let decoded = decode(&event.bytes).unwrap();
+        decoded.header.extensions.chat.unwrap()
+    }
+
+    fn blob_link(hint: Option<&str>) -> ChatLink {
+        ChatLink {
+            kind: ChatLinkKind::Blob,
+            hash: Hash::digest(b"attachment"),
+            author: author(1),
+            hint: hint.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn test_text_within_the_message_cap_crosses_the_header_decoder() {
+        // A full 2,048-byte message of multibyte text is split into header-sized
+        // chunks and decodes to the same text; the message limit is still enforced.
+        let text = "\u{e9}".repeat(MAX_TEXT_BYTES / 2);
+        assert_eq!(text.len(), MAX_TEXT_BYTES);
+        let message = ChatMessage::new(&text, Vec::new()).unwrap();
+        assert_eq!(decode_round_trip(message.clone()), message);
+        assert!(matches!(
+            ChatMessage::new(&"a".repeat(MAX_TEXT_BYTES + 1), Vec::new()),
+            Err(ChatError::Text(_))
+        ));
+    }
+
+    #[test]
+    fn test_messages_and_hint_strings_normalize_to_nfc_before_signing() {
+        // The header decoder requires NFC text. A built message normalizes instead of
+        // failing later on its own ingestion.
+        let message = ChatMessage::new("e\u{301}", Vec::new()).unwrap();
+        assert_eq!(message.text, "\u{e9}");
+        assert_eq!(decode_round_trip(message.clone()), message);
+
+        let hinted = ChatMessage::new("see this", vec![blob_link(Some("re\u{301}lay"))]).unwrap();
+        assert_eq!(hinted.links[0].hint.as_deref(), Some("r\u{e9}lay"));
+        assert_eq!(decode_round_trip(hinted.clone()), hinted);
+
+        // A manually built value that skipped normalization is refused rather than
+        // producing an event the decoder cannot read back.
+        let raw = ChatMessage {
+            text: "e\u{301}".to_owned(),
+            links: Vec::new(),
+        };
+        assert!(matches!(raw.check(), Err(ChatError::Text(_))));
+        let raw_hint = ChatMessage {
+            text: "hello".to_owned(),
+            links: vec![blob_link(Some("re\u{301}lay"))],
+        };
+        assert!(matches!(raw_hint.check(), Err(ChatError::Hint(_))));
     }
 }

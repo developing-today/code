@@ -25,12 +25,12 @@ use crate::chain::{ChainExt, Event, MAX_AFTER, sign};
 use crate::chat::{CHAT_MESSAGE_KIND, ChatMessage, ChatRecord, SendRate};
 use crate::documents::{DOCUMENT_KIND, DocumentRef, REMOVAL_KIND};
 use crate::event_store::{EventStore, Ingest};
+use crate::local_claims::LocalClaims;
 use crate::notes::{
     AppliedNote, CREATE_KIND as NOTE_CREATE_KIND, NoteFoldError, NoteOp, NoteRecord,
     REVISE_KIND as NOTE_REVISE_KIND, check_note_op, fold_notes,
 };
 use crate::search::{Hit, ValueMatch, search_store};
-use crate::local_claims::LocalClaims;
 use crate::tag_claims::{
     CLEAR_KIND, Claim, LocalClaim, MAX_CLEAR_CLAIMS, SET_KIND, TagOp, TagScope, check_op,
 };
@@ -297,7 +297,16 @@ impl LocalEvents {
                 bail!("a publish names the same tag twice");
             }
         }
-        let id = self.record(DOCUMENT_KIND, None, None, Some(document.clone()), None, None, None, &[])?;
+        let id = self.record(
+            DOCUMENT_KIND,
+            None,
+            None,
+            Some(document.clone()),
+            None,
+            None,
+            None,
+            &[],
+        )?;
         let mut claims = Vec::with_capacity(tags.len());
         for (name, value) in tags {
             claims.push(self.set_tag(id, name, value.as_deref())?);
@@ -417,21 +426,14 @@ impl LocalEvents {
     /// # Errors
     ///
     /// Fails if the store cannot be read or written, or the local claim file cannot be written.
-    pub fn set_tag_scope(
-        &mut self,
-        subject: Hash,
-        name: &str,
-        scope: TagScope,
-    ) -> Result<usize> {
+    pub fn set_tag_scope(&mut self, subject: Hash, name: &str, scope: TagScope) -> Result<usize> {
         let me = self.author();
         let mut moved = 0;
         let shared: Vec<Claim> = self
             .store
             .tag_claims()?
             .into_iter()
-            .filter(|claim| {
-                claim.subject == subject && claim.name == name && claim.author == me
-            })
+            .filter(|claim| claim.subject == subject && claim.name == name && claim.author == me)
             .collect();
         match scope {
             TagScope::Local => {
@@ -615,7 +617,12 @@ impl LocalEvents {
             .into_iter()
             .filter(|claim| claim.subject == subject)
             .collect();
-        claims.extend(self.local.on_subject(&subject).iter().map(LocalClaim::as_claim));
+        claims.extend(
+            self.local
+                .on_subject(&subject)
+                .iter()
+                .map(LocalClaim::as_claim),
+        );
         claims.sort_by_key(|claim| *claim.id.as_bytes());
         Ok(claims)
     }
@@ -667,7 +674,16 @@ impl LocalEvents {
         let content = DocumentRef::for_bytes(media_type, content)?;
         let op = NoteOp::Create { content };
         check_note_op(NOTE_CREATE_KIND, &op)?;
-        self.record(NOTE_CREATE_KIND, None, None, None, None, Some(op), None, &[])
+        self.record(
+            NOTE_CREATE_KIND,
+            None,
+            None,
+            None,
+            None,
+            Some(op),
+            None,
+            &[],
+        )
     }
 
     /// Adds one revision with `content` to the note `note`, building on `parents`. The
@@ -720,7 +736,16 @@ impl LocalEvents {
             parents: parents.to_vec(),
         };
         check_note_op(NOTE_REVISE_KIND, &op)?;
-        self.record(NOTE_REVISE_KIND, None, None, None, None, Some(op), None, &required)
+        self.record(
+            NOTE_REVISE_KIND,
+            None,
+            None,
+            None,
+            None,
+            Some(op),
+            None,
+            &required,
+        )
     }
 
     /// Every note in the store, in note ID order, each with its revisions and heads.
@@ -1281,6 +1306,8 @@ mod tests {
                 link: None,
                 checkpoint: None,
                 rotation: None,
+
+                chat: None,
             },
         )
         .unwrap();
@@ -1458,7 +1485,10 @@ mod tests {
         assert!(events.store.tag_claims().unwrap().is_empty());
         assert_eq!(events.store.sync_entries().unwrap(), before);
         assert_eq!(events.review_tags().unwrap(), visible);
-        assert_eq!(events.search("city", Some("Oslo")).unwrap()[0].claims, visible);
+        assert_eq!(
+            events.search("city", Some("Oslo")).unwrap()[0].claims,
+            visible
+        );
     }
 
     #[test]
@@ -1469,7 +1499,12 @@ mod tests {
             .set_tag_scoped(subject, "city", Some("Oslo"), TagScope::Local)
             .unwrap();
 
-        assert_eq!(events.set_tag_scope(subject, "city", TagScope::Shared).unwrap(), 1);
+        assert_eq!(
+            events
+                .set_tag_scope(subject, "city", TagScope::Shared)
+                .unwrap(),
+            1
+        );
         let shared = events.tags_on(subject).unwrap();
         assert_eq!(shared.len(), 1);
         assert_eq!(shared[0].scope, TagScope::Shared);
@@ -1477,7 +1512,12 @@ mod tests {
         assert!(events.local.claims().is_empty());
         assert_eq!(events.store.tag_claims().unwrap(), shared);
 
-        assert_eq!(events.set_tag_scope(subject, "city", TagScope::Local).unwrap(), 1);
+        assert_eq!(
+            events
+                .set_tag_scope(subject, "city", TagScope::Local)
+                .unwrap(),
+            1
+        );
         let local = events.tags_on(subject).unwrap();
         assert_eq!(local.len(), 1);
         assert_eq!(local[0].scope, TagScope::Local);
@@ -1665,6 +1705,11 @@ mod chat_tests {
             document: None,
             removes: None,
             chat: None,
+
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
         };
         let event = sign(alice, 0, None, Some(&body), ext).unwrap();
         (event, body)
@@ -1710,10 +1755,16 @@ mod chat_tests {
         assert!(node_c.store.chat_records(&group).unwrap().is_empty());
 
         let first = node_a
-            .send_chat(group, ChatMessage::new("hello from alice", Vec::new()).unwrap())
+            .send_chat(
+                group,
+                ChatMessage::new("hello from alice", Vec::new()).unwrap(),
+            )
             .unwrap();
         let second = node_b
-            .send_chat(group, ChatMessage::new("hello from bob", Vec::new()).unwrap())
+            .send_chat(
+                group,
+                ChatMessage::new("hello from bob", Vec::new()).unwrap(),
+            )
             .unwrap();
 
         exchange(&node_a, &mut node_b);
@@ -1757,10 +1808,7 @@ mod chat_tests {
             )
             .unwrap();
         }
-        let refused = node.send_chat(
-            group,
-            ChatMessage::new("one too many", Vec::new()).unwrap(),
-        );
+        let refused = node.send_chat(group, ChatMessage::new("one too many", Vec::new()).unwrap());
         assert!(refused.is_err());
     }
 }

@@ -977,6 +977,7 @@ mod tests {
                 link: None,
                 checkpoint: None,
                 rotation: None,
+                chat: None,
             }
         }
         let create_body = encode_body(&GroupAction::Create {
@@ -986,15 +987,36 @@ mod tests {
                 .collect(),
         })
         .unwrap();
-        let create = sign(&key(b'A'), 0, None, Some(&create_body), ext(None, Vec::new(), "group.op")).unwrap();
+        let create = sign(
+            &key(b'A'),
+            0,
+            None,
+            Some(&create_body),
+            ext(None, Vec::new(), "group.op"),
+        )
+        .unwrap();
         let grp = create.id;
         let op_body = encode_body(&GroupAction::Add {
             member: GroupMember::Individual(gauth(b'E')),
             access: Access::manage(),
         })
         .unwrap();
-        let op = sign(&key(b'D'), 0, None, Some(&op_body), ext(Some(grp), vec![grp], "group.op")).unwrap();
-        let target = sign(&key(b'D'), 1, Some(op.id), None, ext(Some(grp), vec![op.id], "message")).unwrap();
+        let op = sign(
+            &key(b'D'),
+            0,
+            None,
+            Some(&op_body),
+            ext(Some(grp), vec![grp], "group.op"),
+        )
+        .unwrap();
+        let target = sign(
+            &key(b'D'),
+            1,
+            Some(op.id),
+            None,
+            ext(Some(grp), vec![op.id], "message"),
+        )
+        .unwrap();
 
         let (_da, store_a) = open();
         let (_db, store_b) = open();
@@ -1031,7 +1053,11 @@ mod tests {
 
         assert_eq!(outcome.method, SyncMethod::Range);
         assert_eq!(answered.method, SyncMethod::Range);
-        assert_eq!(outcome.received.voided, 1, "B stores the target without applying it: {:?}", outcome.received);
+        assert_eq!(
+            outcome.received.voided, 1,
+            "B stores the target without applying it: {:?}",
+            outcome.received
+        );
         assert_eq!(outcome.received.accepted, 0, "{:?}", outcome.received);
         assert_eq!(outcome.received.refused, 0, "{:?}", outcome.received);
         assert_eq!(answered.received.voided, 0, "{:?}", answered.received);
