@@ -74,7 +74,7 @@ func NewLegacySSE(ctx context.Context, opts HTTPOptions) (*LegacySSETransport, e
 	}
 	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, defaults.HTTPErrorBodyLimit))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		cancel()
 		return nil, &HTTPStatusError{URL: opts.URL, Status: resp.StatusCode, Body: bytes.TrimSpace(b)}
 	}
@@ -86,21 +86,21 @@ func NewLegacySSE(ctx context.Context, opts HTTPOptions) (*LegacySSETransport, e
 	select {
 	case ep := <-ready:
 		if ep == "" {
-			t.Close()
+			_ = t.Close()
 			return nil, fmt.Errorf("http+sse: %s closed the stream without an endpoint event: %v", opts.URL, t.failure())
 		}
 		endpoint, err := sameOriginEndpoint(opts.URL, ep)
 		if err != nil {
-			t.Close()
+			_ = t.Close()
 			return nil, err
 		}
 		t.endpoint = endpoint
 		return t, nil
 	case <-wait.C:
-		t.Close()
+		_ = t.Close()
 		return nil, fmt.Errorf("http+sse: %s sent no endpoint event within %s", opts.URL, defaults.UpstreamLegacyStreamEndpointTimeout)
 	case <-ctx.Done():
-		t.Close()
+		_ = t.Close()
 		return nil, ctx.Err()
 	}
 }
@@ -127,7 +127,7 @@ func sameOriginEndpoint(base, ep string) (string, error) {
 // read parses the event stream: the first endpoint event goes to ready,
 // every message event to Recv.
 func (t *LegacySSETransport) read(body io.ReadCloser, ready chan<- string) {
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 	sc := bufio.NewScanner(body)
 	sc.Buffer(make([]byte, 0, 64<<10), maxLine)
 	var event string
@@ -221,7 +221,7 @@ func (t *LegacySSETransport) Send(ctx context.Context, msg []byte) error {
 	if err != nil {
 		return fmt.Errorf("post %s: %w", t.endpoint, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, defaults.HTTPErrorBodyLimit))
 		return &HTTPStatusError{URL: t.endpoint, Status: resp.StatusCode, Body: bytes.TrimSpace(b)}

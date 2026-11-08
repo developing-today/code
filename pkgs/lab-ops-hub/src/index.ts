@@ -6,6 +6,8 @@ import {
   extractHtml,
   fetchFollowingValidatedRedirects,
   parseJsonObjectBody,
+  parseFormDataBody,
+  parseUploadFile,
   readResponseTextCapped,
   crawlArchiveKey,
   uploadKey,
@@ -15,6 +17,7 @@ import {
   validateNoteBody,
   validateTaskBody,
   parseCrawlResult,
+  parseAiSummaryResult,
   fileResponseForKey,
 } from "./lib";
 
@@ -286,13 +289,13 @@ export default {
           )
             .bind(
               valid.values.name,
-              b.role ?? "compute",
-              b.cpu ?? null,
-              b.ram_gb ?? null,
-              b.storage ?? null,
-              b.gpu ?? null,
-              b.status ?? "planned",
-              b.notes ?? null,
+              valid.values.role,
+              valid.values.cpu,
+              valid.values.ram_gb,
+              valid.values.storage,
+              valid.values.gpu,
+              valid.values.status,
+              valid.values.notes,
             )
             .run();
         } catch (e) {
@@ -321,7 +324,7 @@ export default {
         const valid = validateNoteBody(b);
         if (!valid.ok) return json({ error: valid.error }, 400);
         const r = await env.DB.prepare("INSERT INTO notes (title, body, tags) VALUES (?1,?2,?3)")
-          .bind(valid.values.title, valid.values.text, b.tags ?? "")
+          .bind(valid.values.title, valid.values.text, valid.values.tags)
           .run();
         ctx.waitUntil(logUsage(env, "d1_write", "note"));
         return json({ ok: true, id: r.meta.last_row_id }, 201);
@@ -333,13 +336,19 @@ export default {
           .first<{ body: string }>();
         if (!note) return json({ error: "note not found" }, 404);
         ctx.waitUntil(logUsage(env, "ai_request", "summarize"));
-        const ai = (await env.AI.run("@cf/meta/llama-3.2-3b-instruct", {
+        const ai: unknown = await env.AI.run("@cf/meta/llama-3.2-3b-instruct", {
           messages: [
             { role: "system", content: "Summarise in one or two sentences. Plain text only." },
             { role: "user", content: note.body.slice(0, 4000) },
           ],
-        })) as { response?: string };
-        const summary = (ai.response ?? "").trim();
+        });
+        // The AI result crosses a service boundary, so validate its
+        // shape before anything is stored (#7037): a malformed result
+        // is an upstream failure (502), never a silently stored empty
+        // summary and never a raw TypeError.
+        const parsed = parseAiSummaryResult(ai);
+        if (!parsed.ok) return json({ error: `AI returned a malformed summary result: ${parsed.error}` }, 502);
+        const summary = parsed.values.summary;
         await env.DB.prepare("UPDATE notes SET summary=?1 WHERE id=?2").bind(summary, sumMatch[1]).run();
         ctx.waitUntil(logUsage(env, "d1_write", "note-summary"));
         return json({ ok: true, summary });
@@ -357,7 +366,7 @@ export default {
         const valid = validateTaskBody(b);
         if (!valid.ok) return json({ error: valid.error }, 400);
         const r = await env.DB.prepare("INSERT INTO tasks (title, machine_id, due) VALUES (?1,?2,?3)")
-          .bind(valid.values.title, b.machine_id ?? null, b.due ?? null)
+          .bind(valid.values.title, valid.values.machine_id, valid.values.due)
           .run();
         ctx.waitUntil(logUsage(env, "d1_write", "task"));
         return json({ ok: true, id: r.meta.last_row_id }, 201);
@@ -369,14 +378,15 @@ export default {
         return json({ files: results });
       }
       if (p === "/api/files" && req.method === "POST") {
-        const form = await req.formData();
-        const file = form.get("file") as File | null;
-        if (!file) return json({ error: "multipart field 'file' required" }, 400);
-        const buf = await file.arrayBuffer();
-        const key = uploadKey(file.name, Date.now(), crypto.randomUUID());
-        await env.FILES.put(key, buf, { httpMetadata: { contentType: file.type || "application/octet-stream" } });
+        const form = await parseFormDataBody(req);
+        if (!form.ok) return json({ error: form.error }, 400);
+        const file = parseUploadFile(form.form.get("file"));
+        if (!file.ok) return json({ error: file.error }, 400);
+        const buf = await file.values.arrayBuffer();
+        const key = uploadKey(file.values.name, Date.now(), crypto.randomUUID());
+        await env.FILES.put(key, buf, { httpMetadata: { contentType: file.values.type || "application/octet-stream" } });
         const r = await env.DB.prepare("INSERT INTO files (r2_key, filename, content_type, size) VALUES (?1,?2,?3,?4)")
-          .bind(key, file.name, file.type || null, buf.byteLength)
+          .bind(key, file.values.name, file.values.type || null, buf.byteLength)
           .run();
         await env.JOBS.send({ type: "index-file", r2Key: key });
         ctx.waitUntil(

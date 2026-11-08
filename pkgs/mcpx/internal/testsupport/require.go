@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+// RequiredBinaries returns the external binaries a test run must have, as named by MCPX_TEST_REQUIRE.
+//
 // MCPX_TEST_REQUIRE names the external binaries a test run must have, as a
 // comma-separated list (e.g. MCPX_TEST_REQUIRE=deno,bun,node,python3).
 //

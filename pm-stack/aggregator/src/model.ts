@@ -10,7 +10,7 @@ export const REPOS = [
   "developing-today/code",
   "developing-today-forks/opencode",
   "developing-today-forks/openchamber",
-  "dezren39/nix",
+  "dezren39/darwin-nix",
 ] as const;
 
 /** "owner/repo#123" — the registry's canonical key for an issue or PR. */
@@ -500,6 +500,19 @@ export function parseRef(key: RefKey): GhRef {
  *  number. Boundary validators and store-load gates route through this
  *  instead of re-checking the shape with a local regex whose \d+ group
  *  admits numbers parseRef (and refUrl) then throw on. */
+/** The ref contract (design #6242, closed out by the Phase 4 inventory on
+ *  #6243): a ref is an annotation, not identity. (1) Validity is
+ *  isValidRef only - no local shape checks. (2) An invalid ref is dropped
+ *  at the consumption step beside its gate: the item survives, the drop
+ *  is traced (log or count). (3) Producers mint only valid refs: scrapes
+ *  route through refsInText / titleRefs, which filter with isValidRef,
+ *  and constructors validate before minting. (4) Rendering or deriving
+ *  reaches refUrl for stored or feed-derived refs only through a guard
+ *  (an isValidRef check, a load/read gate upstream, or a safe-link
+ *  helper); an invalid ref renders as plain text, never a throw.
+ *  Code-built refs (issue(n), fixture literals, validated config) are
+ *  exempt from (4): parseRef's throw is their test-time assertion. */
+
 export function isValidRef(value: unknown): value is RefKey {
   if (typeof value !== "string") return false;
   try {
@@ -1295,6 +1308,19 @@ export interface SaasService {
   usageNote?: string;
 }
 
+/** A service evaluated in free-services-to-check.md but not represented
+ * by an instrumented quota card. Values are copied from that tracker so
+ * the overview never invents provider states or pricing behavior. */
+export interface UninstrumentedSaasService {
+  name: string;
+  whatFor: string;
+  /** Tracker status text with its dated check kept in checkedAt. */
+  status: string;
+  checkedAt: string | null;
+  overageBehavior: string;
+  guardrailNotes: string;
+}
+
 /** One line of the PAYG dollars card (§1.2). */
 export interface PaygLine {
   id: string;
@@ -1441,6 +1467,8 @@ export interface SnapshotRecord {
 /** The hub's family-2 + PAYG + charges model, served by Source.usage(). */
 export interface UsageView {
   services: SaasService[];
+  /** Tracker-derived SaaS services without an instrumented quota card. */
+  uninstrumentedServices: UninstrumentedSaasService[];
   payg: PaygLine[];
   charges: ChargeRow[];
   /** Set when no charge evidence could be derived — the strip explains itself. */

@@ -49,6 +49,38 @@ function arg(name: string): string | undefined {
   return i >= 0 ? valueAfter(i, name) : undefined;
 }
 
+/** Strict operator-argument contract (#7332): every documented flag
+ * takes a value, and --task is the only repeatable one. The parser
+ * otherwise probes argv with indexOf only, so an unknown, misspelled,
+ * joined (--model=sonnet), or duplicate token was silently ignored
+ * with exit 0: a typo --task dropped the session task linkage, a typo
+ * --file wrote the record to the default registry file, and a typo
+ * --status recorded the default instead of the named status. Reject
+ * the whole argv here, before any file is touched -- the mirror of
+ * the sibling guards (#6961/#7097/#7254/#7289/#7302). */
+const VALUE_FLAGS = ["--label", "--id", "--parent", "--task", "--model", "--status", "--file"];
+function rejectUnknownArgs(): void {
+  const args = process.argv.slice(2);
+  const seen = new Set<string>();
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i] as string;
+    if (VALUE_FLAGS.includes(token)) {
+      if (token !== "--task") {
+        if (seen.has(token)) usageError(`duplicate ${token}`);
+        seen.add(token);
+      }
+      const value = args[i + 1];
+      if (value === undefined || value.trim() === "" || value.startsWith("--")) {
+        usageError(`${token} requires a value that is neither empty nor a flag`);
+      }
+      i++; // skip the validated value
+      continue;
+    }
+    usageError(`unknown argument ${JSON.stringify(token)}`);
+  }
+}
+rejectUnknownArgs();
+
 const file =
   arg("file") ??
   process.env.CLAUDE_LAUNCH_RECORDS_PATH ??

@@ -29,6 +29,44 @@ const USAGE = "usage: generate-digest.ts [--kind daily|weekly] [--no-deliver] [-
 // a daily digest for an invocation that named --kind and supplied no
 // value, and a flag token in the value slot was blamed as a bad kind
 // (#6926).
+// Unknown or duplicated arguments are usage errors, never silently
+// ignored (#7097): argv is probed token-by-token below, so a typo'd
+// --knd weekly fell through to the daily default and a typo'd
+// --no-delivre made the includes() check false and delivered anyway.
+// Mirrors rejectUnknownArgs in append-usage-snapshots.ts (#6961) /
+// compact-usage-snapshots.ts (#6967). Runs before any config load,
+// archive write, or delivery attempt.
+function rejectUnknownArgs(): void {
+  const args = process.argv.slice(2);
+  const seen = new Set<string>();
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i] as string;
+    if (token === "--kind") {
+      if (seen.has(token)) {
+        console.error("generate-digest: duplicate --kind");
+        console.error(USAGE);
+        process.exit(2);
+      }
+      seen.add(token);
+      i++; // skip the value; arg() validates it
+      continue;
+    }
+    if (token === "--no-deliver" || token === "--strict-deliver") {
+      if (seen.has(token)) {
+        console.error(`generate-digest: duplicate ${token}`);
+        console.error(USAGE);
+        process.exit(2);
+      }
+      seen.add(token);
+      continue;
+    }
+    console.error(`generate-digest: unknown argument ${JSON.stringify(token)}`);
+    console.error(USAGE);
+    process.exit(2);
+  }
+}
+rejectUnknownArgs();
+
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
   if (i < 0) return undefined;

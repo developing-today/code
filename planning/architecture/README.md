@@ -64,6 +64,9 @@ records.
 - [Atlas — schema-driven filter surface from the classification manifest](../../doc/2026-11-05T13-03-49Z_design_atlas_manifest_filter_surface/2026-11-05T13-03-49Z_design_atlas_manifest_filter_surface.md)
 - [Design: shared threat-list feed protocol — versioned, signed, subscribable feeds with local override lists](../../doc/2026-11-05T13-36-21Z_design_threat_list_feed_protocol/2026-11-05T13-36-21Z_design_threat_list_feed_protocol.md)
 - [Capability-certification exception policy](../../doc/2026-11-08T01-10-24Z_design_id_capability_certification_exceptions/2026-11-08T01-10-24Z_design_id_capability_certification_exceptions.md)
+- [Knowledge-layer sharing and permissions](../../doc/2026-11-08T08-19-40Z_design_id_knowledge_sharing_permissions/2026-11-08T08-19-40Z_design_id_knowledge_sharing_permissions.md)
+- [Permission UX for worlds: pre-connect disclosure, grant modes, and memory](../../doc/2026-11-08T09-06-08Z_design_id_permission_ux/2026-11-08T09-06-08Z_design_id_permission_ux.md)
+- [Capability observability: who can see which capability facts, where](../../doc/2026-11-08T10-40-00Z_design_id_capability_observability/2026-11-08T10-40-00Z_design_id_capability_observability.md)
 
 ## Package architecture docs (living, with the code)
 

@@ -49,6 +49,7 @@ mod assets;
 mod collab;
 mod content_mode;
 mod explore;
+mod groups;
 mod home;
 mod identity;
 mod markdown;
@@ -252,6 +253,10 @@ pub struct AppState {
     pub program_world: Option<String>,
     /// Mark the directory explorer's session cookies `Secure`.
     pub cookie_secure: bool,
+    /// The resolved group-log path for the read-only `/groups` page
+    /// (`id serve` passes its `--groups-log` resolution); `None` reads
+    /// the default `groups.jsonl`, as the group CLI does.
+    pub groups_log: Option<std::path::PathBuf>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -268,6 +273,7 @@ impl std::fmt::Debug for AppState {
             .field("local_events", &"<LocalEvents>")
             .field("world", &self.world)
             .field("cookie_secure", &self.cookie_secure)
+            .field("groups_log", &self.groups_log)
             .finish()
     }
 }
@@ -336,6 +342,7 @@ impl AppState {
             web_socket: Some("/ws/world".to_owned()),
             program_world: None,
             cookie_secure: false,
+            groups_log: None,
         })
     }
 }
@@ -402,6 +409,7 @@ fn load_asset_urls() -> AssetUrls {
 /// # Returns
 ///
 /// An Axum router ready to be merged with the serve endpoint.
+#[allow(clippy::too_many_arguments)]
 pub async fn web_router(
     store: Store,
     peers: Option<PeerDiscovery>,
@@ -412,6 +420,7 @@ pub async fn web_router(
     security: WebSecurity,
     world: Option<crate::world_hub::WorldHub>,
     cookie_secure: bool,
+    groups_log: Option<std::path::PathBuf>,
 ) -> anyhow::Result<Router> {
     let state = AppState::new(
         store,
@@ -422,7 +431,7 @@ pub async fn web_router(
         identity_db_path,
     )
     .await?;
-    Ok(finish_router(state, security, world, cookie_secure, None))
+    Ok(finish_router(state, security, world, cookie_secure, None, groups_log))
 }
 
 /// Like [`web_router`], but over a caller-opened, shared `local_events` store (see
@@ -438,6 +447,7 @@ pub async fn web_router_with_local_events(
     security: WebSecurity,
     world: Option<crate::world_hub::WorldHub>,
     cookie_secure: bool,
+    groups_log: Option<std::path::PathBuf>,
     local_events: Arc<Mutex<crate::local_events::LocalEvents>>,
 ) -> anyhow::Result<Router> {
     let state = AppState::with_local_events(
@@ -450,7 +460,7 @@ pub async fn web_router_with_local_events(
         local_events,
     )
     .await?;
-    Ok(finish_router(state, security, world, cookie_secure, None))
+    Ok(finish_router(state, security, world, cookie_secure, None, groups_log))
 }
 
 /// Build one router per listener security over a SINGLE shared
@@ -476,6 +486,7 @@ pub async fn web_routers(
     cookie_secure: bool,
     local_events: Option<Arc<Mutex<crate::local_events::LocalEvents>>>,
     surfaces: Vec<Option<String>>,
+    groups_log: Option<std::path::PathBuf>,
 ) -> anyhow::Result<Vec<Router>> {
     let state = match local_events {
         Some(events) => {
@@ -512,12 +523,14 @@ pub async fn web_routers(
                 world.clone(),
                 cookie_secure,
                 surface,
+                groups_log.clone(),
             )
         })
         .collect())
 }
 
-/// Applies the world/cookie settings and the security layer to a built state.
+/// Applies the world/cookie settings and delegates security to the public
+/// constructor, which applies exactly one guard layer.
 ///
 /// `surface` is the listener's #2146 content target: `None` builds the
 /// Explorer router; `Some(world)` builds the program-only router for
@@ -528,21 +541,19 @@ fn finish_router(
     world: Option<crate::world_hub::WorldHub>,
     cookie_secure: bool,
     surface: Option<String>,
+    groups_log: Option<std::path::PathBuf>,
 ) -> Router {
     state.world = world;
+    state.groups_log = groups_log;
     state.cookie_secure = cookie_secure;
     let security = WebSecurity {
         cookie_secure,
         ..security
     };
-    let router = match &surface {
-        Some(world) => create_program_router(state, world),
-        None => create_router(state),
-    };
-    router.layer(axum::middleware::from_fn_with_state(
-        Arc::new(security),
-        security::guard,
-    ))
+    match &surface {
+        Some(world) => create_program_router(state, world, security),
+        None => create_router(state, security),
+    }
 }
 
 #[cfg(test)]
