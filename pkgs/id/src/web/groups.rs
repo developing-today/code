@@ -9,8 +9,9 @@
 //! Read-only is load-bearing: [`GroupLog::open`](crate::groups::log::GroupLog::open)
 //! truncates a torn final line, which is a mutation — a page GET must
 //! never repair the file. [`read_projection`] therefore parses the file
-//! itself with the same torn-tail tolerance (an unparseable final line
-//! without a trailing newline is ignored) but writes nothing, ever.
+//! itself with the same torn-tail tolerance (every unterminated final
+//! entry is dropped, parseable or not, exactly as `GroupLog::open` drops
+//! it) but writes nothing, ever.
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -48,20 +49,27 @@ pub fn groups_log_path(state: &AppState) -> PathBuf {
 /// Fails if the file cannot be read, a complete line is not an event,
 /// or the events cannot be folded.
 pub fn read_projection(path: &Path) -> Result<Projection> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == ErrorKind::NotFound => Vec::new(),
         Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
     };
     let mut events: Vec<Event> = Vec::new();
-    for (number, line) in text.split_inclusive('\n').enumerate() {
-        if line.trim().is_empty() {
+    for (number, line) in bytes.split_inclusive(|byte| *byte == b'\n').enumerate() {
+        if !line.ends_with(b"\n") {
+            // Torn final entry: `GroupLog::open` drops every unterminated
+            // final entry, parseable or not -- mirror that here, without
+            // truncating the file.
+            break;
+        }
+        let text = std::str::from_utf8(line).with_context(|| {
+            format!("{}: line {} is not an event", path.display(), number + 1)
+        })?;
+        if text.trim().is_empty() {
             continue;
         }
-        let complete = line.ends_with('\n');
-        match serde_json::from_str::<Event>(line.trim_end()) {
+        match serde_json::from_str::<Event>(text.trim_end()) {
             Ok(event) => events.push(event),
-            Err(_) if !complete => break,
             Err(error) => {
                 return Err(error).with_context(|| {
                     format!("{}: line {} is not an event", path.display(), number + 1)
@@ -77,8 +85,8 @@ fn key_hex(key: &Key) -> String {
 }
 
 /// Renders the groups page content (without the page shell) from a
-/// folded projection: every group with its ID and active/dissolved
-/// status, its direct members and roles, and the grants in force in
+/// folded projection: every group with its ID and active/pending/
+/// dissolved status, its direct members and roles, and the grants in force in
 /// it — via [`Projection::grants_in_force`], so a grant whose grantor
 /// was later removed still shows while it remains in force.
 pub fn render_groups(projection: &Projection) -> String {
@@ -91,7 +99,15 @@ pub fn render_groups(projection: &Projection) -> String {
     let mut any = false;
     for (id, view) in projection.groups() {
         any = true;
-        let status = if view.is_active() { "active" } else { "dissolved" };
+        let status = if view.dissolved_by.is_some() {
+            "dissolved"
+        } else if view.is_active() {
+            "active"
+        } else {
+            // Not dissolved, but not yet in effect -- e.g. a friendship
+            // still awaiting acceptance.
+            "pending"
+        };
         html.push_str(&format!(
             "<section class=\"group\"><h2>Group {}</h2><p>Status: {}</p>",
             id, status
@@ -273,6 +289,57 @@ mod tests {
             resolve_groups_log(None),
             PathBuf::from(crate::groups::log::FILE_NAME)
         );
+    }
+
+    #[test]
+    fn unterminated_final_entry_is_dropped_even_when_it_parses() {
+        let dir = TempDir::new().unwrap();
+        let path = log_with_retained_grant(&dir);
+        // Strip only the trailing newline: the final (member-remove)
+        // event becomes an unterminated torn entry. `GroupLog::open`
+        // drops it, so the page must too -- OWNER stays a member.
+        let mut bytes = std::fs::read(&path).unwrap();
+        assert_eq!(bytes.pop(), Some(b'\n'));
+        std::fs::write(&path, &bytes).unwrap();
+
+        let projection = read_projection(&path).unwrap();
+        let (_, view) = projection.groups().next().unwrap();
+        assert!(view.members.contains_key(&OWNER));
+    }
+
+    #[test]
+    fn torn_multibyte_tail_is_dropped_not_an_error() {
+        let dir = TempDir::new().unwrap();
+        let path = log_with_retained_grant(&dir);
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.extend_from_slice(&[0xE2, 0x82]);
+        std::fs::write(&path, &bytes).unwrap();
+
+        let projection = read_projection(&path).unwrap();
+        assert_eq!(projection.groups().count(), 1);
+    }
+
+    #[test]
+    fn pending_friendship_renders_pending_not_dissolved() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(crate::groups::log::FILE_NAME);
+        let mut log = GroupLog::open(&path).unwrap();
+        log.record(
+            OWNER,
+            None,
+            Body::Create(Create {
+                template: Template::Friendship,
+                policy: Policy::friendship(),
+                members: vec![(ANN, Role::Manage)],
+                admins_on_create: false,
+            }),
+        )
+        .unwrap();
+
+        let projection = read_projection(&path).unwrap();
+        let html = render_groups(&projection);
+        assert!(html.contains("Status: pending"), "html: {html}");
+        assert!(!html.contains("Status: dissolved"), "html: {html}");
     }
 
     #[test]
