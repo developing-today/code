@@ -218,6 +218,43 @@ class TestCheckProviderRetirementGate(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("opencode-route/workhorse", result.stderr)
 
+    def test_disabled_providers_tombstone_passes(self):
+        # Codex finding 4506484591 (PR #7679): an entry in
+        # "disabled_providers" is a tombstone that SUPPRESSES a
+        # retired provider (removing it would reactivate the provider
+        # through the catalog); it is not an active reference and
+        # must not block that provider's retirement.
+        with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
+            cfg = Path(tmp) / "opencode.jsonc"
+            cfg.write_text(
+                '{\n'
+                '  "disabled_providers": [\n'
+                '    "google-vertex",\n'
+                '    "openai-codex"\n'
+                '  ],\n'
+                '  "model": "native-provider/model"\n'
+                '}\n'
+            )
+            for provider in ("google-vertex", "openai-codex"):
+                result = run_gate(["--config", str(cfg), provider])
+                self.assertEqual(result.returncode, 0, (provider, result.stderr))
+                self.assertIn("Retirement gate OK", result.stdout)
+
+    def test_disabled_tombstone_plus_active_reference_blocks(self):
+        # The tombstone exclusion is scoped to the array: the same
+        # provider referenced as a real key elsewhere still blocks.
+        with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
+            cfg = Path(tmp) / "opencode.jsonc"
+            cfg.write_text(
+                '{\n'
+                '  "disabled_providers": ["google-vertex"],\n'
+                '  "provider": {"google-vertex": {"options": {}}}\n'
+                '}\n'
+            )
+            result = run_gate(["--config", str(cfg), "google-vertex"])
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("Retirement BLOCKED", result.stderr)
+
     @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0,
                      "root can read chmod-0 files; grep-error path not exercisable")
     def test_unreadable_config_fails_closed(self):

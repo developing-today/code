@@ -18,6 +18,12 @@
 # while "opencode-route/workhorse" exists) does not block
 # (PR #7679 Codex finding 4506371633).
 #
+# Entries in a "disabled_providers" array are tombstones, not active
+# references: the tracked config REQUIRES that already-retired
+# providers stay listed there, because removing an entry reactivates
+# the provider through the catalog. Those entries are blanked before
+# searching (PR #7679 Codex finding 4506484591).
+#
 # Usage:
 #   scripts/check-provider-retirement-gate.sh [options] <provider-id> [provider-id...]
 #
@@ -85,6 +91,55 @@ strip_jsonc_comments() {
           break
         }
         if (c == "/" && d == "*") { in_block = 1; out = out "  "; i++; continue }
+        out = out c
+      }
+      print out
+    }' "$1"
+}
+
+# Blank the entries of any "disabled_providers" array in a
+# comment-stripped config, preserving line numbers: a tombstone entry
+# suppresses a retired provider, it does not use it.
+strip_disabled_providers() {
+  awk '
+    BEGIN { in_str = 0; esc = 0; awaiting_colon = 0; awaiting_bracket = 0; in_disabled = 0; depth = 0; str = "" }
+    {
+      out = ""
+      n = length($0)
+      for (i = 1; i <= n; i++) {
+        c = substr($0, i, 1)
+        if (in_disabled) {
+          out = out " "
+          if (in_str) {
+            if (esc) { esc = 0 }
+            else if (c == "\\") { esc = 1 }
+            else if (c == "\"") { in_str = 0 }
+            continue
+          }
+          if (c == "\"") { in_str = 1; esc = 0; continue }
+          if (c == "[") { depth++; continue }
+          if (c == "]") { depth--; if (depth == 0) { in_disabled = 0 } continue }
+          continue
+        }
+        if (awaiting_colon) {
+          if (c == " " || c == "\t") { out = out c; continue }
+          if (c == ":") { awaiting_colon = 0; awaiting_bracket = 1; out = out c; continue }
+          awaiting_colon = 0
+        }
+        if (awaiting_bracket) {
+          if (c == " " || c == "\t") { out = out c; continue }
+          if (c == "[") { awaiting_bracket = 0; in_disabled = 1; depth = 1; out = out " "; continue }
+          awaiting_bracket = 0
+        }
+        if (in_str) {
+          out = out c
+          if (esc) { esc = 0 }
+          else if (c == "\\") { esc = 1 }
+          else if (c == "\"") { in_str = 0; if (str == "disabled_providers") { awaiting_colon = 1 } str = "" }
+          else { str = str c }
+          continue
+        }
+        if (c == "\"") { in_str = 1; esc = 0; str = ""; out = out c; continue }
         out = out c
       }
       print out
@@ -191,9 +246,16 @@ for provider in "${providers[@]}"; do
       rm -f "$stripped_file"
       exit 2
     fi
-    grep_status=0
-    matches="$(grep -nF -e "\"$provider\"" -e "\"$provider/" "$stripped_file")" || grep_status=$?
+    filtered_file="$(mktemp)"
+    if ! strip_disabled_providers "$stripped_file" > "$filtered_file"; then
+      echo "::error::Config file '$cfg' could not be read/searched; failing closed (exit 2)." >&2
+      rm -f "$stripped_file" "$filtered_file"
+      exit 2
+    fi
     rm -f "$stripped_file"
+    grep_status=0
+    matches="$(grep -nF -e "\"$provider\"" -e "\"$provider/" "$filtered_file")" || grep_status=$?
+    rm -f "$filtered_file"
     if [[ $grep_status -eq 2 ]]; then
       echo "::error::Config file '$cfg' could not be searched (grep error); failing closed (exit 2)." >&2
       exit 2
