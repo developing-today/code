@@ -90,6 +90,7 @@ The first is checked at admission: a derived set wider than the declaration is a
 Answering the issue's first open question directly:
 
 - **Static analysis is the certification mechanism.** Call-graph reachability over the closed platform-function namespace produces the discovered-used set. It is path-independent by construction: it enumerates every platform function reachable from the entry points, which is exactly the "same for every run" question the issue asks. Higher-order boundaries take the union of possible targets; where the target set cannot be enumerated, certification fails rather than guessing (#5997 §1, and #6000 §1's five certification-voiding features).
+- **Data-encoded capabilities are inside the analysis surface.** Not every capability is exercised by *calling* a platform function. The ABI also accepts arbitrary strings from `program.wants` (`pkgs/id/examples/roc-world/platform.roc:56-57`), and existing worlds use that channel as data, not as calls: `pkgs/id/examples/territory/main.roc:114-115` subscribes to `players` by returning literal JSON without invoking any capability-specific platform function, and `RocCap` helpers likewise construct JSON rather than call host functions. A call-graph-only derivation would miss exactly these capabilities and either under-report the used set or leave ordinary worlds uncertifiable. The derivation must therefore analyze, conservatively, every value reachable code can emit through `program.wants` and RocCap-style JSON construction: any capability named by an emittable request/subscription value counts in `discovered_used`, exactly as if the corresponding platform function had been called. Where the emittable values are not a closed, statically enumerable set of literals (arbitrary string construction, concatenation from runtime input), certification **fails** with that reason — it never certifies a call-graph-only subset as the used set. (Restricting the ABI so requests are typed values rather than arbitrary strings would remove this failure mode; that is an ABI change, out of scope for this design, and is recorded here as the known cost of the current string channel.)
 - **Profiling is corroboration, not certification.** A profiling run (platform-call instrumentation during execution) cannot prove absence — it only sees paths taken. It is retained for three jobs: (a) detecting **drift**, a runtime use of a name outside the certified set, which is a hard fault (§3.2); (b) **ranking** the used set by hotness for the observability surface (#6017), which is presentational only; (c) **test evidence** that a derived set is not vacuous.
 - **Neither mechanism is alone sufficient**, so the design names both and their roles. A registry that showed only the static set would hide real-path usage; one that showed only the profile would present a path-dependent sample as if it were the whole truth.
 
@@ -121,6 +122,8 @@ The canonical schema lives here; #6000's semantics and #6017's presentation cons
 
 A registry entry describes an immutable **world release** (the artifact plus its transitive dependency closure), identified by the content-addressed identity of #5965 §2 and #5997 §2 (platform tree hash + source closure hash + DLL closure hash + compiler digest + target). It is *not* a per-world-row record: a world that republishes new code gets a new entry; a world restored from a checkpoint keeps its entry.
 
+Certification content (`requested`, `discovered_used`, `custom_platform`) is a property of the release and lives here. **Effective grants and runtime observations are not fields of this record**: they are properties of a *world instance* running the release (§4.2.1). Two worlds on one server can run the same release under different grants and ceilings — the ledger and ceiling are stored per `WorldCore` (`pkgs/id/src/world/core.rs:145-153`) and updated per world (`world/actor.rs:1769-1780`) — so a single release-keyed `effective_grant` would overwrite one worlds authority report with anothers.
+
 ### 4.2 Shape
 
 ```json
@@ -149,6 +152,19 @@ A registry entry describes an immutable **world release** (the artifact plus its
       "at": "2026-11-08T09:15:00Z"
     }
   },
+  "custom_platform": null
+}
+```
+
+### 4.2.1 The world-instance record (grants and observations)
+
+Effective grants and runtime observations are recorded per **world instance**, keyed by `(world_id, release identity)`:
+
+```json
+{
+  "v": 1,
+  "world_id": "<world instance id>",
+  "release_identity": "<blake3 hex>",
   "effective_grant": {
     "tiers": ["standard"],
     "caps": ["time.now", "chat.say", "Screen", "Key"],
@@ -159,16 +175,17 @@ A registry entry describes an immutable **world release** (the artifact plus its
     "window": "last 24h",
     "caps": ["time.now", "chat.say"],
     "runs": 412
-  },
-  "custom_platform": null
+  }
 }
 ```
+
+Admission and presentation join the two records on `release identity`: the release record says what the code *can* use and what its author *asked* for; the instance record says what *this* world may use now and what it has been seen using. Neither record alone is an authority report, and a consumer must never read a release record as if it carried a grant.
 
 Rules that make the shape honest:
 
 - **`discovered_used.state` is the first thing a reader sees.** `caps` is **absent or `null`** unless `state == "certified"`. A `null` set with `state: "not_certified"` and a `reason` is the honest representation of "we do not know"; `[]` is reserved for a completed analysis that proved no platform calls, and the schema makes that distinction explicit rather than by convention.
 - **`partial`** carries any known subset the analyzer could report despite failure, explicitly labelled `non_authoritative: true`. Consumers must not use it to reduce a grant (#6000 §2).
-- **`requested.tiers` and `effective_grant.tiers`** carry the tier decision, so a reader can see "this world asks for `sandbox.fs`, the server did not enable it, its derived set therefore cannot include `fs.*`" without reconstructing the arithmetic.
+- **`requested.tiers` (release record) and `effective_grant.tiers` (instance record, §4.2.1)** carry the tier decision, so a reader can see "this world asks for `sandbox.fs`, the server did not enable it, its derived set therefore cannot include `fs.*`" without reconstructing the arithmetic.
 - **`custom_platform`** is `null` for a world on the server's stock platform, or `{tree_hash, requested_key, compiled_at}` for a world on a synthesised platform (§5).
 - **`release.analyzer`** is part of the identity of the analysis, not of the artifact: a change of analyzer version stales every entry it produced (`state: "stale"`), forcing re-analysis. This is the "no silently stale certification" rule.
 
