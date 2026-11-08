@@ -106,7 +106,34 @@ export async function uploadImageFile(file: File): Promise<UploadResponse> {
     throw new Error(`Upload failed (${response.status}): ${text}`);
   }
 
-  return (await response.json()) as UploadResponse;
+  return parseUploadResponse(await response.json());
+}
+
+/**
+ * Validate an `/api/upload` payload at the fetch boundary (#7823).
+ *
+ * The server contract is three required strings (hash, name, url). A
+ * wrong-shape 200 (deploy skew, a future contract change) must fail
+ * closed through the upload-failure path: without this check the bare
+ * cast resolved malformed values and the caller inserted an image
+ * node with an undefined/wrong-typed src, or dereferenced null and
+ * misreported the failure as an insertion failure.
+ */
+export function parseUploadResponse(payload: unknown): UploadResponse {
+  if (
+    typeof payload !== "object" ||
+    payload === null ||
+    Array.isArray(payload)
+  ) {
+    throw new Error("Upload failed: malformed /api/upload response (expected an object)");
+  }
+  const { hash, name, url } = payload as Record<string, unknown>;
+  if (typeof hash !== "string" || typeof name !== "string" || typeof url !== "string") {
+    throw new Error(
+      "Upload failed: malformed /api/upload response (hash, name and url must be strings)",
+    );
+  }
+  return { hash, name, url };
 }
 
 // ============================================================================

@@ -1351,7 +1351,7 @@ def main() -> int:
             resolved = entry.path
             if resolved.is_symlink() or not resolved.is_dir():
                 raise SafetyError(f"entry changed since plan: {resolved}")
-            if not resolved.is_relative_to(root):
+            if not resolved.is_relative_to(args.fleet_root.resolve(strict=True)):
                 raise SafetyError(f"entry escaped fleet root: {resolved}")
             task_id = task_id_from(resolved.name) or dir_task_id(resolved.name)
             if task_id is not None and task_id in fresh_claimed:
@@ -1383,7 +1383,7 @@ def main() -> int:
                     f"entry gained keep-set files; stopping before {resolved}"
                 )
             dest = trash_root / resolved.name
-            if resolved.parent == root / "queue":
+            if resolved.parent == args.fleet_root.resolve(strict=True) / "queue":
                 dest = trash_root / "queue" / resolved.name
             if dest.exists():
                 raise SafetyError(f"trash destination already exists: {dest}")
