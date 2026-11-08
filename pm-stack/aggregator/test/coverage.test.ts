@@ -227,7 +227,7 @@ describe("snapshot rotation — poisoned anchorAt (#5196)", () => {
     expect(snap.anchorAt).toBe("2026-11-01T12:00:00.000Z");
   });
 
-  test("the store reads a garbage-anchor file as absent, and a well-formed one as itself", async () => {
+  test("the store reads a poisoned-anchor file as absent and a well-formed one as itself", async () => {
     const dir = await mkdtemp(join(tmpdir(), "coverage-anchor-"));
     try {
       const file = join(dir, "coverage-snapshot.json");
@@ -246,6 +246,25 @@ describe("snapshot rotation — poisoned anchorAt (#5196)", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  test("the fallback anchor rotates a week later instead of freezing", () => {
+    // The freeze bug was one week downstream: main kept returning the
+    // poisoned anchor, so no later read could ever cross the week. The
+    // fallback must be a real date that the NEXT read rotates from.
+    const stored: CoverageSnapshotFile = {
+      baseline: null,
+      current: mk("2026-10-31T00:00:00Z", 90),
+      weekly: mk("2026-10-24T00:00:00Z", 80),
+      anchorAt: "2026-02-30T00:00:00Z",
+    };
+    const snap = nextCoverageSnapshot(stored, mk("2026-11-01T00:00:00Z", 100), NOW);
+    expect(snap.anchorAt).toBe("2026-10-31T00:00:00Z");
+    expect(snap.baseline).toBeNull();
+    const aWeekLater = new Date("2026-11-08T00:00:00Z");
+    const rotated = nextCoverageSnapshot(snap, mk("2026-11-08T00:00:00Z", 120), aWeekLater);
+    expect(rotated.anchorAt).toBe("2026-11-08T00:00:00.000Z");
+    expect(rotated.baseline?.generatedAt).toBe("2026-10-24T00:00:00Z");
   });
 });
 
