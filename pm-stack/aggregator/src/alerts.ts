@@ -9,6 +9,17 @@
 // immediately, quiet hours or not, because the sentinels are
 // external to the thing that might be down. Warnings never push in
 // v1 (page + ledger only).
+//
+// The throat's truth contract (#3702 Phase 3, 2026-11-03): the alert
+// throat's records and responses tell the truth and keep its secrets.
+// A state transition is recorded only when the event it names happened
+// (delivered / escalated require at least one accepted send; `gone` is
+// not a send). Subscription key material (`p256dh`, `auth`) never
+// leaves the server: store rows are internal, any HTTP surface
+// projects — the page's projection is the only read shape. Subscription
+// preferences are validated as values, not shapes, and an invalid value
+// falls back per-field to the default — never stored, never
+// reinterpreted.
 import type { Config } from "./config.ts";
 import { sendPush, type PushOutcome, type PushTarget } from "./push.ts";
 import { getSupabaseClient, sqlInt, sqlJson, sqlStr, type SupabaseClient } from "./supabase.ts";
@@ -57,6 +68,21 @@ export interface PushSubscriptionRow {
   created_at: string;
   last_seen_at: string;
   gone_count: number;
+}
+
+/** One alerts.notification_sends ledger row (#3319): one per send
+ * attempt, written by logSend; acted_on_at is stamped by the
+ * exactly-once Ack transition. The insert names no timestamp column,
+ * so the send time is the row's defaulted created_at; sent_at is
+ * read first when a row carries one. */
+export interface NotificationSendRow {
+  class: string;
+  object_ref: string;
+  incident_id: string | null;
+  outcome: string;
+  sent_at?: string | null;
+  created_at?: string | null;
+  acted_on_at: string | null;
 }
 
 export interface QuietPrefs {
@@ -115,12 +141,23 @@ export function mergeClasses(input: unknown): Record<string, boolean> {
   return out;
 }
 
+/** #3686: clock-shape plus numeric range — hours 00–23, minutes 00–59.
+ * Shape-only checks accept impossible values (99:99, 24:60) that
+ * inQuietHours then reinterprets as a different window. */
+function isClockTime(s: string): boolean {
+  const m = /^(\d{2}):(\d{2})$/.exec(s);
+  if (!m) return false;
+  const hh = Number(m[1]);
+  const mm = Number(m[2]);
+  return hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59;
+}
+
 export function mergeQuiet(input: unknown): QuietPrefs {
   const out = { ...DEFAULT_QUIET };
   if (input && typeof input === "object") {
     const q = input as Record<string, unknown>;
-    if (typeof q.start === "string" && /^\d{2}:\d{2}$/.test(q.start)) out.start = q.start;
-    if (typeof q.end === "string" && /^\d{2}:\d{2}$/.test(q.end)) out.end = q.end;
+    if (typeof q.start === "string" && isClockTime(q.start)) out.start = q.start;
+    if (typeof q.end === "string" && isClockTime(q.end)) out.end = q.end;
     if (typeof q.tz === "string" && q.tz.trim()) {
       const tz = q.tz.trim();
       try {
@@ -143,16 +180,30 @@ export function classEnabled(sub: { classes: Record<string, boolean> }, cls: str
 /** Is `now` inside the quiet window (evaluated in the prefs' timezone)?
  * The incident class never consults this (breakthrough class, #3676);
  * it exists for the dashboard classes of #3317. */
+// ⚡ Bolt: inQuietHours is evaluated per subscription on every digest /
+// alert pass, and Intl.DateTimeFormat construction dominates it (~29µs).
+// The formatter depends only on the timezone, so cache one per tz; the
+// map is bounded by the set of tz names users actually store (a handful).
+const QUIET_HOURS_FORMATTERS = new Map<string, Intl.DateTimeFormat>();
+function quietHoursFormatter(tz: string): Intl.DateTimeFormat {
+  let fmt = QUIET_HOURS_FORMATTERS.get(tz);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    });
+    QUIET_HOURS_FORMATTERS.set(tz, fmt);
+  }
+  return fmt;
+}
+
 export function inQuietHours(quiet: QuietPrefs, now: Date): boolean {
   if (quiet.enabled === false) return false; // quiet hours off — no time-of-day limit
   let mins: number;
   try {
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: quiet.tz,
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23",
-    }).formatToParts(now);
+    const parts = quietHoursFormatter(quiet.tz).formatToParts(now);
     const h = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
     const m = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
     mins = h * 60 + m;
@@ -274,8 +325,54 @@ export function validateNewSubscription(
 
 // --- The store (Supabase `alerts` schema) ------------------------------------
 
+interface PendingIncidentCursor {
+  timestamp: string;
+  id: string;
+}
+
+type PendingIncidentOrder = "first_seen_at" | "delivered_at";
+
 export class AlertsStore {
+  // Each queue advances independently, even when a send fails and leaves
+  // the incident eligible. The keyset cursor lives for this store's lifetime.
+  private readonly deliveryCursor: { last: PendingIncidentCursor | null } = { last: null };
+  private readonly escalationCursor: { last: PendingIncidentCursor | null } = { last: null };
+
   constructor(private readonly db: SupabaseClient) {}
+
+  private async pendingBatch(
+    eligibility: string,
+    orderColumn: PendingIncidentOrder,
+    cursor: { last: PendingIncidentCursor | null },
+    limit: number,
+  ): Promise<Incident[]> {
+    const previous = cursor.last;
+    const page = (wrap: boolean, pageLimit: number) => {
+      const cursorFilter = previous
+        ? `and (${orderColumn}, id) ${wrap ? "<=" : ">"} (${sqlStr(previous.timestamp)}, ${sqlStr(previous.id)})`
+        : "";
+      return this.db.query<Incident>(
+        `select * from alerts.incidents
+         where ${eligibility} ${cursorFilter}
+         order by ${orderColumn}, id limit ${sqlInt(pageLimit)}`,
+      );
+    };
+
+    const rows = await page(false, limit);
+    let advanceTo = rows.at(-1);
+    if (previous && rows.length < limit) {
+      const wrapped = await page(true, limit - rows.length);
+      rows.push(...wrapped);
+      if (wrapped.length) advanceTo = wrapped.at(-1);
+    }
+
+    if (advanceTo) {
+      const timestamp = advanceTo[orderColumn];
+      if (timestamp === null) throw new Error(`pending incident has no ${orderColumn}`);
+      cursor.last = { timestamp, id: advanceTo.id };
+    }
+    return rows;
+  }
 
   private async addEvent(incidentId: string, kind: IncidentEvent["kind"], detail?: Record<string, unknown>) {
     await this.db.query(
@@ -306,7 +403,13 @@ export class AlertsStore {
   }
 
   async listSubscriptions(): Promise<PushSubscriptionRow[]> {
-    return this.db.query<PushSubscriptionRow>(`select * from alerts.push_subscriptions order by created_at`);
+    const rows = await this.db.query<PushSubscriptionRow>(
+      `select * from alerts.push_subscriptions order by created_at`,
+    );
+    // #3702 decision 3: old stored prefs are not rewritten, but must not
+    // be reinterpreted on read. Apply the same per-field fallbacks used at
+    // intake so delivery and the prefs page see safe values.
+    return rows.map((row) => ({ ...row, quiet: mergeQuiet(row.quiet) }));
   }
 
   /** Design §4: a 404/410 marks the subscription gone; two consecutive
@@ -412,20 +515,22 @@ export class AlertsStore {
   }
 
   async pendingDeliveries(limit = 20): Promise<Incident[]> {
-    return this.db.query<Incident>(
-      `select * from alerts.incidents
-       where status = 'open' and severity = 'critical' and delivered_at is null
-       order by first_seen_at limit ${sqlInt(limit)}`,
+    return this.pendingBatch(
+      "status = 'open' and severity = 'critical' and delivered_at is null",
+      "first_seen_at",
+      this.deliveryCursor,
+      limit,
     );
   }
 
   async pendingEscalations(ackWindowMin: number, limit = 20): Promise<Incident[]> {
-    return this.db.query<Incident>(
-      `select * from alerts.incidents
-       where status = 'open' and severity = 'critical'
-         and delivered_at is not null and escalated_at is null
-         and delivered_at < now() - make_interval(mins => ${sqlInt(ackWindowMin)})
-       order by delivered_at limit ${sqlInt(limit)}`,
+    return this.pendingBatch(
+      `status = 'open' and severity = 'critical'
+       and delivered_at is not null and escalated_at is null
+       and delivered_at < now() - make_interval(mins => ${sqlInt(ackWindowMin)})`,
+      "delivered_at",
+      this.escalationCursor,
+      limit,
     );
   }
 
@@ -457,6 +562,13 @@ export class AlertsStore {
          entry.incidentId ? sqlStr(entry.incidentId) : "null"
        }, ${sqlStr(entry.outcome)})`,
     );
+  }
+
+  /** Every send-ledger row (#3319 roll-up input). The ledger is one
+   * row per attempt, so a full read stays small; the rolling window
+   * is applied by the pure roll-up in src/notifications.ts. */
+  async listSends(): Promise<NotificationSendRow[]> {
+    return this.db.query<NotificationSendRow>(`select * from alerts.notification_sends`);
   }
 }
 
@@ -516,15 +628,35 @@ export async function sendTestPush(
   return summary;
 }
 
-let storePromise: Promise<AlertsStore | null> | null = null;
+/**
+ * Create the shared store resolver. Keep the in-flight attempt and successful
+ * store cached, but clear null/rejected attempts so a later call can recover.
+ * Lazy-init contract (success-only memoization): README "Lazy-initialization contract" (#3879).
+ */
+export function createAlertsStoreGetter(
+  getClient: typeof getSupabaseClient = getSupabaseClient,
+): () => Promise<AlertsStore | null> {
+  let storePromise: Promise<AlertsStore | null> | null = null;
+
+  return function getAlertsStore(): Promise<AlertsStore | null> {
+    if (!storePromise) {
+      const pending = getClient().then((db) => (db ? new AlertsStore(db) : null));
+      storePromise = pending;
+      void pending.then(
+        (store) => {
+          if (store === null && storePromise === pending) storePromise = null;
+        },
+        () => {
+          if (storePromise === pending) storePromise = null;
+        },
+      );
+    }
+    return storePromise;
+  }
+}
 
 /** The shared store; null when the Supabase path is unavailable. */
-export function getAlertsStore(): Promise<AlertsStore | null> {
-  if (!storePromise) {
-    storePromise = getSupabaseClient().then((db) => (db ? new AlertsStore(db) : null));
-  }
-  return storePromise;
-}
+export const getAlertsStore = createAlertsStoreGetter();
 
 // --- The engine ---------------------------------------------------------------
 

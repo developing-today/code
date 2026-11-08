@@ -20,7 +20,9 @@
 //! In addition, an optional **token** ([`WebSecurity::token`]) gates the whole
 //! interface. It is accepted as the `id_token` cookie, an
 //! `Authorization: Bearer` header, or a `?token=` query parameter; the latter
-//! also sets the cookie so a browser only needs the link once.
+//! also sets the cookie so a browser only needs the link once,
+//! and the bootstrap then redirects to the same path without the token
+//! (#5746) so the token does not stay in the browser URL.
 
 use std::sync::Arc;
 
@@ -135,6 +137,27 @@ fn query_param<'a>(query: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
+/// The post-bootstrap URL for a request: its own path with the `token`
+/// query parameter removed and every other parameter preserved verbatim
+/// (#5746). Built only from the request URI, so the result is always a
+/// same-origin relative reference and never an open redirect.
+fn clean_bootstrap_target(uri: &axum::http::Uri) -> String {
+    let path = uri.path();
+    let kept: Vec<&str> = uri
+        .query()
+        .map(|q| {
+            q.split('&')
+                .filter(|kv| kv.split('=').next() != Some("token"))
+                .collect()
+        })
+        .unwrap_or_default();
+    if kept.is_empty() {
+        path.to_owned()
+    } else {
+        format!("{path}?{}", kept.join("&"))
+    }
+}
+
 fn forbidden(msg: &'static str, status: StatusCode) -> Response {
     (status, msg).into_response()
 }
@@ -208,6 +231,23 @@ pub async fn guard(
                 secure_attribute(sec.cookie_secure)
             ))
             .ok();
+        }
+    }
+
+    // #5746: a successful query-token bootstrap must not leave the token
+    // in the browser URL (history, copied links, Referer, access logs).
+    // When this request just minted the cookie, answer the navigation
+    // with a redirect to the clean target instead of serving the page
+    // under the token URL. Non-GET requests keep the old behaviour: a
+    // 303 would rewrite them to GET and drop the body.
+    if set_cookie.is_some() && *req.method() == axum::http::Method::GET {
+        if let Ok(loc) = HeaderValue::from_str(&clean_bootstrap_target(req.uri())) {
+            let mut resp = StatusCode::SEE_OTHER.into_response();
+            resp.headers_mut().insert(header::LOCATION, loc);
+            if let Some(c) = set_cookie.take() {
+                resp.headers_mut().append(header::SET_COOKIE, c);
+            }
+            return resp;
         }
     }
 
@@ -471,7 +511,16 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        assert_eq!(query.status(), StatusCode::OK);
+        assert_eq!(query.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            query
+                .headers()
+                .get(header::LOCATION)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "/"
+        );
         let set = query
             .headers()
             .get(header::SET_COOKIE)
@@ -494,5 +543,64 @@ mod tests {
         )
         .await;
         assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn query_bootstrap_redirect_preserves_other_params_and_hides_token() {
+        let r = call(
+            app(with_token()),
+            Request::builder()
+                .uri("/page?a=1&token=s3cret&b=2")
+                .header(header::HOST, "h")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::SEE_OTHER);
+        let loc = r.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+        assert_eq!(loc, "/page?a=1&b=2");
+        assert!(!loc.contains("s3cret"));
+        assert!(!loc.contains("token="));
+        let set = r
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(set.starts_with("id_token=s3cret"), "{set}");
+        assert!(set.contains("HttpOnly"));
+        assert!(set.contains("SameSite=Strict"));
+    }
+
+    #[tokio::test]
+    async fn cookie_auth_with_query_token_does_not_redirect() {
+        let r = call(
+            app(with_token()),
+            Request::builder()
+                .uri("/?token=s3cret")
+                .header(header::HOST, "h")
+                .header(header::COOKIE, "id_token=s3cret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert!(r.headers().get(header::LOCATION).is_none());
+    }
+
+    #[tokio::test]
+    async fn invalid_query_token_is_rejected_without_cookie_or_redirect() {
+        let r = call(
+            app(with_token()),
+            Request::builder()
+                .uri("/?token=wrong")
+                .header(header::HOST, "h")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+        assert!(r.headers().get(header::SET_COOKIE).is_none());
+        assert!(r.headers().get(header::LOCATION).is_none());
     }
 }

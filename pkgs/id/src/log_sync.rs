@@ -6,6 +6,10 @@
 //! if both agree on range sync, each side runs a range session (`event_store::sync`) on the same
 //! stream pair, over the same store (#179).
 //!
+//! A group-sync initiator is not built yet. When one calls `sync_with`, it must persist successful
+//! completion after that call returns successfully, keyed by topic and peer, for later selection.
+//! Completion recording is deferred until that initiator exists.
+//!
 //! Three decisions shape the session:
 //!
 //! - **Arrival order is the write path.** Each operation is handed to an ingest worker, which verifies
@@ -298,6 +302,15 @@ pub async fn answer(
         let request: Request = next_message(&mut recv).await?;
         // The pull policy decides before the method is agreed, so a refused peer gets no event.
         if !gate.admits(&peer) {
+            send_message(&mut send, &Answer::Refuse).await?;
+            finish_stream(&mut send, &mut recv).await;
+            return Err(SyncError::PullRefused);
+        }
+        // A blocked topic tag is not pulled (#2245): the gate's block list
+        // is also checked against the requested topic's hash bytes, the
+        // form this seam names a topic in. Refused exactly as a pull
+        // refusal, before the method is agreed.
+        if gate.topic_tag_blocked(request.topic.as_bytes()) {
             send_message(&mut send, &Answer::Refuse).await?;
             finish_stream(&mut send, &mut recv).await;
             return Err(SyncError::PullRefused);
@@ -702,6 +715,8 @@ mod tests {
                 removes: None,
                 note: None,
                 link: None,
+                checkpoint: None,
+                rotation: None,
             };
             events.push(sign(signer, seq, backlink, None, ext).unwrap());
         }
@@ -932,6 +947,92 @@ mod tests {
         assert_eq!(again.received, Tally::default());
         assert_eq!(again_answered.received, Tally::default());
         assert_eq!(again.metrics.sent_operations, 0);
+    }
+
+    /// #2414, mirrored for the log sync tally: a range session under the
+    /// LogSync protocol counts an arrival it stores but does not apply as
+    /// voided. The shape matches the event store range test: a content event
+    /// naming a voided group operation, by an author who is not a member of
+    /// the group at that position, is kept without applying.
+    #[tokio::test]
+    async fn test_a_range_session_counts_a_stored_but_unapplied_arrival_as_voided() {
+        use crate::membership::AuthId;
+        use crate::membership::body::encode_body;
+        use p2panda_auth::Access;
+        use p2panda_auth::group::{GroupAction, GroupMember};
+
+        fn gauth(who: u8) -> AuthId {
+            AuthId::Key(*key(who).verifying_key().as_bytes())
+        }
+        fn ext(group: Option<Hash>, after: Vec<Hash>, kind: &str) -> ChainExt {
+            ChainExt {
+                kind: kind.to_owned(),
+                group,
+                after,
+                tag: None,
+                document: None,
+                removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+            }
+        }
+        let create_body = encode_body(&GroupAction::Create {
+            initial_members: [b'A', b'B', b'C']
+                .iter()
+                .map(|who| (GroupMember::Individual(gauth(*who)), Access::manage()))
+                .collect(),
+        })
+        .unwrap();
+        let create = sign(&key(b'A'), 0, None, Some(&create_body), ext(None, Vec::new(), "group.op")).unwrap();
+        let grp = create.id;
+        let op_body = encode_body(&GroupAction::Add {
+            member: GroupMember::Individual(gauth(b'E')),
+            access: Access::manage(),
+        })
+        .unwrap();
+        let op = sign(&key(b'D'), 0, None, Some(&op_body), ext(Some(grp), vec![grp], "group.op")).unwrap();
+        let target = sign(&key(b'D'), 1, Some(op.id), None, ext(Some(grp), vec![op.id], "message")).unwrap();
+
+        let (_da, store_a) = open();
+        let (_db, store_b) = open();
+        for store in [&store_a, &store_b] {
+            let created = store.ingest(&create.bytes, Some(&create_body), 0).unwrap();
+            assert!(matches!(created, Ingest::Accepted { .. }), "{created:?}");
+            let voided = store.ingest(&op.bytes, Some(&op_body), 0).unwrap();
+            assert!(matches!(voided, Ingest::Voided { .. }), "{voided:?}");
+        }
+        let held = store_a.ingest(&target.bytes, None, 0).unwrap();
+        assert!(matches!(held, Ingest::Voided { .. }), "{held:?}");
+
+        let (server, _router, mut results) =
+            responder_support(&store_a, Arc::new(LogAndRange)).await;
+        let client = endpoint().await;
+        // Synced before, with no difference: the rule picks range.
+        let synced = Estimate {
+            chains: 1,
+            difference: 0,
+            last_completed_sync_ms: Some(1),
+        };
+        assert_eq!(choose(&synced), SyncMethod::Range);
+        let outcome = sync_with(
+            &client,
+            loopback(&server),
+            &store_b,
+            group(9),
+            &synced,
+            DEADLINE,
+        )
+        .await
+        .unwrap();
+        let answered = results.recv().await.unwrap().unwrap();
+
+        assert_eq!(outcome.method, SyncMethod::Range);
+        assert_eq!(answered.method, SyncMethod::Range);
+        assert_eq!(outcome.received.voided, 1, "B stores the target without applying it: {:?}", outcome.received);
+        assert_eq!(outcome.received.accepted, 0, "{:?}", outcome.received);
+        assert_eq!(outcome.received.refused, 0, "{:?}", outcome.received);
+        assert_eq!(answered.received.voided, 0, "{:?}", answered.received);
     }
 
     /// Issue #1302: on a failed bulk session, read the responder's own
@@ -1207,6 +1308,8 @@ mod tests {
             removes: None,
             note: None,
             link: None,
+            checkpoint: None,
+            rotation: None,
         };
         let rival = sign(alice, 1, Some(honest[0].id), None, rival_ext).unwrap();
         assert!(matches!(
@@ -1669,6 +1772,97 @@ mod tests {
         assert_eq!(
             applied(&store_a, &[&alice], 3),
             applied(&store_b, &[&alice], 3)
+        );
+    }
+
+    /// #2245: a peer blocked by key is refused by the responder's gate
+    /// before any event is sent, under the open policy included. The
+    /// dialer gets `Refuse`, the responder reports the refusal, and the
+    /// blocked peer's store does not change.
+    #[tokio::test]
+    async fn test_blocked_peer_log_session_is_refused_and_sends_no_event() {
+        let topic = group(14);
+        let alice = key(26);
+        let (_da, store_a) = open();
+        let (_db, store_b) = open();
+        ingest_all(&store_a, &chain_of(&alice, 4, topic));
+        let before = applied(&store_b, &[&alice], 3);
+        let gate = testing::open_gate().with_blocks(testing::stub_blocks(
+            &[*testing::key(0xd5).public().as_bytes()],
+            &[],
+        ));
+        let (server, _router, mut results) = responder_gated(&store_a, gate).await;
+        let client = endpoint_as(testing::key(0xd5)).await;
+        let error = sync_with(
+            &client,
+            loopback(&server),
+            &store_b,
+            topic,
+            &bootstrap(),
+            DEADLINE,
+        )
+        .await
+        .unwrap_err();
+        let answered = results.recv().await.unwrap();
+
+        assert!(
+            matches!(error, SyncError::Refused(SyncMethod::Log)),
+            "got {error}"
+        );
+        assert!(
+            matches!(answered, Err(SyncError::PullRefused)),
+            "got {answered:?}"
+        );
+        assert_eq!(
+            applied(&store_b, &[&alice], 3),
+            before,
+            "no event crossed to the blocked peer"
+        );
+    }
+
+    /// #2245: a blocked topic tag is not pulled. The peer is not blocked
+    /// and the gate is open, but the requested topic's hash bytes are a
+    /// blocked tag, so the session is refused before the method is agreed.
+    #[tokio::test]
+    async fn test_blocked_topic_tag_log_session_is_refused_and_sends_no_event() {
+        let topic = group(15);
+        let alice = key(27);
+        let (_da, store_a) = open();
+        let (_db, store_b) = open();
+        ingest_all(&store_a, &chain_of(&alice, 4, topic));
+        let before = applied(&store_b, &[&alice], 3);
+        let blocks = std::sync::Arc::new(testing::StubBlocks {
+            peers: Default::default(),
+            topics: [topic.as_bytes().to_vec()].into_iter().collect(),
+            ips: Default::default(),
+        });
+        let gate = testing::open_gate().with_blocks(blocks);
+        let (server, _router, mut results) = responder_gated(&store_a, gate).await;
+        let client = endpoint_as(testing::key(0xd5)).await;
+        let error = sync_with(
+            &client,
+            loopback(&server),
+            &store_b,
+            topic,
+            &bootstrap(),
+            DEADLINE,
+        )
+        .await
+        .unwrap_err();
+        let answered = results.recv().await.unwrap();
+
+        assert!(
+            matches!(error, SyncError::Refused(SyncMethod::Log)),
+            "got {error}"
+        );
+        assert!(
+            matches!(answered, Err(SyncError::PullRefused)),
+            "got {answered:?}"
+        );
+        assert_eq!(
+            applied(&store_b, &[&alice], 3),
+            before,
+            "no event crossed for the blocked topic"
         );
     }
 

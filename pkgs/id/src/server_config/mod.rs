@@ -28,6 +28,9 @@
 //! [policy]                       # absent: the code defaults apply
 //! freshness_window_seconds = 300 # the server-level freshness window (N23)
 //! pull_policy = "open"           # who may pull a world's events: "open" or "members" (P6.5)
+//!                                # (the operator block list is not config: it lives in the
+//!                                #  event store's `blocks` table, #2245, and gates read it
+//!                                #  from there via `crate::event_store::BlockList`)
 //!
 //! [budgets]                        # absent: the #2247 code defaults apply
 //! app_inbound_bytes_per_hour = 21474836480   # 20 GiB/h app-wide inbound

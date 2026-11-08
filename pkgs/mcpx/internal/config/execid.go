@@ -186,8 +186,14 @@ func (r *Resolved) resolveExec() string {
 // ExecUsesScopeRoot reports whether resolving the configured executable can
 // depend on a scope root. A relative command containing a path separator is
 // resolved by the child relative to its effective spawn cwd when no config
-// cwd is set.
+// cwd is set. A config cwd that references ${mcpx.root}/${mcpx.cwd} also
+// makes resolution instance-dependent: the substituted directory differs
+// per instance, so the pool-wide stamp (taken against the raw, literal
+// placeholder directory) can never describe the running executable.
 func (r *Resolved) ExecUsesScopeRoot() bool {
+	if strings.Contains(r.Cwd, "${mcpx.") {
+		return true
+	}
 	return r.Cwd == "" && strings.Contains(r.Command, string(filepath.Separator)) && !filepath.IsAbs(r.Command)
 }
 

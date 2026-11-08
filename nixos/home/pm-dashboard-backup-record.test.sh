@@ -97,15 +97,14 @@ chmod +x "$BIN/bws" "$BIN/journalctl" "$BIN/rclone"
 run_scenario() {
   local name="$1" fail_mode="$2" dump_mode="${3:-absent}"
   local home="$TMP_ROOT/$name/home"
-  mkdir -p "$home/backups/dashboard" "$home/.local/state/pm-aggregator" \
-    "$home/atlas/meta-quota-export"
+  mkdir -p "$home/backups/dashboard" "$home/.local/state/pm-aggregator"
   local dump_script="$home/no-such-dump-script.sh"
   if [[ $dump_mode == "ok" ]]; then
     dump_script="$home/dump-ok.sh"
     {
       printf '#!%s\n' "$BASH"
-      printf '%s\n' 'mkdir -p "$HOME/backups/db-dumps/$1"'
-      printf '%s\n' 'printf "{}\n" > "$HOME/backups/db-dumps/$1/dump.sql"'
+      printf '%s\n' 'mkdir -p "$HOME/backups/pm-stack/$1"'
+      printf '%s\n' 'printf "{}\n" > "$HOME/backups/pm-stack/$1/dump.sql"'
     } >"$dump_script"
     chmod +x "$dump_script"
   elif [[ $dump_mode == "fail" ]]; then
@@ -116,11 +115,11 @@ run_scenario() {
     } >"$dump_script"
     chmod +x "$dump_script"
   fi
-  for f in actions.json comments.json fleet-feed.json quota-current.json registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json; do
+  for f in actions.json comments.json fleet-feed.json quota-current.json registry.json \
+    quota-gatherer-state.json quota-gatherer-heartbeat.json events.json \
+    coverage-snapshot.json aa-last-good.json; do
     printf '{}\n' >"$home/.local/state/pm-aggregator/$f"
   done
-  printf '{}\n' >"$home/atlas/meta-quota-export/latest.json"
-  printf '{}\n' >"$home/atlas/meta-quota-export/history.jsonl"
   HOME="$home" PATH="$BIN:$PATH" BWS_ACCESS_TOKEN="<redacted>" \
     RCLONE_FAIL="$fail_mode" RCLONE_STUB_DIR="$TMP_ROOT/$name/rclone-store" \
     PM_DB_DUMP_SCRIPT="$dump_script" \
@@ -202,13 +201,12 @@ check_record r2fail "$TMP_ROOT/assert-r2fail.py"
 # exit_code 143 -- never a fresh "complete" record the watchdog would
 # accept as healthy (Codex finding on PR 2989).
 sig_home="$TMP_ROOT/sigterm/home"
-mkdir -p "$sig_home/backups/dashboard" "$sig_home/.local/state/pm-aggregator" \
-  "$sig_home/atlas/meta-quota-export"
-for f in actions.json comments.json fleet-feed.json quota-current.json registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json; do
+mkdir -p "$sig_home/backups/dashboard" "$sig_home/.local/state/pm-aggregator"
+for f in actions.json comments.json fleet-feed.json quota-current.json registry.json \
+  quota-gatherer-state.json quota-gatherer-heartbeat.json events.json \
+  coverage-snapshot.json aa-last-good.json; do
   printf '{}\n' >"$sig_home/.local/state/pm-aggregator/$f"
 done
-printf '{}\n' >"$sig_home/atlas/meta-quota-export/latest.json"
-printf '{}\n' >"$sig_home/atlas/meta-quota-export/history.jsonl"
 setsid env HOME="$sig_home" PATH="$BIN:$PATH" BWS_ACCESS_TOKEN="<redacted>" \
   BWS_BLOCK=1 BWS_BLOCK_MARKER="$TMP_ROOT/sigterm.blocked" \
   RCLONE_STUB_DIR="$TMP_ROOT/sigterm/rclone-store" \

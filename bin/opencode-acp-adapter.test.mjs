@@ -2,15 +2,22 @@
 // Run: node --test bin/opencode-acp-adapter.test.mjs
 //
 // A scripted ACP client (this file) drives the adapter over stdio
-// against a stub OpenCode serve HTTP API, covering: initialize,
-// session/new -> POST /session (cwd as directory), a streamed prompt
-// round-trip (prompt_async + SSE -> session/update notifications),
-// a permission round-trip (permission.updated ->
-// session/request_permission -> POST permissions), and cancel
-// (session/cancel -> POST abort, prompt resolves "cancelled").
+// against a stub OpenCode serve HTTP API (v2 contract, #4614 — shapes
+// probed live from the standing server, task 6571), covering:
+// initialize, session/new -> POST /api/session (cwd as
+// location.directory, {data} envelope), a streamed prompt round-trip
+// (POST /api/session/:id/prompt {text} + GET /api/event SSE
+// session.text.delta -> session/update notifications, completion on
+// session.execution.succeeded), a permission round-trip
+// (permission.asked -> session/request_permission -> POST
+// /api/session/:id/permission/:id/reply {decision}), and cancel
+// (session/cancel -> POST /api/session/:id/interrupt, prompt resolves
+// "cancelled").
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -21,7 +28,7 @@ const SESSION_ID = 'ses_test1243';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ---------------------------------------------------------------------------
-// Stub serve API. `script` runs when prompt_async arrives; it gets
+// Stub serve API. `script` runs when the v2 prompt call arrives; it gets
 // `emit(event)` to push SSE events to the adapter.
 // ---------------------------------------------------------------------------
 function startStubServe(script) {
@@ -60,8 +67,14 @@ function startStubServe(script) {
     });
     req.on('end', () => {
       const body = raw ? JSON.parse(raw) : null;
-      calls.push({ method: req.method, pathname: url.pathname, query: url.searchParams, body });
-      if (req.method === 'GET' && url.pathname === '/event') {
+      calls.push({
+        method: req.method,
+        pathname: url.pathname,
+        query: url.searchParams,
+        body,
+        authorization: req.headers.authorization ?? null,
+      });
+      if (req.method === 'GET' && url.pathname === '/api/event') {
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
         res.flushHeaders();
         sseClients.add(res);
@@ -71,41 +84,47 @@ function startStubServe(script) {
         res.on('close', () => sseClients.delete(res));
         return;
       }
-      if (req.method === 'GET' && url.pathname === '/session/status') {
+      if (req.method === 'GET' && url.pathname === '/api/session/active') {
+        // v2 active set, driven by the setStatus control: sessions
+        // whose status type is busy/retry are the active ones.
         const statusSnapshot = sessionStatus;
         onStatusRequest?.();
-        const sendStatus = () => {
+        const sendActive = () => {
+          const activeMap = {};
+          for (const [id, s] of Object.entries(statusSnapshot)) {
+            if (s && (s.type === 'busy' || s.type === 'retry')) activeMap[id] = s;
+          }
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify(statusSnapshot));
+          res.end(JSON.stringify({ data: activeMap }));
         };
-        if (statusResponseDelay) setTimeout(sendStatus, statusResponseDelay);
-        else sendStatus();
+        if (statusResponseDelay) setTimeout(sendActive, statusResponseDelay);
+        else sendActive();
         return;
       }
-      if (req.method === 'POST' && url.pathname === '/session') {
+      if (req.method === 'POST' && url.pathname === '/api/session') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ id: SESSION_ID, directory: url.searchParams.get('directory') }));
+        res.end(JSON.stringify({ data: { id: SESSION_ID } }));
         return;
       }
-      if (req.method === 'POST' && url.pathname === `/session/${SESSION_ID}/prompt_async`) {
-        const respondPromptAsync = () => {
-          res.writeHead(204);
-          res.end();
+      if (req.method === 'POST' && url.pathname === `/api/session/${SESSION_ID}/prompt`) {
+        const respondPrompt = () => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ data: { id: 'msg_test1', sessionID: SESSION_ID, type: 'user' } }));
           setImmediate(() => script(emit, body, serveControls));
         };
-        if (promptAsyncResponseDelay) setTimeout(respondPromptAsync, promptAsyncResponseDelay);
-        else respondPromptAsync();
+        if (promptAsyncResponseDelay) setTimeout(respondPrompt, promptAsyncResponseDelay);
+        else respondPrompt();
         return;
       }
-      if (req.method === 'POST' && /\/permissions\//.test(url.pathname)) {
+      if (req.method === 'POST' && /\/permission\/.+\/reply$/.test(url.pathname)) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end('true');
+        res.end(JSON.stringify({ data: true }));
         return;
       }
-      if (req.method === 'POST' && url.pathname === `/session/${SESSION_ID}/abort`) {
+      if (req.method === 'POST' && url.pathname === `/api/session/${SESSION_ID}/interrupt`) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end('true');
-        emit({ type: 'session.idle', properties: { sessionID: SESSION_ID } });
+        res.end(JSON.stringify({ data: true }));
+        emit({ type: 'session.execution.succeeded', data: { sessionID: SESSION_ID } });
         return;
       }
       res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -122,12 +141,26 @@ function startStubServe(script) {
 // ---------------------------------------------------------------------------
 // Scripted ACP client over the adapter's stdio.
 // ---------------------------------------------------------------------------
-function startAdapter(serverPort) {
-  const child = spawn(process.execPath, [
-    path.join(binDir, 'opencode-acp-adapter.mjs'),
-    '--server',
-    `http://127.0.0.1:${serverPort}`,
-  ]);
+function startAdapter(serverPort, env = {}) {
+  const child = spawn(
+    process.execPath,
+    [path.join(binDir, 'opencode-acp-adapter.mjs'), '--server', `http://127.0.0.1:${serverPort}`],
+    {
+      env: {
+        ...process.env,
+        // Hermetic credential resolution: never the developer's real
+        // env password or real state file unless a test opts in.
+        OPENCODE_SERVER_PASSWORD: '',
+        OPENCODE_AUTH_FILE: path.join(binDir, 'nonexistent-auth-fixture.json'),
+        ...env,
+      },
+    },
+  );
+  let stderr = '';
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk;
+  });
   const pending = new Map();
   const notifications = [];
   const clientRequests = [];
@@ -178,12 +211,12 @@ function startAdapter(serverPort) {
     }
     throw new Error(`timed out waiting for ${what}`);
   };
-  return { child, request, notify, respond, notifications, clientRequests, waitFor };
+  return { child, request, notify, respond, notifications, clientRequests, waitFor, stderr: () => stderr };
 }
 
-async function setup(t, script) {
+async function setup(t, script, env) {
   const stub = await startStubServe(script);
-  const acp = startAdapter(stub.port);
+  const acp = startAdapter(stub.port, env);
   t.after(() => {
     acp.child.kill('SIGKILL');
     stub.server.close();
@@ -193,21 +226,9 @@ async function setup(t, script) {
 }
 
 const textEvents = () => (emit) => {
-  emit({
-    type: 'message.part.updated',
-    properties: {
-      part: { id: 'part1', sessionID: SESSION_ID, type: 'text', text: 'Hello ' },
-      delta: 'Hello ',
-    },
-  });
-  emit({
-    type: 'message.part.updated',
-    properties: {
-      part: { id: 'part1', sessionID: SESSION_ID, type: 'text', text: 'Hello world' },
-      delta: 'world',
-    },
-  });
-  emit({ type: 'session.idle', properties: { sessionID: SESSION_ID } });
+  emit({ type: 'session.text.delta', data: { sessionID: SESSION_ID, delta: 'Hello ' } });
+  emit({ type: 'session.text.delta', data: { sessionID: SESSION_ID, delta: 'world' } });
+  emit({ type: 'session.execution.succeeded', data: { sessionID: SESSION_ID } });
 };
 
 test('initialize negotiates ACP v1 and advertises prompt capabilities', async (t) => {
@@ -218,16 +239,36 @@ test('initialize negotiates ACP v1 and advertises prompt capabilities', async (t
   assert.equal(init.agentInfo.name, 'opencode-acp-adapter');
 });
 
+test('a JSON null line on stdin is ignored and the adapter keeps answering (#6919)', async (t) => {
+  const { acp } = await setup(t, textEvents());
+  // `null` is valid JSON but not a message object; before the fix its
+  // destructure in dispatch threw and the process exited (code 1), so
+  // every later request went unanswered. Other non-object JSON values
+  // (42, "hi", true) were already harmless no-ops.
+  acp.child.stdin.write('null\n');
+  acp.child.stdin.write('42\n');
+  await sleep(150);
+  assert.equal(acp.child.exitCode, null, 'adapter still running after a null line');
+  const again = await Promise.race([
+    acp.request('initialize', { protocolVersion: 1, clientCapabilities: {} }),
+    sleep(3000).then(() => {
+      throw new Error('adapter did not answer initialize after a null line');
+    }),
+  ]);
+  assert.equal(again.protocolVersion, 1);
+  assert.equal(again.agentInfo.name, 'opencode-acp-adapter');
+});
+
 test('session/new creates the session on the shared serve with cwd as directory', async (t) => {
   const { stub, acp } = await setup(t, textEvents());
   const result = await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
   assert.equal(result.sessionId, SESSION_ID);
-  const create = stub.calls.find((c) => c.method === 'POST' && c.pathname === '/session');
-  assert.ok(create, 'stub serve saw POST /session');
-  assert.equal(create.query.get('directory'), '/home/user/code');
+  const create = stub.calls.find((c) => c.method === 'POST' && c.pathname === '/api/session');
+  assert.ok(create, 'stub serve saw POST /api/session');
+  assert.deepEqual(create.body, { location: { directory: '/home/user/code' } });
 });
 
-test('session/prompt streams serve SSE parts as session/update and completes on idle', async (t) => {
+test('session/prompt streams serve SSE deltas as session/update and completes on execution.succeeded', async (t) => {
   const { stub, acp } = await setup(t, textEvents());
   await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
   const result = await acp.request('session/prompt', {
@@ -235,9 +276,9 @@ test('session/prompt streams serve SSE parts as session/update and completes on 
     prompt: [{ type: 'text', text: 'say hello' }],
   });
   assert.equal(result.stopReason, 'end_turn');
-  const promptCall = stub.calls.find((c) => c.pathname.endsWith('/prompt_async'));
-  assert.ok(promptCall, 'stub serve saw prompt_async');
-  assert.deepEqual(promptCall.body.parts, [{ type: 'text', text: 'say hello' }]);
+  const promptCall = stub.calls.find((c) => c.pathname === `/api/session/${SESSION_ID}/prompt`);
+  assert.ok(promptCall, 'stub serve saw POST /api/session/:id/prompt');
+  assert.deepEqual(promptCall.body, { text: 'say hello' });
   const chunks = acp.notifications
     .filter((n) => n.method === 'session/update' && n.params.update.sessionUpdate === 'agent_message_chunk')
     .map((n) => n.params.update.content.text);
@@ -247,13 +288,13 @@ test('session/prompt streams serve SSE parts as session/update and completes on 
 test('serve permission events round-trip through session/request_permission', async (t) => {
   const script = (emit) => {
     emit({
-      type: 'permission.updated',
-      properties: { id: 'perm1', sessionID: SESSION_ID, type: 'bash', title: 'Run ls', metadata: {} },
+      type: 'permission.asked',
+      data: { id: 'perm1', sessionID: SESSION_ID, action: 'bash', resources: ['ls'], metadata: {} },
     });
-    // Idle arrives only after the adapter posts the permission reply;
-    // the stub cannot see that from here, so idle on a delay and let
-    // the assertions below order-check via the recorded calls.
-    setTimeout(() => emit({ type: 'session.idle', properties: { sessionID: SESSION_ID } }), 500);
+    // Completion arrives only after the adapter posts the permission
+    // reply; the stub cannot see that from here, so succeed on a delay
+    // and let the assertions below order-check via the recorded calls.
+    setTimeout(() => emit({ type: 'session.execution.succeeded', data: { sessionID: SESSION_ID } }), 500);
   };
   const { stub, acp } = await setup(t, script);
   await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
@@ -270,14 +311,17 @@ test('serve permission events round-trip through session/request_permission', as
   acp.respond(permRequest.id, { outcome: { outcome: 'selected', optionId: 'allow_once' } });
   const result = await promptPromise;
   assert.equal(result.stopReason, 'end_turn');
-  const permCall = stub.calls.find((c) => c.pathname === `/session/${SESSION_ID}/permissions/perm1`);
-  assert.ok(permCall, 'stub serve saw POST permissions/perm1');
-  assert.deepEqual(permCall.body, { response: 'once' });
+  const permCall = stub.calls.find(
+    (c) => c.pathname === `/api/session/${SESSION_ID}/permission/perm1/reply`,
+  );
+  assert.ok(permCall, 'stub serve saw POST /api/session/:id/permission/perm1/reply');
+  assert.deepEqual(permCall.body, { decision: 'once' });
 });
 
-test('session/cancel aborts on the serve and the prompt resolves cancelled', async (t) => {
+test('session/cancel interrupts on the serve and the prompt resolves cancelled', async (t) => {
   const { stub, acp } = await setup(t, () => {
-    // Never idles on its own: only the abort (stub emits idle) ends it.
+    // Never completes on its own: only the interrupt (stub emits
+    // execution.succeeded) ends it.
   });
   await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
   const promptPromise = acp.request('session/prompt', {
@@ -285,15 +329,15 @@ test('session/cancel aborts on the serve and the prompt resolves cancelled', asy
     prompt: [{ type: 'text', text: 'long task' }],
   });
   await acp.waitFor(
-    () => stub.calls.find((c) => c.pathname.endsWith('/prompt_async')),
-    'prompt_async to reach the stub',
+    () => stub.calls.find((c) => c.pathname === `/api/session/${SESSION_ID}/prompt`),
+    'v2 prompt call to reach the stub',
   );
   acp.notify('session/cancel', { sessionId: SESSION_ID });
   const result = await promptPromise;
   assert.equal(result.stopReason, 'cancelled');
   assert.ok(
-    stub.calls.find((c) => c.pathname === `/session/${SESSION_ID}/abort`),
-    'stub serve saw POST abort',
+    stub.calls.find((c) => c.pathname === `/api/session/${SESSION_ID}/interrupt`),
+    'stub serve saw POST interrupt',
   );
 });
 
@@ -304,8 +348,8 @@ test('prompt completed during an event-stream drop is reconciled on reconnect (#
     if (promptCount === 1) {
       serve.setStatus({ [SESSION_ID]: { type: 'busy' } });
       // The stream drops mid-prompt and the server finishes the prompt
-      // during the gap: no session.idle ever reaches the adapter, and
-      // the session leaves the status map. Without reconciliation the
+      // during the gap: no completion event ever reaches the adapter, and
+      // the session leaves the active set. Without reconciliation the
       // ACP request would hang forever.
       setTimeout(() => {
         serve.dropEventStreams();
@@ -313,7 +357,7 @@ test('prompt completed during an event-stream drop is reconciled on reconnect (#
       }, 50);
       return;
     }
-    emit({ type: 'session.idle', properties: { sessionID: SESSION_ID } });
+    emit({ type: 'session.execution.succeeded', data: { sessionID: SESSION_ID } });
   };
   const { stub, acp } = await setup(t, script);
   await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
@@ -323,8 +367,8 @@ test('prompt completed during an event-stream drop is reconciled on reconnect (#
   });
   assert.equal(result.stopReason, 'end_turn');
   assert.ok(
-    stub.calls.find((c) => c.method === 'GET' && c.pathname === '/session/status'),
-    'adapter queried /session/status after reconnecting',
+    stub.calls.find((c) => c.method === 'GET' && c.pathname === '/api/session/active'),
+    'adapter queried /api/session/active after reconnecting',
   );
   // The session is not wedged: a later prompt is accepted and completes.
   const second = await acp.request('session/prompt', {
@@ -334,7 +378,7 @@ test('prompt completed during an event-stream drop is reconciled on reconnect (#
   assert.equal(second.stopReason, 'end_turn');
 });
 
-test('reconciliation does not finish a newer prompt using a stale status snapshot', async (t) => {
+test('reconciliation does not finish a newer prompt using a stale active-set snapshot', async (t) => {
   let promptCount = 0;
   let secondPromptIdleEmitted = false;
   const script = (emit, body, serve) => {
@@ -343,10 +387,10 @@ test('reconciliation does not finish a newer prompt using a stale status snapsho
       serve.setStatus({});
       serve.setStatusResponseDelay(500);
       // Deliver the first prompt's completion over the reconnected stream
-      // while the status response is delayed. The client will start another
+      // while the active-set response is delayed. The client will start another
       // prompt before the stale snapshot arrives.
       serve.onStatusRequest(() => {
-        emit({ type: 'session.idle', properties: { sessionID: SESSION_ID } });
+        emit({ type: 'session.execution.succeeded', data: { sessionID: SESSION_ID } });
       });
       setTimeout(() => serve.dropEventStreams(), 50);
       return;
@@ -355,7 +399,7 @@ test('reconciliation does not finish a newer prompt using a stale status snapsho
     setTimeout(() => {
       secondPromptIdleEmitted = true;
       serve.setStatus({});
-      emit({ type: 'session.idle', properties: { sessionID: SESSION_ID } });
+      emit({ type: 'session.execution.succeeded', data: { sessionID: SESSION_ID } });
     }, 1000);
   };
   const { acp } = await setup(t, script);
@@ -372,24 +416,18 @@ test('reconciliation does not finish a newer prompt using a stale status snapsho
     prompt: [{ type: 'text', text: 'second task' }],
   });
   assert.equal(second.stopReason, 'end_turn');
-  assert.equal(secondPromptIdleEmitted, true, 'new prompt waited for its own idle event');
+  assert.equal(secondPromptIdleEmitted, true, 'new prompt waited for its own completion event');
 });
 
 test('reconciliation does not finish a prompt whose submission is still in flight', async (t) => {
-  // The prompt_async POST stays in flight while the stream drops and
-  // reconnects. The status snapshot taken during reconciliation predates
+  // The prompt POST stays in flight while the stream drops and
+  // reconnects. The active-set snapshot taken during reconciliation predates
   // server-side execution (idle/absent), so without the submitted guard
   // the prompt would resolve end_turn early and its later streamed output
   // would be discarded as orphan events.
   const script = (emit) => {
-    emit({
-      type: 'message.part.updated',
-      properties: {
-        part: { id: 'part1', sessionID: SESSION_ID, type: 'text', text: 'late output' },
-        delta: 'late output',
-      },
-    });
-    emit({ type: 'session.idle', properties: { sessionID: SESSION_ID } });
+    emit({ type: 'session.text.delta', data: { sessionID: SESSION_ID, delta: 'late output' } });
+    emit({ type: 'session.execution.succeeded', data: { sessionID: SESSION_ID } });
   };
   const { stub, acp } = await setup(t, script);
   await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
@@ -399,12 +437,12 @@ test('reconciliation does not finish a prompt whose submission is still in fligh
     prompt: [{ type: 'text', text: 'slow submission' }],
   });
   // The prompt entry is registered as soon as the POST reaches the stub,
-  // while the 204 response (submission) is still delayed.
+  // while the prompt response (submission) is still delayed.
   await acp.waitFor(
-    () => stub.calls.find((c) => c.pathname.endsWith('/prompt_async')),
-    'prompt_async to reach the stub',
+    () => stub.calls.find((c) => c.pathname.endsWith('/prompt')),
+    'prompt POST to reach the stub',
   );
-  // Drop the stream mid-submission with the session absent from status:
+  // Drop the stream mid-submission with the session absent from the active set:
   // reconnect reconciliation must leave the unsubmitted entry alone.
   stub.controls.setStatus({});
   stub.controls.dropEventStreams();
@@ -414,4 +452,79 @@ test('reconciliation does not finish a prompt whose submission is still in fligh
     .filter((n) => n.method === 'session/update' && n.params.update.sessionUpdate === 'agent_message_chunk')
     .map((n) => n.params.update.content.text);
   assert.equal(chunks.join(''), 'late output', 'streamed output after reconcile was not discarded');
+});
+
+test('a cancel arriving after a finished prompt does not mark the next prompt cancelled (#4618)', async (t) => {
+  const { acp } = await setup(t, textEvents());
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const first = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'first' }],
+  });
+  assert.equal(first.stopReason, 'end_turn');
+  acp.notify('session/cancel', { sessionId: SESSION_ID });
+  // Let the stray cancel handler run against a completed prompt before the
+  // next prompt starts; the regression is deterministic without a pause.
+  await sleep(50);
+  const second = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'second' }],
+  });
+  assert.equal(second.stopReason, 'end_turn');
+});
+
+// ---------------------------------------------------------------------------
+// #4615: the configured gateway launch path (acpx spawns the adapter
+// with no OPENCODE_SERVER_PASSWORD) must still authenticate, by
+// runtime-loading the standing server's own state file. Fixtures use
+// synthetic passwords only.
+// ---------------------------------------------------------------------------
+
+const basicFor = (password) => `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`;
+
+test('gateway launch path: adapter loads the credential from the default state file under HOME', async (t) => {
+  const home = mkdtempSync(path.join(tmpdir(), 'acp-adapter-home-'));
+  const stateDir = path.join(home, '.local', 'state', 'opencode');
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(path.join(stateDir, 'service-prod.json'), JSON.stringify({ password: 'synthetic-gateway-password' }));
+  const { stub, acp } = await setup(t, textEvents(), {
+    HOME: home,
+    OPENCODE_AUTH_FILE: '',
+  });
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const create = stub.calls.find((c) => c.method === 'POST' && c.pathname === '/api/session');
+  assert.equal(create.authorization, basicFor('synthetic-gateway-password'));
+  assert.ok(!acp.stderr().includes('synthetic-gateway-password'), 'credential never reaches stderr');
+});
+
+test('OPENCODE_AUTH_FILE fixture authenticates; the env password wins over the file', async (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'acp-adapter-auth-'));
+  const authFile = path.join(dir, 'service-prod.json');
+  writeFileSync(authFile, JSON.stringify({ password: 'synthetic-file-password' }));
+
+  const fromFile = await setup(t, textEvents(), { OPENCODE_AUTH_FILE: authFile });
+  await fromFile.acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const fileCreate = fromFile.stub.calls.find((c) => c.method === 'POST' && c.pathname === '/api/session');
+  assert.equal(fileCreate.authorization, basicFor('synthetic-file-password'));
+
+  const fromEnv = await setup(t, textEvents(), {
+    OPENCODE_AUTH_FILE: authFile,
+    OPENCODE_SERVER_PASSWORD: 'synthetic-env-password',
+  });
+  await fromEnv.acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const envCreate = fromEnv.stub.calls.find((c) => c.method === 'POST' && c.pathname === '/api/session');
+  assert.equal(envCreate.authorization, basicFor('synthetic-env-password'));
+});
+
+test('malformed credential state file warns on stderr and sends no auth header', async (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'acp-adapter-bad-'));
+  const authFile = path.join(dir, 'service-prod.json');
+  writeFileSync(authFile, 'this is not json');
+  const { stub, acp } = await setup(t, textEvents(), { OPENCODE_AUTH_FILE: authFile });
+  const result = await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  assert.equal(result.sessionId, SESSION_ID);
+  const create = stub.calls.find((c) => c.method === 'POST' && c.pathname === '/api/session');
+  assert.equal(create.authorization, null);
+  await acp.waitFor(() => acp.stderr().includes('not valid JSON') || null, 'stderr warning');
+  assert.ok(acp.stderr().includes(authFile), 'warning names the state file');
 });

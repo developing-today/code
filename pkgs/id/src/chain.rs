@@ -23,8 +23,10 @@ use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
 
 use crate::documents::{DocumentRef, is_document_kind, is_removal_kind};
+use crate::issuer_rotation::{IssuerRotation, check_rotation, is_rotation_kind};
 use crate::note_links::{NoteLinkOp, check_note_link_op, is_note_link_kind};
 use crate::notes::{NoteOp, check_note_op, is_note_kind};
+use crate::session_checkpoint::{SessionCheckpoint, check_session_checkpoint, is_checkpoint_kind};
 use crate::tag_claims::{TagOp, check_op, is_tag_kind};
 
 /// The domain tag every `ChainExt` carries, so this header type cannot be
@@ -125,6 +127,16 @@ pub struct ChainExt {
     /// It is the link body (#3816): signed with the header, so an event carries
     /// its whole link operation, and sync needs no separate body.
     pub link: Option<NoteLinkOp>,
+    /// The session checkpoint of a `session.checkpoint`, and `None` for every
+    /// other kind. It is the checkpoint body (#3794): the session header and
+    /// the segment this checkpoint closes, signed with the header, so an
+    /// event carries its whole checkpoint, and sync needs no separate body.
+    pub checkpoint: Option<SessionCheckpoint>,
+    /// The issuer rotation of an `issuer.rotation` event, and `None` for every
+    /// other kind. It is the rotation record (#5526, design #2804 section 3.2): signed
+    /// with the header and persisted with it, because the event store keeps the
+    /// header but not an event body, so an event carries its whole rotation.
+    pub rotation: Option<IssuerRotation>,
 }
 
 /// The wire form of [`ChainExt`]: the same fields, plus the domain tag. Keys
@@ -147,6 +159,10 @@ struct Wire {
     note: Option<NoteOp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     link: Option<NoteLinkOp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checkpoint: Option<SessionCheckpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rotation: Option<IssuerRotation>,
 }
 
 impl From<ChainExt> for Wire {
@@ -161,6 +177,8 @@ impl From<ChainExt> for Wire {
             removes: ext.removes,
             note: ext.note,
             link: ext.link,
+            checkpoint: ext.checkpoint,
+            rotation: ext.rotation,
         }
     }
 }
@@ -181,6 +199,8 @@ impl TryFrom<Wire> for ChainExt {
             removes: wire.removes,
             note: wire.note,
             link: wire.link,
+            checkpoint: wire.checkpoint,
+            rotation: wire.rotation,
         };
         ext.validate()?;
         Ok(ext)
@@ -201,6 +221,10 @@ impl ChainExt {
     /// carry none. A removal kind must name the document it removes, and any
     /// other kind must name none. A removal carries no tag and no document, as
     /// any kind that is not a tag or a document kind must not.
+    /// A session checkpoint kind must carry a session checkpoint that passes
+    /// [`check_session_checkpoint`], and any other kind must carry none.
+    /// A rotation kind must carry an issuer rotation that passes
+    /// [`check_rotation`], and any other kind must carry none.
     pub fn validate(&self) -> Result<(), ChainError> {
         if self.after.len() > MAX_AFTER {
             return Err(ChainError::TooManyAfter(self.after.len()));
@@ -305,6 +329,44 @@ impl ChainExt {
             }
             (true, Some(op)) => {
                 check_note_link_op(&self.kind, op)
+                    .map_err(|err| ChainError::Extension(err.to_string()))?;
+            }
+        }
+        match (is_checkpoint_kind(&self.kind), &self.checkpoint) {
+            (false, None) => {}
+            (false, Some(_)) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} carries a session checkpoint",
+                    self.kind
+                )));
+            }
+            (true, None) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} needs its session checkpoint",
+                    self.kind
+                )));
+            }
+            (true, Some(checkpoint)) => {
+                check_session_checkpoint(&self.kind, checkpoint)
+                    .map_err(|err| ChainError::Extension(err.to_string()))?;
+            }
+        }
+        match (is_rotation_kind(&self.kind), &self.rotation) {
+            (false, None) => {}
+            (false, Some(_)) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} carries an issuer rotation",
+                    self.kind
+                )));
+            }
+            (true, None) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} needs its issuer rotation",
+                    self.kind
+                )));
+            }
+            (true, Some(rotation)) => {
+                check_rotation(&self.kind, rotation)
                     .map_err(|err| ChainError::Extension(err.to_string()))?;
             }
         }
@@ -442,6 +504,8 @@ mod tests {
     use p2panda_core::Extensions;
 
     use super::*;
+    use crate::currency::issuer_id;
+    use crate::issuer_rotation::{ISSUER_ROTATION_KIND, RotationMode};
 
     /// The test key: the 32 bytes 00 through 1f. It is not a real key.
     fn key() -> SigningKey {
@@ -462,7 +526,20 @@ mod tests {
             removes: None,
             note: None,
             link: None,
+            checkpoint: None,
+            rotation: None,
         }
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    fn unhex(text: &str) -> Vec<u8> {
+        (0..text.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     /// `count` distinct hashes: the digests of the counters `0..count`.
@@ -518,6 +595,143 @@ mod tests {
     /// Signs any extension as sequence 0 with no body, the way `sign` would.
     fn sign_raw<E: Extensions>(ext: E) -> Vec<u8> {
         Header::<E>::builder().build(&key(), ext).encode()
+    }
+
+    /// The successor key for the rotation tests: the 32 bytes of 9s.
+    fn successor_key() -> SigningKey {
+        SigningKey::from_bytes(&[9; 32])
+    }
+
+    /// A rotation extension carrying `rotation` on the rotation kind.
+    fn rotation_ext(rotation: IssuerRotation) -> ChainExt {
+        ChainExt {
+            rotation: Some(rotation),
+            ..ext(ISSUER_ROTATION_KIND, None, vec![])
+        }
+    }
+
+    /// A well-formed routine rotation out of generation 0, proven by
+    /// its successor. `key()` authors it; the successor is
+    /// [`successor_key`].
+    fn proven_rotation() -> IssuerRotation {
+        let successor = successor_key();
+        let mut rotation = IssuerRotation::unsigned(
+            RotationMode::Routine,
+            issuer_id(&key()),
+            hash(42),
+            0,
+            None,
+            issuer_id(&successor),
+            None,
+        );
+        rotation
+            .prove_successor(&successor)
+            .expect("prove successor");
+        rotation
+    }
+
+    #[test]
+    fn test_rotation_well_formed_signs_and_decodes() {
+        let rotation = proven_rotation();
+        let event = sign(&key(), 0, None, None, rotation_ext(rotation.clone()))
+            .expect("a well-formed rotation is signed");
+        assert_eq!(decode(&event.bytes).unwrap(), event);
+        assert_eq!(event.header.extensions.rotation, Some(rotation));
+    }
+
+    #[test]
+    fn test_rotation_malformed_bodies_are_refused_at_sign_and_decode() {
+        // Non-consecutive generations: 0 -> 2, proven as built, so only
+        // the generation rule can refuse it.
+        let successor = successor_key();
+        let mut skipped = proven_rotation();
+        skipped.to_generation = 2;
+        skipped
+            .prove_successor(&successor)
+            .expect("prove successor");
+
+        // A generation-0 predecessor: the initial transition names a
+        // previous rotation.
+        let mut predecessor = IssuerRotation::unsigned(
+            RotationMode::Routine,
+            issuer_id(&key()),
+            hash(42),
+            0,
+            Some(hash(1)),
+            issuer_id(&successor),
+            None,
+        );
+        predecessor
+            .prove_successor(&successor)
+            .expect("prove successor");
+
+        // A later transition naming no predecessor.
+        let mut missing_predecessor = IssuerRotation::unsigned(
+            RotationMode::Routine,
+            issuer_id(&key()),
+            hash(42),
+            1,
+            None,
+            issuer_id(&successor),
+            None,
+        );
+        missing_predecessor
+            .prove_successor(&successor)
+            .expect("prove successor");
+
+        // A routine rotation asserting a compromise start, which only
+        // recovery rotations may carry.
+        let mut asserted = IssuerRotation::unsigned(
+            RotationMode::Routine,
+            issuer_id(&key()),
+            hash(42),
+            0,
+            None,
+            issuer_id(&successor),
+            Some(hash(2)),
+        );
+        asserted
+            .prove_successor(&successor)
+            .expect("prove successor");
+
+        // A zeroed successor proof, never countersigned.
+        let zeroed = IssuerRotation::unsigned(
+            RotationMode::Routine,
+            issuer_id(&key()),
+            hash(42),
+            0,
+            None,
+            issuer_id(&successor),
+            None,
+        );
+
+        // A successor proof made by a key that is not the successor.
+        let mut forged_proof = proven_rotation();
+        forged_proof
+            .prove_successor(&key())
+            .expect("prove with the wrong key");
+
+        for (name, rotation) in [
+            ("non-consecutive generation", skipped),
+            ("generation-0 predecessor", predecessor),
+            ("missing predecessor", missing_predecessor),
+            ("routine asserted compromise", asserted),
+            ("zeroed successor proof", zeroed),
+            ("forged successor proof", forged_proof),
+        ] {
+            let ext = rotation_ext(rotation);
+            assert!(
+                matches!(
+                    sign(&key(), 0, None, None, ext.clone()),
+                    Err(ChainError::Extension(_))
+                ),
+                "{name}: sign refuses the malformed rotation"
+            );
+            // A header signed outside `sign` with the same body is
+            // refused at decode too.
+            let forged = sign_raw(ext);
+            assert!(decode(&forged).is_err(), "{name}: decode refuses it");
+        }
     }
 
     #[test]
@@ -750,6 +964,86 @@ mod tests {
             assert!(decode(&event.bytes[..cut]).is_err(), "cut at {cut}");
         }
     }
+
+    /// A `session.checkpoint` event from fixed values, for the golden vector
+    /// below: the test key's session, two participants, segment 0 with an
+    /// audit blob.
+    fn checkpoint_event() -> Event {
+        use crate::session_checkpoint::{MacScope, SegmentCheckpoint, SessionHeader};
+
+        let author = key();
+        let other = SigningKey::from_bytes(&[7; 32]);
+        sign(
+            &author,
+            0,
+            None,
+            None,
+            ChainExt {
+                kind: "session.checkpoint".to_owned(),
+                group: None,
+                after: Vec::new(),
+                tag: None,
+                document: None,
+                removes: None,
+                note: None,
+                link: None,
+                checkpoint: Some(SessionCheckpoint {
+                    header: SessionHeader {
+                        session_id: hash(1),
+                        purpose: "collab editing".to_owned(),
+                        participants: vec![author.verifying_key(), other.verifying_key()],
+                        started_ms: 1_000,
+                        nonce: hash(2),
+                        mac_key_commitment: hash(3),
+                        mac_scope: MacScope::PerParticipant,
+                    },
+                    segment: SegmentCheckpoint {
+                        segment_seq: 0,
+                        prev_checkpoint: None,
+                        root: hash(4),
+                        event_count: 256,
+                        start_ms: 1_000,
+                        end_ms: 2_800,
+                        audit_blob: Some(hash(5)),
+                    },
+                }),
+                rotation: None,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_session_checkpoint_golden_vector_is_pinned() {
+        const BYTES: &str = "8601582003a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8584044bc9d648ffd9e02e2aab846e028b4581a49c4832be635ddacc2a5d3bd31f59a3395c4e85090336563040c8e24cc60bf15ce1a6e987d6ac474f99ac1cb93c50d0000a5646b696e647273657373696f6e2e636865636b706f696e74656166746572806567726f7570f666646f6d61696e6c69642e6576656e74732e76316a636865636b706f696e74a266686561646572a7656e6f6e63655820ab13bedf42e84bae0f7c62c7dd6a8ada571e8829bed6ea558217f0361b5e25d067707572706f73656e636f6c6c61622065646974696e67696d61635f73636f70656e5065725061727469636970616e746a73657373696f6e5f6964582048fc721fbbc172e0925fa27af1671de225ba927134802998b10a1568a188652b6a737461727465645f6d731903e86c7061727469636970616e747382582003a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b85820ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c726d61635f6b65795f636f6d6d69746d656e745820e1e0e81d6ea39b0cf8b86ffd440921011f57400cbc3f76a8a171906a9b8d7505677365676d656e74a764726f6f7458200c389a743e34fda435fbd575bb889dbc0d3e66b9f9d81e00be33b7188509e7eb66656e645f6d73190af06873746172745f6d731903e86a61756469745f626c6f62582084cb40e74f0e856bb4bb91233e3cb74113533dca78a74f36f59edaa41895c9466b6576656e745f636f756e741901006b7365676d656e745f736571006f707265765f636865636b706f696e74f6";
+        const ID: &str = "4f6c1d23b5b47657e5e5a4d39da727c2613b8cfc00af23453934f44749845fa7";
+
+        let event = checkpoint_event();
+        assert_eq!(hex(&event.bytes), BYTES);
+        assert_eq!(event.id.to_hex(), ID);
+        assert_eq!(decode(&unhex(BYTES)).unwrap(), event);
+    }
+
+    #[test]
+    fn test_a_checkpoint_kind_without_its_checkpoint_is_refused() {
+        let err = sign(
+            &key(),
+            0,
+            None,
+            None,
+            ext("session.checkpoint", None, Vec::new()),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("session checkpoint"), "{err}");
+    }
+
+    #[test]
+    fn test_a_checkpoint_on_another_kind_is_refused() {
+        let mut ext = checkpoint_event().header.extensions.clone();
+        ext.kind = "message".to_owned();
+        let err = sign(&key(), 0, None, None, ext).unwrap_err();
+        assert!(err.to_string().contains("session checkpoint"), "{err}");
+    }
 }
 
 #[cfg(test)]
@@ -766,7 +1060,7 @@ mod golden {
     use dcbor::{ByteString, CBOR};
     use p2panda_core::{AnyHeader, Hash, Header, SigningKey};
 
-    use super::{decode, sign, ChainExt, Event, DOMAIN_TAG};
+    use super::{ChainExt, DOMAIN_TAG, Event, decode, sign};
 
     /// The test key: the 32 bytes 00 through 1f. It is not a real key.
     fn key() -> SigningKey {
@@ -941,6 +1235,8 @@ mod golden {
                 removes: None,
                 note: None,
                 link: None,
+                checkpoint: None,
+                rotation: None,
             },
         )
         .unwrap();
@@ -959,6 +1255,8 @@ mod golden {
                 removes: None,
                 note: None,
                 link: None,
+                checkpoint: None,
+                rotation: None,
             },
         )
         .unwrap();

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -88,22 +89,40 @@ func newApp() *app {
 	return a
 }
 
-func (a *app) Start() {
-	var err error
-	done := make(chan os.Signal, 1)
-	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
-	log.Printf("Starting SSH server on %s:%d", host, port)
+func runServer(serve func() error, shutdown func(context.Context) error, done <-chan os.Signal, timeout time.Duration) error {
+	serveErr := make(chan error, 1)
 	go func() {
-		if err = a.ListenAndServe(); err != nil {
-			log.Fatalln(err)
-		}
+		serveErr <- serve()
 	}()
 
-	<-done
-	log.Println("Stopping SSH server")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer func() { cancel() }()
-	if err := a.Shutdown(ctx); err != nil {
+	select {
+	case err := <-serveErr:
+		if err != nil && !errors.Is(err, ssh.ErrServerClosed) {
+			return err
+		}
+		return nil
+	case <-done:
+		log.Println("Stopping SSH server")
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		if err := shutdown(ctx); err != nil {
+			return err
+		}
+
+		err := <-serveErr
+		if err != nil && !errors.Is(err, ssh.ErrServerClosed) {
+			return err
+		}
+		return nil
+	}
+}
+
+func (a *app) Start() {
+	done := make(chan os.Signal, 1)
+	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(done)
+	log.Printf("Starting SSH server on %s:%d", host, port)
+	if err := runServer(a.ListenAndServe, a.Shutdown, done, 30*time.Second); err != nil {
 		log.Fatalln(err)
 	}
 }
@@ -202,11 +221,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlC, tea.KeyEsc:
 			return m, tea.Quit
 		case tea.KeyEnter:
-			m.app.send(chatMsg{
-				id:   m.id,
-				text: m.textarea.Value(),
-			})
-			m.textarea.Reset()
+			// An empty or whitespace-only input sends nothing (#3273):
+			// broadcasting it would append a bare "name: " line to every
+			// session's history. The textarea is left exactly as it is.
+			// Real text, including surrounding spaces, is sent verbatim.
+			if strings.TrimSpace(m.textarea.Value()) != "" {
+				m.app.send(chatMsg{
+					id:   m.id,
+					text: m.textarea.Value(),
+				})
+				m.textarea.Reset()
+			}
 		}
 
 	case chatMsg:

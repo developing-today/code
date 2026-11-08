@@ -70,6 +70,12 @@ export interface ItemRow {
   fetched_at: string;
 }
 
+export interface ItemDeletionRow {
+  ref: string;
+  source_updated_at: string;
+  fetched_at: string;
+}
+
 export interface CommentRow {
   id: string;
   ref: string;
@@ -105,79 +111,127 @@ const now = () => new Date().toISOString();
 // Items
 // ---------------------------------------------------------------------------
 
+/** Read the deletion marker for a ref (#6782), or null when none exists. */
+export async function getItemDeletion(db: Client, ref: string): Promise<ItemDeletionRow | null> {
+  const r = await db.execute({
+    sql: `SELECT * FROM pmp_item_deletions WHERE ref = ?`,
+    args: [ref],
+  });
+  return (r.rows[0] as unknown as ItemDeletionRow) ?? null;
+}
+
 /** Upsert an item. Monotonic: a stale source (older updated_at) never overwrites. */
 export async function upsertItem(db: Client, i: Omit<ItemRow, "fetched_at">): Promise<void> {
-  // Two steps, so "the payload shape does not carry merge fields" (null
-  // draft/merged, #4158) stays distinguishable from an explicit 0 on the
-  // update path: the INSERT materializes defaults for a brand-new row, the
-  // UPDATE preserves the stored merge fields whenever the incoming row
-  // does not carry them. (A single INSERT ... ON CONFLICT cannot do this:
-  // excluded.draft would already be the COALESCE'd insert value.)
-  await db.execute({
-    sql: `INSERT OR IGNORE INTO pmp_items (
-            ref, repo, number, kind, url, api_url, title, state, state_reason,
-            draft, merged, author, labels, assignees, created_at, updated_at,
-            closed_at, merged_at, source_updated_at, fetched_at
-          ) VALUES (?,?,?,?,?,?,?,?,?,COALESCE(?,0),COALESCE(?,0),?,?,?,?,?,?,?,?,?)`,
-    args: [
-      i.ref,
-      i.repo,
-      i.number,
-      i.kind,
-      i.url,
-      i.api_url,
-      i.title,
-      i.state,
-      i.state_reason,
-      i.draft,
-      i.merged,
-      i.author,
-      i.labels,
-      i.assignees,
-      i.created_at,
-      i.updated_at,
-      i.closed_at,
-      i.merged_at,
-      i.source_updated_at,
-      now(),
+  // Deletion is absorbing (#6782): an item whose ref carries a deletion
+  // marker is not recreated by an event at or before the deletion's source
+  // timestamp (stale webhook replays, in-flight reconcile responses). An
+  // event strictly newer than the marker wins and clears it — GitHub is
+  // the source of truth, and such an event means the item demonstrably
+  // exists at a later source time than its deletion.
+  //
+  // The three statements run as one write batch (a single transaction),
+  // so the marker decision and the item writes are atomic relative to a
+  // concurrent deleteItem (Codex P2 on PR #6792 — the previous
+  // read-then-unconditional-delete could remove a marker a racing
+  // deleteItem had just refreshed, then recreate the stale item). The
+  // clear only removes markers this event legitimately beats (strictly
+  // older), and both item writes are guarded by NOT EXISTS over whatever
+  // marker survives that clear: a marker refreshed mid-flight to a
+  // timestamp at/after this event's blocks the writes instead of being
+  // silently discarded.
+  //
+  // Two steps for the item write, so "the payload shape does not carry
+  // merge fields" (null draft/merged, #4158) stays distinguishable from
+  // an explicit 0 on the update path: the INSERT materializes defaults
+  // for a brand-new row, the UPDATE preserves the stored merge fields
+  // whenever the incoming row does not carry them. (A single INSERT ...
+  // ON CONFLICT cannot do this: excluded.draft would already be the
+  // COALESCE'd insert value.)
+  await db.batch(
+    [
+      {
+        sql: `DELETE FROM pmp_item_deletions WHERE ref = ? AND source_updated_at < ?`,
+        args: [i.ref, i.source_updated_at],
+      },
+      {
+        sql: `INSERT OR IGNORE INTO pmp_items (
+                ref, repo, number, kind, url, api_url, title, state, state_reason,
+                draft, merged, author, labels, assignees, created_at, updated_at,
+                closed_at, merged_at, source_updated_at, fetched_at
+              ) SELECT ?,?,?,?,?,?,?,?,?,COALESCE(?,0),COALESCE(?,0),?,?,?,?,?,?,?,?,?
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM pmp_item_deletions
+                  WHERE ref = ? AND source_updated_at >= ?
+                )`,
+        args: [
+          i.ref,
+          i.repo,
+          i.number,
+          i.kind,
+          i.url,
+          i.api_url,
+          i.title,
+          i.state,
+          i.state_reason,
+          i.draft,
+          i.merged,
+          i.author,
+          i.labels,
+          i.assignees,
+          i.created_at,
+          i.updated_at,
+          i.closed_at,
+          i.merged_at,
+          i.source_updated_at,
+          now(),
+          i.ref,
+          i.source_updated_at,
+        ],
+      },
+      {
+        sql: `UPDATE pmp_items SET
+                repo = ?, number = ?, kind = ?, url = ?, api_url = ?, title = ?,
+                state = ?, state_reason = ?,
+                draft = COALESCE(?, draft),
+                merged = COALESCE(?, merged),
+                author = ?, labels = ?, assignees = ?, created_at = ?, updated_at = ?,
+                closed_at = ?,
+                merged_at = CASE WHEN ? IS NULL THEN merged_at ELSE ? END,
+                source_updated_at = ?, fetched_at = ?
+              WHERE ref = ? AND ? >= source_updated_at
+                AND NOT EXISTS (
+                  SELECT 1 FROM pmp_item_deletions
+                  WHERE ref = pmp_items.ref AND source_updated_at >= ?
+                )`,
+        args: [
+          i.repo,
+          i.number,
+          i.kind,
+          i.url,
+          i.api_url,
+          i.title,
+          i.state,
+          i.state_reason,
+          i.draft,
+          i.merged,
+          i.author,
+          i.labels,
+          i.assignees,
+          i.created_at,
+          i.updated_at,
+          i.closed_at,
+          i.merged,
+          i.merged_at,
+          i.source_updated_at,
+          now(),
+          i.ref,
+          i.source_updated_at,
+          i.source_updated_at,
+        ],
+      },
     ],
-  });
-  await db.execute({
-    sql: `UPDATE pmp_items SET
-            repo = ?, number = ?, kind = ?, url = ?, api_url = ?, title = ?,
-            state = ?, state_reason = ?,
-            draft = COALESCE(?, draft),
-            merged = COALESCE(?, merged),
-            author = ?, labels = ?, assignees = ?, created_at = ?, updated_at = ?,
-            closed_at = ?,
-            merged_at = CASE WHEN ? IS NULL THEN merged_at ELSE ? END,
-            source_updated_at = ?, fetched_at = ?
-          WHERE ref = ? AND ? >= source_updated_at`,
-    args: [
-      i.repo,
-      i.number,
-      i.kind,
-      i.url,
-      i.api_url,
-      i.title,
-      i.state,
-      i.state_reason,
-      i.draft,
-      i.merged,
-      i.author,
-      i.labels,
-      i.assignees,
-      i.created_at,
-      i.updated_at,
-      i.closed_at,
-      i.merged,
-      i.merged_at,
-      i.source_updated_at,
-      now(),
-      i.ref,
-      i.source_updated_at,
-    ],
-  });
+    "write",
+  );
 }
 
 export async function getItems(db: Client, refs: string[]): Promise<ItemRow[]> {
@@ -362,6 +416,54 @@ export async function deleteLink(db: Client, subject: string, ref: string, relat
   });
 }
 
+/**
+ * Remove an item and everything keyed off it, for a GitHub `issues`
+ * `deleted` event (#4210). Links and comments are projection data with
+ * no consumer independent of the item -- every read joins through it --
+ * so they go with the item row instead of becoming orphans (triage
+ * decision on #4210), with two refinements from review:
+ * - A GitHub item's outbound links are keyed by the namespaced subject
+ *   `gh:<ref>` (schema.sql), not the bare ref; both spellings are
+ *   removed so no writer's rows survive.
+ * - A deletion marker is persisted in pmp_item_deletions (#6782), so a
+ *   stale replay arriving after this delete cannot resurrect the item
+ *   through upsertItem; see the guard there.
+ * - Comment tombstones (deleted = 1) are RETAINED: they are the
+ *   absorbing guard that rejects stale comment replays (see
+ *   upsertComment), and erasing one would let a delayed create/edit
+ *   resurrect a deleted comment. Live comments are removed; the
+ *   tombstone rows are already excluded from default reads.
+ */
+export async function deleteItem(db: Client, ref: string, sourceUpdatedAt?: string): Promise<void> {
+  // One write batch (a single transaction), atomic relative to a
+  // concurrent upsertItem (Codex P2 on PR #6792): the marker write and
+  // the row removals land together, so an upsert racing this delete
+  // decides against either the pre-delete or the post-delete state —
+  // never a torn mix (marker present but row rewritten, or row deleted
+  // with no marker).
+  //
+  // The marker is monotonic (#6782): a later delete event refreshes it,
+  // an older one never moves it backwards. Without a payload timestamp
+  // (direct callers), the write time is the marker — every replayed
+  // event carries a past source timestamp, so absorption still holds.
+  const ts = sourceUpdatedAt ?? now();
+  await db.batch(
+    [
+      {
+        sql: `INSERT INTO pmp_item_deletions (ref, source_updated_at, fetched_at) VALUES (?,?,?)
+              ON CONFLICT(ref) DO UPDATE SET
+                source_updated_at = excluded.source_updated_at,
+                fetched_at = excluded.fetched_at
+              WHERE excluded.source_updated_at >= pmp_item_deletions.source_updated_at`,
+        args: [ref, ts, now()],
+      },
+      { sql: `DELETE FROM pmp_items WHERE ref = ?`, args: [ref] },
+      { sql: `DELETE FROM pmp_comments WHERE ref = ? AND deleted = 0`, args: [ref] },
+      { sql: `DELETE FROM pmp_links WHERE subject IN (?, ?)`, args: [`gh:${ref}`, ref] },
+    ],
+    "write",
+  );
+}
 export async function getLinks(db: Client, opts: { subject?: string; ref?: string } = {}): Promise<LinkRow[]> {
   const clauses: string[] = [];
   const args: string[] = [];
@@ -485,4 +587,144 @@ export async function getSubject(db: Client, subject: string): Promise<SubjectVi
     links: links.map((l) => ({ ...l, item: itemByRef.get(l.ref) ?? null })),
     activity,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Hot list (#5204): append-only normalized events + consumer checkpoints
+// ---------------------------------------------------------------------------
+
+export interface HotEventRow {
+  seq: number;
+  event_id: string;
+  delivery_id: string | null;
+  repo: string;
+  event: string;
+  action: string | null;
+  ref: string | null;
+  actor: string | null;
+  source_url: string | null;
+  source_timestamp: string | null;
+  received_at: string;
+}
+
+export interface HotEventInput {
+  eventId: string;
+  deliveryId?: string | null;
+  repo: string;
+  event: string;
+  action?: string | null;
+  ref?: string | null;
+  actor?: string | null;
+  sourceUrl?: string | null;
+  sourceTimestamp?: string | null;
+}
+
+/**
+ * Append normalized hot-list events. Idempotent per event_id: a redelivery
+ * of the same x-github-delivery derives the same event_ids and inserts
+ * nothing twice (INSERT OR IGNORE), while distinct deliveries carry
+ * distinct event_ids and stay distinct rows. Returns the rows inserted.
+ */
+export async function appendHotEvents(db: Client, events: HotEventInput[]): Promise<number> {
+  let inserted = 0;
+  for (const e of events) {
+    const r = await db.execute({
+      sql: `INSERT OR IGNORE INTO pmp_hot_events (
+              event_id, delivery_id, repo, event, action, ref, actor,
+              source_url, source_timestamp, received_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      args: [
+        e.eventId,
+        e.deliveryId ?? null,
+        e.repo,
+        e.event,
+        e.action ?? null,
+        e.ref ?? null,
+        e.actor ?? null,
+        e.sourceUrl ?? null,
+        e.sourceTimestamp ?? null,
+        now(),
+      ],
+    });
+    inserted += r.rowsAffected;
+  }
+  return inserted;
+}
+
+/** The current high-water cursor: the largest seq issued so far (0 when empty). */
+export async function hotHighWater(db: Client): Promise<number> {
+  const r = await db.execute("SELECT COALESCE(MAX(seq), 0) AS hw FROM pmp_hot_events");
+  return Number((r.rows[0] as unknown as { hw: number }).hw);
+}
+
+/**
+ * Bounded ascending page of hot events strictly after `after` (exclusive
+ * cursor), never past `highWater` when one is given: a sweep pins the
+ * high-water the server issued at its start and pages inside that window,
+ * so events arriving mid-sweep are left for the next sweep.
+ */
+export async function listHotEvents(
+  db: Client,
+  opts: { after?: number; limit?: number; highWater?: number } = {},
+): Promise<HotEventRow[]> {
+  const after = opts.after ?? 0;
+  const limit = opts.limit ?? 200;
+  const args: (string | number)[] = [after];
+  let highWaterClause = "";
+  if (opts.highWater !== undefined) {
+    highWaterClause = "AND seq <= ?";
+    args.push(opts.highWater);
+  }
+  args.push(limit);
+  const r = await db.execute({
+    sql: `SELECT * FROM pmp_hot_events WHERE seq > ? ${highWaterClause} ORDER BY seq ASC LIMIT ?`,
+    args,
+  });
+  return r.rows as unknown as HotEventRow[];
+}
+
+/** A consumer's last acked checkpoint cursor (0 when it has never acked). */
+export async function getConsumerCheckpoint(db: Client, consumer: string): Promise<number> {
+  const r = await db.execute({
+    sql: `SELECT cursor FROM pmp_consumer_checkpoints WHERE consumer = ?`,
+    args: [consumer],
+  });
+  return r.rows.length ? Number((r.rows[0] as unknown as { cursor: number }).cursor) : 0;
+}
+
+/**
+ * Acknowledge a consumer checkpoint after a completed sweep. Monotonic: a
+ * stale or repeated ack never moves the cursor backwards. A cursor past
+ * the sweep's server-issued high-water is rejected outright -- a consumer
+ * can only ack events the server actually issued to it. The claimed
+ * high-water is checked against the ledger's own current high-water
+ * (server-controlled state), so a caller cannot mint a future bound and
+ * ack past events that do not exist yet. Returns the stored cursor.
+ */
+export async function ackConsumerCheckpoint(
+  db: Client,
+  consumer: string,
+  cursor: number,
+  highWater: number,
+): Promise<number> {
+  if (!Number.isInteger(cursor) || cursor < 0) throw new Error("invalid_checkpoint_cursor");
+  if (!Number.isInteger(highWater) || highWater < 0) throw new Error("invalid_high_water");
+  if (cursor > highWater) throw new Error("checkpoint_past_high_water");
+  // The bound is validated against server-controlled state, never just the
+  // caller-supplied pair: a high-water the ledger has not actually reached
+  // was never issued, and acking up to it would silently skip the events
+  // that later arrive under those seqs (Codex finding on PR #5327).
+  const serverHighWater = await hotHighWater(db);
+  if (highWater > serverHighWater) throw new Error("high_water_past_server");
+  if (cursor > serverHighWater) throw new Error("checkpoint_past_high_water");
+  await db.execute({
+    sql: `INSERT INTO pmp_consumer_checkpoints (consumer, cursor, updated_at)
+          VALUES (?,?,?)
+          ON CONFLICT(consumer) DO UPDATE SET
+            cursor = excluded.cursor,
+            updated_at = excluded.updated_at
+          WHERE excluded.cursor > pmp_consumer_checkpoints.cursor`,
+    args: [consumer, cursor, now()],
+  });
+  return getConsumerCheckpoint(db, consumer);
 }

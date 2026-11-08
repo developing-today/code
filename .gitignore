@@ -173,3 +173,6 @@ codedb.snapshot
 /r.out
 /r.err
 *.db
+
+# pm-stack aggregator runtime event log (written by the live service; tracking it blocks pm-git-sync fast-forward — #4906)
+pm-stack/aggregator/events.json

@@ -198,9 +198,11 @@ cmp -s "$tmp/unparseable.fixture" "$tmp/unparseable.copy" || {
   failures=$((failures + 1))
 }
 
-# Case 6: agents shape the fold splice cannot recognise (4-space
-# indent) with a v1 `agent` block also present — the file must be left
-# byte-identical with exit 1, never stripped.
+# Case 6: agents in a 4-space indent with a v1 `agent` block also
+# present (#4612) — the locator-based fold splices whatever layout the
+# value span has, so this normalises like the 2-space merge (Case 3).
+# (Before #4612 the layout-bound regex splice could not recognise this
+# shape and the case asserted the fail-closed exit 1 instead.)
 cat >"$tmp/unrecognised.fixture" <<'EOF'
 {
   "$schema": "https://opencode.ai/config.json",
@@ -212,7 +214,8 @@ cat >"$tmp/unrecognised.fixture" <<'EOF'
     }
 }
 EOF
-check unrecognised "$tmp/unrecognised.fixture" '' 1
+check unrecognised "$tmp/unrecognised.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"},"plan":{"model":"anthropic/claude-haiku-4-5"}}}' 0
 
 # Case 7: inline // comments (#3179) — the old probe stripper removed
 # only full-line comments, so this file failed to parse and every
@@ -310,8 +313,278 @@ EOF
 check plugins-merge "$tmp/plugins-merge.fixture" \
   '{"$schema":"https://opencode.ai/config.json","plugins":["opencode-plugin-a","opencode-plugin-b",["opencode-plugin-c",{"opt":1}]]}' 0
 
+# Case 14 (#4612, probe B): `agents` inline empty object with a
+# standard v1 `agent` block — the old regex splice demanded a
+# newline + two-space closing brace, so this exited 1 forever.
+cat >"$tmp/inline-agents.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "build": { "model": "anthropic/claude-sonnet-4-5" }
+  },
+  "agents": {}
+}
+EOF
+check inline-agents "$tmp/inline-agents.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"}}}' 0
+
+# Case 15 (#4612, probe C): `agents` on a single line with content,
+# plus a v1 `agent` block adding a key — merges with exit 0.
+cat >"$tmp/singleline-agents.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": { "scout": { "model": "anthropic/claude-haiku-4-5" } },
+  "agents": { "build": { "model": "anthropic/claude-sonnet-4-5" } }
+}
+EOF
+check singleline-agents "$tmp/singleline-agents.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"},"scout":{"model":"anthropic/claude-haiku-4-5"}}}' 0
+
+# Case 16 (#4612, probe F): an "agents": lookalike inside a // comment
+# above the live keys — the fold must splice the LIVE keys and leave
+# the comment byte-identical (asserted explicitly after the check).
+cat >"$tmp/comment-agents-key.fixture" <<'EOF'
+{
+  // example only: "agents": { "ghost": { "model": "comment/lookalike" } }
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "scout": { "model": "anthropic/claude-haiku-4-5" }
+  },
+  "agents": {
+    "build": { "model": "anthropic/claude-sonnet-4-5" }
+  }
+}
+EOF
+check comment-agents-key "$tmp/comment-agents-key.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"},"scout":{"model":"anthropic/claude-haiku-4-5"}}}' 0
+cp "$tmp/comment-agents-key.fixture" "$tmp/comment-agents-key.copy"
+OPENCODE_CONFIG="$tmp/comment-agents-key.copy" bash "$script" 2>/dev/null
+grep -Fq '// example only: "agents": { "ghost": { "model": "comment/lookalike" } }' "$tmp/comment-agents-key.copy" || {
+  echo "FAIL comment-agents-key-bytes: comment line not byte-identical"
+  failures=$((failures + 1))
+}
+
+# Case 17 (#4612, probe E): fully duplicated entries (merged ==
+# agents) with the v1 `agent` block on ONE line — the old deletion
+# regex missed this layout and silently exited 0 with the v1 block
+# left in place. The block must actually be removed.
+cat >"$tmp/duplicate-singleline.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": { "build": { "model": "anthropic/claude-sonnet-4-5" } },
+  "agents": {
+    "build": { "model": "anthropic/claude-sonnet-4-5" }
+  }
+}
+EOF
+check duplicate-singleline "$tmp/duplicate-singleline.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"}}}' 0
+cp "$tmp/duplicate-singleline.fixture" "$tmp/duplicate-singleline.copy"
+OPENCODE_CONFIG="$tmp/duplicate-singleline.copy" bash "$script" 2>/dev/null
+grep -Fq '"agent":' "$tmp/duplicate-singleline.copy" && {
+  echo "FAIL duplicate-singleline-bytes: v1 agent key still present"
+  failures=$((failures + 1))
+}
+
+# Case 18 (#4612): duplicated entries with the v1 `agent` block as
+# the LAST entry (no trailing comma) — deletion must remove the
+# preceding separator comma and leave a valid single `agents` block.
+cat >"$tmp/duplicate-last.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agents": {
+    "build": { "model": "anthropic/claude-sonnet-4-5" }
+  },
+  "agent": {
+    "build": { "model": "anthropic/claude-sonnet-4-5" }
+  }
+}
+EOF
+check duplicate-last "$tmp/duplicate-last.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"}}}' 0
+
+# Case 19: plugin + plugins both present with comments inside BOTH
+# arrays (#4639) — the merge is a textual element splice, so every
+# comment survives byte-identical instead of the arrays being
+# re-serialised.
+cat >"$tmp/plugins-merge-comments.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  // file-level note
+  "plugin": [
+    /* legacy note */
+    "opencode-plugin-a"
+  ],
+  "plugins": [
+    // native note
+    "opencode-plugin-b"
+    // trailing native
+  ]
+}
+EOF
+check plugins-merge-comments "$tmp/plugins-merge-comments.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","plugins":["opencode-plugin-a","opencode-plugin-b"]}' 0
+for needle in '/* legacy note */' '// native note' '// trailing native' '// file-level note'; do
+  grep -qF "$needle" "$tmp/plugins-merge-comments.jsonc" || {
+    echo "FAIL plugins-merge-comments: lost comment: $needle"
+    failures=$((failures + 1))
+  }
+done
+
+# Case 20: a // line comment trailing the last legacy element (#4639
+# boundary) — the joining comma would be swallowed by the comment, so
+# the merge fails closed: exit 1 with the file byte-identical.
+cat >"$tmp/plugins-merge-trailing-comment.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "opencode-plugin-a" // trailing legacy note
+  ],
+  "plugins": [
+    "opencode-plugin-b"
+  ]
+}
+EOF
+check plugins-merge-trailing-comment "$tmp/plugins-merge-trailing-comment.fixture" '' 1
+
+# Case 21 (Codex P2 on PR #4644): a trailing comma before a trailing
+# block comment is still the legacy array's element separator. Remove
+# that comma while preserving the comment, then perform the merge.
+cat >"$tmp/plugins-merge-trailing-block-comment.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-plugin-a", /* keep trailing block */],
+  "plugins": ["opencode-plugin-b"]
+}
+EOF
+check plugins-merge-trailing-block-comment "$tmp/plugins-merge-trailing-block-comment.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","plugins":["opencode-plugin-a","opencode-plugin-b"]}' 0
+grep -qF '/* keep trailing block */' "$tmp/plugins-merge-trailing-block-comment.jsonc" || {
+  echo "FAIL plugins-merge-trailing-block-comment: lost trailing block comment"
+  failures=$((failures + 1))
+}
+
+# Case 22 (Codex P2 on PR #4644): legacy array holds only a comment,
+# e.g. [/* disabled */] — no joining comma is emitted, so the merge
+# succeeds and the comment survives instead of failing closed.
+cat >"$tmp/plugins-merge-comment-only-legacy.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [/* disabled */],
+  "plugins": ["opencode-plugin-b"]
+}
+EOF
+check plugins-merge-comment-only-legacy "$tmp/plugins-merge-comment-only-legacy.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","plugins":["opencode-plugin-b"]}' 0
+grep -qF '/* disabled */' "$tmp/plugins-merge-comment-only-legacy.jsonc" || {
+  echo "FAIL plugins-merge-comment-only-legacy: lost legacy comment"
+  failures=$((failures + 1))
+}
+
+# Case 23 (Codex P2 on PR #4644): multiline block comment with a URL on
+# its final line inside the legacy array — the // in the URL is inside
+# /* */, not a live line comment, so the merge succeeds.
+cat >"$tmp/plugins-merge-url-comment.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-plugin-a" /* note
+https://example.com/docs */],
+  "plugins": ["opencode-plugin-b"]
+}
+EOF
+check plugins-merge-url-comment "$tmp/plugins-merge-url-comment.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","plugins":["opencode-plugin-a","opencode-plugin-b"]}' 0
+grep -qF 'https://example.com/docs */' "$tmp/plugins-merge-url-comment.jsonc" || {
+  echo "FAIL plugins-merge-url-comment: lost block comment"
+  failures=$((failures + 1))
+}
+
+# Case: agent as the last entry, with an inline comment between the
+# preceding entry's comma and the agent key (PR #4625 Codex P2). The
+# backward separator scan in delete_top_level_entry must skip the
+# comment; the fold must succeed and stay idempotent.
+cat >"$tmp/comment-before-agent-last.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agents": {
+    "plan": { "model": "anthropic/claude-sonnet-4-5" }
+  }, // native agents live here
+  "agent": {
+    "build": { "model": "anthropic/claude-sonnet-4-5" }
+  }
+}
+EOF
+check comment-before-agent-last "$tmp/comment-before-agent-last.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"},"plan":{"model":"anthropic/claude-sonnet-4-5"}}}' 0
+
+# Case 24 (#4770): a block comment containing a literal /* before the
+# final legacy `agent` entry — the backward separator scan must match
+# the comment's actual opening delimiter, not the inner literal, so
+# the fold succeeds and the comment text is preserved byte-identical.
+cat >"$tmp/block-comment-inner-delimiter.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agents": {
+    "build": { "model": "anthropic/claude-sonnet-4-5" }
+  },
+  /* example syntax: /* text */
+  "agent": {
+    "build": { "model": "anthropic/claude-sonnet-4-5" }
+  }
+}
+EOF
+check block-comment-inner-delimiter "$tmp/block-comment-inner-delimiter.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"}}}' 0
+grep -qF '/* example syntax: /* text */' "$tmp/block-comment-inner-delimiter.jsonc" || {
+  echo "FAIL block-comment-inner-delimiter: comment text not preserved"
+  failures=$((failures + 1))
+}
+
+# Case 7: a repair preserves the config's original permission bits.
+# (Input is the v1 `plugin` spelling — the canonical direction since
+# the v2 rename — so the run performs a real rewrite.)
+cat >"$tmp/mode.fixture" <<'EOF'
+{
+  "plugin": ["opencode-plugin-x"]
+}
+EOF
+cp "$tmp/mode.fixture" "$tmp/mode.jsonc"
+chmod 0600 "$tmp/mode.jsonc"
+OPENCODE_CONFIG="$tmp/mode.jsonc" bash "$script" 2>/dev/null
+if [ "$?" -ne 0 ] || [ "$(stat -c '%a' "$tmp/mode.jsonc")" != "600" ] ||
+  [ "$(parsed_doc "$tmp/mode.jsonc")" != '{"plugins": ["opencode-plugin-x"]}' ]; then
+  echo "FAIL mode-preserved: repair must preserve 0600 and normalize plugins"
+  failures=$((failures + 1))
+else
+  echo "PASS mode-preserved"
+fi
+
+# Case 8: a symlinked config is refused before writes; keep both the link
+# target and its contents unchanged.
+cat >"$tmp/symlink-target.jsonc" <<'EOF'
+{
+  "plugin": ["opencode-plugin-x"]
+}
+EOF
+ln -s symlink-target.jsonc "$tmp/symlink.jsonc"
+link_before="$(readlink "$tmp/symlink.jsonc")"
+target_before="$(sha256sum "$tmp/symlink-target.jsonc" | cut -d' ' -f1)"
+OPENCODE_CONFIG="$tmp/symlink.jsonc" bash "$script" 2>"$tmp/symlink.stderr"
+symlink_exit=$?
+target_after="$(sha256sum "$tmp/symlink-target.jsonc" | cut -d' ' -f1)"
+if [ "$symlink_exit" -eq 0 ] || [ ! -L "$tmp/symlink.jsonc" ] ||
+  [ "$(readlink "$tmp/symlink.jsonc")" != "$link_before" ] ||
+  [ "$target_before" != "$target_after" ] ||
+  ! grep -q 'refusing symlinked config' "$tmp/symlink.stderr"; then
+  echo "FAIL symlink-refused: expected a clear refusal with link and target unchanged"
+  failures=$((failures + 1))
+else
+  echo "PASS symlink-refused"
+fi
+
 if [ "$failures" -ne 0 ]; then
   echo "normalize_test: $failures failure(s)"
   exit 1
 fi
+
 echo "normalize_test: all cases passed"
