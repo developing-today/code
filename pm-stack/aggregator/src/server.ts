@@ -65,6 +65,7 @@ import {
   type RoadmapReconciliation,
 } from "./roadmap-reconcile.ts";
 import type { Comment, DashComment, GhItem, ProjectPoolItem, QuotaView, RefKey, UsageView } from "./model.ts";
+import { isValidRef } from "./model.ts";
 import { buildEpicRollups } from "./epics.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
@@ -556,10 +557,27 @@ async function roadmapContext() {
 }
 
 async function searchContext(query: string) {
-  const [board, rows] = await Promise.all([source.board(), source.roadmap()]);
-  const refs = [...new Set([...allRefs(board), ...allRefs(rows)])];
+  // #1212 slice 2: registry, DNS, services, and tier items join the
+  // board/roadmap subjects. Each extra source fails soft (empty on
+  // error) so one broken source never takes search down with it.
+  const [board, rows, registry, dns, usage, orchestration] = await Promise.all([
+    source.board(),
+    source.roadmap(),
+    source.registry().catch(() => []),
+    source.dns().catch(() => null),
+    source.usage().catch(() => null),
+    source.orchestration().catch(() => null),
+  ]);
+  const tierItems = orchestration ? [...orchestration.tiers.needsDrew, ...orchestration.tiers.needsOrchestrator] : [];
+  // Codex P2 on PR #7331: refs carried only by the slice-2 sources
+  // (registry taskRefs, tier-item refs) join the resolution set, or
+  // their search badges always render unresolved even when the live
+  // pool/projector could resolve them.
+  const extraRefs = [...registry.flatMap((record) => record.taskRefs), ...tierItems.map((item) => item.ref)].filter(isValidRef);
+  const refs = [...new Set([...allRefs(board), ...allRefs(rows), ...extraRefs])];
   const items = await source.items(refs);
-  return { query, results: searchWork(board, rows, items, query), items };
+  const extras = { registry, dns, services: usage?.services ?? [], tierItems };
+  return { query, results: searchWork(board, rows, items, query, extras), items };
 }
 
 // #3321: watchdog gap-sync passes run whole and in observation
