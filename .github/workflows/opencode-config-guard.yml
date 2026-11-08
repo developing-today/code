@@ -19,7 +19,15 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
       - name: Run guard fixtures
         run: node --test bin/check-opencode-metered-providers.test.mjs
       - name: Check canonical OpenCode config
         run: node bin/check-opencode-metered-providers.mjs .opencode/opencode.jsonc
+      # #5611: regression fixtures cover the exact-id credential requirement
+      # and the successful-attempt window. The live-store check runs on the
+      # laptop timer; CI must not pretend it can read the laptop's database.
+      - name: Run opencode-go seating fixtures
+        run: node --test bin/check-opencode-go-seating.test.mjs
