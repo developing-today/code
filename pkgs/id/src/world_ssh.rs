@@ -3117,10 +3117,27 @@ mod tests {
             after: "k".to_owned(),
         };
         sent.push(check(&command_frame(&more, "cap").unwrap(), Phase::Joined));
+        let more_documents = WorldCommand::DocumentsContinue {
+            prefix: None,
+            after: "a.md".to_owned(),
+        };
+        sent.push(check(
+            &command_frame(&more_documents, "cap").unwrap(),
+            Phase::Joined,
+        ));
         assert_eq!(
             sent,
             [
-                "chat", "input", "records", "records", "info", "caps", "records"
+                "chat",
+                "input",
+                "records",
+                "records",
+                "info",
+                "caps",
+                "documents",
+                "document",
+                "records",
+                "documents"
             ]
         );
     }
