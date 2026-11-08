@@ -72,7 +72,7 @@ pub async fn cmd_claim(path: Option<PathBuf>, json: bool, command: ClaimCommand)
                 ("subject", json!(subject.to_hex())),
                 ("name", json!(name)),
                 ("scope", json!(scope.as_str())),
-                ("claim", json!(claim.to_hex())),
+                ("event", json!(claim.to_hex())),
             ];
             if let Some(value) = value {
                 fields.push(("value", json!(value)));

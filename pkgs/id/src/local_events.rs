@@ -388,7 +388,10 @@ impl LocalEvents {
             }
             TagScope::Shared => {
                 let local = self.local.on_subject(&subject);
-                for claim in local.iter().filter(|claim| claim.name == name) {
+                for claim in local
+                    .iter()
+                    .filter(|claim| claim.name == name && claim.author == me)
+                {
                     self.set_tag(subject, &claim.name, claim.value.as_deref())?;
                     moved += 1;
                 }
@@ -1414,6 +1417,40 @@ mod tests {
         assert_eq!(local.len(), 1);
         assert_eq!(local[0].scope, TagScope::Local);
         assert!(events.store.tag_claims().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_scope_edit_to_shared_publishes_only_own_local_claims() {
+        // Two identities can share one event store with different data
+        // directories; the local store merged into this view can therefore
+        // hold another author's local-only claims. Moving a tag to shared
+        // must publish only this node's own claims and leave the foreign
+        // local claim unpublished and intact (Codex review, PR #7344).
+        let (_dir, mut events) = open_events();
+        let subject = publish_subject(&mut events);
+        events
+            .set_tag_scoped(subject, "city", Some("Oslo"), TagScope::Local)
+            .unwrap();
+        let foreign: AuthorKey = [9; 32];
+        events
+            .local
+            .set(&foreign, subject, "city", Some("Bergen"))
+            .unwrap();
+
+        assert_eq!(
+            events
+                .set_tag_scope(subject, "city", TagScope::Shared)
+                .unwrap(),
+            1
+        );
+
+        let shared = events.store.tag_claims().unwrap();
+        assert_eq!(shared.len(), 1);
+        assert_eq!(shared[0].value.as_deref(), Some("Oslo"));
+        let remaining = events.local.claims();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].author, foreign);
+        assert_eq!(remaining[0].value.as_deref(), Some("Bergen"));
     }
 
     #[test]
