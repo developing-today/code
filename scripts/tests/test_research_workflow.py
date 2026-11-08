@@ -501,6 +501,50 @@ class ResearchWorkflowTests(unittest.TestCase):
             ok=ok,
         )
 
+    def test_check_rejects_non_object_resolution_blocks_with_named_errors(self):
+        package = self.init()
+        concept = package / self.state(package)["concepts"][0]["path"]
+        original = concept.read_bytes().decode("utf-8")
+        for malformed in ("[]", '"x"', "42"):
+            with self.subTest(resolution=malformed):
+                concept.write_bytes(
+                    (
+                        original
+                        + "\n<!-- workflow:resolution -->\n"
+                        + malformed
+                        + "\n<!-- /workflow:resolution -->\n"
+                    ).encode("utf-8")
+                )
+                result = self.check(package, ok=False)
+                self.assertIn(
+                    f"{concept}: resolution block must be a JSON object",
+                    result.stderr,
+                )
+                self.assertNotIn("AttributeError", result.stderr)
+
+    def test_check_rejects_non_object_note_markers_with_named_errors(self):
+        package = self.init()
+        note_path = package / self.create_note(package)
+        original = note_path.read_bytes().decode("utf-8")
+        marker = re.compile(
+            r"(<!-- workflow:note -->\s*)(.*?)(\s*<!-- /workflow:note -->)", re.S
+        )
+        for malformed in ("[]", '"x"', "42", "null", "[1, 2]"):
+            with self.subTest(marker=malformed):
+                content, count = marker.subn(
+                    lambda match: match.group(1) + malformed + match.group(3),
+                    original,
+                    count=1,
+                )
+                self.assertEqual(count, 1)
+                note_path.write_bytes(content.encode("utf-8"))
+                result = self.check(package, ok=False)
+                self.assertIn(
+                    f"{note_path}: note marker must be a JSON object",
+                    result.stderr,
+                )
+                self.assertNotIn("AttributeError", result.stderr)
+
     def test_every_disposition_passes_require_resolved_via_resolve_note(self):
         # The skill names five dispositions (#492): each one, recorded
         # through resolve-note, must satisfy check --require-resolved.

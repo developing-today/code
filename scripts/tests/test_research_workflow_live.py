@@ -347,6 +347,47 @@ class ReceiptTests(Fixture):
     def check(self, ok=True):
         return self.cli("check", "--package", self.package, "--require-resolved", ok=ok)
 
+    def test_resolve_note_rejects_non_object_note_markers_with_named_errors(self):
+        note_path = self.package / self.note
+        original = note_path.read_bytes().decode("utf-8")
+        marker = re.compile(
+            r"(<!-- workflow:note -->\s*)(.*?)(\s*<!-- /workflow:note -->)", re.S
+        )
+        for malformed in ("[]", '"x"', "42", "null", "[1, 2]"):
+            with self.subTest(marker=malformed):
+                content, count = marker.subn(
+                    lambda match: match.group(1) + malformed + match.group(3),
+                    original,
+                    count=1,
+                )
+                self.assertEqual(count, 1)
+                note_path.write_bytes(content.encode("utf-8"))
+                error = self.resolve(ok=False)
+                self.assertIn(
+                    f"{note_path}: note marker must be a JSON object", error
+                )
+                self.assertNotIn("AttributeError", error)
+
+    def test_resolve_note_rejects_non_object_resolution_blocks_with_named_errors(self):
+        concept = self.package / "concepts/C002-concept-2.md"
+        original = concept.read_bytes().decode("utf-8")
+        for malformed in ("[]", '"x"', "42"):
+            with self.subTest(resolution=malformed):
+                concept.write_bytes(
+                    (
+                        original
+                        + "\n<!-- workflow:resolution -->\n"
+                        + malformed
+                        + "\n<!-- /workflow:resolution -->\n"
+                    ).encode("utf-8")
+                )
+                error = self.resolve(ok=False)
+                self.assertIn(
+                    f"{concept}: resolution block must be a JSON object", error
+                )
+                self.assertNotIn("AttributeError", error)
+                self.assertFalse(self.receipt.exists())
+
     def test_the_receipt_is_its_own_file_and_resolves_the_note(self):
         self.check(ok=False)
         before = self.snapshot()

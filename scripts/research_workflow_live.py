@@ -346,6 +346,8 @@ def read_note(path, ids):
     if not found or c.NOTE.search(content, found.end()):
         fail(f"{path}: expected exactly one note marker")
     note = json.loads(found[1])
+    if not isinstance(note, dict):
+        fail(f"{path}: note marker must be a JSON object")
     body = content[found.end() :]
     if not body.startswith("\n\n") or hashlib.sha256(
         body[2:].encode()
@@ -464,9 +466,13 @@ def resolve_command(args, root, config, package):
     if receipt.exists() or receipt.is_symlink():
         fail(f"{key} already has a receipt: receipts/{path.name}")
     for concept in state["concepts"]:
-        text = c.contained(package, concept["path"]).read_text(encoding="utf-8")
+        document = c.contained(package, concept["path"])
+        text = document.read_text(encoding="utf-8")
         for block in c.RESOLUTION.findall(c.unfenced(text)):
-            if json.loads(block).get("note") == key:
+            entry = json.loads(block)
+            if not isinstance(entry, dict):
+                fail(f"{document}: resolution block must be a JSON object")
+            if entry.get("note") == key:
                 fail(f"{key} already has a disposition in {concept['path']}")
     content = receipt_text(note, entry).encode("utf-8")
     if receipt.parent.is_symlink():
