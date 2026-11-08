@@ -63,7 +63,11 @@ EOF
 # Comment characters are replaced with spaces (newlines preserved) so
 # line numbers in the output still match the source file. String
 # literals are passed through untouched, including // and /* sequences
-# inside them. Returns non-zero when the file cannot be read.
+# inside them. Returns non-zero when the file cannot be read, or when a
+# block comment is still open at end of input: an unterminated comment
+# would blank the rest of the file and hide any references in it, so
+# the strip fails and the caller fails closed (PR #7679 CodeRabbit
+# finding 4506377624).
 strip_jsonc_comments() {
   awk '
     BEGIN { in_str = 0; in_block = 0; esc = 0 }
@@ -94,7 +98,8 @@ strip_jsonc_comments() {
         out = out c
       }
       print out
-    }' "$1"
+    }
+    END { if (in_block) exit 1 }' "$1"
 }
 
 # Blank the entries of any "disabled_providers" array in a
@@ -187,6 +192,14 @@ if [[ ${#providers[@]} -eq 0 ]]; then
   usage >&2
   exit 2
 fi
+
+for provider in "${providers[@]}"; do
+  if [[ -z "$provider" ]]; then
+    echo "::error::Provider IDs must not be empty." >&2
+    usage >&2
+    exit 2
+  fi
+done
 
 # Resolve candidate configs if none explicitly specified
 resolved_configs=()

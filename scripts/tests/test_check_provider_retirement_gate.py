@@ -255,6 +255,34 @@ class TestCheckProviderRetirementGate(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("Retirement BLOCKED", result.stderr)
 
+    def test_unterminated_block_comment_fails_closed(self):
+        # CodeRabbit finding 4506377624 (PR #7679): a block comment
+        # that is never closed blanks the rest of the file; without a
+        # fail-closed check, references after it would be hidden and
+        # the gate would pass. The strip must error (exit 2 overall).
+        with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
+            cfg = Path(tmp) / "opencode.jsonc"
+            cfg.write_text(
+                '{\n'
+                '  /* retirement note that is never closed\n'
+                '  "model": "opencode-route/workhorse"\n'
+                '}\n'
+            )
+            result = run_gate(["--config", str(cfg), "opencode-route"])
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("failing closed", result.stderr)
+
+    def test_empty_provider_id_is_usage_error(self):
+        # CodeRabbit finding 4506377635 (PR #7679), second half: an
+        # empty provider ID would search for the patterns '""' and
+        # '"/' and block on unrelated config; reject it up front.
+        with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
+            cfg = Path(tmp) / "opencode.jsonc"
+            cfg.write_text('{\n  "model": "native/model"\n}\n')
+            result = run_gate(["--config", str(cfg), ""])
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("must not be empty", result.stderr)
+
     @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0,
                      "root can read chmod-0 files; grep-error path not exercisable")
     def test_unreadable_config_fails_closed(self):
