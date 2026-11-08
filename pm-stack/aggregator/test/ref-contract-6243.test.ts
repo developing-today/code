@@ -11,12 +11,17 @@
 //    (rule 4); a stored url still wins over any ref.
 //
 // Run: bun test test/ref-contract-6243.test.ts
+// Salvage (task 12925): the sessionRecordLine disposition-5 tests below
+// come from PR #7642 (task 13017), whose render.ts fix is salvaged into
+// this PR; see the salvage note on PR #7639.
 import { describe, expect, test } from "bun:test";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import { liveSource, mapProjectorComment, type ProjectorCommentRow } from "../src/sources/live.ts";
+import { isValidRef, parseRef, refUrl, type RefKey, type SessionRecord } from "../src/model.ts";
+import { sessionRecordLine } from "../src/render.ts";
 
 describe("mapProjectorComment refUrl fallback (#6243)", () => {
   const row = (over: Partial<ProjectorCommentRow>): ProjectorCommentRow => ({
@@ -116,5 +121,60 @@ describe("Kaneo board link minting (#6243)", () => {
     const card = board.find((b) => b.title === "Work in p1");
     expect(card).toBeDefined();
     expect(card?.links.map((l) => l.ref)).toEqual(["example-org/example-repo#42"]);
+  });
+});
+
+// ---- Salvaged from PR #7642: sessionRecordLine alignment (disposition 5) ----
+
+function rec(taskRefs: string[]): SessionRecord {
+  return {
+    id: "ses_phase4",
+    source: "claude-code",
+    label: "Phase 4 probe",
+    agentId: "claude-code",
+    agentLabel: "Muse",
+    parentId: null,
+    status: "succeeded",
+    startedAt: "2026-11-08T00:00:00Z",
+    lastSeenAt: "2026-11-08T01:00:00Z",
+    taskRefs: taskRefs as RefKey[],
+  } as SessionRecord;
+}
+
+const GOOD = "developing-today/code#6243";
+const BAD_UNSAFE = "developing-today/code#99999999999999999999";
+const BAD_SHAPE = "goal:keep-the-four-repos-healthy";
+
+describe("sessionRecordLine renders invalid stored refs as plain text (#6243)", () => {
+  test("unsafe-integer ref: no throw, ref visible as plain text, no anchor", () => {
+    const html = sessionRecordLine(rec([BAD_UNSAFE]));
+    expect(html).toContain(BAD_UNSAFE);
+    expect(html).not.toContain(`href="https://github.com/developing-today/code/issues/99999999999999999999"`);
+  });
+  test("non-GitHub ref: no throw, ref visible as plain text", () => {
+    const html = sessionRecordLine(rec([BAD_SHAPE]));
+    expect(html).toContain(BAD_SHAPE);
+    expect(html).not.toContain("<a href=\"https://github.com/goal");
+  });
+  test("valid ref control: anchor unchanged", () => {
+    const html = sessionRecordLine(rec([GOOD]));
+    expect(html).toContain(`<a href="https://github.com/developing-today/code/issues/6243">${GOOD}</a>`);
+  });
+  test("mixed refs: valid anchors, invalid is plain text, session survives", () => {
+    const html = sessionRecordLine(rec([GOOD, BAD_UNSAFE]));
+    expect(html).toContain(`<a href="https://github.com/developing-today/code/issues/6243">${GOOD}</a>`);
+    expect(html).toContain(BAD_UNSAFE);
+  });
+});
+
+describe("the internal ref assertion stays total-checked (#6242 rule 1)", () => {
+  test("isValidRef is the shared rule", () => {
+    expect(isValidRef(GOOD)).toBe(true);
+    expect(isValidRef(BAD_UNSAFE)).toBe(false);
+    expect(isValidRef(BAD_SHAPE)).toBe(false);
+  });
+  test("parseRef and refUrl still throw on invalid refs", () => {
+    expect(() => parseRef(BAD_UNSAFE as RefKey)).toThrow();
+    expect(() => refUrl(BAD_SHAPE as RefKey)).toThrow();
   });
 });
