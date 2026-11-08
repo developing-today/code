@@ -255,6 +255,25 @@ class TestCheckProviderRetirementGate(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("Retirement BLOCKED", result.stderr)
 
+    def test_nested_disabled_providers_array_is_not_a_tombstone(self):
+        # CodeRabbit finding 4506743525 (PR #7679): tombstone
+        # filtering applies only to the TOP-LEVEL disabled_providers
+        # list. A nested array with the same key inside provider or
+        # plugin options is ordinary data; a provider/model reference
+        # inside it must still block retirement.
+        with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
+            cfg = Path(tmp) / "opencode.jsonc"
+            cfg.write_text(
+                '{\n'
+                '  "provider": {"some-provider": {"options": {\n'
+                '    "disabled_providers": ["opencode-route/workhorse"]\n'
+                '  }}}\n'
+                '}\n'
+            )
+            result = run_gate(["--config", str(cfg), "opencode-route"])
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("Retirement BLOCKED", result.stderr)
+
     def test_unterminated_block_comment_fails_closed(self):
         # CodeRabbit finding 4506377624 (PR #7679): a block comment
         # that is never closed blanks the rest of the file; without a

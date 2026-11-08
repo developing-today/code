@@ -102,12 +102,12 @@ strip_jsonc_comments() {
     END { if (in_block) exit 1 }' "$1"
 }
 
-# Blank the entries of any "disabled_providers" array in a
+# Blank the entries of the top-level "disabled_providers" array in a
 # comment-stripped config, preserving line numbers: a tombstone entry
 # suppresses a retired provider, it does not use it.
 strip_disabled_providers() {
   awk '
-    BEGIN { in_str = 0; esc = 0; awaiting_colon = 0; awaiting_bracket = 0; in_disabled = 0; depth = 0; str = "" }
+    BEGIN { in_str = 0; esc = 0; awaiting_colon = 0; awaiting_bracket = 0; in_disabled = 0; depth = 0; objdepth = 0; str = "" }
     {
       out = ""
       n = length($0)
@@ -140,11 +140,13 @@ strip_disabled_providers() {
           out = out c
           if (esc) { esc = 0 }
           else if (c == "\\") { esc = 1 }
-          else if (c == "\"") { in_str = 0; if (str == "disabled_providers") { awaiting_colon = 1 } str = "" }
+          else if (c == "\"") { in_str = 0; if (str == "disabled_providers" && objdepth == 1) { awaiting_colon = 1 } str = "" }
           else { str = str c }
           continue
         }
         if (c == "\"") { in_str = 1; esc = 0; str = ""; out = out c; continue }
+        if (c == "{") { objdepth++ }
+        if (c == "}") { objdepth-- }
         out = out c
       }
       print out
