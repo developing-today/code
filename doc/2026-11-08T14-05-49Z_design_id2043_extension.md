@@ -3,76 +3,96 @@
 - Date: 2026-11-08
 - Status: **design proposal** — extends the settled design; no implementation code is included in this PR, and nothing here changes a ruling. The rulings themselves are already recorded on the issues (links below); this document designs how the three modifications fit the model and names what still needs Drew's clarification before implementation.
 - Issues: [#2043 — ID currencies v1](https://github.com/developing-today/code/issues/2043) (rulings recorded in [comment 6721988851](https://github.com/developing-today/code/issues/2043#issuecomment-6721988851)) and [#2296 — grant refund window and pending spendability](https://github.com/developing-today/code/issues/2296) (rulings recorded in [comment 6721993178](https://github.com/developing-today/code/issues/2296#issuecomment-6721993178)), parent epic #2056.
+- Rulings note: Drew, 2026-11-08 09:13 CST — **"double entry"**: the §1 three-currency model is a double-entry structure (one ledger, three currencies as account classes, every movement a balanced journal entry). §1 was rewritten on this ruling; it supersedes the earlier draft's balance-classes recommendation, and clarification U7 is answered by it (see §1.7 and §4).
 - Base design: `doc/2026-11-01_design_id2043.md` (PR #3886). Where this extension and the base design disagree, the base design stands until Drew accepts this extension; the disagreements are listed explicitly in §5.
 
 ## The rulings this extension designs
 
 Drew ruled on all six policy questions from the base design's §8 on 2026-11-08. Three answers confirm the recommendations as stated (Q3 recovery key, Q4 emergency revocation, Q6 open-source boundary) and need no design work. Three modify the design and are the subject of this document:
 
-- **Q1 (name):** the neutral label "units" ships and branding is deferred, as recommended — **and** the model has **three currencies: units, pending units, and revoked units** (§1).
+- **Q1 (name):** the neutral label "units" ships and branding is deferred, as recommended — **and** the model has **three currencies: units, pending units, and revoked units** (§1). A follow-on ruling the same morning (09:13 CST) settles the structure: **double entry** (§1).
 - **Q2 (supply):** a finite cap for all v1, as recommended — **except transfers from the account for supplying currency** (§2). His sentence ends "named like tiger beetle would be"; that phrase is unresolved (§4, U1) and is not interpreted anywhere in this document.
 - **Q5 (grant terms, #2296):** the base terms are accepted (14-day Steam-direct hold, pending never spendable, per-processor chargeback horizon, debt never silently expires, for-cause-only revocation for first-party premium) — **except pending units may be traded when both parties accept/sign**, under a chained option-contract mechanism (§3). The final sentence of his ruling, proposing atomic batch escrow of the whole chain, ends with a question mark in his text and is recorded on the issues as an **open proposal, not a ruling**; §3.7 designs it as an option and recommends on it.
 
 Drew's full ruling text is quoted verbatim on both issues (links above) and is the authority for everything below. Where his text does not settle a point, this document says UNRESOLVED and §4 lists the exact clarification needed; no unresolved point is silently designed around.
 
-## 1. Three currencies: units, pending units, revoked units
+## 1. Three currencies on one double-entry ledger
 
-### 1.1 What the ruling changes
+### 1.1 What the rulings change — and what "double entry" supersedes
 
-The base design has one ledger-anchored currency per signed definition. "Pending" is a **state** of value in that currency: a purchase grant is a pending TigerBeetle hold, unspendable until the refund window closes, then it posts into the holder's ordinary balance. "Revoked" is an **event/policy**: issuer revocation, gateway suspension, per-definition revocation policy. Neither is a currency, and the base design's identity rule — a currency is `(issuer public key, definition event/hash)` — gives the system exactly one currency per grant-issuing definition.
+The base design has one ledger-anchored currency per signed definition. "Pending" is a **state** of value in that currency: a purchase grant is a pending TigerBeetle hold, unspendable until the refund window closes, then it posts into the holder's ordinary balance. "Revoked" is an **event/policy**: issuer revocation, gateway suspension, per-definition revocation policy. Neither is a currency.
 
-Drew's ruling names three currencies. Taken as the ruling (which is how this document treats it), the grant value exists in three distinct currencies over its life:
+Drew's Q1 ruling names **three currencies — units, pending units, and revoked units**. The first draft of this extension designed that ruling two ways (three distinct currency definitions vs. three balance classes on one ledger), recommended the balance-classes reading, and put the fork to Drew as clarification U7. Drew's follow-on ruling on 2026-11-08 — **"double entry"** — supersedes that fork and that recommendation. The model is now fixed:
 
-| Currency | What it is | Who holds it | What can be done with it |
+- **One** signed definition, **one** TigerBeetle ledger per grant programme (the base design's identity rule is unchanged).
+- The three currencies are **three classes of accounts** on that ledger — every holder's position is kept in a units account, a pending account, and a revoked account, presented and ruled as the three currencies Drew named in every wallet view, statement, and API response. They are never summed into one number and are never fungible with each other.
+- **Every movement of value is a balanced double-entry journal entry**: a debit and an equal credit, posted as one atomic operation. Nothing is created or destroyed inside the books; value changes class, holder, or both, only through a named journal entry type (§1.4), and the only boundary entries are issuance out of the supply account and the one-time genesis endowment that funds it (§1.3).
+
+This is stronger than the superseded balance-classes draft in exactly the way Drew's ruling intends: classes alone said *where* value sits; double entry also says *how it may move* — never by editing a balance, never by a one-sided adjustment, only by a balanced pair whose other side names where the value came from.
+
+### 1.2 The double-entry rule
+
+- A **journal entry** is a set of TigerBeetle transfers submitted as one linked batch that **balances**: total debits = total credits. Simple movements are a single debit/credit pair; multi-leg events (a trade plus its units consideration, §3.4) are one batch whose legs balance in aggregate and post or fail together (base Invariant 6 pattern).
+- **Convention.** Entries are written `Dr <account>` / `Cr <account>` in TigerBeetle's own sense: the debited account is the transfer's source (`debit_account_id`), the credited account is its destination (`credit_account_id`). A holder account's balance in its currency is `credits_posted − debits_posted` (plus the pending fields, §1.6); the supply account's balance is read the same way.
+- **No one-sided operations exist.** There is no mint primitive, no balance edit, no admin adjustment. Issuance is an entry (Cr supply → Dr holder class, §1.4). Correction of a posted entry is a new **compensating entry** referencing the original — the base design's rule for posted conversions, generalised to every entry type. The journal is append-only.
+- **Every entry carries its authorisation**: the graph event that authorises it, joined by `user_data_128` as usual (base Invariant 7). An entry with no authorising event is not submittable.
+
+### 1.3 Chart of accounts (per programme ledger)
+
+| Account | Held by | Meaning |
+| --- | --- | --- |
+| **Genesis endowment** (contra) | The ledger itself | Balances the one-time endowment that funds the supply account at definition creation. It is the only account permitted a negative standing balance (debits exceed credits by exactly the endowed amount); that negative figure *is* the issued capital of the programme, and it moves only under a new signed definition event (e.g. a cap amendment). |
+| **Supply** | Currency service only | Unissued value. Its balance is the unissued remainder of the endowed issuance. See §2 — exactly one per currency, named in the signed definition. |
+| **Units** (one per holder) | Each holder | Settled value: the currency **units**. Spendable and transferable per the base design. |
+| **Pending** (one per holder) | Each holder | **Pending units**: grant value inside its refund/chargeback window, plus positions received under §3 trades. Never spendable (§1.5, DE-5). |
+| **Revoked** (one per holder) | Each holder | **Revoked units**: value cancelled or revoked out of the live currencies, kept on the *holder's* statement so exactly what was taken, and why, stays visible to them. Terminal (§1.5, DE-6). |
+| **Escrow** (one per chain) | Gateway | Exists only under the §3.8 Variant E escrow design; in the sequential design (Variant S, recommended for v1) no escrow accounts are created. Holds pending value escrowed for an atomic batch. |
+
+A user's balance in each currency is simply the balance of their account of that class — three balances, three accounts, reported separately in every snapshot (per-class roots, §1.5 DE-2). Scale is shared across all classes (the definition's scale), so every 1:1 life-cycle entry is exact integer equality with no rounding path.
+
+### 1.4 Journal entries by event type
+
+| Event | Debit | Credit | Notes |
 | --- | --- | --- | --- |
-| **pending units** | Grant value inside its refund/chargeback window | The grantee (and, under §3, a chain of consenting trade counterparties) | Hold; trade under a chained option contract (§3); vest into units at window close. Never spendable (§3.6). |
-| **units** | Settled value | Any holder | Everything the base design allows: spend, transfer, convert under a rate authorisation. |
-| **revoked units** | Value that has been revoked or cancelled out of the live currencies | The issuer's revocation account; the originator after exercising the §3 cancel option | Evidence and accounting only. Never spendable, never re-enters circulation except by a compensating operation (§1.4). |
+| **Genesis endowment** (definition creation, once) | Genesis endowment | Supply | Amount = the programme's authorised issuance (§2). The single boundary entry that brings value into the books; thereafter the books are closed (§1.5, DE-2). |
+| **Issuance — grant** | Pending (grantee) | Supply | The grant enters as pending units inside its window (§3.0). Counts against the cap net of returns (§2.4 — unchanged; Drew did not override §2). |
+| **Issuance — direct** | Units (recipient) | Supply | Non-grant issuance (e.g. a purchase settled immediately), where the definition allows it. |
+| **Vesting** (window closes, no adverse event) | Units (holder) | Pending (holder) | Same holder, class change only. Executed by the gateway at window close. |
+| **Cancel option exercise** (§3.3) | Revoked (originator) | Pending (originator) | 1:1, originator-initiated, inside the 14-days-from-Init window. An exit-from-the-chain device, not early vesting: the originator receives revoked units, never units. |
+| **Revocation — in-window** (adverse event) | Revoked (holder) | Pending (holder) | Authorised by the issuer's revocation policy event. |
+| **Revocation — post-activation** | Revoked (holder) | Units (holder) | Only up to the holder's units balance (DE-4: no negative holdings). Any shortfall becomes explicit grantee debt — a graph/control-plane record (base Invariant 9), **not** a ledger entry: debt never appears as a negative balance. |
+| **Trade of pending units** (§3.4) | Pending (taker) | Pending (grantor) | Holder changes, class does not; only under a countersigned chained option contract. If the consideration is units, a second leg posts in the same balanced batch: Dr Units (grantor) / Cr Units (taker). |
+| **Payment / redemption** | Units (recipient or issuer service account) | Units (payer) | The only spend path, and it can draw only on Units accounts (DE-5). |
+| **Burn / return** | Supply | Units (holder) | Under a signed burn event; restores cap headroom net of returns (§2.3). Final. |
+| **Escrow in / out** (Variant E only, §3.8) | Escrow (chain) / Pending (holder) | Pending (holder) / Escrow (chain) | Submission escrows; batch settlement or unwind posts the reverse and onward legs as one balanced batch. |
 
-Two readings of the ruling are possible. Both are designed below; §1.5 recommends one.
+### 1.5 Invariants, restated in double-entry terms
 
-### 1.2 Reading A — three distinct currency definitions
+- **DE-1 — Trial balance.** Every journal batch balances (Σ debits = Σ credits), and therefore the ledger balances cumulatively at every instant: Σ over all accounts of (debits posted − credits posted) = 0, the genesis contra account included. TigerBeetle enforces the per-transfer half structurally (a transfer *is* a debit and a credit); the gateway enforces the batch half — a multi-leg event whose legs do not balance in aggregate is rejected before submission.
+- **DE-2 — Conservation.** Between genesis and any later signed endowment amendment, the closed total is constant: `Supply + Σ Units + Σ Pending + Σ Revoked + Σ Escrow = endowed issuance`, and `Genesis endowment = −endowed issuance`. Life-cycle entries (vest, cancel, revoke) move value between classes without changing any class-crossing total; §2.3's reconciliation equation is this invariant read at a snapshot. A mismatch is a durable finding, never silently dropped (base Invariant 7). Snapshots report per-class roots; a snapshot reporting only the combined total does not satisfy base Invariant 11 under this extension.
+- **DE-3 — Cap as a supply-account constraint.** The finite cap (§2.4 wording, unchanged) is enforced as a balance constraint on one account: the Supply account's balance may never go negative, issuance entries are valid only while it covers them, and cumulative net issuance (issuance entries minus returns) never exceeds the cap stated in the signed definition.
+- **DE-4 — No negative holdings.** No holder account of any class may go negative. Enforced by TigerBeetle account flags (§1.6) *and* gateway validation; a revocation or payment larger than the balance posts only up to the balance, with the remainder handled off-ledger as debt (base Invariant 9) — never as a negative entry.
+- **DE-5 — Pending never spendable, as an account-type restriction.** Debits out of a Pending account are permitted only to the destinations the journal names: Units of the *same holder* (vesting), Revoked of the *same holder* (cancel/revocation), Pending of another holder (a §3 trade under a countersigned option contract), or Escrow (§3.8). No payment, redemption, or conversion path may name a Pending account as its source. This is an allowlist on (source class, destination class, event type) enforced by the gateway — "pending never spendable" (§3.6) is a property of the account type, not a per-request check. Revoked accounts are stricter still (DE-6).
+- **DE-6 — Revoked is terminal.** No journal entry debits a Revoked account except one: a compensating relief entry under a new, separately authorised operation referencing the original revocation (the good-faith relief path, base §8 Q5: signed write-off / case-by-case relief). Revoked value is never spendable, never tradable (including under §3), and never re-enters circulation directly — this keeps "revoked" from becoming a laundering hop back into units.
 
-Each of the three is its own signed currency definition under the base design's identity rule: its own `(issuer, definition)` pair, its own scale, its own supply policy, its own TigerBeetle ledger. Life-cycle movements between them are **conversions** in the base design's sense: a signed, directional `currency.rate_authorisation`, a pinned quote, and one atomically linked TigerBeetle batch — because, per #2040, TigerBeetle has no cross-ledger transfer.
+### 1.6 TigerBeetle mapping — what is native, what is not
 
-Mechanics under Reading A:
+**Maps natively:**
 
-- **Grant issuance** mints (or transfers from the supply account, §2) pending units to the grantee. The pending currency's cap is the grant programme's authorised issuance.
-- **Vesting** is a 1:1 conversion pending units → units, authorised by a standing issuer-signed rate authorisation created at definition time (rate exactly 1, zero fee, eligible caller = the gateway's vesting scheduler, `not_before` = window close per grant). The conversion burns/escrows the pending leg and posts the units leg in one linked batch, exactly like any other conversion, and produces a conversion receipt.
-- **Revocation / void** is a 1:1 conversion pending units → revoked units (in-window adverse event) or units → revoked units (post-activation revocation under the definition's revocation policy), again via standing authorisation and linked batch.
-- **The §3 cancel option** is native to this reading: "trade pending units 1:1 for revoked units" is literally one of these conversions, initiated by the originator.
-- **Accounts:** per holder, one account per currency (three TigerBeetle accounts per holder per programme, on three ledgers), plus issuer accounts: supply (§2), revocation sink, and conversion-inventory accounts on each ledger pair the standing authorisations touch (#2063 requires explicitly bound inventory accounts; ordinary shared liquidity accounts are not silently conversion inventory).
-- **Invariants:** each currency keeps base Invariant 2 (finite cap) as amended by §2; cross-currency conservation becomes a new invariant — the sum across the three currencies plus burned amounts is constant except at authorised issuance and burn points, and every change in one currency's supply is matched by an equal opposite change in another's under a single conversion ID (base Invariants 6–7 extend naturally, since conversions already work this way).
+- **Accounts and balanced transfers.** TigerBeetle's account model *is* double-entry shaped: every transfer names a debit account and a credit account for equal amounts on one `ledger`, and accounts carry `debits_pending / debits_posted / credits_pending / credits_posted`. The chart of accounts (§1.3) is a set of TigerBeetle accounts on the programme's single ledger; the three currency classes are three accounts per holder, distinguished by account metadata the gateway assigns at creation. DE-1's per-transfer half and DE-4 are enforceable with TigerBeetle's own account flags (`debits_must_not_exceed_credits` on holder accounts and on Supply, so neither a holder nor the supply account can be overdrawn; `history` retained for audit).
+- **Two-phase transfers for the vesting leg.** TigerBeetle transfers are inherently two-phase (pending → posted/voided, with timeouts). The vesting entry can be pre-created at grant time as a TigerBeetle *pending transfer* Pending → Units with the window as its timeout: it posts at window close, and an in-window adverse event voids it and posts the revocation entry instead. Two different senses of "pending" must not be conflated in code or docs: **pending units** are a *currency* (the Pending account class, this section), while a TigerBeetle *pending transfer* is a *transfer state* — the design uses the second as machinery for the first's life cycle, and the grant hold of the base design (#2042) already works this way.
 
-Costs of Reading A: every life-cycle transition pays full conversion machinery (quote pinning, cap reservation, linked batch, receipt) even though the rate is fixed at 1 and both sides are the same issuer; there are three caps to size and audit instead of one; wallets and services must display and reconcile three balances per programme; the graph-native binding has no natural analogue (a graph-native currency has no pending/revoked siblings unless it also triples, and folds would need cross-definition ancestry rules the base design does not have).
+**Needs the ledger-anchored layer from the base design (not native to TigerBeetle):**
 
-### 1.3 Reading B — one currency definition, three balance classes (implementation technique)
+- **Authorisation and identity.** TigerBeetle has no authentication, no signatures, no identity (#2040). Which journal entries may exist at all — the §1.4 entry-type table, the §1.5 DE-5/DE-6 (source, destination, event-type) allowlist, the option-contract rules of §3, cap semantics beyond Supply's balance floor — is gateway policy: the graph event authorises, the gateway is the only TigerBeetle client and writer, and `user_data_128` joins each transfer to its authorisation, exactly as the base design's ledger-anchored binding prescribes.
+- **The genesis endowment.** TigerBeetle accounts start at zero and transfers must balance, so the endowment is a real transfer out of the Genesis endowment contra account (§1.3) — an ordinary account whose flags deliberately permit its one negative standing balance. Nothing in TigerBeetle creates it; the signed definition event does.
+- **Cross-currency conversion.** Life-cycle entries never leave the ledger, so #2040's "no cross-ledger transfer" is not in play inside a programme. Conversions *between programmes/currencies* still use the base design's machinery (signed `currency.rate_authorisation`, pinned quote, linked batch, §2063) unchanged.
+- The unresolved phrase "named like tiger beetle would be" (U1, §4) remains **UNRESOLVED verbatim**; nothing in this mapping interprets it or relies on it.
 
-One signed definition, one TigerBeetle ledger — and inside that ledger, each holder's position is kept in **three segregated balance classes**, realised as three TigerBeetle accounts per holder on the same ledger: a `pending` account, an `available` account (units), and a `revoked` account. The classes are named, displayed, and reported as the three currencies Drew named — units, pending units, revoked units — in every wallet view, statement, and API response. They are never summed into one number, and no code path may treat them as fungible with each other.
+### 1.7 What this supersedes, and U7's disposition
 
-Mechanics under Reading B:
-
-- **Grant issuance** credits the grantee's `pending` account.
-- **Vesting** is an ordinary same-ledger transfer `pending` → `available`, executed by the gateway at window close. No conversion machinery: same ledger, so a plain transfer (or a two-phase pending transfer in TigerBeetle's own sense, which is how the base design already models the hold) settles it.
-- **Revocation / void** is a transfer `pending` → `revoked` or `available` → `revoked`, into the holder's own `revoked` account (not the issuer's), so the holder's statement shows exactly what was taken and why; the issuer's revocation policy event is the authorisation, joined by `user_data_128` as usual.
-- **The §3 cancel option** is a transfer of the originator's pending units to their own `revoked` account at 1:1 — value-preserving, identity-preserving, and trivially auditable.
-- **Accounts:** three accounts per holder on one ledger; issuer supply and inventory accounts as in §2. Account count is the same as Reading A; ledger count is one instead of three.
-- **Invariants:** one cap (§2) governs total supply across the three classes; a class-conservation invariant states that transfers between classes neither create nor destroy value, and the class totals reconcile to the currency total at every snapshot (base Invariant 11 gains a per-class root).
-
-What Reading B does **not** do: it does not collapse the three currencies back into "states of one balance." The classes are separate accounts with separate balances, separate transfer rules (pending can never pay a service; revoked can never move except by compensating operation, §1.4), and separate presentation. A holder's pending units are not "their units, temporarily locked" in any code path: no spend, conversion, or transfer rule reads more than one class, except the three named life-cycle transitions (vest, revoke/void, cancel), each of which is its own signed, authorised operation.
-
-Where Reading B genuinely differs from the ruling's letter: the base design's identity rule makes a currency a signed definition, and under B the three currencies share one definition and one ledger rather than having three of each. If Drew intends three independently definable currencies — different issuers able to issue one class, different scales, separate caps as a policy matter rather than an accounting one — only Reading A satisfies him. Nothing in his ruling text states that intent; the text names three currencies in the context of one grant programme's life cycle. This is a real fork in the design, and it is put to Drew as clarification U7 (§4) — but implementation should not wait for it if §1.5's recommendation is accepted provisionally, because B's account structure is a strict subset of A's: moving B → A later means splitting ledgers and re-pinning definitions, while the account-level history carries over unchanged.
-
-### 1.4 Rules common to both readings
-
-- **Revoked units are terminal.** Value in the revoked currency/class is never spendable, never tradable (including under §3), and never converts back directly. The only exit is a compensating operation of the kind the base design already prescribes for posted transfers: a new, separately authorised compensating issuance/conversion referencing the original revocation, used for the good-faith relief path (base design §8 Q5: signed write-off / case-by-case relief). This keeps "revoked" from becoming a laundering hop back into units.
-- **Pending units are never spendable** in either reading (§3.6 gives the exact wording change #2296 needs).
-- **Scale is shared.** All three currencies/classes use the definition's scale; a 1:1 transition is exact integer equality, no rounding path exists.
-- **Snapshots and reconciliation** report per-currency (A) or per-class (B) roots; a snapshot that reports only the combined total does not satisfy base Invariant 11 under this extension.
-
-### 1.5 Recommendation
-
-**Adopt Reading B — three balance classes on one ledger, presented and ruled as three currencies — as the implementation technique for the three-currency ruling.** Why, in one line: it gives Drew exactly the three named, separately-ruled currencies at every surface a user or auditor touches, while keeping vesting and revocation as same-ledger transfers instead of paying full cross-ledger conversion machinery for fixed 1:1 life-cycle moves. If Drew answers U7 saying he intends three independent definitions, Reading A is fully designed above and the switch is a known, bounded migration.
+- **Superseded:** the first draft's §1 in full — the two-readings fork (three definitions vs. balance classes), its §1.5 recommendation of the balance-classes reading, and its §1.4 "rules common to both readings" (whose substance survives, restated as DE-5/DE-6 and the shared-scale rule in §1.3). Also superseded: every cross-reference in §§2–3 to the two readings (updated to point at this section).
+- **U7 is answered and removed.** U7 asked whether Drew intended three independent signed definitions or three balance classes on one ledger. "Double entry" dissolves the fork rather than picking a side: it fixes the structure at the journal level — one ledger, three currencies as account classes, every movement a balanced entry — which is the balance-classes *account structure* with the definitions question made moot for v1, because no life-cycle operation needs a second definition or a second ledger under either reading once entries are balanced. The one residue is noted, not re-asked: if a class is ever to become an independently definable currency (different issuer, scale, or cap as policy), it would be split into its own double-entry ledger at that time, and §§1.2–1.5 apply per ledger unchanged. §4 records the removal.
 
 ## 2. The supply account and the cap exception (Q2)
 
@@ -82,7 +102,7 @@ Finite cap for all v1 — "except transfers from the account for supplying curre
 
 ### 2.2 The supplying account, defined
 
-- Each ledger-anchored currency (under §1 Reading B: each programme ledger; under Reading A: each of the three ledgers) has exactly one **supply account**: a gateway-controlled TigerBeetle account, created with the currency's registry entry, named in the signed definition by its registry account ID, and controlled by no key other than the currency service's.
+- Each ledger-anchored currency (one per programme ledger under §1's double-entry model) has exactly one **supply account**: a gateway-controlled TigerBeetle account, created with the currency's registry entry, named in the signed definition by its registry account ID, and controlled by no key other than the currency service's.
 - The supply account is the **only** account a currency's value can be issued into existence through. Issuance is a transfer out of the supply account; the supply account is funded only by the definition process itself (its opening balance is the authorised issuance, §2.3). No other account may go negative, and no other account's transfers create value.
 - The supply account is not a holder account: it cannot receive ordinary transfers, cannot be a trade counterparty under §3, cannot be debited by clawback, and its balance is published in every supply audit (base phase 4 already produces supply-audit/reconciliation reports; the supply account balance becomes a required line).
 
@@ -92,8 +112,8 @@ Drew's text does not say whether transfers out of the supply account count again
 
 - **Authorised issuance (the cap)** is a number in the signed definition: the maximum total value that may ever leave the supply account, net of returns, over the currency's life. Recommended semantics: **transfers out of the supply account count against the cap; transfers back into it (burns, voided grants returned by the issuer's own operations, expired unissued allocations the gateway returns) restore headroom.** Under this reading the exception in Drew's sentence is about *who may move value without a holder-style authorisation* — the supply account's transfers are issuance events authorised by the definition itself, not exempt from counting. The alternative reading — supply transfers do not count at all — makes the cap unenforceable (any amount could be issued by routing it through the supply account, which is the only issuance path anyway), so this document does not recommend it; it is recorded as the literal alternative in §2.4 for Drew's U2 answer.
 - **Mint** is not a ledger primitive here: "minting" N units = transferring N from the supply account to a holder account (or, at grant issuance, to a holder's pending account/class). The graph issuance event, signed by the issuer, authorises it; the gateway validates definition, cap headroom, and registry mapping before submitting, exactly as base §3 already requires for anchored issuance.
-- **Burn** is a transfer into the supply account from a holder account under a signed burn event, or into a dedicated burn account if Reading A is adopted and cross-ledger symmetry is preferred; either way the burn is final, reduces circulating supply, and — under the recommended semantics — restores cap headroom only when it returns to the supply account. Debts and write-offs never touch the supply account: a signed write-off (base Invariant 9) is a graph/control-plane record, not a ledger movement.
-- **Reconciliation:** at every snapshot, `supply account balance + Σ holder balances (all classes) + burned-outside-supply (Reading A burn account, if any) = authorised issuance`, and `cumulative net issuance ≤ cap`. A mismatch is a durable finding, never silently dropped (base Invariant 7).
+- **Burn** is a transfer into the supply account from a holder account under a signed burn event (the §1.4 burn entry); the burn is final, reduces circulating supply, and — under the recommended semantics — restores cap headroom only when it returns to the supply account. Debts and write-offs never touch the supply account: a signed write-off (base Invariant 9) is a graph/control-plane record, not a ledger movement.
+- **Reconciliation:** at every snapshot, `supply account balance + Σ holder balances (all classes) = endowed issuance` (invariant DE-2, §1.5), and `cumulative net issuance ≤ cap`. A mismatch is a durable finding, never silently dropped (base Invariant 7).
 
 ### 2.4 Replacement wording for Invariant 2
 
@@ -145,7 +165,7 @@ Drew: "transfer cancel option that originator can trade their pending units 1:1 
 Designed mechanics:
 
 - At the initial grant, the grant event itself carries (or is accompanied by) a standing cancel option in favour of the **originator** (the grantee of the initial grant — the reading used here; if "originator" means the issuer, the mechanics are identical with the holder of the option changed, and the distinction is noted for Drew in U3's neighbourhood, §4).
-- **Exercise:** the originator signs an exercise referencing the cancel option; the gateway executes the 1:1 pending → revoked movement (§1: a conversion under Reading A, a class transfer under Reading B) for the specified amount, up to the position's remaining pending amount. Partial exercise is allowed; the unexercised remainder keeps its chain and its own still-live cancel option until the deadline.
+- **Exercise:** the originator signs an exercise referencing the cancel option; the gateway executes the 1:1 pending → revoked movement (§1.4: the balanced journal entry pending → revoked) for the specified amount, up to the position's remaining pending amount. Partial exercise is allowed; the unexercised remainder keeps its chain and its own still-live cancel option until the deadline.
 - **Deadline:** exercise is valid **not after 14 days from Init** (working reading: the initial grant event's timestamp). After the deadline the cancel option lapses — it cannot be revived by stale gateway state (base Invariant 4).
 - **The notBefore attachment:** exercising the cancel option "also attaches the notBefore trade from pending units to units." Working design (the phrase itself is UNRESOLVED, U4): the exercise event embeds a vesting term stating that any portion of the position **not** cancelled continues to vest by the ordinary pending → units transition at its `not_before` (= window close), i.e. exercising a partial cancel re-affirms and pins the vesting schedule for the remainder rather than leaving it implicit. The cancel exercise receipt therefore records three things atomically: amount revoked, amount remaining pending, and the remainder's vesting `not_before`. If Drew means something else by the attachment, only this subsection changes.
 - The cancelled amount lands in revoked units (§1.4: terminal). The originator receives revoked units, not units — the cancel option is an exit-from-the-trade-chain device, not an early-vesting device: it unwinds the originator's exposure (and, per §3.5, the downstream chain's expectations are settled in revoked units under the escrow variant, §3.7) without making pending value spendable or settled early.
@@ -155,7 +175,7 @@ Designed mechanics:
 A trade under a countersigned option executes as one gateway operation:
 
 1. Validate per §3.2.
-2. Move the pending amount from grantor to taker (same-ledger transfer between pending accounts/classes; under Reading A, a transfer within the pending currency's ledger — no conversion is involved in a trade, the currency does not change).
+2. Move the pending amount from grantor to taker (the §1.4 trade entry: a same-ledger transfer between pending accounts — no conversion is involved in a trade, the currency does not change).
 3. If the consideration is units, execute the linked units payment in the same operation batch (linked transfers, base Invariant 6 pattern) so the pending leg and the payment leg post or fail together. If the consideration is off-ledger, the trade posts on the countersignature plus the grantor's signed attestation of the consideration terms' hash; the platform does not adjudicate off-ledger payment, and the option's terms must say so in the client UI.
 4. Emit the trade event as the new chain head for the position, naming the option event as its authorisation (`user_data_128` join, base Invariant 7).
 
@@ -221,15 +241,17 @@ Lifted from the ruling comments on #2043 and #2296. Each item quotes Drew's word
 - **U4 (§3.3).** *"which also attaches the notBefore trade from pending units to units"* — What exactly is attached, and to what? §3.3's working design (the exercise pins the remainder's vesting `not_before`) is a guess at the shape, not a reading of the words.
 - **U5 (§3.7).** *"at 28 days notAfter signature is enabled, we automatically sign and put the transfer at 14 days"* — 28 days counted from what? And "put the transfer at 14 days": 14 days measured from what, effective when?
 - **U6 (§3.3, §3.8).** *"rejected units"* (escrow proposal) vs *"revoked units"* (cancel option) — Are rejected units and revoked units the same currency/class, or different things? §1 designs revoked units; nothing designs rejected units until this is answered.
-- **U7 (§1, raised by this design, not from Drew's text).** Three currencies: three independent signed definitions (Reading A), or three balance classes presented and ruled as three currencies on one ledger (Reading B, recommended in §1.5)? Drew's text names the three currencies without stating which structure he intends.
 
 Two transcription readings, recorded on the issues and used in §3, are also Drew's to correct if wrong: "oresubmit signs" read as "resubmit signed" and "ckuntersigns" read as "countersigns."
+
+- **U7 — REMOVED (answered by Drew, 2026-11-08).** U7 asked whether the three currencies were three independent signed definitions or three balance classes on one ledger. Drew's follow-on ruling — "double entry" — dissolves the fork: §1 now fixes one double-entry ledger with the three currencies as account classes and every movement a balanced journal entry (§1.7). The only residue (splitting a class into its own definition later) is recorded in §1.7, not re-asked.
 
 ## 5. What changes in the base design if this extension is accepted
 
 - Invariant 2 is replaced by the §2.4 wording (supply account; cap accounting).
 - Invariant 9 gains the §3 tradability carve-out: pending value may change holder under §3 without becoming spendable; clawback allocation after a trade follows the option contract's explicit field (§3.4).
-- Invariant 11 gains per-currency/per-class snapshot roots (§1.4).
+- Invariant 11 gains per-class snapshot roots (§1.5, DE-2).
+- §1's three currencies are implemented as double-entry account classes on one ledger (Drew's 2026-11-08 "double entry" ruling): the §1.4 journal-entry table and the §1.5 DE-1–DE-6 invariants join the phase 1 canonical-contracts work and the phase 4 anchored-transfer work.
 - Phase 6 (real-service grant lifecycle) gains the §3 mechanism as a sub-phase, shipped disabled until the §4 clarifications land — the base terms' config defaults (the ones the #2065 build issues read, per #2296) must encode "tradable only under chained option contracts" alongside the accepted base terms.
 - New graph event types: `currency.pending_option` and its exercise/denial records (§3.1). These belong to phase 1's canonical-contracts work if the extension is accepted before phase 1 closes.
 
