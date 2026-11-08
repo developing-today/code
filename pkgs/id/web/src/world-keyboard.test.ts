@@ -252,6 +252,26 @@ describe("kitty-disambiguate-v1 rich world key input (Slice C)", () => {
     expect(rich("ą", { altKey: true })).toBe("\x1b[261;3u");
   });
 
+  it("does not unshift a scalar Shift did not produce (non-US layout base keys)", () => {
+    // AZERTY: "&" is an unshifted base key, so Ctrl+"&" keeps the
+    // resulting scalar's codepoint instead of the US-table "7".
+    expect(rich("&", { ctrlKey: true })).toBe("\x1b[38;5u");
+    expect(rich("&", { ctrlKey: true, shiftKey: false })).toBe("\x1b[38;5u");
+    // With Shift held, "&" on a US layout is Shift+7: the protocol
+    // Shift bit is set and the decoder's normalize_shift restores "&".
+    expect(rich("&", { ctrlKey: true, shiftKey: true })).toBe("\x1b[55;6u");
+  });
+
+  it("keeps multi-scalar input on the text path under Ctrl/Alt (design §4.4)", () => {
+    const combining = "e\u0301";
+    expect(
+      richTerminalBytesForKey({ key: combining, ctrlKey: false, altKey: true, metaKey: false, shiftKey: false }),
+    ).toEqual(new TextEncoder().encode(combining));
+    expect(
+      richTerminalBytesForKey({ key: combining, ctrlKey: true, altKey: false, metaKey: false, shiftKey: false }),
+    ).toEqual(new TextEncoder().encode(combining));
+  });
+
   it("preserves AltGr printable input as text (fixture: altgr-a-ogonek)", () => {
     expect(
       richTerminalBytesForKey({ key: "ą", ctrlKey: true, altKey: true, metaKey: false, shiftKey: false }),

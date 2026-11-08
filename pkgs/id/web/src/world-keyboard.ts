@@ -235,7 +235,8 @@ function unshiftedScalar(key: string): string {
  * Encode a browser key under the kitty-disambiguate-v1 profile.
  * Returns null for the same exclusions as the legacy encoder, plus
  * anything the profile leaves Unknown (F13+, CapsLock and other
- * modifier-only or unsupported named keys, multi-scalar text).
+ * modifier-only or unsupported named keys). Multi-scalar text is not
+ * a physical key: it stays on the text path (design §4.4).
  * Unused by the UI in this slice (see the block comment above).
  */
 export function richTerminalBytesForKey(event: KeyEventLike): Uint8Array | null {
@@ -267,7 +268,18 @@ export function richTerminalBytesForKey(event: KeyEventLike): Uint8Array | null 
   if (!event.ctrlKey && !event.altKey) return encode(key);
   if (event.ctrlKey && event.altKey) return encode(key);
 
-  const codePoint = unshiftedScalar(key).codePointAt(0);
+  // Multi-scalar values (combining sequences, ZWJ emoji) have no
+  // single CSI-u codepoint: keep every scalar on the text path
+  // instead of silently dropping all but the first (Codex review,
+  // PR #7734). The modifier is not recoverable for such input, which
+  // is exactly the design §4.4 rule: text, not a fabricated key.
+  if (codePoints.length !== 1) return encode(key);
+
+  // Unshift only when Shift actually produced this scalar. A scalar
+  // that exists without Shift (e.g. AZERTY "&", shiftKey false) is
+  // its own base key: unshifting it through the US table would make
+  // the decoder deliver a different key (Ctrl+"&" -> Ctrl+7).
+  const codePoint = (event.shiftKey ? unshiftedScalar(key) : key).codePointAt(0);
   if (codePoint === undefined) return null;
   return encode(`\x1b[${codePoint};${mod}u`);
 }
