@@ -36,7 +36,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use fleet_config::Config;
 use fleet_proxy_proto::{
     Hello, HelloResponse, ProtoError, Request, Response, ServiceInfo, is_hello_frame,
-    proto_too_old_frame, read_frame, unwrap_hello, write_frame,
+    is_splice_frame, proto_too_old_frame, read_frame, unwrap_hello, write_frame,
 };
 
 use crate::http::{HttpConn, HttpError};
@@ -717,7 +717,12 @@ fn serve_session(broker: &Broker, mut stream: UnixStream) {
         let resp = HelloResponse {
             proto: fleet_proxy_proto::PROTO_MAJOR,
             services: broker.services_map(),
-            capabilities: vec![fleet_registry::Capability::ProxyServe.id().to_string()],
+            capabilities: vec![
+                fleet_registry::Capability::ProxyServe.id().to_string(),
+                // code#6221: the raw splice. A client that does not
+                // see this id keeps its SSH-forward fallback.
+                fleet_registry::Capability::SpliceServe.id().to_string(),
+            ],
         };
         if write_frame(&mut stream, &fleet_proxy_proto::hello_response_frame(&resp)).is_err() {
             return;
@@ -744,6 +749,19 @@ fn serve_session(broker: &Broker, mut stream: UnixStream) {
     loop {
         match read_frame(&mut stream) {
             Ok(frame) => {
+                // A splice frame hands the whole connection to the raw
+                // relay: no reply beyond its own handshake, no frames
+                // after it, and the session ends when the relay does
+                // (code#6221).
+                if is_splice_frame(&frame) {
+                    crate::splice::serve_splice(
+                        &broker.config,
+                        broker.egress.as_ref(),
+                        stream,
+                        &frame,
+                    );
+                    return;
+                }
                 let reply = handle_request(broker, &frame);
                 if write_frame(&mut stream, &reply).is_err() {
                     return;
@@ -1346,8 +1364,7 @@ mod tests {
     fn parse_request_absent_port_means_the_default() {
         // No "port" key at all: None, which do_request turns into
         // PORT_LAPTOP_AGENT (4799) -- the absent-port route.
-        let req = parse_request(&serde_json::json!({"method": "GET", "path": "/health"}))
-            .unwrap();
+        let req = parse_request(&serde_json::json!({"method": "GET", "path": "/health"})).unwrap();
         assert_eq!(req.port, None);
         // An explicit null is absent too, mirroring `body`.
         let req = parse_request(&frame_with_port(serde_json::Value::Null)).unwrap();
@@ -1399,9 +1416,7 @@ mod tests {
             match value {
                 serde_json::Value::Null => Ok(None),
                 serde_json::Value::Number(n) => match n.as_u64() {
-                    Some(u) if n.is_u64() && (1..=65535).contains(&u) => {
-                        Ok(Some(u as u16))
-                    }
+                    Some(u) if n.is_u64() && (1..=65535).contains(&u) => Ok(Some(u as u16)),
                     _ => Err(()),
                 },
                 _ => Err(()),

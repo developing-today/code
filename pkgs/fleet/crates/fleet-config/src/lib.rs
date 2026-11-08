@@ -33,6 +33,18 @@ pub const DEFAULT_SECRETS_BROKER_SOCKET: &str = ".config/secrets-broker/broker.s
 pub const PORT_LAPTOP_AGENT: u16 = 4799;
 pub const PORT_SECRETS_BROKER: u16 = 4800;
 pub const PORT_QUEUE_BROKER: u16 = 4801;
+/// RustDesk's direct-access port on the laptop (code#6221, first build
+/// of code#5694's recommendation B). It is NOT an HTTP service: the
+/// broker reaches it only through the raw splice (`{ "splice": … }`),
+/// never through the request/response dialect, and the client exposes
+/// it on the sandbox as a loopback listener (`fleet proxy desktop`).
+/// The port number is RustDesk's own default (`RENDEZVOUS_PORT + 2`,
+/// `direct-access-port`), which the laptop's client config already
+/// uses — the fleet does not get to pick it.
+pub const PORT_RUSTDESK: u16 = 21118;
+/// The loopback address the splice listener binds. Loopback only, by
+/// construction: the splice is a local capability, never a LAN surface.
+pub const SPLICE_LISTEN_HOST: &str = "127.0.0.1";
 /// Broker idle exit (§4: retained from the Python broker — a warmth
 /// cache that exits when cold is a feature on a shared sandbox).
 pub const DEFAULT_IDLE_EXIT_SECS: u64 = 3600;
@@ -590,7 +602,10 @@ impl Config {
     /// built-in table matching today's live system — 4799 the
     /// (Python) laptop-agent daemon, 4800/4801 the fleet broker
     /// roles (§4: a serve build without a role advertises a map
-    /// without its port; the table is how that is said).
+    /// without its port; the table is how that is said), and 21118
+    /// RustDesk's direct-access port, reachable only by raw splice
+    /// (code#6221 — its presence here is what makes the broker's
+    /// splice request for it legal).
     pub fn services(&self) -> Vec<ServiceConfig> {
         if !self.proxy.services.is_empty() {
             return self.proxy.services.clone();
@@ -599,7 +614,8 @@ impl Config {
         [
             (PORT_LAPTOP_AGENT, "laptop-agent", "python".to_string()),
             (PORT_SECRETS_BROKER, "secrets-broker", fleet_version.clone()),
-            (PORT_QUEUE_BROKER, "queue-broker", fleet_version),
+            (PORT_QUEUE_BROKER, "queue-broker", fleet_version.clone()),
+            (PORT_RUSTDESK, "rustdesk", "direct".to_string()),
         ]
         .into_iter()
         .map(|(port, name, version)| ServiceConfig {
@@ -833,15 +849,27 @@ mod tests {
     fn services_default_to_the_live_table() {
         let cfg = Config::default();
         let services = cfg.services();
-        assert_eq!(services.len(), 3);
+        assert_eq!(services.len(), 4);
         assert_eq!(services[0].port, PORT_LAPTOP_AGENT);
         assert_eq!(services[0].name, "laptop-agent");
         assert_eq!(services[1].port, PORT_SECRETS_BROKER);
         assert_eq!(services[2].port, PORT_QUEUE_BROKER);
+        // code#6221: RustDesk's direct-access port is in the table so
+        // the broker's splice request for it is legal.
+        assert_eq!(services[3].port, PORT_RUSTDESK);
+        assert_eq!(services[3].name, "rustdesk");
         assert!(services.iter().all(|s| s.version.is_some()));
         assert_eq!(cfg.target_host(), DEFAULT_TARGET_HOST);
         assert_eq!(cfg.egress_proxy_port(), DEFAULT_EGRESS_PROXY_PORT);
         assert!(!cfg.proxy_direct());
+    }
+
+    #[test]
+    fn rustdesk_port_is_rustdesks_own_default_not_a_fleet_choice() {
+        // RENDEZVOUS_PORT (21116) + 2, per RustDesk's direct-access
+        // documentation; the laptop's client config already uses it.
+        assert_eq!(PORT_RUSTDESK, 21118);
+        assert_eq!(SPLICE_LISTEN_HOST, "127.0.0.1");
     }
 
     #[test]

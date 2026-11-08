@@ -31,6 +31,7 @@
 pub mod client;
 pub mod http;
 pub mod shims;
+pub mod splice;
 pub mod stdio;
 pub mod tunnel;
 

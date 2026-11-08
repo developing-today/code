@@ -57,9 +57,13 @@ const EXIT_UNAVAILABLE: i32 = 69;
 /// The capabilities this artifact was compiled with (its Cargo feature
 /// set). `proxy-connect` is unconditional: it is in every variant (§2).
 fn compiled_capabilities() -> CapabilitySet {
-    let mut caps = capability_set(&[Capability::ProxyConnect]);
+    let mut caps = capability_set(&[Capability::ProxyConnect, Capability::ProxySplice]);
     if cfg!(feature = "proxy-serve") {
         caps.insert(Capability::ProxyServe);
+        // The splice broker half rides the same feature: a build that
+        // serves the broker socket is the build that accepts splice
+        // frames (code#6221).
+        caps.insert(Capability::SpliceServe);
     }
     if cfg!(feature = "queue") {
         caps.insert(Capability::Queue);
@@ -418,8 +422,10 @@ fn required_capability(d: &Domain, args: &[String]) -> Result<Capability, i32> {
             match sub {
                 Some("serve") => Ok(Capability::ProxyServe),
                 Some("connect") | Some("init") | Some("ssh") => Ok(Capability::ProxyConnect),
+                // The raw splice's client half (code#6221).
+                Some("desktop") => Ok(Capability::ProxySplice),
                 _ => Err(usage_error(
-                    "'fleet proxy' needs a command: serve, connect, init, or ssh",
+                    "'fleet proxy' needs a command: serve, connect, init, ssh, or desktop",
                 )),
             }
         }
@@ -690,6 +696,31 @@ fn run_proxy(surface: &Surface, args: &[String]) -> i32 {
         }
         Some("init") => run_init_call(surface, &args[1..]),
         Some("ssh") => run_proxy_ssh(&args[1..], config),
+        Some("desktop") => {
+            // A help flag asks for the usage and must not bind a
+            // listener (#5619's rule for every leaf).
+            if args[1..]
+                .iter()
+                .any(|a| matches!(a.as_str(), "--help" | "-h"))
+            {
+                println!("{}", fleet_proxy::splice::DESKTOP_USAGE);
+                return EXIT_OK;
+            }
+            let parsed = match fleet_proxy::splice::DesktopArgs::parse(&args[1..]) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("fleet: {e}");
+                    return e.exit_code();
+                }
+            };
+            match fleet_proxy::splice::run_desktop(&parsed, config, &client, &capabilities) {
+                Ok(code) => code,
+                Err(e) => {
+                    eprintln!("fleet: {e}");
+                    e.exit_code()
+                }
+            }
+        }
         _ => unreachable!("required_capability rejects other proxy commands first"),
     }
 }
@@ -1218,6 +1249,48 @@ mod tests {
                 run_proxy(&surface, &args(&["init", flag])),
                 EXIT_OK,
                 "proxy init {flag} must succeed"
+            );
+            // code#6221: the splice leaf's help must not bind a
+            // listener or probe a broker.
+            assert_eq!(
+                run_proxy(&surface, &args(&["desktop", flag])),
+                EXIT_OK,
+                "proxy desktop {flag} must succeed"
+            );
+        }
+    }
+
+    #[test]
+    fn proxy_desktop_is_gated_on_the_splice_capability() {
+        // The raw splice's client half is its own capability, so the
+        // connect-only build carries it and a build without it stubs.
+        let proxy = domain("proxy").expect("proxy domain exists");
+        assert_eq!(
+            required_capability(proxy, &args(&["desktop"])),
+            Ok(Capability::ProxySplice)
+        );
+        assert_eq!(
+            required_capability(proxy, &args(&["connect"])),
+            Ok(Capability::ProxyConnect)
+        );
+        assert_eq!(
+            required_capability(proxy, &args(&["serve"])),
+            Ok(Capability::ProxyServe)
+        );
+    }
+
+    #[test]
+    fn proxy_desktop_rejects_bad_arguments_with_exit_2() {
+        let surface = Surface::new(None, fleet_config::Config::default());
+        for bad in [
+            vec!["desktop", "--port"],
+            vec!["desktop", "--port", "nope"],
+            vec!["desktop", "--bogus"],
+        ] {
+            assert_eq!(
+                run_proxy(&surface, &args(&bad)),
+                EXIT_USAGE,
+                "{bad:?} must be a usage error"
             );
         }
     }

@@ -31,6 +31,14 @@ pub enum Capability {
     ProxyConnect,
     /// `fleet proxy serve` — the session broker.
     ProxyServe,
+    /// `fleet proxy desktop` — the client half of the raw byte splice
+    /// (code#6221): a loopback listener whose accepted connections are
+    /// relayed opaquely over a CONNECT tunnel to a laptop TCP service.
+    ProxySplice,
+    /// The broker half of the raw splice: `serve_session` accepts
+    /// `{ "splice": … }` frames and hands the connection to a raw
+    /// byte relay. Advertised in the hello as `splice-serve`.
+    SpliceServe,
     /// `fleet queue …` — the repo-queue client surface.
     Queue,
     /// `fleet serve queue-broker` — the queue broker daemon role.
@@ -59,6 +67,8 @@ impl Capability {
         match self {
             Capability::ProxyConnect => "proxy-connect",
             Capability::ProxyServe => "proxy-serve",
+            Capability::ProxySplice => "proxy-splice",
+            Capability::SpliceServe => "splice-serve",
             Capability::Queue => "queue",
             Capability::QueueBroker => "queue-broker",
             Capability::SecretsBroker => "secrets-broker",
@@ -76,6 +86,8 @@ impl Capability {
     pub const ALL: &'static [Capability] = &[
         Capability::ProxyConnect,
         Capability::ProxyServe,
+        Capability::ProxySplice,
+        Capability::SpliceServe,
         Capability::Queue,
         Capability::QueueBroker,
         Capability::SecretsBroker,
@@ -114,6 +126,8 @@ pub fn serve_capabilities() -> CapabilitySet {
     capability_set(&[
         Capability::ProxyConnect,
         Capability::ProxyServe,
+        Capability::ProxySplice,
+        Capability::SpliceServe,
         Capability::QueueBroker,
         Capability::SecretsBroker,
         Capability::SearchServe,
@@ -123,7 +137,7 @@ pub fn serve_capabilities() -> CapabilitySet {
 
 /// The `fleet-connect` build: the proxy client and nothing else (§2).
 pub fn connect_capabilities() -> CapabilitySet {
-    capability_set(&[Capability::ProxyConnect])
+    capability_set(&[Capability::ProxyConnect, Capability::ProxySplice])
 }
 
 /// A shipped build variant (§2). The variant is a property of the
@@ -241,10 +255,15 @@ pub const DOMAINS: &[Domain] = &[
     Domain {
         name: "proxy",
         summary: "The session proxy: serve the broker socket, connect or init through it, or run recovery SSH.",
-        capabilities: &[Capability::ProxyServe, Capability::ProxyConnect],
+        capabilities: &[
+            Capability::ProxyServe,
+            Capability::ProxyConnect,
+            Capability::ProxySplice,
+            Capability::SpliceServe,
+        ],
         primary: Capability::ProxyConnect,
         aliases: &["laptop-agent-broker"],
-        subcommands: &["serve", "connect", "init", "ssh"],
+        subcommands: &["serve", "connect", "init", "ssh", "desktop"],
     },
     Domain {
         name: "dispatch",

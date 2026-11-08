@@ -122,11 +122,11 @@ their domain through argv0.
 
 | nix attr               | profile | capabilities                                                           |
 | ---------------------- | ------- | ---------------------------------------------------------------------- |
-| `fleet`                | full    | all ten                                                                |
-| `fleet-serve`          | serve   | proxy-connect, proxy-serve, queue-broker, secrets-broker, search-serve, secrets |
-| `fleet-static`         | full    | all nine (musl static; the sandbox's artifact)                         |
-| `fleet-connect`        | connect | proxy-connect (dynamic)                                                |
-| `fleet-connect-static` | connect | proxy-connect (musl static, runs anywhere)                             |
+| `fleet`                | full    | all twelve                                                             |
+| `fleet-serve`          | serve   | proxy-connect, proxy-splice, proxy-serve, splice-serve, queue-broker, secrets-broker, search-serve, secrets |
+| `fleet-static`         | full    | all twelve (musl static; the sandbox's artifact)                       |
+| `fleet-connect`        | connect | proxy-connect, proxy-splice (dynamic)                                  |
+| `fleet-connect-static` | connect | proxy-connect, proxy-splice (musl static, runs anywhere)               |
 | `fleet-brokers`        | —       | standalone repo-queue / queue-broker / secrets-broker (rollback)       |
 
 Every package installs its binary as `bin/fleet`; the hyphen

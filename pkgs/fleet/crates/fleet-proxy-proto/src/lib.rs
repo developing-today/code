@@ -161,6 +161,107 @@ pub struct Response {
     pub body: serde_json::Value,
 }
 
+// ---------------------------------------------------------------------
+// Raw splice (code#6221, first build of code#5694's recommendation B)
+// ---------------------------------------------------------------------
+//
+// Some laptop services are not HTTP: RustDesk's direct-access port
+// (21118) speaks its own binary protocol, and a desktop session is a
+// long-lived opaque byte stream. The request/response dialect above
+// cannot carry that — it frames JSON both ways and returns every
+// connection to the pool.
+//
+// The splice is therefore its own negotiated capability
+// (`proxy-splice` / `splice-serve`), and its own frame:
+//
+// ```text
+// client → { "splice": { "port": 21118 } }
+// broker → { "splice": { "status": 200 } }      ← then raw bytes, both ways
+// broker → { "splice": { "status": 502, "error": "…" } }   ← tunnel failed
+// ```
+//
+// After a `200` splice reply the connection stops being a frame
+// stream in both directions: the broker copies bytes between the
+// client socket and one freshly opened tunnel to the laptop port,
+// and nothing in either direction is parsed, buffered as frames,
+// logged, or returned to the pool. A spent splice stream is dead
+// when it ends — the pool only ever holds reusable HTTP conns.
+//
+// Capability negotiation is the gate: a broker that does not
+// advertise [`CAP_SPLICE_SERVE`] (every proto-0 broker, and every
+// fleet broker built before this capability) must be treated by
+// clients as "no splice here" and the existing SSH-forward
+// fallback kept. A broker that is asked for a splice it does not
+// serve answers [`splice_refused_frame`], never a bare close.
+
+/// Client capability id: this client can drive a raw splice.
+pub const CAP_SPLICE_CONNECT: &str = "proxy-splice";
+
+/// Broker capability id: this broker serves raw splices.
+pub const CAP_SPLICE_SERVE: &str = "splice-serve";
+
+/// The client's splice request payload: `{ "splice": SpliceRequest }`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpliceRequest {
+    /// The laptop port to splice to (fleet-config's routing table
+    /// is the authority on which ports exist; the broker refuses
+    /// anything its own table does not name).
+    pub port: u16,
+}
+
+/// The broker's splice answer payload: `{ "splice": SpliceReply }`.
+/// `status` mirrors the request/response dialect's convention so
+/// clients branch on a number, not on text: `200` means the
+/// following bytes are the raw stream; anything else is a refusal
+/// with `error` naming the reason (shapes only — a splice never
+/// carries payload contents in an error).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpliceReply {
+    pub status: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Is this frame a splice envelope (`{ "splice": … }`)?
+pub fn is_splice_frame(frame: &serde_json::Value) -> bool {
+    frame.get("splice").map(|s| s.is_object()).unwrap_or(false)
+}
+
+/// Wrap a splice request in its `{ "splice": … }` envelope.
+pub fn splice_frame(req: &SpliceRequest) -> serde_json::Value {
+    serde_json::json!({ "splice": req })
+}
+
+/// Wrap a splice reply in its `{ "splice": … }` envelope.
+pub fn splice_reply_frame(reply: &SpliceReply) -> serde_json::Value {
+    serde_json::json!({ "splice": reply })
+}
+
+/// The refusal a broker sends when it does not serve splices (or
+/// when the requested port is not in its routing table).
+pub fn splice_refused_frame(why: &str) -> serde_json::Value {
+    splice_reply_frame(&SpliceReply {
+        status: 502,
+        error: Some(why.to_string()),
+    })
+}
+
+/// Unwrap a `{ "splice": … }` envelope into `T`.
+pub fn unwrap_splice<T: for<'de> Deserialize<'de>>(
+    frame: &serde_json::Value,
+) -> Result<T, ProtoError> {
+    let inner = frame
+        .get("splice")
+        .ok_or_else(|| ProtoError::BadFrame("frame has no \"splice\" object".to_string()))?;
+    serde_json::from_value(inner.clone())
+        .map_err(|e| ProtoError::BadFrame(format!("splice shape mismatch: {e}")))
+}
+
+/// Does this capability list advertise `cap`?
+pub fn advertises(capabilities: &[String], cap: &str) -> bool {
+    capabilities.iter().any(|c| c == cap)
+}
+
 /// Frame-level errors. None of these ever carry payload contents —
 /// proxy payloads can be secret-bearing (the secrets broker's
 /// replies), so errors name shapes and sizes only.
@@ -412,5 +513,64 @@ mod tests {
             Err(ProtoError::Oversize(_)) => {}
             other => panic!("expected Oversize, got {other:?}"),
         }
+    }
+
+    // --- raw splice (#6221) -------------------------------------------
+
+    #[test]
+    fn splice_frames_roundtrip_in_their_envelope() {
+        let req = SpliceRequest { port: 21118 };
+        let frame = splice_frame(&req);
+        assert!(is_splice_frame(&frame));
+        assert_eq!(frame["splice"]["port"], 21118);
+        assert_eq!(unwrap_splice::<SpliceRequest>(&frame).unwrap(), req);
+
+        let ok = SpliceReply {
+            status: 200,
+            error: None,
+        };
+        let frame = splice_reply_frame(&ok);
+        assert!(is_splice_frame(&frame));
+        // A successful reply carries no error key at all.
+        assert!(frame["splice"].get("error").is_none());
+        assert_eq!(unwrap_splice::<SpliceReply>(&frame).unwrap(), ok);
+    }
+
+    #[test]
+    fn splice_refusal_names_a_reason_and_is_not_a_splice_request() {
+        let frame = splice_refused_frame("port 21118 is not in this broker's table");
+        let reply: SpliceReply = unwrap_splice(&frame).unwrap();
+        assert_eq!(reply.status, 502);
+        assert!(reply.error.as_deref().unwrap_or_default().contains("21118"));
+        // The request and reply shapes are distinct: a reply has no
+        // `port`, so a client can never mistake one for the other.
+        assert!(unwrap_splice::<SpliceRequest>(&frame).is_err());
+    }
+
+    #[test]
+    fn splice_detection_ignores_other_envelopes() {
+        assert!(!is_splice_frame(&serde_json::json!({"hello": {}})));
+        assert!(!is_splice_frame(&serde_json::json!({"method": "GET"})));
+        assert!(!is_splice_frame(&serde_json::json!({"splice": 3})));
+    }
+
+    #[test]
+    fn capability_advertisement_is_an_exact_id_match() {
+        let caps = vec![CAP_SPLICE_SERVE.to_string(), "proxy-serve".to_string()];
+        assert!(advertises(&caps, CAP_SPLICE_SERVE));
+        assert!(advertises(&caps, "proxy-serve"));
+        assert!(!advertises(&caps, CAP_SPLICE_CONNECT));
+        // The pre-splice broker (and every proto-0 broker) advertises
+        // neither, which is exactly how a client knows to keep the
+        // SSH-forward fallback.
+        assert!(!advertises(&[], CAP_SPLICE_SERVE));
+        assert!(!advertises(&["proxy-serve".to_string()], CAP_SPLICE_SERVE));
+    }
+
+    #[test]
+    fn splice_capability_ids_are_distinct_from_the_legacy_pair() {
+        assert_ne!(CAP_SPLICE_CONNECT, CAP_SPLICE_SERVE);
+        assert_ne!(CAP_SPLICE_CONNECT, "proxy-connect");
+        assert_ne!(CAP_SPLICE_SERVE, "proxy-serve");
     }
 }

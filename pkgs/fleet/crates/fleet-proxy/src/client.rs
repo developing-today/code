@@ -43,6 +43,10 @@ pub enum ClientError {
     Transport(String),
     /// The broker's protocol is outside our window — exit 69.
     ProtoTooOld,
+    /// The broker is reachable but cannot do what was asked (no
+    /// `splice-serve` capability, legacy dialect) — exit 69, the
+    /// capability-stub code: "not spoken here", not "transport down".
+    Unavailable(String),
     /// Bad invocation — exit 2.
     Usage(String),
 }
@@ -54,6 +58,7 @@ impl std::fmt::Display for ClientError {
             ClientError::ProtoTooOld => {
                 write!(f, "the broker's protocol is older than this build accepts")
             }
+            ClientError::Unavailable(why) => write!(f, "{why}"),
             ClientError::Usage(why) => write!(f, "{why}"),
         }
     }
@@ -64,6 +69,7 @@ impl ClientError {
         match self {
             ClientError::Transport(_) => EXIT_TRANSPORT,
             ClientError::ProtoTooOld => EXIT_UNAVAILABLE,
+            ClientError::Unavailable(_) => EXIT_UNAVAILABLE,
             ClientError::Usage(_) => EXIT_USAGE,
         }
     }

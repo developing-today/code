@@ -112,6 +112,35 @@ fn connect_addrs(
 pub const TUNNEL_READ_TIMEOUT: Duration = Duration::from_secs(660);
 pub const TUNNEL_WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How an established tunnel is tuned once its setup completed.
+///
+/// The HTTP dialect is request/response: a 660 s read timeout is the
+/// Python broker's parity and bounds a stalled peer. A **raw splice**
+/// (code#6221) is the opposite shape — a desktop session that must
+/// idle and work for hours — so it clears both timeouts and lets the
+/// TCP layer alone decide when the stream is dead. That is the whole
+/// reason this is a caller choice rather than a constant: `tune()` was
+/// HTTP-shaped, and applying it to a splice would kill every session
+/// at 11 minutes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TunnelMode {
+    /// The request/response dialect: [`TUNNEL_READ_TIMEOUT`] and
+    /// [`TUNNEL_WRITE_TIMEOUT`] apply.
+    Http,
+    /// A raw byte stream: no read or write timeout at all.
+    Raw,
+}
+
+impl TunnelMode {
+    /// The read/write timeouts this mode applies (absent = none).
+    pub fn timeouts(self) -> (Option<Duration>, Option<Duration>) {
+        match self {
+            TunnelMode::Http => (Some(TUNNEL_READ_TIMEOUT), Some(TUNNEL_WRITE_TIMEOUT)),
+            TunnelMode::Raw => (None, None),
+        }
+    }
+}
+
 /// The egress proxy endpoint, parsed from `HTTPS_PROXY`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Egress {
@@ -232,7 +261,13 @@ pub fn connect_tunnel(
     target_host: &str,
     target_port: u16,
 ) -> std::io::Result<TcpStream> {
-    connect_tunnel_with_deadline(egress, target_host, target_port, TRANSPORT_DEADLINE)
+    connect_tunnel_mode(
+        egress,
+        target_host,
+        target_port,
+        TRANSPORT_DEADLINE,
+        TunnelMode::Http,
+    )
 }
 
 /// [`connect_tunnel`] with the transport deadline supplied — the
@@ -244,11 +279,26 @@ pub fn connect_tunnel_with_deadline(
     target_port: u16,
     deadline: Duration,
 ) -> std::io::Result<TcpStream> {
+    connect_tunnel_mode(egress, target_host, target_port, deadline, TunnelMode::Http)
+}
+
+/// [`connect_tunnel_with_deadline`] with the post-setup tuning mode
+/// supplied: [`TunnelMode::Raw`] clears the HTTP timeouts for a splice
+/// (code#6221). The setup deadline is unchanged either way — bounding
+/// setup is what makes a dead target cost seconds, and it is over
+/// before the first payload byte.
+pub fn connect_tunnel_mode(
+    egress: Option<&Egress>,
+    target_host: &str,
+    target_port: u16,
+    deadline: Duration,
+    mode: TunnelMode,
+) -> std::io::Result<TcpStream> {
     let start = Instant::now();
     match egress {
         None => {
             let stream = connect_tcp(target_host, target_port, deadline, start)?;
-            tune(&stream);
+            tune(&stream, mode);
             Ok(stream)
         }
         Some(egress) => {
@@ -298,15 +348,26 @@ pub fn connect_tunnel_with_deadline(
                     format!("CONNECT refused: {status_line}"),
                 ));
             }
-            tune(&stream);
+            tune(&stream, mode);
             Ok(stream)
         }
     }
 }
 
-fn tune(stream: &TcpStream) {
-    stream.set_read_timeout(Some(TUNNEL_READ_TIMEOUT)).ok();
-    stream.set_write_timeout(Some(TUNNEL_WRITE_TIMEOUT)).ok();
+/// Apply the mode's timeouts; `None` clears the corresponding timeout
+/// (a blocking read/write with no deadline — the splice's shape).
+/// Apply a mode's timeouts to a socket. Crate-visible so the splice
+/// tests can prove [`TunnelMode::Raw`] really clears them on a live
+/// socket, not just in the mode's table.
+#[cfg(test)]
+pub(crate) fn tune_for_test(stream: &TcpStream, mode: TunnelMode) {
+    tune(stream, mode)
+}
+
+fn tune(stream: &TcpStream, mode: TunnelMode) {
+    let (read, write) = mode.timeouts();
+    stream.set_read_timeout(read).ok();
+    stream.set_write_timeout(write).ok();
     stream.set_nodelay(true).ok();
 }
 
