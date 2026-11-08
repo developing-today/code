@@ -248,11 +248,20 @@ fn hex_bytes(text: &str) -> Result<Vec<u8>, String> {
     if !text.len().is_multiple_of(2) {
         return Err(format!("{text:?} has an odd number of hex digits"));
     }
-    (0..text.len())
-        .step_by(2)
-        .map(|index| {
-            u8::from_str_radix(&text[index..index + 2], 16)
-                .map_err(|_| format!("{text:?} is not hex"))
+    // Every byte must be an ASCII hex digit (#7750, the #2517 gate the
+    // sibling parsers already carry): u8::from_str_radix also accepts a
+    // leading plus sign, so without this gate a byte 0x00-0x0f has two accepted
+    // spellings. Decoding works on bytes, never str slices at byte
+    // offsets, so a multi-byte character in a corrupt line is an error,
+    // not a char-boundary panic.
+    if !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("{text:?} is not hex"));
+    }
+    text.as_bytes()
+        .chunks(2)
+        .map(|pair| {
+            let digits = std::str::from_utf8(pair).map_err(|_| format!("{text:?} is not hex"))?;
+            u8::from_str_radix(digits, 16).map_err(|_| format!("{text:?} is not hex"))
         })
         .collect()
 }
@@ -383,5 +392,18 @@ mod tests {
         assert_eq!(split_scope_prefix("city"), (TagScope::Shared, "city"));
         assert_eq!(split_scope_prefix("local:"), (TagScope::Shared, "local:"));
         assert!(scope_prefix_error("local:").is_some());
+    }
+
+    #[test]
+    fn test_hex_bytes_refuses_plus_pairs_and_multibyte_input() {
+        // #7750: the plus spelling the #2517 gate refuses in the sibling
+        // parsers, and multi-byte input at a misaligned offset (which used
+        // to panic on a char boundary instead of erroring).
+        assert!(hex_bytes(&"+a".repeat(32)).is_err());
+        assert!(hex_bytes("€a").is_err());
+        assert!(hex_bytes(&format!("{}€a", "0a".repeat(30))).is_err());
+        assert_eq!(hex_bytes(&"0A".repeat(32)).unwrap(), vec![10; 32]);
+        assert!(hex_bytes("abc").is_err());
+        assert!(hex_bytes(&"zz".repeat(32)).is_err());
     }
 }
