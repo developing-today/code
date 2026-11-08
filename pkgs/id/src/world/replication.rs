@@ -1549,12 +1549,7 @@ mod tests {
         receiver.accept(&first).unwrap();
         // Header-bump rebase to v2, as in
         // snapshot_rebases_the_chain_on_a_header_bump.
-        let bump = signed_snapshot(
-            &key,
-            2,
-            frame_digest(&first),
-            entry_payload_with_version(2),
-        );
+        let bump = signed_snapshot(&key, 2, frame_digest(&first), entry_payload_with_version(2));
         let accepted = receiver.accept(&bump).unwrap();
         assert_eq!(accepted.kind, ReplicationKind::Snapshot);
         assert_eq!(receiver.header_version(), 2);
@@ -1563,12 +1558,7 @@ mod tests {
         // A snapshot on the OLD header version (correct session nonce,
         // correct frame chain, signed by the pinned source) must be
         // refused: header versions never move backwards.
-        let downgrade = signed_snapshot(
-            &key,
-            1,
-            frame_digest(&bump),
-            entry_payload(),
-        );
+        let downgrade = signed_snapshot(&key, 1, frame_digest(&bump), entry_payload());
         assert_eq!(
             receiver.accept(&downgrade),
             Err(ReplicationError::HeaderVersionChanged)
