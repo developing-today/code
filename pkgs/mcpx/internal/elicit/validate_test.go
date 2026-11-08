@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
 )
 
 // #1954: an accepted form answer is validated against the question's
@@ -89,5 +89,43 @@ func TestRespondRecordsAnswerWhenSchemaDoesNotCompile(t *testing.T) {
 	if err := b.Respond(elicit.Answer{ID: r.ID, Action: elicit.Accept,
 		Content: json.RawMessage(`{"repo": 42}`), By: "cli"}); err != nil {
 		t.Errorf("answer wedged on an uncompilable schema: %v", err)
+	}
+}
+
+// Codex review on #2646 (4422039941): a required field whose schema
+// carries a default must not make an answer that omits it invalid --
+// the mcpclient path applies defaults before validating, and the
+// daemon path applies them when relaying the broker's answer.
+func TestRespondAppliesSchemaDefaultsBeforeValidation(t *testing.T) {
+	const defaultedSchema = `{
+		"type": "object",
+		"properties": {
+			"name": {"type": "string", "default": "John Doe"},
+			"count": {"type": "integer"}
+		},
+		"required": ["name"],
+		"additionalProperties": false
+	}`
+	b := open(t)
+	r := ask(t, b, elicit.Request{Mode: elicit.Form, Schema: json.RawMessage(defaultedSchema)})
+
+	// An explicitly supplied value of the wrong type is still refused:
+	// defaults fill only what is missing, they never mask a bad value.
+	if err := b.Respond(elicit.Answer{ID: r.ID, Action: elicit.Accept,
+		Content: json.RawMessage(`{"name": 42}`), By: "cli"}); err == nil {
+		t.Fatalf("wrong-typed supplied value accepted against the schema")
+	}
+	// Omitting the defaulted required field validates, and the answer
+	// recorded is the one given (defaults are applied at relay time).
+	if err := b.Respond(elicit.Answer{ID: r.ID, Action: elicit.Accept,
+		Content: json.RawMessage(`{"count": 1}`), By: "cli"}); err != nil {
+		t.Fatalf("answer omitting a defaulted required field refused: %v", err)
+	}
+	a, ok, err := b.Lookup(r.ID)
+	if err != nil || !ok {
+		t.Fatalf("defaulted answer not recorded: ok=%v err=%v", ok, err)
+	}
+	if string(a.Content) != `{"count": 1}` {
+		t.Errorf("recorded content = %s, want the answer as given", a.Content)
 	}
 }
