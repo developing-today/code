@@ -115,6 +115,7 @@ def inventory_owner(owner):
     """All repos visible to the gh token under one owner, via GraphQL."""
     repos = []
     after = None
+    seen_cursors = set()
     while True:
         variables = {"login": owner}
         if after:
@@ -171,7 +172,18 @@ def inventory_owner(owner):
                 }
             )
         if conn["pageInfo"]["hasNextPage"]:
-            after = conn["pageInfo"]["endCursor"]
+            next_after = conn["pageInfo"]["endCursor"]
+            if (
+                not isinstance(next_after, str)
+                or not next_after
+                or next_after in seen_cursors
+            ):
+                raise RuntimeError(
+                    f"gh api graphql for {owner}: hasNextPage true with malformed "
+                    f"endCursor {next_after!r}; expected a non-empty advancing cursor"
+                )
+            seen_cursors.add(next_after)
+            after = next_after
         else:
             return repos
 
