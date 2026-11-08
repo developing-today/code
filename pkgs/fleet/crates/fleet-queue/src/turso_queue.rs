@@ -905,6 +905,118 @@ fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
     }
 }
 
+/// `/coverage` — read-only reconciliation of an issue set against queue
+/// coverage (#7016).
+///
+/// The caller supplies the open-issue set it just enumerated from GitHub
+/// (`issues`: `[{"number": 7016, "title": "…"}]`); this verb answers, for
+/// each one, whether its repo-health dedupe key is covered by a LIVE task
+/// in the named queue. A done/cancelled/failed task is NOT coverage
+/// (Drew's doctrine, 2026-11-07: a done task means triage or a slice, not
+/// a resolved issue), and neither is a task in another queue.
+///
+/// Read-only by construction: it never writes tasks or events, so it is
+/// safe to run on a schedule and safe to run in observe mode. The caller
+/// decides what to enqueue; the dedupe key makes that idempotent.
+fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
+    let queue = req_str(req, "queue").unwrap_or("").to_string();
+    if queue.is_empty() {
+        return fail(2, "coverage: queue is required".to_string());
+    }
+    let repo = req_str(req, "repo").unwrap_or("").to_string();
+    if repo.is_empty() {
+        return fail(2, "coverage: repo is required".to_string());
+    }
+    let issues = match req.get("issues").and_then(|v| v.as_array()) {
+        Some(a) => a.clone(),
+        None => return fail(2, "coverage: issues must be an array".to_string()),
+    };
+    let work = (|| -> Result<Value, TErr> {
+        // One query for every live task in the queue that carries an
+        // issue dedupe key; the match is done in Rust so both the
+        // `triage` and `fix` classes count as coverage for the issue.
+        let rows = t.query_objs(
+            "SELECT id, status, dedupe_key FROM tasks \
+             WHERE queue = ? AND dedupe_key IS NOT NULL \
+               AND status IN ('queued','claimed','parked','blocked')",
+            &[Arg::Text(queue.clone())],
+            &[],
+        )?;
+        let mut live: std::collections::HashMap<i64, (i64, String)> =
+            std::collections::HashMap::new();
+        for r in &rows {
+            let id = r.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+            let status = r
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let Some(key) = r.get("dedupe_key").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if let Some(n) = issue_number_from_dedupe(key, &repo) {
+                live.entry(n).or_insert((id, status));
+            }
+        }
+        let mut uncovered: Vec<Value> = Vec::new();
+        let mut covered: Vec<Value> = Vec::new();
+        for iss in &issues {
+            let Some(n) = iss.get("number").and_then(|v| v.as_i64()) else {
+                continue;
+            };
+            match live.get(&n) {
+                Some((id, status)) => covered.push(json!({
+                    "number": n,
+                    "task": id,
+                    "status": status,
+                    "title": iss.get("title").cloned().unwrap_or(Value::Null),
+                })),
+                None => uncovered.push(json!({
+                    "number": n,
+                    "title": iss.get("title").cloned().unwrap_or(Value::Null),
+                    "url": format!("https://github.com/{repo}/issues/{n}"),
+                })),
+            }
+        }
+        Ok(json!({
+            "queue": queue,
+            "repo": repo,
+            "open_issues": issues.len(),
+            "covered": covered.len(),
+            "uncovered": uncovered.len(),
+            "uncovered_issues": uncovered,
+            "covered_issues": covered,
+        }))
+    })();
+    match work {
+        Ok(v) => ok(v),
+        Err(e) => terr(e),
+    }
+}
+
+/// Extract the issue number from a repo-health dedupe key for `repo`.
+///
+/// Accepted shapes (all seen in the store): the canonical
+/// `repo-health:v1:(triage|fix):<repo>:issue:<n>` plus dispatch-suffixed
+/// variants (`…:issue:<n>:dispatch:<x>`) and the legacy repo-name aliases
+/// the reconciliation run of 2026-11-07 had to match by hand.
+fn issue_number_from_dedupe(key: &str, repo: &str) -> Option<i64> {
+    let marker = format!(":{repo}:issue:");
+    let start = key.find(&marker)? + marker.len();
+    let rest = &key[start..];
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    // Reject `:issue:12abc` style tails only when the tail is not a
+    // known suffix separator.
+    let tail = &rest[digits.len()..];
+    if !(tail.is_empty() || tail.starts_with(':')) {
+        return None;
+    }
+    digits.parse::<i64>().ok()
+}
+
 fn touch_worker(t: &TursoBackend, worker: &str, task_id: Option<i64>) -> Result<(), TErr> {
     // PG workers is the roster table (id/role/display_name/status/
     // last_heartbeat_at): a touch upserts the heartbeat and marks
@@ -2571,6 +2683,7 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/events-count" => verb_events_count(t, req),
         "/events-prune" => verb_events_prune(t, req),
         "/sweep" => verb_sweep(t, req),
+        "/coverage" => verb_coverage(t, req),
         _ => fail(2, format!("unknown command {path}")),
     }
 }
@@ -2578,6 +2691,7 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn iso_epoch_and_known_instants() {
@@ -2805,5 +2919,85 @@ mod tests {
             follow_on_key("repo-health:v1:maintenance:developing-today/code:weekly:2026-W44"),
             None
         );
+    }
+
+    // -- /coverage (#7016) --------------------------------------------------
+
+    #[test]
+    fn issue_number_parses_canonical_keys() {
+        let repo = "developing-today/code";
+        assert_eq!(
+            issue_number_from_dedupe("repo-health:v1:triage:developing-today/code:issue:7016", repo),
+            Some(7016)
+        );
+        assert_eq!(
+            issue_number_from_dedupe("repo-health:v1:fix:developing-today/code:issue:5486", repo),
+            Some(5486)
+        );
+    }
+
+    #[test]
+    fn issue_number_parses_dispatch_suffixed_keys() {
+        let repo = "developing-today/code";
+        assert_eq!(
+            issue_number_from_dedupe(
+                "repo-health:v1:triage:developing-today/code:issue:7016:dispatch:abc123",
+                repo
+            ),
+            Some(7016)
+        );
+    }
+
+    #[test]
+    fn issue_number_rejects_other_repos_and_non_issue_keys() {
+        let repo = "developing-today/code";
+        // A different repo is not coverage for this one.
+        assert_eq!(
+            issue_number_from_dedupe("repo-health:v1:triage:developing-today-forks/opencode:issue:195", repo),
+            None
+        );
+        // Maintenance keys carry no issue number.
+        assert_eq!(
+            issue_number_from_dedupe("repo-health:v1:maintenance:developing-today/code:weekly:2026-W44", repo),
+            None
+        );
+        // No number at all.
+        assert_eq!(
+            issue_number_from_dedupe("repo-health:v1:triage:developing-today/code:issue:", repo),
+            None
+        );
+        // A tail that is neither empty nor a separator is not a match
+        // (e.g. `:issue:12abc`), so a malformed key cannot silently
+        // claim coverage for issue 12.
+        assert_eq!(
+            issue_number_from_dedupe("repo-health:v1:triage:developing-today/code:issue:12abc", repo),
+            None
+        );
+    }
+
+    proptest! {
+        /// Any canonical key built from a repo and a positive issue number
+        /// round-trips through the parser, for every class and every
+        /// dispatch suffix.
+        #[test]
+        fn prop_issue_number_round_trips(
+            n in 1i64..10_000_000i64,
+            class in prop::sample::select(vec!["triage", "fix"]),
+            suffix in prop::option::of("[a-z0-9]{1,12}"),
+        ) {
+            let repo = "developing-today/code";
+            let mut key = format!("repo-health:v1:{class}:{repo}:issue:{n}");
+            if let Some(s) = &suffix {
+                key.push_str(&format!(":dispatch:{s}"));
+            }
+            prop_assert_eq!(issue_number_from_dedupe(&key, repo), Some(n));
+        }
+
+        /// A key for a different repo never matches, whatever the number.
+        #[test]
+        fn prop_other_repo_never_matches(n in 1i64..10_000_000i64) {
+            let key = format!("repo-health:v1:triage:developing-today-forks/opencode:issue:{n}");
+            prop_assert_eq!(issue_number_from_dedupe(&key, "developing-today/code"), None);
+        }
     }
 }
