@@ -6,7 +6,7 @@ export const NOTIFICATION_CLASS_DEFAULTS: Record<string, boolean> = {
   incident: true,
   "needs-drew": true,
   "quota-wall": true,
-  "quota-near-wall": false,
+  "quota-near-wall": true,
   "stack-health": true,
   "blocked-age": true,
 };
@@ -27,6 +27,8 @@ export interface NotificationCandidate {
   breakthrough: boolean;
   digestOnly?: boolean;
   escalationStep?: 24 | 48 | "weekly";
+  /** Dashboard object-ref aliases used to stop escalation after Drew acts. */
+  actedRefs?: string[];
 }
 
 export interface NotificationHistoryEntry {
@@ -34,8 +36,19 @@ export interface NotificationHistoryEntry {
   class: NotificationCandidate["class"];
   objectRef: string;
   stateFingerprint: string;
-  outcome: "sent" | "suppressed-quiet" | "suppressed-dedupe" | "suppressed-cooldown" | "gone" | "error";
+  outcome:
+    | "sent"
+    | "suppressed-quiet"
+    | "suppressed-dedupe"
+    | "suppressed-cooldown"
+    | "gone"
+    | "error"
+    | "queued"
+    | "queue-cancelled";
   subscriptionId?: string;
+  /** Queue events carry enough data to recover and deliver after restart. */
+  candidate?: NotificationCandidate;
+  dueAt?: string;
 }
 
 export type NotificationDecision = "send" | "digest" | "suppress-dedupe" | "suppress-cooldown";
@@ -46,6 +59,74 @@ export interface NotificationSnapshot {
   health: Pick<HealthView, "services">;
   /** Pool ids identified as having no alternative route. */
   soleDoorPoolIds?: ReadonlySet<string>;
+  /** Drew-authored dashboard actions/comments, with their event times. */
+  drewActivity?: Array<{ objectRef: string; at: string }>;
+}
+
+interface LocalClock {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+}
+
+function localClock(at: number, timeZone: string): LocalClock {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(at));
+  const value = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((part) => part.type === type)?.value);
+  return { year: value("year"), month: value("month"), day: value("day"), hour: value("hour"), minute: value("minute") };
+}
+
+function localTimeToInstant(clock: LocalClock, timeZone: string): number {
+  const wanted = Date.UTC(clock.year, clock.month - 1, clock.day, clock.hour, clock.minute);
+  let result = wanted;
+  // Resolve the zone offset from the requested wall time. Digest times are
+  // daytime boundaries (noon and quiet-window end), so they never land in
+  // the repeated hour at a DST transition.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const seen = localClock(result, timeZone);
+    const represented = Date.UTC(seen.year, seen.month - 1, seen.day, seen.hour, seen.minute);
+    const correction = wanted - represented;
+    result += correction;
+    if (correction === 0) break;
+  }
+  return result;
+}
+
+/** Next per-subscription batch point: quiet-window end or local noon. */
+export function nextNotificationDigestAt(
+  now: number,
+  quiet: { start: string; end: string; tz: string; enabled?: boolean },
+): number {
+  const clock = localClock(now, quiet.tz);
+  const minute = clock.hour * 60 + clock.minute;
+  const toMinute = (value: string) => {
+    const [hour, min] = value.split(":").map(Number);
+    return hour * 60 + min;
+  };
+  const start = toMinute(quiet.start);
+  const end = toMinute(quiet.end);
+  const inQuiet = quiet.enabled !== false && (start <= end ? minute >= start && minute < end : minute >= start || minute < end);
+  const useEndToday = minute < end;
+  const dayOffset = inQuiet ? (minute >= start && start > end ? 1 : 0) : minute < 12 * 60 ? 0 : useEndToday ? 0 : 1;
+  const day = new Date(Date.UTC(clock.year, clock.month - 1, clock.day + dayOffset));
+  const endDigest = inQuiet || minute >= 12 * 60;
+  const targetClock: LocalClock = {
+    year: day.getUTCFullYear(),
+    month: day.getUTCMonth() + 1,
+    day: day.getUTCDate(),
+    hour: endDigest ? Number(quiet.end.slice(0, 2)) : 12,
+    minute: endDigest ? Number(quiet.end.slice(3, 5)) : 0,
+  };
+  return localTimeToInstant(targetClock, quiet.tz);
 }
 
 function candidate(
@@ -70,6 +151,11 @@ function tierItemCandidate(item: TierItem | TieredEntry, now: number): Notificat
       ? `https://github.com/${itemRef.replace("#", "/issues/")}`
       : `/attention#${encodeURIComponent(itemId ?? "unknown")}`;
   const observedAt = isTierItem ? item.since : item.tierSince ?? item.createdAt ?? item.lastActivityAt ?? new Date(now).toISOString();
+  const actedRefs = [
+    objectRef,
+    ...(itemId ? [`orch:${itemId}`] : []),
+    ...(itemRef ? [`gh:${itemRef}`] : []),
+  ];
   const entry = candidate({
     class: "needs-drew",
     objectRef,
@@ -77,6 +163,7 @@ function tierItemCandidate(item: TierItem | TieredEntry, now: number): Notificat
     body: "This item entered the needs-Drew tier.",
     url,
     observedAt,
+    actedRefs,
     state: { tier: "needs-drew", state: "state" in item ? item.state : undefined, kind: isTierItem ? item.kind : undefined },
   });
   const since = Date.parse(observedAt);
@@ -91,6 +178,7 @@ function tierItemCandidate(item: TierItem | TieredEntry, now: number): Notificat
       body: "This needs-Drew item remains unacted.",
       url,
       observedAt,
+      actedRefs,
       state: { step },
       breakthrough: step === 48,
       digestOnly: step === 24,
@@ -108,6 +196,7 @@ function tierItemCandidate(item: TierItem | TieredEntry, now: number): Notificat
           body: `This needs-Drew item remains unacted (week ${week} after the 48-hour breakthrough).`,
           url,
           observedAt,
+          actedRefs,
           state: { step: "weekly", week },
           digestOnly: true,
           escalationStep: "weekly",
@@ -155,7 +244,14 @@ export function buildNotificationCandidates(snapshot: NotificationSnapshot, now 
     ...snapshot.attention.drew,
     ...snapshot.attention.drewExtra,
   ];
-  const candidates = attentionItems.flatMap((item) => tierItemCandidate(item, now));
+  const attentionCandidates = attentionItems.flatMap((item) => tierItemCandidate(item, now));
+  const drewActivity = snapshot.drewActivity ?? [];
+  const candidates = attentionCandidates.filter((entry) => {
+    const observedAt = Date.parse(entry.observedAt);
+    return !(entry.actedRefs ?? []).some((ref) =>
+      drewActivity.some((activity) => activity.objectRef === ref && Date.parse(activity.at) >= observedAt),
+    );
+  });
 
   for (const pool of snapshot.quota.pools) {
     const soleDoor = snapshot.soleDoorPoolIds?.has(pool.id) ?? false;

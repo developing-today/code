@@ -97,7 +97,7 @@ describe("class + quiet merges (design §1/§2)", () => {
       incident: true,
       "needs-drew": true,
       "quota-wall": true,
-      "quota-near-wall": false,
+      "quota-near-wall": true,
       "stack-health": true,
       "blocked-age": true,
     });
@@ -309,7 +309,7 @@ describe("validation", () => {
         incident: true,
         "needs-drew": true,
         "quota-wall": true,
-        "quota-near-wall": false,
+        "quota-near-wall": true,
         "stack-health": true,
         "blocked-age": true,
       });
@@ -534,6 +534,58 @@ describe("alert tick delivery state", () => {
     expect(dashboardPushes).toBe(1);
     expect(historyRows.map((row) => row.outcome)).toEqual(["sent", "suppressed-dedupe"]);
     expect(historyRows.every((row) => row.subscriptionId === sub.id)).toBe(true);
+  });
+
+  test("quiet-hour candidates persist across ticks and drain as one digest at window end", async () => {
+    const now = Date.parse("2026-11-04T01:00:00Z");
+    const { store } = alertTickStore({ deliveries: [], escalations: [] });
+    const sub: PushSubscriptionRow = {
+      id: "sub-digest",
+      endpoint: "https://push.example/sub-digest",
+      p256dh: "p256dh",
+      auth: "auth",
+      classes: { incident: true, "needs-drew": true },
+      quiet: { start: "23:00", end: "07:00", tz: "UTC" },
+      user_agent: null,
+      created_at: "2026-11-01T00:00:00Z",
+      last_seen_at: "2026-11-01T00:00:00Z",
+      gone_count: 0,
+    };
+    store.listSubscriptions = async () => [sub];
+    const historyRows: NotificationHistoryEntry[] = [];
+    const notificationHistory: NonNullable<AlertTickOptions["notificationHistory"]> = {
+      read: async () => [...historyRows],
+      append: async (entry) => {
+        historyRows.push(entry);
+      },
+    };
+    const pushed: unknown[] = [];
+    const push: typeof successfulSend = async (_target, payload) => {
+      pushed.push(payload);
+      return successfulSend(_target, payload);
+    };
+    const item = {
+      id: "quiet-task",
+      kind: "task",
+      title: "Quiet-hour task",
+      since: new Date(now - 60_000).toISOString(),
+      state: "open",
+    };
+    const dashboardSnapshot = async (): Promise<NotificationSnapshot> => ({
+      attention: { drew: [item], drewExtra: [] } as unknown as NotificationSnapshot["attention"],
+      quota: { pools: [] } as unknown as NotificationSnapshot["quota"],
+      health: { services: [] },
+    });
+
+    await runAlertTick(tickConfig, store, push, { dashboardSnapshot, notificationHistory, now });
+    expect(pushed).toHaveLength(0);
+    expect(historyRows.map((row) => row.outcome)).toEqual(["suppressed-quiet", "queued"]);
+
+    // Recreate the tick over the same durable history at quiet-window end.
+    await runAlertTick(tickConfig, store, push, { dashboardSnapshot, notificationHistory, now: Date.parse("2026-11-04T07:00:00Z") });
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0]).toMatchObject({ class: "digest", items: [{ title: "Quiet-hour task" }] });
+    expect(historyRows.map((row) => row.outcome)).toEqual(["suppressed-quiet", "queued", "sent"]);
   });
 
   test("all-error delivery stays pending and a later successful tick marks it delivered once", async () => {

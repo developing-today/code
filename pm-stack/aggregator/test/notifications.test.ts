@@ -5,6 +5,8 @@ import { join } from "node:path";
 import {
   buildNotificationCandidates,
   decideNotification,
+  nextNotificationDigestAt,
+  NOTIFICATION_CLASS_DEFAULTS,
   rollupNotificationSends,
   sendTimestamp,
   type NotificationCandidate,
@@ -48,6 +50,34 @@ describe("dashboard notification candidate derivation", () => {
     expect(candidates[0].objectRef).toBe("item:developing-today/code#3317");
     expect(candidates[1].escalationStep).toBe(48);
     expect(candidates[1].breakthrough).toBe(true);
+  });
+
+  test("a later Drew action/comment on the matched dashboard object stops the needs-Drew ladder", () => {
+    const since = new Date(TASK_NOW - 3 * 24 * 60 * 60_000).toISOString();
+    const item = {
+      id: "developing-today/code#3317",
+      kind: "task",
+      title: "Queue engine task",
+      since,
+      ref: "developing-today/code#3317",
+    };
+    const acted = buildNotificationCandidates(
+      snapshot({
+        attention: { drew: [], drewExtra: [item] } as unknown as NotificationSnapshot["attention"],
+        drewActivity: [{ objectRef: "gh:developing-today/code#3317", at: new Date(TASK_NOW - 60_000).toISOString() }],
+      }),
+      TASK_NOW,
+    );
+    const preEntry = buildNotificationCandidates(
+      snapshot({
+        attention: { drew: [], drewExtra: [item] } as unknown as NotificationSnapshot["attention"],
+        drewActivity: [{ objectRef: "gh:developing-today/code#3317", at: new Date(TASK_NOW - 4 * 24 * 60 * 60_000).toISOString() }],
+      }),
+      TASK_NOW,
+    );
+
+    expect(acted).toHaveLength(0);
+    expect(preEntry.some((entry) => entry.class === "blocked-age")).toBe(true);
   });
 
   test("emits one digest-only needs-Drew reminder per week after the 48-hour breakthrough", () => {
@@ -168,6 +198,17 @@ describe("notification transition policy", () => {
     const age48: NotificationCandidate = { ...age24, stateFingerprint: '{"step":48}', digestOnly: false, escalationStep: 48 as const, breakthrough: true };
     expect(decideNotification(age24, [], TASK_NOW, false)).toBe("digest");
     expect(decideNotification(age48, [], TASK_NOW, true)).toBe("send");
+  });
+
+  test("digest scheduling uses each subscription timezone and the next noon/window-end boundary", () => {
+    const quiet = { start: "23:00", end: "07:00", tz: "America/Chicago" };
+    expect(new Date(nextNotificationDigestAt(Date.parse("2026-11-04T12:00:00Z"), quiet)).toISOString()).toBe("2026-11-04T13:00:00.000Z");
+    expect(new Date(nextNotificationDigestAt(Date.parse("2026-11-04T14:00:00Z"), quiet)).toISOString()).toBe("2026-11-04T18:00:00.000Z");
+    expect(new Date(nextNotificationDigestAt(Date.parse("2026-11-04T20:00:00Z"), quiet)).toISOString()).toBe("2026-11-05T13:00:00.000Z");
+  });
+
+  test("sole-door near-wall class is enabled for new subscriptions by the recommended defaults", () => {
+    expect(NOTIFICATION_CLASS_DEFAULTS["quota-near-wall"]).toBe(true);
   });
 });
 

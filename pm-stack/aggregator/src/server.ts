@@ -2408,10 +2408,16 @@ if (source.ingestSnapshots) {
 // The alert throat's engine (#3676): the ~60s delivery/escalation
 // tick (live mode only, fail-soft — see src/alerts.ts).
 startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
-  const [attention, quota, health] = await Promise.all([
+  const [attention, quota, health, actions, comments] = await Promise.all([
     attentionContext(),
     source.quota().catch(() => emptyQuotaView()),
     healthContext(false),
+    actionsStore.all().catch(() => []),
+    commentsStore.all().catch(() => []),
   ]);
-  return { attention: attention.view, quota, health };
+  const drewActivity = [
+    ...actions.filter((action) => action.author.kind === "drew").map((action) => ({ objectRef: action.objectRef, at: action.createdAt })),
+    ...comments.filter((comment) => comment.author.kind === "drew").map((comment) => ({ objectRef: comment.objectRef, at: comment.createdAt })),
+  ];
+  return { attention: attention.view, quota, health, drewActivity };
 });
