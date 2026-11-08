@@ -44,9 +44,10 @@ deduplicated, provenance-checked, and only then published to the live shard
 set. A batch that fails any stage never touches the searchable corpus; a
 batch that fails is quarantined with a machine-readable reason, not deleted
 and not silently retried forever; and a retry of the same batch is safe
-because landing is content-addressed. A reader must never observe a
-half-published batch — not through a fan-out scan, not through a cached
-result, not through a snapshot id.
+because landing is content-addressed. A newly executed fan-out must never
+observe a half-published batch. A cache may still return an older, internally
+coherent result until the separate cache-freshness work lands (§6.5); this
+design does not mislabel that stale hit as current.
 
 This is lakeFS's **write-audit-publish** pattern applied to Atlas's existing
 staging tier. The gate is not a new storage system: #5669 already defines
@@ -62,10 +63,12 @@ close. The gate is the **contract** that promotion runs under.
   each increment is judged as its own batch.
 - **Staging shard** — the unit's staging DB (§5669 `atlas_stage` v1:
   `items`, `chunks_raw`, `notes`, `kv`, `_schema_version`). Nothing in it is
-  searchable. It is the gate's only write target.
-- **Live shard set** — the `atlas-core-<tier>-<topic>-<nn>` scan stores plus
-  the per-tier content stores (#5755 layout, authoritative map on #5669).
-  Only the publish stage writes here.
+  searchable; it is the producer's only write target. The gate writes
+  publish candidates separately and commits visibility through the catalog.
+- **Live shard set** — the committed `atlas-core-<tier>-<topic>-<nn>` scan
+  manifests plus the per-tier content stores (#5755 layout, authoritative
+  map on #5669). Candidate writes are separate; publish changes visibility
+  only by committing the catalog generation.
 - **Gate record** — the durable, per-batch judgement: batch id, stage
   reached, verdict per stage, reason codes, counts, content hashes, the
   publish manifest id if published. One row per batch in the internal
@@ -115,7 +118,7 @@ design.
 **Contract.** Every row in the batch is assigned exactly one sensitivity
 level — `public`, `internal`, or `secret` — before anything can be
 published. The level is a property of the row, not of the batch: a batch
-that contains both internal and secret rows is split at publish time
+that contains both internal and secret rows is split before publish
 (§5.2), never published wholesale at the batch's maximum level.
 
 **Passes when** every row has a level, the level is one of the three, and
@@ -154,10 +157,12 @@ have to *delete* something to proceed — deletion on a similarity score is
 forbidden (#5733: "dedup findings are data, not deletions").
 
 **Semantics of each disposition at publish:** `new` publishes normally.
-`exact-duplicate-of` does **not** create a second chunk; it **adds an
-occurrence** to the existing chunk's `chunk_occurrences` row (#3125 rule 3:
-every chunk records every place it was found). This is the gate's answer to
-the historical defect where dedup silently dropped ~127K occurrences.
+`exact-duplicate-of` does **not** create a second chunk; it writes an
+occurrence addition into the batch's hidden candidate overlay. The catalog
+commit makes that occurrence visible with the rest of the tier publication
+(#3125 rule 3: every chunk records every place it was found). This is the
+gate's answer to the historical defect where dedup silently dropped ~127K
+occurrences.
 `near-duplicate-of` publishes the chunk **and** the edge; promotion policy —
 not the gate — decides whether a near-duplicate is suppressed, so a
 suppressed near-duplicate must still leave its occurrence recorded.
@@ -194,28 +199,35 @@ CAS lookup), not a human review.
 
 ### 3.5 Stage 5 — publish
 
-**Contract.** Promote the batch's survivors into the live shard set, in
-bounded transactions, and make the promotion atomic with respect to
-readers (§6). Publish is the only stage that writes live shards.
+**Contract.** Build immutable, batch-scoped candidate artifacts in bounded
+transactions, verify them, then make them visible with one atomic
+per-tier catalog commit (§6). Publish is the only stage that changes the
+search-visible catalog; it never writes into an already-active shard.
 
 **Passes when** all of:
 
 - every surviving row was promoted exactly once — `rows_in == rows_promoted
   + rows_deduped_into_occurrences + rows_quarantined_at_publish`, and the
   identity holds by count **and** by content hash;
-- the write stayed inside the ≤500-rows-per-transaction bound (#5669) so no
-  core writer is held for more than seconds;
-- the merge manifest was written (unit id, rows in/promoted, content hash)
-  and the core snapshot id was bumped per batch (#5669, consumed by the
-  #6666 result-cache key);
+- all candidate chunk rows and exact-duplicate occurrence additions were
+  written to immutable, not-yet-visible batch artifacts; no active shard or
+  visible occurrence set was mutated;
+- candidate writes stayed inside the ≤500-rows-per-transaction bound
+  (#5669); the active shard set is never held under a long writer;
+- candidate manifests (unit id, tier, rows in/promoted, content hash,
+  schema/model identity) and a gate record were durable before one atomic
+  catalog commit made their complete manifest set visible (§6);
+- the new per-tier snapshot id was computed from that committed manifest
+  set and emitted in the merge manifest for #6666 / #6805;
 - the tier split placed every row in the shard set its classification
   allows, and no secret row touched an internal or public shard.
 
 **Fails when** the count/hash identity does not hold, a transaction exceeds
-the bound, the manifest is missing, the snapshot id was not bumped, or a
+the bound, a candidate is visible before commit, the catalog commit is
+missing, the snapshot id does not match the committed manifest set, or a
 tier boundary was crossed. A publish-stage failure is the most serious
-class: it is quarantined with `publish_partial` (§7.3) and triggers the
-reconciliation in §6.4 before the batch may be retried.
+class: it is quarantined with `publish_partial` (§6.4); candidate artifacts
+remain invisible while reconciliation runs (§6.4).
 
 ## 4. Per-stage pass/fail semantics, in one table
 
@@ -225,7 +237,7 @@ reconciliation in §6.4 before the batch may be retried.
 | classify | every row has one of three levels at acceptable confidence | never | `classify_unresolved` |
 | dedup | every row has a disposition; no deletion required | never | `dedup_undispositioned` |
 | provenance-check | every mark parses, content resolves, attestation present, occurrences spanned | never | `provenance_unresolvable` |
-| publish | count + hash identity, batch bound, manifest, snapshot bump, tier split | batch had zero survivors after dedup suppression | `publish_partial` |
+| publish | count + hash identity, bounded candidate writes, hidden prepare, atomic catalog commit, committed snapshot id, tier split | tier unit had zero survivors after dedup suppression | `publish_partial` |
 
 `skip` is never a pass and never advances a snapshot id. Only the write
 stage (empty batch) and publish (zero survivors) can be skipped, and each
@@ -240,14 +252,23 @@ is retained (branched as an archive, per #5669's archive behaviour) and its
 gate record carries the failing stage, the reason codes, and the row ids.
 Nothing in the batch is published, and nothing in it is deleted.
 
-### 5.2 Tier split happens at publish, not at classify
+### 5.2 Tier split happens before publish, not at classify
 
-Classification assigns per-row levels; publish routes each row to the shard
-set for its level. A batch that mixes levels yields **one publish per
-level**, each with its own manifest and snapshot bump. This is what makes
-the "secret only in secret DBs" rule mechanical rather than a policy hope:
-an internal shard write is only reachable by rows whose classification says
-`internal`.
+Classification assigns per-row levels; the gate splits the original staging
+unit into **tier-scoped publication units** before Stage 5. Each tier unit
+gets separate candidate artifacts, a catalog commit and a snapshot id. A
+mixed-tier source batch is therefore not one cross-tier transaction: each
+tier is atomic independently, and a query reports the snapshot id for each
+tier it was authorized to search. This preserves the security boundary — a
+secret-capable client can never make an internal shard write reachable —
+without claiming a cross-database atomic transaction the storage system
+does not provide.
+
+The search-visible catalog is the authority for visibility, not physical
+database enumeration alone. A candidate may exist in the Turso organization
+and carry an `atlas-core-*` name, but fan-out must exclude it until the
+catalog commit references its manifest. This is a required extension to
+#5669/#6666, not behavior claimed to exist today.
 
 ### 5.3 Retry is safe because landing is content-addressed
 
@@ -278,17 +299,24 @@ failure is a spend leak (#6018 S3 ceiling), not resilience.
 
 ### 6.1 The reader-visible invariant
 
-**A reader observes either the pre-batch shard set or the post-batch shard
-set, never a mixture.** Concretely: a fan-out scan must not see half of a
-batch's rows, and a cached result must not outlive the shard set it was
-computed from.
+**A newly executed fan-out observes either the pre-commit or post-commit
+manifest set for each tier-scoped publication unit, never a mixture.** The
+gate does not claim a cross-tier transaction: the per-tier snapshot ids in a
+response make that boundary explicit. A cached result may be stale; that is
+a separate freshness contract (§6.5), not permission for a live fan-out to
+read a partially published batch.
 
 ### 6.2 What #5755's closure changes
 
 #5755 is closed; its atomicity surface is now three separate mechanisms:
 
-1. **`ShardSet::snapshot_id()`** — sha256 over sorted shard name/tier/chunk
-   count (slice 1, #6666). This is the shard set's version.
+1. **`ShardSet::snapshot_id()`** — currently specified as sha256 over sorted
+   shard name/tier/chunk count (slice 1, #6666). That physical-inventory
+   digest is not an atomic commit point: counts can change while bounded
+   writes are still in progress. The gate requires it to be derived from
+   the committed catalog generation (sorted published manifest ids, tier,
+   counts and content hashes); physical inventory is only candidate
+   discovery.
 2. **Result-cache keying** — the snapshot id must feed the #5668 result-cache
    key so a re-shard invalidates correctly (#6666 item 2).
 3. **The Worker + Durable Object cache** (#6788, closed) — stores results
@@ -296,45 +324,72 @@ computed from.
    `sha256(normalized_query || config_fingerprint)`. Its eviction and
    invalidation policy is the open follow-up #6805.
 
-The third is where this gate's atomicity claim is at risk, and it is the
-one thing this design must state plainly: **a cache that never expires and
-is not keyed on the snapshot id will serve pre-batch results forever.** The
-gate cannot fix that from the publish side; it can only make the change
-observable. §6.3 is the contract the publish stage owes the cache.
+The third is where freshness is at risk, and this design states it plainly:
+**a cache that never expires and is not keyed or invalidated by snapshot id
+may serve pre-batch results indefinitely.** The gate cannot fix that from
+the publish side. It can guarantee that a fresh fan-out reads one committed
+snapshot, and emit the id for cache work to consume; it cannot claim every
+cache hit is current. §6.5 records that limit.
 
-### 6.3 The publish contract against fan-out and cache
+### 6.3 Prepare/commit visibility protocol
 
-- **Batch visibility is per-snapshot.** A batch's rows become visible to a
-  fan-out when, and only when, the snapshot id that includes them is
-  published. The aggregator writes the batch, writes the manifest, then
-  bumps the snapshot id — in that order, so a reader that resolves the old
-  id sees the old set and a reader that resolves the new id sees the whole
-  batch.
-- **The snapshot id is the cache's invalidation key.** The publish stage
-  must emit the new snapshot id in the merge manifest, so #6666's serve-mode
-  integration and #6805's eviction policy have a value to key on. Until
-  #6805 lands, the gate's honest position is: **the DO cache is a known
-  staleness window for newly published batches**, and it is recorded as
-  such rather than claimed atomic.
-- **The gate does not claim cache atomicity it cannot enforce.** Publish
-  atomicity means the *shard set* transitions atomically. Cache freshness is
-  a separate contract (#6666, #6805); this design requires only that publish
-  produce the snapshot id those contracts consume.
+- **Prepare:** write each tier's immutable candidate shards and occurrence
+  additions in ≤500-row transactions; keep them outside the active manifest
+  set. Write and verify all candidate manifests and the gate record. Retries
+  are idempotent by batch id + content hash.
+- **Commit:** in one transaction on the tier's catalog/registry, append a
+  commit record that references the complete candidate-manifest set and
+  advances that tier's active generation. This catalog commit is the single
+  visibility point. An incomplete prepare has no commit record and remains
+  invisible; no multi-DB transaction is assumed.
+- **Read:** the fan-out resolves the active catalog generation once at query
+  start, pins its committed manifest list and snapshot id, then scans only
+  those manifests. It must not treat every physical `atlas-core-*` database
+  as searchable merely because it exists. A query spanning multiple tiers
+  carries one pinned snapshot id per authorized tier.
+- **Snapshot:** hash the committed manifest ids, tier, counts and content
+  hashes (or an equivalent generation id), not live mutable row counts.
+  Publish returns/emits this id in its merge manifest; #6666's
+  `ShardSet::snapshot_id()` and cache integration must consume the committed
+  generation rather than independently observing in-progress writes.
 
-### 6.4 Reconciliation after a partial publish
+This is a **new gate requirement**: the current #5669 aggregator description
+promotes into core in bounded batches and bumps a snapshot id per batch, but
+does not specify a hidden candidate set or one catalog commit point. The
+implementation must add that visibility boundary before it can claim
+atomicity. If the chosen registry/catalog cannot make the active-generation
+update atomic, use an equivalent single-record pointer flip; do not weaken
+the invariant to "bump the hash after the writes".
 
-If a publish fails mid-batch (`publish_partial`), the shard set may hold
-some of the batch's rows. Reconciliation is: re-read the manifest's
-`rows_promoted` against the shard set's actual content hashes for that
-batch id; promote the missing rows or, if the partial rows are wrong,
-quarantine them by batch id and re-land from staging. The snapshot id is
-**not** bumped until the identity in §3.5 holds, so a partial publish is
-invisible to readers that resolve the last good snapshot id.
+### 6.4 Reconciliation after a partial prepare/commit
+
+If preparation fails mid-batch (`publish_partial`), some candidate rows may
+exist, but without the catalog commit they remain invisible. Reconciliation
+re-reads candidate manifests and content hashes for the batch id, then
+completes missing candidate writes or quarantines mismatched artifacts and
+re-lands from staging. Only after the count/hash identity in §3.5 holds may
+the catalog commit occur. If commit acknowledgement is lost, read the
+catalog first: if the commit record exists, report success; otherwise retry
+the same idempotent commit. Never infer visibility from physical row counts.
+
+### 6.5 Cache freshness is separate from fan-out atomicity
+
+The Worker + Durable Object cache (#6788) stores results indefinitely and
+its key `sha256(normalized_query || config_fingerprint)` does not currently
+include the shard snapshot id. It may therefore return a coherent but old
+result indefinitely. This does **not** mean a fresh fan-out can see half of
+a batch; it means the system does not yet promise that a cache hit sees the
+latest batch. #6805 owns invalidation/eviction, and #6666 owns wiring the
+committed snapshot id through the serve path. Until those land, the response
+should expose the snapshot id that produced it where the current envelope
+allows, and documentation must not label the DO cache fresh or atomic.
 
 ## 7. What this design does not decide
 
 - The staging schema, provisioning tool, registry columns, aggregator
-  implementation, batch size tuning, archive mechanics — #5669.
+  implementation, batch size tuning, archive mechanics — #5669. The
+  prepared/published catalog boundary and per-tier generation are additional
+  requirements this gate sends back to #5669.
 - Classifier implementation, thresholds, tier content profile, the
   revalidation scan — #6021 and #5410.
 - Shingle construction, hashing, storage cost, the exact Jaccard threshold,
@@ -352,11 +407,13 @@ overwrite; a retry lands a new version). It consumes #3125's keep-all rule
 unchanged (dedup adds occurrences, never deletes). It consumes #5733's
 "findings are data, not deletions" unchanged. It consumes #5669's ≤500-row
 transaction bound and merge-on-close promotion unchanged. Where this note
-adds an obligation those designs did not state — the per-row tier split at
-publish (§5.2), the snapshot-id-in-manifest requirement (§6.3), the
-three-strikes quarantine bound (§5.5) — that is recorded here as a gate
-requirement and must be reflected back into #5669 and #6666 when they are
-implemented; it is not a change to their decisions.
+adds obligations those designs did not state — per-tier candidate artifacts
+and an atomic catalog commit (§6.3), the per-row tier split (§5.2),
+snapshot ids derived from committed manifests (not live counts), the
+snapshot-id-in-manifest requirement, and the three-strikes quarantine bound
+(§5.5) — those are explicitly new gate requirements to reflect back into
+#5669 and #6666; they are not claimed to exist today and are not silent
+changes to sibling decisions.
 
 ## 8. Logging and sensitivity
 
@@ -383,8 +440,9 @@ implementation is split so each part lands against the sibling that owns it:
 4. **Stage 4 wiring** (depends on #6018 grammar, #3125 CAS) — the
    mechanical mark/attestation/CAS check.
 5. **Stage 5 wiring + atomicity** (depends on #5669 aggregator, #6666) —
-   the count/hash identity, the per-level split, the manifest carrying the
-   snapshot id, and the §6.4 reconciliation path.
+   immutable hidden candidate shards/occurrence overlays, the count/hash
+   identity, per-tier catalog commit, snapshot derived from committed
+   manifests, the manifest carrying the snapshot id, and §6.4 reconciliation.
 6. **Quarantine + retry** — the quarantine state, resume-at-failing-stage
    retry, and the three-strikes escalation to `needs-review`.
 
