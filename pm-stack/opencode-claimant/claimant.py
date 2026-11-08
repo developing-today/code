@@ -310,29 +310,16 @@ def supervision_step(mode: str) -> List[Dict]:
                         # Session is gone or stuck - check if recovery is possible
                         # Check task attempts and lease
                         if task.get("attempts", 0) < task.get("max_attempts", 5):
-                            # Verify zero messages first
-                            try:
-                                messages_response = subprocess.run(
-                                    ["curl", "-s", "-m", "5", *_curl_auth_args(),
-                                     f"{_session_base()}/api/session/{session_id}/messages"],
-                                    capture_output=True,
-                                    text=True
-                                )
-                                
-                                if messages_response.returncode == 0:
-                                    try:
-                                        parsed_messages = json.loads(messages_response.stdout or "[]")
-                                    except Exception:
-                                        parsed_messages = None
-                                    if isinstance(parsed_messages, list) and len(parsed_messages) == 0:
-                                        recovery_candidates.append({
-                                            "task_id": task["id"],
-                                            "session_id": session_id,
-                                            "reason": "zero_message"
-                                        })
-                            except Exception:
-                                # Could not read messages - treat as unknown state
-                                pass
+                            # Verify zero messages first (supported
+                            # v2 endpoint; an inconclusive read is an
+                            # unknown state, never a recovery signal)
+                            parsed_messages = _read_session_messages(session_id)
+                            if isinstance(parsed_messages, list) and len(parsed_messages) == 0:
+                                recovery_candidates.append({
+                                    "task_id": task["id"],
+                                    "session_id": session_id,
+                                    "reason": "zero_message"
+                                })
         except Exception as e:
             print(f"Warning: Supervision check failed for queue {queue}: {e}")
     
@@ -413,6 +400,62 @@ def cap_step() -> int:
     
     cap_room = max(0, CONCURRENCY_CAP - active_count)
     return cap_room
+
+
+def _read_session_messages(session_id: str):
+    """Read a session's messages from the supported v2 endpoint
+    (GET /api/session/{id}/message?limit=N -> {data: [...]}).
+
+    Returns the message list, or None when the read is inconclusive
+    (transport failure, non-zero exit, malformed body). An inconclusive
+    read is NOT evidence the session is empty. (Codex round-3 on
+    PR #6990: the plural /messages path is not the supported endpoint,
+    and prompt reconciliation must not resend on an unknown state.)
+    """
+    try:
+        r = subprocess.run(
+            ["curl", "-s", "-m", "5", *_curl_auth_args(),
+             f"{_session_base()}/api/session/{session_id}/message?limit=100"],
+            capture_output=True,
+            text=True
+        )
+        if r.returncode != 0:
+            return None
+        parsed = json.loads(r.stdout or "[]")
+        if isinstance(parsed, dict) and "data" in parsed:
+            parsed = parsed["data"]
+        if isinstance(parsed, list):
+            return parsed
+        return None
+    except Exception:
+        return None
+
+
+def _packet_route_model(packet) -> str:
+    """The session route model for a handed-off task: the packet's
+    explicit route when it names one (prompt.md: packet-over-default
+    precedence — Specialist/Summit routes are chosen by the packet),
+    else the Workhorse default. Accepts a bare model id
+    ("specialist"), a route path ("opencode-route/specialist"), a
+    variant pin ("specialist#high" — the base pool is what creation
+    selects), or a dict with id/model/name. (Codex round-3, PR #6990.)
+    """
+    if isinstance(packet, dict):
+        raw = (packet.get("route") or packet.get("execution_route")
+               or packet.get("model"))
+        if raw is None and isinstance(packet.get("payload"), dict):
+            raw = (packet["payload"].get("route")
+                   or packet["payload"].get("execution_route"))
+        if isinstance(raw, dict):
+            raw = raw.get("id") or raw.get("model") or raw.get("name")
+        if isinstance(raw, str) and raw.strip():
+            r = raw.strip()
+            if r.startswith("opencode-route/"):
+                r = r[len("opencode-route/"):]
+            r = r.split("#")[0].strip().lower()
+            if r:
+                return r
+    return "workhorse"
 
 
 def launch_step(mode: str, cap_room: int) -> tuple:
@@ -498,7 +541,7 @@ def launch_step(mode: str, cap_room: int) -> tuple:
                 },
                 "title": f"Queue task {task_id} - {issue}",
                 "model": {
-                    "id": "workhorse",
+                    "id": _packet_route_model(packet),
                     "providerID": "opencode-route"
                 },
                 "agent": "build"
@@ -623,22 +666,19 @@ Finish with: complete, park, block, or fail --execution '{{...}}'
                     # executing - leave it to supervision. Only a
                     # demonstrably empty session gets ONE resend, to
                     # the SAME session.
-                    landed = False
-                    try:
-                        m = subprocess.run(
-                            ["curl", "-s", "-m", "5", *_curl_auth_args(),
-                             f"{_session_base()}/api/session/{session_id}/messages"],
-                            capture_output=True,
-                            text=True
-                        )
-                        if m.returncode == 0:
-                            parsed = json.loads(m.stdout or "[]")
-                            if isinstance(parsed, dict) and "data" in parsed:
-                                parsed = parsed["data"]
-                            landed = isinstance(parsed, list) and len(parsed) > 0
-                    except Exception:
-                        landed = False
-                    delivered = landed or _deliver_prompt()
+                    # Codex round-3 (P1): an inconclusive messages
+                    # read is NOT evidence the session is empty — the
+                    # first prompt may have landed despite its lost
+                    # response, and resending could execute the task
+                    # twice. Resend only after a successful read
+                    # positively confirms an empty session; when
+                    # reconciliation is inconclusive, leave the
+                    # binding intact for supervision (delivered stays
+                    # False and the session is retained below).
+                    messages = _read_session_messages(session_id)
+                    landed = isinstance(messages, list) and len(messages) > 0
+                    verified_empty = isinstance(messages, list) and len(messages) == 0
+                    delivered = landed or (verified_empty and _deliver_prompt())
                 if not delivered:
                     # The binding stays as the record and the session
                     # is NOT deleted: supervision and the
@@ -650,6 +690,13 @@ Finish with: complete, park, block, or fail --execution '{{...}}'
                         "session_id": session_id,
                         "reason": "prompt_delivery_failed_bound"
                     })
+                    # The retained session counts as an active root
+                    # (poll.py::is_active_root) and may already be
+                    # executing — reserve its cap slot here, not only
+                    # on the success path below, or repeated delivery
+                    # failures create roots beyond the cap.
+                    # (Codex round-3, PR #6990.)
+                    cap_room -= 1
                     continue
 
                 launched.append({

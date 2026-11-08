@@ -139,7 +139,7 @@ class TestSupervisionStep(unittest.TestCase):
                 return Result(0, json.dumps({"rows": rows}))
             if "DELETE" in argv_s:
                 return Result(0)
-            if any("/messages" in a for a in argv_s):
+            if any("/message" in a for a in argv_s):
                 return Result(0, "[]")
             if any("api/session" in a for a in argv_s):
                 return Result(1, "")  # session gone from the server
@@ -269,7 +269,7 @@ class TestCodexFindings(unittest.TestCase):
                 if prompt_attempts["n"] == 1:
                     return Result(1, "", "transient")
                 return Result(0)
-            if any(a.endswith("/messages") for a in argv_s):
+            if any("/message" in a for a in argv_s):
                 return Result(0, "[]")
             if any("api/session" in a for a in argv_s):
                 return Result(0, json.dumps({
@@ -358,7 +358,7 @@ class TestSupervisionStuckBound(unittest.TestCase):
                 return Result(0, json.dumps({"rows": rows}))
             if "DELETE" in argv_s:
                 return Result(0)
-            if any("/messages" in a for a in argv_s):
+            if any("/message" in a for a in argv_s):
                 return Result(0, "[]")
             if any("api/session" in a for a in argv_s):
                 return Result(0, json.dumps(session))
@@ -373,6 +373,118 @@ class TestSupervisionStuckBound(unittest.TestCase):
             recovered,
             [{"task_id": 777, "session_id": "ses_stuck",
               "reason": "zero_message"}])
+
+
+class TestCodexRound3(unittest.TestCase):
+    """Regression tests for the four Codex round-3 findings on PR #6990
+    (2026-11-08T02:26Z): verified-empty resend guard, the supported v2
+    message endpoint, cap reservation for retained sessions, and
+    packet-route selection at session creation."""
+
+    def run_launch(self, candidates, cap_room=1, prompt_rcs=(0,),
+                   messages_result=None):
+        """messages_result: Result for the /message read, or None to
+        answer an enveloped empty array (verified empty)."""
+        calls = []
+        state = {"prompt_n": 0}
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            argv_s = [str(a) for a in argv]
+            if "bind" in argv_s:
+                return Result(0)
+            if any(a.endswith("/prompt") for a in argv_s):
+                rc = prompt_rcs[min(state["prompt_n"], len(prompt_rcs) - 1)]
+                state["prompt_n"] += 1
+                return Result(rc, "", "boom" if rc else "")
+            if any("/message" in a for a in argv_s):
+                if messages_result is not None:
+                    return messages_result
+                return Result(0, json.dumps({"data": []}))
+            if any("api/session" in a for a in argv_s):
+                return Result(0, json.dumps({
+                    "id": "ses_test1",
+                    "location": {"directory": str(claimant.PRIMARY_CLONE)}}))
+            return Result(0)
+
+        with patch.object(claimant, "run_poll",
+                          return_value={"candidates": candidates}), \
+             patch.object(claimant.subprocess, "run", side_effect=fake_run):
+            launched, skips = claimant.launch_step("live", cap_room)
+        return launched, skips, calls, state
+
+    def test_prompt_not_resent_when_messages_read_inconclusive(self):
+        # P1: the first prompt POST fails and the messages read ALSO
+        # fails — delivery state is unknown, so no resend may happen.
+        launched, skips, calls, state = self.run_launch(
+            [candidate()], prompt_rcs=(1,),
+            messages_result=Result(1, "", "timeout"))
+        self.assertEqual(launched, [])
+        self.assertEqual(state["prompt_n"], 1)
+        self.assertEqual([s["reason"] for s in skips],
+                         ["prompt_delivery_failed_bound"])
+
+    def test_prompt_resent_only_after_verified_empty(self):
+        launched, skips, calls, state = self.run_launch(
+            [candidate()], prompt_rcs=(1, 0))
+        self.assertEqual(skips, [])
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(state["prompt_n"], 2)
+
+    def test_message_reads_use_singular_v2_endpoint(self):
+        _, _, calls, _ = self.run_launch(
+            [candidate()], prompt_rcs=(1, 0))
+        flat = [str(a) for a in calls]
+        msg_urls = [x for x in flat if "/message" in x]
+        self.assertTrue(msg_urls)
+        for u in msg_urls:
+            self.assertIn("/message?limit=", u)
+        self.assertFalse(any("/messages" in x for x in flat))
+
+    def test_retained_session_consumes_cap_room(self):
+        # P2: candidate 123's session is retained after delivery
+        # failure, so candidate 124 must see a saturated cap.
+        launched, skips, calls, state = self.run_launch(
+            [candidate(123), candidate(124)], cap_room=1,
+            prompt_rcs=(1,), messages_result=Result(1, "", "timeout"))
+        self.assertEqual(launched, [])
+        self.assertEqual(
+            [(s["task_id"], s["reason"]) for s in skips],
+            [(123, "prompt_delivery_failed_bound"),
+             (124, "cap_saturated")])
+
+    def test_packet_route_wins_at_session_creation(self):
+        launched, skips, calls, _ = self.run_launch(
+            [candidate(packet={"route": "specialist"})])
+        self.assertEqual(len(launched), 1)
+        create = next(a for a in calls
+                      if any("api/session" in str(x) for x in a)
+                      and not any("/prompt" in str(x) for x in a)
+                      and not any("/message" in str(x) for x in a))
+        body = json.loads(create[create.index("-d") + 1])
+        self.assertEqual(body["model"],
+                         {"id": "specialist", "providerID": "opencode-route"})
+
+    def test_default_route_is_workhorse(self):
+        launched, skips, calls, _ = self.run_launch([candidate()])
+        self.assertEqual(len(launched), 1)
+        create = next(a for a in calls
+                      if any("api/session" in str(x) for x in a)
+                      and not any("/prompt" in str(x) for x in a)
+                      and not any("/message" in str(x) for x in a))
+        body = json.loads(create[create.index("-d") + 1])
+        self.assertEqual(body["model"]["id"], "workhorse")
+
+    def test_route_model_normalization(self):
+        self.assertEqual(claimant._packet_route_model({}), "workhorse")
+        self.assertEqual(
+            claimant._packet_route_model({"route": "opencode-route/summit"}),
+            "summit")
+        self.assertEqual(
+            claimant._packet_route_model({"route": "specialist#high"}),
+            "specialist")
+        self.assertEqual(
+            claimant._packet_route_model({"model": {"id": "scout"}}), "scout")
 
 
 if __name__ == "__main__":
