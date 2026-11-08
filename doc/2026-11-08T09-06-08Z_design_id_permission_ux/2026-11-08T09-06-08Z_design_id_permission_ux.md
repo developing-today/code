@@ -3,7 +3,7 @@
 - Date: 2026-11-08
 - Status: **design decision record**, ready for issue-owner review; no implementation is included.
 - Issue: [#5960](https://github.com/developing-today/code/issues/5960), the permission-UX child of the worlds design programme [#5955](https://github.com/developing-today/code/issues/5955) (statements S19–S23 of the 2026-11-04 brief).
-- Sibling records: knowledge-layer sharing & permissions [#5840](https://github.com/developing-today/code/issues/5840) (different layer, shared vocabulary); attenuated capabilities for world access (`doc/2026-10-09T09-59-07Z_design_attenuated_capabilities/`).
+- Sibling records: capability model [#5958](https://github.com/developing-today/code/issues/5958), capability-change notices [#5959](https://github.com/developing-today/code/issues/5959), precedent research [#5961](https://github.com/developing-today/code/issues/5961) (coordination and dependencies in [Sibling coordination](#sibling-coordination)); knowledge-layer sharing & permissions [#5840](https://github.com/developing-today/code/issues/5840) (different layer, shared vocabulary); attenuated capabilities for world access (`doc/2026-10-09T09-59-07Z_design_attenuated_capabilities/`).
 - Baseline: current `main` at `62e722d5a1`.
 
 ## Decision in brief
@@ -241,12 +241,26 @@ marked required (server-side).
    The reconnect prompts on the delta only — one new line, decision
    required, everything else untouched.
 
+## Sibling coordination
+
+Recorded 2026-11-08 against the live state of the design children of
+[#5955](https://github.com/developing-today/code/issues/5955). The sibling
+outputs are not finished, so every dependency below is named rather than
+silently assumed; nothing here claims a sibling decision it does not yet own.
+
+| Sibling | State at authoring | What this record takes from it | Dependency |
+|---|---|---|---|
+| [#5958](https://github.com/developing-today/code/issues/5958) capability model — requested vs discovered-used sets | open; design PR [#7599](https://github.com/developing-today/code/pull/7599) in review, not yet on `main` | the requested/discovered-used vocabulary and the registry listing that names capabilities | **dependency.** The requested-vs-used disclosure in §1.1 presumes #5958's used-set measurement. Until it lands, the used set is shown only when a world publishes instrumentation, and the disclosure degrades to the requested set alone. |
+| [#5959](https://github.com/developing-today/code/issues/5959) capability-change notices | open, triaged, waiting on dependency | nothing yet | **dependency.** The "capability change" firing rule in §1.2 consumes #5959's classification of expansion vs sideways change. This record fixes only the prompt behaviour for a change, not the notice taxonomy or transport. |
+| [#5961](https://github.com/developing-today/code/issues/5961) permission-prompt precedents | open, in progress; research not landed | nothing yet | **assumption.** The prompt shape follows the Play Store precedent fixed by the 2026-11-04 brief (S19–S23). If #5961's findings contradict a specific content rule here (group labelling, denial copy, memory defaults), the issue owner revises that rule; it is not treated as frozen against new evidence. |
+| [#5840](https://github.com/developing-today/code/issues/5840) knowledge-layer sharing & permissions | separate layer | shared vocabulary (principal, grant, scope) | none — the surfaces are deliberately different. |
+
 ## Out of scope
 
 - The capability model itself (what capabilities exist, how the used
-  set is measured): the capability-model child of #5955.
+  set is measured): [#5958](https://github.com/developing-today/code/issues/5958).
 - Capability-change notices beyond the prompt behaviour named here:
-  the change-notices child of #5955.
+  [#5959](https://github.com/developing-today/code/issues/5959).
 - Knowledge-layer sharing (notes, groups, read/edit grants): #5840.
   This record governs *world connection* permissions; the vocabulary
   (principal, grant, scope) is shared deliberately, the surfaces are
