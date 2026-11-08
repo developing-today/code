@@ -65,7 +65,14 @@ def ensure_state_dir() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def log_fire(mode: str, candidates: List[Dict], launched: List[Dict], cap_room: int, skips: List[Dict]) -> None:
+def log_fire(
+    mode: str,
+    candidates: List[Dict],
+    launched: List[Dict],
+    cap_room: Optional[int],
+    skips: List[Dict],
+    report: Optional[Dict] = None,
+) -> None:
     """Append a fire log entry to fires.jsonl."""
     ensure_state_dir()
     
@@ -77,9 +84,148 @@ def log_fire(mode: str, candidates: List[Dict], launched: List[Dict], cap_room: 
         "cap_room": cap_room,
         "skips": skips,
     }
+    if report:
+        fire_entry.update(report)
     
     with FIRES_FILE.open("a") as f:
         f.write(json.dumps(fire_entry) + "\n")
+
+
+HELD_ISSUE_LABELS = {"held", "user/owned", "do-not-merge", "do-not-auto-edit"}
+
+
+def _labels_from(value: Any) -> List[str]:
+    """Extract label names from common packet/issue representations."""
+    if isinstance(value, str):
+        return [value.lower()]
+    if isinstance(value, dict):
+        if isinstance(value.get("name"), str):
+            return [value["name"].lower()]
+        labels = value.get("labels")
+        if labels is not None:
+            return _labels_from(labels)
+        return []
+    if isinstance(value, list):
+        found = []
+        for item in value:
+            found.extend(_labels_from(item))
+        return found
+    return []
+
+
+def candidate_labels(candidate: Dict) -> List[str]:
+    """Return labels carried by the candidate or its inlined packet."""
+    packet = candidate.get("packet")
+    labels = _labels_from(candidate.get("labels"))
+    labels.extend(_labels_from(candidate.get("issue_labels")))
+    if isinstance(packet, dict):
+        labels.extend(_labels_from(packet.get("labels")))
+        labels.extend(_labels_from(packet.get("issue_labels")))
+        labels.extend(_labels_from(packet.get("issue")))
+    return sorted(set(labels))
+
+
+def candidate_route(candidate: Dict) -> Dict[str, str]:
+    """Resolve the packet route, falling back only to the Workhorse route."""
+    packet = candidate.get("packet")
+    route = packet.get("route") if isinstance(packet, dict) else None
+    if not isinstance(route, dict):
+        route = {}
+
+    provider_id = route.get("providerID") or route.get("provider_id") or "opencode-route"
+    model_id = route.get("modelID") or route.get("model_id") or route.get("id")
+    agent = route.get("agent") or (packet.get("agent") if isinstance(packet, dict) else None)
+
+    if not model_id:
+        model_id = "workhorse"
+    if not agent:
+        agent = "build"
+    return {"providerID": str(provider_id), "modelID": str(model_id), "agent": str(agent)}
+
+
+def shadow_report(poll_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a read-only worked-example report; this function never launches."""
+    candidates = poll_data.get("candidates")
+    if not isinstance(candidates, list):
+        candidates = []
+
+    cap_room = poll_data.get("cap_room")
+    skips: List[Dict] = []
+    would_launch: List[Dict] = []
+    for candidate in candidates:
+        labels = candidate_labels(candidate)
+        blocked = sorted(HELD_ISSUE_LABELS.intersection(labels))
+        if blocked:
+            skips.append({
+                "task_id": candidate.get("id"),
+                "reason": "held_issue_label",
+                "labels": blocked,
+            })
+            continue
+        if cap_room is None:
+            skips.append({"task_id": candidate.get("id"), "reason": "cap_unknown"})
+            continue
+        if cap_room <= len(would_launch):
+            skips.append({"task_id": candidate.get("id"), "reason": "cap_saturated"})
+            continue
+        would_launch.append({
+            "task_id": candidate.get("id"),
+            "queue": candidate.get("queue"),
+            "issue": candidate.get("issue"),
+            "route": candidate_route(candidate),
+        })
+
+    if not candidates:
+        skips.append({"reason": "no_candidates"})
+    elif cap_room == 0:
+        skips.append({"reason": "cap_saturated"})
+    elif cap_room is None:
+        skips.append({"reason": "cap_unknown"})
+
+    return {
+        "would_launch": would_launch,
+        "cap": poll_data.get("cap", poll_data.get("concurrency_cap", CONCURRENCY_CAP)),
+        "cap_count": poll_data.get("active_root_sessions"),
+        "live_root_sessions": poll_data.get("live_root_sessions"),
+        "active_root_sessions": poll_data.get("active_root_sessions"),
+        "supervision_stalls": poll_data.get("stuck_bound", []),
+        "skips": skips,
+    }
+
+
+def run_shadow_fire() -> int:
+    """Discover and log a shadow fire without entering any mutation path."""
+    try:
+        poll_data = run_poll()
+        if not isinstance(poll_data, dict):
+            raise RuntimeError("poll.py returned a non-object result")
+    except Exception as e:
+        log_fire(
+            "shadow", [], [], None,
+            [{"reason": "discovery_failed", "error": str(e)}],
+            {"would_launch": [], "supervision_stalls": [], "cap_count": None},
+        )
+        print(f"Shadow discovery failed; no launch attempted: {e}")
+        return 1
+
+    candidates = poll_data.get("candidates")
+    if not isinstance(candidates, list):
+        candidates = []
+    report = shadow_report(poll_data)
+    log_fire(
+        "shadow",
+        candidates,
+        [],
+        poll_data.get("cap_room"),
+        report.pop("skips"),
+        report,
+    )
+    print(
+        f"Shadow fire complete. Candidates: {len(candidates)}; "
+        f"would launch: {len(report['would_launch'])}; "
+        f"cap room: {poll_data.get('cap_room')}"
+    )
+    return 0
 
 
 def run_poll() -> Dict[str, Any]:
@@ -325,7 +471,7 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
     
     Returns list of successfully launched sessions.
     """
-    if cap_room <= 0:
+    if mode != "live" or cap_room <= 0:
         return []
     
     launched = []
@@ -481,11 +627,16 @@ def main():
     mode = read_mode()
     
     print(f"OpenCode claimant starting in {mode} mode")
+
+    # Shadow mode is a strict read-only fire. Keep this branch ahead of
+    # supervision, gate, cap, and launch helpers so a future refactor
+    # cannot accidentally reach a mutation path from the default mode.
+    if mode != "live":
+        return run_shadow_fire()
     
     # Step 1: Supervision (always runs in live mode)
-    if mode == "live":
-        print("Running supervision step...")
-        supervision_step(mode)
+    print("Running supervision step...")
+    supervision_step(mode)
     
     # Step 2: Gate
     print("Running gate step...")
