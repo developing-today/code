@@ -262,18 +262,26 @@ usage: fleet proxy connect [--print-path] [--stdio [--host H] \
 
 Connect to the session proxy: ensure a broker answers (starting
 one when none does), sync the PATH shims from its services map,
-and optionally issue one request over the negotiated stream.";
+and optionally issue one request over the negotiated stream.
+
+Each flag may be given at most once. --stdio and --print-path are
+mutually exclusive with --request, and --host/--port require
+--stdio.";
 
 impl ConnectArgs {
     pub fn parse(argv: &[String]) -> Result<ConnectArgs, ClientError> {
         let mut out = ConnectArgs::default();
         let mut i = 0;
         let usage = |what: &str| ClientError::Usage(format!("proxy connect: {what}"));
+        let repeated = |flag: &str| usage(&format!("{flag} given more than once"));
         while i < argv.len() {
             match argv[i].as_str() {
                 "--print-path" => out.print_path = true,
                 "--stdio" => out.stdio = true,
                 "--host" => {
+                    if out.host.is_some() {
+                        return Err(repeated("--host"));
+                    }
                     i += 1;
                     out.host = Some(
                         argv.get(i)
@@ -282,6 +290,9 @@ impl ConnectArgs {
                     );
                 }
                 "--port" => {
+                    if out.port.is_some() {
+                        return Err(repeated("--port"));
+                    }
                     i += 1;
                     out.port = Some(
                         argv.get(i)
@@ -291,6 +302,9 @@ impl ConnectArgs {
                     );
                 }
                 "--request" => {
+                    if out.request.is_some() {
+                        return Err(repeated("--request"));
+                    }
                     i += 1;
                     let method = argv
                         .get(i)
@@ -310,6 +324,13 @@ impl ConnectArgs {
                     });
                 }
                 "--service-port" => {
+                    if out
+                        .request
+                        .as_ref()
+                        .is_some_and(|r| r.service_port.is_some())
+                    {
+                        return Err(repeated("--service-port"));
+                    }
                     i += 1;
                     let value = argv
                         .get(i)
@@ -322,6 +343,9 @@ impl ConnectArgs {
                         .service_port = Some(value);
                 }
                 "--token-file" => {
+                    if out.request.as_ref().is_some_and(|r| r.token_file.is_some()) {
+                        return Err(repeated("--token-file"));
+                    }
                     i += 1;
                     let value = argv
                         .get(i)
@@ -333,6 +357,9 @@ impl ConnectArgs {
                         .token_file = Some(value);
                 }
                 "--body" => {
+                    if out.request.as_ref().is_some_and(|r| r.body.is_some()) {
+                        return Err(repeated("--body"));
+                    }
                     i += 1;
                     let value = argv
                         .get(i)
@@ -351,7 +378,33 @@ impl ConnectArgs {
             }
             i += 1;
         }
+        out.validate()?;
         Ok(out)
+    }
+
+    /// Reject flag combinations that would silently drop an
+    /// argument: `run_connect` returns early for `--stdio` and
+    /// `--print-path` (never sending a `--request`), and
+    /// `--host`/`--port` only feed the stdio relay (#5929).
+    pub fn validate(&self) -> Result<(), ClientError> {
+        let usage = |what: &str| ClientError::Usage(format!("proxy connect: {what}"));
+        if self.request.is_some() {
+            if self.stdio {
+                return Err(usage("--stdio cannot be combined with --request"));
+            }
+            if self.print_path {
+                return Err(usage("--print-path cannot be combined with --request"));
+            }
+        }
+        if !self.stdio {
+            if self.host.is_some() {
+                return Err(usage("--host requires --stdio"));
+            }
+            if self.port.is_some() {
+                return Err(usage("--port requires --stdio"));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -363,6 +416,7 @@ pub fn run_connect(
     client: &str,
     capabilities: &[String],
 ) -> Result<i32, ClientError> {
+    args.validate()?;
     if args.stdio {
         let host = args
             .host
@@ -538,5 +592,113 @@ mod tests {
             .expect_err("a non-help argument must be rejected");
         assert_eq!(err.exit_code(), EXIT_USAGE);
         assert!(err.to_string().contains("--bogus"));
+    }
+
+    fn parse_err(list: &[&str]) -> String {
+        let err = ConnectArgs::parse(&strings(list)).expect_err("must be rejected");
+        assert_eq!(err.exit_code(), EXIT_USAGE, "{list:?}");
+        err.to_string()
+    }
+
+    #[test]
+    fn connect_rejects_repeated_value_flags() {
+        // #5929: last-wins used to discard earlier values silently.
+        let cases: [(&[&str], &str); 6] = [
+            (&["--stdio", "--host", "a", "--host", "b"], "--host"),
+            (&["--stdio", "--port", "1", "--port", "2"], "--port"),
+            (
+                &["--request", "GET", "/a", "--request", "GET", "/b"],
+                "--request",
+            ),
+            (
+                &[
+                    "--request",
+                    "GET",
+                    "/a",
+                    "--service-port",
+                    "1",
+                    "--service-port",
+                    "2",
+                ],
+                "--service-port",
+            ),
+            (
+                &[
+                    "--request",
+                    "GET",
+                    "/a",
+                    "--token-file",
+                    "x",
+                    "--token-file",
+                    "y",
+                ],
+                "--token-file",
+            ),
+            (
+                &["--request", "POST", "/a", "--body", "1", "--body", "2"],
+                "--body",
+            ),
+        ];
+        for (argv, flag) in cases {
+            let msg = parse_err(argv);
+            assert!(
+                msg.contains(flag) && msg.contains("more than once"),
+                "{msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn connect_rejects_conflicting_modes() {
+        let msg = parse_err(&["--stdio", "--request", "GET", "/a"]);
+        assert!(
+            msg.contains("--stdio") && msg.contains("--request"),
+            "{msg}"
+        );
+        let msg = parse_err(&["--request", "GET", "/a", "--stdio"]);
+        assert!(
+            msg.contains("--stdio") && msg.contains("--request"),
+            "{msg}"
+        );
+        let msg = parse_err(&["--print-path", "--request", "GET", "/a"]);
+        assert!(
+            msg.contains("--print-path") && msg.contains("--request"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn connect_rejects_host_and_port_without_stdio() {
+        assert!(parse_err(&["--host", "h"]).contains("--host requires --stdio"));
+        assert!(parse_err(&["--port", "22"]).contains("--port requires --stdio"));
+        assert!(parse_err(&["--print-path", "--host", "h"]).contains("--stdio"));
+    }
+
+    #[test]
+    fn connect_valid_shapes_still_parse() {
+        let a = ConnectArgs::parse(&strings(&[
+            "--request",
+            "POST",
+            "/a",
+            "--service-port",
+            "8080",
+            "--token-file",
+            "t",
+            "--body",
+            "{\"k\":1}",
+        ]))
+        .unwrap();
+        let r = a.request.unwrap();
+        assert_eq!((r.method.as_str(), r.path.as_str()), ("POST", "/a"));
+        assert_eq!(r.service_port, Some(8080));
+        assert_eq!(r.token_file.as_deref(), Some("t"));
+        assert!(r.body.is_some());
+
+        let a = ConnectArgs::parse(&strings(&["--stdio", "--host", "h", "--port", "22"])).unwrap();
+        assert!(a.stdio && a.host.as_deref() == Some("h") && a.port == Some(22));
+
+        let a = ConnectArgs::parse(&strings(&["--print-path"])).unwrap();
+        assert!(a.print_path && !a.stdio && a.request.is_none());
+        assert!(ConnectArgs::parse(&[]).is_ok());
     }
 }

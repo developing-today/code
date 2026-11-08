@@ -1764,6 +1764,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 web_cookie_secure,
                 event_events.as_ref().map(Arc::clone),
                 surfaces,
+                Some(groups_log.clone()),
             )
             .await?;
             for ((listener_addr, listener, target), web_router) in

@@ -123,6 +123,7 @@ events.redb
 events.redb.tmp
 groups.jsonl
 test.*
+!pkgs/mcpx/scripts/test.sh
 pkgs/roc/platforms/rust-basic-cli
 codedb.snapshot
 **/codedb.snapshot
@@ -176,3 +177,9 @@ codedb.snapshot
 
 # pm-stack aggregator runtime event log (written by the live service; tracking it blocks pm-git-sync fast-forward — #4906)
 pm-stack/aggregator/events.json
+
+# mcpx tooling run from the checkout writes its schema cache in-tree
+# (.cache/mcpx/schemas-<hash>.json); untracked, it made pm-git-sync's
+# dirty-tree refusal fire permanently (#5562). Root-anchored so only the
+# repo-root cache is ignored.
+/.cache/

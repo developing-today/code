@@ -221,6 +221,21 @@ describe("events store (#1739)", () => {
     expect(second.events.map((event) => event.id)).not.toContain("late-event");
   });
 
+  test("ingestedAt stamps are strictly monotonic across rapid appends (#3322, PR #7665)", async () => {
+    // pageEvents snapshot exclusion is only exact if a later append
+    // can never share the snapshot's newest ingestedAt; wall-clock
+    // stamps tie at millisecond resolution, so record() must stamp
+    // strictly past the previous record even within the same ms.
+    const { store } = tmpStore();
+    for (let i = 0; i < 5; i++) {
+      await store.record({ ...base, id: `mono-${i}`, summary: `rapid ${i}` });
+    }
+    const stamps = (await store.list()).map((e) => Date.parse(e.ingestedAt)).sort((a, b) => a - b);
+    for (let i = 1; i < stamps.length; i++) {
+      expect(stamps[i]).toBeGreaterThan(stamps[i - 1]!);
+    }
+  });
+
   test("pageEvents compares ingestion timestamps as instants, not strings", () => {
     // Migrated v1 rows keep offset timestamps as ingestedAt: the first
     // row below is 07:00Z even though its string sorts after the native

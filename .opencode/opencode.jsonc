@@ -1095,6 +1095,10 @@
       "instanceOf": "opencode-go",
       "name": "OpenCode Go (popesdrew)"
     },
+    "opencode-go.developing-today-0": {
+      "instanceOf": "opencode-go",
+      "name": "OpenCode Go (developing-today-0)"
+    },
     "_commandcode": {
           // 2026-11-05 (code#6117, opencode#1749): repointed from the CLI proxy
           // (:18748, @ai-sdk/openai-compatible) to the in-fork native commandcode
@@ -1966,14 +1970,16 @@
       // 2026-11-07 (Drew, direct order): internal split back to
       // 1:1 — each account door at weight 1, superseding the 2:1
       // above.
+      // 2026-11-08 (Drew, direct order): third Go account
+      // opencode-go.developing-today-0 joins as a peer at weight 1.
       // The bare opencode-go provider is NOT a member: it has no account
       // of its own and rides whichever console login is active, so its
       // burn landed on that account unattributed. Quota/health rules
       // still demote a walled member inside the group.
       "opencode-go-plans": {
-        "providers": ["opencode-go.drewrypope", "opencode-go.popesdrew"],
+        "providers": ["opencode-go.drewrypope", "opencode-go.popesdrew", "opencode-go.developing-today-0"],
         "selection": "weighted",
-        "weights": { "opencode-go.drewrypope": 1, "opencode-go.popesdrew": 1 }
+        "weights": { "opencode-go.drewrypope": 1, "opencode-go.popesdrew": 1, "opencode-go.developing-today-0": 1 }
       }
     },
     "model_routes": {

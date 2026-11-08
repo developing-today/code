@@ -126,6 +126,14 @@ fn presence_after(events: &[WorldEvent]) -> BTreeSet<u64> {
     present
 }
 
+pub(super) fn check_journal_version(version: u32, max_supported: u32) -> Result<()> {
+    ensure!(
+        (JOURNAL_VERSION..=max_supported).contains(&version),
+        "unsupported world journal version {version}"
+    );
+    Ok(())
+}
+
 /// Mutable world state. Keep it behind one actor/mutex so event sequencing is serialized.
 #[derive(Debug)]
 pub struct WorldCore {
@@ -524,10 +532,7 @@ impl WorldCore {
                     "journal belongs to world {world_id:?}, not {:?}",
                     core.world_id
                 );
-                ensure!(
-                    (JOURNAL_VERSION..=MAX_JOURNAL_VERSION).contains(&version),
-                    "unsupported world journal version {version}"
-                );
+                check_journal_version(version, MAX_JOURNAL_VERSION)?;
                 version
             }
             Some(_) => anyhow::bail!("world journal does not start with a header"),
