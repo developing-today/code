@@ -4,14 +4,35 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "The fleet search domain: the atlas-search client surface over the live Atlas service (job protocol), with the Q3 host defaults — via-service with loud standalone fallback on the sandbox seat, standalone on the laptop seat (epic developing-today/code#5412, step 5 #5433)."
+description = "The fleet search domain: the atlas-search client surface over the live Atlas service (job protocol), with the Q3 host defaults — via-service with loud standalone fallback on the sandbox seat, standalone on the laptop seat (epic developing-today/code#5412, step 5 #5433) — and the `serve search` role, the Atlas service itself rehomed from the atlas-search bin crate (#5604)."
+
+[features]
+default = ["client"]
+# The client surface (`fleet search`, `fleet search get-chunk`).
+client = ["dep:fleet-config", "dep:ureq"]
+# The service role (`fleet serve search`): atlas-core / atlas-embed /
+# atlas-proto consumed as-is from the atlas-search workspace.
+serve = ["dep:atlas-core", "dep:atlas-embed", "dep:atlas-proto"]
 
 [dependencies]
-fleet-config = { workspace = true }
+fleet-config = { workspace = true, optional = true }
 serde = { workspace = true }
 # preserve_order, as in fleet-dispatch: the service envelope's key
 # order is part of the printed output shape.
 serde_json = { version = "1", features = ["preserve_order"] }
 # The atlas via-service client's own HTTP stack (atlas-search's
 # service.rs builds on ureq 3); same pin as fleet-queue.
-ureq = { version = "3", features = ["rustls", "json"] }
+ureq = { version = "3", features = ["rustls", "json"], optional = true }
+# The Atlas crates stay in their own workspace (pkgs/atlas-search) and
+# are consumed by path, untouched (design note §1/§6). The nix build
+# must put both trees in its source (pkgs/fleet/default.nix).
+atlas-core = { path = "../../../atlas-search/crates/atlas-core", optional = true }
+atlas-embed = { path = "../../../atlas-search/crates/atlas-embed", optional = true }
+atlas-proto = { path = "../../../atlas-search/crates/atlas-proto", optional = true }
+
+[dev-dependencies]
+proptest = "1.12"
+# The serve contract tests drive the role over real loopback HTTP with a
+# stub backend, so they name atlas-core's backend trait and types.
+atlas-core = { path = "../../../atlas-search/crates/atlas-core" }
+atlas-proto = { path = "../../../atlas-search/crates/atlas-proto" }

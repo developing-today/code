@@ -477,8 +477,18 @@ func (s *Server) startHTTP() {
 }
 
 func (s *Server) clearStaleSocket() error {
-	if _, err := os.Stat(s.paths.Socket); err != nil {
+	info, err := os.Lstat(s.paths.Socket)
+	if err != nil {
 		return nil
+	}
+	// Only a socket file is stale-daemon state this cleanup may remove.
+	// Anything else at the path -- a regular file, a symlink, a
+	// directory -- is somebody else's data, not a crashed daemon's
+	// leavings: preserve it and fail startup with the collision named
+	// (#5742). Lstat, not Stat: a symlink is preserved as a symlink,
+	// never followed into a remove decision about its target.
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("socket path %s is occupied by a non-socket entry (%s); refusing to remove it", s.paths.Socket, info.Mode())
 	}
 	c, err := net.DialTimeout("unix", s.paths.Socket, s.set.Duration("daemon.socketProbeTimeout"))
 	if err == nil {

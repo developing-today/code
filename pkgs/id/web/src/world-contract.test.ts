@@ -100,6 +100,71 @@ describe("shell contract validator", () => {
     expect(() => parseShellContract(fractionalCap)).toThrow("max_frame_bytes must be a non-negative integer");
   });
 
+  it("rejects malformed frame specs and header fields when loading a contract (#6965)", () => {
+    const asRecord = (doc: unknown): Record<string, any> => doc as Record<string, any>;
+
+    const noClass = structuredClone(contract);
+    delete asRecord(noClass.client_frames.chat).class;
+    expect(() => parseShellContract(noClass)).toThrow("chat: unknown frame class");
+
+    const badClass = structuredClone(contract);
+    asRecord(badClass.client_frames.chat).class = "bogus";
+    expect(() => parseShellContract(badClass)).toThrow("chat: unknown frame class");
+
+    // A string `phases` must not load: at check time it would substring-match
+    // phase names, so chat would be accepted in the opening phase.
+    const stringPhases = structuredClone(contract);
+    asRecord(stringPhases.client_frames.chat).phases = "joinedopening";
+    expect(() => parseShellContract(stringPhases)).toThrow("chat: phases must be an array of phase names");
+
+    const bogusPhase = structuredClone(contract);
+    asRecord(bogusPhase.client_frames.chat).phases = ["joined", "bogus"];
+    expect(() => parseShellContract(bogusPhase)).toThrow("chat: phases must be an array of phase names");
+
+    // A bogus `opens` must not load: Conformance would adopt it as the
+    // session phase after a join.
+    const bogusOpens = structuredClone(contract);
+    asRecord(bogusOpens.client_frames.join).opens = "bogus";
+    expect(() => parseShellContract(bogusOpens)).toThrow("join: opens must be a phase name");
+
+    const stringForbidden = structuredClone(contract);
+    asRecord(stringForbidden.client_frames.attenuate).forbidden_keys = "uses";
+    expect(() => parseShellContract(stringForbidden)).toThrow("attenuate: forbidden_keys must be an array of strings");
+
+    const stringVersion = structuredClone(contract);
+    asRecord(stringVersion).version = "1";
+    expect(() => parseShellContract(stringVersion)).toThrow("version must be a non-negative integer");
+
+    const noRevision = structuredClone(contract);
+    delete asRecord(noRevision).revision;
+    expect(() => parseShellContract(noRevision)).toThrow("revision must be a non-negative integer");
+
+    const noTransports = structuredClone(contract);
+    delete asRecord(noTransports).transports;
+    expect(() => parseShellContract(noTransports)).toThrow("transports must be an object");
+
+    const noName = structuredClone(contract);
+    delete asRecord(noName).contract;
+    expect(() => parseShellContract(noName)).toThrow("contract must be a string");
+
+    const negativeBound = structuredClone(contract);
+    (negativeBound.client_frames.chat!.fields as Record<string, unknown>).text = { type: "string", max_bytes: -1 };
+    expect(() => parseShellContract(negativeBound)).toThrow("chat.text: max_bytes must be a non-negative integer");
+
+    const fractionalBound = structuredClone(contract);
+    (fractionalBound.client_frames.chat!.fields as Record<string, unknown>).text = { type: "string", max_bytes: 1.5 };
+    expect(() => parseShellContract(fractionalBound)).toThrow("chat.text: max_bytes must be a non-negative integer");
+
+    const negativeMin = structuredClone(contract);
+    (negativeMin.client_frames.join!.fields as Record<string, unknown>).after = {
+      type: "u64",
+      optional: true,
+      nullable: true,
+      min: -1,
+    };
+    expect(() => parseShellContract(negativeMin)).toThrow("join.after: min must be a non-negative integer");
+  });
+
   it("returns violations instead of throwing for malformed field specs", () => {
     const malformedClient = withFieldType("client", "chat", "text", "u65");
     const clientCheck = checkClientFrame(malformedClient, { type: "chat", text: "hi" }, "joined");

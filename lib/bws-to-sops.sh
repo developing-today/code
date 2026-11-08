@@ -6,7 +6,7 @@
 #   lib/bws-to-sops.sh              sync all secrets -> secrets/sops/common/bws.yaml
 #   lib/bws-to-sops.sh --dry-run    list what would be written (key names only)
 #   lib/bws-to-sops.sh --check      names-only freshness check vs the committed
-#                                   mirror: writes nothing, exit 1 on drift (#5451)
+#                                   mirror: writes nothing, exit 1 on drift (#5451); --check beats --dry-run (#6631)
 #   lib/bws-to-sops.sh --project ID only secrets in one bws project
 #   lib/bws-to-sops.sh --out FILE   write somewhere else
 #
@@ -96,12 +96,11 @@ DOC="$(jq -S 'map({(.key): .value}) | add // {}' <<<"$RAW")"
 COUNT="$(jq 'length' <<<"$DOC")"
 [ "$COUNT" -gt 0 ] || die "bws returned no secrets (wrong project / token scope?)"
 
-if [ "$DRY_RUN" = true ]; then
-  echo "Would write $COUNT secret(s) to ${OUT#"$REPO_ROOT"/}:"
-  jq -r 'keys[] | "  " + .' <<<"$DOC"
-  exit 0
-fi
-
+# --check takes precedence over --dry-run (#6631): the check block below
+# always exits (0 fresh / 1 drift / 2 operational), so combined flags run
+# the freshness comparison and report its status. The dry-run branch used
+# to run first and exit 0, so `--check --dry-run` reported success for a
+# check that never compared anything.
 if [ "$CHECK" = true ]; then
   # Names-only freshness check (#5451): compare BWS against the committed
   # mirror without writing anything. The jq programs below only ever touch
@@ -125,6 +124,12 @@ if [ "$CHECK" = true ]; then
     (($ak - $bk)[] | "  - \(.)"),
     (($ak - ($ak - $bk))[] | select($a[.] != $b[.]) | "  ~ \(.)")'
   exit 1
+fi
+
+if [ "$DRY_RUN" = true ]; then
+  echo "Would write $COUNT secret(s) to ${OUT#"$REPO_ROOT"/}:"
+  jq -r 'keys[] | "  " + .' <<<"$DOC"
+  exit 0
 fi
 
 if [ -f "$OUT" ]; then

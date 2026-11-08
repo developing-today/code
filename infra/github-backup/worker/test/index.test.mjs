@@ -153,3 +153,57 @@ test("POST /queue/ack requires auth", async () => {
   assert.equal(response.status, 401);
   assert.equal(deleted, false);
 });
+
+import { createHmac } from "node:crypto";
+
+const sign = (secret, body) =>
+  "sha256=" + createHmac("sha256", secret).update(body).digest("hex");
+
+function githubRequest(secret, body, event = "push") {
+  const headers = { "X-GitHub-Event": event };
+  if (secret !== null) headers["X-Hub-Signature-256"] = sign(secret, body);
+  return new Request("https://worker.test/github", { method: "POST", headers, body });
+}
+
+test("POST /github stores a correctly signed repository event", async () => {
+  const puts = [];
+  const env = {
+    GHB_EVENTS: { async put(k, v) { puts.push([k, v]); } },
+    GITHUB_WEBHOOK_SECRET: "whsec",
+  };
+  const body = JSON.stringify({ repository: { full_name: "owner/repo" }, action: "created" });
+  const response = await worker.fetch(githubRequest("whsec", body), env);
+  assert.equal(response.status, 202);
+  assert.equal(puts.length, 1);
+  assert.equal(JSON.parse(puts[0][1]).repo, "owner/repo");
+  const bad = await worker.fetch(githubRequest("wrong", body), env);
+  assert.equal(bad.status, 401);
+  assert.equal(puts.length, 1);
+});
+
+test("POST /github returns 202 (not a crash) for a signed JSON null body (#6951)", async () => {
+  let puts = 0;
+  const env = {
+    GHB_EVENTS: { async put() { puts++; } },
+    GITHUB_WEBHOOK_SECRET: "whsec",
+  };
+  const response = await worker.fetch(githubRequest("whsec", "null"), env);
+  assert.equal(response.status, 202);
+  assert.equal(await response.text(), "no repository in payload");
+  assert.equal(puts, 0);
+});
+
+test("POST /github fails closed naming the config when the webhook secret is unset or empty (#6951)", async () => {
+  let puts = 0;
+  const kv = { async put() { puts++; } };
+  const body = JSON.stringify({ repository: { full_name: "owner/repo" } });
+  for (const secret of [undefined, ""]) {
+    const env = { GHB_EVENTS: kv };
+    if (secret !== undefined) env.GITHUB_WEBHOOK_SECRET = secret;
+    // Even a signature computed with the empty key must not be accepted.
+    const response = await worker.fetch(githubRequest("", body), env);
+    assert.equal(response.status, 500);
+    assert.match(await response.text(), /webhook secret not configured/);
+  }
+  assert.equal(puts, 0);
+});

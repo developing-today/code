@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -109,6 +110,62 @@ class TestExactTitleFilter(unittest.TestCase):
         ]
         hits = [i for i in items if i.get("title") == title]
         self.assertEqual([h["number"] for h in hits], [3])
+
+
+class _FakeClient:
+    def token_for(self, owner):
+        return "test-token"
+
+
+class TestFindByExactTitle(unittest.TestCase):
+    """The real find_by_exact_title against stubbed Search-API payloads,
+    shaped as GitHub returns them (PRs carry a `pull_request` key)."""
+
+    TITLE = "id: exact title shared with a PR"
+
+    def run_lookup(self, pages):
+        """pages: {page_number: [items]}. Returns (hit, requested_paths)."""
+        paths = []
+
+        def fake_http(method, path, token, payload=None):
+            paths.append(path)
+            page = int(path.rsplit("page=", 1)[1])
+            return 200, {"items": pages.get(page, [])}
+
+        with unittest.mock.patch.object(fp, "http", fake_http):
+            hit = fp.find_by_exact_title(
+                _FakeClient(), "developing-today/code", self.TITLE
+            )
+        return hit, paths
+
+    def test_pr_with_same_title_is_not_a_hit(self):
+        pr = {
+            "title": self.TITLE,
+            "number": 4242,
+            "pull_request": {"url": "https://api.github.com/x/pulls/4242"},
+        }
+        hit, paths = self.run_lookup({1: [pr]})
+        self.assertIsNone(hit)
+        # The query itself also scopes to issues (belt and braces).
+        self.assertIn("type%3Aissue", paths[0])
+
+    def test_exact_title_issue_is_a_hit(self):
+        issue = {"title": self.TITLE, "number": 7}
+        hit, _ = self.run_lookup({1: [{"title": "other", "number": 1}, issue]})
+        self.assertEqual(hit["number"], 7)
+
+    def test_pr_before_exact_issue_on_same_page_is_skipped(self):
+        pr = {"title": self.TITLE, "number": 4242, "pull_request": {}}
+        issue = {"title": self.TITLE, "number": 8}
+        hit, _ = self.run_lookup({1: [pr, issue]})
+        self.assertEqual(hit["number"], 8)
+
+    def test_exact_issue_past_first_page_is_found(self):
+        page1 = [{"title": f"{self.TITLE} (mention {i})", "number": i} for i in range(100)]
+        issue = {"title": self.TITLE, "number": 99}
+        hit, paths = self.run_lookup({1: page1, 2: [issue]})
+        self.assertEqual(hit["number"], 99)
+        self.assertEqual(len(paths), 2)
 
 
 class TestGenericCommandArgs(unittest.TestCase):

@@ -23,10 +23,10 @@
 # store) and is read at service start.
 let
   homeDir = "/home/user";
-  # Local provider-proxy ports. The canonical definitions live in
-  # home/common/default.nix (clefProxyPort..claudeCodeProxyPort); these are
-  # the same numbers, repeated here because OpenClaw's config is rendered
-  # as data, not shell env. Keep in sync with home/common.
+  # Local service ports, repeated here because OpenClaw's config is
+  # rendered as data, not shell env. (The provider-proxy ports that
+  # once had to stay in sync with home/common/default.nix are all
+  # retired — the last, museProxyPort 18747, on 2026-11-06.)
   # The opencode-route provider talks to the OpenCode server facade
   # directly (127.0.0.1:13420/v1) since the route proxy's retirement
   # (opencode#1153, 2026-11-04); the proxy's port (18750) is free.
@@ -71,12 +71,13 @@ in
   # since the route proxy retired (opencode#1153, 2026-11-04); it is
   # ordered After it but does not Want it (the server has its own
   # enablement; the ExecStartPre below waits for its service record).
-  # The per-CLI proxies are owned by the proxy-supervisor (transient
-  # fps-* units on the canonical ports), so the gateway must not Want
-  # the manual per-proxy units: a gateway restart would re-pull them,
-  # and the manual commandcode-proxy unit crash-loops on its
-  # already-taken port (#883). Only mcpx and the embedding server are
-  # Wanted.
+  # The gateway must not Want the per-proxy units: a gateway restart
+  # would re-pull them (the manual commandcode-proxy unit once
+  # crash-looped on its already-taken port, #883, in the retired
+  # proxy-supervisor era). The commandcode-proxy and agy-proxy units
+  # themselves are gone — commandcode in the 2026-11-06 proxy-infra
+  # decommission, agy on 2026-10-30 — so their After entries below
+  # are gone too. Only mcpx and the embedding server are Wanted.
   # Stable local embedding endpoint for memory-lancedb (#1300 phase 1):
   # a dedicated llama-server on a FIXED loopback port, reusing the
   # llama.cpp build and the Qwen3-Embedding-0.6B GGUF that OpenCode's
@@ -102,9 +103,6 @@ in
     Unit = {
       After = [
         "openclaw-embedding.service"
-        "commandcode-proxy.service"
-        "agy-proxy.service"
-        "codex-proxy.service"
         "mcpx.service"
         "opencode.service"
       ];
@@ -174,6 +172,7 @@ in
       OPENCLAW_GATEWAY_TOKEN = "/run/secrets/openclaw/gateway-token";
       OPENCLAW_SLACK_BOT_TOKEN = "/run/secrets/openclaw/slack-bot-token";
       OPENCLAW_SLACK_APP_TOKEN = "/run/secrets/openclaw/slack-app-token";
+      OPENCLAW_TELEGRAM_BOT_TOKEN = "/run/secrets/openclaw/telegram-bot-token";
       TAVILY_API_KEY = "/run/secrets/openclaw/tavily-api-key";
       OPENCODE_SERVER_AUTH = "${homeDir}/.local/state/openclaw/opencode-server-auth";
     };
@@ -256,6 +255,14 @@ in
     runtimePlugins = [
       "acpx" # ACP backend: opencode / claude / codex / gemini / copilot harnesses
       "slack" # Slack channel (channel inert until app tokens are wired; see CHANNELS.md)
+      # NOTE: no "telegram" entry here — in the pinned build (2026.10.7)
+      # Telegram is a bundled core channel: extensions/telegram ships
+      # inside the openclaw-gateway package itself, so it is absent from
+      # the external runtime-plugin catalog (report.json) and listing it
+      # here fails evaluation (#7042). It activates from the
+      # channels.telegram config + plugins.entries.telegram below
+      # (bot @shed_openclaw_bot, created 2026-11-07; token via env
+      # SecretRef).
       "discord"
       "whatsapp"
       "matrix"
@@ -332,7 +339,7 @@ in
           # Laptop operations
 
           - Everything is a systemd **user** service (linger on): `systemctl --user status|restart <name>`, logs via `journalctl --user -u <name>`.
-          - Provider proxies on loopback: clef 18742, agy 18743, codex 18744, antigravity-ls 18745, muse 18747, commandcode 18748, claude-code 18749; the OpenCode server facade on 13420 is this gateway's only model route. This gateway: 18789 (tailnet).
+          - No provider proxies remain on loopback: the last one, muse 18747, retired 2026-11-06 when muse-direct went native in the fork (the codex, clef, agy, antigravity-ls, design-code, commandcode and claude-code doors retired earlier — codex, commandcode and claude-code in the 2026-11-06 proxy-infra decommission); the OpenCode server facade on 13420 is this gateway's only model route. This gateway: 18789 (tailnet).
           - OpenChamber's managed OpenCode port is dynamic — read `~/.config/openchamber/managed-opencode/state.json`, never hardcode it.
           - Secrets are referenced by name only (Bitwarden Secrets Manager; sops files under /run/secrets/agent-auth/). Never print or commit a secret value.
 
@@ -378,6 +385,21 @@ in
           };
           dmPolicy = "allowlist";
           allowFrom = [ "U0CBX163G8Z" ]; # Drew
+          groupPolicy = "allowlist";
+        };
+        # Telegram wired 2026-11-07: bot @shed_openclaw_bot (Shed),
+        # created via BotFather from Drew's account; token via env
+        # SecretRef fed from the sops-decrypted laptop file. DMs from
+        # Drew only (numeric user id).
+        telegram = {
+          enabled = true;
+          botToken = {
+            source = "env";
+            provider = "default";
+            id = "OPENCLAW_TELEGRAM_BOT_TOKEN";
+          };
+          dmPolicy = "allowlist";
+          allowFrom = [ "8290042325" ]; # Drew
           groupPolicy = "allowlist";
         };
       };
@@ -532,6 +554,7 @@ in
             };
           };
           slack.enabled = true;
+          telegram.enabled = true;
           codex.enabled = true;
           copilot.enabled = true;
           "memory-lancedb" = {

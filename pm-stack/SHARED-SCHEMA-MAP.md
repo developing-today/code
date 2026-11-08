@@ -40,6 +40,16 @@ service's current source of truth and native restore path.
 | Supabase `alerts.incidents`, `alerts.incident_events`, `alerts.push_subscriptions`, `alerts.notification_sends` ([store and writes](aggregator/src/alerts.ts#L275-L310), [incident mutations](aggregator/src/alerts.ts#L340-L363), [send ledger](aggregator/src/alerts.ts#L448-L460); [schema/location](aggregator/README.md#L299-L310)) | aggregator alerts service | No; acknowledgement state, subscriptions, and delivery history are writable durable records | `agg_` alerts; `incident_events` maps to `shared_events` |
 | Drill state under `~/.local/state/pm-drills/` ([default state path](aggregator/scripts/kill-collector-drill.sh#L41-L49)) | laptop-only aggregator drill script | Yes; run results/locks/incident flags are operational drill artifacts | `agg_` operational, or omit from shared tables as ephemeral |
 
+#### First action/event column contract (#6103)
+
+The first Move 1 store group is now specified by the versioned
+[action/event schema contract](shared-schema/README.md): `public.agg_actions`
+owns the aggregator's `actions.json` records, and `public.shared_events`
+holds their cross-service outcomes. The paired up/down migration and
+disposable PostgreSQL test are under `shared-schema/`. This is DDL and a
+contract only; `actions.json` / `events.json` remain authoritative, with no
+rows copied and no live reader or writer changed.
+
 Read-only producer inputs (quota register/view, OpenChamber state, Cloudflare
 and Supabase exports, DNS/orchestration/charge/launch records) are not
 aggregator-owned stores: their producer remains owner and their target is

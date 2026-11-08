@@ -552,7 +552,17 @@ fn parse_args(args: &[String], value_flags: &[&str], bool_flags: &[&str]) -> Res
                         .ok_or_else(|| usage(format!("--{name} needs a value")))?
                 }
             };
-            values.insert(name.to_string(), Value::String(value));
+            // A repeated value flag is malformed input, not a
+            // last-value-wins override: silently dropping the first
+            // value can launch against the wrong repo or prompt
+            // (#5713). Name the flag and stop, like every other
+            // malformed shape this parser rejects.
+            if values
+                .insert(name.to_string(), Value::String(value))
+                .is_some()
+            {
+                return Err(usage(format!("--{name} given more than once")));
+            }
         } else {
             return Err(usage(format!("unknown option --{name}")));
         }
@@ -578,6 +588,13 @@ impl Args {
 }
 
 fn prompt_of(args: &Args) -> Result<String> {
+    // Both prompt sources supplied: preferring the file would
+    // silently discard the explicitly typed --prompt text (#5713).
+    if args.get("prompt").is_some() && args.get("prompt-file").is_some() {
+        return Err(usage(
+            "--prompt and --prompt-file are mutually exclusive: supply only one".to_string(),
+        ));
+    }
     if let Some(path) = args.get("prompt-file") {
         return std::fs::read_to_string(path)
             .map_err(|e| usage(format!("cannot read prompt file {path}: {e}")));
@@ -614,6 +631,17 @@ fn verb_launch(config: &Config, args: &[String]) -> Result<Value> {
         ],
         &["issue", "no-issue", "wait", "no-wait"],
     )?;
+    // Contradictory pairs resolve by whichever the user meant, and
+    // check order cannot know it: --issue --no-issue and
+    // --no-issue --issue are the same ambiguity (#5713). Reject the
+    // pair instead of silently letting the negative always win.
+    for (pos, neg) in [("issue", "no-issue"), ("wait", "no-wait")] {
+        if parsed.flag(pos) && parsed.flag(neg) {
+            return Err(usage(format!(
+                "--{pos} and --{neg} are contradictory: supply only one"
+            )));
+        }
+    }
     let mut body = Map::new();
     body.insert(
         "repo".into(),
@@ -872,6 +900,84 @@ mod tests {
         let err = verb_status(&config, &strings(&["--bogus"])).unwrap_err();
         assert_eq!(err.exit_code(), EXIT_USAGE);
         assert!(err.message().contains("--bogus"));
+    }
+
+    #[test]
+    fn duplicate_value_flags_are_rejected() {
+        // Repeated value flags error naming the flag (#5713), in both
+        // the spaced and inline forms, before any network call.
+        for args in [
+            strings(&["--repo", "a", "--repo", "b"]),
+            strings(&["--repo=a", "--repo=b"]),
+            strings(&["--repo", "a", "--repo=a"]),
+        ] {
+            let err = parse_args(&args, &["repo"], &[]).err().expect("duplicate must error");
+            assert_eq!(err.exit_code(), EXIT_USAGE);
+            assert!(err.message().contains("--repo"), "{}", err.message());
+            assert!(
+                err.message().contains("more than once"),
+                "{}",
+                err.message()
+            );
+        }
+        // The ordinary single-flag control still parses.
+        let parsed = parse_args(&strings(&["--repo", "a"]), &["repo"], &[]).unwrap();
+        assert_eq!(parsed.require("repo").unwrap(), "a");
+    }
+
+    #[test]
+    fn contradictory_bool_pairs_are_rejected_in_both_orders() {
+        // --issue/--no-issue and --wait/--no-wait together are a usage
+        // error naming the pair, whichever order they were typed in
+        // (#5713). Rejection happens before any transport is opened,
+        // so these calls return promptly against the default config.
+        let config = Config::default();
+        for extra in [
+            strings(&["--issue", "--no-issue"]),
+            strings(&["--no-issue", "--issue"]),
+            strings(&["--wait", "--no-wait"]),
+            strings(&["--no-wait", "--wait"]),
+        ] {
+            let mut args = strings(&["--repo", "developing-today/code", "--prompt", "fix it"]);
+            args.extend(extra);
+            let err = verb_launch(&config, &args).unwrap_err();
+            assert_eq!(err.exit_code(), EXIT_USAGE);
+            assert!(err.message().contains("contradictory"), "{}", err.message());
+        }
+    }
+
+    #[test]
+    fn prompt_and_prompt_file_together_are_rejected() {
+        // Both prompt sources: a usage error naming both, never a
+        // silent preference for the file (#5713). The prompt-file
+        // path does not exist, so an implementation that read it
+        // first would fail with a different message.
+        let config = Config::default();
+        let launch_args = strings(&[
+            "--repo",
+            "developing-today/code",
+            "--prompt",
+            "typed text",
+            "--prompt-file",
+            "/nonexistent/prompt.txt",
+        ]);
+        let err = verb_launch(&config, &launch_args).unwrap_err();
+        assert_eq!(err.exit_code(), EXIT_USAGE);
+        assert!(err.message().contains("--prompt"), "{}", err.message());
+        assert!(err.message().contains("--prompt-file"), "{}", err.message());
+        let enqueue_args = strings(&[
+            "--repo",
+            "developing-today/code",
+            "--title",
+            "t",
+            "--prompt",
+            "typed text",
+            "--prompt-file",
+            "/nonexistent/prompt.txt",
+        ]);
+        let err = verb_enqueue(&config, &enqueue_args).unwrap_err();
+        assert_eq!(err.exit_code(), EXIT_USAGE);
+        assert!(err.message().contains("--prompt-file"), "{}", err.message());
     }
 
     #[test]

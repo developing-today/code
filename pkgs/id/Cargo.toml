@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.96"
 description = "A peer-to-peer file sharing CLI built with Iroh"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/example/id"
+repository = "https://github.com/developing-today/code"
 keywords = ["p2p", "file-sharing", "iroh", "cli"]
 categories = ["command-line-utilities", "network-programming"]
 

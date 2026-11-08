@@ -26,7 +26,10 @@
 //! A malformed agreement is no agreement: the two seats must be two
 //! distinct players (#2863, design #2898). [`compute_state`] returns
 //! `Proposed` for a duplicate-seat agreement regardless of the genesis
-//! and claim set, and [`sign_genesis`] refuses to sign one.
+//! and claim set, and [`sign_genesis`] refuses to sign one. Likewise a
+//! claim whose outcome is outside the countable shape (`"draw"` or a
+//! lowercase 64-character hex id) is dead on arrival, and
+//! [`sign_claim`] refuses to sign one (#6441).
 //!
 //! Reconstruction is admission, not deserialization: derive conclusions from
 //! signature-verified authors and compare claims with the selected agreement.
@@ -202,9 +205,16 @@ pub fn sign_genesis(
 
 /// Signs a result claim as an `attestation.claim` event.
 ///
+/// Returns [`SignError::InvalidOutcome`] if the claim's outcome is
+/// outside the shape [`compute_state`] can ever count: it must be
+/// exactly `"draw"` or a 64-character lowercase hex player id (#6441).
+/// Whether a well-formed hex outcome names a *seated* player is
+/// knowable only against the agreement and stays `compute_state`'s
+/// call, so any well-formed hex signs here.
+///
 /// # Errors
 ///
-/// As [`sign_genesis`].
+/// As [`sign_genesis`], plus [`SignError::InvalidOutcome`] above.
 pub fn sign_claim(
     key: &SigningKey,
     seq_num: SeqNum,
@@ -212,6 +222,15 @@ pub fn sign_claim(
     claim: &ResultClaim,
     after: Vec<Hash>,
 ) -> Result<Event, SignError> {
+    let outcome = claim.outcome.as_str();
+    let well_formed = outcome == "draw"
+        || (outcome.len() == 64
+            && outcome
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+    if !well_formed {
+        return Err(SignError::InvalidOutcome);
+    }
     let body = claim.body()?;
     Ok(chain::sign(
         key,
@@ -325,6 +344,9 @@ pub enum SignError {
     Chain(chain::ChainError),
     /// Both seats of the agreement name the same player (#2863).
     DuplicateSeat,
+    /// The claim's outcome is neither `"draw"` nor a 64-character
+    /// lowercase hex player id, so no view could ever count it (#6441).
+    InvalidOutcome,
 }
 
 impl From<serde_json::Error> for SignError {
@@ -346,6 +368,12 @@ impl std::fmt::Display for SignError {
             Self::Chain(err) => write!(f, "chain refused the attestation event: {err:?}"),
             Self::DuplicateSeat => {
                 write!(f, "both seats of the agreement name the same player")
+            }
+            Self::InvalidOutcome => {
+                write!(
+                    f,
+                    "claim outcome is neither \"draw\" nor a 64-character lowercase hex player id"
+                )
             }
         }
     }

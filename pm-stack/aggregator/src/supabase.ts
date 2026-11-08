@@ -44,6 +44,7 @@ async function supabaseQuery(token: string, ref: string, sql: string): Promise<u
  * Create the shared muse-dev2 client resolver. In-flight calls share one
  * attempt and successful clients stay cached; a null result is fail-soft
  * but not permanent, so a later call can recover.
+ * Lazy-init contract (success-only memoization): README "Lazy-initialization contract" (#3879).
  */
 export function createSupabaseClientGetter(
   resolveSecret: typeof resolveBwsSecret = resolveBwsSecret,

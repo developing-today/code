@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import { validateStreamEvent } from "../src/events.ts";
-import { todayFromSection } from "../src/derive.ts";
+import { buildAttention, todayFromSection } from "../src/derive.ts";
 import {
   ageMsText,
   diagnoseOrchestrationSection,
@@ -14,7 +14,8 @@ import {
   normalizeOrchestrationSection,
   orchestrationSectionProblem,
 } from "../src/feed.ts";
-import type { OrchestrationSection } from "../src/model.ts";
+import type { LinedUpTask, OrchestrationSection, QuotaView } from "../src/model.ts";
+import { renderTodayBody } from "../src/render.ts";
 import { liveSource } from "../src/sources/live.ts";
 
 // #899: the orchestration section rides the fleet feed. The collector
@@ -198,6 +199,36 @@ describe("orchestration section validation", () => {
     };
     expect(isOrchestrationSection(rich)).toBe(true);
     expect(() => todayFromSection(rich as OrchestrationSection)).not.toThrow();
+  });
+
+  test("rejects a lined-up task with a malformed blockedBy, accepts a shaped one (#4316)", () => {
+    const base = SECTION;
+    const goal = base.goals[0]!;
+    const task = { title: "Task A", status: "in-progress", horizon: "today", horizonWhy: "due" };
+    for (const blockedBy of [
+      "code#123",
+      [null],
+      [{ task: "Other" }],
+      [{ task: "Other", status: "bogus" }],
+      [{ task: "Other", status: "queued", ref: 42 }],
+      [{ status: "queued" }],
+    ]) {
+      const section = { ...base, goals: [{ ...goal, linedUp: [{ ...task, blockedBy }] }] };
+      expect(isOrchestrationSection(section)).toBe(false);
+    }
+    const shaped = {
+      ...base,
+      goals: [
+        {
+          ...goal,
+          linedUp: [
+            { ...task, blockedBy: [{ task: "Other", status: "queued", ref: "code#123" }] },
+            { ...task, title: "Task B", blockedBy: [] },
+          ],
+        },
+      ],
+    };
+    expect(isOrchestrationSection(shaped)).toBe(true);
   });
 
   test("rejects poisoned dependency elements and bad dependency shapes", () => {
@@ -739,5 +770,63 @@ describe("live source diagnostics + provenance detail (#1139/#1138)", () => {
     const muse = (await clean.coverage()).find((row) => row.source === "claude-code");
     expect(muse?.wired).toBe(true);
     expect(muse?.detail).toContain("1 recorded");
+  });
+});
+
+// #6174: the Today-page sibling of the #6149 Needs-you fix. A lined-up
+// task whose ref is not a GitHub ref (a tracked goal id is the live-data
+// shape) passed the section gate unchecked and reached refUrl unguarded
+// in the objectives render, 500ing /today and /frag/today.
+describe("#6174: lined-up refs on the Today objectives path", () => {
+  const QUOTA = {
+    pools: [],
+    burn: [],
+    choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] },
+  } satisfies QuotaView;
+
+  function sectionWithRef(ref: unknown): OrchestrationSection {
+    return {
+      ...SECTION,
+      goals: [
+        {
+          ...SECTION.goals[0]!,
+          linedUp: [
+            {
+              title: "Link the Citi accounts in Plaid",
+              ref: ref as LinedUpTask["ref"],
+              status: "queued",
+              horizon: "today",
+              horizonWhy: "due today",
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  function renderObjectives(section: OrchestrationSection): string {
+    const today = todayFromSection(section);
+    return renderTodayBody(today, buildAttention([], section), QUOTA, []);
+  }
+
+  test("a goal-id lined-up ref passes the gate and renders as plain code, never a link", () => {
+    const section = sectionWithRef("goal_b647ff5c92f5");
+    expect(isOrchestrationSection(section)).toBe(true);
+    const html = renderObjectives(section);
+    expect(html).toContain("Link the Citi accounts in Plaid");
+    expect(html).toContain("<code>goal_b647ff5c92f5</code>");
+    expect(html).not.toContain("github.com/goal_b647ff5c92f5");
+  });
+
+  test("a valid GitHub lined-up ref still renders as a link on the objective", () => {
+    const section = sectionWithRef("developing-today/code#812");
+    expect(isOrchestrationSection(section)).toBe(true);
+    const html = renderObjectives(section);
+    expect(html).toContain('href="https://github.com/developing-today/code/issues/812"');
+    expect(html).toContain("developing-today/code#812");
+  });
+
+  test("a non-string lined-up ref fails the gate (designed fallback, no render throw)", () => {
+    expect(isOrchestrationSection(sectionWithRef(12345))).toBe(false);
   });
 });

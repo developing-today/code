@@ -163,7 +163,7 @@ in
         };
 
         Service = {
-          ExecStart = "/run/current-system/sw/bin/systemd-socket-proxyd 127.0.0.1:6056";
+          ExecStart = "${config.systemd.package}/lib/systemd/systemd-socket-proxyd 127.0.0.1:6056";
         };
       };
     };

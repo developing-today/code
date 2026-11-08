@@ -77,27 +77,58 @@ pub fn static_handler(path: &str) -> Response<Body> {
     }
 }
 
-/// Check if a filename contains a content hash.
+/// Check if a filename is a content-hashed build artifact.
 ///
-/// Matches patterns like `main.abc12xyz.js` or `styles.def67890.css`
-/// where the middle segment is 8+ alphanumeric characters.
-/// (Bun uses base36 hashes, CSS builder uses hex hashes.)
+/// The contract is what the `web/dist` build actually emits -- a name
+/// is hashed iff one of the two emitters can produce it (#6779; oracle:
+/// the emitters, not a pattern resemblance):
+///
+/// - the JS entry from `bun build --entry-naming=[name].[hash].js`
+///   (pkgs/id/web/package.json): `main.` + exactly 8 base36 chars
+///   (`[a-z0-9]`) + `.js`, plus that entry's `.js.map` sourcemap;
+/// - the stylesheet renamed by pkgs/id/web/scripts/build-manifest.ts:
+///   `styles.` + exactly 8 lowercase hex chars (`[0-9a-f]`, a SHA-256
+///   prefix) + `.css`.
+///
+/// Everything else is served `no-cache`. Anchoring on the emitted
+/// names is what keeps ordinary dotted names (`app.development.js`,
+/// `styles.darkmode.css`, `vendor.production.js`,
+/// `editor.settings.js`) out of the one-year immutable cache: a word
+/// segment is indistinguishable from a hash by charset alone
+/// (letters-only Bun hashes exist). The rule fails in the safe
+/// direction -- a future second entry point or renamed stylesheet
+/// gets revalidation, not staleness, until this contract is extended
+/// deliberately alongside the build change.
 fn is_hashed_filename(path: &str) -> bool {
-    let path = std::path::Path::new(path);
-    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+    let Some(name) = std::path::Path::new(path)
+        .file_name()
+        .and_then(|s| s.to_str())
+    else {
         return false;
     };
-
-    // Look for pattern: name.hash where hash is 8+ alphanumeric chars
-    if let Some(dot_pos) = stem.rfind('.') {
-        let potential_hash = &stem[dot_pos + 1..];
-        potential_hash.len() >= 8
-            && potential_hash
+    if let Some(rest) = name.strip_prefix("main.") {
+        let segment = if let Some(seg) = rest.strip_suffix(".js") {
+            seg
+        } else if let Some(seg) = rest.strip_suffix(".js.map") {
+            seg
+        } else {
+            return false;
+        };
+        return segment.len() == 8
+            && segment
                 .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-    } else {
-        false
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
     }
+    if let Some(rest) = name.strip_prefix("styles.") {
+        let Some(segment) = rest.strip_suffix(".css") else {
+            return false;
+        };
+        return segment.len() == 8
+            && segment
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c));
+    }
+    false
 }
 
 /// Build a 404 Not Found response.
@@ -192,6 +223,29 @@ mod tests {
         assert!(!is_hashed_filename("main.ABCD1234.js")); // uppercase
         assert!(!is_hashed_filename("main.abc-1234.js")); // hyphen
         assert!(!is_hashed_filename("main.abc_1234.js")); // underscore
+    }
+
+    #[test]
+    fn test_is_hashed_filename_dotted_word_segments() {
+        // #6779: ordinary dotted names are not build hashes and must
+        // get no-cache, not the one-year immutable header.
+        assert!(!is_hashed_filename("app.development.js"));
+        assert!(!is_hashed_filename("styles.darkmode.css"));
+        assert!(!is_hashed_filename("vendor.production.js"));
+        assert!(!is_hashed_filename("editor.settings.js"));
+        // A longer or shorter segment is not an emitted hash either.
+        assert!(!is_hashed_filename("main.development.js"));
+        assert!(!is_hashed_filename("styles.99e0273f1.css"));
+    }
+
+    #[test]
+    fn test_is_hashed_filename_sourcemap_and_wrong_stem() {
+        // The JS entry's sourcemap shares the hashed stem.
+        assert!(is_hashed_filename("main.bjbjbv7v.js.map"));
+        // Hash-shaped segments on stems the build never emits are not
+        // hashed: no other entry point exists in the contract.
+        assert!(!is_hashed_filename("app.bjbjbv7v.js"));
+        assert!(!is_hashed_filename("other.99e0273f.css"));
     }
 
     #[test]

@@ -50,3 +50,31 @@ pub trait SearchBackend {
     /// One message row by id (for `--with-message` payloads).
     fn message(&self, message_id: &str) -> Result<Option<MessageRow>>;
 }
+
+/// Boxed backends (the CLI's `pick_backend`) compose like any other.
+impl<T: SearchBackend + ?Sized> SearchBackend for Box<T> {
+    fn name(&self) -> &'static str {
+        (**self).name()
+    }
+    fn vec_table(&self) -> &str {
+        (**self).vec_table()
+    }
+    fn notes(&self) -> Vec<String> {
+        (**self).notes()
+    }
+    fn has_vector_store(&self) -> Option<bool> {
+        (**self).has_vector_store()
+    }
+    fn branch_pools(&self, q: &BranchQuery, filters: &Filters) -> Result<BranchPools> {
+        (**self).branch_pools(q, filters)
+    }
+    fn chunk_details(&self, ids: &[i64]) -> Result<Vec<ChunkDetail>> {
+        (**self).chunk_details(ids)
+    }
+    fn neighbors(&self, message_id: &str, chunk_idx: i64, n: i64) -> Result<Vec<NeighborRow>> {
+        (**self).neighbors(message_id, chunk_idx, n)
+    }
+    fn message(&self, message_id: &str) -> Result<Option<MessageRow>> {
+        (**self).message(message_id)
+    }
+}

@@ -419,12 +419,7 @@ fn day_count_includes_previous_days_wrapping_span() {
             period: Period::Day,
         },
     ));
-    let at_2am = record(
-        0x56,
-        vec![dog_a()],
-        "outside",
-        chicago(2026, 6, 16, 2, 0),
-    );
+    let at_2am = record(0x56, vec![dog_a()], "outside", chicago(2026, 6, 16, 2, 0));
     let now = chicago(2026, 6, 16, 12, 0);
 
     let verdicts = evaluate(&[outside], &[at_2am], now).expect("evaluate");
@@ -566,12 +561,7 @@ fn week_count_includes_previous_days_wrapping_span() {
             period: Period::Week,
         },
     ));
-    let at_2am = record(
-        0x58,
-        vec![dog_a()],
-        "outside",
-        chicago(2026, 6, 15, 2, 0),
-    );
+    let at_2am = record(0x58, vec![dog_a()], "outside", chicago(2026, 6, 15, 2, 0));
     let now = chicago(2026, 6, 15, 12, 0);
 
     let verdicts = evaluate(&[outside], &[at_2am], now).expect("evaluate");

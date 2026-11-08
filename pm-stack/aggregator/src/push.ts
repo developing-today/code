@@ -25,17 +25,31 @@ export type PushOutcome = { ok: true; status: number } | { ok: false; gone: bool
 let configured = false;
 let configurePromise: Promise<boolean> | null = null;
 
-/** Lazily fetch the VAPID private key by name and configure web-push. */
+/** Lazily fetch the VAPID private key by name and configure web-push.
+ *
+ * Only success is memoized (#3729): when an attempt settles false —
+ * the secret resolving to null on a transient bws problem, or the
+ * configure throwing — the pending promise clears itself, so the next
+ * call re-resolves and can succeed without a process restart (the
+ * secrets layer already heals its own null cache after 5 minutes; an
+ * unbounded latch here defeated that). Concurrent callers still share
+ * the one in-flight attempt. Same retry-after-failure shape as
+ * createAlertsStoreGetter in alerts.ts.
+ * Lazy-init contract (success-only memoization): README "Lazy-initialization contract" (#3879). */
 export function ensurePushConfigured(): Promise<boolean> {
   if (configured) return Promise.resolve(true);
   if (!configurePromise) {
-    configurePromise = (async () => {
+    const pending = (async () => {
       const priv = await resolveBwsSecret(VAPID_PRIVATE_KEY_SECRET);
       if (!priv) return false;
       webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, priv);
       configured = true;
       return true;
     })().catch(() => false);
+    configurePromise = pending;
+    void pending.then((ok) => {
+      if (!ok && configurePromise === pending) configurePromise = null;
+    });
   }
   return configurePromise;
 }

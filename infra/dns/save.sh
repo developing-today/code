@@ -37,6 +37,15 @@ if [ ! -f "$dir/terraform.tfstate" ] || [ ! -s "$dir/terraform.tfstate" ]; then
 fi
 echo "terraform.tfstate exists and is not empty, continuing... (dir=$dir)"
 
+# If terraform.tfstate.enc already decrypts to exactly this state, the
+# encrypted state of record is already current: skip re-encryption so
+# read-only runs (e.g. plan) leave terraform.tfstate.enc byte-identical
+# instead of dirtying it with a fresh sops ciphertext of the same plaintext.
+if [ -f "$dir/terraform.tfstate.enc" ] && sops -d "$dir/terraform.tfstate.enc" 2>/dev/null | cmp -s - "$dir/terraform.tfstate"; then
+  echo "terraform.tfstate.enc already contains this exact state; skipping re-encryption"
+  exit 0
+fi
+
 echo "Encrypting with sops: terraform.tfstate -> terraform.tfstate.enc (dir=$dir)"
 sops -e "$dir/terraform.tfstate" >"$dir/terraform.tfstate.enc"
 echo "Encrypted with sops: terraform.tfstate -> terraform.tfstate.enc (dir=$dir)"

@@ -60,9 +60,11 @@ Exactly **1** ACP session: backend `acpx`, agent `opencode`, mode
 ACP configuration (`openclaw.json`): enabled, `allowedAgents` =
 `opencode`, `claude`, `codex`, `agy`. Only the OpenCode session above
 exists in `acp_sessions`; the other allowed agents have no recorded ACP
-session (consistent with CHANNELS.md: the OpenCode ACP harness is the
-one wired so far; Claude/Codex are expected via their native runtime
-plugins).
+session in this inventory. This is an observation about recorded
+sessions, not a wiring gap: `home/openclaw/default.nix` configures ACP
+command overrides for all four agents. Claude and Codex are also
+available through their native runtime plugins; ACP is their
+background-spawn path.
 
 ## 3. Channels, plugins, MCP
 

@@ -73,6 +73,21 @@ use crate::discovery::{PeerAnnouncement, PeerDiscovery};
 use crate::fileops::{FileOpError, FileOps};
 use crate::tags::TagStore;
 
+/// Decode exactly one meta-protocol value, rejecting any trailing bytes.
+///
+/// Meta requests and responses are one-message-per-stream. Accepting a valid
+/// postcard prefix would let a padded or concatenated stream be interpreted as
+/// a different, complete message.
+pub fn decode_meta_exact<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> anyhow::Result<T> {
+    let (value, rest) = postcard::take_from_bytes(bytes)?;
+    anyhow::ensure!(
+        rest.is_empty(),
+        "trailing bytes after meta-protocol value ({} bytes)",
+        rest.len()
+    );
+    Ok(value)
+}
+
 /// Maximum time for one network phase (request read or response write) of a
 /// meta stream. The phases are bounded separately on purpose: once a request
 /// has been fully read, its handler runs to completion, so the deadline can
@@ -842,7 +857,7 @@ impl MetaProtocol {
         // then transfers metadata), and cancelling one midway would corrupt
         // state. The handler does no peer-controlled waiting — the network
         // phases on either side of it carry the deadline.
-        let resp = match postcard::from_bytes::<MetaRequest>(&buf) {
+        let resp = match decode_meta_exact::<MetaRequest>(&buf) {
             Ok(req) => self.handle(&remote, req).await,
             Err(error) => MetaResponse::Error {
                 message: format!("malformed request: {error}"),
@@ -993,6 +1008,44 @@ mod tests {
         assert_eq!(m.query, "test");
         assert_eq!(m.kind, MatchKind::Prefix);
         assert!(m.is_hash_match);
+    }
+
+    #[test]
+    fn meta_decode_requires_full_consumption() {
+        let list = postcard::to_allocvec(&MetaRequest::List).unwrap();
+        assert!(matches!(
+            decode_meta_exact::<MetaRequest>(&list),
+            Ok(MetaRequest::List)
+        ));
+
+        let mut padded_list = list.clone();
+        padded_list.push(0);
+        assert!(decode_meta_exact::<MetaRequest>(&padded_list).is_err());
+
+        let mut garbage_list = list;
+        garbage_list.extend_from_slice(b"GARBAGE");
+        assert!(decode_meta_exact::<MetaRequest>(&garbage_list).is_err());
+
+        let delete = MetaRequest::Delete {
+            filename: "victim.txt".to_owned(),
+        };
+        let mut padded_delete = postcard::to_allocvec(&delete).unwrap();
+        padded_delete.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        assert!(decode_meta_exact::<MetaRequest>(&padded_delete).is_err());
+
+        let mut double_request = postcard::to_allocvec(&delete).unwrap();
+        double_request.extend_from_slice(&postcard::to_allocvec(&MetaRequest::List).unwrap());
+        assert!(decode_meta_exact::<MetaRequest>(&double_request).is_err());
+
+        let response = MetaResponse::Delete { success: true };
+        let mut padded_response = postcard::to_allocvec(&response).unwrap();
+        padded_response.extend_from_slice(b"EXTRA");
+        assert!(decode_meta_exact::<MetaResponse>(&padded_response).is_err());
+
+        assert!(matches!(
+            decode_meta_exact::<MetaResponse>(&postcard::to_allocvec(&response).unwrap()),
+            Ok(MetaResponse::Delete { success: true })
+        ));
     }
 
     #[test]

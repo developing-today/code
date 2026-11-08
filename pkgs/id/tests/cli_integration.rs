@@ -1970,6 +1970,308 @@ mod serve_tests {
         assert!(!capability.is_empty() && !capability.contains(char::is_whitespace));
     }
 
+    /// #5238 (9-8): `id world logs`, `caps --ceiling`, and `profile`
+    /// execute against a live world host — not just parse. (`stats`
+    /// has its own test below.)
+    /// Each verb's output is asserted on the state the host reports,
+    /// and a change made through one verb is read back through the
+    /// same verb's read path, so a verb that silently no-ops cannot
+    /// pass.
+    #[test]
+    fn test_world_logs_caps_ceiling_and_profile_execute() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let module = examples_dir().join("roc-counter/counter.wasm");
+        let mut server = ServerHandle::spawn_persistent(
+            server_dir.path(),
+            &[
+                "--world",
+                "--world-admin-token",
+                "adm",
+                "--world-module",
+                module.to_str().unwrap(),
+            ],
+        );
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+
+        let world = |args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", &addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY")
+                .env_remove("ID_WORLD");
+            cmd
+        };
+        let run = |args: &[&str]| -> (bool, String, String) {
+            let output = world(args).output_within(PROCESS_TIMEOUT).unwrap();
+            (
+                output.status.success(),
+                String::from_utf8(output.stdout).unwrap(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        };
+
+        let (ok, ann, err) = run(&["invite", &node, "--admin-token", "adm", "--name", "ann"]);
+        assert!(ok, "{err}");
+        let ann = ann.trim().to_owned();
+        let (ok, tail, err) = run(&["invite", &node, "--admin-token", "adm", "--name", "tail"]);
+        assert!(ok, "{err}");
+        let tail = tail.trim().to_owned();
+
+        // Tail the world's events with `logs` while another guest
+        // commits one: the tailed event frame is the verb's output.
+        let mut logs = world(&["logs", &node, "--capability", &tail, "--seconds", "5"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map(KillOnDrop)
+            .unwrap();
+        let logs_stdout = logs.stdout.take().unwrap();
+        let (logs_tx, logs_rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            for line in BufReader::new(logs_stdout).lines().map_while(Result::ok) {
+                if logs_tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+
+        // One committed event for `logs` to tail.
+        let mut joined = world(&["join", &node, "--capability", &ann])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map(KillOnDrop)
+            .unwrap();
+        let mut stdin = joined.stdin.take().unwrap();
+        let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+        let _snapshot = lines.next().unwrap().unwrap();
+        let view = lines.next().unwrap().unwrap();
+        assert!(view.contains("count=0"), "{view}");
+        stdin.write_all(b"/input 696e63\n").unwrap();
+        let _event = lines.next().unwrap().unwrap();
+        let view = lines.next().unwrap().unwrap();
+        assert!(view.contains("count=1"), "{view}");
+        stdin.write_all(b"/quit\n").unwrap();
+        drop(stdin);
+        assert!(joined.wait().unwrap().success());
+
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut tailed = String::new();
+        while Instant::now() < deadline && !tailed.contains("\"type\":\"event\"") {
+            match logs_rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(line) => {
+                    tailed.push_str(&line);
+                    tailed.push('\n');
+                }
+                Err(_) => {
+                    if logs.try_wait().unwrap().is_some() {
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(
+            tailed.contains("\"type\":\"event\""),
+            "logs tailed no event frame: {tailed}"
+        );
+
+        // caps --ceiling: set with the admin token, read back in the report.
+        let (ok, out, err) = run(&[
+            "caps",
+            &node,
+            "--admin-token",
+            "adm",
+            "--ceiling",
+            "time.now",
+        ]);
+        assert!(ok, "{err}");
+        let ceiling_reply: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            ceiling_reply["report"]["ceiling"],
+            serde_json::json!(["time.now"]),
+            "{out}"
+        );
+        let (ok, out, err) = run(&["caps", &node, "--capability", &ann]);
+        assert!(ok, "{err}");
+        let report: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(report["ceiling"], serde_json::json!(["time.now"]), "{out}");
+
+        // profile: set a bound with the admin token, read it back as a guest.
+        let (ok, out, err) = run(&[
+            "profile",
+            &node,
+            "--admin-token",
+            "adm",
+            "--wasm-fuel",
+            "424242",
+        ]);
+        assert!(ok, "{err}");
+        let set_reply: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            set_reply["update"]["requested"]["wasm_fuel"], 424242,
+            "{out}"
+        );
+        let (ok, out, err) = run(&["profile", &node, "--capability", &ann]);
+        assert!(ok, "{err}");
+        let profile: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(profile["wasm_fuel"], 424242, "{out}");
+
+        server.stop();
+    }
+
+    /// #5238 (9-8): `id world stats` executes against a live world host.
+    ///
+    /// Was ignored until #6802: stats issues its `info`, `caps`, and
+    /// `profile` queries over one connection, but the host only served
+    /// `caps` / `profile` as first frames — the second query was
+    /// refused with "expected a query frame". #6802 taught the query
+    /// session both read-only frames, so this runs in the suite now.
+    #[test]
+    fn test_world_stats_executes_against_a_live_world() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let module = examples_dir().join("roc-counter/counter.wasm");
+        let mut server = ServerHandle::spawn_persistent(
+            server_dir.path(),
+            &[
+                "--world",
+                "--world-admin-token",
+                "adm",
+                "--world-module",
+                module.to_str().unwrap(),
+            ],
+        );
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+
+        let world = |args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", &addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY")
+                .env_remove("ID_WORLD");
+            cmd
+        };
+        let run = |args: &[&str]| -> (bool, String, String) {
+            let output = world(args).output_within(PROCESS_TIMEOUT).unwrap();
+            (
+                output.status.success(),
+                String::from_utf8(output.stdout).unwrap(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        };
+
+        let (ok, ann, err) = run(&["invite", &node, "--admin-token", "adm", "--name", "ann"]);
+        assert!(ok, "{err}");
+        let ann = ann.trim().to_owned();
+
+        // One committed event, so stats has a non-zero sequence to report.
+        let mut joined = world(&["join", &node, "--capability", &ann])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map(KillOnDrop)
+            .unwrap();
+        let mut stdin = joined.stdin.take().unwrap();
+        let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+        let _snapshot = lines.next().unwrap().unwrap();
+        let view = lines.next().unwrap().unwrap();
+        assert!(view.contains("count=0"), "{view}");
+        stdin.write_all(b"/input 696e63\n").unwrap();
+        let _event = lines.next().unwrap().unwrap();
+        let view = lines.next().unwrap().unwrap();
+        assert!(view.contains("count=1"), "{view}");
+        stdin.write_all(b"/quit\n").unwrap();
+        drop(stdin);
+        assert!(joined.wait().unwrap().success());
+
+        // stats: one JSON object joining module, caps, and profile state.
+        let (ok, out, err) = run(&["stats", &node, "--capability", &ann]);
+        assert!(ok, "{err}");
+        let stats: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(stats["world_id"].is_string(), "{out}");
+        let hash = stats["active_module_hash"].as_str().unwrap_or_default();
+        assert_eq!(hash.len(), 64, "{out}");
+        assert!(
+            stats["current_sequence"].as_u64().unwrap_or(0) >= 1,
+            "{out}"
+        );
+        assert!(stats["caps"]["catalog"].is_array(), "{out}");
+        assert!(stats["profile"].is_object(), "{out}");
+
+        server.stop();
+    }
+
+    /// #5238 (9-8): a test that runs in CI compiles the `world new`
+    /// scaffold output. The scaffold's platform path is
+    /// `../roc-world/platform.roc`, so the scaffold is created next to
+    /// a link to the repo's platform checkout and built with the roc
+    /// invocation its own `build.sh` uses.
+    #[cfg(unix)]
+    #[test]
+    fn test_world_new_scaffold_compiles() {
+        let Some(roc) = pinned_roc() else {
+            eprintln!("skipping: no roc binary available");
+            return;
+        };
+        let platform = examples_dir().join("roc-world");
+        if !platform.join("targets/wasm32/host.wasm").is_file() {
+            eprintln!(
+                "skipping: examples/roc-world has no targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
+            );
+            return;
+        }
+        let root = TempDir::new().unwrap();
+        let scaffold = root.path().join("scaffold-app");
+        let output = StdCommand::new(get_binary_path())
+            .args([
+                "world",
+                "new",
+                scaffold.to_str().unwrap(),
+                "--name",
+                "scaffold-app",
+            ])
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::os::unix::fs::symlink(&platform, root.path().join("roc-world")).unwrap();
+        let wasm = root.path().join("scaffold-app.wasm");
+        let output = StdCommand::new(&roc)
+            .args([
+                "build",
+                scaffold.join("main.roc").to_str().unwrap(),
+                "--target=wasm32",
+                "--debug",
+                "--wasm-memory=8454144",
+                &format!("--output={}", wasm.display()),
+            ])
+            .current_dir(root.path())
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "scaffold did not compile: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let bytes = fs::read(&wasm).unwrap();
+        assert!(bytes.starts_with(b"\0asm"), "not a wasm module");
+    }
+
     /// The world web presentation only exists when the binary is built
     /// with the `web` feature; without it the server never prints the
     /// `web:` line this test waits for.

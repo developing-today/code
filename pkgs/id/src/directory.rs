@@ -534,8 +534,8 @@ impl Directory {
     /// Fails if a line is malformed or an entry breaks a directory rule.
     pub fn replay(path: &Path) -> Result<Self> {
         let mut directory = Self::new();
-        let text = match std::fs::read_to_string(path) {
-            Ok(text) => text,
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(directory),
             Err(error) => return Err(error.into()),
         };
@@ -546,12 +546,15 @@ impl Directory {
         // drop the fragment (parseable or not), warn, and truncate the
         // file to the last complete line. A newline-terminated line
         // that does not parse is corruption and still fails below.
-        let kept_len = if text.is_empty() || text.ends_with('\n') {
-            text.len()
+        let kept_len = if bytes.is_empty() || bytes.ends_with(b"\n") {
+            bytes.len()
         } else {
-            text.rfind('\n').map_or(0, |index| index + 1)
+            bytes
+                .iter()
+                .rposition(|&byte| byte == b'\n')
+                .map_or(0, |index| index + 1)
         };
-        if kept_len < text.len() {
+        if kept_len < bytes.len() {
             tracing::warn!(
                 "directory journal {}: dropping torn final entry at byte {kept_len}",
                 path.display()
@@ -561,7 +564,9 @@ impl Directory {
                 .open(path)?
                 .set_len(u64::try_from(kept_len)?)?;
         }
-        for (number, line) in text[..kept_len].lines().enumerate() {
+        let text =
+            std::str::from_utf8(&bytes[..kept_len]).context("directory journal is not UTF-8")?;
+        for (number, line) in text.lines().enumerate() {
             if line.trim().is_empty() {
                 continue;
             }
@@ -1115,6 +1120,18 @@ impl Directory {
     /// groups. A nested group passes on at most the level it is held at.
     #[must_use]
     pub fn level_in(&self, account: &str, group: u64) -> Option<Level> {
+        self.level_in_cached(account, group, &mut BTreeMap::new())
+    }
+
+    fn level_in_cached(
+        &self,
+        account: &str,
+        group: u64,
+        cache: &mut BTreeMap<u64, Option<Level>>,
+    ) -> Option<Level> {
+        if let Some(level) = cache.get(&group) {
+            return *level;
+        }
         let direct = self
             .members
             .get(&(
@@ -1124,15 +1141,18 @@ impl Directory {
                 },
             ))
             .copied();
-        self.members
+        let best = self
+            .members
             .range((group, Member::Group { id: 0 })..=(group, Member::Group { id: u64::MAX }))
             .fold(direct, |best, ((_, member), held_at)| match member {
-                Member::Group { id } => match self.level_in(account, *id) {
+                Member::Group { id } => match self.level_in_cached(account, *id, cache) {
                     Some(inner) => best.max(Some(inner.min(*held_at))),
                     None => best,
                 },
                 Member::Account { .. } => best,
-            })
+            });
+        cache.insert(group, best);
+        best
     }
 
     /// Every permission an account may use: its tier's set, plus the set of
@@ -2415,13 +2435,20 @@ impl Directory {
 
     /// Whether `target` is `from` or is nested, at any depth, inside it.
     fn reaches(&self, from: u64, target: u64) -> bool {
+        self.reaches_visited(from, target, &mut BTreeSet::new())
+    }
+
+    fn reaches_visited(&self, from: u64, target: u64, visited: &mut BTreeSet<u64>) -> bool {
         if from == target {
             return true;
+        }
+        if !visited.insert(from) {
+            return false;
         }
         self.members
             .range((from, Member::Group { id: 0 })..=(from, Member::Group { id: u64::MAX }))
             .any(|((_, member), _)| match member {
-                Member::Group { id } => self.reaches(*id, target),
+                Member::Group { id } => self.reaches_visited(*id, target, visited),
                 Member::Account { .. } => false,
             })
     }
@@ -2598,6 +2625,45 @@ mod tests {
         let (credential, _) = directory.sign_up(name).unwrap();
         let id = directory.account_for(&credential).unwrap();
         (id, credential)
+    }
+
+    fn diamond_directory() -> (Directory, String, Vec<Vec<u64>>, u64) {
+        let mut directory = Directory::new();
+        let (ann, _) = account(&mut directory, "Ann");
+        let (bo, _) = account(&mut directory, "Bo");
+        let (leaf, _) = directory.create_group(&ann, "Leaf", "", all()).unwrap();
+        let (holder, _) = directory.create_group(&ann, "Holder", "", all()).unwrap();
+        let mut layers = vec![vec![leaf]];
+
+        for layer in 0..25 {
+            let children = layers.last().unwrap();
+            let mut parents = Vec::new();
+            for branch in 0..2 {
+                let (parent, _) = directory
+                    .create_group(&ann, &format!("Layer {layer} branch {branch}"), "", all())
+                    .unwrap();
+                for child in children {
+                    let held_at = if layer == 0 {
+                        if branch == 0 {
+                            Level::Read
+                        } else {
+                            Level::Manage
+                        }
+                    } else {
+                        Level::Write
+                    };
+                    directory
+                        .members
+                        .insert((parent, Member::Group { id: *child }), held_at);
+                }
+                parents.push(parent);
+            }
+            layers.push(parents);
+        }
+        directory
+            .members
+            .insert((leaf, Member::Account { id: bo.clone() }), Level::Admin);
+        (directory, bo, layers, holder)
     }
 
     #[test]
@@ -4183,6 +4249,35 @@ mod tests {
     }
 
     #[test]
+    fn diamond_nesting_preserves_max_of_min_and_checks_member_cycles() {
+        let (mut directory, bo, layers, holder) = diamond_directory();
+        let root = layers.last().unwrap()[0];
+
+        assert_eq!(directory.level_in(&bo, root), Some(Level::Write));
+
+        directory
+            .set_member(
+                Actor::Server,
+                holder,
+                Member::Group { id: root },
+                Some(Level::Read),
+            )
+            .unwrap();
+        assert_eq!(directory.level_in(&bo, holder), Some(Level::Read));
+        assert!(
+            directory
+                .set_member(
+                    Actor::Server,
+                    root,
+                    Member::Group { id: holder },
+                    Some(Level::Read),
+                )
+                .is_err(),
+            "the MemberSet path still refuses a cycle"
+        );
+    }
+
+    #[test]
     fn an_account_may_belong_to_several_groups_and_ceilings_union() {
         let mut directory = Directory::new();
         let (ann, _) = account(&mut directory, "Ann");
@@ -4551,19 +4646,24 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("directory.jsonl");
         let mut directory = Directory::new();
-        let (ann, ann_credential) = account_into(&mut directory, &path, "Ann");
+        let (ann, ann_credential) = account_into(&mut directory, &path, "José");
         let (_bo, _) = account_into(&mut directory, &path, "Bo");
-        let complete = std::fs::read_to_string(&path).unwrap();
+        let complete = std::fs::read(&path).unwrap();
 
-        // A crash mid-append leaves half a JSON entry with no newline.
-        let mut text = complete.clone();
-        text.push_str("{\"account_created\":{\"id\":\"torn");
-        std::fs::write(&path, text).unwrap();
+        // A crash after the first byte of a multibyte name leaves invalid
+        // UTF-8 in the unterminated final entry.
+        let mut torn = complete.clone();
+        torn.extend_from_slice(b"{\"name\":\"Jos");
+        torn.push(0xc3); // First byte of "é".
+        std::fs::write(&path, torn).unwrap();
 
-        let replayed = Directory::replay(&path).unwrap();
+        let mut replayed = Directory::replay(&path).unwrap();
         assert_eq!(replayed.account_for(&ann_credential), Some(ann));
         // The fragment is gone: the file is back to the complete lines.
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), complete);
+        assert_eq!(std::fs::read(&path).unwrap(), complete);
+        let (carol, carol_credential) = account_into(&mut replayed, &path, "Carol");
+        let roundtrip = Directory::replay(&path).unwrap();
+        assert_eq!(roundtrip.account_for(&carol_credential), Some(carol));
     }
 
     #[test]

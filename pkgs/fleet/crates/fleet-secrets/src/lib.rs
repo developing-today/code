@@ -393,21 +393,33 @@ impl SecretSource for BwsSource {
             .map_err(|d| unavailable(format!("bws secret list: {d}")))?;
         let list: serde_json::Value = serde_json::from_str(&list_raw)
             .map_err(|_| unavailable("bws secret list: output is not JSON".to_string()))?;
-        let id = list
-            .as_array()
-            .and_then(|items| {
-                items.iter().find_map(|item| {
-                    if item.get("key").and_then(|k| k.as_str()) == Some(name) {
-                        item.get("id").and_then(|i| i.as_str()).map(str::to_string)
-                    } else {
-                        None
-                    }
-                })
-            })
-            .ok_or_else(|| SecretError::NotFound {
-                source: "bws",
-                name: name.to_string(),
-            })?;
+        // A listing that cannot be understood is a source failure
+        // (Unavailable), never a confident absence (NotFound): the
+        // top level must be an array, and an entry keyed by the
+        // requested name demonstrably exists, so a missing or
+        // non-string id on THAT entry is malformed, not absent.
+        // Entries for other names are not inspected: a malformed
+        // id on an unrelated entry does not block this lookup.
+        let items = list.as_array().ok_or_else(|| {
+            unavailable("bws secret list: output is not a JSON array".to_string())
+        })?;
+        let mut found_id: Option<String> = None;
+        for item in items {
+            if item.get("key").and_then(|k| k.as_str()) == Some(name) {
+                let raw_id = item.get("id").and_then(|i| i.as_str()).ok_or_else(|| {
+                    unavailable(
+                        "bws secret list: entry for the requested key has a missing or non-string id"
+                            .to_string(),
+                    )
+                })?;
+                found_id = Some(raw_id.to_string());
+                break;
+            }
+        }
+        let id = found_id.ok_or_else(|| SecretError::NotFound {
+            source: "bws",
+            name: name.to_string(),
+        })?;
         let got_raw = self
             .runner
             .run("bws", &["secret", "get", &id, "-o", "json"])
@@ -590,6 +602,71 @@ mod tests {
             }
             other => panic!("expected Unavailable, got {other:?}"),
         }
+    }
+
+    fn bws_resolve_with_list(list: &str) -> Result<SecretValue, SecretError> {
+        let source = BwsSource::with_runner(Box::new(FakeRunner {
+            list: list.to_string(),
+            get: r#"{"id":"id-1","key":"wanted.name","value":"fixture-value-not-a-secret"}"#
+                .to_string(),
+        }));
+        source.resolve("wanted.name")
+    }
+
+    #[test]
+    fn bws_fallback_non_array_listing_is_unavailable_not_notfound() {
+        // #6577: valid JSON, wrong shape (object / string / number).
+        for list in [r#"{"id":"id-1","key":"wanted.name"}"#, r#""hello""#, "42"] {
+            match bws_resolve_with_list(list) {
+                Err(SecretError::Unavailable { source, detail, .. }) => {
+                    assert_eq!(source, "bws");
+                    assert!(detail.contains("not a JSON array"), "detail: {detail}");
+                }
+                other => panic!("list {list}: expected Unavailable, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn bws_fallback_key_match_with_bad_id_is_unavailable_not_notfound() {
+        // #6577: the key matches, so the secret exists; its record
+        // is malformed (numeric / missing / null id).
+        for list in [
+            r#"[{"id":123,"key":"wanted.name"}]"#,
+            r#"[{"key":"wanted.name"}]"#,
+            r#"[{"id":null,"key":"wanted.name"}]"#,
+        ] {
+            match bws_resolve_with_list(list) {
+                Err(SecretError::Unavailable { source, detail, .. }) => {
+                    assert_eq!(source, "bws");
+                    assert!(detail.contains("non-string id"), "detail: {detail}");
+                }
+                other => panic!("list {list}: expected Unavailable, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn bws_fallback_genuine_absence_stays_notfound() {
+        // #6577 controls: empty list, and a well-formed list with no
+        // entry for the name. A malformed id on an entry for ANOTHER
+        // name does not block a lookup it is not part of.
+        for list in [
+            "[]",
+            r#"[{"id":"id-2","key":"other.name"}]"#,
+            r#"[{"id":123,"key":"other.name"}]"#,
+        ] {
+            match bws_resolve_with_list(list) {
+                Err(SecretError::NotFound { source, .. }) => assert_eq!(source, "bws"),
+                other => panic!("list {list}: expected NotFound, got {other:?}"),
+            }
+        }
+        // ...and a malformed unrelated entry does not block a hit.
+        let v = bws_resolve_with_list(
+            r#"[{"id":123,"key":"other.name"},{"id":"id-1","key":"wanted.name"}]"#,
+        )
+        .unwrap();
+        assert_eq!(v.expose(), "fixture-value-not-a-secret");
     }
 
     #[test]

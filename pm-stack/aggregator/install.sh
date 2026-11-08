@@ -120,7 +120,11 @@ if [ "$CHANGED" -eq 1 ]; then
   } >"$ENV_FILE"
   chmod 600 "$ENV_FILE"
 
-  cp "$UNIT_SRC" "$UNIT_DST"
+  if [ -L "$UNIT_DST" ]; then
+    echo "pm-aggregator.service is symlink-managed at $UNIT_DST; skipping unit copy"
+  else
+    cp "$UNIT_SRC" "$UNIT_DST"
+  fi
 
   cd "$SRC"
   bun install --silent

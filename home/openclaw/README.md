@@ -17,11 +17,16 @@ source in the fleet next to Muse (Archer) and Aster (Dot). It is installed
 - **Workspace/knowledge pack:** `workspace/*.md` here, materialized into
   `~/.openclaw/workspace/` (AGENTS/SOUL/TOOLS/IDENTITY/USER/HEARTBEAT are
   the bootstrap files; FLEET/QUOTAS/CHANNELS are reference files).
-- **Models:** local plan proxies only — primary DeepSeek V4 Flash via the
-  CommandCode proxy (:18748), fallbacks on the Design (:18746) and
-  Antigravity (:18743) plans. The Codex/OpenAI proxy (:18744) is the final
-  reserve and is deliberately not an automatic fallback. See
-  `workspace/QUOTAS.md`.
+- **Models:** the OpenCode server facade (127.0.0.1:13420) is this
+  gateway's only model route: the default is the opencode-route
+  workhorse pool, with the specialist and speed pools as fallbacks.
+  The local plan proxies this gateway once fronted directly are
+  retired — CommandCode (:18748) and Claude Code (:18749) in the
+  2026-11-06 proxy-infra decommission (both providers are native in
+  the fork since 2026-11-05), Design (:18746) on 2026-11-03 and
+  Antigravity (:18743) on 2026-10-30 and Codex (:18744) on
+  2026-11-06 (replaced by the fork's native openai provider).
+  See `workspace/QUOTAS.md`.
 - **Coding:** ACP via the acpx plugin. The default ACP agent is
   `opencode` (spawn with cwd `~/code`) — the same OpenCode
   build/config/auth OpenChamber drives; `~/.acpx/config.json` (managed in

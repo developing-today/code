@@ -109,7 +109,7 @@ async fn request_over_with_timeout(
         send.write_all(&postcard::to_allocvec(req)?).await?;
         send.finish()?;
         let buf = read_capped_response_unbounded(&mut recv).await?;
-        postcard::from_bytes(&buf).context("decoding meta response")
+        crate::protocol::decode_meta_exact(&buf).context("decoding meta response")
     })
     .await
 }

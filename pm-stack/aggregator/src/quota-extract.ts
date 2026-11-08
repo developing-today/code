@@ -517,6 +517,12 @@ interface PoolSpec {
 // antigravity-direct.gemini / antigravity-direct.claude-gpt — the
 // opencode-go.<workspace> pattern (Drew, 2026-11-03: "why are you not
 // including antigravity in the board?"). Ground truth for the
+// RENAMED 2026-11-07 (#1823, Drew): fleet-built providers carry a
+// leading underscore — the commandcode pool is now _commandcode and
+// the Antigravity pools ride under _antigravity.gemini /
+// _antigravity.claude-gpt. Per the rule above, each starts a NEW
+// snapshot series; the pre-rename series stay in the store under
+// their old ids, unrewritten.
 // choice: the deployed config defines antigravity-agy,
 // antigravity-direct and antigravity-ls (ls/agy are the disabled
 // legacy doors; no antigravity-local provider exists), and
@@ -585,7 +591,7 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read (dashboard-only source).",
   },
   {
-    id: "commandcode",
+    id: "_commandcode",
     provider: "Command Code",
     plan: "GO",
     heading: /^### Command Code/,
@@ -593,7 +599,7 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read.",
   },
   {
-    id: "antigravity-direct.gemini",
+    id: "_antigravity.gemini",
     provider: "Antigravity",
     plan: "Gemini pool",
     heading: /^### Gemini/,
@@ -601,7 +607,7 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read.",
   },
   {
-    id: "antigravity-direct.claude-gpt",
+    id: "_antigravity.claude-gpt",
     provider: "Antigravity",
     plan: "Claude+GPT pool",
     heading: /^### Gemini/,
@@ -639,7 +645,7 @@ const SHELL_POOLS: QuotaPool[] = [
  * OpenCode config door sat in disabled_providers. That hid live,
  * measured pools whose traffic runs through model routes rather than
  * the disabled direct door: at removal time the deployed board was
- * missing anthropic:claude-pro, commandcode, deepseek and BOTH
+ * missing anthropic:claude-pro, _commandcode, deepseek and BOTH
  * Antigravity pools even though the OpenCode quota read reported
  * them. Pool assembly no longer consults disabled_providers at all;
  * extractQuotaPools returns every pool it knows, and the serve-time

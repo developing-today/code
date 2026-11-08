@@ -4,7 +4,7 @@ silently drop a malformed outbox line.
 
 Each case runs the real `record-external-send push` as a subprocess
 with an isolated EXTERNAL_COMMS_STATE_DIR and a loopback-refused
-Supabase URL (127.0.0.1:9), so valid records stay pending with retry
+Turso URL (127.0.0.1:9), so valid records stay pending with retry
 bookkeeping and no database is needed.
 
 Run: python3 -m unittest test_push_quarantine -v   (from this dir)
@@ -34,8 +34,8 @@ class PushCase(unittest.TestCase):
                 f.write(ln + "\n")
         env = dict(os.environ,
                    EXTERNAL_COMMS_STATE_DIR=state,
-                   EXTERNAL_COMMS_SUPABASE_URL="http://127.0.0.1:9",
-                   EXTERNAL_COMMS_SERVICE_KEY="dummy-test-key")
+                   EXTERNAL_COMMS_TURSO_URL="http://127.0.0.1:9",
+                   EXTERNAL_COMMS_TURSO_TOKEN="dummy-test-key")
         out = subprocess.run([sys.executable, SCRIPT, "push"], env=env,
                              capture_output=True, text=True, timeout=60)
         self.assertEqual(out.returncode, 0, out.stderr)

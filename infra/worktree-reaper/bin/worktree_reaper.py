@@ -13,6 +13,16 @@ reaped only when ALL of these gates hold at decision time:
                e.g. pkgs/mcpx/internal/cli/logs/, and generated_dirt_files,
                e.g. fleet-feed.json — matched on untracked entries only,
                re-verified in the same run just before removal).
+               Ignored files are gated too (#6734): the PUSHED proof
+               cannot cover content git ignores, so any ignored path
+               beyond the ignored-dirt allowlist (config:
+               ignored_dirt_prefixes, e.g. target/ and node_modules/
+               build output, and ignored_dirt_files) blocks the reap —
+               fail closed, at this gate and at the pre-removal
+               re-verification. Every ignored path present in a reaped
+               tree is recorded by path in the run record
+               (ignored_paths) before removal: a reap never silently
+               deletes unlisted content.
   3. QUIET     last activity >= quiet_hours ago (absolute epoch). Activity
                = newest working-tree file mtime excluding the tree's root
                .git entry, max()ed with the HEAD reflog timestamp.
@@ -68,6 +78,8 @@ DEFAULT_CONFIG = {
     "deny_names": [],
     "generated_dirt_prefixes": ["pkgs/mcpx/internal/cli/logs/"],
     "generated_dirt_files": ["fleet-feed.json"],
+    "ignored_dirt_prefixes": ["target/", "node_modules/"],
+    "ignored_dirt_files": [],
     "fetch": True,
 }
 
@@ -286,14 +298,22 @@ def pushed_proof(primary, tip, branch):
 
 
 def status_entries(tree):
-    """Return (tracked_dirty, untracked) repo-relative path lists."""
+    """Return (tracked_dirty, untracked, ignored) repo-relative path lists.
+
+    Ignored entries (porcelain `!!`, via --ignored=matching) are
+    enumerated explicitly (#6734): without the flag they are invisible
+    to every gate, yet `git worktree remove` deletes them with the
+    tree. With =matching, git lists an ignored directory itself (path
+    ending in /) when the directory matches an ignore rule, and
+    individual ignored files otherwise.
+    """
     rc, out, err = run_git(
         tree, "status", "--porcelain=v1", "-z", "--no-renames",
-        "--untracked-files=all",
+        "--untracked-files=all", "--ignored=matching",
     )
     if rc != 0:
         raise RuntimeError(f"status failed in {tree}: {err.strip()}")
-    tracked, untracked = [], []
+    tracked, untracked, ignored = [], [], []
     for token in out.split(b"\0"):
         if len(token) < 4:
             continue
@@ -301,9 +321,29 @@ def status_entries(tree):
         path = token[3:].decode("utf-8", "surrogateescape")
         if xy == "??":
             untracked.append(path)
+        elif xy == "!!":
+            ignored.append(path)
         else:
             tracked.append(path)
-    return tracked, untracked
+    return tracked, untracked, ignored
+
+
+def ignored_allowlisted(ignored, cfg):
+    """Split ignored paths into (allowlisted, other) per the config's
+    ignored-dirt lists. Prefixes match on whole path segments (target/
+    matches target/ and pkgs/id/target/ alike): build output lives at
+    crate roots, not only at the tree root. Files match on basename,
+    like the generated-dirt allowlist."""
+    prefixes = [p.strip("/") for p in cfg.get("ignored_dirt_prefixes", [])]
+    names = set(cfg.get("ignored_dirt_files", []))
+    allow, other = [], []
+    for path in ignored:
+        segments = [seg for seg in path.split("/") if seg]
+        if any(seg in prefixes for seg in segments) or os.path.basename(path.rstrip("/")) in names:
+            allow.append(path)
+        else:
+            other.append(path)
+    return allow, other
 
 
 def dirt_allowlisted(untracked, cfg):
@@ -374,30 +414,88 @@ def walk_activity(tree, cutoff):
     return max_mtime, total, True
 
 
-def proc_cwds():
-    cwds = []
+class ProcScanError(OSError):
+    """The /proc scan itself failed (#5740).
+
+    Distinct from a successful scan that finds no processes: occupancy
+    is UNKNOWN, and every caller must fail closed (retain the tree).
+    Subclasses OSError so generic OS-error handlers still see it as
+    an inspection failure, never as an empty result.
+    """
+
+
+def _strip_deleted(target):
+    if target.endswith(" (deleted)"):
+        target = target[: -len(" (deleted)")]
+    return target
+
+
+def proc_refs():
+    """All filesystem paths any process is tied to, from /proc (#6898).
+
+    For each pid: its cwd, its exe, every open fd target, and every
+    absolute-path token in its cmdline. The cwd-only scan this replaces
+    could not see a process holding an open file in a tree (or running
+    a binary from it) with its cwd elsewhere, so the reaper could
+    delete a tree in active use. Cost is bounded by the number of
+    processes plus their open fds (one readlink per fd), the same
+    order as any /proc scan. Per-pid errors (the process exited
+    mid-scan, or its entries are not ours to inspect) skip that entry,
+    exactly as the cwd scan did; only failing to list /proc itself
+    raises ProcScanError (fail closed, #5740).
+    """
+    refs = []
     me = str(os.getpid())
     try:
         pids = os.listdir("/proc")
-    except OSError:
-        return cwds
+    except OSError as exc:
+        raise ProcScanError(f"cannot list /proc: {exc}") from exc
     for pid in pids:
         if not pid.isdigit() or pid == me:
             continue
+        base = os.path.join("/proc", pid)
+        for name in ("cwd", "exe"):
+            try:
+                target = os.readlink(os.path.join(base, name))
+            except OSError:
+                continue
+            target = _strip_deleted(target)
+            if target.startswith("/"):
+                refs.append(target)
         try:
-            target = os.readlink(os.path.join("/proc", pid, "cwd"))
+            fds = os.listdir(os.path.join(base, "fd"))
         except OSError:
-            continue
-        if target.endswith(" (deleted)"):
-            target = target[: -len(" (deleted)")]
-        cwds.append(target)
-    return cwds
+            fds = []
+        for fd in fds:
+            try:
+                target = os.readlink(os.path.join(base, "fd", fd))
+            except OSError:
+                continue
+            target = _strip_deleted(target)
+            if target.startswith("/"):
+                refs.append(target)
+        try:
+            with open(os.path.join(base, "cmdline"), "rb") as fh:
+                tokens = fh.read().split(b"\0")
+        except OSError:
+            tokens = []
+        for token in tokens:
+            path = token.decode("utf-8", "surrogateescape")
+            if path.startswith("/"):
+                refs.append(path)
+    return refs
+
+
+def proc_cwds():
+    """Backward-compatible name: the scan now returns every /proc path
+    reference (cwd, exe, fd targets, cmdline paths), not only cwds."""
+    return proc_refs()
 
 
 def tree_occupied(tree, cwds=None):
     rp = os.path.realpath(tree)
-    for cwd in (proc_cwds() if cwds is None else cwds):
-        c = os.path.realpath(cwd)
+    for ref in (proc_refs() if cwds is None else cwds):
+        c = os.path.realpath(ref)
         if c == rp or c.startswith(rp + os.sep):
             return True
     return False
@@ -435,18 +533,23 @@ def evaluate_tree(primary, wt, cfg, now, cwds):
         rec["reason"] = "unpushed"
         return rec
     try:
-        tracked, untracked = status_entries(tree)
+        tracked, untracked, ignored = status_entries(tree)
     except RuntimeError as exc:
         gates["clean"] = {"ok": False, "error": str(exc)}
         rec["reason"] = "status-error"
         return rec
     allow, other = dirt_allowlisted(untracked, cfg)
+    ig_allow, ig_other = ignored_allowlisted(ignored, cfg)
     # Clean = no tracked changes and no untracked files beyond the
-    # allowlisted generated dirt (allowlisted-only dirt reaps via --force).
+    # allowlisted generated dirt (allowlisted-only dirt reaps via --force),
+    # and no ignored files beyond the ignored-dirt allowlist (#6734:
+    # ignored content is exactly what the PUSHED proof cannot cover).
     gates["clean"] = {
-        "ok": not tracked and not other,
+        "ok": not tracked and not other and not ig_other,
         "tracked": tracked[:20], "untracked_other": other[:20],
         "allowlisted": allow[:20],
+        "ignored_other": ig_other[:20], "ignored_allowlisted": ig_allow[:20],
+        "ignored": ignored,
         "allowlisted_only": bool(allow) and not tracked and not other,
     }
     if not gates["clean"]["ok"]:
@@ -482,21 +585,37 @@ def reap_tree(primary, rec, cfg):
     # Re-verify in the same run, immediately before the irreversible step:
     # fresh /proc scan and a fresh dirt check (spec: --force only when the
     # sole blocker is allowlisted dirt, re-verified in the same run).
-    if tree_occupied(tree):
+    try:
+        occupied_now = tree_occupied(tree)
+    except ProcScanError as exc:
+        # Fail closed (#5740): occupancy unknown — retain the tree and
+        # say so; never let a scan error read as "unoccupied".
+        rec["action"] = "keep"
+        rec["reason"] = "occupied-unknown-at-removal"
+        rec["error"] = str(exc)
+        print(f"worktree-reaper: WARNING: /proc scan failed before "
+              f"removal of {tree}; retaining it ({exc})")
+        return False
+    if occupied_now:
         rec["action"] = "keep"
         rec["reason"] = "occupied-at-removal"
         return False
     try:
-        tracked, untracked = status_entries(tree)
+        tracked, untracked, ignored = status_entries(tree)
     except RuntimeError as exc:
         rec["action"] = "keep"
         rec["reason"] = f"status-error-at-removal: {exc}"
         return False
     allow, other = dirt_allowlisted(untracked, cfg)
-    if tracked or other:
+    _ig_allow, ig_other = ignored_allowlisted(ignored, cfg)
+    if tracked or other or ig_other:
         rec["action"] = "keep"
         rec["reason"] = "dirty-at-removal"
         return False
+    # Record every ignored path in this tree before the irreversible
+    # step (#6734): only allowlisted ignored paths can be present
+    # here, and the record is the audit trail for their deletion.
+    rec["ignored_paths"] = ignored
     force = bool(allow)
     args = ["worktree", "remove"] + (["--force"] if force else []) + [tree]
     rc, _, err = run_git(primary, *args)
@@ -548,7 +667,16 @@ def main(argv=None):
     }
 
     primaries = [expand(p) for p in args.primary] or discover_primaries(cfg)
-    cwds = proc_cwds()
+    try:
+        cwds = proc_refs()
+    except ProcScanError as exc:
+        # Fail closed (#5740): with no trustworthy occupancy scan,
+        # nothing in this run may be removed — stop before evaluating.
+        print(f"worktree-reaper: ERROR: /proc scan failed ({exc}); "
+              "failing closed, nothing will be removed this run.")
+        summary["errors"].append(f"proc scan failed: {exc}")
+        print(json.dumps(summary, indent=2))
+        return 1
     reaped_count = 0
     cap = int(cfg["max_removals"])
 

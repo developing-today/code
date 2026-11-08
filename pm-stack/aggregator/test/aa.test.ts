@@ -4,7 +4,7 @@
 // render + HTTP routes. Follows test/slice3.test.ts / program.test.ts.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type Subprocess } from "bun";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -818,7 +818,13 @@ describe("aa chart expand + zoom/pan (#3298)", () => {
     expect(html).toContain("setPointerCapture(drag.id)");
     expect(html).toContain("Recommendation inputs redraw #xpl-recs directly");
     expect(html).toContain("data-zbound");
-    expect(html).toContain(".chart-expanded { position: fixed");
+    // Phase C (#6153): page CSS is the external /assets/app.css build; the
+    // expanded-chart rule lives in its source (src/ui.css), not in page HTML
+    // (same pattern as render.test.ts / epic-graph.test.ts).
+    expect(html).toContain('href="/assets/app.css"');
+    expect(readFileSync(join(import.meta.dir, "..", "src", "ui.css"), "utf8")).toContain(
+      ".chart-expanded { position: fixed",
+    );
     // the emitted script still parses (same check as #1215)
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
     expect(scripts.length).toBeGreaterThan(0);

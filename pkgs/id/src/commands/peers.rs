@@ -256,7 +256,7 @@ async fn query_local_peers() -> Result<Vec<PeerAnnouncement>> {
         send.write_all(&req).await?;
         send.finish()?;
         let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
         match resp {
@@ -296,7 +296,7 @@ async fn query_remote_peers(
         send.write_all(&req).await?;
         send.finish()?;
         let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
         match resp {

@@ -260,7 +260,18 @@ fn percent_decode(s: &str) -> String {
 /// the trailing CR/LF. `Ok(None)` is a clean EOF before any byte.
 fn read_head_line(reader: &mut impl BufRead, total: &mut usize) -> std::io::Result<Option<String>> {
     let mut line = Vec::new();
-    let n = reader.read_until(b'\n', &mut line)?;
+    // Bound the read itself, not just the accounting after it
+    // (#6511): take() caps accumulation at one byte past the
+    // remaining head budget, so a single newline-free line is
+    // refused as soon as the cumulative total crosses
+    // MAX_HEAD_BYTES instead of after the whole line has already
+    // been allocated. The +1 lets a line that exactly fills the
+    // remaining budget (total == MAX_HEAD_BYTES) still succeed.
+    let remaining = MAX_HEAD_BYTES.saturating_sub(*total);
+    let n = reader
+        .by_ref()
+        .take((remaining + 1) as u64)
+        .read_until(b'\n', &mut line)?;
     *total += n;
     if *total > MAX_HEAD_BYTES {
         return Err(std::io::Error::new(
@@ -1012,6 +1023,71 @@ mod tests {
         let mut total = 0;
         let line = read_head_line(&mut reader, &mut total).unwrap().unwrap();
         assert!(line.contains("400"), "expected 400, got: {line}");
+    }
+
+    #[test]
+    fn head_line_bound_applies_during_the_read() {
+        // #6511: a single newline-free line must be refused once
+        // the cumulative total crosses MAX_HEAD_BYTES, with the
+        // accumulation itself capped -- not after the whole line
+        // has already been read into memory.
+        use std::io::Cursor;
+        let mut reader = Cursor::new(vec![b'x'; MAX_HEAD_BYTES + 4096]);
+        let mut total = 0;
+        let err = read_head_line(&mut reader, &mut total).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
+        assert!(err.to_string().contains("exceeds the byte bound"), "{err}");
+        // The reader stopped at most one byte past the bound, and
+        // the accounting never ran past it either.
+        assert!(
+            reader.position() <= (MAX_HEAD_BYTES + 1) as u64,
+            "consumed {}",
+            reader.position()
+        );
+        assert!(total <= MAX_HEAD_BYTES + 1, "total {total}");
+    }
+
+    #[test]
+    fn head_line_bound_is_cumulative_across_lines() {
+        // #6511: the bound is on the whole head, so a second line
+        // gets only the remaining budget plus the one probe byte.
+        use std::io::Cursor;
+        let mut data = vec![b'a'; MAX_HEAD_BYTES - 10];
+        data.push(b'\n');
+        data.extend(vec![b'b'; 4096]);
+        let mut reader = Cursor::new(data);
+        let mut total = 0;
+        let line = read_head_line(&mut reader, &mut total).unwrap().unwrap();
+        assert_eq!(line.len(), MAX_HEAD_BYTES - 10);
+        let err = read_head_line(&mut reader, &mut total).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
+        assert!(total <= MAX_HEAD_BYTES + 1, "total {total}");
+    }
+
+    #[test]
+    fn head_line_exactly_at_the_bound_still_reads() {
+        // #6511: a line whose bytes (newline included) exactly
+        // fill the budget is at the bound, not over it, and a
+        // clean EOF right at the bound is still Ok(None).
+        use std::io::Cursor;
+        let mut data = vec![b'c'; MAX_HEAD_BYTES - 1];
+        data.push(b'\n');
+        let mut reader = Cursor::new(data);
+        let mut total = 0;
+        let line = read_head_line(&mut reader, &mut total).unwrap().unwrap();
+        assert_eq!(line.len(), MAX_HEAD_BYTES - 1);
+        assert_eq!(total, MAX_HEAD_BYTES);
+        assert!(read_head_line(&mut reader, &mut total).unwrap().is_none());
+    }
+
+    #[test]
+    fn request_head_over_bound_single_line_is_a_400() {
+        // #6511: at the read_request boundary the refusal surfaces
+        // as the existing 400 shape, promptly on the one line.
+        use std::io::Cursor;
+        let mut reader = Cursor::new(vec![b'x'; MAX_HEAD_BYTES + 1024]);
+        let (status, _reason) = read_request(&mut reader).unwrap_err();
+        assert_eq!(status, 400);
     }
 
     #[test]

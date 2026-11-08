@@ -35,6 +35,12 @@ export default {
     const url = new URL(req.url);
     if (url.pathname === "/health") return new Response("ok");
     if (url.pathname === "/github" && req.method === "POST") {
+      // Fail closed on a misconfigured deployment (#6951): without a
+      // secret the HMAC key is zero-length and importKey throws for
+      // every delivery, leaving an opaque 500 that names nothing.
+      if (!env.GITHUB_WEBHOOK_SECRET) {
+        return new Response("webhook secret not configured", { status: 500 });
+      }
       const body = await req.text();
       const given = (req.headers.get("X-Hub-Signature-256") || "").replace("sha256=", "");
       const expect = await hmacHex(env.GITHUB_WEBHOOK_SECRET, body);
@@ -46,7 +52,9 @@ export default {
       try { payload = JSON.parse(body); } catch { /* ping has form encoding sometimes */ }
       const event = req.headers.get("X-GitHub-Event") || "unknown";
       if (event === "ping") return new Response("pong");
-      const repo = payload.repository && payload.repository.full_name;
+      // A JSON null body parses to null (#6951): every other
+      // non-object shape already lands on the 202 below.
+      const repo = payload?.repository && payload.repository.full_name;
       if (!repo) return new Response("no repository in payload", { status: 202 });
       const id = `${Date.now()}-${crypto.randomUUID()}`;
       await env.GHB_EVENTS.put("ev:" + id, JSON.stringify({

@@ -17,6 +17,7 @@ import {
   upsertItem as storeUpsertItem,
   upsertComment as storeUpsertComment,
   markCommentDeleted as storeMarkCommentDeleted,
+  deleteItem as storeDeleteItem,
   recordPush as storeRecordPush,
   type HotEventInput,
 } from "../src/store";
@@ -44,6 +45,7 @@ function libsqlStore(dbx: Client): ProjectorStore {
     upsertItem: (i) => storeUpsertItem(dbx, i),
     upsertComment: (c) => storeUpsertComment(dbx, c),
     markCommentDeleted: (c) => storeMarkCommentDeleted(dbx, c),
+    deleteItem: (ref) => storeDeleteItem(dbx, ref),
     recordPush: (p) => storeRecordPush(dbx, p),
     appendHotEvents: (events) => appendHotEvents(dbx, events),
   };

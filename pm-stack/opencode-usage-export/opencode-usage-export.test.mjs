@@ -156,3 +156,85 @@ test("no candidate exists: store-missing failure document, exit 3", async () => 
   assert.equal(doc.status, "store-missing");
   assert.equal(doc.sessions, undefined);
 });
+
+test("junk --window-hours: invalid-argument failure document, no ok document, exit 2", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir, "--window-hours", "banana"] });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--window-hours/);
+  assert.equal(doc.sessions, undefined);
+  const latest = JSON.parse(await readFile(join(outDir, "latest.json"), "utf8"));
+  assert.equal(latest.status, "invalid-argument");
+});
+
+test("missing --window-hours value: invalid-argument failure document, exit 2", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir, "--window-hours"] });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--window-hours/);
+  assert.equal(doc.sessions, undefined);
+});
+
+test("negative --window-hours: invalid-argument failure document, exit 2", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir, "--window-hours", "-5"] });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--window-hours/);
+});
+
+test("junk --fresh-hours: invalid-argument (not store-stale) failure document, exit 2", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir, "--fresh-hours", "banana"] });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--fresh-hours/);
+  assert.equal(doc.sessions, undefined);
+});
+
+test("valid positive --window-hours / --fresh-hours behave as before", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), {
+    sessions: [
+      { id: "ses_recent", updated: NOW - 2 * HOUR },
+      { id: "ses_old", updated: NOW - 48 * HOUR },
+    ],
+  });
+  const { exitCode, doc } = await run({
+    home, now: NOW,
+    argv: ["--out-dir", outDir, "--window-hours", "6", "--fresh-hours", "12"],
+  });
+  assert.equal(exitCode, 0);
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.windowHours, 6);
+  assert.equal(doc.sessions.length, 1);
+  assert.equal(doc.sessions[0].id, "ses_recent");
+});
+test("wrong-shape state.json is treated as no previous state (#6915)", async () => {
+  // Valid JSON of the wrong shape must not wedge the tick (null used to
+  // throw a raw TypeError -> read-failed on every tick) and must not
+  // fabricate a `moved` report (a non-string storePath used to surface
+  // as moved.from). The tick proceeds as a normal ok export and rewrites
+  // state.json in the correct shape, so the state self-heals.
+  for (const content of ["null", "[]", '"just a string"', "5", JSON.stringify({ storePath: 123 }), JSON.stringify({ storePath: "" })]) {
+    const { home, outDir } = await fakeHome();
+    await makeStore(defaultDb(home), {
+      sessions: [{ id: "ses_live", cost: 1 }],
+      messages: [assistantMsg("ses_live", { cost: 1 })],
+    });
+    await writeFile(join(outDir, "state.json"), content);
+    const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir] });
+    assert.equal(exitCode, 0, `state.json=${content}`);
+    assert.equal(doc.status, "ok", `state.json=${content}`);
+    assert.equal(doc.moved, null, `state.json=${content}`);
+    assert.equal(doc.sessions.length, 1, `state.json=${content}`);
+    const state = JSON.parse(await readFile(join(outDir, "state.json"), "utf8"));
+    assert.equal(state.storePath, defaultDb(home), `state.json=${content}`);
+  }
+});

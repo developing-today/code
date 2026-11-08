@@ -127,6 +127,35 @@ jobs:
           fi
           go vet ./...
 
+
+  plugin-ts:
+    name: "basic: mcpx-test plugin-ts"
+    if: github.event_name != pull_request || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      # #5151: lint + type-check coverage for the mcpx-owned TypeScript
+      # plugin sources (plugin/opencode/mcpx/), which the Go jobs and
+      # the bun test suite never type-check. Toolchain is pinned
+      # exactly in plugin/opencode/package.json + bun.lock: biome lint
+      # under the repo-root biome.json (mcpx/biome.json extends it and
+      # disables only noAssignInExpressions — daemon.ts parses Go
+      # durations with the canonical while ((m = re.exec(s))) loop)
+      # and tsc --noEmit under plugin/opencode/tsconfig.json (strict).
+      # Deno was evaluated first (it is already in this workflow for
+      # the Go legs):  fails on these sources inside its
+      # tsc host, and  default rules flag the daemon wire
+      # codes established patterns wholesale, so the repos existing
+      # biome + tsc pair (id web, pm-stack aggregator) is the fit.
+      - name: Install the pinned plugin check toolchain
+        working-directory: pkgs/mcpx/plugin/opencode
+        run: bun install --frozen-lockfile
+      - name: Lint and type-check the plugin TypeScript
+        working-directory: pkgs/mcpx/plugin/opencode
+        run: bun run check
+
   e2e:
     name: "basic: mcpx-test e2e (shard ${{ matrix.shard }})"
     needs: init
@@ -215,7 +244,7 @@ jobs:
 
   ci-ok:
     name: "mcpx-test ci-ok"
-    needs: [init, unit, lint, e2e]
+    needs: [init, unit, lint, plugin-ts, e2e]
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 10

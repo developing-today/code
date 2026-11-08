@@ -422,9 +422,48 @@ pub struct HealthResponse {
     pub active_jobs: usize,
 }
 
+/// `POST /v1/embed` request (#6788): embed one query text in the
+/// production query-vector space. `trunc` absent/0 = full width.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct EmbedRequest {
+    pub query: String,
+    #[serde(default)]
+    pub trunc: Option<usize>,
+}
+
+/// `POST /v1/embed` response (#6788): the production-shaped query
+/// vector (prompt applied, truncated, renormalized by atlas-core)
+/// and the space it lives in, named so a caller can refuse a
+/// vector from the wrong space before storing or using it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct EmbedResponse {
+    pub model: String,
+    pub dims: usize,
+    pub vector: Vec<f32>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embed_wire_roundtrip() {
+        // #6788: a missing trunc is the full-width request; the
+        // response names its model space and dimension so the
+        // Worker can pin both before caching the vector.
+        let req: EmbedRequest = serde_json::from_str(r#"{"query": "alpha"}"#).unwrap();
+        assert_eq!(req.query, "alpha");
+        assert_eq!(req.trunc, None);
+        let resp = EmbedResponse {
+            model: "m".to_string(),
+            dims: 2,
+            vector: vec![1.0, 0.0],
+        };
+        let wire = serde_json::to_value(&resp).unwrap();
+        assert_eq!(wire["model"], serde_json::json!("m"));
+        assert_eq!(wire["dims"], serde_json::json!(2));
+        assert_eq!(wire["vector"], serde_json::json!([1.0, 0.0]));
+    }
 
     #[test]
     fn sensitivity_clamp_uses_ladder() {

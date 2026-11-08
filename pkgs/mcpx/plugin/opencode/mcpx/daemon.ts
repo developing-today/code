@@ -92,8 +92,12 @@ export const TUNING = {
  */
 export const goDurationMs = (v: string | undefined): number | undefined => {
   if (!v) return undefined;
-  const unit: Record<string, number> = { ns: 1e-6, us: 1e-3, µs: 1e-3, ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
-  const re = /(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)/g;
+  const unit: Record<string, number> = { ns: 1e-6, us: 1e-3, µs: 1e-3, μs: 1e-3, ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
+  // Go's number grammar is digits[.digits*] or .digits, so ".5s" and
+  // "1.s" are whole components (#3490); Go also accepts both mu
+  // codepoints for microseconds -- U+00B5 (micro sign) and U+03BC
+  // (Greek small letter mu) -- so both are in the unit table and here.
+  const re = /((?:\d+(?:\.\d*)?|\.\d+))(ns|us|µs|μs|ms|s|m|h)/g;
   let total = 0;
   let matched = 0;
   let m: RegExpExecArray | null;
@@ -113,7 +117,7 @@ export const goDurationMs = (v: string | undefined): number | undefined => {
   // past the ceiling), and an infinite discovery cooldown silently
   // disabled daemon rediscovery for the whole session (#2309).
   // Unparseable-by-Go is this function's "treated as absent".
-  if (!Number.isFinite(total) || total > 9_223_372_036_854.776) return undefined;
+  if (!Number.isFinite(total) || total > 9_223_372_036_854.775) return undefined;
   return v.trim().startsWith("-") ? undefined : total;
 };
 

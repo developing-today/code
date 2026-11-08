@@ -141,6 +141,165 @@ def inventory(owners):
     return out, errors
 
 
+# ------------------------------------------------------- plan/state files
+def _shape(value):
+    return type(value).__name__
+
+
+# Plan fields every consumer treats as a repo name / branch name (or
+# null): clone_all hashes "reference" into its scheduler state and
+# passes "branch" to manifest's head_sha string concatenation;
+# manifest groups families by "reference", sorts the anchors, and
+# copies "parent" into MANIFEST.json. All three must be strings or
+# null — any other JSON shape is poison (#6834).
+_PLAN_STRING_FIELDS = ("reference", "branch", "parent")
+
+
+def validate_plan(plan, source="plan.json"):
+    """Split a loaded plan.json into (valid entries, named problems).
+
+    A plan entry is valid only as an object with a string "repo" —
+    every consumer subscripts entry["repo"], so any other shape is a
+    poison entry (#6637): it is reported by index and skipped, never
+    allowed to crash the run for every other repo. A non-list top
+    level invalidates the whole file as a single named problem.
+
+    The consumed string fields ("reference", "branch", "parent")
+    are validated per entry (#6834): a value that is neither a string
+    nor null/absent is reported by entry and field and neutralized
+    to None — a list/dict reference is unhashable in clone_all's
+    scheduler and manifest's family grouping, a numeric reference
+    crashes manifest's mixed-type anchor sort (or writes a bogus
+    FAMILIES anchor), and a non-string branch crashes head_sha for a
+    present mirror. The entry itself is kept: its repo is fine, only
+    the poisoned field is dropped. Entries are copied, never mutated
+    in place.
+    """
+    if not isinstance(plan, list):
+        return [], [
+            f"{source}: top level is {_shape(plan)}, expected a list of "
+            f"objects — whole file treated as empty"
+        ]
+    entries, problems = [], []
+    for i, item in enumerate(plan):
+        if not (isinstance(item, dict) and isinstance(item.get("repo"), str)):
+            problems.append(
+                f"{source}: entry {i} is not an object with a string "
+                f"'repo' (got {_shape(item)}) — skipped"
+            )
+            continue
+        entry = dict(item)
+        for field in _PLAN_STRING_FIELDS:
+            value = entry.get(field)
+            if value is not None and not isinstance(value, str):
+                problems.append(
+                    f"{source}: entry {i} ({entry['repo']}) field "
+                    f"'{field}' is {_shape(value)}, expected a string "
+                    f"or null — set to null"
+                )
+                entry[field] = None
+        entries.append(entry)
+    return entries, problems
+
+
+def validate_state(state, source="state.json"):
+    """Split a loaded state.json into (clean state, named problems).
+
+    Per-repo entries must be objects; a wrong-shape entry is dropped
+    by name (#6637) so one poison entry cannot wedge every repo, and
+    a non-list "fail_days" inside an entry is reset to [] under the
+    same rule. A non-object top level invalidates the whole file as
+    a single named problem.
+
+    Bookkeeping keys written by the webhook drainer are state too,
+    under their own shapes: "drain_last::<repo>" is a numeric
+    timestamp and "drain_fail::<repo>" is an object. They are
+    validated under those shapes and preserved — dropping them
+    would erase the drainer's coalescing window every daily fetch.
+    """
+    if not isinstance(state, dict):
+        return {}, [
+            f"{source}: top level is {_shape(state)}, expected an "
+            f"object — whole file treated as empty"
+        ]
+    clean, problems = {}, []
+    for repo, entry in state.items():
+        if repo.startswith("drain_last::"):
+            if isinstance(entry, (int, float)) and not isinstance(entry, bool):
+                clean[repo] = entry
+            else:
+                problems.append(
+                    f"{source}: entry for {repo!r} is {_shape(entry)}, "
+                    f"expected a number — dropped"
+                )
+            continue
+        if not isinstance(entry, dict):
+            problems.append(
+                f"{source}: entry for {repo!r} is {_shape(entry)}, "
+                f"expected an object — dropped"
+            )
+            continue
+        entry = dict(entry)
+        days = entry.get("fail_days")
+        if days is not None and not isinstance(days, list):
+            problems.append(
+                f"{source}: 'fail_days' for {repo!r} is {_shape(days)}, "
+                f"expected a list — reset to []"
+            )
+            entry["fail_days"] = []
+        clean[repo] = entry
+    return clean, problems
+
+
+def load_plan(root):
+    """Load + validate plan.json under `root` (missing file = empty)."""
+    path = os.path.join(root, "plan.json")
+    if not os.path.exists(path):
+        return [], []
+    with open(path) as f:
+        return validate_plan(json.load(f))
+
+
+def load_state(root):
+    """Load + validate state.json under `root` (missing file = empty)."""
+    path = os.path.join(root, "state.json")
+    if not os.path.exists(path):
+        return {}, []
+    with open(path) as f:
+        return validate_state(json.load(f))
+
+
+def clone_status_record(line):
+    """The clone-status.jsonl line contract — the ONE place it is stated
+    (#6606). Both readers of clone-status.jsonl (clone_all.py and
+    reconcile.py) go through this helper, so they cannot disagree:
+
+    each line is a JSON *object* (a status record like
+    {"repo": ..., "status": ...}). A line that does not parse as JSON,
+    and a line that parses as valid JSON of any other shape (number,
+    string, list, null, bool — a torn/interleaved append, a hand edit,
+    a future writer change), is NOT a record: this returns None and
+    the reader ignores the line exactly as it ignores unparseable
+    lines. Records are returned as-is; missing keys are the caller's
+    existing concern, and a caller that puts a field value into a set
+    must require the field's expected type (a record can still carry
+    a malformed field value, e.g. a list "repo" — both current
+    consumers require a string repo).
+    """
+    try:
+        value = json.loads(line)
+    except Exception:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def report_problems(problems):
+    """Name every shape problem on stderr; returns the count."""
+    for problem in problems:
+        print(f"github-backup: {problem}", file=sys.stderr)
+    return len(problems)
+
+
 # ---------------------------------------------------------------- plan
 def build_plan(repos, cfg):
     """Apply config tier rules. Returns (plan, excluded, gaps, pending_review).

@@ -5,6 +5,8 @@
 //! contract's bounds. This is the step-1 stand-in for the live
 //! `id world contract --check` session harness (step 2).
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::PathBuf;

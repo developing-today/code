@@ -164,6 +164,7 @@ pub fn present(data: &str, surface: Option<&WorldSurface>) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use id::world_presentation::parse_surface;

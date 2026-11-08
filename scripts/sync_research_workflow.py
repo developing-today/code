@@ -48,20 +48,36 @@ def load_json_object(path):
 
 def load_profile(path, *, lifecycle_skills=False):
     profile = load_json_object(path)
-    if not isinstance(profile.get("workflow_docs"), str):
+    workflow_docs = profile.get("workflow_docs")
+    if not isinstance(workflow_docs, str):
         raise ValueError(f"{path}: workflow_docs must be a string")  # noqa: TRY004
+    if not Path(workflow_docs).parts:
+        # "" and "." name the repository root itself: source_files would
+        # treat the whole checkout (including .git) as the docs tree.
+        raise ValueError(
+            f"{path}: workflow_docs must name a directory inside the repository"
+        )
     skills = profile.get("lifecycle_skills", SKILLS)
     if (
         lifecycle_skills
         and "lifecycle_skills" in profile
         and (
             not isinstance(skills, list)
-            or any(
-                not isinstance(skill, str) for skill in skills
-            )
+            or any(not isinstance(skill, str) for skill in skills)
         )
     ):
         raise ValueError(f"{path}: lifecycle_skills must be a list of strings")
+    if lifecycle_skills and any(
+        skill in (".", "..")
+        or not Path(skill).parts
+        or Path(skill).parts != (skill,)
+        for skill in skills
+    ):
+        # "" / "." would map the whole .agents/skills tree, and a name
+        # with separators is not a skill directory name.
+        raise ValueError(
+            f"{path}: lifecycle_skills entries must be directory names"
+        )
     return profile, skills
 
 

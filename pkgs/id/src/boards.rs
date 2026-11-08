@@ -18,6 +18,10 @@
 //! three-layer view (personal filter / board view / host view) under the
 //! transparency rule: hidden is never erased. It does not render markup,
 //! serve content, or fetch attachment/game payloads.
+//! Duplicate `Rules` objects for the same board and revision are legal signed
+//! history. [`BoardGraph::resolve_rules`] selects the greater content hash
+//! within a revision; current rules are the highest revision, using that same
+//! tie-break, so every peer projects the same signed set identically.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -597,6 +601,37 @@ impl BoardGraph {
     /// Whether the graph has no accepted objects.
     pub fn is_empty(&self) -> bool {
         self.objects.is_empty()
+    }
+
+    /// Resolve rules for one board, returning the selected content hash and body.
+    ///
+    /// `Some(revision)` selects that exact revision; `None` selects current
+    /// rules, meaning the highest revision present. Duplicate `(board,
+    /// revision)` objects are legal signed history: within a revision, the
+    /// greater content hash wins. The same tie-break selects current rules
+    /// when multiple objects share its highest revision, independent of
+    /// insertion order. A thread's `rules_ref` remains pinned to its exact
+    /// referenced hash; this projection does not rewrite or reinterpret it.
+    pub fn resolve_rules(
+        &self,
+        board: &ArtifactHash,
+        revision: Option<u64>,
+    ) -> Option<(&ArtifactHash, &Rules)> {
+        self.objects
+            .iter()
+            .filter_map(|(hash, signed)| {
+                let BoardObject::Rules(rules) = &signed.object else {
+                    return None;
+                };
+                (rules.board == *board
+                    && revision.is_none_or(|revision| rules.revision == revision))
+                .then_some((hash, rules))
+            })
+            .max_by(|(left_hash, left), (right_hash, right)| {
+                left.revision
+                    .cmp(&right.revision)
+                    .then_with(|| left_hash.cmp(right_hash))
+            })
     }
 
     fn validate_links(&self, signed: &SignedBoardObject) -> Result<()> {
@@ -1592,6 +1627,7 @@ fn is_public_key(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use ed25519_dalek::SigningKey;
+    use proptest::prelude::*;
 
     use super::*;
     use crate::world::hex_encode;
@@ -1855,6 +1891,113 @@ mod tests {
                 "valid embed",
             ))
             .unwrap();
+    }
+
+    proptest! {
+        #[test]
+        fn rules_resolution_is_independent_of_insertion_order(
+            additional in prop::collection::vec((1_u64..=3, "[a-z0-9]{0,8}"), 0..6)
+        ) {
+            let owner = key(41);
+            let mut first_graph = BoardGraph::default();
+            let board_hash = first_graph.insert(board(&owner)).unwrap();
+            let mut reverse_graph = BoardGraph::default();
+            prop_assert_eq!(reverse_graph.insert(board(&owner)).unwrap(), board_hash.clone());
+
+            // Always include two different revision-1 rules so the regression
+            // property covers the adopted legal-duplicate case.
+            let rule_data = [(1_u64, "first".to_owned()), (1_u64, "second".to_owned())]
+                .into_iter()
+                .chain(additional.into_iter().map(|(revision, text)| (revision, text)));
+            let mut rules = Vec::new();
+            for (index, (revision, text)) in rule_data.enumerate() {
+                let signed = SignedBoardObject::sign(
+                    &owner,
+                    index as u64 + 2,
+                    "",
+                    BoardObject::Rules(Rules {
+                        board: board_hash.clone(),
+                        revision,
+                        text: format!("{index}: {text}"),
+                    }),
+                )
+                .unwrap();
+                rules.push((signed.hash().unwrap(), revision, signed));
+            }
+
+            for (_, _, signed) in &rules {
+                first_graph.insert(signed.clone()).unwrap();
+            }
+            for (_, _, signed) in rules.iter().rev() {
+                reverse_graph.insert(signed.clone()).unwrap();
+            }
+
+            let expected_current = rules
+                .iter()
+                .max_by(|(left_hash, left_revision, _), (right_hash, right_revision, _)| {
+                    left_revision
+                        .cmp(right_revision)
+                        .then_with(|| left_hash.cmp(right_hash))
+                })
+                .map(|(hash, _, _)| hash)
+                .unwrap();
+            prop_assert_eq!(
+                first_graph.resolve_rules(&board_hash, None).map(|(hash, _)| hash),
+                Some(expected_current)
+            );
+            prop_assert_eq!(
+                reverse_graph.resolve_rules(&board_hash, None).map(|(hash, _)| hash),
+                Some(expected_current)
+            );
+
+            for revision in 1..=3 {
+                let expected_revision = rules
+                    .iter()
+                    .filter(|(_, candidate_revision, _)| *candidate_revision == revision)
+                    .map(|(hash, _, _)| hash)
+                    .max();
+                prop_assert_eq!(
+                    first_graph.resolve_rules(&board_hash, Some(revision)).map(|(hash, _)| hash),
+                    expected_revision
+                );
+                prop_assert_eq!(
+                    reverse_graph.resolve_rules(&board_hash, Some(revision)).map(|(hash, _)| hash),
+                    expected_revision
+                );
+            }
+
+            // A thread keeps the exact hash it names, even if that is not the
+            // graph's selected winner for the same revision.
+            let pinned_hash = rules
+                .iter()
+                .filter(|(_, revision, _)| *revision == 1)
+                .map(|(hash, _, _)| hash)
+                .min()
+                .unwrap()
+                .clone();
+            let pinned_thread = SignedBoardObject::sign(
+                &owner,
+                u64::MAX,
+                "",
+                BoardObject::Thread(Thread {
+                    board: board_hash.clone(),
+                    forum_ref: None,
+                    rules_ref: Some(pinned_hash.clone()),
+                    title: "pinned rules".to_owned(),
+                }),
+            )
+            .unwrap();
+            let thread_hash = pinned_thread.hash().unwrap();
+            first_graph.insert(pinned_thread.clone()).unwrap();
+            reverse_graph.insert(pinned_thread).unwrap();
+            for graph in [&first_graph, &reverse_graph] {
+                let BoardObject::Thread(thread) = &graph.get(&thread_hash).unwrap().object else {
+                    prop_assert!(false, "inserted thread hash did not resolve to a thread");
+                    return Ok(());
+                };
+                prop_assert_eq!(thread.rules_ref.as_ref(), Some(&pinned_hash));
+            }
+        }
     }
 
     #[test]

@@ -213,8 +213,18 @@ function allowedModelIds(policy, providerPolicy, ids) {
       if (!match) continue;
       if (match[1] === undefined) continue;
       const version = match[1].replace(/-/g, '.').split('.').map(Number);
+      // #6893: a capture with a non-numeric component (e.g. "2-beta")
+      // maps that component to NaN, and every comparison against NaN
+      // is false — the "newest" pick would silently be whichever id
+      // was enumerated first. Such an id is deterministically
+      // excluded from selection: it can never be a family's newest
+      // model, in any input order.
+      if (version.some(component => Number.isNaN(component))) break;
       const current = newest.get(family);
-      if (!current || compareVersions(version, current.version) > 0) {
+      // Equal versions tie-break on the id itself, so the pick is
+      // the same set for every permutation of the same id list.
+      if (!current || compareVersions(version, current.version) > 0 ||
+          (compareVersions(version, current.version) === 0 && id > current.id)) {
         newest.set(family, { id, version });
       }
       break;
@@ -459,7 +469,7 @@ async function run() {
   // file keeps its comments and formatting.
   const edits = [];
 
-  // 1. Sync antigravity-direct (the CLI-wire door; antigravity-agy &
+  // 1. Sync _antigravity (the CLI-wire door; antigravity-agy &
   // antigravity-ls retired 2026-10-30 — see home/common/default.nix)
   if (agyModels.length > 0) {
     // Write local cache for proxies
@@ -507,7 +517,7 @@ async function run() {
       return { context: 1048576, output: 65536 };
     };
 
-    for (const targetProvider of ['antigravity-direct']) {
+    for (const targetProvider of ['_antigravity']) {
       if (!config.provider[targetProvider]) continue;
       const prov = config.provider[targetProvider];
       prov.models = prov.models || {};

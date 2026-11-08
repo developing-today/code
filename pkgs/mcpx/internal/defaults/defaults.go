@@ -359,6 +359,7 @@ type Defaults struct {
 		EraFile        string `json:"eraFile"`
 		EraFileVersion int    `json:"eraFileVersion"`
 		ErrorBodyLimit string `json:"errorBodyLimit"`
+		ResponseBodyLimit string `json:"responseBodyLimit"`
 		// SSEReconnectDelay is the wait before resuming a Streamable HTTP
 		// stream the server closed without saying how long to wait (no
 		// retry field).
@@ -415,6 +416,11 @@ var (
 	// HTTPErrorBodyLimit bounds how much of a non-2xx body is read: enough
 	// for a JSON-RPC error, not enough for an HTML error page to matter.
 	HTTPErrorBodyLimit = mustBytes(builtin.Upstream.ErrorBodyLimit, "upstream.errorBodyLimit")
+	// ProviderResponseBodyLimit bounds how much of a model provider's
+	// response body is read on the success path: a chat-completion
+	// JSON has no business being larger, and an unbounded read lets a
+	// bad endpoint make the daemon allocate arbitrarily much (#4354).
+	ProviderResponseBodyLimit = mustBytes(builtin.Upstream.ResponseBodyLimit, "upstream.responseBodyLimit")
 	// UpstreamSSEReconnectDelay is the resume wait when a server sent no
 	// retry field.
 	UpstreamSSEReconnectDelay = mustDur(builtin.Upstream.SSEReconnectDelay, "upstream.sseReconnectDelay")

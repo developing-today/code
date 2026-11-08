@@ -89,6 +89,7 @@ export function normalizeResetAt(v: unknown): string | null {
 export function serviceIdFor(providerId: string): string {
   switch (providerId) {
     case "claude":
+    case "_claude":
       return "anthropic:claude-pro";
     case "codex":
       return "openai.main";
@@ -96,6 +97,8 @@ export function serviceIdFor(providerId: string): string {
       return "cline-pass";
     case "command-code":
       return "commandcode";
+    case "_commandcode":
+      return "_commandcode";
     case "deepseek":
       return "deepseek";
     case "meta":
@@ -122,8 +125,13 @@ export const GATHERER_SOURCE = "opencode-quota";
  */
 export const GO_DREWRYPOPE_SERVICE_ID = "opencode-go.drewrypope";
 export const GO_POPESDREW_SERVICE_ID = "opencode-go.popesdrew";
-export const ANTIGRAVITY_GEMINI_SERVICE_ID = "antigravity-direct.gemini";
-export const ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID = "antigravity-direct.claude-gpt";
+export const ANTIGRAVITY_GEMINI_SERVICE_ID = "_antigravity.gemini";
+export const ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID = "_antigravity.claude-gpt";
+// Pre-rename (#1823) split ids: a gatherer still paired with the old
+// fork binary reports providerId "antigravity" and its rows keep the
+// historical series; the renamed provider starts the new series.
+export const ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID = "antigravity-direct.gemini";
+export const ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID = "antigravity-direct.claude-gpt";
 
 /**
  * Which split Go pool a per-workspace entry belongs to, from the
@@ -148,7 +156,8 @@ export function goPoolServiceId(entry: QuotaCurrentEntry): string | null {
  * Claude+GPT pool. Quota grouping must use the same rule, or burn and
  * quota would disagree about which pool a model draws from.
  */
-function antigravityPoolForModel(model: string): string {
+function antigravityPoolForModel(model: string, legacy = false): string {
+  if (legacy) return model.startsWith("gemini") ? ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID : ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID;
   return model.startsWith("gemini") ? ANTIGRAVITY_GEMINI_SERVICE_ID : ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID;
 }
 
@@ -169,7 +178,11 @@ function antigravityPoolRows(entry: QuotaCurrentEntry): QuotaCurrentEntry[] {
     // A failed provider read lapses both pools loudly — history
     // retained, no stale % presented as current — instead of leaving
     // the pools on their dated reads with no signal the source died.
-    return [ANTIGRAVITY_GEMINI_SERVICE_ID, ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID].map((serviceId) => ({
+    const ids =
+      entry.providerId === "antigravity"
+        ? [ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID, ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID]
+        : [ANTIGRAVITY_GEMINI_SERVICE_ID, ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID];
+    return ids.map((serviceId) => ({
       ...entry,
       serviceId,
     }));
@@ -181,7 +194,7 @@ function antigravityPoolRows(entry: QuotaCurrentEntry): QuotaCurrentEntry[] {
     const sep = w.name.lastIndexOf(":");
     if (sep <= 0 || sep === w.name.length - 1) continue;
     if (w.pctOfLimit == null) continue;
-    const pool = antigravityPoolForModel(w.name.slice(0, sep));
+    const pool = antigravityPoolForModel(w.name.slice(0, sep), entry.providerId === "antigravity");
     const winName = w.name.slice(sep + 1);
     let group = best.get(pool);
     if (!group) {
@@ -224,7 +237,7 @@ export function entriesWithPoolSplits(entries: readonly QuotaCurrentEntry[]): Qu
       // their dated reads until a real read (ok or error) arrives.
       const serviceId = goPoolServiceId(entry);
       if (serviceId && entry.state !== "unconfigured") out.push({ ...entry, serviceId });
-    } else if (entry.providerId === "antigravity") {
+    } else if (entry.providerId === "antigravity" || entry.providerId === "_antigravity") {
       out.push(...antigravityPoolRows(entry));
     }
   }

@@ -164,3 +164,68 @@ test("limiter state is alarm-bounded and alarm cleans up dormant keys", async ()
   // After cleanup the same key starts a fresh window.
   assert.equal(await take(1, 60000), true);
 });
+
+test("malformed or wrong-shape MAIL_CONFIG fails closed with the 500 envelope (#6970)", async () => {
+  const fx = makeEnv();
+  const env = fx.build();
+  for (const bad of [
+    "{not json",
+    "null",
+    "[]",
+    JSON.stringify({ defaultTransport: "email", transports: ["email"], templates: [] }),
+    JSON.stringify({
+      defaultTransport: "email",
+      transports: "email",
+      templates: [],
+      limits: { windowSeconds: 60, callerPerWindow: 10, recipientPerWindow: 10 },
+    }),
+    JSON.stringify({
+      defaultTransport: "email",
+      transports: ["email"],
+      templates: [null],
+      limits: { windowSeconds: 60, callerPerWindow: 10, recipientPerWindow: 10 },
+    }),
+  ]) {
+    env.MAIL_CONFIG = bad;
+    const response = await worker.fetch(mailRequest(["one@example.com"]), env);
+    assert.equal(response.status, 500, bad);
+    assert.deepEqual(await response.json(), { error: "worker is not configured" });
+  }
+  assert.deepEqual(fx.sent, []);
+});
+
+test("malformed or wrong-shape CALLERS fails closed with the 500 envelope (#6970)", async () => {
+  const fx = makeEnv();
+  const env = fx.build();
+  for (const bad of [
+    "{nope",
+    "null",
+    JSON.stringify({ alice: null }),
+    JSON.stringify({ alice: { sha256: CALLER.sha256 } }),
+    JSON.stringify({ alice: { sha256: CALLER.sha256, transports: { email: { mode: "free", from: "alice@example.com", maxRecipients: 2 } } } }),
+    JSON.stringify({ alice: { sha256: CALLER.sha256, transports: { email: { mode: "free", maxRecipients: 2 } } } }),
+  ]) {
+    env.CALLERS = bad;
+    const response = await worker.fetch(mailRequest(["one@example.com"]), env);
+    assert.equal(response.status, 500, bad);
+    assert.deepEqual(await response.json(), { error: "worker is not configured" });
+  }
+  assert.deepEqual(fx.sent, []);
+});
+
+test("template mode with no templates configured refuses instead of throwing (#6970)", async () => {
+  const fx = makeEnv();
+  const env = fx.build();
+  env.CALLERS = JSON.stringify({
+    alice: {
+      sha256: CALLER.sha256,
+      transports: { email: { mode: "template", from: ["alice@example.com"], maxRecipients: 2 } },
+    },
+  });
+  const config = JSON.parse(env.MAIL_CONFIG);
+  delete config.templates;
+  env.MAIL_CONFIG = JSON.stringify(config);
+  const response = await worker.fetch(mailRequest(["one@example.com"]), env);
+  assert.equal(response.status, 400);
+  assert.deepEqual(fx.sent, []);
+});

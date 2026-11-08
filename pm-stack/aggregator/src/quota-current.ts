@@ -19,6 +19,7 @@
 //   fresh ok entry wins over an error entry; otherwise the newest
 //   entry decides the surfaced state.
 import { poolState } from "./derive.ts";
+import { isProviderAuthAlert, reevaluateProviderAuth } from "./provider-auth-alerts.ts";
 import { lifecycleForEntry, safeProviderReason } from "./credential-lifecycle.ts";
 import { computeChoices } from "./quota-guidance.ts";
 import type {
@@ -119,9 +120,17 @@ export function parseQuotaCurrent(doc: unknown): QuotaCurrentFile | null {
       windows: windows.values,
     };
   });
+  // #6671: the optional providerAuth section is isolated at this
+  // boundary like the provider list — a non-array value is dropped
+  // and malformed rows are filtered, so one bad section can never
+  // throw in the overlay and suppress the unrelated quota data.
+  const providerAuth = Array.isArray(doc.providerAuth)
+    ? doc.providerAuth.filter(isProviderAuthAlert)
+    : undefined;
   return {
     ...doc,
     providers: validProviders,
+    providerAuth,
     sanitized: { droppedProviders: providers.dropped, droppedWindows },
   } as unknown as QuotaCurrentFile;
 }
@@ -327,13 +336,14 @@ function summarize(file: QuotaCurrentFile, nowMs: number): GathererSummary {
  * "turso" is a SaaS usage row (its display surface is the SaaS cards,
  * via overlayTursoUsage), and "antigravity" / "opencode-go" are the
  * COMBINED account rows whose pool-level rendering is their split
- * rows (antigravity-direct.gemini / antigravity-direct.claude-gpt and
+ * rows (_antigravity.gemini / _antigravity.claude-gpt — pre-rename:
+ * antigravity-direct.gemini / antigravity-direct.claude-gpt — and
  * opencode-go.drewrypope / opencode-go.popesdrew, produced by
  * entriesWithPoolSplits in quota-gather-map.ts). Synthesizing pools
  * for them would double-render the same read. Every OTHER serviceId
  * the read reports renders as a pool — see the synthesis below.
  */
-const NON_POOL_SERVICE_IDS: ReadonlySet<string> = new Set(["turso", "antigravity", "opencode-go"]);
+const NON_POOL_SERVICE_IDS: ReadonlySet<string> = new Set(["turso", "antigravity", "_antigravity", "opencode-go"]);
 
 /**
  * Overlay a parsed quota-current document onto a quota view. Pure:
@@ -402,6 +412,10 @@ export function overlayQuotaCurrent(view: QuotaView, file: QuotaCurrentFile, now
   const allPools = [...pools, ...synthesized];
 
   const out: QuotaView = { ...view, pools: allPools, gatherer: summarize(file, nowMs) };
+  // #6671: keeper alerts ride the same overlay; malformed rows are
+  // dropped at this boundary like every other gatherer field.
+  if (Array.isArray(file.providerAuth))
+    out.providerAuth = reevaluateProviderAuth(file.providerAuth.filter(isProviderAuthAlert), now);
   const credentialLifecycle = file.providers
     .filter((entry) => entry.credentialWatch === true)
     .map((entry) => lifecycleForEntry(entry, now));

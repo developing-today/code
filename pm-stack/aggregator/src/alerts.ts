@@ -631,6 +631,7 @@ export async function sendTestPush(
 /**
  * Create the shared store resolver. Keep the in-flight attempt and successful
  * store cached, but clear null/rejected attempts so a later call can recover.
+ * Lazy-init contract (success-only memoization): README "Lazy-initialization contract" (#3879).
  */
 export function createAlertsStoreGetter(
   getClient: typeof getSupabaseClient = getSupabaseClient,

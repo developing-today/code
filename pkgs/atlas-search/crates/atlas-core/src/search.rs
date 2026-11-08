@@ -162,6 +162,12 @@ pub fn run_search_with_executor(
     opts: &SearchOptions,
     executor: &dyn BranchPoolExecutor,
 ) -> Result<Json> {
+    if opts.expand > crate::MAX_EXPAND_NEIGHBORS {
+        return Err(Error::fatal(format!(
+            "expand must be at most {}",
+            crate::MAX_EXPAND_NEIGHBORS
+        )));
+    }
     if opts.mode.uses_vector()
         && opts.vector_backend != VectorBackend::Scan
         && backend.name() != "turso"
@@ -399,7 +405,9 @@ fn entry_chunk_extras(
 
 /// The Python's `neighbor_map`.
 fn neighbor_map(backend: &dyn SearchBackend, d: &ChunkDetail, n: usize) -> Result<Json> {
-    let rows = backend.neighbors(&d.message_id, d.chunk_idx, n as i64)?;
+    let n = i64::try_from(n)
+        .map_err(|_| Error::fatal("neighbor count does not fit in the backend's signed range"))?;
+    let rows = backend.neighbors(&d.message_id, d.chunk_idx, n)?;
     let mut before = Vec::new();
     let mut after = Vec::new();
     for r in &rows {

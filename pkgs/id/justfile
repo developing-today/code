@@ -36,7 +36,7 @@ alias check-all := check
 
 # CI-safe checks (read-only, no modifications) [bun]
 [group('check')]
-ci: cargo-fmt-check web-fmt-check cargo-check clippy-lint web-lint test-sandbox test-web-unit test-web-typecheck roc-test doc build release
+ci: cargo-fmt-check web-fmt-check cargo-check clippy-lint clippy-native-shell web-lint test-sandbox test-native-shell test-web-unit test-web-typecheck roc-test doc build release
     @echo "✓ CI checks passed!"
 
 # Auto-fix formatting and lint issues
@@ -168,6 +168,11 @@ clippy-lint:
 clippy-lint-fix:
     cargo clippy --all-targets --all-features --fix --allow-dirty --allow-staged
 
+# Clippy for id-native-shell (#5582): non-default workspace member, so the default-member clippy-lint never sees it.
+[group('lint')]
+clippy-native-shell:
+    cargo clippy -p id-native-shell --all-targets
+
 # [biome] Lint web code (TypeScript + CSS)
 [group('lint')]
 web-lint:
@@ -216,6 +221,11 @@ just-recipes-check:
 test-rust:
     cargo test --all-features
 alias test-cargo := test-rust
+
+# Planted-bug check: prove the voiding/frontier suites catch planted bugs (#1395, P2.3/P2.8)
+[group('test')]
+planted-bug-check:
+    bash tests/planted-bug-check.sh
 
 # Run all fast tests (Rust + TypeScript unit + typecheck)
 [group('test')]
@@ -276,6 +286,11 @@ crash-gate-ingest:
 test-unit:
     cargo test --all-features --lib
 alias test-lib := test-unit
+
+# Run the id-native-shell unit + contract transcript tests (#5582): non-default workspace member, so the default-member test recipes never run it.
+[group('test')]
+test-native-shell:
+    cargo test -p id-native-shell
 
 # Run the F11.8 benchmark harness (issue #539): journal append+fsync, checkpoint compaction, guest replay, session fan-out
 bench *args:

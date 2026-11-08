@@ -36,3 +36,14 @@ all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
 cargo = { level = "warn", priority = -1 }
+
+# Deny critical issues - these indicate bugs or serious problems
+# (mirrors pkgs/id/Cargo.toml so the clippy-native-shell gate, #5582,
+# enforces the same standard as the default-member clippy-lint gate).
+# Test modules should add: #[allow(clippy::unwrap_used, clippy::expect_used)]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unimplemented = "deny"
+todo = "deny"
+dbg_macro = "deny"

@@ -25,6 +25,8 @@
 //! to 1 MiB and 256 causal predecessors / create members. These limits apply
 //! before decoding large structures as well as before encoding.
 
+use std::collections::HashSet;
+
 use cbor_core::{DecodeOptions, Strictness, Value};
 use p2panda_core::Hash;
 
@@ -229,6 +231,30 @@ fn check_bounds(event: &GroupEvent) -> Result<(), EventError> {
             "{} create members, the most is {MAX_CREATE_MEMBERS}",
             create.members.len()
         )));
+    }
+    let mut seen_after = HashSet::with_capacity(event.after.len());
+    for predecessor in &event.after {
+        if *predecessor == event.id {
+            return Err(EventError::Shape(
+                "an event may not name itself as a predecessor".to_owned(),
+            ));
+        }
+        if !seen_after.insert(predecessor) {
+            return Err(EventError::Shape(
+                "after names the same predecessor twice (duplicate predecessor)".to_owned(),
+            ));
+        }
+    }
+    if let EventBody::Group(Body::Create(create)) = &event.body {
+        let mut seen_members = HashSet::with_capacity(create.members.len());
+        for (key, _role) in &create.members {
+            if !seen_members.insert(key) {
+                return Err(EventError::Shape(
+                    "create members name the same member twice (duplicate create member)"
+                        .to_owned(),
+                ));
+            }
+        }
     }
     if matches!(&event.body, EventBody::FriendshipDecline) && event.group.is_none() {
         return Err(EventError::Shape(
@@ -803,6 +829,129 @@ mod tests {
         ])
         .encode();
         assert!(matches!(decode(&malformed_join), Err(EventError::Shape(_))));
+    }
+
+    #[test]
+    fn group_event_wire_rejects_duplicate_self_and_member_repeats() {
+        // Duplicate predecessors: refused on encode and on decode.
+        let mut dup_after = sample(EventBody::Group(Body::Join));
+        dup_after.after = vec![Hash::from_bytes([4; 32]), Hash::from_bytes([4; 32])];
+        assert!(matches!(
+            encode_group_event(&dup_after),
+            Err(EventError::Shape(_))
+        ));
+        let dup_after_wire = Value::Array(vec![
+            Value::TextString(TAG.to_owned().into()),
+            Value::Unsigned(VERSION),
+            hash_value(&dup_after.id),
+            key_value(&dup_after.author),
+            Value::Array(vec![
+                hash_value(&Hash::from_bytes([4; 32])),
+                hash_value(&Hash::from_bytes([4; 32])),
+            ]),
+            hash_value(dup_after.group.as_ref().unwrap()),
+            Value::Array(vec![
+                Value::TextString("join".to_owned().into()),
+                Value::Array(vec![]),
+            ]),
+        ])
+        .encode();
+        assert!(matches!(decode(&dup_after_wire), Err(EventError::Shape(_))));
+
+        // Self-predecessor: refused on encode and on decode.
+        let mut self_after = sample(EventBody::Group(Body::Join));
+        self_after.after = vec![self_after.id];
+        assert!(matches!(
+            encode_group_event(&self_after),
+            Err(EventError::Shape(_))
+        ));
+        let self_after_wire = Value::Array(vec![
+            Value::TextString(TAG.to_owned().into()),
+            Value::Unsigned(VERSION),
+            hash_value(&self_after.id),
+            key_value(&self_after.author),
+            Value::Array(vec![hash_value(&self_after.id)]),
+            hash_value(self_after.group.as_ref().unwrap()),
+            Value::Array(vec![
+                Value::TextString("join".to_owned().into()),
+                Value::Array(vec![]),
+            ]),
+        ])
+        .encode();
+        assert!(matches!(
+            decode(&self_after_wire),
+            Err(EventError::Shape(_))
+        ));
+
+        // Duplicate create member (same key, conflicting roles): refused on
+        // encode and on decode (the decode path rebuilds the create body
+        // through the same shared gate).
+        let dup_member = sample(EventBody::Group(Body::Create(Create {
+            template: Template::Custom,
+            policy: Policy::default(),
+            members: vec![([6; 32], Role::Read), ([6; 32], Role::Admin)],
+            admins_on_create: false,
+        })));
+        assert!(matches!(
+            encode_group_event(&dup_member),
+            Err(EventError::Shape(_))
+        ));
+        // Hand-built create wire bytes carrying the repeated member: build
+        // them by encoding a valid single-member create and splicing a
+        // second entry for the same key into the members array is brittle,
+        // so decode is exercised through a members list constructed with
+        // the codec's own value helpers via a raw Value envelope.
+        let (kind, args) = {
+            let single = sample(EventBody::Group(Body::Create(Create {
+                template: Template::Custom,
+                policy: Policy::default(),
+                members: vec![([6; 32], Role::Read)],
+                admins_on_create: false,
+            })));
+            let bytes = encode_group_event(&single).unwrap();
+            let value = DecodeOptions::new()
+                .strictness(Strictness::STRICT)
+                .decode_owned(&bytes)
+                .unwrap();
+            let Value::Array(envelope) = value else {
+                panic!("envelope is an array");
+            };
+            let Value::Array(body) = &envelope[6] else {
+                panic!("body is an array");
+            };
+            let kind = body[0].clone();
+            let Value::Array(create_args) = &body[1] else {
+                panic!("create args are an array");
+            };
+            let mut create_args = create_args.clone();
+            let Value::Array(members) = &create_args[2] else {
+                panic!("members are an array");
+            };
+            let mut members = members.clone();
+            members.push(Value::Array(vec![
+                key_value(&[6; 32]),
+                role_value(Role::Admin),
+            ]));
+            create_args[2] = Value::Array(members);
+            (kind, Value::Array(create_args))
+        };
+        let dup_member_wire = Value::Array(vec![
+            Value::TextString(TAG.to_owned().into()),
+            Value::Unsigned(VERSION),
+            hash_value(&dup_member.id),
+            key_value(&dup_member.author),
+            Value::Array(vec![]),
+            hash_value(dup_member.group.as_ref().unwrap()),
+            Value::Array(vec![kind, args]),
+        ])
+        .encode();
+        assert!(matches!(
+            decode(&dup_member_wire),
+            Err(EventError::Shape(_))
+        ));
+
+        // Distinct predecessors and members still pass.
+        assert!(encode_group_event(&sample(EventBody::Group(Body::Join))).is_ok());
     }
 
     #[test]

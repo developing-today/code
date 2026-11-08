@@ -35,6 +35,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::chain::{self, ChainExt, Event};
 
+/// Graph-native currency definitions and value-event contracts.
+pub mod graph;
+
 /// The event kind carrying a rate authorisation body.
 pub const RATE_AUTHORISATION_KIND: &str = "currency.rate_authorisation";
 

@@ -322,10 +322,10 @@ mkdir -p "$STAGE/aggregator" "$STAGE/meta-quota-export" "$STAGE/journals" "$OUTD
 # the source silently shrank the backup set. Classes preserve the
 # intent the staging code below has always had: existing state files
 # are required (their WARN-for-missing becomes a failed run at verify);
-# the snapshots tree and the journal logs are optional (journals keep
-# their tolerated-unavailable placeholder, but are now recorded);
-# db-dumps is CONDITIONALLY required — required when the DB dump step
-# ran (DUMP_RAN=1), optional otherwise.
+# retired meta-quota-export files, the snapshots tree and active journal
+# logs are optional; journals keep their tolerated-unavailable
+# placeholder, but are now recorded; db-dumps is CONDITIONALLY required
+# — required when the DB dump step ran (DUMP_RAN=1), optional otherwise.
 EXPECTED_SET="required file aggregator/actions.json
 required file aggregator/comments.json
 required file aggregator/fleet-feed.json
@@ -338,14 +338,13 @@ required file aggregator/coverage-snapshot.json
 required file aggregator/aa-last-good.json
 optional file aggregator/views.json
 optional tree aggregator/charge-inputs
-required file meta-quota-export/latest.json
-required file meta-quota-export/history.jsonl
+optional file meta-quota-export/latest.json
+optional file meta-quota-export/history.jsonl
 conditional tree db-dumps
 conditional file projector/pmp_links.sql
 optional tree aggregator/snapshots
 optional file journals/pm-aggregator.log
-optional file journals/quota-gatherer.log
-optional file journals/meta-quota-export.log"
+optional file journals/quota-gatherer.log"
 
 # --- data set (explicit list only; the aggregator .env is deliberately NOT
 # --- included — no config/secret files belong in this archive) ---
@@ -434,7 +433,7 @@ case "$LAST" in *[!0-9]* | "") LAST=0 ;; esac
 W=$((NOW_EPOCH - 86400))
 if [ "$LAST" -gt 0 ] && [ "$LAST" -lt "$W" ]; then W="$LAST"; fi
 SINCE_STR="$(date -d "@$W" '+%F %T')"
-for svc in pm-aggregator quota-gatherer meta-quota-export; do
+for svc in pm-aggregator quota-gatherer; do
   journalctl --user -u "$svc.service" --since "$SINCE_STR" --no-pager -o short-iso \
     >"$STAGE/journals/$svc.log" 2>/dev/null ||
     echo "(journal unavailable for $svc)" >"$STAGE/journals/$svc.log"
