@@ -158,6 +158,19 @@ export interface FeedMetadata {
   sections: Record<string, FeedSectionCollectionStatus>;
 }
 
+// Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7741, mirroring the #7694 capUnits guard in actions.ts):
+// an astral character straddling the cap is dropped whole. Local copy, like
+// comments.ts (#7731) — a shared import would tangle module dependencies.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
+
 /** Keep collector diagnostics useful without allowing credentials or
  *  response payloads to leak into the shared feed. */
 export function sanitizeCollectionError(value: unknown): string {
@@ -179,8 +192,8 @@ export function sanitizeCollectionError(value: unknown): string {
     )
     .replace(/(https?:\/\/)[^/@\s:]+(?::[^/@\s]*)?@/gi, "$1[redacted]@")
     .replace(/\b[A-Za-z0-9_-]{40,}\b/g, "[redacted]")
-    .replace(/[\r\n\t]+/g, " ")
-    .slice(0, 240);
+    .replace(/[\r\n\t]+/g, " ");
+  message = capUnits(message, 240);
   return message || "collection failed";
 }
 
