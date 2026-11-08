@@ -773,6 +773,7 @@ class FakeD1:
     def __init__(self):
         self.requests = []  # {path, authorization, sql, params}
         self.fail = False
+        self.mode = None  # "success_false" | "wrong_shape" definitive answers
         self.db = None
 
 
@@ -803,6 +804,19 @@ def make_d1_handler(fake: FakeD1):
                     "params": payload.get("params", []),
                 }
             )
+            if fake.mode == "success_false":
+                self._send(
+                    200,
+                    {
+                        "success": False,
+                        "errors": [{"code": 7403, "message": "definitive probe failure"}],
+                        "result": None,
+                    },
+                )
+                return
+            if fake.mode == "wrong_shape":
+                self._send(200, {"success": True, "errors": [], "result": ["x"]})
+                return
             if fake.fail:
                 self._send(
                     500, {"success": False, "errors": [{"message": "fake failure"}]}
@@ -2660,11 +2674,11 @@ class TestDrillCompare(ColdStoreTestBase):
         path.write_text("\n".join(lines) + "\n")
         return path
 
-    def _run_drill(self, backup_sql: Path):
+    def _run_drill(self, backup_sql: Path, base=None):
         env = dict(os.environ)
         env["CLOUDFLARE_API_TOKEN"] = "fake-cf-token"
         env["COLD_STORE_D1_BASE"] = (
-            f"http://127.0.0.1:{self.d1_server.server_address[1]}"
+            base or f"http://127.0.0.1:{self.d1_server.server_address[1]}"
         )
         return subprocess.run(
             [
@@ -2723,6 +2737,55 @@ class TestDrillCompare(ColdStoreTestBase):
         self.assertIn("objects", proc.stdout)
         self.assertIn(self.HASH_B, proc.stdout)
         self.assertIn("missing", proc.stdout)
+
+    def test_d1_http_error_with_definitive_body_fails_loudly(self):
+        # #6858: an HTTP 500 whose body is a D1 success=false payload is
+        # D1 actively rejecting the query, not unreachability — the
+        # drill must abort carrying the API's message, never downgrade
+        # to the local manifest.
+        self.d1.fail = True
+        proc = self._run_drill(self._render_backup_sql())
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("fake failure", proc.stdout)
+        self.assertNotIn("local manifest", proc.stdout)
+
+    def test_d1_success_false_fails_loudly(self):
+        # #6858: success=false on HTTP 200 is likewise definitive; the
+        # abort message carries the API error code and message.
+        self.d1.mode = "success_false"
+        proc = self._run_drill(self._render_backup_sql())
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("7403", proc.stdout)
+        self.assertIn("definitive probe failure", proc.stdout)
+        self.assertNotIn("local manifest", proc.stdout)
+
+    def test_d1_wrong_shape_payload_fails_loudly(self):
+        # #6858: a success=true payload whose result is not a list of
+        # row objects is a garbled answer, not unreachability.
+        self.d1.mode = "wrong_shape"
+        proc = self._run_drill(self._render_backup_sql())
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("unexpected shape", proc.stdout)
+        self.assertNotIn("local manifest", proc.stdout)
+
+    def test_d1_unreachable_keeps_local_manifest_fallback(self):
+        # #6858 control: genuine transport failure (connection refused)
+        # keeps the documented local-manifest fallback with its
+        # accurate label. The backup is emptied so it is a subset of
+        # any manifest and the drill passes against the local file.
+        def empty(conn):
+            for table in cold_store.MANIFEST_TABLES:
+                conn.execute(f'DELETE FROM "{table}"')
+
+        dead = ThreadingHTTPServer(("127.0.0.1", 0), make_d1_handler(FakeD1()))
+        port = dead.server_address[1]
+        dead.server_close()
+        proc = self._run_drill(
+            self._render_backup_sql(empty), base=f"http://127.0.0.1:{port}"
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("local manifest (D1 unreachable)", proc.stdout)
+        self.assertNotIn("drill aborted", proc.stdout)
 
 
 class TestLedgerTrashMigration(ColdStoreTestBase):
