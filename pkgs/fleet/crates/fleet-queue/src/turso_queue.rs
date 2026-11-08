@@ -611,28 +611,293 @@ fn verb_events_count(t: &TursoBackend, req: &Value) -> Value {
     }
 }
 
+/// prune_events, shared by the /events-prune verb and /sweep:
+/// delete events older than keep_days and self-log an events_pruned
+/// row, like the PG function. Returns (deleted, cutoff).
+fn prune_events(t: &TursoBackend, keep_days: i64) -> Result<(i64, String), TErr> {
+    let cutoff = prune_cutoff(now_unix(), keep_days);
+    let deleted = t
+        .exec(
+            "DELETE FROM events WHERE created_at < ?",
+            &[Arg::Text(cutoff.clone())],
+        )?
+        .affected as i64;
+    event(
+        t,
+        Some("prune_events"),
+        None,
+        "events_pruned",
+        &json!({"deleted": deleted, "cutoff": cutoff, "keep_days": keep_days.clamp(1, 3650)}),
+    )?;
+    Ok((deleted, cutoff))
+}
+
 /// prune_events port: delete events older than keep_days (default
 /// 30, the PG cron's argument) and self-log an events_pruned row,
 /// like the PG function. PG ran this daily at 04:17 via pg_cron;
 /// post-cutover a timer calls this verb (cutover doc).
 fn verb_events_prune(t: &TursoBackend, req: &Value) -> Value {
     let keep_days = req_i64(req, "keep_days").unwrap_or(30);
-    let cutoff = prune_cutoff(now_unix(), keep_days);
     let work = (|| -> Result<Value, TErr> {
-        let deleted = t
-            .exec(
-                "DELETE FROM events WHERE created_at < ?",
-                &[Arg::Text(cutoff.clone())],
-            )?
-            .affected;
-        event(
-            t,
-            Some("prune_events"),
-            None,
-            "events_pruned",
-            &json!({"deleted": deleted, "cutoff": cutoff, "keep_days": keep_days.clamp(1, 3650)}),
-        )?;
+        let (deleted, cutoff) = prune_events(t, keep_days)?;
         Ok(json!({"deleted": deleted, "cutoff": cutoff}))
+    })();
+    match work {
+        Ok(v) => ok(json!({"row": v})),
+        Err(e) => terr(e),
+    }
+}
+
+/// The revalidate_parked_tasks outcome for one parked task, as a
+/// pure function of what the sweeper could observe (migration 0023
+/// §revalidate): the DB-verifiable kinds release, time parks are
+/// only ever confirmed (elapsed time is never evidence — they
+/// release through claim at not_before), and anything the database
+/// cannot verify goes stale so the park surfaces for an agent with
+/// external access instead of sitting silently.
+fn revalidate_outcome(
+    kind: Option<&str>,
+    target_status: Option<&str>,
+    want_status: Option<&str>,
+    event_seen: bool,
+) -> &'static str {
+    match kind {
+        Some("time") => "confirmed",
+        Some("task_terminal") => match target_status {
+            None => "stale",
+            Some("done") | Some("cancelled") => "released",
+            Some(_) => "confirmed",
+        },
+        Some("task_status") => match target_status {
+            None => "stale",
+            Some(s) if Some(s) == want_status => "released",
+            Some(_) => "confirmed",
+        },
+        Some("event_seen") => {
+            if event_seen {
+                "released"
+            } else {
+                "confirmed"
+            }
+        }
+        _ => "stale",
+    }
+}
+
+/// revalidate_parked_tasks port (migration 0023, as fixed by 0024),
+/// replacing the retired pg_cron job park-revalidation-daily
+/// (#6803). Checks parked tasks whose last check (or last update)
+/// is older than min_age_seconds, oldest first, up to limit, and
+/// stamps last_checked_at / check_outcome on each. Satisfied
+/// DB-verifiable conditions release the task to queued with the
+/// binding cleared and a park_released event; every check leaves a
+/// park_revalidated event, worker 'park-revalidation-sweeper'.
+///
+/// observe_only (the C3 landing mode, agent-events-turso.md):
+/// outcomes are computed and logged (releases as would_release)
+/// but no task row is mutated, so the first enabled run re-checks
+/// the same population.
+fn revalidate_parked(
+    t: &TursoBackend,
+    min_age_seconds: i64,
+    limit: i64,
+    observe_only: bool,
+) -> Result<Value, TErr> {
+    let cutoff = iso(now_unix() - min_age_seconds.max(0));
+    let rows = t.query_objs(
+        &format!(
+            "SELECT {TASK_COLS} FROM tasks WHERE status = 'parked' \
+             AND COALESCE(last_checked_at, updated_at) < ? \
+             ORDER BY COALESCE(last_checked_at, updated_at) ASC LIMIT ?"
+        ),
+        &[Arg::Text(cutoff), Arg::Int(limit.clamp(1, 5000))],
+        &TASK_JSON_COLS,
+    )?;
+    let mut results: Vec<Value> = Vec::new();
+    let (mut released, mut confirmed, mut stale, mut would_release) = (0i64, 0i64, 0i64, 0i64);
+    for row in &rows {
+        let id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let condition = row.get("ready_condition").cloned().unwrap_or(Value::Null);
+        let kind = condition.get("kind").and_then(|v| v.as_str());
+        let mut target_status: Option<String> = None;
+        let mut event_seen = false;
+        match kind {
+            Some("task_terminal") | Some("task_status") => {
+                if let Some(tid) = condition.get("task_id").and_then(|v| v.as_i64()) {
+                    let trow = t.query_objs(
+                        "SELECT status FROM tasks WHERE id = ?",
+                        &[Arg::Int(tid)],
+                        &[],
+                    )?;
+                    target_status = trow
+                        .into_iter()
+                        .next()
+                        .and_then(|r| {
+                            r.get("status").and_then(|v| v.as_str()).map(str::to_string)
+                        });
+                }
+            }
+            Some("event_seen") => {
+                let tid = condition
+                    .get("task_id")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(id);
+                if let Some(ek) = condition.get("event_kind").and_then(|v| v.as_str()) {
+                    let nrow = t.query_objs(
+                        "SELECT COUNT(*) AS n FROM events WHERE task_id = ? AND kind = ?",
+                        &[Arg::Int(tid), Arg::Text(ek.to_string())],
+                        &[],
+                    )?;
+                    let n = nrow
+                        .into_iter()
+                        .next()
+                        .and_then(|r| r.get("n").and_then(|v| v.as_i64()))
+                        .unwrap_or(0);
+                    event_seen = n > 0;
+                }
+            }
+            _ => {}
+        }
+        let outcome = revalidate_outcome(
+            kind,
+            target_status.as_deref(),
+            condition.get("status").and_then(|v| v.as_str()),
+            event_seen,
+        );
+        if observe_only {
+            let logged = if outcome == "released" {
+                would_release += 1;
+                "would_release"
+            } else {
+                match outcome {
+                    "confirmed" => confirmed += 1,
+                    _ => stale += 1,
+                }
+                outcome
+            };
+            event(
+                t,
+                Some("park-revalidation-sweeper"),
+                Some(id),
+                "park_revalidated",
+                &json!({"outcome": logged, "condition_kind": kind, "observe_only": true, "via": "revalidate_parked_tasks"}),
+            )?;
+            results.push(json!({"task_id": id, "outcome": logged}));
+            continue;
+        }
+        match outcome {
+            "released" => {
+                released += 1;
+                let progress = row.get("progress").cloned().unwrap_or(json!({}));
+                let (progress, cleared) = clear_binding(&progress, "revalidate_parked_tasks");
+                let mut stamp = json!({
+                    "outcome": "released", "at": now_iso(), "condition": condition,
+                });
+                if let Some(note) = condition.get("note") {
+                    stamp["note"] = note.clone();
+                }
+                let progress = merge_obj(&progress, &json!({"park_revalidation": stamp}));
+                t.exec(
+                    "UPDATE tasks SET status = 'queued', not_before = NULL, \
+                       last_checked_at = ?, check_outcome = 'released', \
+                       progress = ?, updated_at = ? \
+                     WHERE id = ? AND status = 'parked'",
+                    &[
+                        Arg::Text(now_iso()),
+                        Arg::Text(progress.to_string()),
+                        Arg::Text(now_iso()),
+                        Arg::Int(id),
+                    ],
+                )?;
+                if let Some(old) = cleared {
+                    on_binding_cleared(
+                        t,
+                        "park-revalidation-sweeper",
+                        id,
+                        &old,
+                        "revalidate_parked_tasks",
+                    )?;
+                }
+                event(
+                    t,
+                    Some("park-revalidation-sweeper"),
+                    Some(id),
+                    "park_released",
+                    &json!({"condition": condition, "via": "revalidate_parked_tasks"}),
+                )?;
+            }
+            _ => {
+                if outcome == "confirmed" {
+                    confirmed += 1;
+                } else {
+                    stale += 1;
+                }
+                t.exec(
+                    "UPDATE tasks SET last_checked_at = ?, check_outcome = ?, \
+                       updated_at = ? WHERE id = ? AND status = 'parked'",
+                    &[
+                        Arg::Text(now_iso()),
+                        Arg::Text(outcome.to_string()),
+                        Arg::Text(now_iso()),
+                        Arg::Int(id),
+                    ],
+                )?;
+                event(
+                    t,
+                    Some("park-revalidation-sweeper"),
+                    Some(id),
+                    "park_revalidated",
+                    &json!({"outcome": outcome, "condition_kind": kind, "via": "revalidate_parked_tasks"}),
+                )?;
+            }
+        }
+        results.push(json!({"task_id": id, "outcome": outcome}));
+    }
+    Ok(json!({
+        "checked": rows.len(), "released": released, "confirmed": confirmed,
+        "stale": stale, "would_release": would_release,
+        "observe_only": observe_only, "results": results,
+    }))
+}
+
+/// One sweeper cycle (#6803): the Turso replacement for the retired
+/// pg_cron trio — expire_leases (was every minute), prune_events
+/// (daily 04:17) and revalidate_parked_tasks (daily 05:17) — driven
+/// by systemd timers POSTing here. Parts are opt-in per call except
+/// expire, which defaults on: the minutely timer sends
+/// {"expire": true} alone, the daily timer adds prune + revalidate.
+/// observe_only defaults true (C3): releases must be opted into by
+/// passing observe_only=false. A summary event is appended only
+/// when the cycle changed something or ran the daily parts, so the
+/// minutely expire stays silent while it has nothing to expire.
+fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
+    let do_expire = req_bool(req, "expire").unwrap_or(true);
+    let do_revalidate = req_bool(req, "revalidate").unwrap_or(false);
+    let do_prune = req_bool(req, "prune").unwrap_or(false);
+    let observe_only = req_bool(req, "observe_only").unwrap_or(true);
+    let work = (|| -> Result<Value, TErr> {
+        let mut out = json!({"observe_only": observe_only});
+        let mut expired = 0i64;
+        if do_expire {
+            expired = expire_leases(t)?;
+            out["expired_leases"] = json!(expired);
+        }
+        if do_revalidate {
+            out["revalidation"] = revalidate_parked(
+                t,
+                req_i64(req, "min_age_seconds").unwrap_or(86_400),
+                req_i64(req, "limit").unwrap_or(500),
+                observe_only,
+            )?;
+        }
+        if do_prune {
+            let (deleted, cutoff) = prune_events(t, req_i64(req, "keep_days").unwrap_or(30))?;
+            out["prune"] = json!({"deleted": deleted, "cutoff": cutoff});
+        }
+        if expired > 0 || do_revalidate || do_prune {
+            event(t, Some("fleet-sweeper"), None, "sweep", &out)?;
+        }
+        Ok(out)
     })();
     match work {
         Ok(v) => ok(json!({"row": v})),
@@ -711,8 +976,11 @@ fn on_binding_cleared(
 
 /// expire_leases (migration 0023 §1): claimed rows whose lease has
 /// lapsed return to queued, binding cleared, lease rows dropped.
-fn expire_leases(t: &TursoBackend) -> Result<(), TErr> {
+/// Returns how many tasks were returned to queued (PG returned the
+/// count; claim ignores it, the /sweep verb reports it, #6803).
+fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
     let now = now_iso();
+    let mut expired = 0i64;
     let rows = t.query_objs(
         &format!(
             "SELECT {TASK_COLS} FROM tasks \
@@ -744,6 +1012,7 @@ fn expire_leases(t: &TursoBackend) -> Result<(), TErr> {
         if upd.affected == 0 {
             continue;
         }
+        expired += 1;
         event(
             t,
             Some(&worker),
@@ -759,7 +1028,7 @@ fn expire_leases(t: &TursoBackend) -> Result<(), TErr> {
         "DELETE FROM leases WHERE lease_until < ?",
         &[Arg::Text(now)],
     )?;
-    Ok(())
+    Ok(expired)
 }
 
 /// record_repo_task_lane_execution, contract-shaped: stamp the
@@ -836,6 +1105,10 @@ fn req_str<'a>(req: &'a Value, key: &str) -> Option<&'a str> {
 
 fn req_i64(req: &Value, key: &str) -> Option<i64> {
     req.get(key).and_then(|v| v.as_i64())
+}
+
+fn req_bool(req: &Value, key: &str) -> Option<bool> {
+    req.get(key).and_then(|v| v.as_bool())
 }
 
 // ---------------------------------------------------------------------------
@@ -1855,6 +2128,7 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/events-seen" => verb_events_seen(t, req),
         "/events-count" => verb_events_count(t, req),
         "/events-prune" => verb_events_prune(t, req),
+        "/sweep" => verb_sweep(t, req),
         _ => fail(2, format!("unknown command {path}")),
     }
 }
@@ -1938,6 +2212,30 @@ mod tests {
         assert_eq!(prune_cutoff(now, 30), iso(now - 30 * 86_400));
         assert_eq!(prune_cutoff(now, 0), iso(now - 86_400));
         assert_eq!(prune_cutoff(now, 99_999), iso(now - 3650 * 86_400));
+    }
+
+    #[test]
+    fn revalidate_outcome_matrix() {
+        // Time parks are never released by the sweeper: elapsed time
+        // is not evidence; they release through claim at not_before.
+        assert_eq!(revalidate_outcome(Some("time"), None, None, false), "confirmed");
+        // No condition, or a kind the database cannot verify: stale,
+        // so the park surfaces instead of sitting silently.
+        assert_eq!(revalidate_outcome(None, None, None, false), "stale");
+        assert_eq!(revalidate_outcome(Some("issue_closed"), None, None, false), "stale");
+        assert_eq!(revalidate_outcome(Some("person_answer"), None, None, false), "stale");
+        // task_terminal releases on done/cancelled only.
+        assert_eq!(revalidate_outcome(Some("task_terminal"), Some("done"), None, false), "released");
+        assert_eq!(revalidate_outcome(Some("task_terminal"), Some("cancelled"), None, false), "released");
+        assert_eq!(revalidate_outcome(Some("task_terminal"), Some("queued"), None, false), "confirmed");
+        assert_eq!(revalidate_outcome(Some("task_terminal"), None, None, false), "stale");
+        // task_status releases on the exact wanted status.
+        assert_eq!(revalidate_outcome(Some("task_status"), Some("blocked"), Some("blocked"), false), "released");
+        assert_eq!(revalidate_outcome(Some("task_status"), Some("queued"), Some("blocked"), false), "confirmed");
+        assert_eq!(revalidate_outcome(Some("task_status"), None, Some("blocked"), false), "stale");
+        // event_seen releases when the event exists for the task.
+        assert_eq!(revalidate_outcome(Some("event_seen"), None, None, true), "released");
+        assert_eq!(revalidate_outcome(Some("event_seen"), None, None, false), "confirmed");
     }
 
     #[test]

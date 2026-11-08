@@ -937,6 +937,89 @@ in
     Install.WantedBy = [ "timers.target" ];
   };
 
+  # #6803: the Turso sweepers — the replacement for the retired
+  # pg_cron trio (agent-expire-leases every minute, agent-prune-events
+  # daily 04:17, park-revalidation-daily 05:17). Both are thin timers
+  # POSTing to the queue broker's /sweep verb; all logic lives in the
+  # broker (pkgs/fleet/crates/fleet-queue/src/turso_queue.rs).
+  systemd.user.services.fleet-queue-expire = {
+    Unit = {
+      Description = "fleet-queue sweeper: expire lapsed leases (#6803)";
+      After = [
+        "network-online.target"
+        "queue-broker.service"
+      ];
+    };
+    Service = {
+      Type = "oneshot";
+      ExecStart = toString (
+        pkgs.writeShellScript "fleet-queue-expire" ''
+          token="$(cat "$HOME/.config/queue-broker/token")"
+          exec ${pkgs.curl}/bin/curl -fsS -X POST "http://100.99.113.103:4801/sweep" \
+            -H "X-Agent-Token: $token" -H "Content-Type: application/json" \
+            -d '{"expire":true}'
+        ''
+      );
+    };
+  };
+
+  systemd.user.timers.fleet-queue-expire = {
+    Unit = {
+      Description = "Expire fleet-queue leases every minute (#6803)";
+    };
+    Timer = {
+      OnCalendar = "*-*-* *:*:00";
+      Persistent = true;
+    };
+    Install.WantedBy = [ "timers.target" ];
+  };
+
+  systemd.user.services.fleet-queue-sweeper = {
+    Unit = {
+      Description = "fleet-queue sweeper: prune events + revalidate parked tasks (#6803)";
+      After = [
+        "network-online.target"
+        "queue-broker.service"
+      ];
+    };
+    Service = {
+      Type = "oneshot";
+      # The revalidator lands in observe-only mode (C3,
+      # doc/fleet/agent-events-turso.md): it logs would-releases
+      # without mutating tasks. Flip it live by writing "enabled" to
+      # ~/.config/queue-broker/revalidator-mode once the first daily
+      # observe cycle has been reviewed on #6803.
+      ExecStart = toString (
+        pkgs.writeShellScript "fleet-queue-sweeper" ''
+          token="$(cat "$HOME/.config/queue-broker/token")"
+          mode="observe"
+          if [ -f "$HOME/.config/queue-broker/revalidator-mode" ]; then
+            mode="$(cat "$HOME/.config/queue-broker/revalidator-mode")"
+          fi
+          if [ "$mode" = "enabled" ]; then obs=false; else obs=true; fi
+          ${pkgs.curl}/bin/curl -fsS -X POST "http://100.99.113.103:4801/sweep" \
+            -H "X-Agent-Token: $token" -H "Content-Type: application/json" \
+            -d '{"prune":true,"keep_days":30}'
+          ${pkgs.curl}/bin/curl -fsS -X POST "http://100.99.113.103:4801/sweep" \
+            -H "X-Agent-Token: $token" -H "Content-Type: application/json" \
+            -d '{"revalidate":true,"observe_only":'$obs'}'
+        ''
+      );
+    };
+  };
+
+  systemd.user.timers.fleet-queue-sweeper = {
+    Unit = {
+      Description = "Daily fleet-queue prune + park revalidation (#6803)";
+    };
+    Timer = {
+      OnCalendar = "*-*-* 05:17:00";
+      Persistent = true;
+      RandomizedDelaySec = "10m";
+    };
+    Install.WantedBy = [ "timers.target" ];
+  };
+
   # Desktop Commander's Remote Device: the local half of OpenAI's "Remote
   # Desktop Commander" plugin. The hosted Remote MCP at
   # mcp.desktopcommander.app forwards tool calls to this process, which drives
