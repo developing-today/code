@@ -897,6 +897,67 @@ test("validateMachineBody requires a nonblank string name", () => {
   if (ok.ok) assert.equal(ok.values.name, "  amd-6  "); // original preserved, not trimmed
 });
 
+test("validateMachineBody validates optional fields and preserves their defaults", () => {
+  for (const optional of [
+    {},
+    { role: null, cpu: null, ram_gb: null, storage: null, gpu: null, status: null, notes: null },
+  ]) {
+    const defaults = validateMachineBody({ name: "Rig", ...optional });
+    assert.equal(defaults.ok, true);
+    if (defaults.ok) {
+      assert.deepEqual(defaults.values, {
+        name: "Rig",
+        role: "compute",
+        cpu: null,
+        ram_gb: null,
+        storage: null,
+        gpu: null,
+        status: "planned",
+        notes: null,
+      });
+    }
+  }
+
+  const valid = validateMachineBody({
+    name: "Rig",
+    role: "custom role",
+    cpu: "  8-core  ",
+    ram_gb: 16,
+    storage: "2 TB",
+    gpu: "  RTX  ",
+    status: "custom status",
+    notes: " note ",
+  });
+  assert.equal(valid.ok, true);
+  if (valid.ok) {
+    assert.deepEqual(valid.values, {
+      name: "Rig",
+      role: "custom role",
+      cpu: "  8-core  ",
+      ram_gb: 16,
+      storage: "2 TB",
+      gpu: "  RTX  ",
+      status: "custom status",
+      notes: " note ",
+    });
+  }
+
+  for (const [field, value, error] of [
+    ["role", 7, "role must be a string"],
+    ["cpu", {}, "cpu must be a string"],
+    ["ram_gb", "16", "ram_gb must be an integer"],
+    ["ram_gb", 16.5, "ram_gb must be an integer"],
+    ["storage", [], "storage must be a string"],
+    ["gpu", false, "gpu must be a string"],
+    ["status", 1, "status must be a string"],
+    ["notes", {}, "notes must be a string"],
+  ] as const) {
+    const result = validateMachineBody({ name: "Rig", [field]: value });
+    assert.equal(result.ok, false, `${field}: ${JSON.stringify(value)}`);
+    if (!result.ok) assert.equal(result.error, error);
+  }
+});
+
 test("validateNoteBody requires title, then body", () => {
   // Both missing: title is reported first.
   const both = validateNoteBody({});
@@ -924,7 +985,25 @@ test("validateNoteBody requires title, then body", () => {
   }
   const ok = validateNoteBody({ title: " t ", body: " b " });
   assert.equal(ok.ok, true);
-  if (ok.ok) assert.deepEqual(ok.values, { title: " t ", text: " b " });
+  if (ok.ok) assert.deepEqual(ok.values, { title: " t ", text: " b ", tags: "" });
+});
+
+test("validateNoteBody validates optional tags and preserves the default", () => {
+  for (const optional of [{}, { tags: null }]) {
+    const defaults = validateNoteBody({ title: "t", body: "b", ...optional });
+    assert.equal(defaults.ok, true);
+    if (defaults.ok) assert.deepEqual(defaults.values, { title: "t", text: "b", tags: "" });
+  }
+
+  const valid = validateNoteBody({ title: "t", body: "b", tags: "  ops,home  " });
+  assert.equal(valid.ok, true);
+  if (valid.ok) assert.deepEqual(valid.values, { title: "t", text: "b", tags: "  ops,home  " });
+
+  for (const tags of [7, {}, []]) {
+    const result = validateNoteBody({ title: "t", body: "b", tags });
+    assert.equal(result.ok, false, JSON.stringify(tags));
+    if (!result.ok) assert.equal(result.error, "tags must be a string");
+  }
 });
 
 test("validateTaskBody requires a nonblank string title", () => {
@@ -935,7 +1014,31 @@ test("validateTaskBody requires a nonblank string title", () => {
   }
   const ok = validateTaskBody({ title: "do it" });
   assert.equal(ok.ok, true);
-  if (ok.ok) assert.equal(ok.values.title, "do it");
+  if (ok.ok) assert.deepEqual(ok.values, { title: "do it", machine_id: null, due: null });
+});
+
+test("validateTaskBody validates optional machine and due fields and preserves defaults", () => {
+  for (const optional of [{}, { machine_id: null, due: null }]) {
+    const defaults = validateTaskBody({ title: "do it", ...optional });
+    assert.equal(defaults.ok, true);
+    if (defaults.ok) assert.deepEqual(defaults.values, { title: "do it", machine_id: null, due: null });
+  }
+
+  const valid = validateTaskBody({ title: "do it", machine_id: 42, due: "  2026-11-08  " });
+  assert.equal(valid.ok, true);
+  if (valid.ok) assert.deepEqual(valid.values, { title: "do it", machine_id: 42, due: "  2026-11-08  " });
+
+  for (const machine_id of ["42", 3.14, {}, []]) {
+    const result = validateTaskBody({ title: "do it", machine_id });
+    assert.equal(result.ok, false, `machine_id: ${JSON.stringify(machine_id)}`);
+    if (!result.ok) assert.equal(result.error, "machine_id must be an integer");
+  }
+
+  for (const due of [42, {}, []]) {
+    const result = validateTaskBody({ title: "do it", due });
+    assert.equal(result.ok, false, `due: ${JSON.stringify(due)}`);
+    if (!result.ok) assert.equal(result.error, "due must be a string");
+  }
 });
 
 test("uploadKey uniquifies same-millisecond uploads of the same name (#2478)", () => {
