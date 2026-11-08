@@ -382,92 +382,25 @@ fn trailing_placeholder_error() -> anyhow::Error {
 
 // Here-string content is removed before pipes are processed. In particular,
 // unquoted content consumes the rest of the line, including any `|>`.
-//
-// Substitution bodies are skipped the same way: a `|>` inside `$(...)`
-// or backticks is shell code or data for the substitution, not an outer
-// REPL pipe (issue #4427). `start` is the byte index of the `$(` or
-// opening backtick in `line`.
-fn subst_body_end(line: &str, start: usize) -> usize {
-    let bytes = line.as_bytes();
-    if line[start..].starts_with("$(") {
-        // Nested `$(...)` counts toward the depth; quotes inside the
-        // body suspend operator tracking; a backslash escapes the next
-        // byte. Byte-wise scanning is safe: every byte examined here
-        // (`$`, `(`, `)`, quotes, backslash) is ASCII, so `line[i..]`
-        // only ever slices at a char boundary.
-        let mut depth = 0usize;
-        let mut i = start;
-        let mut quote: Option<u8> = None;
-        while i < bytes.len() {
-            let b = bytes[i];
-            if let Some(q) = quote {
-                if b == b'\\' {
-                    i += 1;
-                } else if b == q {
-                    quote = None;
-                }
-            } else {
-                match b {
-                    b'\'' | b'"' => quote = Some(b),
-                    b'\\' => {
-                        i += 1;
-                    }
-                    b'$' if line[i..].starts_with("$(") => {
-                        depth += 1;
-                        i += 1;
-                    }
-                    b')' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            return i + 1;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            i += 1;
-        }
-        // Unterminated: the substitution stage reports that error
-        // itself; the source-level pipe check must not read past it.
-        line.len()
-    } else {
-        // Backtick span: the first unescaped backtick closes it.
-        let mut i = start + 1;
-        while i < bytes.len() {
-            match bytes[i] {
-                b'\\' => {
-                    i += 1;
-                }
-                b'`' => return i + 1,
-                _ => {}
-            }
-            i += 1;
-        }
-        line.len()
-    }
-}
-
 fn source_pipe_position(line: &str) -> Option<usize> {
+    // A `|>` or `<<<` inside a substitution body is shell code or data
+    // for the substitution, not an outer REPL operator (issue #4427).
+    // `substitution_spans` uses the same delimiter and escape semantics
+    // as the expansion stages below — quote-aware paren matching with no
+    // backslash escapes for `$(...)`, and next-backtick closing for
+    // backticks — so a crafted body (e.g. `$(touch x # \)`) cannot make
+    // this source-level scan skip a genuine outer pipe and let the
+    // substitution run before pipe validation rejects the line.
+    let spans = substitution_spans(line);
     let mut from = 0;
     loop {
         let pipe = find_unquoted_from(line, "|>", &[], from);
         let here = find_unquoted_from(line, "<<<", &[], from);
-        let subst = [
-            find_unquoted_from(line, "$(", &[], from),
-            find_unquoted_from(line, "`", &[], from),
-        ]
-        .into_iter()
-        .flatten()
-        .min();
-        // A substitution starting before the first pipe or here-string
-        // marker hides whatever operators its body contains: skip the
-        // whole body and keep scanning after it (issue #4427). A pipe
-        // or here-string that starts first is handled below as before.
-        if let Some(s) = subst {
-            let pipe_first = pipe.map_or(false, |p| p < s);
-            let here_first = here.map_or(false, |h| h < s);
-            if !pipe_first && !here_first {
-                from = subst_body_end(line, s);
+        // The earliest operator decides. If it lies inside a substitution
+        // body, skip that whole body and keep scanning after it.
+        if let Some(e) = pipe.into_iter().chain(here).min() {
+            if let Some(&(_, end)) = spans.iter().find(|&&(a, b)| e >= a && e < b) {
+                from = end;
                 if from >= line.len() {
                     return None;
                 }
@@ -1048,6 +981,26 @@ mod tests {
                 .to_string()
                 .contains("trailing '-' content placeholder")
         );
+    }
+
+    #[test]
+    fn test_preprocess_escape_does_not_hide_outer_pipe() {
+        // Codex P2 on PR #4436: the substitution parser does not
+        // interpret backslash escapes, so `\)` closes `$(...)` and
+        // `\`` closes a backtick span. The genuine outer pipe after such
+        // a body must still be rejected before the substitution runs;
+        // an escape-aware scanner would treat the delimiter as escaped,
+        // skip the real pipe, and let the substitution execute first.
+        for line in [
+            "echo $(touch /tmp/marker # \\) |> put name -",
+            "echo `touch /tmp/marker # \\` |> put name -",
+        ] {
+            let err = preprocess_repl_line(line).unwrap_err().to_string();
+            assert!(
+                err.contains("trailing '-' content placeholder"),
+                "{line}: expected trailing-placeholder rejection, got {err}"
+            );
+        }
     }
 
     #[test]
