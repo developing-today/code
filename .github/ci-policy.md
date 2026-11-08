@@ -186,6 +186,35 @@ the flake-check job runs on main and on the nix-ci nightly
 schedule. mcpx conformance legs run on every mcpx-touching merge
 to main.
 
+## Test-suite coverage contract (#6185, Phase 1 #6186)
+
+The machine-readable inventory is
+[`.github/test-suite-registry.json`](./test-suite-registry.json). A
+suite counts as covered only when all five conditions hold:
+
+1. **Registered:** exactly one registry entry names the suite's files,
+   venue, and invocation; adding a suite without an entry is incomplete.
+2. **Real venue:** the venue is enabled and dispatchable in GitHub Actions,
+   or is a flake check that actually runs. A disabled Actions workflow is
+   not a venue that runs the suite.
+3. **Proven run:** the venue names the suite files explicitly and asserts
+   they exist first; a reported `SKIP` fails coverage. Build, vet, and
+   typecheck steps do not count as running a test suite.
+4. **Runnable and hermetic:** the suite passes from a clean checkout with
+   networking disabled; tests use mock seams and do not rely on
+   import-time side effects or a mismatched lockfile/runner.
+5. **Ratcheted:** a check compares the on-disk suite inventory, registry,
+   and venue contents. Workflow enablement is external state and must be
+   audited through the Actions API by the recurring check, not inferred
+   from files in this repository.
+
+This phase does not add or change workflow triggers. Under the dispatch-only
+coverage ruling in #6185, an enabled workflow is not evidence that a suite
+ran: a suite without an observed, successful run is **not run**, not green.
+The registry records current venues and API enablement state; it does not
+infer execution from either. Phase 2 wiring, Phase 3 venue dispositions,
+and the Phase 4 ratchet remain separate work.
+
 ## Dedup rule
 
 A commit must not run the same suite twice via push +

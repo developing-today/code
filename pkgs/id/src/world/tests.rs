@@ -237,6 +237,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn builder_installed_requires_v2_and_a_v1_reader_refuses_that_header() {
+        let entry = JournalEntry::BuilderInstalled {
+            by: 7,
+            module_hash: "module".to_owned(),
+            seed: 9,
+        };
+        assert_eq!(
+            journal_version_required_by(&entry),
+            JOURNAL_VERSION_EXECUTION_PROFILE
+        );
+        // This exercises the same header check as restore, with the maximum
+        // version supported by a version-1 binary. It rejects before replaying
+        // any entries from the journal.
+        let error = crate::world::core::check_journal_version(
+            JOURNAL_VERSION_EXECUTION_PROFILE,
+            JOURNAL_VERSION,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported world journal version")
+        );
+    }
+
     fn handoff_event() -> WorldEvent {
         WorldEvent {
             sequence: 0,
