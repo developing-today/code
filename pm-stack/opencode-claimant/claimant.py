@@ -121,6 +121,49 @@ def _session_base() -> str:
     return OPENCODE_URL.rstrip("/")
 
 
+
+def _fetch_session(session_id: str):
+    """Positively verify a bound session's state via the session API.
+
+    Returns (state, session) with state in {"present", "absent",
+    "unknown"}. "absent" is returned ONLY on an HTTP 404 - the server
+    positively saying the session does not exist. A curl transport
+    failure (timeout, connection error), a 5xx, or an unparseable
+    body is "unknown": exceeding --max-time does not establish
+    absence, and supervision must leave the binding untouched on
+    unknown. The v2 {data: session} envelope is unwrapped so callers
+    see the session's own fields (id, time, ...) directly.
+    (Codex round-5 on PR #6990.)
+    """
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["curl", "-s", "-m", "5", *_curl_auth_args(),
+             "-w", "\n%{http_code}",
+             f"{_session_base()}/api/session/{session_id}"],
+            capture_output=True, text=True)
+    except Exception:
+        return "unknown", None
+    out = r.stdout or ""
+    body, sep, code = out.rpartition("\n")
+    if r.returncode != 0 or not sep or not code.strip().isdigit():
+        return "unknown", None
+    code = code.strip()
+    if code == "404":
+        return "absent", None
+    if code != "200":
+        return "unknown", None
+    try:
+        session = json.loads(body)
+    except Exception:
+        return "unknown", None
+    if isinstance(session, dict) and "data" in session:
+        session = session["data"]
+    if not isinstance(session, dict):
+        return "unknown", None
+    return "present", session
+
+
 def _http_get(url: str, timeout: int = 10) -> Optional[Dict]:
     """Helper to make HTTP GET requests using urllib."""
     try:
@@ -253,15 +296,14 @@ def supervision_step(mode: str) -> List[Dict]:
                         
                         # Check if session exists and is progressing
                         try:
-                            session_response = subprocess.run(
-                                ["curl", "-s", "-m", "5", *_curl_auth_args(),
-                                 f"{_session_base()}/api/session/{session_id}"],
-                                capture_output=True,
-                                text=True
-                            )
-                            
-                            if session_response.returncode == 0:
-                                session = json.loads(session_response.stdout)
+                            session_state, session = _fetch_session(session_id)
+
+                            if session_state == "unknown":
+                                # Transport failure / unverifiable state: absence is
+                                # NOT established - leave the binding untouched.
+                                continue
+
+                            if session_state == "present":
                                 # Check for terminal state
                                 has_terminal = any(
                                     marker in session.get("outcome", "") or 
@@ -290,7 +332,12 @@ def supervision_step(mode: str) -> List[Dict]:
                                             if isinstance(cand_s, dict) and cand_s.get("id") == session_id:
                                                 sess = cand_s
                                                 break
-                                        if sess is None and isinstance(session, dict):
+                                        if sess is None and sessions is not None and isinstance(session, dict):
+                                            # Fallback to the per-ID read ONLY when the session-list
+                                            # read succeeded (prompt.md step 1a: fail closed when the
+                                            # complete list is unavailable). _fetch_session already
+                                            # unwrapped the v2 envelope, so the fallback carries the
+                                            # session's own time/id into the classifier.
                                             sess = dict(session)
                                             sess.setdefault("id", session_id)
                                         row = dict(task)
@@ -303,14 +350,14 @@ def supervision_step(mode: str) -> List[Dict]:
                                         stuck = False
                                     if not stuck:
                                         continue
-                            # else: Session gone from server or error
+                            # session_state == "absent": positively verified gone (HTTP 404)
                         except Exception:
                             # Could not verify session - leave bound
                             continue
                         
                         # Session is gone or stuck - check if recovery is possible
                         # Check task attempts and lease
-                        session_absent = session_response.returncode != 0
+                        session_absent = session_state == "absent"
                         if task.get("attempts", 0) < task.get("max_attempts", 5):
                             # Verify zero messages first (supported
                             # v2 endpoint; an inconclusive read is an
@@ -603,6 +650,19 @@ def launch_step(mode: str, cap_room: int) -> tuple:
                         "reason": "task_state_changed"
                     })
                     continue
+                # Refresh launch metadata from the VERIFIED task: the claim
+                # may have changed hands since discovery (lease expiry +
+                # reclaim preserves handed_off progress but changes
+                # worker_id), and the backend's claimed_by() guard rejects
+                # queue verbs issued under the stale identity. (Codex
+                # round-5 on PR #6990.)
+                if task.get("worker_id"):
+                    worker_id = task["worker_id"]
+                if task.get("issue"):
+                    issue = task["issue"]
+                if task.get("packet"):
+                    packet = task["packet"]
+
             except Exception as e:
                 skips.append({
                     "task_id": task_id,

@@ -142,7 +142,7 @@ class TestSupervisionStep(unittest.TestCase):
             if any("/message" in a for a in argv_s):
                 return Result(0, "[]")
             if any("api/session" in a for a in argv_s):
-                return Result(1, "")  # session gone from the server
+                return Result(0, "\n404")  # session positively gone: HTTP 404 (curl -w shape)
             if "bind" in argv_s:
                 return Result(0)
             return Result(0)
@@ -361,7 +361,7 @@ class TestSupervisionStuckBound(unittest.TestCase):
             if any("/message" in a for a in argv_s):
                 return Result(0, "[]")
             if any("api/session" in a for a in argv_s):
-                return Result(0, json.dumps(session))
+                return Result(0, json.dumps(session) + "\n200")
             if "bind" in argv_s:
                 return Result(0)
             return Result(0)
@@ -560,7 +560,9 @@ class TestCodexRound4(unittest.TestCase):
             if any("/message" in a for a in argv_s):
                 return Result(0, "[]")
             if any("api/session" in a for a in argv_s):
-                return Result(session_rc, session_body)
+                if session_rc == 0:
+                    return Result(0, session_body + "\n200")
+                return Result(0, "\n404")  # positively verified absence
             return Result(0)
         patches = [patch.object(claimant.subprocess, "run", side_effect=fake_run)]
         if fake_poll is not None:
@@ -643,6 +645,190 @@ class TestCodexRound4(unittest.TestCase):
             task, session_rc=0, session_body=json.dumps(session), fake_poll=FakePoll, delete_rc=1)
         self.assertEqual(recovered, [])
         self.assertEqual(self.fail_calls(calls), [])
+
+
+
+
+class TestCodexRound5(unittest.TestCase):
+    """Regression tests for the three Codex round-5 findings on PR #6990
+    (2026-11-08T03:27Z, review of f7277c7817): session absence must be
+    positively verified before a terminal fail, the per-ID fallback must
+    fail closed when the session list is unavailable (and must not pass
+    the v2 envelope to the stuck classifier), and launch metadata must be
+    refreshed from the re-verified task. Oracle: prompt.md step 1a/1e and
+    the backend claimed_by() guard, as cited in the findings."""
+
+    # ---- supervision: absence verification ----
+
+    def run_supervision(self, task, session_result, fake_poll=None):
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            argv_s = [str(a) for a in argv]
+            if "list" in argv_s:
+                queue = argv_s[argv_s.index("--queue") + 1]
+                rows = [task] if queue == "repo-health-code-pilot" else []
+                return Result(0, json.dumps({"rows": rows}))
+            if "DELETE" in argv_s:
+                return Result(0)
+            if any("/message" in a for a in argv_s):
+                return Result(0, "[]")
+            if any("api/session" in a for a in argv_s):
+                return session_result
+            return Result(0)
+
+        patches = [patch.object(claimant.subprocess, "run", side_effect=fake_run)]
+        if fake_poll is not None:
+            patches.append(patch.object(claimant, "_load_poll_module",
+                                        return_value=fake_poll))
+        for pt in patches:
+            pt.start()
+        try:
+            recovered = claimant.supervision_step("live")
+        finally:
+            for pt in patches:
+                pt.stop()
+        return recovered, calls
+
+    @staticmethod
+    def fail_calls(calls):
+        return [[str(x) for x in a] for a in calls if "fail" in [str(x) for x in a]]
+
+    EXHAUSTED = {"id": 555, "status": "claimed", "attempts": 5,
+                 "max_attempts": 5, "worker_id": "repo-worker-code",
+                 "progress": {"lane": "opencode", "session_id": "ses_gone"}}
+
+    def test_transport_failure_is_unknown_never_terminally_fails(self):
+        # P1: the session GET times out (curl rc 28, http_code 000) while
+        # the task is on its final attempt. Absence is NOT established:
+        # no terminal fail, no delete, binding untouched.
+        recovered, calls = self.run_supervision(
+            dict(self.EXHAUSTED), Result(28, "\n000"))
+        self.assertEqual(recovered, [])
+        self.assertEqual(self.fail_calls(calls), [])
+        self.assertFalse(any("DELETE" in [str(x) for x in a] for a in calls))
+
+    def test_connection_failure_is_unknown_never_terminally_fails(self):
+        recovered, calls = self.run_supervision(
+            dict(self.EXHAUSTED), Result(7, "\n000"))
+        self.assertEqual(recovered, [])
+        self.assertEqual(self.fail_calls(calls), [])
+
+    def test_verified_404_attempts_exhausted_fails_terminally(self):
+        # A positively verified absence (HTTP 404) keeps the round-4
+        # terminal path: exactly one deterministic fail as the owner.
+        recovered, calls = self.run_supervision(
+            dict(self.EXHAUSTED), Result(0, "\n404"))
+        self.assertEqual(recovered, [])
+        fails = self.fail_calls(calls)
+        self.assertEqual(len(fails), 1)
+        self.assertIn("repo-worker-code", fails[0])
+        self.assertIn("deterministic", fails[0])
+
+    def test_http_500_is_unknown_never_terminally_fails(self):
+        recovered, calls = self.run_supervision(
+            dict(self.EXHAUSTED), Result(0, "server error\n500"))
+        self.assertEqual(recovered, [])
+        self.assertEqual(self.fail_calls(calls), [])
+
+    # ---- supervision: stuck fallback shape ----
+
+    STUCK_TASK = {"id": 777, "status": "claimed", "attempts": 1,
+                  "max_attempts": 5, "lease_until": "2000-01-01T00:00:00Z",
+                  "progress": {"lane": "opencode", "session_id": "ses_stuck"}}
+    SESSION = {"id": "ses_stuck", "time": {"created": 0, "updated": 0}}
+
+    def test_fallback_fails_closed_when_session_list_unavailable(self):
+        # P2: fetch_sessions() failed (None). Even though the per-ID GET
+        # succeeds, the stuck classifier must not run on a fallback
+        # envelope - supervision leaves the binding untouched.
+        seen = {}
+
+        class FakePoll:
+            @staticmethod
+            def fetch_sessions():
+                return None
+
+            @staticmethod
+            def fetch_active_ids():
+                return set()
+
+            @staticmethod
+            def is_stuck_bound(row, sess, active_ids, now_ms):
+                seen["sess"] = sess
+                return True
+
+        enveloped = Result(0, json.dumps({"data": self.SESSION}) + "\n200")
+        recovered, calls = self.run_supervision(
+            dict(self.STUCK_TASK), enveloped, fake_poll=FakePoll)
+        self.assertEqual(recovered, [])
+        self.assertNotIn("sess", seen)
+        self.assertFalse(any("DELETE" in [str(x) for x in a] for a in calls))
+
+    def test_fallback_unwraps_envelope_when_list_read_succeeded(self):
+        # The list read succeeded (session simply not in it): the
+        # fallback passes the UNWRAPPED session - its own time fields -
+        # to the classifier, and a stuck verdict reaches recovery.
+        seen = {}
+
+        class FakePoll:
+            @staticmethod
+            def fetch_sessions():
+                return []
+
+            @staticmethod
+            def fetch_active_ids():
+                return set()
+
+            @staticmethod
+            def is_stuck_bound(row, sess, active_ids, now_ms):
+                seen["sess"] = sess
+                return True
+
+        enveloped = Result(0, json.dumps({"data": self.SESSION}) + "\n200")
+        recovered, calls = self.run_supervision(
+            dict(self.STUCK_TASK), enveloped, fake_poll=FakePoll)
+        self.assertEqual(
+            recovered,
+            [{"task_id": 777, "session_id": "ses_stuck",
+              "reason": "zero_message"}])
+        self.assertIn("sess", seen)
+        self.assertEqual(seen["sess"].get("time"), self.SESSION["time"])
+        self.assertNotIn("data", seen["sess"])
+
+    # ---- launch: refresh claim owner after re-verification ----
+
+    def test_launch_refreshes_worker_id_from_verified_task(self):
+        # P2: discovery saw worker "old-worker"; by re-verification the
+        # task was reclaimed by "new-worker". The launched record and
+        # the delivered prompt must carry the NEW identity.
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            argv_s = [str(a) for a in argv]
+            if "bind" in argv_s:
+                return Result(0)
+            if any("api/session" in a for a in argv_s):
+                return Result(0, json.dumps({
+                    "id": "ses_test1",
+                    "location": {"directory": str(claimant.PRIMARY_CLONE)}}))
+            return Result(0)
+
+        polls = [{"candidates": [candidate(worker_id="old-worker")]},
+                 {"candidates": [candidate(worker_id="new-worker")]}]
+        with patch.object(claimant, "run_poll", side_effect=polls), \
+             patch.object(claimant.subprocess, "run", side_effect=fake_run):
+            launched, skips = claimant.launch_step("live", 1)
+        self.assertEqual(skips, [])
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(launched[0]["worker_id"], "new-worker")
+        flat = [str(x) for a in calls for x in a]
+        prompt_bodies = [x for x in flat if "--worker" in x]
+        self.assertTrue(prompt_bodies)
+        self.assertTrue(any("new-worker" in x for x in prompt_bodies))
+        self.assertFalse(any("old-worker" in x for x in prompt_bodies))
 
 
 if __name__ == "__main__":
