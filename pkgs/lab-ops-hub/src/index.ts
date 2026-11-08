@@ -14,6 +14,7 @@ import {
   validateMachineBody,
   validateNoteBody,
   validateTaskBody,
+  parseCrawlResult,
   fileResponseForKey,
 } from "./lib";
 
@@ -183,13 +184,13 @@ async function crawlWithContainer(env: Env, url: string) {
     }),
   );
   if (!res.ok) throw new Error(`container returned ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  return res.json() as Promise<{
-    title?: string;
-    excerpt?: string;
-    links?: number;
-    status_code?: number;
-    text?: string;
-  }>;
+  // The response crosses a service boundary, so validate its shape before
+  // anything is archived or bound (#7018): a malformed result throws here
+  // and the route falls back to the Worker crawler, like any other
+  // container failure.
+  const parsed = parseCrawlResult(await res.json());
+  if (!parsed.ok) throw new Error(`container returned a malformed crawl result: ${parsed.error}`);
+  return parsed.values;
 }
 
 async function crawlFallback(url: string) {
