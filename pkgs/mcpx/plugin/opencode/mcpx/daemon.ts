@@ -576,12 +576,12 @@ export class DaemonClient {
    *
    * @op exec
    */
-  async exec(source: string, session?: string): Promise<ExecResult | undefined> {
+  async exec(source: string, session?: string, signal?: AbortSignal): Promise<ExecResult | undefined> {
     try {
       return (await this.ops.exec({
         source,
         options: { output: "structured", ...(session ? { session } : {}) },
-      })) as ExecResult;
+      }, signal ? { signal } : undefined)) as ExecResult;
     } catch (err) {
       if (err instanceof OpError && err.status === 404) return undefined;
       throw err;
@@ -1042,18 +1042,29 @@ export const runBin = (
   opts: DiscoverOptions,
   argv: string[],
   timeoutMs = TUNING.cliTimeoutMs,
+  signal?: AbortSignal,
 ): Promise<string | undefined> => {
   const env = envOf(opts);
   const bin = opts.bin ?? env.MCPX_PLUGIN_BIN ?? TUNING.bin;
   if (!bin) return Promise.resolve(undefined);
   const extra = opts.binArgs ?? splitArgs(env.MCPX_PLUGIN_BIN_ARGS);
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     try {
       execFile(
         bin,
         [...extra, ...argv],
-        { cwd: opts.directory, timeout: timeoutMs, encoding: "utf8", maxBuffer: TUNING.cliMaxOutput },
+        {
+          cwd: opts.directory,
+          timeout: timeoutMs,
+          encoding: "utf8",
+          maxBuffer: TUNING.cliMaxOutput,
+          ...(signal ? { signal } : {}),
+        },
         (err, stdout, stderr) => {
+          // execFile kills its child for us when this signal aborts. Do not
+          // turn that cancellation into the ordinary "binary unavailable"
+          // result consumed by the CLI fallback.
+          if (signal?.aborted) return reject(err ?? signal.reason ?? new Error("mcpx CLI execution aborted"));
           const out = String(stdout ?? "").trim();
           const bad = String(stderr ?? "").trim();
           // A non-zero exit with output is still an answer -- `mcpx status`
@@ -1062,9 +1073,10 @@ export const runBin = (
           resolve(out || bad);
         },
       );
-    } catch {
+    } catch (err) {
       // No such binary, or a runtime with no child_process at all.
-      resolve(undefined);
+      if (signal?.aborted) reject(err);
+      else resolve(undefined);
     }
   });
 };
