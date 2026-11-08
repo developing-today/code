@@ -30,6 +30,11 @@
 //                             (env OPENCODE_ACP_SERVER; default
 //                             http://127.0.0.1:13420 — the standing
 //                             shared server OpenChamber attaches to)
+//                             A missing, empty, flag-like, or
+//                             non-http(s) value — and any unknown
+//                             argument — is a usage error (exit 2)
+//                             at startup, never a silent fallback or
+//                             a per-request parse loop (#6939).
 //   OPENCODE_SERVER_PASSWORD  when set, sent as HTTP basic auth
 //                             (user "opencode"), matching serve's auth
 //   OPENCODE_AUTH_FILE        JSON state file carrying the standing
@@ -61,20 +66,86 @@ const debug = (...args) => {
   }
 };
 
-function parseServerUrl(argv) {
-  let server = process.env.OPENCODE_ACP_SERVER || 'http://127.0.0.1:13420';
-  for (let i = 0; i < argv.length; i += 1) {
-    if (argv[i] === '--server' && argv[i + 1]) {
-      server = argv[i + 1];
-      i += 1;
-    } else if (argv[i].startsWith('--server=')) {
-      server = argv[i].slice('--server='.length);
-    }
+// ---------------------------------------------------------------------------
+// Strict argv parsing for --server (issue #6939, following the sibling
+// strict-argv pattern from #3449). Before this, parseServerUrl took
+// argv[i + 1] unchecked: a trailing --server was silently dropped (the
+// adapter dialled the default serve instead of the named one),
+// --server= set an empty base that looped forever on 'Failed to parse
+// URL', a flag-like value was consumed verbatim as the URL, and a
+// typo'd flag was silently ignored. Validation runs before any server
+// traffic; a failure is a usage error (exit 2) naming the flag and the
+// offending value.
+// ---------------------------------------------------------------------------
+const USAGE = 'usage: opencode-acp-adapter [--server <url>]';
+
+class UsageError extends Error {}
+
+function validateServerValue(value, source) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new UsageError(`${source} value ${JSON.stringify(value)} is not a parseable URL\n${USAGE}`);
   }
-  return server.replace(/\/+$/, '');
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new UsageError(
+      `${source} value ${JSON.stringify(value)} must be an http: or https: URL\n${USAGE}`,
+    );
+  }
+  if (!url.hostname) {
+    throw new UsageError(`${source} value ${JSON.stringify(value)} has no host\n${USAGE}`);
+  }
+  return value.replace(/\/+$/, '');
 }
 
-const serverBase = parseServerUrl(process.argv.slice(2));
+function parseServerUrl(argv) {
+  let server = process.env.OPENCODE_ACP_SERVER || 'http://127.0.0.1:13420';
+  let source = process.env.OPENCODE_ACP_SERVER ? 'OPENCODE_ACP_SERVER' : '--server default';
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i];
+    if (token === '--server') {
+      const value = argv[i + 1];
+      if (value === undefined) {
+        throw new UsageError(`--server requires a value, but no value followed it\n${USAGE}`);
+      }
+      if (value === '') {
+        throw new UsageError(`--server requires a non-empty value\n${USAGE}`);
+      }
+      if (value.startsWith('--')) {
+        throw new UsageError(
+          `--server requires a URL value, but the next token is the flag ${value}\n${USAGE}`,
+        );
+      }
+      server = value;
+      source = '--server';
+      i += 1;
+      continue;
+    }
+    if (token.startsWith('--server=')) {
+      const value = token.slice('--server='.length);
+      if (value === '') {
+        throw new UsageError(`--server= requires a non-empty value\n${USAGE}`);
+      }
+      server = value;
+      source = '--server';
+      continue;
+    }
+    throw new UsageError(`unrecognised argument: ${token}\n${USAGE}`);
+  }
+  return validateServerValue(server, source);
+}
+
+let serverBase;
+try {
+  serverBase = parseServerUrl(process.argv.slice(2));
+} catch (err) {
+  if (err instanceof UsageError) {
+    process.stderr.write(`${AGENT_NAME}: ${err.message}\n`);
+    process.exit(2);
+  }
+  throw err;
+}
 
 // Resolve the standing server's password (#4615), mirroring the fleet
 // pattern (pm-stack dispatch's OpenCodeClient, bin/openchamber-start.sh):
