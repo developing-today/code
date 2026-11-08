@@ -109,6 +109,91 @@ When attempts exhausted:
 2. For gone sessions: fail task terminally
 3. Use `repo-queue fail` with execution record containing session_id
 
+## Server-call inventory (#4916, Phase 4 of #4912)
+
+Every call the claimant makes to the OpenCode server, with the file:line
+that issues it. Audited 2026-11-08 against `main`. Nothing here is
+inferred: each row names the call site.
+
+| # | Call | Site | Purpose | Failure behaviour |
+| --- | --- | --- | --- | --- |
+| 1 | `GET /api/session?limit={n}` | `poll.py:272` (`fetch_sessions`) | Complete session list for cap counting and stuck-bound classification | Returns `None`; cap fails closed (`-1`), supervision leaves tasks bound |
+| 2 | `GET /api/session/active` | `poll.py:284` (`fetch_active_ids`) | The server's authoritative active set | Returns `None`; cap fails closed |
+| 3 | `GET /api/session/{id}` | `claimant.py:219` (supervision) | Does a bound session still exist, and is it terminal? | Treated as "could not verify" — the task is left bound |
+| 4 | `GET /api/session/{id}/messages` | `claimant.py:253` (supervision) | Zero-message check before a zero-message recovery | Treated as unknown state; no recovery |
+| 5 | `DELETE /api/session/{id}` | `claimant.py:281` (zero-message recovery) | Remove a zero-message session before reclaiming its task | Recovery is skipped when the delete fails |
+| 6 | `POST /api/session` | `claimant.py:428` (launch) | Create the worker session | `launch_error` skip; no bind |
+| 7 | `DELETE /api/session/{id}` | `claimant.py:446` (wrong location) | Roll back a session created in the wrong directory | Rollback only; the skip is already recorded |
+| 8 | `DELETE /api/session/{id}` | `claimant.py:471` (bind failed) | Roll back a session whose bind lost the race | Rollback only; the skip is already recorded |
+
+Two reads are **not** server calls but gate every decision above and are
+listed for completeness: `repo-queue list --status claimed` per queue
+(`poll.py:300`) and the `repo-queue bind` compare-and-clear write
+(`claimant.py:455`, `claimant.py:288`).
+
+### Contract rules
+
+These are invariants of the code above, not aspirations. A change that
+breaks one is a defect in this directory, not a tuning choice.
+
+1. **Per-id reads fail closed.** A per-session read that cannot be
+   completed (transport error, non-JSON body, error object without an
+   `id`) never proves a session gone. Only an explicit "no such session"
+   response may feed a recovery decision; anything else leaves the task
+   bound and lets the next fire re-check. (`claimant.py:226`,
+   `claimant.py:242-244`, `claimant.py:266-268`.)
+2. **Verify before bind.** A session is bound only after its
+   `location.directory` matches `PRIMARY_CLONE`; a mismatch deletes the
+   session and records `session_wrong_location` instead of binding.
+   (`claimant.py:443-452`.)
+3. **Bind is the only mutation that grants work.** Session creation
+   grants nothing. The atomic `bind` compare-and-clear is what makes a
+   task the claimant's, and a failed bind rolls the session back rather
+   than leaving an orphan. (`claimant.py:455-477`.)
+4. **The cap fails closed.** `GET /api/session` truncates at 50 rows by
+   default, so completeness is proven by an escalating `limit` read
+   where the first response below its requested limit is the whole list;
+   if every read comes back exactly at its limit, the count is `-1` and
+   no launch happens. (`poll.py:254-277`, `poll.py:409-420`.)
+
+### Bound-state table
+
+What each state means for the claimant, and what it may do about it.
+"Bound" means the task's `progress.session_id` names a session.
+
+| Bound? | Session exists? | Session state | Claimant action |
+| --- | --- | --- | --- |
+| no | — | — | Candidate for launch if lane is `opencode` and cap room exists |
+| yes | yes | live / progressing | Nothing — never reclaim or re-launch |
+| yes | yes | terminal (`time.idle` or `outcome`) | Supervision may recover if attempts remain |
+| yes | yes, zero messages | silent past `ACTIVE_WINDOW_MS` | Zero-message recovery: delete, then atomic reclaim |
+| yes | no (explicitly absent) | — | Gone-session recovery: atomic reclaim, no delete |
+| yes | unknown (read failed) | — | Nothing — fail closed, leave bound |
+| yes | — | attempts exhausted | Terminal `fail` with the execution record |
+
+### Queue-read disposition: the `limit=500` claimed-task read
+
+The claimed-task read is a PostgREST query with a default `limit` of 500
+rows (`agent.revalidate_parked_tasks` uses the same default,
+`migration-0023.sql:312`). **Disposition: accepted as-is, with the
+truncation made harmless rather than removed.**
+
+- 500 claimed rows on one queue is far above the observed claim
+  population, so in practice the read is complete.
+- If it ever truncated, the effect would be *undercounting* candidates
+  and stuck-bound rows — the claimant would see fewer tasks, never a
+  task that is not really there. Every launch still re-verifies the task
+  is claimed, lane `opencode`, and unbound before binding
+  (`prompt.md:168`), so a truncated read cannot cause a bad launch.
+- The cap does **not** depend on this read: it comes from the session
+  reads above, which fail closed on their own.
+- Raising the limit would trade a bounded, safe undercount for an
+  unbounded read; the failure mode it removes (a missed candidate, found
+  on the next fire) is cheaper than the one it adds.
+
+A future change that makes a queue read drive a destructive action must
+first prove completeness the way `fetch_sessions` does, or fail closed.
+
 ## Hard Rules
 
 - **Never work tasks directly**: Only claim/bind/launch/record
