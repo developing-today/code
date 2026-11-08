@@ -222,6 +222,7 @@ def supervision_step(mode: str) -> List[Dict]:
         return []
     
     recovery_candidates = []
+    exhausted_candidates = []
     
     # Get all claimed opencode-lane tasks with bound session IDs
     for queue in QUEUES:
@@ -309,6 +310,7 @@ def supervision_step(mode: str) -> List[Dict]:
                         
                         # Session is gone or stuck - check if recovery is possible
                         # Check task attempts and lease
+                        session_absent = session_response.returncode != 0
                         if task.get("attempts", 0) < task.get("max_attempts", 5):
                             # Verify zero messages first (supported
                             # v2 endpoint; an inconclusive read is an
@@ -320,6 +322,37 @@ def supervision_step(mode: str) -> List[Dict]:
                                     "session_id": session_id,
                                     "reason": "zero_message"
                                 })
+                        else:
+                            # Attempts exhausted (prompt.md step 1e;
+                            # README "Exhausted Attempts"; Codex
+                            # round-4 on PR #6990): never silently drop
+                            # the task. A gone session's absence is
+                            # already verified; a present session must
+                            # verify zero messages first. The terminal
+                            # fail is addressed to the task's worker_id
+                            # - without one the record cannot be
+                            # addressed, so leave the binding untouched.
+                            worker_id = task.get("worker_id")
+                            if not worker_id:
+                                print(f"Warning: task {task['id']} attempts exhausted but no worker_id recorded; leaving bound session {session_id} for manual terminal handling")
+                            elif session_absent:
+                                exhausted_candidates.append({
+                                    "task_id": task["id"],
+                                    "session_id": session_id,
+                                    "worker_id": worker_id,
+                                    "reason": "gone_exhausted"
+                                })
+                            else:
+                                parsed_messages = _read_session_messages(session_id)
+                                if isinstance(parsed_messages, list) and len(parsed_messages) == 0:
+                                    exhausted_candidates.append({
+                                        "task_id": task["id"],
+                                        "session_id": session_id,
+                                        "worker_id": worker_id,
+                                        "reason": "zero_message_exhausted"
+                                    })
+                                # else: messages present or the read
+                                # was inconclusive - leave bound.
         except Exception as e:
             print(f"Warning: Supervision check failed for queue {queue}: {e}")
     
@@ -362,6 +395,49 @@ def supervision_step(mode: str) -> List[Dict]:
         except Exception as e:
             print(f"Error during recovery of task {task_id}: {e}")
     
+    # Process exhausted-attempts candidates (prompt.md step 1e):
+    # verified delete first for a zero-message session, then the
+    # terminal fail as the task's worker_id, with the bound session
+    # id preserved in the execution record.
+    for candidate in exhausted_candidates:
+        task_id = candidate["task_id"]
+        session_id = candidate["session_id"]
+        try:
+            if candidate["reason"] == "zero_message_exhausted":
+                delete_result = subprocess.run(
+                    ["curl", "-s", "-m", "5", "-X", "DELETE", *_curl_auth_args(),
+                     f"{_session_base()}/api/session/{session_id}"],
+                    capture_output=True,
+                    text=True
+                )
+                if delete_result.returncode != 0:
+                    print(f"Failed to delete exhausted zero-message session {session_id} for task {task_id}; leaving bound")
+                    continue
+            execution = json.dumps({
+                "lane": "opencode",
+                "session_id": session_id,
+                "fallback_reason": "launch_failed_attempts_exhausted"
+            })
+            fail_result = subprocess.run(
+                [
+                    str(REPO_QUEUE_CMD),
+                    "fail", str(task_id),
+                    "--worker", candidate["worker_id"],
+                    "--error", f"bound session {session_id} unavailable without terminal outcome; attempts exhausted",
+                    "--reason-class", "deterministic",
+                    "--execution", execution
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if fail_result.returncode == 0:
+                print(f"Task {task_id} terminally failed: bound session {session_id} unavailable, attempts exhausted")
+            else:
+                print(f"Failed to terminally fail task {task_id}: {fail_result.stderr}")
+        except Exception as e:
+            print(f"Error during exhausted-attempts handling of task {task_id}: {e}")
+
     return recovery_candidates
 
 
@@ -611,20 +687,72 @@ Finish with: complete, park, block, or fail --execution '{{...}}'
                 # someone else owns the launch - do not prompt this
                 # session. (Codex round-2 on PR #6990, finding
                 # bind-before-prompt.)
-                bind_result = subprocess.run(
-                    [
-                        str(REPO_QUEUE_CMD),
-                        "bind", str(task_id),
-                        "--worker", "opencode-claimant",
-                        "--session-id", session_id,
-                        "--launched-by", "opencode-claimant"
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
+                bind_timed_out = False
+                try:
+                    bind_result = subprocess.run(
+                        [
+                            str(REPO_QUEUE_CMD),
+                            "bind", str(task_id),
+                            "--worker", "opencode-claimant",
+                            "--session-id", session_id,
+                            "--launched-by", "opencode-claimant"
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                except subprocess.TimeoutExpired:
+                    # The bind may have committed before its response
+                    # was lost - this is NOT the bind_failed case
+                    # (nothing is proven unbound) and NOT a generic
+                    # launch error. Reconcile below. (Codex round-4
+                    # on PR #6990.)
+                    bind_result = None
+                    bind_timed_out = True
 
-                if bind_result.returncode != 0:
+                if bind_timed_out:
+                    # Reconcile the binding from a fresh poll before
+                    # deciding: bound to OUR session -> proceed to
+                    # prompt delivery; bound elsewhere or positively
+                    # unbound -> deleting our session is safe;
+                    # inconclusive -> retain the session, record its
+                    # id in the skip, and reserve its cap slot (the
+                    # binding may be committed and the session may
+                    # already be a live root).
+                    reconcile_state = "unknown"
+                    try:
+                        poll_now = run_poll()
+                        row_now = next((t for t in poll_now.get("candidates", []) if t.get("id") == task_id), None)
+                        if row_now is not None:
+                            if row_now.get("session_id") == session_id:
+                                reconcile_state = "bound_ours"
+                            elif row_now.get("session_id"):
+                                reconcile_state = "bound_other"
+                            else:
+                                reconcile_state = "unbound"
+                    except Exception:
+                        reconcile_state = "unknown"
+                    if reconcile_state == "bound_ours":
+                        pass  # binding committed - fall through to 4d
+                    elif reconcile_state in ("bound_other", "unbound"):
+                        delete_cmd = ["curl", "-s", "-m", "5", "-X", "DELETE", *_curl_auth_args(),
+                                     f"{_session_base()}/api/session/{session_id}"]
+                        subprocess.run(delete_cmd, capture_output=True)
+                        skips.append({
+                            "task_id": task_id,
+                            "session_id": session_id,
+                            "reason": f"bind_timeout_{reconcile_state}"
+                        })
+                        continue
+                    else:
+                        skips.append({
+                            "task_id": task_id,
+                            "session_id": session_id,
+                            "reason": "bind_timeout_unreconciled"
+                        })
+                        cap_room -= 1
+                        continue
+                elif bind_result.returncode != 0:
                     # Bind failed - delete our unbound session and skip
                     delete_cmd = ["curl", "-s", "-m", "5", "-X", "DELETE", *_curl_auth_args(),
                                  f"{_session_base()}/api/session/{session_id}"]

@@ -487,5 +487,163 @@ class TestCodexRound3(unittest.TestCase):
             claimant._packet_route_model({"model": {"id": "scout"}}), "scout")
 
 
+
+class TestCodexRound4(unittest.TestCase):
+    """Regression tests for the two Codex round-4 findings on PR #6990
+    (2026-11-08T02:53Z): bind-timeout reconciliation in launch_step, and
+    the exhausted-attempts terminal path in supervision_step
+    (prompt.md step 1e)."""
+
+    # ---- launch_step: bind timeout ----
+
+    def run_launch_bind_timeout(self, candidates, reconcile_poll, cap_room=1):
+        calls = []
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            argv_s = [str(a) for a in argv]
+            if "bind" in argv_s:
+                raise claimant.subprocess.TimeoutExpired(argv, 10)
+            if any(a.endswith("/prompt") for a in argv_s):
+                return Result(0)
+            if "DELETE" in argv_s:
+                return Result(0)
+            if any("api/session" in a for a in argv_s):
+                return Result(0, json.dumps({
+                    "id": "ses_test1",
+                    "location": {"directory": str(claimant.PRIMARY_CLONE)}}))
+            return Result(0)
+        base = {"candidates": candidates}
+        with patch.object(claimant, "run_poll",
+                          side_effect=[base, base, reconcile_poll]),              patch.object(claimant.subprocess, "run", side_effect=fake_run):
+            launched, skips = claimant.launch_step("live", cap_room)
+        return launched, skips, calls
+
+    def test_bind_timeout_committed_binding_proceeds_to_prompt(self):
+        launched, skips, calls = self.run_launch_bind_timeout(
+            [candidate()], {"candidates": [candidate(session_id="ses_test1")]})
+        self.assertEqual(skips, [])
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(launched[0]["session_id"], "ses_test1")
+        self.assertTrue(any(any(a.endswith("/prompt") for a in [str(x) for x in c]) for c in calls))
+
+    def test_bind_timeout_unbound_cleans_up_session(self):
+        launched, skips, calls = self.run_launch_bind_timeout(
+            [candidate()], {"candidates": [candidate()]})
+        self.assertEqual(launched, [])
+        self.assertEqual([(s["task_id"], s["reason"], s.get("session_id")) for s in skips],
+                         [(123, "bind_timeout_unbound", "ses_test1")])
+        self.assertTrue(any("DELETE" in [str(x) for x in c] for c in calls))
+        self.assertFalse(any(any(a.endswith("/prompt") for a in [str(x) for x in c]) for c in calls))
+
+    def test_bind_timeout_unreconciled_retains_session_and_cap(self):
+        launched, skips, calls = self.run_launch_bind_timeout(
+            [candidate(123), candidate(124)], RuntimeError("poll down"), cap_room=1)
+        self.assertEqual(launched, [])
+        self.assertEqual([(s["task_id"], s["reason"]) for s in skips],
+                         [(123, "bind_timeout_unreconciled"), (124, "cap_saturated")])
+        self.assertEqual(skips[0].get("session_id"), "ses_test1")
+        self.assertFalse(any("DELETE" in [str(x) for x in c] for c in calls))
+
+    # ---- supervision_step: attempts exhausted ----
+
+    def run_supervision_exhausted(self, task, session_rc, session_body="", fake_poll=None, delete_rc=0):
+        calls = []
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            argv_s = [str(a) for a in argv]
+            if "list" in argv_s:
+                queue = argv_s[argv_s.index("--queue") + 1]
+                rows = [task] if queue == "repo-health-code-pilot" else []
+                return Result(0, json.dumps({"rows": rows}))
+            if "DELETE" in argv_s:
+                return Result(delete_rc)
+            if any("/message" in a for a in argv_s):
+                return Result(0, "[]")
+            if any("api/session" in a for a in argv_s):
+                return Result(session_rc, session_body)
+            return Result(0)
+        patches = [patch.object(claimant.subprocess, "run", side_effect=fake_run)]
+        if fake_poll is not None:
+            patches.append(patch.object(claimant, "_load_poll_module", return_value=fake_poll))
+        for pt in patches:
+            pt.start()
+        try:
+            recovered = claimant.supervision_step("live")
+        finally:
+            for pt in patches:
+                pt.stop()
+        return recovered, calls
+
+    @staticmethod
+    def fail_calls(calls):
+        return [[str(x) for x in a] for a in calls if "fail" in [str(x) for x in a]]
+
+    def test_gone_session_attempts_exhausted_fails_terminally(self):
+        task = {"id": 555, "status": "claimed", "attempts": 5, "max_attempts": 5,
+                "worker_id": "repo-worker-code",
+                "progress": {"lane": "opencode", "session_id": "ses_gone"}}
+        recovered, calls = self.run_supervision_exhausted(task, session_rc=1)
+        self.assertEqual(recovered, [])
+        fails = self.fail_calls(calls)
+        self.assertEqual(len(fails), 1)
+        flat = fails[0]
+        self.assertIn("555", flat)
+        self.assertIn("repo-worker-code", flat)
+        self.assertIn("deterministic", flat)
+        execution = json.loads(flat[flat.index("--execution") + 1])
+        self.assertEqual(execution["session_id"], "ses_gone")
+        self.assertEqual(execution["fallback_reason"], "launch_failed_attempts_exhausted")
+        self.assertFalse(any("bind" in [str(x) for x in a] for a in calls))
+
+    def test_stuck_zero_message_attempts_exhausted_deletes_then_fails(self):
+        task = {"id": 777, "status": "claimed", "attempts": 5, "max_attempts": 5,
+                "worker_id": "repo-worker-code",
+                "lease_until": "2000-01-01T00:00:00Z",
+                "progress": {"lane": "opencode", "session_id": "ses_stuck"}}
+        session = {"id": "ses_stuck", "time": {"created": 0, "updated": 0}}
+        class FakePoll:
+            @staticmethod
+            def fetch_sessions():
+                return [session]
+            @staticmethod
+            def fetch_active_ids():
+                return set()
+            @staticmethod
+            def is_stuck_bound(row, sess, active_ids, now_ms):
+                return True
+        recovered, calls = self.run_supervision_exhausted(
+            task, session_rc=0, session_body=json.dumps(session), fake_poll=FakePoll)
+        self.assertEqual(recovered, [])
+        kinds = []
+        for a in calls:
+            argv_s = [str(x) for x in a]
+            if "DELETE" in argv_s:
+                kinds.append("delete")
+            if "fail" in argv_s:
+                kinds.append("fail")
+        self.assertEqual(kinds, ["delete", "fail"])
+
+    def test_exhausted_delete_failure_leaves_task_bound(self):
+        task = {"id": 777, "status": "claimed", "attempts": 5, "max_attempts": 5,
+                "worker_id": "repo-worker-code",
+                "lease_until": "2000-01-01T00:00:00Z",
+                "progress": {"lane": "opencode", "session_id": "ses_stuck"}}
+        session = {"id": "ses_stuck", "time": {"created": 0, "updated": 0}}
+        class FakePoll:
+            @staticmethod
+            def fetch_sessions():
+                return [session]
+            @staticmethod
+            def fetch_active_ids():
+                return set()
+            @staticmethod
+            def is_stuck_bound(row, sess, active_ids, now_ms):
+                return True
+        recovered, calls = self.run_supervision_exhausted(
+            task, session_rc=0, session_body=json.dumps(session), fake_poll=FakePoll, delete_rc=1)
+        self.assertEqual(recovered, [])
+        self.assertEqual(self.fail_calls(calls), [])
+
+
 if __name__ == "__main__":
     unittest.main()
