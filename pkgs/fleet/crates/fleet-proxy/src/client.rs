@@ -221,12 +221,21 @@ fn spawn_serve(config: &Config) -> Result<(), ClientError> {
     Ok(())
 }
 
+/// Resolve the shims directory WITHOUT starting anything (#6825).
+/// The broker-starting flows validate this BEFORE `ensure_broker`:
+/// `sync_shims_from` resolves it too, but only after a spawn may
+/// already have happened — a resolution failure then left the
+/// detached broker running until its idle exit.
+fn validated_shims_dir() -> Result<std::path::PathBuf, ClientError> {
+    Config::shims_dir().map_err(|e| ClientError::Transport(e.to_string()))
+}
+
 fn sync_shims_from(
     services: &std::collections::BTreeMap<String, fleet_proxy_proto::ServiceInfo>,
 ) -> Result<shims::ShimSync, ClientError> {
     let exe = shims::current_fleet_exe()
         .map_err(|e| ClientError::Transport(format!("current exe: {e}")))?;
-    let shims_dir = Config::shims_dir().map_err(|e| ClientError::Transport(e.to_string()))?;
+    let shims_dir = validated_shims_dir()?;
     shims::sync_shims(&shims_dir, services, &exe)
         .map_err(|e| ClientError::Transport(format!("shim sync: {e}")))
 }
@@ -376,6 +385,9 @@ pub fn run_connect(
         let port = args.port.unwrap_or(22);
         return crate::stdio::relay_stdio(config, &host, port);
     }
+    // #6825: a shims_dir failure must surface before any broker
+    // spawn, not after it (via sync_shims_from below).
+    validated_shims_dir()?;
     let mut ensured = ensure_broker(config, client, capabilities)?;
     let (services, broker_desc) = match &ensured.negotiated {
         Negotiated::Fleet(resp) => (
@@ -478,6 +490,9 @@ pub fn run_init(
             argv[0]
         )));
     }
+    // #6825: same ordering as run_connect — validate the shim path
+    // before this flow can reach the ensure_broker spawn below.
+    validated_shims_dir()?;
     let socket = config
         .broker_socket()
         .map_err(|e| ClientError::Transport(e.to_string()))?;
