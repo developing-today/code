@@ -1307,6 +1307,15 @@ let
               python3 ${../pkgs/deploy/test_dupkeys_property.py} ${../pkgs/deploy/deploy.py}
               mkdir -p $out
             '';
+        deploy-slice2-tests =
+          pkgs.runCommandLocal "check-deploy-slice2-tests"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_deploy_slice2.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
         deploy-list-malformed = pkgs.runCommandLocal "check-deploy-list-malformed" { } ''
           expect_invalid() {
             registry="$1"
