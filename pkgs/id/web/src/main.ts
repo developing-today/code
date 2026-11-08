@@ -12,6 +12,7 @@ import { buildCollabWsUrl, type CollabConnection, initCollab } from "./collab";
 import { type EditorInstance, getEditorState } from "./editor";
 import { updateHeaderSubtitle } from "./header-subtitle";
 import { identityNeedsRefresh } from "./identity-refresh";
+import { clientIdForDisplay } from "./settings-identity";
 import { closeImageBrowser } from "./image-browser";
 import { createNavigation } from "./navigation";
 import { resolveSaveFilename } from "./save-filename";
@@ -589,6 +590,18 @@ function initPeersAutoRefresh(): void {
  * Reads the current name from the identity state and fills the input.
  */
 function initSettingsIdentity(): void {
+  // Client id (#1792): render the stable, server-issued client id above
+  // the display name. It persists across in-site navigation because the
+  // identity is kept in localStorage; fall back to the stored value when
+  // the in-memory identity has not been populated yet.
+  const clientIdEl = document.getElementById("client-id-value");
+  if (clientIdEl) {
+    clientIdEl.textContent = clientIdForDisplay(
+      currentIdentity?.clientId,
+      getStoredIdentity()?.clientId,
+    );
+  }
+
   const input = document.getElementById("display-name-input") as HTMLInputElement | null;
   if (!input) return; // Not on settings page
 
