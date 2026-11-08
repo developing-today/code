@@ -149,6 +149,14 @@ export function terminalBytesForKey(event: KeyEventLike): Uint8Array | null {
 //   Shift alone is not encoded this way: the browser key already IS the
 //   shifted scalar (`A`, `!`), and plain text decodes to exactly that
 //   scalar with Shift consumed, per the design's normalization policy.
+// - The decoder's Shift re-application is a US-layout table, so it is
+//   only trusted when it reconstructs the browser-reported scalar
+//   exactly: a Caps Lock uppercase letter arrives with no Shift flag
+//   (its case is preserved as-is), and on layouts where Shift produces
+//   a scalar the US table does not predict (e.g. AZERTY Shift+& reports
+//   `1`), the reported scalar is sent with Shift dropped from the
+//   modifier parameter instead of letting the decoder remap it to the
+//   US shifted symbol.
 // - AltGr (Ctrl+Alt producing a non-letter printable, e.g. `€`) stays
 //   plain text, exactly as in the legacy encoder: the browser key is the
 //   composed character, not a command chord. Ctrl+Alt with an ASCII
@@ -200,9 +208,29 @@ const shiftedSymbolBases: Record<string, string> = {
 
 /** The scalar a kitty terminal would name for this key event's key. */
 function kittyBaseScalar(key: string, shiftKey: boolean): string {
-  if (/^[a-z]$/iu.test(key)) return key.toLowerCase();
+  // Lowercasing a letter is only safe when Shift is in the chord: the
+  // decoder re-applies Shift to recover the uppercase scalar. Without
+  // Shift (Caps Lock, or an Alt chord on an uppercase letter) the
+  // reported case IS the scalar and must be preserved as-is.
+  if (shiftKey && /^[a-z]$/iu.test(key)) return key.toLowerCase();
   if (shiftKey && Object.hasOwn(shiftedSymbolBases, key)) return shiftedSymbolBases[key];
   return key;
+}
+
+/**
+ * What the Roc decoder's `normalize_shift` produces for a base scalar
+ * when Shift is in the modifier set: letters uppercase, and single-byte
+ * digits/punctuation map through the US shift table (the forward
+ * direction of `shiftedSymbolBases`). The decoder applies this only to
+ * single-byte scalars; anything else passes through unchanged.
+ */
+function shiftNormalizedScalar(base: string): string {
+  if (new TextEncoder().encode(base).length !== 1) return base;
+  if (/^[a-z]$/.test(base)) return base.toUpperCase();
+  for (const [shifted, unshifted] of Object.entries(shiftedSymbolBases)) {
+    if (unshifted === base) return shifted;
+  }
+  return base;
 }
 
 /**
@@ -256,5 +284,17 @@ export function kittyBytesForKey(event: KeyEventLike): Uint8Array | null {
   const base = kittyBaseScalar(key, event.shiftKey);
   const code = base.codePointAt(0);
   if (code === undefined || code < 32) return null;
+  if (event.shiftKey && shiftNormalizedScalar(base) !== key) {
+    // Shift is in the chord but the decoder's US-table re-application
+    // would not reconstruct the reported scalar (Caps Lock + Shift
+    // reversing a letter to lowercase, or a non-US layout where Shift
+    // produces e.g. a digit): send the reported scalar itself with
+    // Shift dropped from the modifier parameter, so the decoder passes
+    // it through unchanged instead of remapping it.
+    const direct = key.codePointAt(0);
+    if (direct === undefined || direct < 32) return null;
+    const withoutShift = 1 + (event.altKey ? 2 : 0) + (event.ctrlKey ? 4 : 0);
+    return encode(`\x1b[${direct};${withoutShift}u`);
+  }
   return encode(`\x1b[${code};${modifierParameter(event)}u`);
 }

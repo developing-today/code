@@ -237,6 +237,26 @@ describe("kitty-disambiguate-v1 world key input (Slice C, unused by the UI)", ()
     expect(rich("1", { ctrlKey: true })).toBe("\x1b[49;5u");
   });
 
+  it("preserves case and layout scalars the decoder cannot reconstruct from Shift", () => {
+    // Caps Lock: the browser reports `A` with Control and no Shift; the
+    // decoder only restores uppercase from Shift, so the case is sent
+    // as-is instead of being lowercased to the base letter.
+    expect(rich("A", { ctrlKey: true })).toBe("\x1b[65;5u");
+    expect(rich("A", { altKey: true })).toBe("\x1b[65;3u");
+    // Caps Lock + Shift reports lowercase `a`; re-applying Shift would
+    // uppercase it in the decoder, so Shift is dropped and the
+    // reported scalar is sent directly.
+    expect(rich("a", { ctrlKey: true, shiftKey: true })).toBe("\x1b[97;5u");
+    // AZERTY: Shift produces the digit `1` itself; the decoder's US
+    // table would remap scalar 49 + Shift to `!`, so the digit is sent
+    // with Shift dropped.
+    expect(rich("1", { ctrlKey: true, shiftKey: true })).toBe("\x1b[49;5u");
+    expect(rich("5", { ctrlKey: true, shiftKey: true })).toBe("\x1b[53;5u");
+    // Shift that changes nothing (Space) is not consumed: it stays in
+    // the modifier parameter and the decoder passes the scalar through.
+    expect(rich(" ", { ctrlKey: true, shiftKey: true })).toBe("\x1b[32;6u");
+  });
+
   it("preserves AltGr printable text and plain multi-scalar text", () => {
     expect(
       kittyBytesForKey({ key: "€", ctrlKey: true, altKey: true, metaKey: false, shiftKey: false }),
