@@ -184,7 +184,10 @@ it lives, and must not change the shape to fit the store.
 # one record per execution node
 id: amd-6                # registry identity; distinct from any
                          # Talos/Cozystack node name (§0)
-hostname: amd-6          # NixOS host name under ./nixos/hosts
+hostname: amd            # NixOS host key under ./nixos/hosts — the
+                         # flake target (nixosConfigurations.amd in
+                         # nixos/hosts/default.nix); distinct from the
+                         # registry id above, which is fleet identity
 state: active            # declared | joining | active | draining | retired
 roles: [execution]       # execution | lab-cluster | both (both only
                          # by a recorded #2179 decision, §0)
