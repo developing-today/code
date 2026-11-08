@@ -517,7 +517,8 @@ pub async fn web_routers(
         .collect())
 }
 
-/// Applies the world/cookie settings and the security layer to a built state.
+/// Applies the world/cookie settings and delegates security to the public
+/// constructor, which applies exactly one guard layer.
 ///
 /// `surface` is the listener's #2146 content target: `None` builds the
 /// Explorer router; `Some(world)` builds the program-only router for
@@ -535,14 +536,10 @@ fn finish_router(
         cookie_secure,
         ..security
     };
-    let router = match &surface {
-        Some(world) => create_program_router(state, world),
-        None => create_router(state),
-    };
-    router.layer(axum::middleware::from_fn_with_state(
-        Arc::new(security),
-        security::guard,
-    ))
+    match &surface {
+        Some(world) => create_program_router(state, world, security),
+        None => create_router(state, security),
+    }
 }
 
 #[cfg(test)]

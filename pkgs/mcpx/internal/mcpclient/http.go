@@ -45,7 +45,6 @@ type HTTPTransport struct {
 	getStream bool
 
 	incoming chan inbound
-	errOnce  sync.Once
 	errCh    chan error
 	err      error
 
@@ -198,12 +197,12 @@ func (t *HTTPTransport) Send(ctx context.Context, msg []byte) error {
 	}
 
 	if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusNoContent {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil // notification acknowledged, no body
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, defaults.HTTPErrorBodyLimit))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		he := &HTTPStatusError{URL: t.url, Status: resp.StatusCode, Body: bytes.TrimSpace(b)}
 		he.rpc, he.id = parseRPCError(he.Body)
 		// A modern server answers a bad request with 400 and a JSON-RPC
@@ -227,7 +226,7 @@ func (t *HTTPTransport) Send(ctx context.Context, msg []byte) error {
 		go func() {
 			defer t.wg.Done()
 			st := t.readSSE(ctx, resp.Body, reqID)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if reqID == nil || st.answered || ctx.Err() != nil {
 				return
 			}
@@ -254,7 +253,7 @@ func (t *HTTPTransport) Send(ctx context.Context, msg []byte) error {
 			// Empty, or not JSON: handed on whole as before, for push to
 			// judge.
 			rest, readErr := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if readErr != nil {
 				return readErr
 			}
@@ -269,7 +268,7 @@ func (t *HTTPTransport) Send(ctx context.Context, msg []byte) error {
 		t.wg.Add(1)
 		go func() {
 			defer t.wg.Done()
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			for {
 				var next json.RawMessage
 				if dec.Decode(&next) != nil {
@@ -420,7 +419,7 @@ func (t *HTTPTransport) resume(ctx context.Context, reqID json.RawMessage, st ss
 			break
 		}
 		next := t.readSSE(ctx, body, reqID)
-		body.Close()
+		_ = body.Close()
 		if next.answered {
 			return
 		}
@@ -479,7 +478,7 @@ func (t *HTTPTransport) get(ctx context.Context, lastID string) (io.ReadCloser, 
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, &HTTPStatusError{URL: t.url, Status: resp.StatusCode}
 	}
 	return resp.Body, nil
@@ -525,8 +524,8 @@ func (t *HTTPTransport) listen() {
 				failures++
 			} else {
 				failures = 0
-				next := t.readSSE(nil, body, nil)
-				body.Close()
+				next := t.readSSE(context.TODO(), body, nil)
+				_ = body.Close()
 				if next.lastID != "" {
 					st.lastID = next.lastID
 				}
@@ -589,7 +588,7 @@ type inbound struct {
 	origin context.Context
 }
 
-func (t *HTTPTransport) push(b []byte) { t.pushFrom(nil, b) }
+func (t *HTTPTransport) push(b []byte) { t.pushFrom(context.TODO(), b) }
 
 func (t *HTTPTransport) pushFrom(origin context.Context, b []byte) {
 	// A frame may be a single object or a batch array.
@@ -693,7 +692,7 @@ func (t *HTTPTransport) deleteSession(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode >= http.StatusBadRequest && resp.StatusCode != http.StatusNotFound {
 		return fmt.Errorf("delete %s: http %d", t.url, resp.StatusCode)
 	}

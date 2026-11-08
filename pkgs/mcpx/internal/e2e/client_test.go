@@ -38,7 +38,7 @@ func TestMcpxIsAModernClientOfMcpx(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			body := decodeJSON(t, resp.Body)
 			servers, _ := body["asClient"].(map[string]any)["servers"].([]any)
 			want := "modern"

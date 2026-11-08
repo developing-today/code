@@ -361,6 +361,44 @@ describe("dashboard actions validation", () => {
     expect(v({ objectRef: "has space" }).ok).toBe(false);
   });
 
+  test("caps never split a surrogate pair (#7694)", () => {
+    // reason cap 2000: 1999 units + an astral character straddling the cap.
+    const straddle = validateNewAction({
+      ...base,
+      verb: "dismiss",
+      payload: { reason: "x".repeat(1999) + "\u{1F600}" + "tail" },
+    });
+    expect(straddle.ok).toBe(true);
+    if (straddle.ok) {
+      const reason = (straddle.value.payload as { reason?: string }).reason ?? "";
+      expect(reason.length).toBe(1999);
+      expect(reason.endsWith("x")).toBe(true);
+    }
+    // A pair that fits exactly inside the cap is kept whole.
+    const fits = validateNewAction({
+      ...base,
+      verb: "dismiss",
+      payload: { reason: "x".repeat(1998) + "\u{1F600}" },
+    });
+    expect(fits.ok).toBe(true);
+    if (fits.ok) {
+      const reason = (fits.value.payload as { reason?: string }).reason ?? "";
+      expect(reason.length).toBe(2000);
+      expect(reason.endsWith("\u{1F600}")).toBe(true);
+    }
+    // Small cap, same rule: optionId cap 200.
+    const opt = validateNewAction({
+      ...base,
+      verb: "answer",
+      payload: { optionId: "o".repeat(199) + "\u{1F600}" + "tail" },
+    });
+    expect(opt.ok).toBe(true);
+    if (opt.ok) {
+      const optionId = (opt.value.payload as { optionId?: string }).optionId ?? "";
+      expect(optionId.length).toBe(199);
+    }
+  });
+
   test("status-request: gh object, status required, targetRef derived", () => {
     const ok = validateNewAction({
       clientToken: "ct-valid-token-2",
@@ -768,6 +806,40 @@ describe("actions HTTP round-trip (fixture consumer)", () => {
       ).status,
     ).toBe(400);
     expect((await post("/api/actions", { ...body, clientToken: "ct-http-bad-2", author: undefined })).status).toBe(400);
+  });
+
+  test("/api/actions.json?state=all returns applied history; unknown state 400s (#4620)", async () => {
+    const body = {
+      clientToken: "ct-http-state-all-1",
+      kind: "triage",
+      verb: "acknowledge",
+      objectRef: "orch:state-all-item",
+      author: drew,
+      payload: {},
+    };
+    const created = await post("/api/actions", body);
+    expect(created.status).toBe(201);
+    const { action } = (await created.json()) as { action: DashAction };
+    const result = await post("/api/actions/result", {
+      id: action.id,
+      outcome: "applied",
+      byRun: "orch-fixture-state-all",
+      note: "applied for the #4620 history-read regression test",
+    });
+    expect(result.status).toBe(200);
+
+    const listFor = async (qs: string) =>
+      ((await (await fetch(`http://127.0.0.1:${port}/api/actions.json?${qs}`)).json()) as { actions: DashAction[] })
+        .actions.map((a) => a.id);
+
+    // The regression: state=all must return the applied record, not [].
+    expect(await listFor("state=all")).toContain(action.id);
+    // Concrete history states return history too.
+    expect(await listFor("state=applied")).toContain(action.id);
+    // state=new behaviour is unchanged: the applied record is not pending.
+    expect(await listFor("state=new")).not.toContain(action.id);
+    // An unknown state is a 400, never a silent false zero.
+    expect((await fetch(`http://127.0.0.1:${port}/api/actions.json?state=bogus`)).status).toBe(400);
   });
 
   test("duplicate answer response includes the persisted audit pointer", async () => {

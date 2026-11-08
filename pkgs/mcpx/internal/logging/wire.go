@@ -185,7 +185,7 @@ func Stream(src io.Reader, w *Writer, opts StreamOptions) error {
 		rec, ok := ParseLine(line)
 		if !ok {
 			if opts.Passthrough != nil {
-				io.WriteString(opts.Passthrough, line+"\n")
+				_, _ = io.WriteString(opts.Passthrough, line+"\n")
 			}
 			continue
 		}

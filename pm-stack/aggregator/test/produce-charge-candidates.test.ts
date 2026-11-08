@@ -3,10 +3,64 @@
 // wins over an earlier bare total.
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { amountFromBody, gmailMessageDay, isNotChargeSubject, stagedManifestPeriod } from "../scripts/produce-charge-candidates.ts";
+
+const producerScript = join(import.meta.dir, "../scripts/produce-charge-candidates.ts");
+
+function liveHarness() {
+  const dir = mkdtempSync(join(tmpdir(), "charge-producer-cli-"));
+  const out = join(dir, "explicit-candidates.json");
+  const defaultOut = join(dir, "default-candidates.json");
+  const plaidCalls = join(dir, "plaid-calls.log");
+  const gmailCalls = join(dir, "gmail-calls.log");
+  const plaidCli = join(dir, "plaid-stub");
+  const gmailCli = join(dir, "gmail-stub");
+  writeFileSync(
+    plaidCli,
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> "${plaidCalls}"\nprintf '%s\\n' '{"ok":true,"body":{"accounts":[],"transactions":[]}}'\n`,
+  );
+  writeFileSync(gmailCli, `#!/bin/sh\nprintf '%s\\n' "$*" >> "${gmailCalls}"\nprintf '%s\\n' '{"messages":[]}'\n`);
+  chmodSync(plaidCli, 0o755);
+  chmodSync(gmailCli, 0o755);
+
+  return {
+    dir,
+    out,
+    defaultOut,
+    plaidCalls,
+    gmailCalls,
+    run(args: string[]) {
+      return spawnSync(process.execPath, ["run", producerScript, ...args], {
+        cwd: dir,
+        env: {
+          ...process.env,
+          CHARGE_INPUTS_DIR: "",
+          CHARGE_CANDIDATES_PATH: defaultOut,
+          PLAID_CLI: plaidCli,
+          GMAIL_CLI: gmailCli,
+        },
+        encoding: "utf8",
+        timeout: 60_000,
+      });
+    },
+  };
+}
+
+function expectCliUsageError(args: (h: ReturnType<typeof liveHarness>) => string[], message: string, strayFile?: string) {
+  const h = liveHarness();
+  writeFileSync(h.defaultOut, "preserve existing candidates");
+  const res = h.run(args(h));
+  expect(res.status).toBe(2);
+  expect(res.stderr).toContain(message);
+  expect(existsSync(h.plaidCalls)).toBe(false);
+  expect(existsSync(h.gmailCalls)).toBe(false);
+  expect(existsSync(h.out)).toBe(false);
+  expect(readFileSync(h.defaultOut, "utf8")).toBe("preserve existing candidates");
+  if (strayFile) expect(existsSync(join(h.dir, strayFile))).toBe(false);
+}
 
 describe("amountFromBody", () => {
   test("records the paid total, not the subtotal", () => {
@@ -204,8 +258,8 @@ describe("staged mode gmail staging (#4660)", () => {
     return { dir, out: join(dir, "candidates.json") };
   }
 
-  function runProducer(dir: string, out: string) {
-    return spawnSync(process.execPath, ["run", script, "--out", out], {
+  function runProducer(dir: string, out: string, extraArgs: string[] = []) {
+    return spawnSync(process.execPath, ["run", script, ...extraArgs, "--out", out], {
       env: { ...process.env, CHARGE_INPUTS_DIR: dir },
       encoding: "utf8",
       timeout: 60_000,
@@ -238,5 +292,138 @@ describe("staged mode gmail staging (#4660)", () => {
     expect(written.candidates).toContainEqual(
       expect.objectContaining({ source: "plaid", merchant: "Coffee Shop", amountUsd: 12.34 }),
     );
+  });
+
+  test("staged manifest period remains authoritative over CLI period flags", () => {
+    const { dir, out } = stage([empty, empty]);
+    const res = runProducer(dir, out, ["--start", "banana", "--end", "2026-02-30"]);
+    expect(res.status).toBe(0);
+    expect(JSON.parse(readFileSync(out, "utf8")).period).toEqual({ start: "2026-10-01", end: "2026-10-31" });
+  });
+});
+
+// #3333: malformed live-mode flags must fail before the producer can
+// query either connector or replace the candidates file.
+describe("live mode CLI validation (#3333)", () => {
+  test("a trailing --start is a usage error before any side effect", () => {
+    expectCliUsageError(() => ["--start"], "--start");
+  });
+
+  test("a flag-like --start value is a usage error", () => {
+    expectCliUsageError(
+      (h) => ["--start", "--end", "2026-10-31", "--out", h.out, "--skip-gmail"],
+      "--start",
+    );
+  });
+
+  test("a trailing --end is a usage error before any side effect", () => {
+    expectCliUsageError(() => ["--end"], "--end");
+  });
+
+  test("a flag-like --end value is a usage error", () => {
+    expectCliUsageError(
+      (h) => ["--start", "2026-10-01", "--end", "--out", h.out, "--skip-gmail"],
+      "--end",
+    );
+  });
+
+  test("a trailing --out is a usage error and preserves the configured default path", () => {
+    expectCliUsageError(() => ["--out"], "--out");
+  });
+
+  test("--out followed by --skip-gmail is not treated as a path", () => {
+    expectCliUsageError((h) => ["--out", "--skip-gmail"], "--out", "--skip-gmail");
+  });
+
+  test("an invalid --start date names the value and exits before querying", () => {
+    expectCliUsageError(
+      (h) => ["--start", "banana", "--end", "2026-10-31", "--out", h.out, "--skip-gmail"],
+      '--start value "banana"',
+    );
+  });
+
+  test("an impossible explicit --end date is rejected", () => {
+    expectCliUsageError(
+      (h) => ["--start", "2026-10-01", "--end", "2026-02-30", "--out", h.out, "--skip-gmail"],
+      '--end value "2026-02-30"',
+    );
+  });
+
+  test("an inverted explicit period names both dates and exits before querying", () => {
+    expectCliUsageError(
+      (h) => ["--start", "2026-10-02", "--end", "2026-10-01", "--out", h.out, "--skip-gmail"],
+      "--start 2026-10-02",
+    );
+  });
+
+  test("an unknown flag is a usage error before any side effect (#7302)", () => {
+    expectCliUsageError(() => ["--bogus-flag"], "unknown argument");
+  });
+
+  test("a misspelled --skip-gmial is a usage error, not a Gmail run (#7302)", () => {
+    expectCliUsageError(() => ["--skip-gmial"], "unknown argument");
+  });
+
+  test("a joined --start=... is a usage error, not the default period (#7302)", () => {
+    expectCliUsageError(() => ["--start=2026-10-01"], "unknown argument");
+  });
+
+  test("a duplicate --start is a usage error, not first-wins (#7302)", () => {
+    expectCliUsageError(
+      (h) => ["--start", "2026-10-01", "--start", "2026-09-01", "--out", h.out, "--skip-gmail"],
+      "duplicate --start",
+    );
+  });
+
+  test("a duplicate --skip-gmail is a usage error (#7302)", () => {
+    expectCliUsageError(() => ["--skip-gmail", "--skip-gmail"], "duplicate --skip-gmail");
+  });
+
+  test("a positional argument is a usage error (#7302)", () => {
+    expectCliUsageError(() => ["candidates.json"], "unknown argument");
+  });
+
+  test("valid explicit flags keep the period, output path, and summary", () => {
+    const h = liveHarness();
+    writeFileSync(h.defaultOut, "preserve existing candidates");
+    const res = h.run([
+      "--start",
+      "2026-10-01",
+      "--end",
+      "2026-10-01",
+      "--out",
+      h.out,
+      "--skip-gmail",
+    ]);
+    expect(res.status).toBe(0);
+    expect(JSON.parse(readFileSync(h.out, "utf8")).period).toEqual({ start: "2026-10-01", end: "2026-10-01" });
+    expect(res.stdout).toContain(`producer: wrote ${h.out} — 0 candidates for 2026-10-01..2026-10-01`);
+    expect(readFileSync(h.plaidCalls, "utf8")).toContain(
+      "transactions-get --start-date 2026-10-01 --end-date 2026-10-01",
+    );
+    expect(existsSync(h.gmailCalls)).toBe(false);
+    expect(readFileSync(h.defaultOut, "utf8")).toBe("preserve existing candidates");
+  });
+
+  test("no-flag current-period and output defaults are unchanged", () => {
+    const h = liveHarness();
+    const res = h.run([]);
+    expect(res.status).toBe(0);
+    const written = JSON.parse(readFileSync(h.defaultOut, "utf8")) as {
+      generatedAt: string;
+      period: { start: string; end: string };
+    };
+    const now = new Date(written.generatedAt);
+    const expectedStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString().slice(0, 10);
+    const expectedEnd = now.toISOString().slice(0, 10);
+    expect(written.period).toEqual({
+      start: expectedStart,
+      end: expectedEnd,
+    });
+    expect(res.stdout).toContain(`producer: wrote ${h.defaultOut} — 0 candidates for ${expectedStart}..${expectedEnd}`);
+    expect(readFileSync(h.plaidCalls, "utf8")).toContain(
+      `transactions-get --start-date ${expectedStart} --end-date ${expectedEnd}`,
+    );
+    expect(readFileSync(h.gmailCalls, "utf8")).toContain("gmail +triage");
   });
 });

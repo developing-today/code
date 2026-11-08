@@ -35,6 +35,7 @@ mod actor;
 mod clock;
 mod core;
 mod handle;
+pub mod hotness;
 mod metrics;
 mod replica;
 mod replication;
@@ -50,7 +51,10 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub(crate) use core::AdminHistoryByteLedger;
 pub use core::WorldCore;
 pub use handle::WorldHandle;
-pub use metrics::{HistogramSnapshot, MetricsSnapshot, WorldMetrics};
+pub use hotness::{FiredSignal, HotnessBand, HotnessReport, HotnessSignal};
+pub use metrics::{
+    HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,
+};
 pub use replica::{
     ReplicaCursor, ReplicaRestore, parse_replica_journal, restore_replica_entries,
     restore_replica_entries_with_runtime, restore_replica_journal,
@@ -506,7 +510,7 @@ pub enum FileMode {
 }
 
 /// A world's sharing and file settings, read in one step.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldPolicy {
     /// Whether other worlds may read this one.
     pub isolation: Isolation,
@@ -1944,8 +1948,14 @@ pub const MAX_RECORD_VALUE_BYTES: usize = 8 * 1024;
 ///
 /// Anything that is not a bounded JSON object of valid keys.
 pub fn parse_records(text: &str) -> Result<Records> {
-    let records: Records =
-        serde_json::from_str(text).context("world records must be a JSON object")?;
+    // A duplicate key is a parse error (#6520): the caps below must see
+    // the document as written, never a last-wins collapse of it.
+    let value = id_core::json_unique::parse_json_without_duplicate_keys(text)
+        .context("world records must be a JSON object")?;
+    let serde_json::Value::Object(map) = value else {
+        bail!("world records must be a JSON object");
+    };
+    let records: Records = map.into_iter().collect();
     ensure!(
         records.len() <= MAX_RECORDS,
         "world publishes {} records; the limit is {MAX_RECORDS}",

@@ -322,10 +322,10 @@ mkdir -p "$STAGE/aggregator" "$STAGE/meta-quota-export" "$STAGE/journals" "$OUTD
 # the source silently shrank the backup set. Classes preserve the
 # intent the staging code below has always had: existing state files
 # are required (their WARN-for-missing becomes a failed run at verify);
-# the snapshots tree and the journal logs are optional (journals keep
-# their tolerated-unavailable placeholder, but are now recorded);
-# db-dumps is CONDITIONALLY required — required when the DB dump step
-# ran (DUMP_RAN=1), optional otherwise.
+# retired meta-quota-export files, the snapshots tree and active journal
+# logs are optional; journals keep their tolerated-unavailable
+# placeholder, but are now recorded; db-dumps is CONDITIONALLY required
+# — required when the DB dump step ran (DUMP_RAN=1), optional otherwise.
 EXPECTED_SET="required file aggregator/actions.json
 required file aggregator/comments.json
 required file aggregator/fleet-feed.json
@@ -338,14 +338,13 @@ required file aggregator/coverage-snapshot.json
 required file aggregator/aa-last-good.json
 optional file aggregator/views.json
 optional tree aggregator/charge-inputs
-required file meta-quota-export/latest.json
-required file meta-quota-export/history.jsonl
+optional file meta-quota-export/latest.json
+optional file meta-quota-export/history.jsonl
 conditional tree db-dumps
 conditional file projector/pmp_links.sql
 optional tree aggregator/snapshots
 optional file journals/pm-aggregator.log
-optional file journals/quota-gatherer.log
-optional file journals/meta-quota-export.log"
+optional file journals/quota-gatherer.log"
 
 # --- data set (explicit list only; the aggregator .env is deliberately NOT
 # --- included — no config/secret files belong in this archive) ---
@@ -380,41 +379,119 @@ if [ -d "$DUMP_DIR" ]; then cp -a "$DUMP_DIR" "$STAGE/db-dumps" ||
   fail "dataset copy failed: $DUMP_DIR"; fi
 
 # --- pmp_links export (code#1744 P0) ----------------------------------
-# Source: the ACTUAL configured projector database — DATABASE_URL in the
-# pm-projector env file when it names a file: URL, else the deployed
-# default ~/.local/state/pm-projector/projector.db (a relative file:
-# value resolves against the projector unit's working directory).
+# Source: the ACTUAL configured projector database — the LAST DATABASE_URL
+# assignment in the pm-projector env file when it names a file: URL
+# (percent-decoded) or a local path, else <PM_PROJECTOR_DIR>/data/projector.db
+# when that directory is named, else the deployed default
+# ~/.local/state/pm-projector/projector.db (a relative value resolves
+# against PM_PROJECTOR_DIR). A remote (non-file) DATABASE_URL fails the
+# run: exporting a stale local DB instead would make the archive evidence
+# claim a source it never read.
 # PM_PROJECTOR_DB / PM_PROJECTOR_ENV override both (tests, relocation).
 # Only the pmp_links table is exported (schema + rows as SQL): the rest
 # of projector.db is a rebuildable projection and credentials never
 # enter the archive — the .env file itself is NOT read beyond the
 # DATABASE_URL line and is never staged.
+# Env-file value -> path/URL: strip one trailing CR, edge whitespace and a
+# single matching quote pair, leaving interior characters (spaces, quotes)
+# untouched — only the value's edges are syntax, the path itself is data.
+pmp_trim_value() {
+  local v="$1"
+  v="${v%$'\r'}"
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  if ((${#v} >= 2)); then
+    case "$v" in
+      \"*\") v="${v:1:${#v}-2}" ;;
+      \'*\') v="${v:1:${#v}-2}" ;;
+    esac
+  fi
+  printf '%s' "$v"
+}
+# Percent-decode a file: URL path (%20 -> space, %2F -> /, ...). Malformed
+# escapes are kept literally rather than dropped.
+pmp_url_decode() {
+  local in="$1" out="" byte
+  while [[ "$in" == *%* ]]; do
+    out+="${in%%\%*}"
+    in="${in#*\%}"
+    if [[ "${in:0:2}" =~ ^[0-9A-Fa-f]{2}$ ]]; then
+      printf -v byte "\\x${in:0:2}"
+      out+="$byte"
+      in="${in:2}"
+    else
+      out+="%"
+    fi
+  done
+  printf '%s' "$out$in"
+}
 PMP_DB="${PM_PROJECTOR_DB:-}"
 if [ -z "$PMP_DB" ]; then
   PMP_ENV="${PM_PROJECTOR_ENV:-$HOME/.local/state/pm-projector/.env}"
+  PMP_URL=""
   if [ -f "$PMP_ENV" ]; then
-    _url="$(grep -m1 '^DATABASE_URL=' "$PMP_ENV" 2>/dev/null | cut -d= -f2- | tr -d '"'"'"' \r')" 
-    case "$_url" in
-      file:*) PMP_DB="${_url#file:}"; PMP_DB="${PMP_DB%%\?*}" ;;
+    # The LAST assignment wins: a later line is what the service loads.
+    PMP_URL="$(grep -E '^[[:space:]]*(export[[:space:]]+)?DATABASE_URL[[:space:]]*=' "$PMP_ENV" 2>/dev/null |
+      tail -n 1 | sed -E 's/^[[:space:]]*(export[[:space:]]+)?DATABASE_URL[[:space:]]*=//')"
+  fi
+  PMP_URL="$(pmp_trim_value "$PMP_URL")"
+  PMP_DIR="${PM_PROJECTOR_DIR:-}"
+  if [ -n "$PMP_URL" ]; then
+    case "$PMP_URL" in
+      file:*)
+        PMP_DB="${PMP_URL#file:}"
+        PMP_DB="${PMP_DB%%\?*}"
+        PMP_DB="${PMP_DB%%#*}"
+        # file://host/path -> /path: drop an empty or localhost
+        # authority, then decode the path before any existence check.
+        case "$PMP_DB" in
+          //localhost/*) PMP_DB="/${PMP_DB#//localhost/}" ;;
+          ///*) PMP_DB="/${PMP_DB#///}" ;;
+        esac
+        PMP_DB="$(pmp_url_decode "$PMP_DB")"
+        ;;
+      *://*)
+        # Remote DSN (postgres://, libsql://, ...): this export cannot
+        # read it, and silently archiving a local file instead would make
+        # the archive claim a source it never read. Name the scheme only
+        # — a DSN may embed credentials.
+        fail "pmp_links export failed: DATABASE_URL in $PMP_ENV uses '${PMP_URL%%://*}://', which is not supported (only file: URLs or local paths); remote export is not implemented"
+        ;;
+      *)
+        PMP_DB="$PMP_URL" # local path, absolute or relative
+        ;;
     esac
   fi
-  [ -n "$PMP_DB" ] || PMP_DB="$HOME/.local/state/pm-projector/projector.db"
-  case "$PMP_DB" in
-    /*) ;;
-    *) PMP_DB="${PM_PROJECTOR_DIR:-$HOME/git/code/pm-stack/projector}/$PMP_DB" ;;
-  esac
+  if [ -z "$PMP_DB" ]; then
+    # Nothing configured: the projector's own default is
+    # file:data/projector.db relative to its working directory
+    # (pm-stack/projector/src/store.ts), so the active DB is
+    # <PM_PROJECTOR_DIR>/data/projector.db when that dir is named,
+    # else the deployed state-directory default. A projector.db at
+    # the directory root is NOT the active DB and is never picked.
+    if [ -n "$PMP_DIR" ] && [ -f "$PMP_DIR/data/projector.db" ]; then
+      PMP_DB="$PMP_DIR/data/projector.db"
+    else
+      PMP_DB="$HOME/.local/state/pm-projector/projector.db"
+    fi
+  else
+    case "$PMP_DB" in
+      /*) ;;
+      *) PMP_DB="${PMP_DIR:-$HOME/git/code/pm-stack/projector}/$PMP_DB" ;;
+    esac
+  fi
 fi
 if [ -f "$PMP_DB" ]; then
   command -v sqlite3 >/dev/null 2>&1 ||
     fail "sqlite3 not found — cannot export pmp_links from $PMP_DB"
-  PMP_ROWS="$(sqlite3 "file:$PMP_DB?mode=ro" 'SELECT COUNT(*) FROM pmp_links;' 2>/dev/null)" ||
+  PMP_ROWS="$(sqlite3 -readonly "$PMP_DB" 'SELECT COUNT(*) FROM pmp_links;' 2>/dev/null)" ||
     fail "pmp_links export failed: cannot read pmp_links in $PMP_DB"
   mkdir -p "$STAGE/projector"
-  sqlite3 "file:$PMP_DB?mode=ro" '.dump pmp_links' >"$STAGE/projector/pmp_links.sql" ||
+  sqlite3 -readonly "$PMP_DB" '.dump pmp_links' >"$STAGE/projector/pmp_links.sql" ||
     fail "pmp_links export failed: .dump of $PMP_DB"
   # .dump omits the table's indexes on this sqlite build — append them
   # from sqlite_master so a restore reproduces the full table shape.
-  sqlite3 "file:$PMP_DB?mode=ro" \
+  sqlite3 -readonly "$PMP_DB" \
     "SELECT sql || ';' FROM sqlite_master WHERE type = 'index' AND tbl_name = 'pmp_links' AND sql IS NOT NULL;" \
     >>"$STAGE/projector/pmp_links.sql" ||
     fail "pmp_links export failed: index definitions of $PMP_DB"
@@ -434,7 +511,7 @@ case "$LAST" in *[!0-9]* | "") LAST=0 ;; esac
 W=$((NOW_EPOCH - 86400))
 if [ "$LAST" -gt 0 ] && [ "$LAST" -lt "$W" ]; then W="$LAST"; fi
 SINCE_STR="$(date -d "@$W" '+%F %T')"
-for svc in pm-aggregator quota-gatherer meta-quota-export; do
+for svc in pm-aggregator quota-gatherer; do
   journalctl --user -u "$svc.service" --since "$SINCE_STR" --no-pager -o short-iso \
     >"$STAGE/journals/$svc.log" 2>/dev/null ||
     echo "(journal unavailable for $svc)" >"$STAGE/journals/$svc.log"

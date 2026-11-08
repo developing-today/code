@@ -136,7 +136,7 @@ export const VERBS_BY_KIND: Record<DashActionKind, readonly DashActionVerb[]> = 
 };
 
 const ACTION_KINDS = new Set<DashActionKind>(["triage", "status-request", "session", "preference"]);
-const ACTION_STATES = new Set(["new", "applied", "rejected", "superseded"]);
+export const ACTION_STATES = new Set(["new", "applied", "rejected", "superseded"]);
 
 function actionRecordProblem(value: unknown): string | null {
   if (!isRecord(value)) return "record must be an object";
@@ -289,7 +289,16 @@ const SESSION_SOURCES = new Set(["opencode-sandbox", "opencode-laptop", "claude-
 function cleanText(v: unknown, max: number): string | undefined {
   if (typeof v !== "string") return undefined;
   const t = v.trim();
-  return t === "" ? undefined : t.slice(0, max);
+  if (t === "") return undefined;
+  if (t.length <= max) return t;
+  // Keep the UTF-16 cap, but never leave half of a surrogate pair at the
+  // cut (#7694, mirroring the #3178 guard in pm-dispatch validate.ts):
+  // an astral character straddling the cap is dropped whole.
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
 }
 
 /** Validate an untrusted POST body into a NewAction, or explain why not. */

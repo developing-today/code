@@ -25,6 +25,7 @@ import json
 import os
 import re
 import sys
+from urllib.parse import urlsplit
 
 CLASSES = {"systemd", "launchd", "cloudflare", "sandbox", "container"}
 RESTART_POLICIES = {
@@ -61,7 +62,7 @@ def validate(registry):
         return ["registry: no service definitions"]
     for name, defn in sorted(registry.items()):
         where = f"service {name!r}"
-        if not NAME_RE.match(name):
+        if not NAME_RE.fullmatch(name):
             errors.append(f"{where}: name must match {NAME_RE.pattern}")
         if not isinstance(defn, dict):
             errors.append(f"{where}: definition must be an object")
@@ -108,6 +109,11 @@ def validate(registry):
             errors.append(
                 f"{where}: secrets must be a list of secret names (names only, never values)"
             )
+        elif (
+            "secrets" in defn
+            and len(set(defn["secrets"])) != len(defn["secrets"])
+        ):
+            errors.append(f"{where}: secrets must not repeat a secret name")
         if "user" in defn and not (isinstance(defn["user"], str) and defn["user"]):
             errors.append(f"{where}: user must be a non-empty string")
         if "ports" in defn:
@@ -122,17 +128,31 @@ def validate(registry):
                 errors.append(f"{where}: ports must be a list of integers in 1..65535")
             elif len(set(ports)) != len(ports):
                 errors.append(f"{where}: ports must not repeat a port")
-        if "restart" in defn and defn["restart"] not in RESTART_POLICIES:
+        if "restart" in defn and not (
+            isinstance(defn["restart"], str) and defn["restart"] in RESTART_POLICIES
+        ):
             errors.append(
                 f"{where}: restart must be one of {', '.join(sorted(RESTART_POLICIES))}"
             )
         if "healthCheck" in defn and defn["healthCheck"] is not None:
             hc = defn["healthCheck"]
-            if not (
-                isinstance(hc, str)
-                and (hc.startswith("http://") or hc.startswith("https://"))
-            ):
-                errors.append(f"{where}: healthCheck must be an http(s) URL or null")
+            try:
+                parsed = urlsplit(hc) if isinstance(hc, str) else None
+                hostname = parsed.hostname if parsed is not None else None
+                if parsed is not None:
+                    # Accessing .port also rejects malformed/out-of-range ports.
+                    parsed.port
+                valid_url = (
+                    parsed is not None
+                    and parsed.scheme in {"http", "https"}
+                    and bool(hostname)
+                )
+            except ValueError:
+                valid_url = False
+            if not valid_url:
+                errors.append(
+                    f"{where}: healthCheck must be an http(s) URL with a host or null"
+                )
         if "targets" in defn and not (
             isinstance(defn["targets"], list)
             and defn["targets"]
@@ -141,14 +161,34 @@ def validate(registry):
             errors.append(
                 f"{where}: targets must be a non-empty list of host/class names"
             )
-        if "class" in defn and defn["class"] not in CLASSES:
+        elif (
+            "targets" in defn
+            and len(set(defn["targets"])) != len(defn["targets"])
+        ):
+            errors.append(f"{where}: targets must not repeat a target")
+        if "class" in defn and not (
+            isinstance(defn["class"], str) and defn["class"] in CLASSES
+        ):
             errors.append(f"{where}: class must be one of {', '.join(sorted(CLASSES))}")
     return errors
 
 
+def _no_duplicate_keys(pairs):
+    # json silently keeps only the last value of a repeated key; a
+    # registry is the validation oracle, so discarded text must fail
+    # the load instead of vanishing (issue #6384). This hook runs for
+    # every object at every nesting level.
+    obj = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError(f"duplicate key {key!r} in registry")
+        obj[key] = value
+    return obj
+
+
 def load_registry(path):
     with open(path, "r", encoding="utf-8") as fh:
-        return json.load(fh)
+        return json.load(fh, object_pairs_hook=_no_duplicate_keys)
 
 
 def cmd_list(registry):
@@ -198,7 +238,7 @@ def main(argv):
         return 2
     try:
         registry = load_registry(registry_path)
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         print(f"deploy: cannot load registry {registry_path}: {exc}", file=sys.stderr)
         return 1
     return cmd_list(registry)

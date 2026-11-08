@@ -205,6 +205,7 @@ pub mod invites;
 pub mod issuer_rotation;
 pub(crate) mod key_envelope;
 pub mod local;
+pub mod local_claims;
 pub mod local_events;
 pub mod log_sync;
 mod peer_announcement;

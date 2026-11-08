@@ -1258,11 +1258,11 @@ func parse(b []byte) (*Config, error) {
 	return c, nil
 }
 
-// stripComments removes // and /* */ comments so JSONC configs load. It is
-// string-literal aware.
 // StripJSONC removes JSONC comments, string-literal aware. Exported so that
 // anything else reading the same files parses them the same way; a file that
 // loads here and fails elsewhere is the worst kind of inconsistency.
+// stripComments removes // and /* */ comments so JSONC configs load. It is
+// string-literal aware.
 func StripJSONC(b []byte) []byte { return stripComments(b) }
 
 func stripComments(b []byte) []byte {

@@ -489,7 +489,7 @@ func TestNumeric_artifacts_limit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { store.Close() })
+		t.Cleanup(func() { _ = store.Close() })
 		srv := &Server{}
 		srv.artifactStore = store
 		srv.artifactsOnce.Do(func() {})
