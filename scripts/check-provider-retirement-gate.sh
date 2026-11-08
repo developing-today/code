@@ -11,6 +11,13 @@
 # recorded in comments does not block a retirement whose real
 # references are gone (PR #7679 Codex finding 4506184819).
 #
+# Matching is by provider identity, not arbitrary substring: a
+# reference is a quoted provider key ("<id>": ...) or a model
+# reference ("<id>/<model>"). An ID that is merely a substring of an
+# unrelated provider, package, or model name (retiring "opencode"
+# while "opencode-route/workhorse" exists) does not block
+# (PR #7679 Codex finding 4506371633).
+#
 # Usage:
 #   scripts/check-provider-retirement-gate.sh [options] <provider-id> [provider-id...]
 #
@@ -143,10 +150,23 @@ else
     "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.jsonc"
     "${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.jsonc"
     "${XDG_STATE_HOME:-$HOME/.local/state}/opencode/opencode-runtime.jsonc"
+    # The deployed standing server's runtime overlay lives at a FIXED
+    # location (home/common/default.nix sets OPENCODE_CONFIG to
+    # %h/.local/state/opencode/opencode-runtime.jsonc) regardless of
+    # XDG_STATE_HOME, so always check that exact file too — an XDG
+    # override must not steer the gate away from the deployed overlay
+    # (PR #7679 Codex finding 4506371638).
+    "$HOME/.local/state/opencode/opencode-runtime.jsonc"
   )
   for candidate in "${default_candidates[@]}"; do
     if [[ -f "$candidate" ]]; then
-      resolved_configs+=("$candidate")
+      already=0
+      for existing in "${resolved_configs[@]}"; do
+        if [[ "$existing" == "$candidate" ]]; then already=1; break; fi
+      done
+      if [[ $already -eq 0 ]]; then
+        resolved_configs+=("$candidate")
+      fi
     fi
   done
 fi
@@ -172,7 +192,7 @@ for provider in "${providers[@]}"; do
       exit 2
     fi
     grep_status=0
-    matches="$(grep -nF "$provider" "$stripped_file")" || grep_status=$?
+    matches="$(grep -nF -e "\"$provider\"" -e "\"$provider/" "$stripped_file")" || grep_status=$?
     rm -f "$stripped_file"
     if [[ $grep_status -eq 2 ]]; then
       echo "::error::Config file '$cfg' could not be searched (grep error); failing closed (exit 2)." >&2

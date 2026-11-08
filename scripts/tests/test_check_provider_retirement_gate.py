@@ -110,6 +110,68 @@ class TestCheckProviderRetirementGate(unittest.TestCase):
             self.assertIn("--allow-empty", result.stdout)
 
 
+    def test_provider_id_substring_of_others_passes(self):
+        # Codex finding 4506371633 (PR #7679): matching is by provider
+        # identity, not substring. Retiring "opencode" must not be
+        # blocked by unrelated longer IDs or package names that merely
+        # contain it.
+        with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
+            cfg = Path(tmp) / "opencode.jsonc"
+            cfg.write_text(
+                '{\n'
+                '  "model": "opencode-route/workhorse",\n'
+                '  "provider": {"opencode-go.drewrypope": {}},\n'
+                '  "plugin": ["@opencode/ai/providers/claude-code"]\n'
+                '}\n'
+            )
+            result = run_gate(["--config", str(cfg), "opencode"])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Retirement gate OK", result.stdout)
+
+    def test_provider_identity_key_and_model_block(self):
+        # The identity forms that DO block: a provider key and a
+        # "<id>/<model>" reference.
+        with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
+            cfg = Path(tmp) / "opencode.jsonc"
+            cfg.write_text(
+                '{\n'
+                '  "provider": {"opencode": {"options": {}}},\n'
+                '  "model": "opencode/some-model"\n'
+                '}\n'
+            )
+            result = run_gate(["--config", str(cfg), "opencode"])
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("Retirement BLOCKED", result.stderr)
+
+    def test_deployed_runtime_overlay_checked_despite_xdg_override(self):
+        # Codex finding 4506371638 (PR #7679): the deployed runtime
+        # overlay lives at the fixed $HOME/.local/state location
+        # (home/common/default.nix OPENCODE_CONFIG) even when
+        # XDG_STATE_HOME points elsewhere; the gate must check it.
+        with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
+            root = Path(tmp) / "repo"
+            (root / "scripts").mkdir(parents=True)
+            isolated = root / "scripts" / SCRIPT.name
+            isolated.write_text(SCRIPT.read_text())
+            home = Path(tmp) / "home"
+            overlay = home / ".local" / "state" / "opencode" / "opencode-runtime.jsonc"
+            overlay.parent.mkdir(parents=True)
+            overlay.write_text('{\n  "model": "opencode-route/workhorse"\n}\n')
+            env = os.environ.copy()
+            env["HOME"] = str(home)
+            env["XDG_CONFIG_HOME"] = str(home / "config")
+            env["XDG_DATA_HOME"] = str(home / "data")
+            env["XDG_STATE_HOME"] = str(home / "other-state")
+            result = subprocess.run(
+                ["bash", str(isolated), "opencode-route"],
+                text=True,
+                capture_output=True,
+                check=False,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn(str(overlay), result.stderr)
+
     def test_comment_only_references_pass(self):
         # Codex finding 4506184819 (PR #7679): a provider mentioned only
         # in JSONC comments (retirement history) is not an active
