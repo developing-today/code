@@ -4,7 +4,7 @@
 - Status: **design decision record**, ready for issue-owner review; no implementation is included.
 - Issue: [#5973](https://github.com/developing-today/code/issues/5973), child of the worlds design programme [#5955](https://github.com/developing-today/code/issues/5955) (statements S75–S76 of the 2026-11-04 brief).
 - Specified against: `origin/main` `83b7a024b8`, read 2026-11-08. Every substrate claim below is cited `path:line` at that revision.
-- Consumes, never re-defines: the capability-model registry schema of [#5958](https://github.com/developing-today/code/issues/5958) (`requested` / `discovered_used` / `effective_grant` / `observed`) and the audience vocabulary of [#5960](https://github.com/developing-today/code/issues/5960). Where this record names a capability, it names a **provider-registry entry** in the sense of `world_caps.rs`, not a new kind of thing.
+- Consumes, never re-defines: the capability-model registry schema of [#5958](https://github.com/developing-today/code/issues/5958) (`requested` / `discovered_used` / `effective_grant` / `observed`) and the audience vocabulary of [#5960](https://github.com/developing-today/code/issues/5960) (`doc/2026-11-08T09-06-08Z_design_id_permission_ux/`; the issue is closed, the record is landed). Where this record names a capability, it names a **provider-registry entry** in the sense of `world_caps.rs`, not a new kind of thing.
 
 ## Decision in brief
 
