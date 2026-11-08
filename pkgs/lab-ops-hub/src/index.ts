@@ -6,6 +6,8 @@ import {
   extractHtml,
   fetchFollowingValidatedRedirects,
   parseJsonObjectBody,
+  parseFormDataBody,
+  parseUploadFile,
   readResponseTextCapped,
   crawlArchiveKey,
   uploadKey,
@@ -376,14 +378,15 @@ export default {
         return json({ files: results });
       }
       if (p === "/api/files" && req.method === "POST") {
-        const form = await req.formData();
-        const file = form.get("file") as File | null;
-        if (!file) return json({ error: "multipart field 'file' required" }, 400);
-        const buf = await file.arrayBuffer();
-        const key = uploadKey(file.name, Date.now(), crypto.randomUUID());
-        await env.FILES.put(key, buf, { httpMetadata: { contentType: file.type || "application/octet-stream" } });
+        const form = await parseFormDataBody(req);
+        if (!form.ok) return json({ error: form.error }, 400);
+        const file = parseUploadFile(form.form.get("file"));
+        if (!file.ok) return json({ error: file.error }, 400);
+        const buf = await file.values.arrayBuffer();
+        const key = uploadKey(file.values.name, Date.now(), crypto.randomUUID());
+        await env.FILES.put(key, buf, { httpMetadata: { contentType: file.values.type || "application/octet-stream" } });
         const r = await env.DB.prepare("INSERT INTO files (r2_key, filename, content_type, size) VALUES (?1,?2,?3,?4)")
-          .bind(key, file.name, file.type || null, buf.byteLength)
+          .bind(key, file.values.name, file.values.type || null, buf.byteLength)
           .run();
         await env.JOBS.send({ type: "index-file", r2Key: key });
         ctx.waitUntil(
