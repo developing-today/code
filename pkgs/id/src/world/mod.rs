@@ -17,6 +17,7 @@
 //! counts are local to the hosting node and need not converge across partitions.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::io::Read;
 
 use anyhow::{Context, Result, bail, ensure};
 use rand::RngExt as _;
@@ -35,6 +36,10 @@ mod clock;
 mod core;
 mod handle;
 mod metrics;
+mod replica;
+mod replication;
+mod replication_receiver;
+pub mod signed;
 mod util;
 
 #[cfg(test)]
@@ -43,16 +48,57 @@ mod tests;
 pub(crate) use actor::{WorldActor, WorldCommand};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use core::WorldCore;
+pub(crate) use core::AdminHistoryByteLedger;
 pub use handle::WorldHandle;
 pub use metrics::{HistogramSnapshot, MetricsSnapshot, WorldMetrics};
+pub use replica::{
+    ReplicaCursor, ReplicaRestore, parse_replica_journal, restore_replica_entries,
+    restore_replica_entries_with_runtime, restore_replica_journal,
+    restore_replica_journal_with_runtime, serve_replica,
+};
+pub use replication::{
+    AcceptedFrame, MAX_REPLICATION_FRAME_BYTES, MAX_REPLICATION_PAYLOAD_BYTES, REPLICATION_DOMAIN,
+    REPLICATION_ENVELOPE_VERSION, REPLICATION_FRAME_MAGIC, ReplicationCursor, ReplicationEnvelope,
+    ReplicationError, ReplicationKind, ReplicationTracker, SESSION_NONCE_BYTES,
+    SignedReplicationEnvelope, advance_cursor, chain_base_cursor, chain_payload, frame_digest,
+    journal_entry_line, payload_digest, split_entry_payload,
+};
+pub use replication_receiver::{
+    DurableReceiver, MAX_STAGED_TRANSFER_BYTES, REPLICA_JOURNAL_FILE, ReceiverError,
+    ReceiverProgress,
+};
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{
-    constant_time_eq, hex_decode_32, sanitize_chat, sanitize_display_name, token_digest,
+    constant_time_eq, hex_decode_32, legacy_sanitize_display_name, sanitize_chat,
+    is_pre_fix_mint_display_name, pre_fix_sanitize_display_name,
+    sanitize_display_name, token_digest,
 };
+
+/// Identity of one live connection. It stays in memory only and is never part
+/// of a world event or journal entry.
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+pub(crate) struct SessionId(u64);
+
+impl SessionId {
+    pub(crate) const fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
 
 /// A chat participant may send at most this many lines during the rolling window.
 pub(crate) const CHAT_RATE_BURST: u8 = 50;
 pub(crate) const CHAT_RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+/// Maximum host-authorized event history kept for fixture export.
+pub(crate) const MAX_ADMIN_HISTORY_EVENTS: usize = 4096;
+/// Maximum encoded history bytes kept in memory or a checkpoint.
+pub(crate) const MAX_ADMIN_HISTORY_BYTES: usize = 64 * 1024 * 1024;
+/// Maximum distinct participant IDs represented as open in a checkpoint.
+///
+/// This is a stable journal-format bound, not the current world's participant
+/// quota. If a live world exceeds it (for example, while revoked sessions are
+/// still closing), compaction is skipped and the complete append-only journal
+/// is retained. Restore enforces the same bound regardless of current config.
+pub(crate) const MAX_CHECKPOINT_OPEN_PRESENCE: usize = 4096;
 
 /// Bounded limits for one world.
 #[derive(Clone, Debug)]
@@ -74,7 +120,8 @@ pub struct WorldLimits {
     /// Trim the journal behind a program snapshot once this many events were
     /// committed since the last one. `0` disables checkpointing.
     pub checkpoint_every: u64,
-    /// Slowest tick a program may subscribe to, in milliseconds.
+    /// Minimum tick interval a program may subscribe to, in milliseconds.
+    /// Subscriptions below this floor are refused at subscription time.
     pub min_tick_ms: u64,
     /// Whether a world's policy grants a capability on its first use.
     pub grant_on_use: bool,
@@ -95,7 +142,7 @@ impl Default for WorldLimits {
             checkpoint_every: 1000,
             min_tick_ms: 1000,
             grant_on_use: false,
-            server_caps: crate::world_caps::catalog_names(),
+            server_caps: crate::world_caps::default_ceiling_names(),
         }
     }
 }
@@ -248,12 +295,15 @@ impl WorldScopes {
     /// connected participant may read; `chat.say` also needs `CHAT`.
     #[must_use]
     pub fn allows_effect(self, cap: &str) -> bool {
-        match cap {
-            "chat.say" => self.contains(Self::CHAT),
+        match crate::world_caps::PROVIDER_REGISTRY.get(cap).map_or(
+            crate::world_caps::RequiredScope::Join,
+            |provider| provider.required_scope,
+        ) {
+            crate::world_caps::RequiredScope::Chat => self.contains(Self::CHAT),
             // Reading chat needs only the right to read it (`CHAT` or
             // `HISTORY`), the same rule the event stream applies.
-            "chat.history" => self.reads_chat(),
-            _ => self.contains(Self::JOIN),
+            crate::world_caps::RequiredScope::ChatRead => self.reads_chat(),
+            crate::world_caps::RequiredScope::Join => self.contains(Self::JOIN),
         }
     }
 
@@ -330,9 +380,24 @@ pub enum WorldEventKind {
     Chat(String),
     /// Opaque input for a future game/world module.
     Input(Vec<u8>),
+    /// Entity-addressed input for region-sharded worlds (#3870, design
+    /// #2818): the input targets exactly one application-owned entity, so
+    /// the host can fence that `entity_ref` during a region-seam handoff
+    /// without inspecting the opaque bytes. Region-sharded mode rejects
+    /// legacy unscoped [`WorldEventKind::Input`] (phase 2 of #3870 wires
+    /// the gate; this packet adds the kind and its journal plumbing).
+    EntityInput {
+        /// Application-defined stable entity reference (not a world-local
+        /// participant ID).
+        entity_ref: String,
+        /// Opaque input bytes for the program, as with
+        /// [`WorldEventKind::Input`].
+        input: Vec<u8>,
+    },
     /// An event the host originated for the program: capability results,
-    /// ticks, presence. Delivered with `participant_id` 0; never sequenced,
-    /// never broadcast to sessions.
+    /// ticks, presence. Delivered with `participant_id` 0; never sequenced
+    /// or broadcast to participant sessions. Admins may export these events
+    /// through the history protocol.
     System {
         /// The event's JSON.
         event: String,
@@ -350,6 +415,14 @@ pub enum WorldEventKind {
         /// Server-observed origin metadata. Absent on older journal entries.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provenance: Option<ModuleProvenance>,
+        /// The trust decision that admitted this module (#1069), carried
+        /// by the install event itself so the decision and the install
+        /// are one durable record: a separate audit append after the
+        /// install event could fail and leave a durable install with no
+        /// decision (or a split live/restored state). Absent on older
+        /// journal entries.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trust: Option<TrustDecision>,
     },
 }
 
@@ -389,6 +462,14 @@ pub struct SourceBuildProvenance {
     pub schema_version: u8,
     /// Domain-separated BLAKE3 digest of the compiler executable bytes.
     pub compiler_blake3: String,
+    /// Version string the compiler binary reports for itself (`roc
+    /// version`), recorded alongside its digest (#1069): the digest
+    /// identifies the exact bytes, the version is the human-legible
+    /// name for them. Empty when the version probe failed. Defaulted
+    /// so provenance records written before this field existed still
+    /// deserialize.
+    #[serde(default)]
+    pub compiler_version: String,
     /// BLAKE3 digest of the platform tree, including relative paths.
     pub platform_blake3: String,
     /// BLAKE3 digest of the submitted source filenames and contents.
@@ -462,6 +543,168 @@ pub enum Authority {
     Admin,
     /// A signed request made with this public key, as lower-case hex.
     Signed(String),
+}
+
+/// Which side of a region-seam handoff a [`HandoffTransferState`] records
+/// (#3870, design #2818).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandoffDirection {
+    /// This world exported the entity (source side): it holds the fence and
+    /// the durable recovery payload until coordinator completion.
+    Export,
+    /// This world imported the entity (destination side): it holds the
+    /// dedupe receipt keyed by `handoff_id`.
+    Import,
+}
+
+/// One active region-seam handoff as a world journal records it (#3870
+/// phase 1, design #2818 §3). Carried in [`JournalEntry::Checkpoint`] so
+/// compaction preserves active export fences/payloads, import receipts and
+/// owner epochs exactly as the un-compacted journal would replay them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandoffTransferState {
+    /// Coordinator-generated random 128-bit handoff ID, as hex. Reused for
+    /// every retry of this crossing; a new crossing gets a new ID.
+    pub handoff_id: String,
+    /// Application-defined stable entity reference.
+    pub entity_ref: String,
+    /// Region (shard world) the entity leaves.
+    pub source_region: String,
+    /// Region (shard world) the entity enters.
+    pub target_region: String,
+    /// Which side of the seam this world is.
+    pub direction: HandoffDirection,
+    /// Owner epoch the entity had at the source before this handoff.
+    pub prior_owner_epoch: u64,
+    /// Owner epoch at the destination once the handoff completes
+    /// (`prior_owner_epoch + 1`); set on import records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_owner_epoch: Option<u64>,
+    /// Program module hash both regions must agree on for v1.
+    pub program_module_hash: String,
+    /// Versioned payload schema name.
+    pub payload_schema: String,
+    /// Digest of the complete entity payload.
+    pub payload_digest: String,
+    /// The complete entity payload. Present on export records (the source
+    /// is the durable recovery copy until completion); absent on import
+    /// records, whose payload rides inside `event`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Vec<u8>>,
+    /// The host-originated system event that removes (export) or adds
+    /// (import) the entity in the program. Replay applies it from the same
+    /// durable fact as the journal entry itself.
+    pub event: WorldEvent,
+}
+
+/// One durable fact in the region coordinator's own journal (#3870 phase 1,
+/// design #2818 §3). The coordinator records and recovers handoff progress;
+/// it never stores entity payloads and never emulates a cross-region
+/// transaction. Phase 4 of #3870 builds the coordinator state machine on
+/// these records; this packet fixes their format.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "entry", rename_all = "snake_case")]
+pub enum CoordinatorJournalEntry {
+    /// A handoff was requested. Persisted before any shard side effect.
+    HandoffStarted {
+        /// Random 128-bit handoff ID, as hex.
+        handoff_id: String,
+        /// Application-defined stable entity reference.
+        entity_ref: String,
+        /// Region the entity leaves.
+        source_region: String,
+        /// Region the entity enters.
+        target_region: String,
+        /// Owner epoch the coordinator expects at the source.
+        expected_owner_epoch: u64,
+        /// Region-map epoch observed when the transfer was requested.
+        region_map_epoch: u64,
+        /// Program module hash both regions must run for v1.
+        program_module_hash: String,
+        /// Versioned payload schema name.
+        payload_schema: String,
+        /// Unix milliseconds the handoff was requested (operator
+        /// visibility only; ordering comes from journal order).
+        requested_at: u64,
+    },
+    /// The coordinator verified the source's durable, applied export
+    /// receipt for this handoff.
+    HandoffExportObserved {
+        /// Handoff ID.
+        handoff_id: String,
+        /// Digest of the exported payload.
+        payload_digest: String,
+        /// Unix milliseconds the receipt was observed.
+        observed_at: u64,
+    },
+    /// The coordinator verified the destination's durable, applied import
+    /// receipt for this handoff.
+    HandoffImportObserved {
+        /// Handoff ID.
+        handoff_id: String,
+        /// Digest of the imported payload.
+        payload_digest: String,
+        /// Unix milliseconds the receipt was observed.
+        observed_at: u64,
+    },
+    /// The handoff completed: the destination's matching import is durable
+    /// and applied. Persisted before the coordinator changes its in-memory
+    /// owner map or exposes the destination.
+    HandoffCompleted {
+        /// Handoff ID.
+        handoff_id: String,
+        /// Application-defined stable entity reference.
+        entity_ref: String,
+        /// Region the entity left.
+        source_region: String,
+        /// Region the entity entered.
+        target_region: String,
+        /// Digest of the transferred payload.
+        payload_digest: String,
+        /// Owner epoch at the destination (`prior + 1`).
+        new_owner_epoch: u64,
+        /// Region-map epoch after this completion.
+        new_region_map_epoch: u64,
+        /// Program module hash the transfer ran under.
+        program_module_hash: String,
+        /// Versioned payload schema name.
+        payload_schema: String,
+    },
+    /// A handoff was cancelled. Legal only before the source export
+    /// committed; the coordinator must first prove no export exists.
+    HandoffCancelled {
+        /// Handoff ID.
+        handoff_id: String,
+        /// Application-defined stable entity reference.
+        entity_ref: String,
+        /// Why the handoff was cancelled.
+        reason: String,
+    },
+}
+
+/// The basis on which the module trust gate admitted a module (#1069).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustBasis {
+    /// A publisher signature verified against the configured trust list.
+    SignatureVerified,
+    /// No trust list is configured, so the gate admits any module.
+    NoTrustList,
+    /// The server compiled the module from source itself, so the upload
+    /// trust gate does not apply.
+    ServerCompiled,
+}
+
+/// A trust gate decision recorded in the journal as part of the
+/// install event it admitted (#1069): the basis, and the publisher key
+/// when one verified.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustDecision {
+    /// The basis on which the module was admitted.
+    pub basis: TrustBasis,
+    /// Hex public key of the verifying publisher, if any.
+    pub publisher: Option<String>,
 }
 
 /// One durable fact about a world, in commit order.
@@ -612,6 +855,63 @@ pub enum JournalEntry {
         /// The fired schedule's id.
         id: String,
     },
+    /// An application-owned entity was exported to another region shard
+    /// (#3870 phase 1, design #2818 §3). Written persist-before-apply: once
+    /// this entry is durable the source is fenced for `entity_ref` and this
+    /// entry is the durable recovery copy of the payload until the
+    /// coordinator journals completion.
+    EntityExported {
+        /// Coordinator-generated handoff ID (hex); the receipt key.
+        handoff_id: String,
+        /// Application-defined stable entity reference.
+        entity_ref: String,
+        /// Region exporting the entity.
+        source_region: String,
+        /// Region importing the entity.
+        target_region: String,
+        /// Owner epoch at the source before this handoff.
+        prior_owner_epoch: u64,
+        /// The host-originated system event removing the entity; replay
+        /// applies it from this same durable fact.
+        source_event: WorldEvent,
+        /// Versioned payload schema name.
+        payload_schema: String,
+        /// Program module hash the destination must match.
+        program_module_hash: String,
+        /// The complete entity snapshot (bounded by the transfer payload
+        /// cap; the cap itself is enforced from phase 2 of #3870).
+        payload: Vec<u8>,
+        /// Digest of `payload`.
+        payload_digest: String,
+    },
+    /// An application-owned entity was imported from another region shard
+    /// (#3870 phase 1, design #2818 §3). Written persist-before-apply; the
+    /// durable receipt for `handoff_id`. An exact retry returns the
+    /// existing receipt; the same ID with a different digest is a hard
+    /// conflict (enforced from phase 3 of #3870).
+    EntityImported {
+        /// Coordinator-generated handoff ID (hex); the dedupe key.
+        handoff_id: String,
+        /// Application-defined stable entity reference.
+        entity_ref: String,
+        /// Region that exported the entity.
+        source_region: String,
+        /// Region importing the entity.
+        target_region: String,
+        /// Owner epoch at the source before this handoff.
+        prior_owner_epoch: u64,
+        /// Owner epoch at this destination (`prior_owner_epoch + 1`).
+        new_owner_epoch: u64,
+        /// Program module hash, matched against the export before commit.
+        program_module_hash: String,
+        /// Versioned payload schema name.
+        payload_schema: String,
+        /// Digest of the imported payload.
+        payload_digest: String,
+        /// The host-originated system event adding the entity (it carries
+        /// the payload, hex-encoded, per design #2818 §3).
+        destination_event: WorldEvent,
+    },
     /// The world as of `sequence`, standing in for every event up to it. Only
     /// ever written by compaction, directly after the participant entries.
     Checkpoint {
@@ -635,29 +935,52 @@ pub enum JournalEntry {
         /// and it must match the `ScheduleSet` entries before it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         schedules: Option<Vec<(String, u64)>>,
+        /// Active region-seam handoffs (#3870 phase 1, design #2818 §3):
+        /// export fences/payloads, import receipts/dedupe keys and owner
+        /// epochs, so compaction cannot resurrect an exported entity or
+        /// forget an import. Absent when no handoff is active, and in
+        /// checkpoints written before journal version 3.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transfers: Option<Vec<HandoffTransferState>>,
         /// The program's own serialization of its state.
         snapshot: String,
         /// Recent events kept for reconnect catch-up.
         events: Vec<WorldEvent>,
+        /// Ordered sequenced and host-originated events retained for the
+        /// admin-only fixture export. Absent in older checkpoints.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        admin_history: Option<JournalAdminHistory>,
+        /// Participants whose join the program has seen without a later leave.
+        /// `Some(empty)` records a known-empty set; `None` is reserved for
+        /// legacy checkpoints and triggers the documented migration fallback.
+        /// See the journal-version contract.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        open_presence: Option<Vec<u64>>,
     },
+}
+
+/// The bounded ordered event window carried across journal compaction.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct JournalAdminHistory {
+    pub(crate) events: Vec<WorldEvent>,
+    pub(crate) complete: bool,
 }
 
 /// Version written in a new journal's [`JournalEntry::Created`] header.
 ///
 /// Journal upgrade/rollback contract (issue #227): a journal is created at
 /// version 1 and stays at version 1 until it contains an entry kind a
-/// version-1 binary cannot read. The first such entry — today only
-/// [`JournalEntry::ExecutionProfile`] — bumps the header to
-/// [`JOURNAL_VERSION_EXECUTION_PROFILE`] *before* the entry is appended, by
-/// atomically rewriting the journal (sibling temp file, fsync, rename), so
-/// a failed bump leaves the old journal untouched. A binary refuses any
-/// journal newer than [`MAX_JOURNAL_VERSION`] at the header check in
-/// [`WorldCore::restore`], never mid-read: a version-1 binary opening a
-/// version-2 journal therefore fails early and clearly instead of dying on
-/// the profile entry it cannot deserialize. New binaries accept versions
-/// 1..=[`MAX_JOURNAL_VERSION`], so existing journals stay readable
-/// (forward compatibility), and a journal that never writes a profile
-/// entry is never migrated at all.
+/// version-1 binary cannot read. New entry kinds raise the header to the
+/// highest required version *before* the entry is appended, by atomically
+/// rewriting the journal (sibling temp file, fsync, rename), so a failed bump
+/// leaves the old journal untouched. The first such entries were an
+/// [`JournalEntry::ExecutionProfile`], a region-handoff entry, an entry
+/// carrying a per-world total memory budget, and a checkpoint carrying
+/// open program-visible presence. A binary refuses any journal newer than
+/// [`MAX_JOURNAL_VERSION`] at the header check in [`WorldCore::restore`],
+/// never mid-read. New binaries accept versions 1..=[`MAX_JOURNAL_VERSION`],
+/// so existing journals stay readable and a journal that never needs a newer
+/// entry kind is never migrated.
 pub const JOURNAL_VERSION: u32 = 1;
 
 /// Header version of a journal that contains a
@@ -665,18 +988,88 @@ pub const JOURNAL_VERSION: u32 = 1;
 /// binary cannot read. See the contract on [`JOURNAL_VERSION`].
 pub const JOURNAL_VERSION_EXECUTION_PROFILE: u32 = 2;
 
+/// Header version of a journal that contains a region-seam handoff entry
+/// ([`JournalEntry::EntityExported`] / [`JournalEntry::EntityImported`], an
+/// entity-addressed [`WorldEventKind::EntityInput`] event, or a checkpoint
+/// carrying handoff transfers): the first entry kinds a version-2 binary
+/// cannot read (#3870 phase 1, design #2818 §3). See the contract on
+/// [`JOURNAL_VERSION`].
+pub const JOURNAL_VERSION_REGION_HANDOFF: u32 = 3;
+
+/// Header version of a journal that persists a per-world total memory
+/// budget (#557 Phase 1, design `doc/2026-11-01_design_id557.md`): an
+/// [`JournalEntry::ExecutionProfile`] or [`JournalEntry::Checkpoint`]
+/// whose profile sets `total_memory_bytes`. An older binary would parse
+/// the entry yet silently ignore the budget it cannot account for, so the
+/// budget requires a version the old binary refuses at the header check.
+/// Profiles and checkpoints without a budget keep their existing version.
+pub const JOURNAL_VERSION_WORLD_BUDGET: u32 = 4;
+
+/// Header version of a checkpoint that carries open program-visible presence.
+/// Version-4 binaries would ignore the field and fail to close those joins on
+/// restart, so such checkpoints must be refused by them. This follows the
+/// world-budget journal version so both features retain distinct contracts.
+/// (Renumbered from 4 to 5 when this branch merged main: main had already
+/// assigned version 4 to the world-budget contract above.)
+pub const JOURNAL_VERSION_OPEN_PRESENCE: u32 = 5;
+
 /// Newest journal version this binary can read. Journals with a higher
 /// header version are refused at the header check, before any entry is
 /// applied.
-pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_EXECUTION_PROFILE;
+pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_OPEN_PRESENCE;
 
-/// The header version a journal must carry once it contains `entry`:
-/// [`JOURNAL_VERSION_EXECUTION_PROFILE`] for the entry kinds a version-1
-/// binary cannot read, [`JOURNAL_VERSION`] for everything else.
+/// The header version a journal must carry once it contains `entry`: version 2
+/// for execution-profile entries, version 3 for region-handoff entries,
+/// version 4 for entries persisting a per-world total memory budget, and
+/// version 5 for checkpoints with open-presence metadata. Checkpoints combine
+/// the requirements of their transfers, retained events, profile and presence field.
 #[must_use]
-pub const fn journal_version_required_by(entry: &JournalEntry) -> u32 {
+pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
+    // A persisted budget always requires the budget version, on top of any
+    // version the entry kind itself already requires.
+    let budget_version = |profile: Option<&crate::world_limits::WorldExecutionProfile>| {
+        if profile.is_some_and(|p| p.total_memory_bytes.is_some()) {
+            JOURNAL_VERSION_WORLD_BUDGET
+        } else {
+            JOURNAL_VERSION
+        }
+    };
     match entry {
-        JournalEntry::ExecutionProfile { .. } => JOURNAL_VERSION_EXECUTION_PROFILE,
+        JournalEntry::EntityExported { .. } | JournalEntry::EntityImported { .. } => {
+            JOURNAL_VERSION_REGION_HANDOFF
+        }
+        JournalEntry::Committed { event } | JournalEntry::System { event } => match &event.kind {
+            WorldEventKind::EntityInput { .. } => JOURNAL_VERSION_REGION_HANDOFF,
+            _ => JOURNAL_VERSION,
+        },
+        // A checkpoint stands in for the entries it compacted, so it must
+        // require every version its contents require: its transfer list,
+        // and its retained events — a retained `EntityInput` event is a
+        // version-3 kind even when no handoff is active (Codex review on
+        // PR #3922).
+        JournalEntry::Checkpoint {
+            transfers,
+            events,
+            open_presence,
+            execution_profile,
+            ..
+        } => {
+            let base = if open_presence.is_some() {
+                JOURNAL_VERSION_OPEN_PRESENCE
+            } else if transfers.is_some()
+                || events
+                    .iter()
+                    .any(|event| matches!(event.kind, WorldEventKind::EntityInput { .. }))
+            {
+                JOURNAL_VERSION_REGION_HANDOFF
+            } else {
+                JOURNAL_VERSION
+            };
+            base.max(budget_version(execution_profile.as_ref()))
+        }
+        JournalEntry::ExecutionProfile { profile } => {
+            JOURNAL_VERSION_EXECUTION_PROFILE.max(budget_version(Some(profile)))
+        }
         _ => JOURNAL_VERSION,
     }
 }
@@ -694,6 +1087,28 @@ pub trait WorldJournal: Send + 'static {
     /// Any I/O failure; the actor then refuses further mutations.
     fn append(&mut self, entry: &JournalEntry) -> Result<()>;
 
+    /// Capture the exact durable journal bytes and their header version.
+    /// Implementations that do not own a readable journal may leave this
+    /// unsupported; the replication feed is available only for durable
+    /// journals that can provide an atomic snapshot from the world actor.
+    fn replication_snapshot(&mut self) -> Result<JournalSnapshot> {
+        bail!("this journal cannot provide a replication snapshot")
+    }
+
+    /// Capture a lightweight, readable source for the initial replication
+    /// feed. Durable file journals should pin the file and its current length
+    /// here, then defer reading the bytes until the network layer requests it.
+    /// Journals that cannot provide a deferred source should leave this
+    /// unsupported rather than materializing the full image in the actor.
+    fn replication_snapshot_source(&mut self) -> Result<JournalSnapshotSource> {
+        bail!("this journal cannot provide a deferred replication snapshot source")
+    }
+
+    /// Current journal header version, when the implementation can report it.
+    fn replication_header_version(&self) -> Option<u32> {
+        None
+    }
+
     /// Atomically replace the whole journal with `entries` (a header, the
     /// participants and a [`JournalEntry::Checkpoint`]). Either the old or
     /// the new journal survives a crash, never a mixture.
@@ -705,6 +1120,93 @@ pub trait WorldJournal: Send + 'static {
     fn compact(&mut self, _entries: &[JournalEntry]) -> Result<()> {
         bail!("this journal cannot be compacted")
     }
+}
+
+/// A byte-exact, newline-terminated journal image captured by the actor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JournalSnapshot {
+    /// Version in the journal's `Created` header.
+    pub header_version: u32,
+    /// Exact JSONL bytes, including every entry's newline.
+    pub bytes: Vec<u8>,
+}
+
+/// A captured snapshot reader. File-backed journals keep only a pinned file
+/// handle and the captured byte length in the actor; the network layer reads
+/// the bytes after the actor has resumed handling commands.
+pub struct JournalSnapshotSource {
+    /// Version in the journal's `Created` header.
+    pub header_version: u32,
+    /// Number of bytes belonging to this captured image.
+    pub byte_len: u64,
+    reader: Box<dyn Read + Send>,
+}
+
+impl std::fmt::Debug for JournalSnapshotSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("JournalSnapshotSource")
+            .field("header_version", &self.header_version)
+            .field("byte_len", &self.byte_len)
+            .finish_non_exhaustive()
+    }
+}
+
+impl JournalSnapshotSource {
+    pub(crate) fn from_reader<R>(header_version: u32, byte_len: u64, reader: R) -> Self
+    where
+        R: Read + Send + 'static,
+    {
+        Self {
+            header_version,
+            byte_len,
+            reader: Box::new(reader),
+        }
+    }
+
+    /// Read exactly the captured image. This consumes the source, so its file
+    /// handle and the resulting byte buffer have one clear owner at a time.
+    ///
+    /// # Errors
+    ///
+    /// If the source cannot be read completely, is too large for this target,
+    /// or does not end at a journal-entry boundary.
+    pub fn read(self) -> Result<JournalSnapshot> {
+        let capacity = usize::try_from(self.byte_len).context("journal snapshot is too large")?;
+        let mut bytes = Vec::with_capacity(capacity);
+        self.reader
+            .take(self.byte_len)
+            .read_to_end(&mut bytes)
+            .context("read captured journal snapshot")?;
+        ensure!(
+            bytes.len() == capacity,
+            "captured journal snapshot changed while reading"
+        );
+        ensure!(
+            bytes.is_empty() || bytes.ends_with(b"\n"),
+            "captured journal snapshot has an unterminated final entry"
+        );
+        Ok(JournalSnapshot {
+            header_version: self.header_version,
+            bytes,
+        })
+    }
+}
+
+/// A durable change delivered to replication subscribers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReplicationUpdate {
+    /// One entry appended and fsynced after the subscriber's snapshot.
+    Append {
+        /// Header version the appended entry is encoded under.
+        header_version: u32,
+        /// Exact serialized JSONL entry bytes, including its newline.
+        entry: Vec<u8>,
+    },
+    /// The journal was compacted or its header version changed.
+    Reset(JournalSnapshot),
+    /// A reset became necessary but the journal image could not be captured.
+    ResetFailed,
 }
 
 /// The program a journal says was running, and where to resume it from.
@@ -731,6 +1233,10 @@ pub struct RestoredWorld {
     /// Inputs committed after the install or checkpoint, in order, to replay
     /// through it.
     pub replay: Vec<WorldEvent>,
+    /// Live presence reconstructed from journaled `players` events. Writer
+    /// restore clears it after synthesizing the process-restart leaves;
+    /// replica restore retains it at the verified cursor.
+    pub presence: BTreeMap<u64, u64>,
 }
 
 /// The profile requested by the world admin and when it takes effect.
@@ -951,6 +1457,18 @@ pub struct WorldSnapshot {
     pub participants: Vec<Participant>,
 }
 
+/// One actor-consistent snapshot for an admin-authorized fixture export.
+/// This type is crate-private so history cannot become a participant API.
+#[derive(Clone, Debug)]
+pub(crate) struct AdminEventHistory {
+    pub(crate) world_id: String,
+    pub(crate) module_hash: Option<String>,
+    pub(crate) current_sequence: u64,
+    pub(crate) complete: bool,
+    pub(crate) events: Vec<WorldEvent>,
+    pub(crate) records: Records,
+}
+
 /// The one projection of an event onto a viewer holding `scopes`.
 ///
 /// Every path that hands an event to a participant — the snapshot, catch-up
@@ -962,6 +1480,7 @@ pub struct WorldSnapshot {
 ///   fetch the module — but its install seed is zeroed (#240), because a
 ///   program whose hidden state derives from `init(seed)` must not leak that
 ///   state to every participant.
+/// - A host-originated `System` event is never part of a participant stream.
 /// - Anything else is returned as is.
 ///
 /// The journal, the core's retained events and the admin paths keep the real
@@ -971,6 +1490,7 @@ pub struct WorldSnapshot {
 pub fn project_event_for(scopes: WorldScopes, event: &WorldEvent) -> Option<WorldEvent> {
     match &event.kind {
         WorldEventKind::Chat(_) if !scopes.reads_chat() => None,
+        WorldEventKind::System { .. } => None,
         WorldEventKind::ProgramInstalled { .. } => {
             // Mutate in place so every other field, including the observed
             // build provenance, is kept as it is.

@@ -4,7 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import type { OrchestrationSection } from "../src/model.ts";
-import { derivedProjectState, parseProjectItems, poolItemToGhItem, projectDisagreement } from "../src/projects.ts";
+import {
+  derivedProjectState,
+  fetchProjectPool,
+  isProjectPoolItem,
+  parseProjectItems,
+  poolItemToGhItem,
+  projectDisagreement,
+  PROJECT_QUERY,
+  resolveEpicRefs,
+} from "../src/projects.ts";
 import { renderProjects } from "../src/render.ts";
 import { liveSource } from "../src/sources/live.ts";
 
@@ -71,6 +80,58 @@ const GQL = {
   },
 };
 
+function projectPage(hasNextPage: boolean, endCursor: string | null, totalCount = 25) {
+  return {
+    data: {
+      node: {
+        ...GQL.data.node,
+        items: {
+          ...GQL.data.node.items,
+          totalCount,
+          pageInfo: { hasNextPage, endCursor },
+        },
+      },
+    },
+  };
+}
+
+describe("fetchProjectPool pagination", () => {
+  test("throws rather than returning a partial pool when page ten has another page", async () => {
+    let calls = 0;
+    const fetchFn: typeof fetch = async () => {
+      calls++;
+      return new Response(JSON.stringify(projectPage(true, `cursor-${calls}`)));
+    };
+
+    await expect(fetchProjectPool("test-token", fetchFn)).rejects.toThrow(/truncat.*25/i);
+    expect(calls).toBe(10);
+  });
+
+  test("returns every item from a finite multi-page pool", async () => {
+    let calls = 0;
+    const fetchFn: typeof fetch = async () => {
+      calls++;
+      return new Response(JSON.stringify(projectPage(calls < 3, calls < 3 ? `cursor-${calls}` : null, 6)));
+    };
+
+    const items = await fetchProjectPool("test-token", fetchFn);
+    expect(calls).toBe(3);
+    expect(items).toHaveLength(6);
+  });
+
+  test("returns a single-page pool unchanged", async () => {
+    let calls = 0;
+    const fetchFn: typeof fetch = async () => {
+      calls++;
+      return new Response(JSON.stringify(projectPage(false, null, 3)));
+    };
+
+    const items = await fetchProjectPool("test-token", fetchFn);
+    expect(calls).toBe(1);
+    expect(items).toHaveLength(2);
+  });
+});
+
 const PROV = {
   board: "x",
   roadmap: "x",
@@ -99,6 +160,17 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
     expect(epic.issueUrl).toBe("https://github.com/dezren39/nix/issues/508");
     expect(epic.url).toBe("https://github.com/orgs/developing-today/projects/4?pane=issue&itemId=111");
     expect(pool[1].state).toBe("closed");
+  });
+
+  test("a null GraphQL databaseId normalizes to absent and the item stays in the pool", () => {
+    const clone = structuredClone(GQL);
+    clone.data.node.items.nodes[0].databaseId = null;
+    const pool = parseProjectItems(clone);
+    expect(pool.length).toBe(2);
+    expect(pool[0].databaseId).toBeUndefined();
+    // projectItemUrl falls back to the bare board URL without an item id.
+    expect(pool[0].url).toBe("https://github.com/orgs/developing-today/projects/4");
+    expect(isProjectPoolItem(pool[0])).toBe(true);
   });
 
   test("derived state + disagreement", () => {
@@ -162,6 +234,250 @@ describe("items-from-pool resolution", () => {
     expect(src.provenance().items).toContain("live (project pool");
     const served = await src.projects();
     expect(served.length).toBe(2);
+  });
+});
+
+// Fixture for the #2399 graph-edges contract: an epic, a child task
+// with parent + blocked-by + blocks edges and effort/mode labels, a
+// grandchild (two-level chain to the epic), an orphan whose parent is
+// off-board, a PR (edges are issue-only), and an edgeless labeled
+// issue (sized but ungraphed). Drafts still drop.
+const GQL_EDGES = {
+  data: {
+    node: {
+      title: "Developing Today",
+      number: 4,
+      url: "https://github.com/orgs/developing-today/projects/4",
+      items: {
+        totalCount: 6,
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: [
+          {
+            id: "PVTI_10",
+            databaseId: 1010,
+            type: "ISSUE",
+            content: {
+              number: 2401,
+              title: "EPIC: edges test",
+              state: "OPEN",
+              url: "https://github.com/developing-today/code/issues/2401",
+              repository: { nameWithOwner: "developing-today/code" },
+              updatedAt: "2026-10-29T00:00:00Z",
+              author: { login: "dezren39" },
+              labels: { nodes: [{ name: "effort/l" }] },
+              parent: null,
+              blockedBy: { nodes: [] },
+              blocking: { nodes: [] },
+            },
+            fieldValues: { nodes: [{ name: "Epic", field: { name: "Kind" } }] },
+          },
+          {
+            id: "PVTI_11",
+            databaseId: 1011,
+            type: "ISSUE",
+            content: {
+              number: 2402,
+              title: "child task",
+              state: "OPEN",
+              url: "https://github.com/developing-today/code/issues/2402",
+              repository: { nameWithOwner: "developing-today/code" },
+              updatedAt: "2026-10-29T00:00:00Z",
+              author: { login: "dezren39" },
+              labels: { nodes: [{ name: "effort/s" }, { name: "mode/async" }] },
+              parent: {
+                number: 2401,
+                url: "https://github.com/developing-today/code/issues/2401",
+                repository: { nameWithOwner: "developing-today/code" },
+              },
+              blockedBy: {
+                nodes: [
+                  {
+                    number: 910,
+                    url: "https://github.com/developing-today/code/issues/910",
+                    repository: { nameWithOwner: "developing-today/code" },
+                  },
+                  { number: null, repository: { nameWithOwner: "developing-today/code" } },
+                ],
+              },
+              blocking: {
+                nodes: [
+                  {
+                    number: 2403,
+                    url: "https://github.com/developing-today/code/issues/2403",
+                    repository: { nameWithOwner: "developing-today/code" },
+                  },
+                ],
+              },
+            },
+            fieldValues: { nodes: [{ name: "Task", field: { name: "Kind" } }] },
+          },
+          {
+            id: "PVTI_12",
+            databaseId: 1012,
+            type: "ISSUE",
+            content: {
+              number: 2403,
+              title: "grandchild task",
+              state: "OPEN",
+              url: "https://github.com/developing-today/code/issues/2403",
+              repository: { nameWithOwner: "developing-today/code" },
+              updatedAt: "2026-10-29T00:00:00Z",
+              parent: {
+                number: 2402,
+                url: "https://github.com/developing-today/code/issues/2402",
+                repository: { nameWithOwner: "developing-today/code" },
+              },
+            },
+            fieldValues: { nodes: [{ name: "Task", field: { name: "Kind" } }] },
+          },
+          {
+            id: "PVTI_13",
+            databaseId: 1013,
+            type: "ISSUE",
+            content: {
+              number: 2405,
+              title: "orphan task",
+              state: "OPEN",
+              url: "https://github.com/developing-today/code/issues/2405",
+              repository: { nameWithOwner: "developing-today/code" },
+              updatedAt: "2026-10-29T00:00:00Z",
+              parent: {
+                number: 1,
+                url: "https://github.com/developing-today/opencode/issues/1",
+                repository: { nameWithOwner: "developing-today/opencode" },
+              },
+            },
+            fieldValues: { nodes: [{ name: "Task", field: { name: "Kind" } }] },
+          },
+          {
+            id: "PVTI_14",
+            databaseId: 1014,
+            type: "PULL_REQUEST",
+            content: {
+              number: 2406,
+              title: "a pr",
+              state: "OPEN",
+              url: "https://github.com/developing-today/code/pull/2406",
+              repository: { nameWithOwner: "developing-today/code" },
+              updatedAt: "2026-10-29T00:00:00Z",
+              author: { login: "dezren39" },
+              isDraft: false,
+            },
+            fieldValues: { nodes: [] },
+          },
+          {
+            id: "PVTI_15",
+            databaseId: 1015,
+            type: "ISSUE",
+            content: {
+              number: 2407,
+              title: "sized but ungraphed",
+              state: "OPEN",
+              url: "https://github.com/developing-today/code/issues/2407",
+              repository: { nameWithOwner: "developing-today/code" },
+              updatedAt: "2026-10-29T00:00:00Z",
+              labels: { nodes: [{ name: "effort/m" }] },
+            },
+            fieldValues: { nodes: [{ name: "Task", field: { name: "Kind" } }] },
+          },
+        ],
+      },
+    },
+  },
+};
+
+describe("collector graph edges (#2399 contract)", () => {
+  test("dependency connections request the supported maximum (50), not a truncating 10", () => {
+    // Codex P2 on PR #2744: first: 10 silently dropped dependency edges
+    // past ten; GitHub supports up to 50 per relationship type.
+    expect(PROJECT_QUERY).toContain("blockedBy(first: 50)");
+    expect(PROJECT_QUERY).toContain("blocking(first: 50)");
+  });
+
+  test("parses parent, blocked-by, and blocks refs; drops incomplete edge nodes", () => {
+    const pool = parseProjectItems(GQL_EDGES);
+    expect(pool.length).toBe(6);
+    const child = pool.find((p) => p.ref === "developing-today/code#2402")!;
+    expect(child.parentRef).toBe("developing-today/code#2401");
+    // The numberless blocked-by node drops; the good one stays.
+    expect(child.blockedBy).toEqual(["developing-today/code#910"]);
+    expect(child.blocks).toEqual(["developing-today/code#2403"]);
+    expect(child.labels).toEqual(["effort/s", "mode/async"]);
+  });
+
+  test("epic, PR, and edgeless shapes carry no edges from the parse", () => {
+    const pool = parseProjectItems(GQL_EDGES);
+    const epic = pool.find((p) => p.ref === "developing-today/code#2401")!;
+    expect(epic.parentRef).toBeUndefined();
+    expect(epic.blockedBy).toBeUndefined();
+    expect(epic.blocks).toBeUndefined();
+    const pr = pool.find((p) => p.ref === "developing-today/code#2406")!;
+    expect(pr.contentKind).toBe("pr");
+    expect(pr.parentRef).toBeUndefined();
+    expect(pr.blockedBy).toBeUndefined();
+    expect(pr.blocks).toBeUndefined();
+    const plain = pool.find((p) => p.ref === "developing-today/code#2407")!;
+    expect(plain.parentRef).toBeUndefined();
+    expect(plain.labels).toEqual(["effort/m"]);
+  });
+
+  test("resolveEpicRefs names the nearest epic ancestor, chains included", () => {
+    const resolved = resolveEpicRefs(parseProjectItems(GQL_EDGES));
+    const byRef = new Map(resolved.map((p) => [p.ref, p] as const));
+    // Direct child of the epic.
+    expect(byRef.get("developing-today/code#2402")?.epicRef).toBe("developing-today/code#2401");
+    // Grandchild walks the two-level chain to the same epic.
+    expect(byRef.get("developing-today/code#2403")?.epicRef).toBe("developing-today/code#2401");
+    // The epic itself, the off-board orphan, the PR, and the plain
+    // issue carry no epic membership.
+    expect(byRef.get("developing-today/code#2401")?.epicRef).toBeUndefined();
+    expect(byRef.get("developing-today/code#2405")?.epicRef).toBeUndefined();
+    expect(byRef.get("developing-today/code#2406")?.epicRef).toBeUndefined();
+    expect(byRef.get("developing-today/code#2407")?.epicRef).toBeUndefined();
+    // The orphan keeps its (off-board) parent ref: absence of an epic
+    // is not absence of the edge.
+    expect(byRef.get("developing-today/code#2405")?.parentRef).toBe("developing-today/opencode#1");
+  });
+
+  test("resolveEpicRefs is cycle-safe and never invents membership", () => {
+    const loop = resolveEpicRefs([
+      {
+        id: "A",
+        url: "u",
+        projectUrl: "p",
+        ref: "o/r#1",
+        repo: "o/r",
+        number: 1,
+        issueUrl: "i",
+        title: "a",
+        state: "open",
+        contentKind: "issue",
+        status: null,
+        area: null,
+        horizon: null,
+        kind: "Task",
+        parentRef: "o/r#2",
+      },
+      {
+        id: "B",
+        url: "u",
+        projectUrl: "p",
+        ref: "o/r#2",
+        repo: "o/r",
+        number: 2,
+        issueUrl: "i",
+        title: "b",
+        state: "open",
+        contentKind: "issue",
+        status: null,
+        area: null,
+        horizon: null,
+        kind: "Task",
+        parentRef: "o/r#1",
+      },
+    ]);
+    expect(loop[0]?.epicRef).toBeUndefined();
+    expect(loop[1]?.epicRef).toBeUndefined();
   });
 });
 

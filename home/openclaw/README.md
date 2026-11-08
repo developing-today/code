@@ -9,7 +9,7 @@ source in the fleet next to Muse (Archer) and Aster (Dot). It is installed
 - **Service:** systemd user unit `openclaw-gateway` (linger is on, so it
   starts at boot). Logs: `journalctl --user -u openclaw-gateway -f`.
 - **Control UI / WebChat:** `http://amd-6.raptor-pumpkinseed.ts.net:18789/`
-  (tailnet bind, token auth). Token: `~/.secrets/openclaw/gateway-token`
+  (tailnet bind, token auth). Token: `/run/secrets/openclaw/gateway-token`
   (0600, machine-local, never in git or the Nix store).
 - **Config:** `programs.openclaw` in `default.nix` here; rendered to
   `~/.openclaw/openclaw.json` at activation. Nix mode is on: change the

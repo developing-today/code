@@ -3,11 +3,13 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/logstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
 )
 
 type feedbackSubmitReq struct {
@@ -29,7 +31,7 @@ func (s *Server) handleFeedbackSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req feedbackSubmitReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.bodyLimit", defaults.HTTPBodyLimit))).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid json request: %w", err))
 		return
 	}
@@ -92,25 +94,47 @@ func (s *Server) handleInteractionsList(w http.ResponseWriter, r *http.Request) 
 		hasFb := hasFbStr == "1" || strings.ToLower(hasFbStr) == "true"
 		filter.HasFeedback = &hasFb
 	}
-	if minStr := q.Get("minScore"); minStr != "" {
-		if val, err := strconv.ParseFloat(minStr, 64); err == nil {
-			filter.MinScore = &val
+	// Invalid query values are rejected with 400 naming the parameter
+	// (#2223): silently dropping a bound made a typo'd minScore return the
+	// unfiltered list with 200, and a NaN/Inf bound (which ParseFloat
+	// accepts) reached SQLite as NULL and matched nothing — both read as
+	// real answers. The same silent-drop shape is fixed for limit/offset.
+	parseScoreBound := func(name string) (*float64, bool) {
+		raw := q.Get(name)
+		if raw == "" {
+			return nil, true
 		}
+		val, err := strconv.ParseFloat(raw, 64)
+		if err != nil || math.IsNaN(val) || math.IsInf(val, 0) {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid %s %q: must be a finite number", name, raw))
+			return nil, false
+		}
+		return &val, true
 	}
-	if maxStr := q.Get("maxScore"); maxStr != "" {
-		if val, err := strconv.ParseFloat(maxStr, 64); err == nil {
-			filter.MaxScore = &val
+	parseIntParam := func(name string) (int, bool) {
+		raw := q.Get(name)
+		if raw == "" {
+			return 0, true
 		}
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid %s %q: must be an integer", name, raw))
+			return 0, false
+		}
+		return n, true
 	}
-	if limitStr := q.Get("limit"); limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil {
-			filter.Limit = l
-		}
+	var ok bool
+	if filter.MinScore, ok = parseScoreBound("minScore"); !ok {
+		return
 	}
-	if offsetStr := q.Get("offset"); offsetStr != "" {
-		if o, err := strconv.Atoi(offsetStr); err == nil {
-			filter.Offset = o
-		}
+	if filter.MaxScore, ok = parseScoreBound("maxScore"); !ok {
+		return
+	}
+	if filter.Limit, ok = parseIntParam("limit"); !ok {
+		return
+	}
+	if filter.Offset, ok = parseIntParam("offset"); !ok {
+		return
 	}
 
 	list, err := fbStore.List(filter)

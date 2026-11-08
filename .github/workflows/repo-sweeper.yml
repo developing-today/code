@@ -17,7 +17,7 @@ name: repo sweeper
 # Audit of this repo's other event-triggered workflows (2026-10-29):
 # nothing else is event-based issue/PR management. Kept event-based,
 # deliberately NOT folded in: jules.yml — a human applies the
-# `jules` label and waits for Jules to start work, and its
+# `jules` label and waits for the dispatched OpenCode session to start, and its
 # workflow_run leg is the ci-failure-fix remediation chain (#304);
 # a synchronous human-initiated handoff, not bookkeeping.
 # main-broken.yml is workflow_run-triggered (the Phase 3 watcher),

@@ -59,6 +59,31 @@ the PR head alone. Operationally: `gh pr merge` now ENQUEUES a
 PR instead of merging it; "in the merge queue" is merge-pending,
 not a failure.
 
+## OpenCode metered-provider config guard
+
+`.github/workflows/opencode-config-guard.yml` runs the static guard and
+its fixtures on pull requests, merge groups, and pushes to `main`. The
+guard checks known metered selections (`cloudflare-*` and the direct
+PAYG `deepseek` provider) in model-route targets/fallbacks, provider-route
+selections, top-level defaults, and agent model/fallback fields. Disabled
+providers are still checked: disabling a seat today must not make a later
+re-enable silently restore metered exposure.
+
+An explicitly approved one-off use must carry a standalone comment directly
+above that specific selection, with a non-empty reason:
+
+```jsonc
+"targets": [
+  // payg-exception: approved for the named migration, 2026-11-02
+  "deepseek/deepseek-chat"
+]
+```
+
+The marker is per selection; stale, malformed, or misplaced markers fail.
+This is a static check of the canonical file, not enforcement of runtime,
+machine-local, or environment overrides, and it does not claim to classify
+every provider as metered or unmetered.
+
 ## Change classes (§3.3 of the design)
 
 | class                        | trigger paths (examples)                                                                                                                       | PR tier                                                                         |
@@ -83,6 +108,7 @@ main-breakage rate (issues labelled `main-broken`) proves out.
 | id bench                                                       | — (removed)                                                                                         | yes                                                                          | —                                                                |
 | go modules build / identity build / map build / mcpx nix build | class-3 paths only (see each workflow)                                                              | always (push to main, no path filter)                                        | —                                                                |
 | mcpx, lab-ops-hub, mod-tidy, research-workflow                 | unchanged path-gated PR checks (already PR-tier weight)                                             | push to main                                                                 | —                                                                |
+| mcpx test (#1998)                                              | init + unit + lint + 6 static e2e shards + ci-ok (PR tier, non-draft PRs)                           | same full sharded suite on push to main                                      | — (main covers it)                                               |
 
 ## Coverage rule
 

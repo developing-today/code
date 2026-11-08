@@ -19,6 +19,7 @@
 //! - [`FileOps::delete`] is a *hard* delete: the name, its metadata and its
 //!   archive tags are removed. The blob bytes stay until garbage collected.
 
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -28,6 +29,18 @@ use thiserror::Error;
 
 use crate::tags::{TagStore, now_unix};
 
+const ARCHIVE_IDENTITY_TAG_KEYS: [&[u8]; 5] = [
+    b"name",
+    b"file",
+    b"path",
+    // Archive references describe the live file's archives, so they
+    // stay on the live name when its other metadata moves onto an
+    // archive. Letting one travel onto the archive subject orphans
+    // every earlier archive from the live file's delete (#4574).
+    b"archive.rename",
+    b"archive.replace",
+];
+
 /// Errors from file operations, distinguishable so callers can map them to
 /// protocol errors or HTTP status codes.
 #[derive(Debug, Error)]
@@ -35,6 +48,9 @@ pub enum FileOpError {
     /// The new name was empty or whitespace.
     #[error("name cannot be empty")]
     EmptyName,
+    /// The name is rooted or contains a traversal component.
+    #[error("name must be a safe relative path: {0}")]
+    InvalidName(String),
     /// Source and destination are the same name.
     #[error("new name must differ from the current name")]
     SameName,
@@ -95,16 +111,36 @@ pub struct FileOps<'a> {
     blob_wait: Duration,
 }
 
+/// Serialises archive-name resolve+claim within this process (#2462).
+///
+/// On its own, resolving a free archive name is check-then-act: the name
+/// comes back *unclaimed* and the caller claims it with a later
+/// unconditional `tags().set`, so two concurrent same-second replaces of
+/// one name could resolve the same candidate and the second claim would
+/// silently overwrite the first replace's archive.
+/// [`claim_archive_name`] holds this lock across the whole
+/// resolve-and-set, so a name is never handed out unclaimed.
+///
+/// Scope: this is an in-process lock. It is sound because the `id` server
+/// is the single process writing this tag store; a second writer process
+/// sharing the store would need store-level compare-and-set instead.
+static ARCHIVE_CLAIM_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// The archive tag for `name` at `ts`, bumped past any archive tag that
 /// already exists: `{name}.archive.{ts}`, then `{name}.archive.{ts + 1}`,
 /// and so on until the name is free.
 ///
-/// Archive names carry second-resolution timestamps, so two replaces of one
-/// name within the same second would otherwise pick the same tag and the
-/// second would silently overwrite the first replace's archive (#1612). The
-/// suffix stays all digits: `delete` enumerates a file's archives by exactly
-/// that shape, and the web layer parses the suffix as the archive timestamp.
-pub(crate) async fn free_archive_name(store: &Store, name: &str, ts: u64) -> Result<String> {
+/// Archive names carry second-resolution timestamps, so two replaces of
+/// one name within the same second would otherwise pick the same tag and
+/// the second would silently overwrite the first replace's archive
+/// (#1612). The suffix stays all digits: `delete` enumerates a file's
+/// archives by exactly that shape, and the web layer parses the suffix
+/// as the archive timestamp.
+///
+/// The returned name is NOT claimed: callers must go through
+/// [`claim_archive_name`], which holds [`ARCHIVE_CLAIM_LOCK`]; this
+/// helper may only be called with that lock held.
+async fn free_archive_name(store: &Store, name: &str, ts: u64) -> Result<String> {
     let mut suffix = ts;
     loop {
         let candidate = format!("{name}.archive.{suffix}");
@@ -113,6 +149,30 @@ pub(crate) async fn free_archive_name(store: &Store, name: &str, ts: u64) -> Res
         }
         suffix += 1;
     }
+}
+
+/// Whether `name` has the archive tag shape used by FileOps.
+fn is_archive_tag_name(name: &str) -> bool {
+    let Some((file_name, suffix)) = name.rsplit_once(".archive.") else {
+        return false;
+    };
+    !file_name.is_empty() && !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Resolve a free archive name for `name` at `ts` and claim it for
+/// `hash` in the same critical section (#2462): when this returns, the
+/// tag already points at `hash`, and no concurrent claim in this process
+/// can receive the same name.
+pub(crate) async fn claim_archive_name(
+    store: &Store,
+    name: &str,
+    ts: u64,
+    hash: Hash,
+) -> Result<String> {
+    let _guard = ARCHIVE_CLAIM_LOCK.lock().await;
+    let candidate = free_archive_name(store, name, ts).await?;
+    store.tags().set(&candidate, hash).await?;
+    Ok(candidate)
 }
 
 impl<'a> FileOps<'a> {
@@ -158,11 +218,28 @@ impl<'a> FileOps<'a> {
         }
     }
 
-    fn validate_target(from: &str, to: &str) -> Result<String, FileOpError> {
-        let to = to.trim();
-        if to.is_empty() {
+    fn validate_name(name: &str) -> Result<(), FileOpError> {
+        if name.trim().is_empty() {
             return Err(FileOpError::EmptyName);
         }
+        let bytes = name.as_bytes();
+        let has_windows_drive_prefix =
+            bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+        if name.starts_with('/')
+            || name.starts_with('\\')
+            || has_windows_drive_prefix
+            || name
+                .split(['/', '\\'])
+                .any(|component| matches!(component, "." | ".."))
+        {
+            return Err(FileOpError::InvalidName(name.to_owned()));
+        }
+        Ok(())
+    }
+
+    fn validate_target(from: &str, to: &str) -> Result<String, FileOpError> {
+        let to = to.trim();
+        Self::validate_name(to)?;
         if from == to {
             return Err(FileOpError::SameName);
         }
@@ -174,12 +251,52 @@ impl<'a> FileOps<'a> {
         let Some(existing) = self.store.tags().get(name).await? else {
             return Ok(None);
         };
-        let archive = free_archive_name(self.store, name, ts).await?;
-        self.store
-            .tags()
-            .set(&archive, existing.hash)
+        // Archive references belong to the live file: they name the
+        // archives a future delete of this file must also remove. The
+        // transfer below discards them from this name (and the
+        // exclusion list keeps them off the archive), so snapshot them
+        // here and restore them onto the live name afterwards -
+        // otherwise each replacement orphans every earlier archive.
+        let mut archive_refs = Vec::new();
+        for key in [&b"archive.rename"[..], &b"archive.replace"[..]] {
+            for tag in self
+                .tags
+                .get_by_key(&self.tags.global, name.as_bytes(), key)
+                .await?
+            {
+                if let Some(value) = tag.value.as_ref().and_then(|value| value.as_str()) {
+                    archive_refs.push((key, value.to_owned()));
+                }
+            }
+        }
+        let archive = claim_archive_name(self.store, name, ts, existing.hash)
             .await
             .with_context(|| format!("archiving replaced file {name}"))?;
+        self.tags
+            .transfer_all_tags_except(
+                &self.tags.global,
+                name.as_bytes(),
+                archive.as_bytes(),
+                &ARCHIVE_IDENTITY_TAG_KEYS,
+            )
+            .await
+            .with_context(|| format!("moving metadata for archived file {name}"))?;
+        self.tags
+            .refresh_identity_tags(&self.tags.global, archive.as_bytes())
+            .await
+            .with_context(|| format!("refreshing identity for archive {archive}"))?;
+        for (key, value) in &archive_refs {
+            self.tags
+                .set_tag(
+                    &self.tags.global,
+                    name.as_bytes(),
+                    key,
+                    Some(value.as_bytes()),
+                    b"",
+                )
+                .await
+                .with_context(|| format!("restoring archive references for {name}"))?;
+        }
         Ok(Some(archive))
     }
 
@@ -188,9 +305,7 @@ impl<'a> FileOps<'a> {
     /// Sets the `created` tag only if absent and always refreshes `modified`,
     /// then auto-tags `name`/`file`.
     pub async fn put(&self, name: &str, hash: Hash) -> Result<(), FileOpError> {
-        if name.trim().is_empty() {
-            return Err(FileOpError::EmptyName);
-        }
+        Self::validate_name(name)?;
         if !self.blob_present(hash).await? {
             return Err(FileOpError::BlobMissing(hash));
         }
@@ -265,14 +380,8 @@ impl<'a> FileOps<'a> {
             .map_err(anyhow::Error::from)?;
 
         let archived_original = if archive {
-            match free_archive_name(self.store, from, ts).await {
-                Ok(name) => match self.store.tags().set(&name, hash).await {
-                    Ok(()) => Some(name),
-                    Err(e) => {
-                        tracing::error!("failed to archive original {from}: {e}");
-                        None
-                    }
-                },
+            match claim_archive_name(self.store, from, ts, hash).await {
+                Ok(name) => Some(name),
                 Err(e) => {
                     tracing::error!("failed to archive original {from}: {e}");
                     None
@@ -388,6 +497,47 @@ impl<'a> FileOps<'a> {
         if name.trim().is_empty() {
             return Err(FileOpError::EmptyName);
         }
+
+        // Renames move the file identity metadata, including these archive
+        // references, to the current name. Read them before deleting metadata.
+        let mut archives = BTreeSet::new();
+        for key in [&b"archive.rename"[..], &b"archive.replace"[..]] {
+            for tag in self
+                .tags
+                .get_by_key(&self.tags.global, name.as_bytes(), key)
+                .await?
+            {
+                if let Some(archive_name) = tag.value.as_ref().and_then(|value| value.as_str()) {
+                    if is_archive_tag_name(archive_name) {
+                        archives.insert(archive_name.to_owned());
+                    } else {
+                        tracing::warn!("ignoring malformed archive reference on {name}");
+                    }
+                }
+            }
+        }
+
+        // Keep the legacy/current-name scan for archives without metadata.
+        // Collect before mutation so a listing failure cannot leave a partial
+        // hard delete behind.
+        let prefix = format!("{name}.archive.");
+        let mut list = self
+            .store
+            .tags()
+            .list()
+            .await
+            .map_err(anyhow::Error::from)?;
+        while let Some(item) = list.next().await {
+            let item = item.map_err(anyhow::Error::from)?;
+            let tag = String::from_utf8_lossy(item.name.as_ref()).into_owned();
+            if let Some(rest) = tag.strip_prefix(&prefix)
+                && !rest.is_empty()
+                && rest.bytes().all(|b| b.is_ascii_digit())
+            {
+                archives.insert(tag);
+            }
+        }
+
         let existed = self
             .store
             .tags()
@@ -410,31 +560,22 @@ impl<'a> FileOps<'a> {
                 0
             });
 
-        // Archive tags are named "<name>.archive.<unix-ts>"; match the numeric
-        // suffix exactly so unrelated files that merely share a prefix survive.
-        let prefix = format!("{name}.archive.");
-        let mut archives = Vec::new();
-        let mut list = self
-            .store
-            .tags()
-            .list()
-            .await
-            .map_err(anyhow::Error::from)?;
-        while let Some(item) = list.next().await {
-            let item = item.map_err(anyhow::Error::from)?;
-            let tag = String::from_utf8_lossy(item.name.as_ref()).into_owned();
-            if let Some(rest) = tag.strip_prefix(&prefix)
-                && !rest.is_empty()
-                && rest.bytes().all(|b| b.is_ascii_digit())
-            {
-                archives.push(tag);
-            }
-        }
         let mut archives_removed = 0;
         for tag in archives {
             match self.store.tags().delete(&tag).await {
                 Ok(_) => archives_removed += 1,
                 Err(e) => tracing::warn!("failed to delete archive tag {tag}: {e}"),
+            }
+            // Archives created by rename/copy carry the replaced file's
+            // metadata (archive_existing moves it onto the archive subject);
+            // remove it too, or it stays searchable after the archive blob
+            // tag is gone.
+            if let Err(e) = self
+                .tags
+                .del_all_tags(&self.tags.global, tag.as_bytes())
+                .await
+            {
+                tracing::warn!("failed to delete metadata for archive {tag}: {e:#}");
             }
         }
 
@@ -465,13 +606,15 @@ mod archive_name_tests {
         let store: Store = MemStore::new().into();
         let ts = 1_700_000_000_u64;
 
-        let first = free_archive_name(&store, "doc", ts).await.unwrap();
+        let first = claim_archive_name(&store, "doc", ts, hash(1))
+            .await
+            .unwrap();
         assert_eq!(first, format!("doc.archive.{ts}"));
-        store.tags().set(&first, hash(1)).await.unwrap();
 
-        let second = free_archive_name(&store, "doc", ts).await.unwrap();
+        let second = claim_archive_name(&store, "doc", ts, hash(2))
+            .await
+            .unwrap();
         assert_eq!(second, format!("doc.archive.{}", ts + 1));
-        store.tags().set(&second, hash(2)).await.unwrap();
 
         // Both archives survive, each still pointing at its own version.
         assert_eq!(
@@ -484,15 +627,444 @@ mod archive_name_tests {
         );
 
         // A third same-second replace bumps past both.
-        let third = free_archive_name(&store, "doc", ts).await.unwrap();
+        let third = claim_archive_name(&store, "doc", ts, hash(3))
+            .await
+            .unwrap();
         assert_eq!(third, format!("doc.archive.{}", ts + 2));
+    }
+
+    /// Concurrent same-second claims must never share a name (#2462):
+    /// when resolve and claim were separate steps, interleaved resolves
+    /// could pick the same candidate and one archive silently overwrote
+    /// another. Barrier-synchronised claims must all land on distinct
+    /// tags, each still pointing at its own version.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_same_second_claims_never_collide() {
+        use std::sync::Arc;
+
+        use tokio::sync::Barrier;
+
+        let store: Store = MemStore::new().into();
+        let store = Arc::new(store);
+        let ts = 1_700_000_000_u64;
+        const CLAIMS: u8 = 8;
+        let barrier = Arc::new(Barrier::new(usize::from(CLAIMS)));
+        let mut handles = Vec::new();
+        for i in 0..CLAIMS {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                let name = claim_archive_name(&store, "doc", ts, hash(i + 1))
+                    .await
+                    .unwrap();
+                (name, hash(i + 1))
+            }));
+        }
+        let mut claimed = Vec::new();
+        for handle in handles {
+            claimed.push(handle.await.unwrap());
+        }
+        let mut names: Vec<&str> = claimed.iter().map(|(name, _)| name.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), usize::from(CLAIMS), "archive claims collided");
+        for (name, expected) in &claimed {
+            assert_eq!(
+                store.tags().get(name).await.unwrap().unwrap().hash,
+                *expected,
+                "archive {name} lost its version"
+            );
+        }
     }
 
     /// With no collision the archive name is exactly the historic shape.
     #[tokio::test]
     async fn uncontested_archive_name_is_unchanged() {
         let store: Store = MemStore::new().into();
-        let name = free_archive_name(&store, "doc", 42).await.unwrap();
+        let name = claim_archive_name(&store, "doc", 42, hash(7))
+            .await
+            .unwrap();
         assert_eq!(name, "doc.archive.42");
+        assert_eq!(
+            store.tags().get(&name).await.unwrap().unwrap().hash,
+            hash(7)
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod replacement_metadata_tests {
+    use crate::local::LocalNode;
+    use crate::tags::Tag;
+
+    use super::*;
+
+    async fn put(node: &LocalNode, name: &str, content: &[u8]) {
+        let guard = node
+            .blobs()
+            .add_bytes(content.to_vec())
+            .temp_tag()
+            .await
+            .unwrap();
+        node.ops().put(name, guard.hash()).await.unwrap();
+    }
+
+    async fn set_tag(node: &LocalNode, subject: &str, key: &str, value: &str) {
+        node.tags()
+            .set_tag(
+                &node.tags().global,
+                subject.as_bytes(),
+                key.as_bytes(),
+                Some(value.as_bytes()),
+                b"",
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn set_singleton(node: &LocalNode, subject: &str, key: &str, value: &str) {
+        node.tags()
+            .set_singleton(
+                &node.tags().global,
+                subject.as_bytes(),
+                key.as_bytes(),
+                Some(value.as_bytes()),
+                b"",
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn tags_of(node: &LocalNode, subject: &str) -> Vec<Tag> {
+        node.tags()
+            .get_tags(&node.tags().global, subject.as_bytes())
+            .await
+            .unwrap()
+    }
+
+    fn values(tags: &[Tag], key: &str) -> Vec<Vec<u8>> {
+        tags.iter()
+            .filter(|tag| tag.key.as_bytes() == key.as_bytes())
+            .filter_map(|tag| tag.value.as_ref().map(|value| value.as_bytes().to_vec()))
+            .collect()
+    }
+
+    fn has_tag(tags: &[Tag], key: &str, value: &str) -> bool {
+        values(tags, key)
+            .iter()
+            .any(|found| found == value.as_bytes())
+    }
+
+    fn assert_single_value(tags: &[Tag], key: &str, value: &str) {
+        assert_eq!(
+            values(tags, key),
+            vec![value.as_bytes().to_vec()],
+            "{tags:?}"
+        );
+    }
+
+    fn assert_archive_identity(tags: &[Tag], archive: &str) {
+        assert_single_value(tags, "name", archive);
+        assert_single_value(tags, "file", archive.rsplit('/').next().unwrap_or(archive));
+        assert!(
+            values(tags, "path").is_empty(),
+            "archive inherited path: {tags:?}"
+        );
+    }
+
+    async fn seed_replacement_pair(node: &LocalNode) {
+        put(node, "source.txt", b"new content").await;
+        put(node, "destination.txt", b"replaced content").await;
+
+        set_tag(node, "source.txt", "shared", "source-value").await;
+        set_tag(node, "source.txt", "source-only", "source-metadata").await;
+        set_singleton(node, "source.txt", "created", "source-created").await;
+        set_singleton(node, "source.txt", "modified", "source-modified").await;
+
+        set_tag(node, "destination.txt", "shared", "replaced-value").await;
+        set_tag(
+            node,
+            "destination.txt",
+            "replaced-only",
+            "replaced-metadata",
+        )
+        .await;
+        set_tag(
+            node,
+            "destination.txt",
+            "archive.previous",
+            "earlier.archive.7",
+        )
+        .await;
+        set_tag(node, "destination.txt", "path", "old/source/path.txt").await;
+        set_singleton(node, "destination.txt", "created", "replaced-created").await;
+        set_singleton(node, "destination.txt", "modified", "replaced-modified").await;
+    }
+
+    fn assert_replaced_metadata_on_archive(tags: &[Tag], archive: &str) {
+        assert!(has_tag(tags, "shared", "replaced-value"), "{tags:?}");
+        assert!(
+            has_tag(tags, "replaced-only", "replaced-metadata"),
+            "{tags:?}"
+        );
+        assert!(
+            has_tag(tags, "archive.previous", "earlier.archive.7"),
+            "{tags:?}"
+        );
+        assert_single_value(tags, "created", "replaced-created");
+        assert_single_value(tags, "modified", "replaced-modified");
+        assert_archive_identity(tags, archive);
+        assert!(!has_tag(tags, "name", "destination.txt"), "{tags:?}");
+        assert!(!has_tag(tags, "file", "destination.txt"), "{tags:?}");
+    }
+
+    #[tokio::test]
+    async fn rename_onto_existing_moves_replaced_metadata_and_refreshes_archive_identity() {
+        let node = LocalNode::open(true).await.unwrap();
+        seed_replacement_pair(&node).await;
+
+        let outcome = node
+            .ops()
+            .rename("source.txt", "destination.txt", false)
+            .await
+            .unwrap();
+        let archive = outcome.archived_replaced.expect("replaced file archived");
+
+        let archived = tags_of(&node, &archive).await;
+        assert_replaced_metadata_on_archive(&archived, &archive);
+
+        let destination = tags_of(&node, "destination.txt").await;
+        assert!(
+            has_tag(&destination, "shared", "source-value"),
+            "{destination:?}"
+        );
+        assert!(
+            has_tag(&destination, "source-only", "source-metadata"),
+            "{destination:?}"
+        );
+        assert!(
+            !has_tag(&destination, "shared", "replaced-value"),
+            "{destination:?}"
+        );
+        assert!(
+            !has_tag(&destination, "replaced-only", "replaced-metadata"),
+            "{destination:?}"
+        );
+        assert!(
+            !has_tag(&destination, "archive.previous", "earlier.archive.7"),
+            "{destination:?}"
+        );
+        assert!(
+            !has_tag(&destination, "path", "old/source/path.txt"),
+            "{destination:?}"
+        );
+        assert_single_value(&destination, "created", "source-created");
+        assert_single_value(&destination, "modified", "source-modified");
+        assert_single_value(&destination, "name", "destination.txt");
+        assert_single_value(&destination, "file", "destination.txt");
+        assert!(
+            has_tag(&destination, "archive.replace", &archive),
+            "{destination:?}"
+        );
+
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn copy_onto_existing_moves_replaced_metadata_and_keeps_single_fresh_stamps() {
+        let node = LocalNode::open(true).await.unwrap();
+        seed_replacement_pair(&node).await;
+
+        let outcome = node
+            .ops()
+            .copy("source.txt", "destination.txt")
+            .await
+            .unwrap();
+        let archive = outcome.archived_replaced.expect("replaced file archived");
+
+        let archived = tags_of(&node, &archive).await;
+        assert_replaced_metadata_on_archive(&archived, &archive);
+
+        let destination = tags_of(&node, "destination.txt").await;
+        assert!(
+            has_tag(&destination, "shared", "source-value"),
+            "{destination:?}"
+        );
+        assert!(
+            has_tag(&destination, "source-only", "source-metadata"),
+            "{destination:?}"
+        );
+        assert!(
+            !has_tag(&destination, "shared", "replaced-value"),
+            "{destination:?}"
+        );
+        assert!(
+            !has_tag(&destination, "replaced-only", "replaced-metadata"),
+            "{destination:?}"
+        );
+        assert!(
+            !has_tag(&destination, "archive.previous", "earlier.archive.7"),
+            "{destination:?}"
+        );
+        assert!(
+            !has_tag(&destination, "path", "old/source/path.txt"),
+            "{destination:?}"
+        );
+        assert_eq!(values(&destination, "created").len(), 1, "{destination:?}");
+        assert_eq!(values(&destination, "modified").len(), 1, "{destination:?}");
+        assert_single_value(&destination, "name", "destination.txt");
+        assert_single_value(&destination, "file", "destination.txt");
+        assert!(
+            has_tag(&destination, "archive.replace", &archive),
+            "{destination:?}"
+        );
+
+        let source = tags_of(&node, "source.txt").await;
+        assert!(has_tag(&source, "shared", "source-value"), "{source:?}");
+        assert!(
+            has_tag(&source, "source-only", "source-metadata"),
+            "{source:?}"
+        );
+
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rename_onto_existing_preserves_replaced_tag_payloads() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "source.txt", b"new content").await;
+        put(&node, "destination.txt", b"replaced content").await;
+
+        // A tag with a non-empty entry payload, as written for legacy
+        // links by migrate_legacy_meta (payload carries the link target).
+        let payload: &[u8] = b"hash:0123abcd";
+        node.tags()
+            .set_tag(
+                &node.tags().global,
+                b"destination.txt",
+                b"link",
+                Some(b"target"),
+                payload,
+            )
+            .await
+            .unwrap();
+        let before = tags_of(&node, "destination.txt").await;
+        let before = before
+            .iter()
+            .find(|tag| tag.key.as_bytes() == b"link")
+            .expect("link tag seeded");
+        assert_eq!(before.len as usize, payload.len(), "{before:?}");
+        let before_hash = before.hash;
+
+        let outcome = node
+            .ops()
+            .rename("source.txt", "destination.txt", false)
+            .await
+            .unwrap();
+        let archive = outcome.archived_replaced.expect("replaced file archived");
+
+        let archived = tags_of(&node, &archive).await;
+        let moved = archived
+            .iter()
+            .find(|tag| tag.key.as_bytes() == b"link")
+            .expect("link tag moved to archive");
+        assert_eq!(moved.hash, before_hash, "{moved:?}");
+        assert_eq!(moved.len as usize, payload.len(), "{moved:?}");
+
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_removes_archived_replaced_metadata() {
+        let node = LocalNode::open(true).await.unwrap();
+        seed_replacement_pair(&node).await;
+
+        let outcome = node
+            .ops()
+            .rename("source.txt", "destination.txt", false)
+            .await
+            .unwrap();
+        let archive = outcome.archived_replaced.expect("replaced file archived");
+        assert!(
+            !tags_of(&node, &archive).await.is_empty(),
+            "archive carries the replaced file's metadata before delete"
+        );
+
+        let deleted = node.ops().delete("destination.txt").await.unwrap();
+        assert_eq!(deleted.archives_removed, 1);
+        assert!(
+            tags_of(&node, &archive).await.is_empty(),
+            "archive metadata removed with the archive"
+        );
+
+        node.shutdown().await.unwrap();
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod delete_tests {
+    use crate::local::LocalNode;
+
+    use super::*;
+
+    async fn put(node: &LocalNode, name: &str, data: &[u8]) {
+        let guard = node
+            .blobs()
+            .add_bytes(data.to_vec())
+            .temp_tag()
+            .await
+            .unwrap();
+        node.ops().put(name, guard.hash()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_after_archived_rename_removes_previous_name_archive() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "before", b"original").await;
+
+        let rename = node.ops().rename("before", "after", true).await.unwrap();
+        let archive = rename.archived_original.unwrap();
+        assert!(node.blobs().tags().get(&archive).await.unwrap().is_some());
+
+        let deleted = node.ops().delete("after").await.unwrap();
+
+        assert_eq!(deleted.archives_removed, 1);
+        assert!(node.blobs().tags().get(&archive).await.unwrap().is_none());
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_after_repeated_replacements_removes_all_replaced_archives() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "A", b"original").await;
+
+        put(&node, "replacement-1", b"first replacement").await;
+        let first = node
+            .ops()
+            .rename("replacement-1", "A", false)
+            .await
+            .unwrap()
+            .archived_replaced
+            .unwrap();
+        put(&node, "replacement-2", b"second replacement").await;
+        let second = node
+            .ops()
+            .rename("replacement-2", "A", false)
+            .await
+            .unwrap()
+            .archived_replaced
+            .unwrap();
+        assert_ne!(first, second);
+
+        node.ops().rename("A", "B", false).await.unwrap();
+        let deleted = node.ops().delete("B").await.unwrap();
+
+        assert_eq!(deleted.archives_removed, 2);
+        assert!(node.blobs().tags().get(&first).await.unwrap().is_none());
+        assert!(node.blobs().tags().get(&second).await.unwrap().is_none());
+        node.shutdown().await.unwrap();
     }
 }

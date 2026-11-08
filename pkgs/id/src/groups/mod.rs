@@ -34,7 +34,8 @@ pub use delegation::Grant;
 pub use fold::{DeviceGrant, FoldError, GroupView, Outcome, Projection, Refusal, fold};
 pub use friendship::{Pair, friendship_id};
 pub use policy::{
-    Delegation, History, Join, OnMemberRemoved, Policy, Removal, RoleRules, Scheme, Template,
+    Delegation, History, Join, OnMemberRemoved, Policy, Removal, RemoveMode, RemoveModeKind,
+    RemovePolicy, RemoveSuccessor, RoleRules, Scheme, SuccessorKind, Template, TransferOpts,
 };
 
 /// The kind of a `device.add` event (P8.3).
@@ -161,7 +162,7 @@ pub struct Create {
 }
 
 /// A change to one member.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum MemberOp {
     /// Adds a member with a role.
     Add {
@@ -171,15 +172,14 @@ pub enum MemberOp {
         /// Its role.
         role: Role,
     },
-    /// Removes a member. The author may remove itself, which is leaving.
+    /// Removes a member. The author may remove itself, which is leaving. The mode is concrete in
+    /// replicated events; `ServerDefault` is resolved before one is recorded.
     Remove {
         /// The member removed.
         #[serde(with = "log::wire::key")]
         member: Key,
-        /// Under the `transfer` delegation mode, the account that takes over the member's grants
-        /// (design §7.3). Ignored by the other modes.
-        #[serde(with = "log::wire::opt_key")]
-        successor: Option<Key>,
+        /// What happens to the removed member's grants.
+        mode: RemoveMode,
     },
     /// Sets a member's role. Admin only.
     SetRole {
@@ -189,4 +189,51 @@ pub enum MemberOp {
         /// Its new role.
         role: Role,
     },
+}
+
+/// Wire form accepted by the event decoder. The optional legacy `successor` is read only when an
+/// event has no `mode`; new events serialize only the concrete mode.
+#[derive(Deserialize)]
+enum MemberOpWire {
+    Add {
+        #[serde(with = "log::wire::key")]
+        member: Key,
+        role: Role,
+    },
+    Remove {
+        #[serde(with = "log::wire::key")]
+        member: Key,
+        #[serde(default)]
+        mode: Option<RemoveMode>,
+        #[serde(default, with = "log::wire::opt_key")]
+        successor: Option<Key>,
+    },
+    SetRole {
+        #[serde(with = "log::wire::key")]
+        member: Key,
+        role: Role,
+    },
+}
+
+impl<'de> Deserialize<'de> for MemberOp {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match MemberOpWire::deserialize(deserializer)? {
+            MemberOpWire::Add { member, role } => Self::Add { member, role },
+            MemberOpWire::Remove {
+                member,
+                mode,
+                successor,
+            } => Self::Remove {
+                member,
+                mode: mode.unwrap_or_else(|| {
+                    successor.map_or(RemoveMode::Revoke, |key| {
+                        RemoveMode::Transfer(TransferOpts {
+                            successor: RemoveSuccessor::Member(key),
+                        })
+                    })
+                }),
+            },
+            MemberOpWire::SetRole { member, role } => Self::SetRole { member, role },
+        })
+    }
 }

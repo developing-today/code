@@ -1,0 +1,80 @@
+# Nightly real-software subset for mcpx (#1990): the real mcpx binary
+# against real, flake-pinned third-party MCP servers
+# (pkgs/mcpx/internal/e2e/real_*_test.go, behind the `realsoftware`
+# build tag, so they never compile into the per-PR path).
+#
+# The servers come from the flake — `nix build .#mcpx-real-servers` —
+# so the versions under test are the pinned nixpkgs set, not whatever
+# npx would fetch tonight. MCPX_TEST_REQUIRE=realsoftware makes a
+# missing server fail instead of skip (testsupport.RealServer reads it
+# now; #1983 step 1 formalises the same variable for runtimes).
+# No test in this subset needs the internet: time, memory and
+# filesystem are all local stdio servers. The one internet-dependent
+# leg (the real registry) is deliberately NOT here (#65, #1990).
+
+name: mcpx realsoftware nightly
+
+on:
+  schedule:
+    # 05:41 UTC ≈ 00:41 CDT — off the hour, away from the other dailies.
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  realsoftware:
+    name: real-software subset (realsoftware tag)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      # No extra-conf: accept-flake-config would pull in the flake
+      # nixConfig, whose use-cgroups requirement the stock installer
+      # cannot satisfy (experimental Nix feature cgroups is disabled;
+      # first dispatch, run 41313241355). mcpx-nixbuild builds this
+      # flake in CI with the plain installer — same pattern here.
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        with:
+          # FlakeHub Cache off (#2120), same as the other nightly legs.
+          use-flakehub: false
+          use-gha-cache: true
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: pkgs/mcpx/go.mod
+          cache: true
+          cache-dependency-path: pkgs/mcpx/go.sum
+
+      - name: Build the flake-pinned real servers
+        run: |
+          servers="$(nix build --no-link --print-out-paths .#mcpx-real-servers)"
+          echo "MCPX_REAL_SERVERS_DIR=$servers" >> "$GITHUB_ENV"
+          ls "$servers/bin"
+
+      # A compile-time tag is only type-checked when it is built, so vet
+      # the tagged tree explicitly (the issue's approach-C caveat).
+      - name: Vet the tagged subset
+        working-directory: pkgs/mcpx
+        run: go vet -tags realsoftware ./internal/e2e ./internal/testsupport
+
+      # The default build must NOT contain the subset: the guard test
+      # runs untagged and fails if a real_* file loses its tag or a
+      # RealServer call escapes into the per-PR path.
+      - name: Guard — subset stays behind the tag
+        working-directory: pkgs/mcpx
+        run: go test ./internal/e2e -run '^TestRealSoftwareGuard$' -count=1 -v
+
+      - name: Run the real-software subset
+        working-directory: pkgs/mcpx
+        env:
+          MCPX_TEST_REQUIRE: realsoftware
+        run: go test -tags realsoftware -run '^TestReal' ./internal/e2e -count=1 -v -timeout 30m

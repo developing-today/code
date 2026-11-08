@@ -40,10 +40,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/conformance"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/mcpserver"
-	"github.com/dezren39/mcpx/internal/mcpspec"
+	"github.com/developing-today/code/pkgs/mcpx/internal/conformance"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpspec"
 )
 
 const (
@@ -273,7 +273,7 @@ func (b *backend) ReadResource(_ context.Context, uri string) ([]mcpserver.Resou
 }
 
 // Complete offers completions values for the one prompt there is.
-func (b *backend) Complete(_ context.Context, params json.RawMessage) ([]string, error) {
+func (b *backend) Complete(_ context.Context, params json.RawMessage) (mcpserver.Completion, error) {
 	var p struct {
 		Ref struct {
 			Name string `json:"name"`
@@ -281,7 +281,7 @@ func (b *backend) Complete(_ context.Context, params json.RawMessage) ([]string,
 	}
 	_ = json.Unmarshal(params, &p)
 	if p.Ref.Name != "greet" {
-		return nil, fmt.Errorf("%w: no prompt named %q", mcpserver.ErrInvalidParams, p.Ref.Name)
+		return mcpserver.Completion{}, fmt.Errorf("%w: no prompt named %q", mcpserver.ErrInvalidParams, p.Ref.Name)
 	}
 	n := b.completions
 	if n == 0 {
@@ -291,7 +291,7 @@ func (b *backend) Complete(_ context.Context, params json.RawMessage) ([]string,
 	for i := range out {
 		out[i] = fmt.Sprintf("v%03d", i)
 	}
-	return out, nil
+	return mcpserver.Completion{Values: out}, nil
 }
 func (b *backend) GetPrompt(_ context.Context, name string, args map[string]string) (string, error) {
 	if name != "greet" {

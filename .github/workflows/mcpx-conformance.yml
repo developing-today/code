@@ -19,10 +19,6 @@ name: mcpx conformance
 # "Variables: read and write" on this repository, stored as the secret MCPX_CONFORMANCE_VARS_TOKEN.
 
 on:
-  pull_request:
-    paths:
-      - "pkgs/mcpx/**"
-      - ".github/workflows/mcpx-conformance.yml"
   push:
     branches: [main]
     paths:
@@ -36,7 +32,7 @@ permissions:
 # Two runs on main must not read and write the records at the same time.
 concurrency:
   group: mcpx-conformance-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: true
 
 env:
   # Spec revisions one side is expected to have and the other not, as JSON

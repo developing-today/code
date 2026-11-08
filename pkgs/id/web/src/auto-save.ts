@@ -58,6 +58,17 @@ export class AutoSaveManager {
 
   /** Called when another client saves (NewVersion received) */
   onNewVersion(): void {
+    // A pending rate-limit retry means a save of THIS client's newer
+    // snapshot was refused — with the #2466 in-flight exclusion, by the
+    // very save whose broadcast this is — so the broadcast version cannot
+    // contain that snapshot. Cancelling the retry here would mark
+    // never-persisted content as saved and lose it: keep the retry (and
+    // the rate-limited state) and let it persist the snapshot when it
+    // fires. If the edits had already propagated, the retry is one
+    // redundant save — the safe direction.
+    if (this.retryTimer !== null) {
+      return;
+    }
     // Cancel any pending save — their version is newer
     if (this.debounceTimer !== null) {
       clearTimeout(this.debounceTimer);

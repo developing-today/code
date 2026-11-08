@@ -139,13 +139,28 @@ impl Outbox {
         };
         let mut kept = 0;
         for (number, line) in text.split_inclusive('\n').enumerate() {
-            let complete = line.ends_with('\n');
+            if !line.ends_with('\n') {
+                // The final line has no newline: a crash cut the append
+                // short. Parseable or not, it was never completely
+                // written, so it is torn and dropped — the same rule
+                // ArtifactLog::open and Directory::replay apply. Keeping
+                // a parseable torn line would let the next append merge
+                // two records onto one line and brick the queue (#1620).
+                // `kept` stays at the last complete line, so the file is
+                // truncated to it below.
+                break;
+            }
+            if line.trim().is_empty() {
+                // Blank lines carry no records, but they are complete bytes in
+                // the journal and must remain before any later torn tail.
+                kept += line.len();
+                continue;
+            }
             match serde_json::from_str::<Record>(line.trim_end()) {
                 Ok(record) => {
                     outbox.apply(record)?;
                     kept += line.len();
                 }
-                Err(_) if !complete => break,
                 Err(error) => {
                     return Err(error).with_context(|| {
                         format!("envelope outbox line {} is corrupt", number + 1)
@@ -436,6 +451,16 @@ mod tests {
         dir.path().join("outbox.jsonl")
     }
 
+    fn queued_line(id: &str) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let mut outbox = Outbox::open(path(&dir)).unwrap();
+        outbox.enqueue(&target(), envelope(id)).unwrap();
+        fs::read_to_string(path(&dir))
+            .unwrap()
+            .trim_end_matches('\n')
+            .to_owned()
+    }
+
     #[test]
     fn a_target_is_a_ticket_or_a_bare_node_id() {
         let id = iroh::SecretKey::from_bytes(&[7; 32]).public();
@@ -520,6 +545,29 @@ mod tests {
     }
 
     #[test]
+    fn test_blank_and_whitespace_lines_are_skipped_and_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = format!("{}\n\n \t\r\n{}\n\n", queued_line("e1"), queued_line("e2"));
+        fs::write(path(&dir), &contents).unwrap();
+
+        let outbox = Outbox::open(path(&dir)).unwrap();
+        assert!(outbox.entry("e1").is_some());
+        assert!(outbox.entry("e2").is_some());
+        assert_eq!(fs::read_to_string(path(&dir)).unwrap(), contents);
+    }
+
+    #[test]
+    fn test_blank_lines_before_a_torn_tail_are_kept_when_the_tail_is_truncated() {
+        let dir = tempfile::tempdir().unwrap();
+        let kept = format!("{}\n \t\n", queued_line("e1"));
+        fs::write(path(&dir), format!("{kept}{{\"op\":\"queued\"")).unwrap();
+
+        let outbox = Outbox::open(path(&dir)).unwrap();
+        assert!(outbox.entry("e1").is_some());
+        assert_eq!(fs::read_to_string(path(&dir)).unwrap(), kept);
+    }
+
+    #[test]
     fn a_torn_last_line_is_dropped_and_not_mixed_into_the_next_record() {
         let dir = tempfile::tempdir().unwrap();
         let mut outbox = Outbox::open(path(&dir)).unwrap();
@@ -539,10 +587,47 @@ mod tests {
     }
 
     #[test]
+    fn a_parseable_torn_last_line_is_also_dropped() {
+        // #1620: the torn tail here is a complete JSON record missing
+        // only its trailing newline. Before the fix, open accepted it,
+        // and the next append merged two records onto one line.
+        let dir = tempfile::tempdir().unwrap();
+        let mut outbox = Outbox::open(path(&dir)).unwrap();
+        outbox.enqueue(&target(), envelope("e1")).unwrap();
+        drop(outbox);
+        // A whole record line for e2, written by a healthy outbox, with
+        // its newline stripped to simulate the crash cut.
+        let scratch = tempfile::tempdir().unwrap();
+        let mut other = Outbox::open(path(&scratch)).unwrap();
+        other.enqueue(&target(), envelope("e2")).unwrap();
+        drop(other);
+        let line = fs::read_to_string(path(&scratch)).unwrap();
+        let mut file = OpenOptions::new().append(true).open(path(&dir)).unwrap();
+        file.write_all(line.trim_end_matches('\n').as_bytes())
+            .unwrap();
+        drop(file);
+
+        let mut outbox = Outbox::open(path(&dir)).unwrap();
+        assert!(outbox.entry("e1").is_some());
+        assert!(
+            outbox.entry("e2").is_none(),
+            "the parseable torn record must be dropped, not accepted"
+        );
+        // The file was truncated to the last complete line, so the next
+        // append starts on its own line and round-trips.
+        outbox.enqueue(&target(), envelope("e2")).unwrap();
+        drop(outbox);
+
+        let reopened = Outbox::open(path(&dir)).unwrap();
+        assert!(reopened.entry("e1").is_some() && reopened.entry("e2").is_some());
+    }
+
+    #[test]
     fn a_corrupt_complete_line_stops_the_load() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(path(&dir), "not json\n").unwrap();
-        assert!(Outbox::open(path(&dir)).is_err());
+        fs::write(path(&dir), "\nnot json\n").unwrap();
+        let error = Outbox::open(path(&dir)).err().unwrap();
+        assert!(format!("{error:#}").contains("envelope outbox line 2 is corrupt"));
     }
 
     #[test]

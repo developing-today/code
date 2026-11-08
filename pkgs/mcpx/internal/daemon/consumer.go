@@ -10,19 +10,21 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/codegen"
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/diagnose"
-	"github.com/dezren39/mcpx/internal/elicit"
-	"github.com/dezren39/mcpx/internal/events"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/pool"
-	"github.com/dezren39/mcpx/internal/recipes"
-	"github.com/dezren39/mcpx/internal/runner"
-	"github.com/dezren39/mcpx/internal/scripting"
-	"github.com/dezren39/mcpx/internal/searchpath"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/model"
+	"github.com/developing-today/code/pkgs/mcpx/internal/policy"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/recipes"
+	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
+	"github.com/developing-today/code/pkgs/mcpx/internal/scripting"
+	"github.com/developing-today/code/pkgs/mcpx/internal/searchpath"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // ConsumerPolicy is the resolved policy for everything mcpx asks for on its
@@ -36,6 +38,7 @@ type ConsumerPolicy struct {
 	Disambiguate        string
 	DisambiguateDefault string
 	ConfirmDestructive  bool
+	WritePolicy         string
 	AskTimeout          time.Duration
 	DiagnosePreflight   bool
 	HistoryPerTool      int
@@ -47,6 +50,14 @@ type ConsumerPolicy struct {
 	PromptSampleTimeout time.Duration
 	PromptMaxTokens     int
 	RunTimeout          time.Duration
+	ModelProvider       string
+	ModelBaseURL        string
+	ModelAPIKeyEnv      string
+	ModelProviders      string
+	ModelProfiles       string
+	ModelDefault        string
+	ModelBudget         int
+	ModelTimeout        time.Duration
 }
 
 // consumerState is everything the consumer routes need that the daemon did
@@ -69,13 +80,26 @@ const CatalogHistoryFile = "catalog-history.json"
 // diagnostic that says what changed.
 func (s *Server) initConsumer() {
 	st := &consumerState{policy: defaultConsumerPolicy()}
-	var sources []string
-	if s.cfg != nil {
-		sources = s.cfg.Sources
+	// The daemon's already-resolved settings are the authority: they
+	// carry the command-line flags (--policy-write and friends), which
+	// a fresh settings.Resolve over the config sources would silently
+	// drop, leaving the gate reading file/environment values the
+	// operator explicitly overrode. Resolve from sources only when
+	// the server was built without a set.
+	set := s.set
+	if set == nil {
+		var sources []string
+		if s.cfg != nil {
+			sources = s.cfg.Sources
+		}
+		resolved, err := settings.Resolve(sources)
+		if err != nil {
+			s.logger.Printf("consumer policy: %v; using defaults", err)
+		} else {
+			set = resolved
+		}
 	}
-	if set, err := settings.Resolve(sources); err != nil {
-		s.logger.Printf("consumer policy: %v; using defaults", err)
-	} else {
+	if set != nil {
 		st.policy = consumerPolicyFrom(set)
 		st.dirs = recipeDirs(set.String("paths.scripts"))
 	}
@@ -99,6 +123,7 @@ func defaultConsumerPolicy() ConsumerPolicy {
 		Disambiguate:        defaults.Disambiguate,
 		DisambiguateDefault: defaults.DisambiguateDefault,
 		ConfirmDestructive:  defaults.ConfirmDestructive,
+		WritePolicy:         defaults.WritePolicy,
 		AskTimeout:          defaults.AskTimeout,
 		DiagnosePreflight:   defaults.DiagnosePreflight,
 		HistoryPerTool:      defaults.HistoryPerTool,
@@ -118,6 +143,7 @@ func consumerPolicyFrom(set *settings.Set) ConsumerPolicy {
 	p.Disambiguate = set.String("elicit.disambiguate")
 	p.DisambiguateDefault = set.String("elicit.disambiguateDefault")
 	p.ConfirmDestructive = set.Bool("elicit.confirmDestructive")
+	p.WritePolicy = set.String("policy.write")
 	p.AskTimeout = set.Duration("elicit.askTimeout")
 	p.DiagnosePreflight = set.Bool("diagnose.preflight")
 	p.HistoryPerTool = set.Int("diagnose.history")
@@ -129,6 +155,14 @@ func consumerPolicyFrom(set *settings.Set) ConsumerPolicy {
 	p.PromptSampleTimeout = set.Duration("prompt.sampleTimeout")
 	p.PromptMaxTokens = set.Int("prompt.maxTokens")
 	p.RunTimeout = set.Duration("prompt.runTimeout")
+	p.ModelProvider = set.String("model.provider")
+	p.ModelBaseURL = set.String("model.baseURL")
+	p.ModelAPIKeyEnv = set.String("model.apiKeyEnv")
+	p.ModelProviders = set.String("model.providers")
+	p.ModelProfiles = set.String("model.profiles")
+	p.ModelDefault = set.String("model.default")
+	p.ModelBudget = set.Int("model.budget")
+	p.ModelTimeout = set.Duration("model.timeout")
 	return p
 }
 
@@ -270,41 +304,41 @@ func (r *Registry) DiagnoseCatalog() diagnose.Catalog {
 // caller already has an instance, the scope key is the answer and a question
 // would be theatre.
 //
-// The returned key is the one to lease. Every path returns something: an
+// The returned scope is the one to lease. Every path returns something: an
 // unanswered question falls back to the configured default, because the
 // caller is frequently headless and a call that waits forever is worse than
 // one that takes the conservative option.
-func (r *Registry) disambiguate(ctx context.Context, p *pool.Pool, cc config.CallContext, key string) string {
+func (r *Registry) disambiguate(ctx context.Context, p *pool.Pool, cc config.CallContext, rs config.ResolvedScope) config.ResolvedScope {
 	if r.consumer.Disambiguate != "ask" || r.broker == nil {
-		return key
+		return rs
 	}
 	st := p.Status()
 	if st.Sharing != string(config.SharingExclusive) || len(st.Instances) < 2 {
-		return key
+		return rs
 	}
 	choices := []elicit.Choice{{
-		Value: key, Title: "new",
+		Value: rs.Key, Title: "new",
 		Detail: "start an instance for this caller, which is what happens today",
 	}}
-	recent := key
+	recent := rs
 	bestIdle := -1
 	for _, in := range st.Instances {
-		if in.Key == key {
+		if in.Key == rs.Key {
 			// The caller already has one. That is the answer.
-			return key
+			return rs
 		}
 		choices = append(choices, elicit.Choice{
 			Value: in.Key, Title: in.Key, Detail: describeInstance(in),
 		})
 		if bestIdle < 0 || in.IdleSec < bestIdle {
-			bestIdle, recent = in.IdleSec, in.Key
+			bestIdle, recent = in.IdleSec, resolvedInstanceScope(in)
 		}
 	}
 	sort.SliceStable(choices[1:], func(i, j int) bool {
 		return choices[1+i].Title < choices[1+j].Title
 	})
 
-	fallback := key
+	fallback := rs
 	if r.consumer.DisambiguateDefault == "recent" {
 		fallback = recent
 	}
@@ -314,7 +348,7 @@ func (r *Registry) disambiguate(ctx context.Context, p *pool.Pool, cc config.Cal
 		Message: fmt.Sprintf("%s has %d live instances and this call named none of them. Which should it use?",
 			p.Namespace(), len(st.Instances)),
 		Choices: choices,
-		Default: fallback,
+		Default: fallback.Key,
 		TTL:     r.consumer.AskTimeout,
 	})
 	opened, err := r.broker.OpenRequest(req)
@@ -328,10 +362,10 @@ func (r *Registry) disambiguate(ctx context.Context, p *pool.Pool, cc config.Cal
 	defer cancel()
 	ans, aerr := r.broker.Await(actx, opened.ID)
 	if aerr != nil {
-		r.logf("disambiguate %s: nobody answered, using %s", p.Name(), fallback)
+		r.logf("disambiguate %s: nobody answered, using %s", p.Name(), fallback.Key)
 		return fallback
 	}
-	chosen, answered := elicit.Resolve(ans, elicit.FieldInstance, fallback)
+	chosen, answered := elicit.Resolve(ans, elicit.FieldInstance, fallback.Key)
 	if !answered {
 		return fallback
 	}
@@ -340,11 +374,27 @@ func (r *Registry) disambiguate(ctx context.Context, p *pool.Pool, cc config.Cal
 	// text somebody typed.
 	for _, c := range choices {
 		if c.Value == chosen {
-			return chosen
+			if chosen == rs.Key {
+				return rs
+			}
+			for _, in := range st.Instances {
+				if in.Key == chosen {
+					return resolvedInstanceScope(in)
+				}
+			}
+			return config.ResolvedScope{Key: chosen}
 		}
 	}
-	r.logf("disambiguate %s: %q is not one of the choices, using %s", p.Name(), chosen, fallback)
+	r.logf("disambiguate %s: %q is not one of the choices, using %s", p.Name(), chosen, fallback.Key)
 	return fallback
+}
+
+// resolvedInstanceScope carries the root chosen with a live instance into
+// Acquire. The instance may need a new protocol lane or may exit while the
+// disambiguation answer is pending, so the selected root cannot be recovered
+// by assuming Acquire will reuse the exact process shown in the choices.
+func resolvedInstanceScope(in pool.InstanceStatus) config.ResolvedScope {
+	return config.ResolvedScope{Key: in.Key, Root: in.Root}
 }
 
 func describeInstance(in pool.InstanceStatus) string {
@@ -396,6 +446,9 @@ func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool st
 				Reason: "its annotations could not be read: " + err.Error()}
 		}
 		all = fresh
+		// This refresh is a genuine catalog observation: discharge
+		// any dead-rule re-check a list_changed left pending (#1986).
+		r.recheckDeadArgumentRules(p.Name())
 	}
 	var found *mcpclient.Tool
 	for i := range all {
@@ -404,7 +457,7 @@ func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool st
 			break
 		}
 	}
-	if found == nil || !destructiveHint(found.Annotations) {
+	if found == nil || annotationClearsCall(p, found) {
 		return nil
 	}
 	path := p.Namespace() + "." + tool
@@ -412,7 +465,7 @@ func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool st
 		Server:  p.Name(),
 		Tool:    tool,
 		Session: cc.SessionID,
-		Message: fmt.Sprintf("%s.%s may be destructive: its server does not mark it read-only or non-destructive. Let this call proceed?",
+		Message: fmt.Sprintf("%s.%s may be destructive: no trusted annotation clears this call. Let this call proceed?",
 			p.Namespace(), tool),
 		Default: "false",
 		TTL:     r.consumer.AskTimeout,
@@ -434,6 +487,243 @@ func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool st
 		return ErrNotConfirmed{Tool: path, Reason: "the answer was " + string(ans.Action)}
 	}
 	return nil
+}
+
+// ErrWriteDenied is returned when the write policy refuses a call.
+type ErrWriteDenied struct {
+	Tool   string
+	Mode   string
+	Reason string
+}
+
+func (e ErrWriteDenied) Error() string {
+	return fmt.Sprintf("%s was refused by the write policy (mode %s): %s; "+
+		"change policy.write, or this server's writePolicy, to allow it", e.Tool, e.Mode, e.Reason)
+}
+
+// ErrArgumentRuleDenied is returned when an argument rule (#1986)
+// refuses a call: the call's arguments broke a JSON Schema constraint
+// configured for its tool. Like a hidden tool it is the caller's
+// mistake -- the arguments, not the server, are wrong -- so the daemon
+// answers 400 (see failureStatus), and the MCP pass-through renders it
+// as an isError result carrying this text.
+type ErrArgumentRuleDenied struct {
+	Tool      string
+	Violation *config.ArgumentRuleViolation
+}
+
+func (e ErrArgumentRuleDenied) Error() string {
+	return fmt.Sprintf("%s was refused by an argument rule: %s; "+
+		"change the call's arguments, or the rule in the config it names, to allow it",
+		e.Tool, e.Violation)
+}
+
+// applyWritePolicy is the write policy gate (#1979, Phase 1): before a
+// call, decide from its tool's annotations and the effective mode
+// whether it proceeds, asks, or is refused. The ledger and argument-rule
+// hooks run first, in the order fixed by #2126.
+//
+// The effective mode is the server's own writePolicy when it sets one,
+// else the daemon's policy.write. An empty effective mode -- a zero
+// ConsumerPolicy, as a registry built for a test has -- is treated as
+// allow, so an unconfigured daemon behaves exactly as it did before
+// the gate existed. A non-empty mode that is none of ask, allow or
+// deny is a configuration error and is refused at call time, naming
+// the bad value, rather than silently read as some other mode.
+//
+// The returned asked reports whether this gate already raised the
+// confirmation, so the caller does not ask twice: under ask the policy
+// has asked, and elicit.confirmDestructive's floor is then satisfied;
+// under allow confirmDestructive still runs, which is how the floor
+// reaches a destructive call the policy let through.
+func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (bool, error) {
+	// A record only affects a server with an unknown write. Consult it
+	// before argument rules, the write mode, or the destructive floor.
+	// A read-only hint is exempt; if it cannot be refreshed, fail closed
+	// and keep the operator's clear path visible in the error.
+	var ledgerRefusal ErrUnknownOutcome
+	ledgerCheck := func() (policy.Decision, bool) {
+		if r.writeLedger == nil {
+			return policy.Decision{}, false
+		}
+		record, blocked := r.ledgerLookupFor(server, p)
+		if !blocked {
+			return policy.Decision{}, false
+		}
+		tools, _, at := p.CachedSchemas()
+		if at.IsZero() || p.SchemaExpired() {
+			fresh, _, err := p.RefreshSchemas(ctx)
+			if err != nil {
+				ledgerRefusal = ErrUnknownOutcome{Record: record,
+					Reason: "could not verify whether this tool is read-only: " + err.Error()}
+				return policy.Decision{Kind: policy.DecideDeny, Reason: ledgerRefusal.Error()}, true
+			}
+			tools = fresh
+		}
+		for _, candidate := range tools {
+			if candidate.Name == tool && policy.Classify(candidate.Annotations).ReadOnly {
+				return policy.Decision{}, false
+			}
+		}
+		ledgerRefusal = ErrUnknownOutcome{Record: record}
+		return policy.Decision{Kind: policy.DecideDeny, Reason: ledgerRefusal.Error()}, true
+	}
+
+	var violation *config.ArgumentRuleViolation
+	argumentRules := func() (policy.Decision, bool) {
+		if view, ok := r.View(server); ok && !view.ArgumentRules.Empty() {
+			if v := view.ArgumentRules.Check(tool, args); v != nil {
+				violation = v
+				return policy.Decision{Kind: policy.DecideDeny, Reason: v.Error()}, true
+			}
+		}
+		return policy.Decision{}, false
+	}
+	preflight := policy.Evaluator{LedgerCheck: ledgerCheck, ArgumentRules: argumentRules}
+	if d := preflight.Evaluate(policy.Input{Mode: policy.ModeAllow}); d.Kind == policy.DecideDeny {
+		if ledgerRefusal.Record.Server != "" {
+			return false, ledgerRefusal
+		}
+		return false, ErrArgumentRuleDenied{Tool: p.Namespace() + "." + tool, Violation: violation}
+	}
+
+	mode := r.consumer.WritePolicy
+	// The requested server's VIEW carries the override, never the
+	// pool's creating config: pools are shared between aliases, so
+	// p.Config() holds only the configuration that happened to create
+	// the pool — an alias configured deny could inherit another
+	// alias's allow, and a Reload that changes a view's writePolicy
+	// (pools are preserved across reloads; views are rebuilt) would
+	// never reach the gate.
+	if view, ok := r.View(server); ok && view.WritePolicy != "" {
+		mode = view.WritePolicy
+	}
+	if mode == "" {
+		// Unconfigured (zero-value policy in tests): allow, with no
+		// schema read, so nothing about the call path changes.
+		return false, nil
+	}
+	parsed, ok := policy.ParseMode(mode)
+	if !ok {
+		return false, fmt.Errorf("write policy: invalid mode %q for %s.%s; want ask, allow or deny "+
+			"(set policy.write, or this server's writePolicy)", mode, p.Namespace(), tool)
+	}
+	if parsed == policy.ModeAllow && !r.consumer.ConfirmDestructive {
+		// The common path made cheaper on purpose: allow with no
+		// destructive floor cannot ask or deny anything the evaluator
+		// would reach, and classifying would cost a schema read on
+		// every call for a decision that is already known.
+		return false, nil
+	}
+
+	// Classification needs the tool's annotations, fetched the way
+	// confirmDestructive fetches them: from the cache, or read now --
+	// failing closed if they cannot be read, because deciding from an
+	// empty list would let a write through unasked.
+	// Freshness matters as much as presence: an expired cache (a
+	// modern upstream's ttlMs deadline, or a disk seed past its
+	// deadline) can carry annotations the tool no longer has — a
+	// cached read-only hint on a now-writable tool would sail past
+	// ask and deny alike. Refresh first, failing closed on error:
+	// RefreshSchemas returns the error instead of serving the stale
+	// catalogue, and deciding from stale annotations is exactly the
+	// fail-open this gate exists to prevent.
+	all, _, at := p.CachedSchemas()
+	if at.IsZero() || p.SchemaExpired() {
+		fresh, _, err := p.RefreshSchemas(ctx)
+		if err != nil {
+			return false, ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
+				Reason: "write policy: its annotations could not be read: " + err.Error()}
+		}
+		all = fresh
+		// This refresh is a genuine catalog observation: discharge
+		// any dead-rule re-check a list_changed left pending (#1986).
+		r.recheckDeadArgumentRules(p.Name())
+	}
+	// A tool the schemas do not name is treated as unannotated, which
+	// the specification's defaults read as a possibly destructive
+	// write -- the conservative answer, not an exemption.
+	class := policy.Classify(nil)
+	for i := range all {
+		if all[i].Name == tool {
+			class = policy.Classify(all[i].Annotations)
+			break
+		}
+	}
+
+	decision := policy.Evaluator{}.Evaluate(policy.Input{
+		Mode:                    parsed,
+		Classification:          class,
+		ConfirmDestructiveFloor: r.consumer.ConfirmDestructive,
+	})
+	path := p.Namespace() + "." + tool
+	switch decision.Kind {
+	case policy.DecideDeny:
+		return false, ErrWriteDenied{Tool: path, Mode: string(parsed), Reason: decision.Reason}
+	case policy.DecideAsk:
+		if r.consumer.ConfirmDestructive && parsed == policy.ModeAllow {
+			// This ask is the floor's, and confirmDestructive is the
+			// code that has always raised it, with its annotation
+			// trust rules (#2191) unchanged. Defer to it rather than
+			// asking here in a second, subtly different way.
+			return false, nil
+		}
+		if r.broker == nil {
+			return false, ErrNotConfirmed{Tool: path,
+				Reason: "write policy is ask but there is no question broker to answer it; " +
+					"set policy.write to allow or deny, or run a caller that can answer questions"}
+		}
+		req := elicit.Confirmation(elicit.Ask{
+			Server:  p.Name(),
+			Tool:    tool,
+			Session: cc.SessionID,
+			Message: fmt.Sprintf("%s.%s is a write call and policy.write is ask. Exact call: %s(%s). Let this call proceed?",
+				p.Namespace(), tool, path, policy.CanonicalArgs(args)),
+			Default: "false",
+			TTL:     r.consumer.AskTimeout,
+		})
+		opened, err := r.broker.OpenRequest(req)
+		if err != nil {
+			return false, err
+		}
+		r.publish(events.Event{Kind: events.ElicitOpened, Server: p.Name(), Data: mustJSON(elicitEventSummary(opened))})
+
+		actx, cancel := context.WithTimeout(ctx, r.consumer.AskTimeout)
+		defer cancel()
+		ans, aerr := r.broker.Await(actx, opened.ID)
+		if aerr != nil {
+			return false, ErrNotConfirmed{Tool: path,
+				Reason: "nobody answered within " + r.consumer.AskTimeout.String()}
+		}
+		if v, _ := elicit.Resolve(ans, elicit.FieldConfirm, "false"); v != "true" {
+			return false, ErrNotConfirmed{Tool: path, Reason: "the answer was " + string(ans.Action)}
+		}
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+// annotationClearsCall reports whether a tool's annotations may clear
+// its call without asking. Tool annotations are hints, not decisions
+// (#2191): the specification forbids basing a security decision on
+// annotations from an untrusted server, and mcpx establishes trust in
+// exactly one way today -- the server is one the user declared locally,
+// a stdio command from their own configuration, whose annotations are
+// part of the interface they chose to run. A remote upstream's
+// readOnlyHint or destructiveHint:false is worth nothing here: a lying
+// or compromised server could suppress every confirmation by claiming
+// its tools are harmless, so for a remote server the annotation can
+// never be the deciding input and the call is confirmed when in doubt.
+func annotationClearsCall(p *pool.Pool, found *mcpclient.Tool) bool {
+	if p == nil || found == nil {
+		return false
+	}
+	cfg := p.Config()
+	if cfg == nil || !cfg.Stdio() {
+		return false
+	}
+	return !destructiveHint(found.Annotations)
 }
 
 // destructiveHint reads the one annotation mcpx acts on, with the
@@ -557,6 +847,17 @@ func (s *Server) execScript(ctx context.Context, source, session string) (*ExecR
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	env := map[string]string{
+		"MCPX_SESSION":    session,
+		"MCPX_SESSION_ID": session,
+		"MCPX_ENDPOINT":   s.endpoint,
+	}
+	if tok := BearerToken(s.set); tok != "" {
+		// #1975: recipes run against this daemon; with bearer auth on
+		// they need the resolved token, not only an exported env var.
+		env["MCPX_TRANSPORT_BEARER_TOKEN"] = tok
+	}
+
 	res, rerr := runner.Run(rctx, runner.Options{
 		Source:        source,
 		Prelude:       prelude(nss),
@@ -565,11 +866,7 @@ func (s *Server) execScript(ctx context.Context, source, session string) (*ExecR
 		Timeout:       timeout,
 		Stdout:        &out,
 		Stderr:        &errOut,
-		Env: map[string]string{
-			"MCPX_SESSION":    session,
-			"MCPX_SESSION_ID": session,
-			"MCPX_ENDPOINT":   s.endpoint,
-		},
+		Env:           env,
 	})
 	result := &ExecResult{Stdout: out.String(), Stderr: errOut.String()}
 	if rerr != nil {
@@ -663,7 +960,19 @@ func (s *Server) resolveProviderFor(provider, model string) scripting.Provider {
 		callerProviderConfig(s.providerConfig(), provider, model), nil)
 }
 
-func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Provider, model string) (string, string, error) {
+// model is the caller's EXPLICIT model only; the daemon's own defaults
+// are applied per-path below (model.default for the model layer,
+// repair.model for the legacy provider's label), never by the caller
+// pre-filling one path's default into the other (Codex review, PR #2592).
+// session is the intent session, propagated to sampling questions so an
+// answerer polling /v1/elicit?session=<session> can see them.
+// explicitProvider is the provider the caller named on THIS request
+// (empty for none): the caller-over-daemon contract Client.Intent
+// documents -- an explicit choice is the generation provider, and the
+// daemon's model layer applies only when no override was supplied.
+// Letting the layer take precedence sent a request's Claude model id
+// to the configured OpenAI endpoint (Codex review, PR #2592).
+func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Provider, model string, session string, explicitProvider string) (string, string, error) {
 	nss, err := s.reg.CodegenNamespaces(nil, config.Profile{All: true})
 	if err != nil {
 		return "", "", err
@@ -678,6 +987,31 @@ func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Pro
 		"returning the result. Answer with the program only, no prose and no " +
 		"code fences.\n\n" + slice
 
+	// The model layer (#1925) is the path when one is configured: the
+	// caller resolved model.* through the settings registry, and a
+	// provider error here is errNoModel like any other, so the intent
+	// route falls back to its deterministic answer -- the ranked recipes
+	// plus the note that no model answered -- which is the scope guard's
+	// required shape. With model.provider at its default (none) this
+	// whole branch is skipped and generation behaves as it always has.
+	mp, merr := s.modelLayerWanted(ctx, session, explicitProvider == "")
+	if merr != nil {
+		// Finding (Codex, PR #2592): a model layer that was configured
+		// but cannot resolve (model.provider=plugin, sampling with no
+		// path) must NOT fall through to the legacy repair provider --
+		// that would silently spend a different provider (an auto-
+		// discovered CLI, an env key) the user did not select, possibly
+		// against prompt.sample=never. Resolution failure is the
+		// deterministic no-model outcome, exactly like a provider error.
+		if s.logger != nil {
+			s.logger.Printf("model layer: %v; generation falls back to the deterministic answer", merr)
+		}
+		return "", "", errNoModel
+	}
+	if mp != nil {
+		return s.generateViaModel(ctx, mp, system, prompt, model)
+	}
+
 	if prov == nil {
 		return "", "", errNoModel
 	}
@@ -691,6 +1025,11 @@ func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Pro
 		return "", "", errNoModel
 	}
 	used := "provider:" + prov.Name()
+	if model == "" {
+		// The legacy path's own default: the daemon's repair.model.
+		// (The model layer never sees this value; see generateViaModel.)
+		model = s.providerConfig().Model
+	}
 	if model != "" {
 		used += "/" + model
 	}
@@ -701,6 +1040,278 @@ func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Pro
 // and generation no longer falls back to an MCP sampling request
 // (sampling is deprecated in MCP 2026-07-28; #1961).
 var errNoModel = fmt.Errorf("no model provider answered")
+
+// modelLayer resolves the #1925 provider layer for this request from the
+// request's own policy. (nil, nil) means no layer applies -- model.provider
+// none or unset, or auto with nothing configured -- and the caller keeps
+// the behaviour it had before the layer existed. A non-nil error means a
+// provider WAS configured but cannot be built (plugin, sampling with no
+// path): the caller must surface that as no-model, never silently invoke
+// a different provider in its place (Codex review, PR #2592).
+// modelLayerWanted is modelLayer behind the caller's explicit-provider
+// choice: an intent request that named its own provider does not consult
+// the daemon's model layer at all.
+func (s *Server) modelLayerWanted(ctx context.Context, session string, wanted bool) (model.Provider, error) {
+	if !wanted {
+		return nil, nil
+	}
+	return s.modelLayer(ctx, session)
+}
+
+func (s *Server) modelLayer(ctx context.Context, session string) (model.Provider, error) {
+	pol := s.policyFor(ctx)
+	if !modelLayerConfigured(pol) {
+		return nil, nil
+	}
+	return model.Resolve(model.Config{
+		Provider:             pol.ModelProvider,
+		BaseURL:              pol.ModelBaseURL,
+		APIKeyEnv:            pol.ModelAPIKeyEnv,
+		ProviderSettingsJSON: pol.ModelProviders,
+		ProfilesJSON:         pol.ModelProfiles,
+		DefaultModel:         pol.ModelDefault,
+		Timeout:              pol.ModelTimeout,
+		Sampler:              s.brokerSampler(session),
+	})
+}
+
+func modelLayerConfigured(pol ConsumerPolicy) bool {
+	if pol.ModelProvider != "" && pol.ModelProvider != "none" {
+		return true
+	}
+	if strings.TrimSpace(pol.ModelDefault) != "" {
+		return true
+	}
+	for _, raw := range []string{pol.ModelProviders, pol.ModelProfiles} {
+		raw = strings.TrimSpace(raw)
+		if raw != "" && raw != "{}" && raw != "null" {
+			return true
+		}
+	}
+	return false
+}
+
+// generateViaModel is generate's model-layer path: the same system prompt
+// and catalog slice, one Generate call, the layer's bounds applied --
+// model.budget caps the tokens asked for, model.default supplies the
+// model id when the caller named none.
+func (s *Server) generateViaModel(ctx context.Context, prov model.Provider, system, prompt, modelID string) (string, string, error) {
+	pol := s.policyFor(ctx)
+	if modelID == "" {
+		modelID = pol.ModelDefault
+	}
+	maxTokens := modelMaxTokens(pol.PromptMaxTokens, pol.ModelBudget)
+	resp, err := prov.Generate(ctx, model.Request{
+		Model:     modelID,
+		Messages:  []model.Message{{Role: "system", Content: system}, {Role: "user", Content: prompt}},
+		MaxTokens: maxTokens,
+	})
+	if err != nil || strings.TrimSpace(resp.Text) == "" {
+		return "", "", errNoModel
+	}
+	providerName := resp.Provider
+	if providerName == "" {
+		providerName = prov.Name()
+	}
+	used := "provider:" + providerName
+	answered := resp.Model
+	if answered == "" {
+		answered = model.ModelID(modelID)
+	}
+	if answered != "" {
+		used += "/" + answered
+	}
+	return stripFences(resp.Text), used, nil
+}
+
+// modelMaxTokens applies the model layer's token bounds to one call:
+// the per-call ask (prompt.maxTokens), capped by model.budget when one
+// is configured. A nonpositive per-call value is UNSET, never a value:
+// the OpenAI backend omits a nonpositive limit, which would leave the
+// endpoint's own limit in force and silently bypass a configured
+// budget ceiling (Codex review, PR #2592).
+func modelMaxTokens(perCall, budget int) int {
+	max := perCall
+	if max < 0 {
+		max = 0
+	}
+	if budget > 0 && (max == 0 || budget < max) {
+		max = budget
+	}
+	return max
+}
+
+// modelRepairProvider adapts the resolved model-layer backend to the
+// scripting.Provider shape Repair speaks, so a script the model layer
+// generated is repaired by the SAME backend -- under the layer's budget
+// -- and never by an independently resolved legacy provider the user
+// did not select for this generation: with prompt.sample=never and a
+// local model.baseURL, the old code sent the generated script and the
+// catalog to an auto-discovered provider on validation failure (Codex
+// review, PR #2592).
+type modelRepairProvider struct {
+	s       *Server
+	mp      model.Provider
+	modelID string
+}
+
+func (p modelRepairProvider) Name() string { return p.mp.Name() }
+
+func (p modelRepairProvider) Complete(ctx context.Context, req scripting.CompletionRequest) (string, error) {
+	pol := p.s.policyFor(ctx)
+	modelID := p.modelID
+	if modelID == "" {
+		modelID = pol.ModelDefault
+	}
+	resp, err := p.mp.Generate(ctx, model.Request{
+		Model: modelID,
+		Messages: []model.Message{
+			{Role: "system", Content: req.SystemPrompt},
+			{Role: "user", Content: req.UserPrompt},
+		},
+		MaxTokens: modelMaxTokens(req.MaxTokens, pol.ModelBudget),
+	})
+	if err != nil {
+		return "", err
+	}
+	return resp.Text, nil
+}
+
+// brokerSampler is the sampling backend's path into the elicitation
+// broker: a generation request becomes a sampling question for whatever
+// drives mcpx, in the CreateMessage shape answerers already know
+// (elicit.SampleAsk). Nobody answering within the deadline is an
+// unavailable provider, not a hang: the broker's expiry answer lands as
+// an error here and the caller falls back deterministically.
+func (s *Server) brokerSampler(session string) model.SampleFunc {
+	if s.reg == nil || s.reg.broker == nil {
+		return nil
+	}
+	broker := s.reg.broker
+	return func(ctx context.Context, req model.Request) (model.Response, error) {
+		params, err := samplingParams(req)
+		if err != nil {
+			return model.Response{}, err
+		}
+		ttl := s.policyFor(ctx).ModelTimeout
+		if ttl <= 0 {
+			ttl = defaults.PromptSampleTimeout
+		}
+		// Session is the intent session, so Broker.Pending's exact
+		// session filter can show this question to the answerer polling
+		// /v1/elicit?session=<session> for it (Codex, PR #2592).
+		question, err := broker.OpenRequest(elicit.SampleAsk(elicit.Ask{
+			Server:  "mcpx",
+			Session: session,
+			Message: "mcpx asks for a model completion (model.provider=sampling)",
+			TTL:     ttl,
+		}, params))
+		if err != nil {
+			return model.Response{}, err
+		}
+		// Publish the lifecycle before waiting, as the upstream
+		// sampling path does (hooks.go): a sample.opened hook is how
+		// an event-driven answerer learns there is a question to
+		// answer, so without this event model.provider=sampling
+		// requests time out unanswered even when a hook answerer is
+		// configured (Codex review, PR #2592).
+		s.reg.publish(events.Event{Kind: events.SampleOpened, Server: question.Server,
+			Data: mustJSON(elicitEventSummary(question))})
+		// model.timeout must bound the WAIT, not only the question's
+		// initial TTL: an answerer reading the question via
+		// /v1/elicit/{id} renews its expiry (Broker.Get touches), so a
+		// TTL alone can be extended toward elicit.maxAge by repeated
+		// reads. Await honours ctx, so the deadline goes on the ctx
+		// (Codex review, PR #2592).
+		awaitCtx, cancel := context.WithTimeout(ctx, ttl)
+		defer cancel()
+		ans, err := broker.Await(awaitCtx, question.ID)
+		if err != nil {
+			return model.Response{}, err
+		}
+		s.reg.publish(events.Event{Kind: events.SampleAnswered, Server: question.Server,
+			Data: mustJSON(elicitAnsweredSummary(question, ans))})
+		if ans.Action != elicit.Accept {
+			return model.Response{}, fmt.Errorf("model: sampling %s: %w", ans.Action, model.ErrUnavailable)
+		}
+		text, answered := parseSampleResult(ans.Content)
+		if strings.TrimSpace(text) == "" {
+			return model.Response{}, fmt.Errorf("model: sampling answered with no text: %w", model.ErrUnavailable)
+		}
+		return model.Response{Text: text, Model: answered, Provider: "sampling"}, nil
+	}
+}
+
+// samplingParams renders a model.Request as an MCP sampling
+// CreateMessageRequest, the shape the broker's answerers speak.
+func samplingParams(req model.Request) (json.RawMessage, error) {
+	var messages []map[string]any
+	var system string
+	for _, m := range req.Messages {
+		if m.Role == "system" {
+			system = m.Content
+			continue
+		}
+		role := m.Role
+		if role == "" {
+			role = "user"
+		}
+		messages = append(messages, map[string]any{
+			"role":    role,
+			"content": map[string]any{"type": "text", "text": m.Content},
+		})
+	}
+	doc := map[string]any{"messages": messages}
+	if system != "" {
+		doc["systemPrompt"] = system
+	}
+	if req.MaxTokens > 0 {
+		doc["maxTokens"] = req.MaxTokens
+	}
+	if len(req.Stop) > 0 {
+		doc["stopSequences"] = req.Stop
+	}
+	if id := model.ModelID(req.Model); id != "" {
+		doc["modelPreferences"] = map[string]any{
+			"hints": []map[string]any{{"name": id}},
+		}
+	}
+	return json.Marshal(doc)
+}
+
+// parseSampleResult extracts the text and the answering model from a
+// sampling CreateMessageResult. Content arrives as one block (the legacy
+// shape) or an array of blocks (2025-11-25); text blocks are concatenated.
+func parseSampleResult(raw json.RawMessage) (text, modelName string) {
+	var result struct {
+		Model   string          `json:"model"`
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(raw, &result) != nil {
+		return "", ""
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(result.Content, &blocks) == nil {
+		var parts []string
+		for _, b := range blocks {
+			if b.Type == "text" {
+				parts = append(parts, b.Text)
+			}
+		}
+		return strings.Join(parts, ""), result.Model
+	}
+	var one struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(result.Content, &one) == nil && one.Type == "text" {
+		return one.Text, result.Model
+	}
+	return "", result.Model
+}
 
 // stripFences removes a markdown code fence a model wrapped the answer in.
 //

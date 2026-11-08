@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/settings"
-	"github.com/dezren39/mcpx/plugin/opencode/skills"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/plugin/opencode/skills"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -20,16 +20,16 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/artifacts"
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/daemon"
-	"github.com/dezren39/mcpx/internal/diagnose"
-	"github.com/dezren39/mcpx/internal/execsvc"
-	"github.com/dezren39/mcpx/internal/logging"
-	"github.com/dezren39/mcpx/internal/preflight"
-	"github.com/dezren39/mcpx/internal/runner"
-	"github.com/dezren39/mcpx/internal/source"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/preflight"
+	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
+	"github.com/developing-today/code/pkgs/mcpx/internal/source"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // App carries state shared by every subcommand.
@@ -310,6 +310,8 @@ func (a *App) setOutputFormat(f logging.Format) {
 func (a *App) CmdSearch(ctx context.Context, args []string) error {
 	fs := newFlagSet("search")
 	semantic := fs.Bool("semantic", false, "rank tools with local semantic vector search")
+	explain := fs.Bool("explain", false, "print the per-term, per-field score breakdown for each hit")
+	tag := fs.String("tag", "", "restrict to tools carrying this tag (exact match)")
 	// -n, --limit and --search-limit are one setting, declared once. The
 	// value is sent only when somebody actually chose it: a client's
 	// inherited default must not override what the daemon is configured
@@ -337,7 +339,14 @@ func (a *App) CmdSearch(ctx context.Context, args []string) error {
 		return err
 	}
 	useSemantic := *semantic || a.Settings().Bool("search.semantic")
-	hits, err := c.Search(ctx, strings.Join(fs.Args(), " "), limit, useSemantic)
+	var hits []daemon.ToolInfo
+	if *tag != "" || *explain {
+		// --explain describes the keyword ranker, so it (and the tag
+		// filter it composes with) takes the keyword path.
+		hits, err = c.SearchOpts(ctx, strings.Join(fs.Args(), " "), limit, false, *tag, *explain)
+	} else {
+		hits, err = c.Search(ctx, strings.Join(fs.Args(), " "), limit, useSemantic)
+	}
 	if err != nil {
 		return err
 	}
@@ -360,6 +369,15 @@ func (a *App) CmdSearch(ctx context.Context, args []string) error {
 			native = strings.Replace(h.Function, ".", "_", 1)
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\n", call, native, truncate(oneLine(h.Description), 90))
+		if *explain {
+			for _, ts := range h.Explain {
+				field := ts.Field
+				if field == "" {
+					field = "no match"
+				}
+				fmt.Fprintf(tw, "  \t%s\t%s +%d\n", ts.Term, field, ts.Points)
+			}
+		}
 	}
 	tw.Flush()
 	return nil
@@ -935,6 +953,15 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if a.Settings().Given("script.permissions") {
 		setPerms = a.Settings().String("script.permissions")
 	}
+	// script.interpreter and script.cwd come from the resolved set like
+	// every other script.* value: flag aliases (--interpreter/--shell),
+	// env and config files all fold into the same two strings.
+	interpreterPref := set.String("script.interpreter")
+	cwdPolicy := set.String("script.cwd")
+	configDir := ""
+	if cp := configPathOf(cfg); cp != "" {
+		configDir = filepath.Dir(cp)
+	}
 	opts := runner.Options{
 		// Set when something other than a terminal is collecting the output:
 		// the MCP server, which has to return it rather than print it.
@@ -943,6 +970,9 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		GlobalsSource:  globalsSrc,
 		CaptureConsole: shape.captureConsole,
 		Runtime:        runtimePref,
+		Interpreter:    interpreterPref,
+		CwdPolicy:      cwdPolicy,
+		ConfigDir:      configDir,
 		Setup:          rtSetup,
 		Timeout:        *timeout,
 		Prelude:        prelude,
@@ -961,6 +991,11 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		Env: map[string]string{
 			"MCPX_SESSION": sessionKey,
 			"MCPX_RUN":     runID,
+			// The caller's call-scoped settings (--pool-call-timeout
+			// and friends) ride along so the generated client's calls
+			// carry them back to the daemon as x-mcpx-settings,
+			// exactly as a daemon-run script's do (#1864 item 4).
+			"MCPX_SETTINGS": c.callSettings,
 			// Whether artifact({path}) may hand the daemon a path instead of
 			// bytes. A socket is the evidence that the daemon shares this
 			// filesystem; a remote endpoint has none.
@@ -990,7 +1025,18 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 			"MCPX_INPUT": inputReport(a.stdoutOverride == nil),
 		},
 	}
+	// #1975: propagate the resolved daemon Bearer [REDACTED] to scripts, so the
+	// generated client's TRANSPORT wrapper can authenticate. Resolved from
+	// the CLI's own settings rather than the environment alone, so a
+	// config-file token reaches scripts too. Unset, no variable is set:
+	// os.Environ() inheritance in the runner already covers an env-sourced
+	// token, and scripts stay byte-for-byte as before.
+	if tok := daemon.BearerToken(a.Settings()); tok != "" {
+		opts.Env["MCPX_TRANSPORT_BEARER_TOKEN"] = tok
+	}
 	opts.TypeCheck = shape.typecheck
+	opts.Imports = shape.imports
+	opts.ImportsOnDynamic = shape.importsOnDynamic
 	opts.Launcher, opts.LauncherName = shape.launcher, shape.launcherName
 	opts.PlaceholderFiles = PlaceholderFiles()
 	opts.AllowRepeat = shape.allowRepeat
@@ -1061,8 +1107,8 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 
 	// The artifact store is the daemon's, opened from this side. When the
 	// daemon is on this machine that is the same SQLite index and the same
-	// blobs, so a file the script registered can be hardlinked into an
-	// output directory rather than fetched back over a socket.
+	// blobs, so a file the script registered can be copied from the store into
+	// an output directory without being fetched back over a socket.
 	var store *artifacts.Store
 	if st, serr := a.localStore(); serr == nil {
 		store = st
@@ -1071,11 +1117,16 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		// Only worth failing for when the caller actually asked for files.
 		return serr
 	}
+	depsOpts, derr := a.depsOptions(mustGetwd(), opts.File)
+	if derr != nil {
+		return derr
+	}
 	svc := a.localService(store, c.Socket())
 	wire := execsvc.Options{
 		Session:   sessionKey,
 		Output:    eo.Output,
 		Artifacts: eo.artifactOptions(mustGetwd()),
+		Deps:      depsOpts,
 	}
 	if wire.Artifacts != nil {
 		wire.Capabilities = []string{execsvc.CapabilityArtifacts}
@@ -1092,7 +1143,11 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		if err != nil {
 			return err
 		}
-		env := runEnvelope(res, out.String(), collected, streamed)
+		// The envelope carries the service's capped stdout
+		// (res.Stdout), not the raw stream captured in out: the raw
+		// copy would hand back output the exec.maxOutputBytes cap
+		// already cut, with no truncation indication.
+		env := runEnvelope(res, res.Stdout, collected, streamed)
 		if s := errOut.String(); s != "" {
 			env["stderr"] = s
 		}
@@ -1161,6 +1216,9 @@ func runEnvelope(res *execsvc.Result, stdout string, logs []logging.Record, stre
 	}
 	if res.TimedOut {
 		env["timedOut"] = true
+	}
+	if res.StdoutTruncated {
+		env["stdoutTruncated"] = true
 	}
 	// A script whose stdout is JSON almost always means it as its result, so
 	// offer it parsed as well as raw rather than making every caller re-parse.
@@ -1591,7 +1649,11 @@ func (a *App) stopAll(ctx context.Context) error {
 		info := listing.info
 		p := listing.paths
 		p.Socket = info.Socket
-		c := NewClient(p, info.ConfigPath)
+		// Explicit unix:// endpoint: this client targets *that recorded
+		// daemon*, so MCPX_SOCKET (which names the caller's own daemon,
+		// #1886 step 6) must not override it — NewClient's ClientSocket
+		// resolution would probe/shut only the override daemon.
+		c := NewClientAt(p, info.ConfigPath, "unix://"+info.Socket)
 		if !c.Ping(ctx) {
 			continue
 		}
@@ -1650,7 +1712,11 @@ func (a *App) CmdDaemons(ctx context.Context, args []string) error {
 		info := listing.info
 		p := listing.paths
 		p.Socket = info.Socket
-		c := NewClient(p, info.ConfigPath)
+		// Explicit unix:// endpoint: this client targets *that recorded
+		// daemon*, so MCPX_SOCKET (which names the caller's own daemon,
+		// #1886 step 6) must not override it — NewClient's ClientSocket
+		// resolution would probe/shut only the override daemon.
+		c := NewClientAt(p, info.ConfigPath, "unix://"+info.Socket)
 		rows = append(rows, row{
 			PID: info.PID, Config: info.ConfigPath,
 			Running: c.Ping(ctx), Started: info.StartedAt,
@@ -2217,6 +2283,7 @@ type scriptShape struct {
 	hooks                      *hookGate
 	env                        map[string]string
 	typecheck                  string
+	imports, importsOnDynamic  string
 	launcher, launcherName     string
 	allowRepeat                []string
 	captureConsole             bool
@@ -2227,13 +2294,29 @@ type scriptShape struct {
 // inlineSource splices prefix and suffix lines around a snippet. A snippet is
 // generated wholesale, so prefix lines share its scope and can declare
 // bindings the snippet uses.
+//
+// A snippet's own shebang goes first, ahead of the prefix. Dispatch reads the
+// first line to decide the interpreter (#2167), and a shell prefix line in
+// front of it hid the shebang: `mcpx exec --prefix 'echo before' $'#!/bin/sh\necho hello'`
+// then went to the JavaScript harness instead of sh (#2611 review). The
+// shebang is still the program's own first line; the prefix runs after it,
+// which is the order the interpreter would have imposed anyway.
 func (sh scriptShape) inlineSource(args []string) string {
 	var body strings.Builder
+	var rest strings.Builder
+	rest.WriteString(strings.Join(args, " "))
+	if first := rest.String(); strings.HasPrefix(first, "#!") {
+		line, tail, _ := strings.Cut(first, "\n")
+		body.WriteString(line)
+		body.WriteString("\n")
+		rest.Reset()
+		rest.WriteString(tail)
+	}
 	for _, line := range sh.prefix {
 		body.WriteString(line)
 		body.WriteString("\n")
 	}
-	body.WriteString(strings.Join(args, " "))
+	body.WriteString(rest.String())
 	for _, line := range sh.suffix {
 		body.WriteString("\n")
 		body.WriteString(line)
@@ -2248,7 +2331,14 @@ func (sh scriptShape) phases() runner.Phases {
 }
 
 func (a *App) resolveScriptShape(cfg *config.Config, f scriptFlags) (scriptShape, error) {
-	sh := scriptShape{captureConsole: !f.noConsole, env: map[string]string{}}
+	// script.captureConsole is the durable form of --no-capture-console:
+	// either one turning capture off turns it off. The daemon's exec
+	// service already read the resolved setting (routes_exec.go); the
+	// local shape read only the flag, so the variable and the config
+	// key were inert for a local run - the #1971 effect guard's probe
+	// is what caught the gap.
+	sh := scriptShape{captureConsole: !f.noConsole && a.Settings().Bool("script.captureConsole"),
+		env: map[string]string{}}
 	// hooks.autonomy, lowered to autonomy.max, governs phases that came from a
 	// configuration file or the environment: they are code this command did not
 	// send. Phases given as flags are the caller's own and are never gated.
@@ -2303,6 +2393,11 @@ func (a *App) resolveScriptShape(cfg *config.Config, f scriptFlags) (scriptShape
 	// short --typecheck spelling, the generated --script-typecheck, a
 	// variable, or the config file.
 	sh.typecheck = firstNonEmpty(f.typecheck, a.Settings().String("script.typecheck"))
+
+	// No short flag spelling: the registry value is the whole story, from
+	// the generated --script-imports flag, a variable, or the config file.
+	sh.imports = a.Settings().String("script.imports")
+	sh.importsOnDynamic = a.Settings().String("script.importsOnDynamic")
 
 	if f.noLauncher && f.launcher != "" {
 		return sh, errors.New("--launcher and --no-launcher contradict each other; " +

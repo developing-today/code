@@ -3,7 +3,7 @@ package daemon
 import (
 	"net/http"
 
-	"github.com/dezren39/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 )
 
 // routesSessions registers the session inventory (#1931 slice 1).

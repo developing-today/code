@@ -122,6 +122,9 @@ else
     fi
   done < <(
     find src -name '*.rs' -type f 2>/dev/null
+    # This package is a workspace root; extracted crate sources and resources
+    # also affect the binary and must invalidate the timestamp cache.
+    find crates -type f 2>/dev/null
     echo Cargo.toml
     echo Cargo.lock
     # For web variant, also check embedded assets (exclude .map files - not embedded)

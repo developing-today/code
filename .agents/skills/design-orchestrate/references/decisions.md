@@ -1,6 +1,6 @@
 # Decisions: triage, disagreement, challenge, human review
 
-Read before step 7. [decisions.md](/planning/workflow/decisions.md) owns the protocol. The [decision template](/planning/workflow/templates/decision.md) and [human-review template](/planning/workflow/templates/human-review.md) own the record shapes. This file is how the orchestrator applies them.
+Read before step 7. [decisions.md](../../../../planning/workflow/decisions.md) owns the protocol. The [decision template](../../../../planning/workflow/templates/decision.md) and [human-review template](../../../../planning/workflow/templates/human-review.md) own the record shapes. This file is how the orchestrator applies them.
 
 The rule that shapes everything here: **the orchestrator does not decide disagreements.** It keeps uncontested decisions that workers made with evidence. It sends every disagreement to read-only subagents and records what they conclude. Work then continues on that conclusion as a preliminary choice.
 
@@ -26,7 +26,7 @@ For every decision record the merged facet added, and every open question in its
 
    Save it as `$LIVE/disagreements/<slug>.md`.
 
-2. **Launch three subagents in parallel**, each given that file and its prompt verbatim: the [reviewer](/planning/workflow/templates/prompts/reviewer.md) checks the facts, the [critic](/planning/workflow/templates/prompts/critic.md) weighs the trade-offs, and the [investigator](/planning/workflow/templates/prompts/investigator.md) looks for options nobody considered. All three are read-only leaves. Save each return verbatim as `$LIVE/disagreements/<slug>.<role>.md`.
+2. **Launch three subagents in parallel**, each given that file and its prompt verbatim: the [reviewer](../../../../planning/workflow/templates/prompts/reviewer.md) checks the facts, the [critic](../../../../planning/workflow/templates/prompts/critic.md) weighs the trade-offs, and the [investigator](../../../../planning/workflow/templates/prompts/investigator.md) looks for options nobody considered. All three are read-only leaves. Save each return verbatim as `$LIVE/disagreements/<slug>.<role>.md`.
 3. **Combine** their returns, question by question:
    - all that answered agree: record that choice;
    - two agree and one differs: record the majority choice, put the dissent in the rationale, and list it as a toss-up if its reversal cost is medium or high;
@@ -57,8 +57,8 @@ Workers that write decision records follow the same steps. Their briefs carry th
 
 Run it once, after every crucial and recommended child issue has merged and before consolidation:
 
-1. Give every `decisions/D*.md` path, the main reference, the concept files, the transcript path and the end goal to one fresh [challenger](/planning/workflow/templates/prompts/challenge-pass.md).
-2. For each `reopen` line, launch an [investigator](/planning/workflow/templates/prompts/investigator.md) with the decision record and the challenger's finding as "Why you are here". Run all the reopens in parallel.
+1. Give every `decisions/D*.md` path, the main reference, the concept files, the transcript path and the end goal to one fresh [challenger](../../../../planning/workflow/templates/prompts/challenge-pass.md).
+2. For each `reopen` line, launch an [investigator](../../../../planning/workflow/templates/prompts/investigator.md) with the decision record and the challenger's finding as "Why you are here". Run all the reopens in parallel.
 3. Record each outcome on a bookkeeping PR as a dated `## <UTC> Reopened:` section in the decision record. It lists the new options with their steelmen, the result, and who returned it.
    - **Choice kept:** no other change.
    - **Choice changed:** set `Status: reversed` on the old record and write a new record for the new choice that names the old one. Run `git grep -l D<nnn>` to list the files to rework, and give each one a follow-up issue.

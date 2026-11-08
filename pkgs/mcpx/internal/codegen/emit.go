@@ -119,7 +119,8 @@ func toolDecl(t Tool, indent string) string {
 	return b.String()
 }
 
-// Module renders the importable client module. Scripts do:
+// Module renders the importable client module for the TypeScript target
+// (the TypeScript entry in the Language table, language.go). Scripts do:
 //
 //	import { fff, chrome_devtools } from "./.mcpx/client.ts";
 //
@@ -234,6 +235,86 @@ func toolMeta(nss []Namespace) string {
 		string(b) + ";\n"
 }
 
+// schemaFieldsDoc is the field-naming part of a JSON Schema: its own
+// properties/required plus any composed subschemas. A tool's input
+// schema may define its arguments inside allOf/anyOf/oneOf instead of
+// at the top level; reading only the outer properties dropped those
+// arguments from the generated signatures entirely, so the generated
+// method could not make a valid call for such a schema.
+type schemaFieldsDoc struct {
+	Properties map[string]any     `json:"properties"`
+	Required   []string           `json:"required"`
+	AllOf      []*schemaFieldsDoc `json:"allOf"`
+	AnyOf      []*schemaFieldsDoc `json:"anyOf"`
+	OneOf      []*schemaFieldsDoc `json:"oneOf"`
+}
+
+// UnmarshalJSON accepts a boolean schema (true admits anything, false
+// admits nothing): either carries no fields, and one appearing inside
+// a composition must not fail the whole document's unmarshal — that
+// discarded even the containing schema's own properties, so generated
+// signatures lost required arguments entirely (Codex round on #2591).
+func (d *schemaFieldsDoc) UnmarshalJSON(data []byte) error {
+	if s := strings.TrimSpace(string(data)); s == "true" || s == "false" {
+		return nil
+	}
+	type plain schemaFieldsDoc
+	return json.Unmarshal(data, (*plain)(d))
+}
+
+// collectProps adds every property name visible through composition.
+func (d *schemaFieldsDoc) collectProps(into map[string]bool) {
+	if d == nil {
+		return
+	}
+	for k := range d.Properties {
+		into[k] = true
+	}
+	for _, subs := range [][]*schemaFieldsDoc{d.AllOf, d.AnyOf, d.OneOf} {
+		for _, sub := range subs {
+			sub.collectProps(into)
+		}
+	}
+}
+
+// requiredSet returns the fields every valid argument object must
+// carry: the schema's own required fields, everything an allOf branch
+// requires (every branch applies), and the fields required by EVERY
+// anyOf/oneOf branch (the only ones guaranteed, whichever branch a
+// caller satisfies).
+func (d *schemaFieldsDoc) requiredSet() map[string]bool {
+	out := map[string]bool{}
+	if d == nil {
+		return out
+	}
+	for _, r := range d.Required {
+		out[r] = true
+	}
+	for _, sub := range d.AllOf {
+		for r := range sub.requiredSet() {
+			out[r] = true
+		}
+	}
+	for _, branches := range [][]*schemaFieldsDoc{d.AnyOf, d.OneOf} {
+		if len(branches) == 0 {
+			continue
+		}
+		common := branches[0].requiredSet()
+		for _, sub := range branches[1:] {
+			subReq := sub.requiredSet()
+			for r := range common {
+				if !subReq[r] {
+					delete(common, r)
+				}
+			}
+		}
+		for r := range common {
+			out[r] = true
+		}
+	}
+	return out
+}
+
 // schemaFields pulls parameter names out of a JSON Schema.
 func schemaFields(raw json.RawMessage) (params, required []string) {
 	// Never nil. A nil slice marshals to JSON null, and the emitted type
@@ -244,19 +325,18 @@ func schemaFields(raw json.RawMessage) (params, required []string) {
 	if len(raw) == 0 {
 		return params, required
 	}
-	var doc struct {
-		Properties map[string]any `json:"properties"`
-		Required   []string       `json:"required"`
-	}
+	var doc schemaFieldsDoc
 	if json.Unmarshal(raw, &doc) != nil {
 		return params, required
 	}
-	for k := range doc.Properties {
+	props := map[string]bool{}
+	doc.collectProps(props)
+	for k := range props {
 		params = append(params, k)
 	}
 	sort.Strings(params)
-	if doc.Required != nil {
-		required = doc.Required
+	for r := range doc.requiredSet() {
+		required = append(required, r)
 	}
 	sort.Strings(required)
 	return params, required
@@ -307,6 +387,15 @@ const moduleRuntime = `function env(name: string): string {
   return "";
 }
 
+// fetch header values must be ByteStrings: a settings JSON carrying a
+// non-ASCII value (a Unicode path in artifacts.dir, say) throws a
+// TypeError before the request leaves the script. Escape non-ASCII
+// characters as JSON unicode escapes -- the daemon's JSON parser turns
+// them back into the same characters, so the settings survive intact.
+function asciiHeader(v: string): string {
+  return v.replace(/[^\x00-\x7F]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+}
+
 // The session and endpoint are read at run time rather than baked in, so that
 // concurrent runs sharing one generated client file still get their own
 // session. That isolation is what gives each run its own browser in
@@ -354,6 +443,26 @@ const makeFetcher = (): { fetch: Fetcher; via: string } => {
 };
 
 const TRANSPORT = makeFetcher();
+
+/**
+ * #1975: when the daemon requires a Bearer [REDACTED] (transport.bearerToken),
+ * every call through TRANSPORT carries it. The token is read from the
+ * script's environment (MCPX_TRANSPORT_BEARER_TOKEN), which the CLI runner
+ * populates from its own resolved settings -- a config-file token reaches
+ * scripts that way too, not only an env-sourced one. Unset, fetch is
+ * untouched: requests are byte-for-byte what they were before the setting
+ * existed. Wrapping here covers every call site (/v1/call, /v1/batch,
+ * /v1/resource, /v1/artifacts) through the one choke point.
+ */
+const DAEMON_TOKEN = env("MCPX_TRANSPORT_BEARER_TOKEN");
+if (DAEMON_TOKEN) {
+  const direct = TRANSPORT.fetch;
+  TRANSPORT.fetch = (u, i) => {
+    const headers = new Headers((i as any)?.headers);
+    headers.set("Authorization", "Bearer " + DAEMON_TOKEN);
+    return direct(u, { ...(i as any), headers });
+  };
+}
 
 /** Where calls are going, for a script that wants to know. */
 export const transport = (): string => TRANSPORT.via;
@@ -614,6 +723,7 @@ async function __call(server: string, tool: string, args: unknown): Promise<Tool
         "x-mcpx-parent-session": env("MCPX_PARENT_SESSION_ID"),
         "x-mcpx-ephemeral": env("MCPX_EPHEMERAL"),
         "x-mcpx-run": env("MCPX_RUN"),
+        "x-mcpx-settings": asciiHeader(env("MCPX_SETTINGS")),
         "x-mcpx-input": env("MCPX_INPUT"),
       },
       body: JSON.stringify({ server, tool, args: args ?? {} }),
@@ -1336,6 +1446,8 @@ export async function batch(
       "x-mcpx-cwd": env("MCPX_CWD"),
       "x-mcpx-pid": env("MCPX_PID"),
       "x-mcpx-parent-session": env("MCPX_PARENT_SESSION_ID"),
+      "x-mcpx-run": env("MCPX_RUN"),
+      "x-mcpx-settings": asciiHeader(env("MCPX_SETTINGS")),
     },
     body: JSON.stringify({
       calls: calls.map((c) => ({
@@ -1403,7 +1515,7 @@ export interface ArtifactOptions {
  * a tool result.
  *
  * This behaves identically wherever the script runs, and that is the whole
- * point of it. Locally the daemon hardlinks the file it was pointed at.
+ * point of it. Locally the daemon reads and copies the file into its store.
  * Remotely the bytes travel once, to the daemon, and the caller fetches them
  * only if it wants them. The script does not ask which case it is in, because
  * a script that has to ask is a script with two code paths and one of them is
@@ -1430,8 +1542,8 @@ export async function artifact(
   if (declared) headers["content-type"] = declared;
   let body: BodyInit | undefined;
   if (norm.path !== undefined && env("MCPX_ARTIFACTS_LOCAL") === "1") {
-    // The daemon can see this file. Naming it lets the store hardlink rather
-    // than read, hash into memory and write again.
+    // The daemon can see this file. Naming it avoids uploading the body over
+    // the client transport; the store still reads, hashes, and copies it.
     headers["x-mcpx-path"] = norm.path;
   } else if (norm.path !== undefined) {
     body = await readFileBytes(norm.path) as unknown as BodyInit;
@@ -1547,9 +1659,9 @@ function normaliseContent(b: ContentBlock | undefined): NormalisedArtifact | und
 func GlobalDeclarations(nss []Namespace) string {
 	var b strings.Builder
 	b.WriteString("// Generated by mcpx. Ambient declarations for the globals the runner\n")
-	b.WriteString("// installs. Importing from ./" + "mcpx-client.ts" + " works too and is equivalent.\n\n")
-	b.WriteString("import type { Logger, LogAttrs, PathPair, ToolResult } from \"./mcpx-client.ts\";\n")
-	b.WriteString("import type * as __mcpx from \"./mcpx-client.ts\";\n\n")
+	b.WriteString("// installs. Importing from ./" + typescriptClientFile + " works too and is equivalent.\n\n")
+	b.WriteString("import type { Logger, LogAttrs, PathPair, ToolResult } from \"./" + typescriptClientFile + "\";\n")
+	b.WriteString("import type * as __mcpx from \"./" + typescriptClientFile + "\";\n\n")
 	b.WriteString("declare global {\n")
 	b.WriteString("  /** Structured logging. Callable: log(msg) is log.info(msg). */\n")
 	b.WriteString("  const log: Logger;\n")

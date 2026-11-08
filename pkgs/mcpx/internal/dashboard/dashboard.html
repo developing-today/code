@@ -1,660 +1,868 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>mcpx Dashboard</title>
-  <style>
-    :root {
-      --bg: #0d1117;
-      --card-bg: #161b22;
-      --border: #30363d;
-      --text: #c9d1d9;
-      --heading: #f0f6fc;
-      --accent: #58a6ff;
-      --green: #3fb950;
-      --purple: #bc8cff;
-      --orange: #d29922;
-      --red: #f85149;
-    }
-    body {
-      margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background-color: var(--bg);
-      color: var(--text);
-    }
-    header {
-      border-bottom: 1px solid var(--border);
-      padding: 1rem 2rem;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      background-color: var(--card-bg);
-    }
-    h1 {
-      margin: 0;
-      font-size: 1.3rem;
-      color: var(--heading);
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-    .badge {
-      background-color: var(--accent);
-      color: #000;
-      font-size: 0.75rem;
-      padding: 0.2rem 0.5rem;
-      border-radius: 12px;
-      font-weight: bold;
-    }
-    .status-dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      background-color: var(--green);
-      display: inline-block;
-      margin-right: 6px;
-    }
-    main {
-      padding: 2rem;
-      max-width: 1200px;
-      margin: 0 auto;
-    }
-    .metrics-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 1rem;
-      margin-bottom: 2rem;
-    }
-    .metric-card {
-      background-color: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 1.2rem;
-    }
-    .metric-title {
-      font-size: 0.85rem;
-      color: #8b949e;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      margin-bottom: 0.5rem;
-    }
-    .metric-val {
-      font-size: 1.8rem;
-      font-weight: bold;
-      color: var(--heading);
-    }
-    .metric-sub {
-      font-size: 0.8rem;
-      color: var(--green);
-      margin-top: 0.3rem;
-    }
-    .section-title {
-      color: var(--heading);
-      font-size: 1.1rem;
-      margin: 2rem 0 1rem;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      background-color: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      overflow: hidden;
-      margin-bottom: 1.5rem;
-    }
-    th, td {
-      padding: 0.75rem 1rem;
-      text-align: left;
-      border-bottom: 1px solid var(--border);
-      font-size: 0.9rem;
-    }
-    th {
-      background-color: #21262d;
-      color: var(--heading);
-      font-size: 0.85rem;
-    }
-    tr:last-child td { border-bottom: none; }
-    .search-box {
-      display: flex;
-      gap: 0.5rem;
-      margin-bottom: 1.5rem;
-    }
-    input[type="text"] {
-      flex: 1;
-      padding: 0.6rem 1rem;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      background-color: var(--bg);
-      color: var(--text);
-      font-size: 0.95rem;
-    }
-    button {
-      padding: 0.6rem 1.2rem;
-      background-color: var(--accent);
-      color: #000;
-      border: none;
-      border-radius: 6px;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    button:hover { opacity: 0.9; }
-    .results {
-      background-color: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 1rem;
-      margin-bottom: 2rem;
-      display: none;
-    }
-    .tool-item {
-      padding: 0.6rem 0;
-      border-bottom: 1px solid var(--border);
-    }
-    .tool-item:last-child { border-bottom: none; }
-    .tool-name { font-weight: 600; color: var(--accent); }
-    .tool-desc { font-size: 0.85rem; color: #8b949e; margin-top: 0.2rem; }
-    .badge-tag {
-      background-color: #21262d;
-      padding: 0.2rem 0.5rem;
-      border-radius: 4px;
-      border: 1px solid var(--border);
-      font-size: 0.8rem;
-    }
-    .badge-error {
-      color: var(--red);
-      font-weight: bold;
-    }
-    .grid-two {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 1.5rem;
-    }
-    @media (max-width: 800px) {
-      .grid-two { grid-template-columns: 1fr; }
-    }
-    .view-tabs {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.5rem;
-      margin-bottom: 1rem;
-    }
-    .view-tab {
-      padding: 0.45rem 0.9rem;
-      background-color: #21262d;
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    .view-tab.active {
-      background-color: var(--accent);
-      color: #000;
-      border-color: var(--accent);
-    }
-    .view-note {
-      font-size: 0.85rem;
-      color: #8b949e;
-      margin-bottom: 0.75rem;
-    }
-    .view-controls {
-      display: flex;
-      gap: 0.5rem;
-      align-items: center;
-      margin-bottom: 1rem;
-      flex-wrap: wrap;
-    }
-    .view-controls select {
-      padding: 0.5rem;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      background-color: var(--bg);
-      color: var(--text);
-      font-size: 0.9rem;
-    }
-    .elicit-card {
-      background-color: var(--card-bg);
-      border: 1px solid var(--orange);
-      border-radius: 8px;
-      padding: 1rem 1.2rem;
-      margin-bottom: 1rem;
-    }
-    .elicit-card .elicit-msg {
-      color: var(--heading);
-      font-weight: 600;
-      margin-bottom: 0.4rem;
-    }
-    .elicit-card .elicit-meta {
-      font-size: 0.8rem;
-      color: #8b949e;
-      margin-bottom: 0.8rem;
-    }
-    .elicit-card label {
-      display: block;
-      font-size: 0.85rem;
-      margin-bottom: 0.6rem;
-    }
-    .elicit-card input[type="text"],
-    .elicit-card input[type="number"],
-    .elicit-card select {
-      display: block;
-      width: 100%;
-      box-sizing: border-box;
-      margin-top: 0.25rem;
-      padding: 0.5rem 0.7rem;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      background-color: var(--bg);
-      color: var(--text);
-      font-size: 0.9rem;
-    }
-    .elicit-actions {
-      display: flex;
-      gap: 0.5rem;
-      margin-top: 0.8rem;
-    }
-    .elicit-actions .btn-decline {
-      background-color: #21262d;
-      color: var(--text);
-      border: 1px solid var(--border);
-    }
-    .elicit-actions .btn-cancel {
-      background-color: transparent;
-      color: var(--red);
-      border: 1px solid var(--red);
-    }
-    .elicit-status {
-      font-size: 0.85rem;
-      margin-top: 0.6rem;
-      color: var(--green);
-    }
-  </style>
-</head>
-<body>
-  <header>
-    <h1><span class="status-dot"></span>mcpx Dashboard <span class="badge">{{VERSION}}</span></h1>
-    <div><span id="daemon-status">Connected</span></div>
-  </header>
-  <main>
-    <div class="metrics-grid">
-      <div class="metric-card">
-        <div class="metric-title">Total Turns</div>
-        <div class="metric-val" id="m-turns">0</div>
-        <div class="metric-sub">Active Sessions</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-title">Tokens Saved</div>
-        <div class="metric-val" id="m-saved" style="color:var(--green)">0</div>
-        <div class="metric-sub" id="m-savings-pct">0% Savings</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-title">Injected vs Baseline</div>
-        <div class="metric-val" id="m-ratio">0 / 0</div>
-        <div class="metric-sub">Prompt Tokens</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-title">Configured Pools</div>
-        <div class="metric-val" id="m-pools">0</div>
-        <div class="metric-sub">Upstream MCP Servers</div>
-      </div>
-    </div>
-
-    <div class="section-title">
-      <span>Interactive Tool Search</span>
-    </div>
-    <div class="search-box">
-      <input type="text" id="query-input" placeholder="Type natural language query (e.g. click element, git status)...">
-      <button onclick="runSearch()">Semantic Search</button>
-    </div>
-    <div class="results" id="search-results"></div>
-
-    <div class="section-title">
-      <span>Active Server Pools</span>
-    </div>
-    <table id="pool-table">
-      <thead>
-        <tr>
-          <th>Namespace</th>
-          <th>Server</th>
-          <th>Tools</th>
-          <th>State</th>
-          <th>Live Instances</th>
-        </tr>
-      </thead>
-      <tbody id="pool-tbody">
-        <tr><td colspan="5" style="text-align:center; color:#8b949e">Loading server status...</td></tr>
-      </tbody>
-    </table>
-
-    <div class="section-title">
-      <span>Tool Reliability & Error Rates</span>
-    </div>
-    <table id="calls-table">
-      <thead>
-        <tr>
-          <th>Tool</th>
-          <th>Server</th>
-          <th>Calls</th>
-          <th>Errors</th>
-          <th>Error Rate</th>
-          <th>P50 Latency</th>
-          <th>Max Latency</th>
-        </tr>
-      </thead>
-      <tbody id="calls-tbody">
-        <tr><td colspan="7" style="text-align:center; color:#8b949e">No tool executions recorded yet</td></tr>
-      </tbody>
-    </table>
-
-    <div class="grid-two">
-      <div>
-        <div class="section-title">
-          <span>Correlated Tool Pairs (Co-Occurring in Sessions)</span>
-        </div>
-        <table id="correlations-table">
-          <thead>
-            <tr>
-              <th>Tool A</th>
-              <th>Tool B</th>
-              <th>Co-Occurrences</th>
-            </tr>
-          </thead>
-          <tbody id="correlations-tbody">
-            <tr><td colspan="3" style="text-align:center; color:#8b949e">No correlation data yet</td></tr>
-          </tbody>
-        </table>
-      </div>
-
-      <div>
-        <div class="section-title">
-          <span>Tool Usage Over Time (Timeline)</span>
-        </div>
-        <table id="timeline-table">
-          <thead>
-            <tr>
-              <th>Time Window</th>
-              <th>Calls</th>
-              <th>Errors</th>
-              <th>Success Rate</th>
-            </tr>
-          </thead>
-          <tbody id="timeline-tbody">
-            <tr><td colspan="4" style="text-align:center; color:#8b949e">No timeline data yet</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="section-title">
-      <span>Common Error Shapes & Recurring Failures</span>
-    </div>
-    <table id="errors-table">
-      <thead>
-        <tr>
-          <th>Error Shape / Template</th>
-          <th>Occurrences</th>
-          <th>Servers</th>
-          <th>Last Seen</th>
-        </tr>
-      </thead>
-      <tbody id="errors-tbody">
-        <tr><td colspan="4" style="text-align:center; color:#8b949e">No error shapes logged</td></tr>
-      </tbody>
-    </table>
-
-    <div class="section-title">
-      <span>Interaction History & Feedback Ratings</span>
-      <div style="font-size:0.8rem; font-weight:normal; display:flex; gap:0.5rem; align-items:center;">
-        <input type="text" id="fb-filter-q" placeholder="Filter interactions..." style="background:#0d1117; border:1px solid #30363d; color:#c9d1d9; border-radius:4px; padding:0.2rem 0.5rem;" oninput="loadInteractions()">
-        <select id="fb-filter-target" style="background:#0d1117; border:1px solid #30363d; color:#c9d1d9; border-radius:4px; padding:0.2rem 0.4rem;" onchange="loadInteractions()">
-          <option value="">All Targets</option>
-          <option value="retrieval">Retrieval</option>
-          <option value="execution">Execution</option>
-        </select>
-        <select id="fb-filter-status" style="background:#0d1117; border:1px solid #30363d; color:#c9d1d9; border-radius:4px; padding:0.2rem 0.4rem;" onchange="loadInteractions()">
-          <option value="">All Feedback</option>
-          <option value="0">Unrated Only</option>
-          <option value="1">Rated Only</option>
-        </select>
-      </div>
-    </div>
-    <table id="interactions-table">
-      <thead>
-        <tr>
-          <th>Trace ID</th>
-          <th>Timestamp</th>
-          <th>Source</th>
-          <th>Target</th>
-          <th>Tools</th>
-          <th>Score</th>
-          <th>Feedback</th>
-          <th>Action</th>
-        </tr>
-      </thead>
-      <tbody id="interactions-tbody">
-        <tr><td colspan="8" style="text-align:center; color:#8b949e">Loading interactions...</td></tr>
-      </tbody>
-    </table>
-    <div class="section-title">
-      <span>Pending Elicitations <span class="badge" id="elicit-count" style="background:var(--orange)">0</span></span>
-      <button style="padding:0.3rem 0.7rem; font-size:0.8rem;" onclick="loadElicitations()">Refresh</button>
-    </div>
-    <div class="view-note">Questions a tool call is waiting on, from <code>GET /v1/elicit</code>. Answering posts to <code>POST /v1/elicit/{id}/{action}</code> — accept sends the form values as the answer content; decline and cancel send none. This is the one write the operator views allow.</div>
-    <div id="elicit-list">
-      <div class="view-note">No pending elicitations.</div>
-    </div>
-
-    <div class="section-title">
-      <span>Operator Views</span>
-    </div>
-    <div class="view-note">The TUI's six views, read-only, over the same <code>/v1</code> endpoints the TUI's data source uses — no UI-specific endpoints. Live updates arrive over <code>/v1/events</code>; views also refresh every 15 seconds while open.</div>
-    <div class="view-tabs" role="tablist">
-      <button class="view-tab active" data-view="browse" onclick="showView('browse')">Browse</button>
-      <button class="view-tab" data-view="log" onclick="showView('log')">Log</button>
-      <button class="view-tab" data-view="stats" onclick="showView('stats')">Stats</button>
-      <button class="view-tab" data-view="servers" onclick="showView('servers')">Servers</button>
-      <button class="view-tab" data-view="sessions" onclick="showView('sessions')">Sessions</button>
-      <button class="view-tab" data-view="storage" onclick="showView('storage')">Storage</button>
-    </div>
-    <div class="view-controls" id="stats-controls" style="display:none">
-      <label for="stats-dimension">Dimension</label>
-      <select id="stats-dimension" onchange="loadView('stats')">
-        <option value="calls">calls</option>
-        <option value="servers">servers</option>
-        <option value="errors">errors</option>
-        <option value="sessions">sessions</option>
-        <option value="slowest">slowest</option>
-        <option value="volume">volume</option>
-      </select>
-    </div>
-    <div class="view-controls" id="browse-controls">
-      <label for="browse-ns">Namespace</label>
-      <select id="browse-ns" onchange="loadView('browse')"></select>
-    </div>
-    <div id="view-body">
-      <div class="view-note">Loading…</div>
-    </div>
-  </main>
-
-  <script>
-    async function loadMetrics() {
-      try {
-        const res = await fetch('/v1/metrics/tokens');
-        if (res.ok) {
-          const data = await res.json();
-          document.getElementById('m-turns').innerText = data.totalTurns || 0;
-          document.getElementById('m-saved').innerText = (data.totalTokensSaved || 0).toLocaleString();
-          document.getElementById('m-savings-pct').innerText = (data.savingsPercentage || 0).toFixed(1) + '% Savings';
-          document.getElementById('m-ratio').innerText = (data.totalInjectedTokens || 0).toLocaleString() + ' / ' + (data.totalBaselineTokens || 0).toLocaleString();
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>mcpx Dashboard</title>
+    <style>
+      :root {
+        --bg: #0d1117;
+        --card-bg: #161b22;
+        --border: #30363d;
+        --text: #c9d1d9;
+        --heading: #f0f6fc;
+        --accent: #58a6ff;
+        --green: #3fb950;
+        --purple: #bc8cff;
+        --orange: #d29922;
+        --red: #f85149;
+      }
+      body {
+        margin: 0;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+          Arial, sans-serif;
+        background-color: var(--bg);
+        color: var(--text);
+      }
+      header {
+        border-bottom: 1px solid var(--border);
+        padding: 1rem 2rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        background-color: var(--card-bg);
+      }
+      h1 {
+        margin: 0;
+        font-size: 1.3rem;
+        color: var(--heading);
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+      .badge {
+        background-color: var(--accent);
+        color: #000;
+        font-size: 0.75rem;
+        padding: 0.2rem 0.5rem;
+        border-radius: 12px;
+        font-weight: bold;
+      }
+      .status-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background-color: var(--green);
+        display: inline-block;
+        margin-right: 6px;
+      }
+      main {
+        padding: 2rem;
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+      .metrics-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 1rem;
+        margin-bottom: 2rem;
+      }
+      .metric-card {
+        background-color: var(--card-bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 1.2rem;
+      }
+      .metric-title {
+        font-size: 0.85rem;
+        color: #8b949e;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 0.5rem;
+      }
+      .metric-val {
+        font-size: 1.8rem;
+        font-weight: bold;
+        color: var(--heading);
+      }
+      .metric-sub {
+        font-size: 0.8rem;
+        color: var(--green);
+        margin-top: 0.3rem;
+      }
+      .section-title {
+        color: var(--heading);
+        font-size: 1.1rem;
+        margin: 2rem 0 1rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background-color: var(--card-bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+        margin-bottom: 1.5rem;
+      }
+      th,
+      td {
+        padding: 0.75rem 1rem;
+        text-align: left;
+        border-bottom: 1px solid var(--border);
+        font-size: 0.9rem;
+      }
+      th {
+        background-color: #21262d;
+        color: var(--heading);
+        font-size: 0.85rem;
+      }
+      tr:last-child td {
+        border-bottom: none;
+      }
+      .search-box {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1.5rem;
+      }
+      input[type="text"] {
+        flex: 1;
+        padding: 0.6rem 1rem;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background-color: var(--bg);
+        color: var(--text);
+        font-size: 0.95rem;
+      }
+      button {
+        padding: 0.6rem 1.2rem;
+        background-color: var(--accent);
+        color: #000;
+        border: none;
+        border-radius: 6px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:hover {
+        opacity: 0.9;
+      }
+      .results {
+        background-color: var(--card-bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 2rem;
+        display: none;
+      }
+      .tool-item {
+        padding: 0.6rem 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .tool-item:last-child {
+        border-bottom: none;
+      }
+      .tool-name {
+        font-weight: 600;
+        color: var(--accent);
+      }
+      .tool-desc {
+        font-size: 0.85rem;
+        color: #8b949e;
+        margin-top: 0.2rem;
+      }
+      .badge-tag {
+        background-color: #21262d;
+        padding: 0.2rem 0.5rem;
+        border-radius: 4px;
+        border: 1px solid var(--border);
+        font-size: 0.8rem;
+      }
+      .badge-error {
+        color: var(--red);
+        font-weight: bold;
+      }
+      .grid-two {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.5rem;
+      }
+      @media (max-width: 800px) {
+        .grid-two {
+          grid-template-columns: 1fr;
         }
-      } catch(e) {}
-    }
+      }
+      .view-tabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin-bottom: 1rem;
+      }
+      .view-tab {
+        padding: 0.45rem 0.9rem;
+        background-color: #21262d;
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .view-tab.active {
+        background-color: var(--accent);
+        color: #000;
+        border-color: var(--accent);
+      }
+      .view-note {
+        font-size: 0.85rem;
+        color: #8b949e;
+        margin-bottom: 0.75rem;
+      }
+      .view-controls {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+        margin-bottom: 1rem;
+        flex-wrap: wrap;
+      }
+      .view-controls select {
+        padding: 0.5rem;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background-color: var(--bg);
+        color: var(--text);
+        font-size: 0.9rem;
+      }
+      .elicit-card {
+        background-color: var(--card-bg);
+        border: 1px solid var(--orange);
+        border-radius: 8px;
+        padding: 1rem 1.2rem;
+        margin-bottom: 1rem;
+      }
+      .elicit-card .elicit-msg {
+        color: var(--heading);
+        font-weight: 600;
+        margin-bottom: 0.4rem;
+      }
+      .elicit-card .elicit-meta {
+        font-size: 0.8rem;
+        color: #8b949e;
+        margin-bottom: 0.8rem;
+      }
+      .elicit-card label {
+        display: block;
+        font-size: 0.85rem;
+        margin-bottom: 0.6rem;
+      }
+      .elicit-card input[type="text"],
+      .elicit-card input[type="number"],
+      .elicit-card select {
+        display: block;
+        width: 100%;
+        box-sizing: border-box;
+        margin-top: 0.25rem;
+        padding: 0.5rem 0.7rem;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background-color: var(--bg);
+        color: var(--text);
+        font-size: 0.9rem;
+      }
+      .elicit-actions {
+        display: flex;
+        gap: 0.5rem;
+        margin-top: 0.8rem;
+      }
+      .elicit-actions .btn-decline {
+        background-color: #21262d;
+        color: var(--text);
+        border: 1px solid var(--border);
+      }
+      .elicit-actions .btn-cancel {
+        background-color: transparent;
+        color: var(--red);
+        border: 1px solid var(--red);
+      }
+      .elicit-status {
+        font-size: 0.85rem;
+        margin-top: 0.6rem;
+        color: var(--green);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>
+        <span class="status-dot"></span>mcpx Dashboard
+        <span class="badge">{{VERSION}}</span>
+      </h1>
+      <div><span id="daemon-status">Connected</span></div>
+    </header>
+    <main>
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-title">Total Turns</div>
+          <div class="metric-val" id="m-turns">0</div>
+          <div class="metric-sub">Active Sessions</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-title">Tokens Saved</div>
+          <div class="metric-val" id="m-saved" style="color: var(--green)">
+            0
+          </div>
+          <div class="metric-sub" id="m-savings-pct">0% Savings</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-title">Injected vs Baseline</div>
+          <div class="metric-val" id="m-ratio">0 / 0</div>
+          <div class="metric-sub">Prompt Tokens</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-title">Configured Pools</div>
+          <div class="metric-val" id="m-pools">0</div>
+          <div class="metric-sub">Upstream MCP Servers</div>
+        </div>
+      </div>
 
-    async function loadPools() {
-      try {
-        const res = await fetch('/v1/status');
-        if (res.ok) {
-          const pools = await res.json();
-          const tbody = document.getElementById('pool-tbody');
-          document.getElementById('m-pools').innerText = pools.length;
-          if (pools.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center">No servers configured</td></tr>';
-            return;
+      <div class="section-title">
+        <span>Interactive Tool Search</span>
+      </div>
+      <div class="search-box">
+        <input
+          type="text"
+          id="query-input"
+          placeholder="Type natural language query (e.g. click element, git status)..."
+        />
+        <button onclick="runSearch()">Semantic Search</button>
+      </div>
+      <div class="results" id="search-results"></div>
+
+      <div class="section-title">
+        <span>Active Server Pools</span>
+      </div>
+      <table id="pool-table">
+        <thead>
+          <tr>
+            <th>Namespace</th>
+            <th>Server</th>
+            <th>Tools</th>
+            <th>State</th>
+            <th>Live Instances</th>
+          </tr>
+        </thead>
+        <tbody id="pool-tbody">
+          <tr>
+            <td colspan="5" style="text-align: center; color: #8b949e">
+              Loading server status...
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="section-title">
+        <span>Tool Reliability & Error Rates</span>
+      </div>
+      <table id="calls-table">
+        <thead>
+          <tr>
+            <th>Tool</th>
+            <th>Server</th>
+            <th>Calls</th>
+            <th>Errors</th>
+            <th>Error Rate</th>
+            <th>P50 Latency</th>
+            <th>Max Latency</th>
+          </tr>
+        </thead>
+        <tbody id="calls-tbody">
+          <tr>
+            <td colspan="7" style="text-align: center; color: #8b949e">
+              No tool executions recorded yet
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="grid-two">
+        <div>
+          <div class="section-title">
+            <span>Correlated Tool Pairs (Co-Occurring in Sessions)</span>
+          </div>
+          <table id="correlations-table">
+            <thead>
+              <tr>
+                <th>Tool A</th>
+                <th>Tool B</th>
+                <th>Co-Occurrences</th>
+              </tr>
+            </thead>
+            <tbody id="correlations-tbody">
+              <tr>
+                <td colspan="3" style="text-align: center; color: #8b949e">
+                  No correlation data yet
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div>
+          <div class="section-title">
+            <span>Tool Usage Over Time (Timeline)</span>
+          </div>
+          <table id="timeline-table">
+            <thead>
+              <tr>
+                <th>Time Window</th>
+                <th>Calls</th>
+                <th>Errors</th>
+                <th>Success Rate</th>
+              </tr>
+            </thead>
+            <tbody id="timeline-tbody">
+              <tr>
+                <td colspan="4" style="text-align: center; color: #8b949e">
+                  No timeline data yet
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="section-title">
+        <span>Common Error Shapes & Recurring Failures</span>
+      </div>
+      <table id="errors-table">
+        <thead>
+          <tr>
+            <th>Error Shape / Template</th>
+            <th>Occurrences</th>
+            <th>Servers</th>
+            <th>Last Seen</th>
+          </tr>
+        </thead>
+        <tbody id="errors-tbody">
+          <tr>
+            <td colspan="4" style="text-align: center; color: #8b949e">
+              No error shapes logged
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="section-title">
+        <span>Interaction History & Feedback Ratings</span>
+        <div
+          style="
+            font-size: 0.8rem;
+            font-weight: normal;
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+          "
+        >
+          <input
+            type="text"
+            id="fb-filter-q"
+            placeholder="Filter interactions..."
+            style="
+              background: #0d1117;
+              border: 1px solid #30363d;
+              color: #c9d1d9;
+              border-radius: 4px;
+              padding: 0.2rem 0.5rem;
+            "
+            oninput="loadInteractions()"
+          />
+          <select
+            id="fb-filter-target"
+            style="
+              background: #0d1117;
+              border: 1px solid #30363d;
+              color: #c9d1d9;
+              border-radius: 4px;
+              padding: 0.2rem 0.4rem;
+            "
+            onchange="loadInteractions()"
+          >
+            <option value="">All Targets</option>
+            <option value="retrieval">Retrieval</option>
+            <option value="execution">Execution</option>
+          </select>
+          <select
+            id="fb-filter-status"
+            style="
+              background: #0d1117;
+              border: 1px solid #30363d;
+              color: #c9d1d9;
+              border-radius: 4px;
+              padding: 0.2rem 0.4rem;
+            "
+            onchange="loadInteractions()"
+          >
+            <option value="">All Feedback</option>
+            <option value="0">Unrated Only</option>
+            <option value="1">Rated Only</option>
+          </select>
+        </div>
+      </div>
+      <table id="interactions-table">
+        <thead>
+          <tr>
+            <th>Trace ID</th>
+            <th>Timestamp</th>
+            <th>Source</th>
+            <th>Target</th>
+            <th>Tools</th>
+            <th>Score</th>
+            <th>Feedback</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="interactions-tbody">
+          <tr>
+            <td colspan="8" style="text-align: center; color: #8b949e">
+              Loading interactions...
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="section-title">
+        <span
+          >Pending Elicitations
+          <span
+            class="badge"
+            id="elicit-count"
+            style="background: var(--orange)"
+            >0</span
+          ></span
+        >
+        <button
+          style="padding: 0.3rem 0.7rem; font-size: 0.8rem"
+          onclick="loadElicitations()"
+        >
+          Refresh
+        </button>
+      </div>
+      <div class="view-note">
+        Questions a tool call is waiting on, from <code>GET /v1/elicit</code>.
+        Answering posts to <code>POST /v1/elicit/{id}/{action}</code> — accept
+        sends the form values as the answer content; decline and cancel send
+        none. This is the one write the operator views allow.
+      </div>
+      <div id="elicit-list">
+        <div class="view-note">No pending elicitations.</div>
+      </div>
+
+      <div class="section-title">
+        <span>Operator Views</span>
+      </div>
+      <div class="view-note">
+        The TUI's six views, read-only, over the same <code>/v1</code> endpoints
+        the TUI's data source uses — no UI-specific endpoints. Live updates
+        arrive over <code>/v1/events</code>; views also refresh every 15 seconds
+        while open.
+      </div>
+      <div class="view-tabs" role="tablist">
+        <button
+          class="view-tab active"
+          data-view="browse"
+          onclick="showView('browse')"
+        >
+          Browse
+        </button>
+        <button class="view-tab" data-view="log" onclick="showView('log')">
+          Log
+        </button>
+        <button class="view-tab" data-view="stats" onclick="showView('stats')">
+          Stats
+        </button>
+        <button
+          class="view-tab"
+          data-view="servers"
+          onclick="showView('servers')"
+        >
+          Servers
+        </button>
+        <button
+          class="view-tab"
+          data-view="sessions"
+          onclick="showView('sessions')"
+        >
+          Sessions
+        </button>
+        <button
+          class="view-tab"
+          data-view="storage"
+          onclick="showView('storage')"
+        >
+          Storage
+        </button>
+      </div>
+      <div class="view-controls" id="stats-controls" style="display: none">
+        <label for="stats-dimension">Dimension</label>
+        <select id="stats-dimension" onchange="loadView('stats')">
+          <option value="calls">calls</option>
+          <option value="servers">servers</option>
+          <option value="errors">errors</option>
+          <option value="sessions">sessions</option>
+          <option value="slowest">slowest</option>
+          <option value="volume">volume</option>
+        </select>
+      </div>
+      <div class="view-controls" id="browse-controls">
+        <label for="browse-ns">Namespace</label>
+        <select id="browse-ns" onchange="loadView('browse')"></select>
+      </div>
+      <div id="view-body">
+        <div class="view-note">Loading…</div>
+      </div>
+    </main>
+
+    <script>
+      async function loadMetrics() {
+        try {
+          const res = await fetch("/v1/metrics/tokens");
+          if (res.ok) {
+            const data = await res.json();
+            document.getElementById("m-turns").innerText = data.totalTurns || 0;
+            document.getElementById("m-saved").innerText = (
+              data.totalTokensSaved || 0
+            ).toLocaleString();
+            document.getElementById("m-savings-pct").innerText =
+              (data.savingsPercentage || 0).toFixed(1) + "% Savings";
+            document.getElementById("m-ratio").innerText =
+              (data.totalInjectedTokens || 0).toLocaleString() +
+              " / " +
+              (data.totalBaselineTokens || 0).toLocaleString();
           }
-          tbody.innerHTML = pools.map(p => `
+        } catch (e) {}
+      }
+
+      async function loadPools() {
+        try {
+          const res = await fetch("/v1/status");
+          if (res.ok) {
+            const pools = await res.json();
+            const tbody = document.getElementById("pool-tbody");
+            document.getElementById("m-pools").innerText = pools.length;
+            if (pools.length === 0) {
+              tbody.innerHTML =
+                '<tr><td colspan="5" style="text-align:center">No servers configured</td></tr>';
+              return;
+            }
+            tbody.innerHTML = pools
+              .map(
+                (p) => `
             <tr>
               <td><strong>${p.namespace || p.server}</strong></td>
               <td>${p.server}</td>
               <td>${p.tools || 0}</td>
-              <td><span style="color:${p.live > 0 ? 'var(--green)' : 'var(--text)'}">${p.live > 0 ? 'running' : 'idle'}</span></td>
+              <td><span style="color:${p.live > 0 ? "var(--green)" : "var(--text)"}">${p.live > 0 ? "running" : "idle"}</span></td>
               <td>${p.live || 0}</td>
             </tr>
-          `).join('');
-        }
-      } catch(e) {}
-    }
+          `,
+              )
+              .join("");
+          }
+        } catch (e) {}
+      }
 
-    async function loadToolMetrics() {
-      try {
-        const res = await fetch('/v1/metrics/tools');
-        if (!res.ok) return;
-        const data = await res.json();
+      async function loadToolMetrics() {
+        try {
+          const res = await fetch("/v1/metrics/tools");
+          if (!res.ok) return;
+          const data = await res.json();
 
-        // 1. Tool Reliability / Error Rates
-        const cBody = document.getElementById('calls-tbody');
-        if (data.calls && data.calls.length > 0) {
-          cBody.innerHTML = data.calls.map(c => `
+          // 1. Tool Reliability / Error Rates
+          const cBody = document.getElementById("calls-tbody");
+          if (data.calls && data.calls.length > 0) {
+            cBody.innerHTML = data.calls
+              .map(
+                (c) => `
             <tr>
               <td><strong>${c.tool}</strong></td>
               <td><span class="badge-tag">${c.server}</span></td>
               <td>${c.calls}</td>
-              <td><span class="${c.errors > 0 ? 'badge-error' : ''}">${c.errors}</span></td>
-              <td><span style="color:${c.errorRate > 0.05 ? 'var(--red)' : 'var(--green)'}">${(c.errorRate * 100).toFixed(1)}%</span></td>
-              <td>${c.p50Ms >= 0 ? c.p50Ms.toFixed(1) + 'ms' : '-'}</td>
-              <td>${c.maxMs >= 0 ? c.maxMs.toFixed(1) + 'ms' : '-'}</td>
+              <td><span class="${c.errors > 0 ? "badge-error" : ""}">${c.errors}</span></td>
+              <td><span style="color:${c.errorRate > 0.05 ? "var(--red)" : "var(--green)"}">${(c.errorRate * 100).toFixed(1)}%</span></td>
+              <td>${c.p50Ms >= 0 ? c.p50Ms.toFixed(1) + "ms" : "-"}</td>
+              <td>${c.maxMs >= 0 ? c.maxMs.toFixed(1) + "ms" : "-"}</td>
             </tr>
-          `).join('');
-        }
+          `,
+              )
+              .join("");
+          }
 
-        // 2. Correlated Tool Pairs
-        const corrBody = document.getElementById('correlations-tbody');
-        if (data.correlations && data.correlations.length > 0) {
-          corrBody.innerHTML = data.correlations.map(cr => `
+          // 2. Correlated Tool Pairs
+          const corrBody = document.getElementById("correlations-tbody");
+          if (data.correlations && data.correlations.length > 0) {
+            corrBody.innerHTML = data.correlations
+              .map(
+                (cr) => `
             <tr>
               <td><code>${cr.toolA}</code></td>
               <td><code>${cr.toolB}</code></td>
               <td><strong>${cr.count}</strong> sessions</td>
             </tr>
-          `).join('');
-        }
+          `,
+              )
+              .join("");
+          }
 
-        // 3. Usage Timeline
-        const tlBody = document.getElementById('timeline-tbody');
-        if (data.timeline && data.timeline.length > 0) {
-          tlBody.innerHTML = data.timeline.map(t => {
-            const successPct = t.calls > 0 ? (((t.calls - t.errors) / t.calls) * 100).toFixed(1) : 100;
-            return `
+          // 3. Usage Timeline
+          const tlBody = document.getElementById("timeline-tbody");
+          if (data.timeline && data.timeline.length > 0) {
+            tlBody.innerHTML = data.timeline
+              .map((t) => {
+                const successPct =
+                  t.calls > 0
+                    ? (((t.calls - t.errors) / t.calls) * 100).toFixed(1)
+                    : 100;
+                return `
               <tr>
                 <td>${t.timeBucket}</td>
                 <td><strong>${t.calls}</strong></td>
-                <td><span class="${t.errors > 0 ? 'badge-error' : ''}">${t.errors}</span></td>
-                <td><span style="color:${successPct < 90 ? 'var(--red)' : 'var(--green)'}">${successPct}%</span></td>
+                <td><span class="${t.errors > 0 ? "badge-error" : ""}">${t.errors}</span></td>
+                <td><span style="color:${successPct < 90 ? "var(--red)" : "var(--green)"}">${successPct}%</span></td>
               </tr>
             `;
-          }).join('');
-        }
+              })
+              .join("");
+          }
 
-        // 4. Common Error Shapes
-        const eBody = document.getElementById('errors-tbody');
-        if (data.errors && data.errors.length > 0) {
-          eBody.innerHTML = data.errors.map(er => `
+          // 4. Common Error Shapes
+          const eBody = document.getElementById("errors-tbody");
+          if (data.errors && data.errors.length > 0) {
+            eBody.innerHTML = data.errors
+              .map(
+                (er) => `
             <tr>
               <td><code>${escapeHTML(er.message)}</code></td>
               <td><span class="badge-error">${er.count}</span></td>
-              <td>${er.servers ? er.servers.split(',').map(s => `<span class="badge-tag">${s}</span>`).join(' ') : '-'}</td>
-              <td>${er.lastSeen ? new Date(er.lastSeen).toLocaleTimeString() : '-'}</td>
+              <td>${
+                er.servers
+                  ? er.servers
+                      .split(",")
+                      .map((s) => `<span class="badge-tag">${s}</span>`)
+                      .join(" ")
+                  : "-"
+              }</td>
+              <td>${er.lastSeen ? new Date(er.lastSeen).toLocaleTimeString() : "-"}</td>
             </tr>
-          `).join('');
-        }
-      } catch(e) {}
-    }
-
-    function escapeHTML(str) {
-      if (!str) return '';
-      return str.replace(/[&<>'"]/g, tag => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
-      }[tag] || tag));
-    }
-
-    async function runSearch() {
-      const q = document.getElementById('query-input').value.trim();
-      if (!q) return;
-      const resBox = document.getElementById('search-results');
-      resBox.style.display = 'block';
-      resBox.innerHTML = 'Searching...';
-      try {
-        const res = await fetch('/v1/search?q=' + encodeURIComponent(q) + '&semantic=true');
-        const items = await res.json();
-        if (!items || items.length === 0) {
-          resBox.innerHTML = '<em>No tools found matching query.</em>';
-          return;
-        }
-        resBox.innerHTML = items.map(t => `
-          <div class="tool-item">
-            <div class="tool-name">${t.function} (Score: ${t.score || 0})</div>
-            <div class="tool-desc">${t.description || ''}</div>
-          </div>
-        `).join('');
-      } catch(e) {
-        resBox.innerHTML = 'Error searching: ' + e;
+          `,
+              )
+              .join("");
+          }
+        } catch (e) {}
       }
-    }
 
-    document.getElementById('query-input').addEventListener('keydown', e => {
-      if (e.key === 'Enter') runSearch();
-    });
+      function escapeHTML(str) {
+        if (!str) return "";
+        return str.replace(
+          /[&<>'"]/g,
+          (tag) =>
+            ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              "'": "&#39;",
+              '"': "&quot;",
+            })[tag] || tag,
+        );
+      }
 
-    async function loadInteractions() {
-      try {
-        const q = (document.getElementById('fb-filter-q') || {}).value || '';
-        const target = (document.getElementById('fb-filter-target') || {}).value || '';
-        const status = (document.getElementById('fb-filter-status') || {}).value || '';
-        let url = '/v1/interactions?limit=30';
-        if (q) url += '&q=' + encodeURIComponent(q);
-        if (target !== '') url += '&target=' + encodeURIComponent(target);
-        if (status !== '') url += '&hasFeedback=' + status;
-
-        const res = await fetch(url);
-        if (res.ok) {
-          const list = await res.json();
-          const tbody = document.getElementById('interactions-tbody');
-          if (!list || list.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color:#8b949e">No interactions recorded yet</td></tr>';
+      async function runSearch() {
+        const q = document.getElementById("query-input").value.trim();
+        if (!q) return;
+        const resBox = document.getElementById("search-results");
+        resBox.style.display = "block";
+        resBox.innerHTML = "Searching...";
+        try {
+          const res = await fetch(
+            "/v1/search?q=" + encodeURIComponent(q) + "&semantic=true",
+          );
+          const items = await res.json();
+          if (!items || items.length === 0) {
+            resBox.innerHTML = "<em>No tools found matching query.</em>";
             return;
           }
-          tbody.innerHTML = list.map(it => {
-            const hasScore = it.score !== null && it.score !== undefined;
-            const scoreBadge = hasScore
-              ? (it.score >= 0.7
-                  ? `<span class="badge" style="background:var(--green); color:#fff;">${it.score.toFixed(2)}</span>`
-                  : `<span class="badge" style="background:var(--red); color:#fff;">${it.score.toFixed(2)}</span>`)
-              : `<span class="badge-tag">unrated</span>`;
+          resBox.innerHTML = items
+            .map(
+              (t) => `
+          <div class="tool-item">
+            <div class="tool-name">${t.function} (Score: ${t.score || 0})</div>
+            <div class="tool-desc">${t.description || ""}</div>
+          </div>
+        `,
+            )
+            .join("");
+        } catch (e) {
+          resBox.innerHTML = "Error searching: " + e;
+        }
+      }
 
-            let targetBadge = '<span style="color:#8b949e">-</span>';
-            if (it.target === 'retrieval') {
-              targetBadge = '<span class="badge" style="background:#1f6feb; color:#fff;">retrieval</span>';
-            } else if (it.target === 'execution') {
-              targetBadge = '<span class="badge" style="background:#8957e5; color:#fff;">execution</span>';
+      document
+        .getElementById("query-input")
+        .addEventListener("keydown", (e) => {
+          if (e.key === "Enter") runSearch();
+        });
+
+      async function loadInteractions() {
+        try {
+          const q = (document.getElementById("fb-filter-q") || {}).value || "";
+          const target =
+            (document.getElementById("fb-filter-target") || {}).value || "";
+          const status =
+            (document.getElementById("fb-filter-status") || {}).value || "";
+          let url = "/v1/interactions?limit=30";
+          if (q) url += "&q=" + encodeURIComponent(q);
+          if (target !== "") url += "&target=" + encodeURIComponent(target);
+          if (status !== "") url += "&hasFeedback=" + status;
+
+          const res = await fetch(url);
+          if (res.ok) {
+            const list = await res.json();
+            const tbody = document.getElementById("interactions-tbody");
+            if (!list || list.length === 0) {
+              tbody.innerHTML =
+                '<tr><td colspan="8" style="text-align:center; color:#8b949e">No interactions recorded yet</td></tr>';
+              return;
             }
+            tbody.innerHTML = list
+              .map((it) => {
+                const hasScore = it.score !== null && it.score !== undefined;
+                const scoreBadge = hasScore
+                  ? it.score >= 0.7
+                    ? `<span class="badge" style="background:var(--green); color:#fff;">${it.score.toFixed(2)}</span>`
+                    : `<span class="badge" style="background:var(--red); color:#fff;">${it.score.toFixed(2)}</span>`
+                  : `<span class="badge-tag">unrated</span>`;
 
-            const tools = (it.toolsUsed || []).map(t => `<span class="badge-tag">${escapeHTML(t)}</span>`).join(' ') || '-';
-            const feedbackText = it.feedbackNotes ? `<em>${escapeHTML(it.feedbackNotes)}</em>` : (hasScore ? 'Rated' : '-');
+                let targetBadge = '<span style="color:#8b949e">-</span>';
+                if (it.target === "retrieval") {
+                  targetBadge =
+                    '<span class="badge" style="background:#1f6feb; color:#fff;">retrieval</span>';
+                } else if (it.target === "execution") {
+                  targetBadge =
+                    '<span class="badge" style="background:#8957e5; color:#fff;">execution</span>';
+                }
 
-            return `
+                const tools =
+                  (it.toolsUsed || [])
+                    .map(
+                      (t) => `<span class="badge-tag">${escapeHTML(t)}</span>`,
+                    )
+                    .join(" ") || "-";
+                const feedbackText = it.feedbackNotes
+                  ? `<em>${escapeHTML(it.feedbackNotes)}</em>`
+                  : hasScore
+                    ? "Rated"
+                    : "-";
+
+                return `
               <tr>
                 <td><code>${escapeHTML(it.traceId)}</code></td>
                 <td>${new Date(it.timestamp).toLocaleTimeString()}</td>
@@ -668,266 +876,548 @@
                 </td>
               </tr>
             `;
-          }).join('');
-        }
-      } catch(e) {}
-    }
-
-    async function promptFeedback(traceId) {
-      const targetChoice = prompt('Feedback target:\nType "retrieval" (search relevance / right tool selected)\nor "execution" (tool runtime success / crash / error)\nor press Enter for general:', 'retrieval');
-      if (targetChoice === null) return;
-      const target = (targetChoice.trim().toLowerCase() === 'retrieval' || targetChoice.trim().toLowerCase() === 'execution') ? targetChoice.trim().toLowerCase() : '';
-
-      const scoreStr = prompt(`Enter ${target ? target + ' ' : ''}score (1 for good, 0 for bad, or 0.0 - 1.0):`, '1.0');
-      if (scoreStr === null) return;
-      const score = parseFloat(scoreStr);
-      if (isNaN(score)) {
-        alert('Invalid numeric score');
-        return;
+              })
+              .join("");
+          }
+        } catch (e) {}
       }
-      const notes = prompt('Optional feedback notes / commentary:', '') || '';
-      try {
-        const payload = {traceId: traceId, score: score, notes: notes};
-        if (target) {
-          payload.target = target;
-          if (target === 'retrieval') payload.retrievalScore = score;
-          if (target === 'execution') payload.executionScore = score;
-        }
-        const res = await fetch('/v1/feedback', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify(payload)
-        });
-        if (res.ok) {
-          loadInteractions();
-        } else {
-          alert('Failed to save feedback: ' + (await res.text()));
-        }
-      } catch(e) {
-        alert('Error: ' + e);
-      }
-    }
 
-    loadMetrics();
-    loadPools();
-    loadToolMetrics();
-    loadInteractions();
-    setInterval(() => {
+      async function promptFeedback(traceId) {
+        const targetChoice = prompt(
+          'Feedback target:\nType "retrieval" (search relevance / right tool selected)\nor "execution" (tool runtime success / crash / error)\nor press Enter for general:',
+          "retrieval",
+        );
+        if (targetChoice === null) return;
+        const target =
+          targetChoice.trim().toLowerCase() === "retrieval" ||
+          targetChoice.trim().toLowerCase() === "execution"
+            ? targetChoice.trim().toLowerCase()
+            : "";
+
+        const scoreStr = prompt(
+          `Enter ${target ? target + " " : ""}score (1 for good, 0 for bad, or 0.0 - 1.0):`,
+          "1.0",
+        );
+        if (scoreStr === null) return;
+        const score = parseFloat(scoreStr);
+        if (isNaN(score)) {
+          alert("Invalid numeric score");
+          return;
+        }
+        const notes = prompt("Optional feedback notes / commentary:", "") || "";
+        try {
+          const payload = { traceId: traceId, score: score, notes: notes };
+          if (target) {
+            payload.target = target;
+            if (target === "retrieval") payload.retrievalScore = score;
+            if (target === "execution") payload.executionScore = score;
+          }
+          const res = await fetch("/v1/feedback", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (res.ok) {
+            loadInteractions();
+          } else {
+            alert("Failed to save feedback: " + (await res.text()));
+          }
+        } catch (e) {
+          alert("Error: " + e);
+        }
+      }
+
       loadMetrics();
       loadPools();
       loadToolMetrics();
       loadInteractions();
-    }, 3000);
-    // ---- Operator views + elicitation (#1882) ----
-    // Everything below reads /v1 (+ /v1/events for live updates) only.
-    // The views mirror the TUI's six tabs (browse/log/stats/servers/
-    // sessions/storage) read-only; elicitation answering is the single
-    // write, through the endpoint that already exists for it.
+      setInterval(() => {
+        loadMetrics();
+        loadPools();
+        loadToolMetrics();
+        loadInteractions();
+      }, 3000);
+      // ---- Operator views + elicitation (#1882) ----
+      // Everything below reads /v1 (+ /v1/events for live updates) only.
+      // The views mirror the TUI's six tabs (browse/log/stats/servers/
+      // sessions/storage) read-only; elicitation answering is the single
+      // write, through the endpoint that already exists for it.
 
-    let currentView = 'browse';
+      let currentView = "browse";
 
-    function cellText(v) {
-      if (v === null || v === undefined) return '-';
-      if (typeof v === 'object') return JSON.stringify(v);
-      return String(v);
-    }
-
-    // renderRows draws an array of flat-ish objects as a table, taking the
-    // union of keys as columns so a new /v1 field shows up without a page
-    // change. Nested values are JSON in one cell, like the TUI's compact
-    // rendering.
-    function renderRows(rows, emptyText) {
-      const body = document.getElementById('view-body');
-      if (!rows || rows.length === 0) {
-        body.innerHTML = '<div class="view-note">' + escapeHTML(emptyText) + '</div>';
-        return;
+      function cellText(v) {
+        if (v === null || v === undefined) return "-";
+        if (typeof v === "object") return JSON.stringify(v);
+        return String(v);
       }
-      const cols = [];
-      rows.forEach(r => Object.keys(r || {}).forEach(k => { if (!cols.includes(k)) cols.push(k); }));
-      let html = '<table><thead><tr>' + cols.map(c => '<th>' + escapeHTML(c) + '</th>').join('') + '</tr></thead><tbody>';
-      rows.forEach(r => {
-        html += '<tr>' + cols.map(c => '<td>' + escapeHTML(cellText(r[c])) + '</td>').join('') + '</tr>';
-      });
-      body.innerHTML = html + '</tbody></table>';
-    }
 
-    async function fetchJSON(url) {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(url + ' -> ' + res.status);
-      return res.json();
-    }
-
-    function showView(name) {
-      currentView = name;
-      document.querySelectorAll('.view-tab').forEach(b =>
-        b.classList.toggle('active', b.dataset.view === name));
-      document.getElementById('stats-controls').style.display = name === 'stats' ? 'flex' : 'none';
-      document.getElementById('browse-controls').style.display = name === 'browse' ? 'flex' : 'none';
-      loadView(name);
-    }
-
-    async function loadView(name) {
-      const body = document.getElementById('view-body');
-      try {
-        if (name === 'browse') {
-          const sel = document.getElementById('browse-ns');
-          if (!sel.options.length) {
-            const nsData = await fetchJSON('/v1/namespaces');
-            const list = Array.isArray(nsData) ? nsData : (nsData.namespaces || []);
-            const names = list.map(n => typeof n === 'string' ? n : (n.name || n.namespace)).filter(Boolean);
-            sel.innerHTML = names.map(n => '<option value="' + escapeHTML(n) + '">' + escapeHTML(n) + '</option>').join('');
-          }
-          const ns = sel.value;
-          const tools = await fetchJSON('/v1/tools' + (ns ? '?ns=' + encodeURIComponent(ns) : ''));
-          renderRows(Array.isArray(tools) ? tools : (tools.tools || []), 'No tools in this namespace.');
-        } else if (name === 'log') {
-          const data = await fetchJSON('/v1/log?limit=50&reverse=1');
-          const rows = (data.records || []).map(r => ({
-            time: r.time ? new Date(r.time).toLocaleTimeString() : '-',
-            level: r.level || '',
-            msg: r.msg || r.template || '',
-            attrs: r.attrs ? JSON.stringify(r.attrs) : ''
-          }));
-          renderRows(rows, 'No log records yet.');
-        } else if (name === 'stats') {
-          const dim = document.getElementById('stats-dimension').value;
-          const data = await fetchJSON('/v1/stats?dimension=' + encodeURIComponent(dim));
-          if (dim === 'volume' && data.rows && !Array.isArray(data.rows)) {
-            renderRows(data.rows.files || [], 'No files recorded yet.');
-          } else {
-            renderRows(data.rows || [], 'Nothing recorded for this dimension yet.');
-          }
-        } else if (name === 'servers') {
-          const data = await fetchJSON('/v1/servers');
-          renderRows(data.servers || [], 'No servers configured.');
-        } else if (name === 'sessions') {
-          const data = await fetchJSON('/v1/stats?dimension=sessions');
-          renderRows(data.rows || [], 'No sessions recorded yet.');
-        } else if (name === 'storage') {
-          const data = await fetchJSON('/v1/stats?dimension=volume');
-          const files = (data.rows && data.rows.files) || [];
-          const total = files.reduce((sum, f) => sum + (f.bytes || 0), 0);
-          renderRows(files, 'Nothing on disk yet.');
-          if (files.length) {
-            body.insertAdjacentHTML('beforeend',
-              '<div class="view-note">Total: ' + total.toLocaleString() + ' bytes across ' + files.length + ' log file(s) (the volume dimension of /v1/stats, as in the TUI storage view).</div>');
-          }
-        }
-      } catch (e) {
-        body.innerHTML = '<div class="view-note">Could not load ' + escapeHTML(name) + ': ' + escapeHTML(String(e)) + '</div>';
-      }
-    }
-
-    // ---- Elicitation ----
-
-    function elicitFields(req) {
-      // requestedSchema is an MCP elicitation form schema: a flat object
-      // schema whose properties are the fields to collect.
-      let schema = req.requestedSchema;
-      if (typeof schema === 'string') {
-        try { schema = JSON.parse(schema); } catch (e) { schema = null; }
-      }
-      if (!schema || !schema.properties) return [];
-      const required = schema.required || [];
-      return Object.keys(schema.properties).map(name => ({
-        name: name,
-        def: schema.properties[name] || {},
-        required: required.includes(name)
-      }));
-    }
-
-    function elicitFieldHTML(req, field) {
-      const id = 'elicit-' + req.id + '-' + field.name;
-      const label = escapeHTML(field.def.title || field.name) + (field.required ? ' *' : '');
-      const desc = field.def.description ? '<div class="elicit-meta">' + escapeHTML(field.def.description) + '</div>' : '';
-      if (Array.isArray(field.def.enum)) {
-        const opts = field.def.enum.map(v =>
-          '<option value="' + escapeHTML(String(v)) + '">' + escapeHTML(String(v)) + '</option>').join('');
-        return '<label>' + label + '<select id="' + id + '" data-field="' + escapeHTML(field.name) + '" data-type="string">' + opts + '</select></label>' + desc;
-      }
-      if (field.def.type === 'boolean') {
-        return '<label>' + label + '<select id="' + id + '" data-field="' + escapeHTML(field.name) + '" data-type="boolean"><option value="true">true</option><option value="false">false</option></select></label>' + desc;
-      }
-      const type = field.def.type === 'number' || field.def.type === 'integer' ? 'number' : 'text';
-      const dflt = field.def.default !== undefined ? ' value="' + escapeHTML(String(field.def.default)) + '"' : '';
-      return '<label>' + label + '<input type="' + type + '" id="' + id + '" data-field="' + escapeHTML(field.name) + '" data-type="' + type + '"' + dflt + '></label>' + desc;
-    }
-
-    async function loadElicitations() {
-      const list = document.getElementById('elicit-list');
-      const count = document.getElementById('elicit-count');
-      try {
-        const pending = await fetchJSON('/v1/elicit');
-        const items = Array.isArray(pending) ? pending : [];
-        count.innerText = items.length;
-        if (items.length === 0) {
-          list.innerHTML = '<div class="view-note">No pending elicitations.</div>';
+      // renderRows draws an array of flat-ish objects as a table, taking the
+      // union of keys as columns so a new /v1 field shows up without a page
+      // change. Nested values are JSON in one cell, like the TUI's compact
+      // rendering.
+      function renderRows(rows, emptyText) {
+        const body = document.getElementById("view-body");
+        if (!rows || rows.length === 0) {
+          body.innerHTML =
+            '<div class="view-note">' + escapeHTML(emptyText) + "</div>";
           return;
         }
-        list.innerHTML = items.map(req => {
-          const fields = elicitFields(req);
-          const meta = [req.mode, req.server, req.tool, req.session ? 'session ' + req.session : '',
-            req.expiresAt ? 'expires ' + new Date(req.expiresAt).toLocaleTimeString() : '']
-            .filter(Boolean).join(' · ');
-          const form = fields.length
-            ? fields.map(f => elicitFieldHTML(req, f)).join('')
-            : '<div class="view-note">No form fields — accept confirms, decline refuses.</div>';
-          const urlLink = req.url ? '<div class="elicit-meta">URL mode: <a href="' + escapeHTML(req.url) + '" target="_blank" rel="noopener">' + escapeHTML(req.url) + '</a></div>' : '';
-          return '<div class="elicit-card" id="elicit-card-' + escapeHTML(req.id) + '">'
-            + '<div class="elicit-msg">' + escapeHTML(req.message || '(no message)') + '</div>'
-            + '<div class="elicit-meta">' + escapeHTML(meta) + '</div>'
-            + urlLink + form
-            + '<div class="elicit-actions">'
-            + '<button onclick="answerElicit(\'' + escapeHTML(req.id) + '\', \'accept\')">Accept</button>'
-            + '<button class="btn-decline" onclick="answerElicit(\'' + escapeHTML(req.id) + '\', \'decline\')">Decline</button>'
-            + '<button class="btn-cancel" onclick="answerElicit(\'' + escapeHTML(req.id) + '\', \'cancel\')">Cancel</button>'
-            + '</div><div class="elicit-status" id="elicit-status-' + escapeHTML(req.id) + '"></div></div>';
-        }).join('');
-      } catch (e) {
-        list.innerHTML = '<div class="view-note">Could not load elicitations: ' + escapeHTML(String(e)) + '</div>';
-      }
-    }
-
-    async function answerElicit(id, action) {
-      const status = document.getElementById('elicit-status-' + id);
-      try {
-        let body = undefined;
-        if (action === 'accept') {
-          const card = document.getElementById('elicit-card-' + id);
-          const content = {};
-          card.querySelectorAll('[data-field]').forEach(el => {
-            const name = el.getAttribute('data-field');
-            if (el.getAttribute('data-type') === 'number') {
-              content[name] = el.value === '' ? null : Number(el.value);
-            } else if (el.getAttribute('data-type') === 'boolean') {
-              content[name] = el.value === 'true';
-            } else {
-              content[name] = el.value;
-            }
-          });
-          body = JSON.stringify(content);
-        }
-        const res = await fetch('/v1/elicit/' + encodeURIComponent(id) + '/' + action, {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json', 'X-Mcpx-Answerer': 'dashboard'},
-          body: body
+        const cols = [];
+        rows.forEach((r) =>
+          Object.keys(r || {}).forEach((k) => {
+            if (!cols.includes(k)) cols.push(k);
+          }),
+        );
+        let html =
+          "<table><thead><tr>" +
+          cols.map((c) => "<th>" + escapeHTML(c) + "</th>").join("") +
+          "</tr></thead><tbody>";
+        rows.forEach((r) => {
+          html +=
+            "<tr>" +
+            cols
+              .map((c) => "<td>" + escapeHTML(cellText(r[c])) + "</td>")
+              .join("") +
+            "</tr>";
         });
-        if (!res.ok) throw new Error('answer -> ' + res.status + ' ' + (await res.text()));
-        if (status) status.innerText = 'Answered: ' + action;
-        setTimeout(loadElicitations, 600);
-      } catch (e) {
-        if (status) { status.style.color = 'var(--red)'; status.innerText = 'Failed: ' + String(e); }
+        body.innerHTML = html + "</tbody></table>";
       }
-    }
 
-    loadElicitations();
-    loadView('browse');
-    setInterval(() => { loadElicitations(); loadView(currentView); }, 15000);
-    try {
-      const events = new EventSource('/v1/events');
-      events.onmessage = () => { loadElicitations(); };
-    } catch (e) {}
+      async function fetchJSON(url) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(url + " -> " + res.status);
+        return res.json();
+      }
 
-  </script>
-</body>
+      function showView(name) {
+        currentView = name;
+        document
+          .querySelectorAll(".view-tab")
+          .forEach((b) =>
+            b.classList.toggle("active", b.dataset.view === name),
+          );
+        document.getElementById("stats-controls").style.display =
+          name === "stats" ? "flex" : "none";
+        document.getElementById("browse-controls").style.display =
+          name === "browse" ? "flex" : "none";
+        loadView(name);
+      }
+
+      async function loadView(name) {
+        const body = document.getElementById("view-body");
+        try {
+          if (name === "browse") {
+            const sel = document.getElementById("browse-ns");
+            if (!sel.options.length) {
+              const nsData = await fetchJSON("/v1/namespaces");
+              const list = Array.isArray(nsData)
+                ? nsData
+                : nsData.namespaces || [];
+              const names = list
+                .map((n) => (typeof n === "string" ? n : n.name || n.namespace))
+                .filter(Boolean);
+              sel.innerHTML = names
+                .map(
+                  (n) =>
+                    '<option value="' +
+                    escapeHTML(n) +
+                    '">' +
+                    escapeHTML(n) +
+                    "</option>",
+                )
+                .join("");
+            }
+            const ns = sel.value;
+            const tools = await fetchJSON(
+              "/v1/tools" + (ns ? "?ns=" + encodeURIComponent(ns) : ""),
+            );
+            renderRows(
+              Array.isArray(tools) ? tools : tools.tools || [],
+              "No tools in this namespace.",
+            );
+          } else if (name === "log") {
+            const data = await fetchJSON("/v1/log?limit=50&reverse=1");
+            const rows = (data.records || []).map((r) => ({
+              time: r.time ? new Date(r.time).toLocaleTimeString() : "-",
+              level: r.level || "",
+              msg: r.msg || r.template || "",
+              attrs: r.attrs ? JSON.stringify(r.attrs) : "",
+            }));
+            renderRows(rows, "No log records yet.");
+          } else if (name === "stats") {
+            const dim = document.getElementById("stats-dimension").value;
+            const data = await fetchJSON(
+              "/v1/stats?dimension=" + encodeURIComponent(dim),
+            );
+            if (dim === "volume" && data.rows && !Array.isArray(data.rows)) {
+              renderRows(data.rows.files || [], "No files recorded yet.");
+            } else {
+              renderRows(
+                data.rows || [],
+                "Nothing recorded for this dimension yet.",
+              );
+            }
+          } else if (name === "servers") {
+            const data = await fetchJSON("/v1/servers");
+            renderRows(data.servers || [], "No servers configured.");
+          } else if (name === "sessions") {
+            const data = await fetchJSON("/v1/stats?dimension=sessions");
+            renderRows(data.rows || [], "No sessions recorded yet.");
+          } else if (name === "storage") {
+            const data = await fetchJSON("/v1/stats?dimension=volume");
+            const files = (data.rows && data.rows.files) || [];
+            const total = files.reduce((sum, f) => sum + (f.bytes || 0), 0);
+            renderRows(files, "Nothing on disk yet.");
+            if (files.length) {
+              body.insertAdjacentHTML(
+                "beforeend",
+                '<div class="view-note">Total: ' +
+                  total.toLocaleString() +
+                  " bytes across " +
+                  files.length +
+                  " log file(s) (the volume dimension of /v1/stats, as in the TUI storage view).</div>",
+              );
+            }
+          }
+        } catch (e) {
+          body.innerHTML =
+            '<div class="view-note">Could not load ' +
+            escapeHTML(name) +
+            ": " +
+            escapeHTML(String(e)) +
+            "</div>";
+        }
+      }
+
+      // ---- Elicitation ----
+
+      function elicitFields(req) {
+        // requestedSchema is an MCP elicitation form schema: a flat object
+        // schema whose properties are the fields to collect.
+        let schema = req.requestedSchema;
+        if (typeof schema === "string") {
+          try {
+            schema = JSON.parse(schema);
+          } catch (e) {
+            schema = null;
+          }
+        }
+        if (!schema || !schema.properties) return [];
+        const required = schema.required || [];
+        return Object.keys(schema.properties).map((name) => ({
+          name: name,
+          def: schema.properties[name] || {},
+          required: required.includes(name),
+        }));
+      }
+
+      function elicitFieldHTML(req, field) {
+        const id = "elicit-" + req.id + "-" + field.name;
+        const label =
+          escapeHTML(field.def.title || field.name) +
+          (field.required ? " *" : "");
+        const desc = field.def.description
+          ? '<div class="elicit-meta">' +
+            escapeHTML(field.def.description) +
+            "</div>"
+          : "";
+        if (Array.isArray(field.def.enum)) {
+          const opts = field.def.enum
+            .map(
+              (v) =>
+                '<option value="' +
+                escapeHTML(String(v)) +
+                '">' +
+                escapeHTML(String(v)) +
+                "</option>",
+            )
+            .join("");
+          return (
+            "<label>" +
+            label +
+            '<select id="' +
+            id +
+            '" data-field="' +
+            escapeHTML(field.name) +
+            '" data-type="string">' +
+            opts +
+            "</select></label>" +
+            desc
+          );
+        }
+        if (field.def.type === "boolean") {
+          return (
+            "<label>" +
+            label +
+            '<select id="' +
+            id +
+            '" data-field="' +
+            escapeHTML(field.name) +
+            '" data-type="boolean"><option value="true">true</option><option value="false">false</option></select></label>' +
+            desc
+          );
+        }
+        const type =
+          field.def.type === "number" || field.def.type === "integer"
+            ? "number"
+            : "text";
+        const dflt =
+          field.def.default !== undefined
+            ? ' value="' + escapeHTML(String(field.def.default)) + '"'
+            : "";
+        return (
+          "<label>" +
+          label +
+          '<input type="' +
+          type +
+          '" id="' +
+          id +
+          '" data-field="' +
+          escapeHTML(field.name) +
+          '" data-type="' +
+          type +
+          '"' +
+          dflt +
+          "></label>" +
+          desc
+        );
+      }
+
+      // Signature of the pending elicitation set as last rendered: the
+      // request ids and their field schemas, in render order. When a
+      // refresh returns the same set, the re-render is skipped entirely
+      // so in-progress answers, focus, and scroll state survive the 15s
+      // interval and SSE-triggered refreshes (issue #3223).
+      //
+      // The signature is deliberately NOT a serialization of the whole
+      // /v1/elicit response: that payload carries volatile per-listing
+      // metadata -- ttlRemainingMs is recomputed from the clock on every
+      // list and lastTouched moves whenever a request is read -- so a
+      // whole-response signature changes between refreshes of an
+      // unchanged set and the skip never fires (Codex review, PR #3237).
+      // Id + requestedSchema is the stable identity of what is rendered:
+      // the card form is derived from the schema by elicitFields.
+      let lastElicitSignature = null;
+
+      function elicitSignature(items) {
+        try {
+          return JSON.stringify(
+            items.map((req) => {
+              if (!req) return [null, null];
+              const schema = req.requestedSchema;
+              return [
+                req.id,
+                typeof schema === "string"
+                  ? schema
+                  : JSON.stringify(schema || null),
+              ];
+            }),
+          );
+        } catch (e) {
+          return null;
+        }
+      }
+
+      function elicitValueKey(el) {
+        const card = el.closest ? el.closest(".elicit-card") : null;
+        const reqId =
+          card && card.id ? card.id.replace(/^elicit-card-/, "") : "";
+        return reqId + "\n" + (el.getAttribute("data-field") || "");
+      }
+
+      // Capture in-progress field values (and focus) keyed by
+      // (request id, field name) so a re-render forced by a changed
+      // pending set does not lose answers for still-pending requests.
+      function captureElicitState(list) {
+        const values = {};
+        list.querySelectorAll("[data-field]").forEach((el) => {
+          values[elicitValueKey(el)] = el.value;
+        });
+        let focus = null;
+        const active = document.activeElement;
+        if (
+          active &&
+          list.contains(active) &&
+          active.getAttribute &&
+          active.getAttribute("data-field")
+        ) {
+          focus = {
+            key: elicitValueKey(active),
+            start:
+              typeof active.selectionStart === "number"
+                ? active.selectionStart
+                : null,
+            end:
+              typeof active.selectionEnd === "number"
+                ? active.selectionEnd
+                : null,
+          };
+        }
+        return { values: values, focus: focus };
+      }
+
+      function restoreElicitState(list, state) {
+        if (!state) return;
+        list.querySelectorAll("[data-field]").forEach((el) => {
+          const key = elicitValueKey(el);
+          if (Object.prototype.hasOwnProperty.call(state.values, key))
+            el.value = state.values[key];
+        });
+        if (state.focus) {
+          const els = list.querySelectorAll("[data-field]");
+          for (const el of els) {
+            if (elicitValueKey(el) === state.focus.key) {
+              el.focus();
+              if (state.focus.start !== null && el.setSelectionRange) {
+                try {
+                  el.setSelectionRange(state.focus.start, state.focus.end);
+                } catch (e) {}
+              }
+              break;
+            }
+          }
+        }
+      }
+
+      async function loadElicitations() {
+        const list = document.getElementById("elicit-list");
+        const count = document.getElementById("elicit-count");
+        try {
+          const pending = await fetchJSON("/v1/elicit");
+          const items = Array.isArray(pending) ? pending : [];
+          count.innerText = items.length;
+          const signature = elicitSignature(items);
+          if (signature !== null && signature === lastElicitSignature) {
+            // Pending set unchanged: skip the re-render so typed answers
+            // and focus are not destroyed by the refresh.
+            return;
+          }
+          const saved = captureElicitState(list);
+          if (items.length === 0) {
+            list.innerHTML =
+              '<div class="view-note">No pending elicitations.</div>';
+            lastElicitSignature = signature;
+            return;
+          }
+          list.innerHTML = items
+            .map((req) => {
+              const fields = elicitFields(req);
+              const meta = [
+                req.mode,
+                req.server,
+                req.tool,
+                req.session ? "session " + req.session : "",
+                req.expiresAt
+                  ? "expires " + new Date(req.expiresAt).toLocaleTimeString()
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" · ");
+              const form = fields.length
+                ? fields.map((f) => elicitFieldHTML(req, f)).join("")
+                : '<div class="view-note">No form fields — accept confirms, decline refuses.</div>';
+              const urlLink = req.url
+                ? '<div class="elicit-meta">URL mode: <a href="' +
+                  escapeHTML(req.url) +
+                  '" target="_blank" rel="noopener">' +
+                  escapeHTML(req.url) +
+                  "</a></div>"
+                : "";
+              return (
+                '<div class="elicit-card" id="elicit-card-' +
+                escapeHTML(req.id) +
+                '">' +
+                '<div class="elicit-msg">' +
+                escapeHTML(req.message || "(no message)") +
+                "</div>" +
+                '<div class="elicit-meta">' +
+                escapeHTML(meta) +
+                "</div>" +
+                urlLink +
+                form +
+                '<div class="elicit-actions">' +
+                "<button onclick=\"answerElicit('" +
+                escapeHTML(req.id) +
+                "', 'accept')\">Accept</button>" +
+                '<button class="btn-decline" onclick="answerElicit(\'' +
+                escapeHTML(req.id) +
+                "', 'decline')\">Decline</button>" +
+                '<button class="btn-cancel" onclick="answerElicit(\'' +
+                escapeHTML(req.id) +
+                "', 'cancel')\">Cancel</button>" +
+                '</div><div class="elicit-status" id="elicit-status-' +
+                escapeHTML(req.id) +
+                '"></div></div>'
+              );
+            })
+            .join("");
+          lastElicitSignature = signature;
+          restoreElicitState(list, saved);
+        } catch (e) {
+          lastElicitSignature = null;
+          list.innerHTML =
+            '<div class="view-note">Could not load elicitations: ' +
+            escapeHTML(String(e)) +
+            "</div>";
+        }
+      }
+
+      async function answerElicit(id, action) {
+        const status = document.getElementById("elicit-status-" + id);
+        try {
+          let body = undefined;
+          if (action === "accept") {
+            const card = document.getElementById("elicit-card-" + id);
+            const content = {};
+            card.querySelectorAll("[data-field]").forEach((el) => {
+              const name = el.getAttribute("data-field");
+              if (el.getAttribute("data-type") === "number") {
+                content[name] = el.value === "" ? null : Number(el.value);
+              } else if (el.getAttribute("data-type") === "boolean") {
+                content[name] = el.value === "true";
+              } else {
+                content[name] = el.value;
+              }
+            });
+            body = JSON.stringify(content);
+          }
+          const res = await fetch(
+            "/v1/elicit/" + encodeURIComponent(id) + "/" + action,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-Mcpx-Answerer": "dashboard",
+              },
+              body: body,
+            },
+          );
+          if (!res.ok)
+            throw new Error(
+              "answer -> " + res.status + " " + (await res.text()),
+            );
+          if (status) status.innerText = "Answered: " + action;
+          setTimeout(loadElicitations, 600);
+        } catch (e) {
+          if (status) {
+            status.style.color = "var(--red)";
+            status.innerText = "Failed: " + String(e);
+          }
+        }
+      }
+
+      loadElicitations();
+      loadView("browse");
+      setInterval(() => {
+        loadElicitations();
+        loadView(currentView);
+      }, 15000);
+      try {
+        const events = new EventSource("/v1/events");
+        events.onmessage = () => {
+          loadElicitations();
+        };
+      } catch (e) {}
+    </script>
+  </body>
 </html>

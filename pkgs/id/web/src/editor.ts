@@ -39,6 +39,44 @@ import { createWrapPlugins } from "./wrap";
 export type ContentMode = "rich" | "markdown" | "plain" | "raw" | "media" | "binary";
 
 /**
+ * Parse an <ol> `start` attribute into the ordered_list `order` attr
+ * (#2005). Only a plain non-negative decimal integer that fits in a
+ * safe integer is preserved (0 included); anything else — malformed
+ * text, fractions, negatives, hex/scientific notation, empty, or an
+ * unrepresentable magnitude — falls back to 1. The bare Number() this
+ * replaces let NaN/fractional/reinterpreted starts through, and the
+ * markdown codec (which reads order as u64) then silently renumbered
+ * pasted lists from 1 on save.
+ */
+export function parseOrderedListStart(raw: string | null): number {
+  if (raw === null) return 1;
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return 1;
+  const n = Number(trimmed);
+  return Number.isSafeInteger(n) ? n : 1;
+}
+
+/**
+ * Parse an <img> `width`/`height` attribute into the image node's
+ * width/height attr (#2010). Only a plain non-negative decimal integer
+ * that fits in a safe integer is preserved (0 included); anything else
+ * — malformed text, fractions, negatives, units/percentages, hex or
+ * scientific notation, empty, an absent attribute, or an
+ * unrepresentable magnitude — is dropped to null at parse time. The
+ * bare Number() this replaces let NaN through and reinterpreted values
+ * like "0x10" as 16, while the markdown codec reads dimensions as u64,
+ * so invalid dimensions were silently dropped (or invented) on save
+ * instead of being rejected where the paste happened.
+ */
+export function parseImageDimension(raw: string | null): number | null {
+  if (raw === null) return null;
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const n = Number(trimmed);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+/**
  * Full schema with list support and GFM extensions for rich/markdown/plain modes.
  * Extends prosemirror-schema-basic with strikethrough mark, task list nodes, and table nodes.
  */
@@ -97,7 +135,7 @@ export const richSchema = new Schema({
           tag: "ol",
           getAttrs(dom) {
             const el = dom as HTMLElement;
-            return { order: el.hasAttribute("start") ? Number(el.getAttribute("start")) : 1 };
+            return { order: parseOrderedListStart(el.getAttribute("start")) };
           },
         },
       ],
@@ -112,6 +150,10 @@ export const richSchema = new Schema({
       attrs: {
         order: { default: 1, validate: "number" },
         tight: { default: true },
+        // #1380: mirror the codec's delimiter attr ("period"/"paren",
+        // default period) so paren-style lists are not rewritten on
+        // save; undeclared, it was dropped on editor load.
+        delimiter: { default: "period" },
       },
     })
     .update("image", {
@@ -142,8 +184,8 @@ export const richSchema = new Schema({
               src: el.getAttribute("src"),
               alt: el.getAttribute("alt"),
               title: el.getAttribute("title"),
-              width: el.getAttribute("width") ? Number(el.getAttribute("width")) : null,
-              height: el.getAttribute("height") ? Number(el.getAttribute("height")) : null,
+              width: parseImageDimension(el.getAttribute("width")),
+              height: parseImageDimension(el.getAttribute("height")),
               linkHref: anchor?.getAttribute("href") ?? null,
               linkTitle: anchor?.getAttribute("title") ?? null,
             };
@@ -173,7 +215,13 @@ export const richSchema = new Schema({
         // depends on it so multi-block task items do not fuse on save.
         // #997: ordered task lists carry their start in `order` (null for
         // bullet task lists), mirroring the markdown codec's attrs.order.
-        attrs: { tight: { default: true }, order: { default: null } },
+        // #1380: ordered task lists also carry `delimiter`, mirroring
+        // the codec (default period, as in ordered_list above).
+        attrs: {
+          tight: { default: true },
+          order: { default: null },
+          delimiter: { default: "period" },
+        },
         parseDOM: [
           {
             tag: "ul",
@@ -191,11 +239,16 @@ export const richSchema = new Schema({
             tag: "ol",
             getAttrs(dom) {
               // Match <ol class=contains-task-list> (ordered task list);
-              // its start is the list's order.
+              // its start is the list's order, read through the same
+              // validated parse as ordered_list (#4100; the raw el.start
+              // reflection admits fractional/negative/hex starts the u64
+              // markdown codec cannot represent).
               const el = dom as HTMLOListElement;
-              if (el.classList.contains("contains-task-list")) return { order: el.start };
+              if (el.classList.contains("contains-task-list"))
+                return { order: parseOrderedListStart(el.getAttribute("start")) };
               const firstLi = el.querySelector("li");
-              if (firstLi?.querySelector('input[type="checkbox"]')) return { order: el.start };
+              if (firstLi?.querySelector('input[type="checkbox"]'))
+                return { order: parseOrderedListStart(el.getAttribute("start")) };
               return false;
             },
           },
@@ -299,6 +352,26 @@ export const richSchema = new Schema({
         ],
         toDOM(node) {
           return ["span", { "data-html-inline": node.attrs.html as string }, node.attrs.html as string];
+        },
+      },
+      // #1369: YAML front matter block (`---` delimiter only; TOML
+      // `+++` is out of scope) carried verbatim in `text`; the markdown
+      // codec reads/writes it. Atom leaf, never a heading/paragraph.
+      front_matter: {
+        group: "block",
+        atom: true,
+        selectable: false,
+        attrs: { text: { default: "" } },
+        parseDOM: [
+          {
+            tag: "pre[data-front-matter]",
+            getAttrs(dom) {
+              return { text: (dom as HTMLElement).dataset.frontMatter ?? "" };
+            },
+          },
+        ],
+        toDOM(node) {
+          return ["pre", { "data-front-matter": node.attrs.text as string }];
         },
       },
     }),

@@ -114,9 +114,17 @@ func splice(list []string, marker string, builtin []string) []string {
 	return out
 }
 
+// absolute resolves one search-path entry against the base dir.
+// Only a bare ~ and ~/... name the caller's home. A ~name entry is
+// NOT expanded (#1702): the tilde survives as a literal first
+// segment of an ordinary relative entry, resolved against dir like
+// any other. Resolving ~name under the caller's home silently
+// searched a lookalike directory -- and invented one for users that
+// do not exist -- while a passwd lookup would answer differently
+// for the CLI user and the daemon user, so neither is done.
 func absolute(path, dir string) string {
 	path = strings.TrimSpace(path)
-	if strings.HasPrefix(path, "~") {
+	if path == "~" || strings.HasPrefix(path, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
 			path = filepath.Join(home, strings.TrimPrefix(path, "~"))
 		}

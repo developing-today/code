@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 )
 
 // Reload swaps in a new configuration without restarting anything that did
@@ -71,6 +71,10 @@ func (r *Registry) Reload(cfg *config.Config) (added, removed []string, err erro
 		order = append(order, s.Name)
 	}
 	sort.Strings(order)
+
+	if err := validateViews(order, views, pools); err != nil {
+		return nil, nil, err
+	}
 
 	// Anything whose process definition is gone is stopped. Done after the
 	// new map is built so a failure above leaves the daemon exactly as it

@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -203,4 +204,149 @@ func RemoveServer(path, name string) (bool, error) {
 		return true, nil
 	})
 	return found, err
+}
+
+// ---- adapter declaration files ----
+//
+// An adapter declaration file is not a configuration file: it is a list of
+// declarations, held either as {"adapters": [...]} or as a bare array. Live
+// add and remove edit that list in place, preserving whichever shape the
+// file already uses, because a person who wrote one shape should not find
+// the other when they next open the file.
+
+// adapterEntries reads a declaration file and returns its entries plus
+// whether the file uses the bare-array shape. A missing file reads as an
+// empty object-shaped document: the first live add creates it.
+func adapterEntries(path string) (entries []any, bare bool, err error) {
+	entries, bare, _, err = adapterDocument(path)
+	return entries, bare, err
+}
+
+// adapterDocument is adapterEntries plus the file's whole object, for the
+// object shape. A declaration file may be a combined document: the loaders
+// accept files that also carry configuration or API declarations
+// (settings/file.go recognises those sections), so an edit that rewrote
+// the file as only its adapters list would permanently delete the
+// sibling sections (Codex review, PR #2565). Writers keep the document
+// and replace only its adapters field.
+func adapterDocument(path string) (entries []any, bare bool, doc map[string]any, err error) {
+	b, rerr := os.ReadFile(path)
+	if rerr != nil {
+		if os.IsNotExist(rerr) {
+			return nil, false, nil, nil
+		}
+		return nil, false, nil, rerr
+	}
+	trimmed := strings.TrimSpace(string(StripJSONC(b)))
+	if strings.HasPrefix(trimmed, "[") {
+		if err := json.Unmarshal([]byte(trimmed), &entries); err != nil {
+			return nil, false, nil, fmt.Errorf("%s is not a valid adapter file: %w", path, err)
+		}
+		return entries, true, nil, nil
+	}
+	if err := json.Unmarshal([]byte(trimmed), &doc); err != nil {
+		return nil, false, nil, fmt.Errorf("%s is not a valid adapter file: %w", path, err)
+	}
+	list, _ := doc["adapters"].([]any)
+	return list, false, doc, nil
+}
+
+func writeAdapterEntries(path string, entries []any, bare bool, doc map[string]any) error {
+	var out []byte
+	var err error
+	if bare {
+		out, err = json.MarshalIndent(entries, "", "  ")
+	} else {
+		if doc == nil {
+			doc = map[string]any{}
+		}
+		doc["adapters"] = entries
+		out, err = json.MarshalIndent(doc, "", "  ")
+	}
+	if err != nil {
+		return err
+	}
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, DirMode); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(path, append(out, '\n'), FileMode)
+}
+
+func adapterEntryName(e any) string {
+	obj, _ := e.(map[string]any)
+	if obj == nil {
+		return ""
+	}
+	name, _ := obj["name"].(string)
+	return name
+}
+
+// AddAdapterEntry inserts one adapter declaration into the file at path.
+//
+// Refusing a name the file already declares rather than replacing it, for
+// the same reason AddServer does: a silent overwrite of a declaration
+// somebody wrote by hand is a loss noticed only when the tool stops
+// working.
+func AddAdapterEntry(path string, entry map[string]any, replace bool) error {
+	name := adapterEntryName(entry)
+	if name == "" {
+		return errors.New("an adapter declaration needs a name")
+	}
+	entries, bare, doc, err := adapterDocument(path)
+	if err != nil {
+		return err
+	}
+	for i, e := range entries {
+		if adapterEntryName(e) == name {
+			if !replace {
+				return fmt.Errorf("%s already declares adapter %q; remove it first or pick another name",
+					path, name)
+			}
+			entries[i] = entry
+			return writeAdapterEntries(path, entries, bare, doc)
+		}
+	}
+	return writeAdapterEntries(path, append(entries, entry), bare, doc)
+}
+
+// RemoveAdapterEntry drops the declaration named name from the file at
+// path, reporting whether it was there.
+func RemoveAdapterEntry(path, name string) (bool, error) {
+	entries, bare, doc, err := adapterDocument(path)
+	if err != nil {
+		return false, err
+	}
+	for i, e := range entries {
+		if adapterEntryName(e) == name {
+			return true, writeAdapterEntries(path, append(entries[:i], entries[i+1:]...), bare, doc)
+		}
+	}
+	return false, nil
+}
+
+// AdapterDefinedIn returns the first of paths whose declaration file
+// declares an adapter named name. Removing an adapter has to edit the
+// file that defines it; editing any other would report success and
+// change nothing.
+func AdapterDefinedIn(paths []string, name string) (string, bool, error) {
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		entries, _, err := adapterEntries(p)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", false, err
+		}
+		for _, e := range entries {
+			if adapterEntryName(e) == name {
+				return p, true, nil
+			}
+		}
+	}
+	return "", false, nil
 }

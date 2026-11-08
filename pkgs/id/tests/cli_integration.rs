@@ -43,6 +43,12 @@ fn examples_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples"))
 }
 
+fn apps_dir() -> PathBuf {
+    std::env::var_os("ID_TEST_APPS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps"))
+}
+
 /// How long one CLI invocation may run before its test fails. A client stuck
 /// on a silent server must not block the suite.
 const PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(3);
@@ -408,6 +414,83 @@ mod cli_tests {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("opening phase"), "{stderr}");
     }
+
+    /// `id world verify` surfaces the fixture-header verdict (#1539): a
+    /// fixture whose two replays agree with each other but mismatch the
+    /// tampered header records must print the header verdict, name the
+    /// agree-but-mismatch case, and exit nonzero. Before the fix it
+    /// printed "records verify" and exited 0.
+    #[test]
+    fn test_world_verify_rejects_agree_but_mismatch_header() {
+        let tmp = TempDir::new().unwrap();
+        let module = apps_dir().join("tic-tac-toe/program/tic-tac-toe.wasm");
+        let module = module.to_str().unwrap();
+        // Embedded at build time: the NixOS VM integration suite runs
+        // the compiled test binary without the source tree, so a
+        // CARGO_MANIFEST_DIR runtime read would panic there (Codex P2
+        // finding on PR #4619).
+        let fixture_text = include_str!("fixtures/tic-tac-toe-determinism.jsonl");
+
+        // The checked-in fixture verifies clean: the header verdict is a
+        // match and the command succeeds.
+        let good = tmp.path().join("good.jsonl");
+        std::fs::write(&good, fixture_text).unwrap();
+        let good = good.to_str().unwrap();
+        let verified = run_cmd_success_stdout(
+            &[
+                "world",
+                "verify",
+                "--module",
+                module,
+                "--fixture",
+                good,
+                "--seed",
+                "7",
+            ],
+            tmp.path(),
+        );
+        assert!(verified.contains("records verify"), "{verified}");
+        assert!(
+            verified.contains("header verdict: records match"),
+            "{verified}"
+        );
+
+        // Tamper only the header records: both replays still agree with
+        // each other, but they now mismatch the fixture header.
+        let tampered = fixture_text.replace(
+            r#""records":{"board":"XXXOO----","plays":5,"winner":"X"}"#,
+            r#""records":{"board":"XXXXXXXXX","plays":9,"winner":"X"}"#,
+        );
+        assert_ne!(tampered, fixture_text);
+        let bad = tmp.path().join("tampered.jsonl");
+        std::fs::write(&bad, &tampered).unwrap();
+        let bad = bad.to_str().unwrap();
+        let output = run_cmd(
+            &[
+                "world",
+                "verify",
+                "--module",
+                module,
+                "--fixture",
+                bad,
+                "--seed",
+                "7",
+            ],
+            tmp.path(),
+        );
+        assert!(!output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("header verdict: records differ"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("agree with each other but mismatch the fixture header"),
+            "{stdout}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("differ from the fixture"), "{stderr}");
+    }
 }
 
 mod put_get_tests {
@@ -552,6 +635,46 @@ mod list_tests {
             }
         }
     }
+
+    #[test]
+    fn test_list_quotes_control_characters_in_names() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.list-control.txt");
+        fs::write(&test_file, b"Control character list test").unwrap();
+
+        let name = "unsafe\nforged\tcolumn";
+        let put_spec = format!("{}:{name}", test_file.display());
+        // A second plain file takes cmd_put past its single-item
+        // stdin auto-detect (a lone `path:name` spec does not exist
+        // as a file, so it would be read as a stdin blob name and
+        // parse_put_spec would never run).
+        run_cmd_success(
+            &["put", &put_spec, test_file.to_str().unwrap()],
+            tmp.path(),
+        );
+
+        let output = run_cmd_success_stdout(&["list"], tmp.path());
+        let rows: Vec<_> = output.lines().filter(|line| line.contains('\t')).collect();
+        assert_eq!(
+            rows.len(),
+            2,
+            "the stored name must not forge another row: {output:?}"
+        );
+        let mut quoted_names = 0;
+        for row in &rows {
+            let fields: Vec<_> = row.split('\t').collect();
+            assert_eq!(
+                fields.len(),
+                2,
+                "the stored name must not forge a column: {output:?}"
+            );
+            assert_eq!(fields[0].len(), 64);
+            if fields[1] == r#""unsafe\nforged\tcolumn""# {
+                quoted_names += 1;
+            }
+        }
+        assert_eq!(quoted_names, 1, "the unsafe name must appear quoted: {output:?}");
+    }
 }
 
 mod find_search_tests {
@@ -628,6 +751,43 @@ mod find_search_tests {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(combined.contains("no matches") || output.status.success());
+    }
+
+    #[test]
+    fn test_bulk_download_collision_fails_before_writing_for_find_and_search() {
+        let tmp = TempDir::new().unwrap();
+        let first_file = tmp.path().join("first-source.txt");
+        let second_file = tmp.path().join("second-source.txt");
+        fs::write(&first_file, b"first report").unwrap();
+        fs::write(&second_file, b"second report").unwrap();
+
+        let first_spec = format!("{}:one/report.txt", first_file.display());
+        let second_spec = format!("{}:two/report.txt", second_file.display());
+        run_cmd_success(&["put", &first_spec, &second_spec], tmp.path());
+
+        for (command, output_dir) in [("find", "find-output"), ("search", "search-output")] {
+            let output = run_cmd(
+                &[command, "--all", "--dir", output_dir, "report.txt"],
+                tmp.path(),
+            );
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                !output.status.success(),
+                "{command} should reject colliding destinations: {combined}"
+            );
+            assert!(
+                combined.contains("collision"),
+                "{command} should explain the collision: {combined}"
+            );
+            assert!(
+                !tmp.path().join(output_dir).exists(),
+                "{command} must reject the batch before creating or writing its destination"
+            );
+        }
     }
 }
 
@@ -1690,7 +1850,11 @@ mod serve_tests {
         assert!(!capability.is_empty() && !capability.contains(char::is_whitespace));
     }
 
+    /// The world web presentation only exists when the binary is built
+    /// with the `web` feature; without it the server never prints the
+    /// `web:` line this test waits for.
     #[test]
+    #[cfg(feature = "web")]
     fn test_world_module_shared_over_iroh_and_web_presentations() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
@@ -1916,6 +2080,7 @@ mod serve_tests {
             "--capability",
             &capability,
             "--command-mode",
+            "--json",
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1934,6 +2099,18 @@ mod serve_tests {
         assert!(event.contains("\"type\":\"event\""), "{event}");
         let view = lines.next().expect("view line").unwrap();
         assert!(view.contains("count=1"), "{view}");
+        stdin.write_all(b"/not-a-command\n").unwrap();
+        let error = lines.next().expect("local error record").unwrap();
+        let error: serde_json::Value = serde_json::from_str(&error).unwrap();
+        assert_eq!(error["type"], "local");
+        assert_eq!(error["level"], "error");
+        assert_eq!(error["message"], "unknown command; type /help");
+        stdin.write_all(b"/help\n").unwrap();
+        let help = lines.next().expect("local help record").unwrap();
+        let help: serde_json::Value = serde_json::from_str(&help).unwrap();
+        assert_eq!(help["type"], "local");
+        assert_eq!(help["level"], "info");
+        assert!(help["message"].as_str().unwrap().contains("/records"));
         stdin.write_all(b"/stats\n").unwrap();
         let info = lines.next().expect("info line").unwrap();
         assert!(info.contains("\"type\":\"module_info\""), "{info}");
@@ -2074,7 +2251,7 @@ mod serve_tests {
     fn test_tic_tac_toe_installed_over_iroh_and_played_by_two_players() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
-        let module = examples_dir().join("tic-tac-toe/tic-tac-toe.wasm");
+        let module = apps_dir().join("tic-tac-toe/program/tic-tac-toe.wasm");
         let mut server = ServerHandle::spawn_with_args(
             server_dir.path(),
             &["--world", "--world-admin-token", "adm"],
@@ -2172,7 +2349,7 @@ mod serve_tests {
     fn test_journal_is_trimmed_behind_a_checkpoint_and_a_game_resumes() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
-        let module = examples_dir().join("tic-tac-toe/tic-tac-toe.wasm");
+        let module = apps_dir().join("tic-tac-toe/program/tic-tac-toe.wasm");
         let module = module.to_str().unwrap();
         let serve_args = [
             "--world",
@@ -2279,7 +2456,7 @@ mod serve_tests {
         let examples = examples_dir();
         let counter = examples.join("roc-counter/counter.wasm");
         let counter = counter.to_str().unwrap();
-        let tictactoe = examples.join("tic-tac-toe/tic-tac-toe.wasm");
+        let tictactoe = apps_dir().join("tic-tac-toe/program/tic-tac-toe.wasm");
         let tictactoe = tictactoe.to_str().unwrap();
         let serve_args = [
             "--world",
@@ -3557,6 +3734,90 @@ mod serve_tests {
         server.stop();
     }
 
+    /// Repeated `--web-listen` values reach the actual executable and bind
+    /// every requested listener, not just the Clap parser/resolver.
+    #[test]
+    #[cfg(feature = "web")]
+    fn test_serve_web_repeated_listen_flags() {
+        let tmp = TempDir::new().unwrap();
+        let mut server = ServerHandle::spawn_with_args(
+            tmp.path(),
+            &[
+                "--web",
+                "--web-listen",
+                "127.0.0.1:0",
+                "--web-listen",
+                "127.0.0.1:0",
+            ],
+        );
+        server.wait_ready_with_web(true);
+
+        let lock_content = fs::read_to_string(server.lock_file_path()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&lock_content).unwrap();
+        let bindings = json["web_bindings"]
+            .as_array()
+            .expect("lock should list every web binding");
+        assert_eq!(bindings.len(), 2, "both CLI listeners should be bound");
+        let first: std::net::SocketAddr = bindings[0].as_str().unwrap().parse().unwrap();
+        let second: std::net::SocketAddr = bindings[1].as_str().unwrap().parse().unwrap();
+        assert_ne!(first.port(), 0);
+        assert_ne!(second.port(), 0);
+        assert_ne!(first.port(), second.port());
+        for addr in [first, second] {
+            let mut stream = StdTcpStream::connect_timeout(&addr, Duration::from_secs(5)).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut status_line = Vec::new();
+            reader.read_until(b'\n', &mut status_line).unwrap();
+            assert!(
+                status_line.starts_with(b"HTTP/1.1 200"),
+                "listener {addr} should answer HTTP 200, got {:?}",
+                String::from_utf8_lossy(&status_line)
+            );
+        }
+
+        server.stop();
+    }
+
+    /// Explicit legacy flags conflict with `--web-listen` through the real
+    /// CLI value-source handling in `main`.
+    #[test]
+    #[cfg(feature = "web")]
+    fn test_serve_web_listen_conflicts_with_explicit_legacy_flags() {
+        let tmp = TempDir::new().unwrap();
+        for (legacy_flag, value, expected) in [
+            ("--bind", "127.0.0.1", "--bind"),
+            ("--port", "3000", "--port"),
+        ] {
+            let output = run_cmd(
+                &[
+                    "serve",
+                    "--ephemeral",
+                    "--web",
+                    "--web-listen",
+                    "127.0.0.1:0",
+                    legacy_flag,
+                    value,
+                ],
+                tmp.path(),
+            );
+            assert!(
+                !output.status.success(),
+                "explicit {legacy_flag} should conflict with --web-listen"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains(expected),
+                "error should name {expected}: {stderr}"
+            );
+        }
+    }
+
     /// Test that multiple servers can run with web on different random ports.
     #[test]
     #[cfg(feature = "web")]
@@ -3765,6 +4026,72 @@ mod serve_tests {
         );
     }
 
+    /// Test that space-form `--new <subcommand>` does not swallow the
+    /// subcommand as the instance name (#3144): `id --new id` must run the
+    /// `id` subcommand under a randomly-named instance, like `--new= id`.
+    #[test]
+    fn test_new_flag_space_form_subcommand_not_swallowed() {
+        let tmp = TempDir::new().unwrap();
+
+        let output = run_cmd(&["--new", "id"], tmp.path());
+        assert!(
+            output.status.success(),
+            "id --new id should succeed. stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let iroh_dir = tmp.path().join(".iroh");
+        assert!(iroh_dir.exists(), ".iroh/ directory should be created");
+        assert!(
+            !iroh_dir.join("id").exists(),
+            "the subcommand token must not become the instance directory"
+        );
+
+        let entries: Vec<_> = fs::read_dir(&iroh_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "Should have exactly one auto-generated subdirectory"
+        );
+        let name = entries[0].file_name().to_string_lossy().to_string();
+        assert_eq!(name.len(), 8, "Auto-generated name should be 8 chars");
+        assert!(
+            name.chars().all(|c| c.is_ascii_hexdigit()),
+            "Auto-generated name should be hex: {name}"
+        );
+        assert!(
+            iroh_dir.join(&name).join(".iroh-key").exists(),
+            "Key file should be created in instance directory"
+        );
+    }
+
+    /// Test that space-form `--new <name> <subcommand>` still creates the
+    /// named instance and runs the subcommand (#3144 preserved form).
+    #[test]
+    fn test_new_flag_space_form_named() {
+        let tmp = TempDir::new().unwrap();
+
+        let output = run_cmd(&["--new", "space-dev", "id"], tmp.path());
+        assert!(
+            output.status.success(),
+            "id --new space-dev id should succeed. stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let instance_dir = tmp.path().join(".iroh").join("space-dev");
+        assert!(
+            instance_dir.exists(),
+            ".iroh/space-dev/ should be created"
+        );
+        assert!(
+            instance_dir.join(".iroh-key").exists(),
+            "Key file should be in named instance directory"
+        );
+    }
+
     /// Test that --new=NAME rejects a name that already has an existing directory.
     #[test]
     fn test_new_flag_duplicate_rejects() {
@@ -3889,6 +4216,17 @@ mod serve_tests {
         assert!(
             json["web_port"].is_null(),
             "web_port should be null when --web is not used"
+        );
+
+        // A server without --web must not initialize the web-only identity
+        // database or event directory.
+        assert!(
+            !tmp.path().join(".identity.redb").exists(),
+            "web-disabled serve must not create the web identity database"
+        );
+        assert!(
+            !tmp.path().join("events").exists(),
+            "web-disabled serve must not create the web events directory"
         );
 
         server.stop();

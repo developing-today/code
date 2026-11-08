@@ -59,6 +59,21 @@ export interface ChargeMatchResult {
 /** Charges from two sources for the same purchase post within days. */
 export const DEDUPE_WINDOW_DAYS = 3;
 
+/** Whether a string is a real YYYY-MM-DD date in the proleptic Gregorian calendar. */
+export function isRealCalendarDate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (year < 1 || month < 1 || month > 12 || day < 1) return false;
+
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day <= daysInMonth[month - 1]!;
+}
+
 const DROP_TOKENS = new Set([
   "US",
   "USA",
@@ -97,10 +112,6 @@ export function normalizeMerchantName(raw: string): string {
     .filter((t) => !/^\d+$/.test(t))
     .filter((t) => !isIdLike(t));
   return tokens.join(" ");
-}
-
-function squash(normalized: string): string {
-  return normalized.replace(/\s+/g, "");
 }
 
 function daysBetween(a: string, b: string): number {
@@ -146,6 +157,10 @@ const SAAS_MARKERS = [
   // charges to these are exactly the unmatched SaaS/AI charges the
   // hub exists to surface.
   "META",
+  // Known Meta billing descriptor (METAPAY*...): previously matched via
+  // the META substring; listed explicitly so token-boundary matching
+  // keeps surfacing it as unmatched SaaS when Meta is not in the catalog.
+  "METAPAY",
   "CLINE",
   "OPENCODE",
   "OPENDESIGN",
@@ -156,20 +171,17 @@ const SAAS_MARKERS = [
 
 /** Heuristic: does this normalized merchant look like a SaaS/AI charge? */
 export function isSaasLooking(normalized: string): boolean {
-  const flat = squash(normalized);
-  return SAAS_MARKERS.some((marker) => flat.includes(marker));
+  const tokens = new Set(normalized.split(" ").filter(Boolean));
+  return SAAS_MARKERS.some((marker) => tokens.has(marker));
 }
 
 /** The hub service a normalized merchant belongs to, if any. */
 export function matchService(normalized: string, services: ChargeServiceRef[]): ChargeServiceRef | undefined {
-  const flat = squash(normalized);
   const tokenSet = new Set(normalized.split(" ").filter(Boolean));
   for (const service of services) {
     for (const candidate of [service.name, ...(service.aliases ?? [])]) {
       const norm = normalizeMerchantName(candidate);
       if (!norm) continue;
-      const flatNorm = squash(norm);
-      if (flatNorm.length >= 4 && flat.includes(flatNorm)) return service;
       const tokens = norm.split(" ").filter(Boolean);
       if (tokens.length > 0 && tokens.every((t) => tokenSet.has(t))) return service;
     }
@@ -202,10 +214,15 @@ export function matchCharges(candidates: ChargeCandidate[], services: ChargeServ
   );
   for (const candidate of ordered) {
     const normalized = normalizeMerchantName(candidate.merchant);
+    // Only pair observations from different sources. When normalization
+    // removes every token, also require the raw descriptor to agree so
+    // unrelated numeric merchant IDs cannot collapse into one charge.
     const existing = clusters.find(
       (cl) =>
         cl.amountUsd === candidate.amountUsd &&
         cl.normalized === normalized &&
+        (candidate.source === "plaid" ? !cl.plaid : !cl.gmail) &&
+        (normalized !== "" || cl.first.merchant.trim().toUpperCase() === candidate.merchant.trim().toUpperCase()) &&
         daysBetween(cl.first.at, candidate.at) <= DEDUPE_WINDOW_DAYS,
     );
     if (existing) {

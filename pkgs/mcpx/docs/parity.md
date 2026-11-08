@@ -32,10 +32,12 @@ and costs an agent the ability to restart a server that has wedged. What they
 carry instead is a description that says so and MCP annotations
 (`readOnlyHint`, `destructiveHint`) for a client that wants to scope on them.
 
-## /v1 operations (82)
+## /v1 operations (85)
 
 | Operation | Route | CLI | MCP tool | Plugin | Notes |
 | --- | --- | --- | --- | --- | --- |
+| `adapters_add` | `POST /v1/adapters` | `mcpx adapter add` | `mcpx_adapters_add` | `ops.adaptersAdd()` | Privileged. |
+| `adapters_remove` | `DELETE /v1/adapters/{name}` | `mcpx adapter remove` | `mcpx_adapters_remove` | `ops.adaptersRemove()` | Privileged. Destructive. |
 | `artifacts_list` | `GET /v1/artifacts` | `mcpx artifact list` *generated* | `mcpx_artifacts_list` | `ops.artifactsList()` |  |
 | `artifact_put` | `POST /v1/artifacts` | `mcpx artifact put` *generated* | `mcpx_artifact_put` | `ops.artifactPut()` | Privileged. |
 | `artifact_delete` | `DELETE /v1/artifacts/{id}` | `mcpx artifact delete` *generated* | `mcpx_artifact_delete` | `ops.artifactDelete()` | Privileged. Destructive. |
@@ -118,6 +120,7 @@ carry instead is a description that says so and MCP annotations
 | `tools` | `GET /v1/tools` | `mcpx tools` *generated* | `mcpx_tools` | `ops.tools()` |  |
 | `tool_invoke` | `POST /v1/tools/{tool}` | `mcpx tool invoke` *generated* | `mcpx_tool_invoke` | `ops.toolInvoke()` |  |
 | `types` | `GET /v1/types` | `mcpx types` | `mcpx_types` | `ops.types()`, `types()` |  |
+| `writes_clear` | `POST /v1/writes/{server}/clear` | `mcpx writes clear` *generated* | `mcpx_writes_clear` | `ops.writesClear()` | Privileged. |
 
 ## CLI commands (70)
 
@@ -126,7 +129,7 @@ that reaches none says why: those are decisions, not gaps.
 
 | Command | Operations | Notes |
 | --- | --- | --- |
-| `adapter` | – | Adapter declarations are files the CLI reads; the daemon serves each adapter as a server of its own, so its tools reach every tool operation (call, types, search, catalog) like any upstream's. |
+| `adapter` | `adapters_add`, `adapters_remove` |  |
 | `api` | – | OpenAPI declarations are files the CLI reads; the tools they produce are served over MCP, and are not yet a tool source the daemon owns (#83). |
 | `artifact` / `artifacts` | `artifacts_list`, `artifact_put`, `artifact_delete`, `artifact_get` | Generated from the operation table. |
 | `ask` | `ask_begin`, `ask_poll`, `ask_abandon`, `ask_answers` | Generated from the operation table. |
@@ -196,6 +199,7 @@ that reaches none says why: those are decisions, not gaps.
 | `tui` | – | An interactive interface over the reads above; it consumes the API rather than extending it. |
 | `types` | `types` |  |
 | `upgrade` | – | Replaces the running daemon with another binary, a decision for whoever runs the CLI rather than a tool a model can call. |
+| `writes` | `writes_clear` | Generated from the operation table. |
 
 ## Hand-written MCP tools (12)
 
@@ -228,6 +232,6 @@ that will enforce it. `TestEveryEnforcedBoundaryNamesItsRefusal` holds both.
 | --- | --- | --- | --- |
 | `transport.allowedOrigins` | a web page on an origin that is not loopback, the daemon's own address or listed in transport.allowedOrigins cannot use /v1 or /mcp | **enforced** | `TestAWebPageCannotRunCodeThroughTheDaemon`, `TestV1AndMCPAgreeOnOrigins` |
 | `script.permissions` | a script runs with no more than the permission profile named; a runtime with no permission model refuses a narrowed profile | **enforced** | `TestScriptPermissionsIsReachableFromEverySurface`, `TestAStrictScriptCannotReadFilesOnARuntimeWithoutPermissions`, `TestARestrictedProfileIsRefusedByARuntimeThatCannotEnforceIt` |
-| `elicit.confirmDestructive` | with it on, a call to a tool that may be destructive (annotated destructiveHint, or unannotated) does not run unless somebody confirms it | **enforced** | `TestADestructiveCallIsRefusedWhenNobodyConfirms`, `TestConfirmDestructiveHoldsOnAColdDaemon` |
+| `elicit.confirmDestructive` | with it on, a call to a tool that may be destructive (annotated destructiveHint, or unannotated) does not run unless somebody confirms it; a remote server's annotation never clears the call (#2191) | **enforced** | `TestADestructiveCallIsRefusedWhenNobodyConfirms`, `TestConfirmDestructiveHoldsOnAColdDaemon` |
 | `autonomy.max` | mcpx does no more on its own than the daemon's autonomy.max allows: a prompt, a recipe run by name or a configured hook asked for above it is lowered to it and the answer says so, from /v1, the CLI, MCP and the plugin alike. It does not govern code a caller sends to /v1/exec itself | **enforced** | `TestV1CannotRaiseAutonomyAboveTheCeiling`, `TestTheCeilingCannotBeRaisedAtRuntime`, `TestTheCLICannotRaiseAutonomyAboveTheCeiling`, `TestMCPCannotRaiseAutonomyAboveTheCeiling`, `TestThePluginCannotRaiseAutonomyAboveTheCeiling`, `TestHooksFromConfigDoNotRunAboveTheCeiling`, `TestRepairCannotRaiseAutonomyAboveTheCeiling`, `TestACallerCannotRaiseAClampedSetting` |
 | `privileged operations (Admin)` | operations marked privileged change the daemon rather than read it; nothing checks who calls them, and every tool description and the OpenAPI document say so | **advisory** | #253 |

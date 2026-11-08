@@ -11,7 +11,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/dezren39/mcpx/internal/secrets"
+	"github.com/developing-today/code/pkgs/mcpx/internal/secrets"
 )
 
 // CmdSecrets gives servers the secrets they need, in memory only.

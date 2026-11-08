@@ -1,0 +1,10 @@
+[Unit]
+Description=github-backup queue drain (every 5 min)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

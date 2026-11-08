@@ -134,7 +134,6 @@ export const FIXTURE_BOARD: BoardItem[] = [
     // The cross-repo case Kaneo cannot express: a code task linking an
     // openchamber PR (the UI's host) alongside its own repo's PRs.
     links: [link(`${CODE}#902`, "implements"), link(`${CODE}#901`, "relates"), link(`${OPENCHAMBER}#210`, "relates")],
-    notes: [{ title: "PM-stack design & phase plan", url: "http://127.0.0.1:7777/" }],
   },
   {
     id: "kaneo:code/fx0connectrepos00000111",
@@ -1317,7 +1316,7 @@ export const FIXTURE_USAGE: UsageView = {
         value: 12,
         unit: "pct",
         limit: 100,
-        resetsAt: "2026-10-31T00:00:00Z",
+        resetsAt: `${daysAgo(-1)}T00:00:00Z`, // future-dated: a fixed past reset collapses the pace window (windowStartIndex) and the detail view loses Pace projections
         source: "manual",
         observedBy: "fixtures",
       },
@@ -1328,7 +1327,7 @@ export const FIXTURE_USAGE: UsageView = {
         value: 38,
         unit: "pct",
         limit: 100,
-        resetsAt: "2026-10-31T00:00:00Z",
+        resetsAt: `${daysAgo(-1)}T00:00:00Z`,
         source: "manual",
         observedBy: "fixtures",
       },
@@ -1339,7 +1338,7 @@ export const FIXTURE_USAGE: UsageView = {
         value: 82,
         unit: "pct",
         limit: 100,
-        resetsAt: "2026-10-31T00:00:00Z",
+        resetsAt: `${daysAgo(-1)}T00:00:00Z`,
         source: "manual",
         observedBy: "fixtures",
       },
@@ -1391,6 +1390,16 @@ export function fixtureSource(): Source {
     comments: async (refs) => {
       const wanted = new Set(refs);
       return FIXTURE_COMMENTS.filter((x) => wanted.has(x.ref));
+    },
+    latestComments: async (refs) => {
+      const wanted = new Set(refs);
+      const byRef = new Map<string, (typeof FIXTURE_COMMENTS)[number]>();
+      for (const c of FIXTURE_COMMENTS) {
+        if (!wanted.has(c.ref) || c.deleted) continue;
+        const cur = byRef.get(c.ref);
+        if (!cur || cur.createdAt < c.createdAt) byRef.set(c.ref, c);
+      }
+      return [...byRef.values()];
     },
     quota: async () => FIXTURE_QUOTA,
     usage: async () => ({ ...FIXTURE_USAGE, attention: buildAttentionFlags(FIXTURE_QUOTA, FIXTURE_USAGE) }),

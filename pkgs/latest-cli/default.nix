@@ -3,6 +3,7 @@
   stdenvNoCC,
   fetchurl,
   autoPatchelfHook,
+  patchelf,
   installShellFiles,
   makeWrapper,
   zlib,
@@ -352,8 +353,8 @@ in
       };
 
       nativeBuildInputs = [
-        autoPatchelfHook
         makeWrapper
+        patchelf
       ];
       buildInputs = [
         zlib
@@ -368,9 +369,25 @@ in
         mkdir -p "$out/libexec/t3" "$out/bin"
         cp -r . "$out/libexec/t3/"
         chmod +x "$out/libexec/t3/t3"
+        # Do NOT use autoPatchelfHook here (issue #4884): the t3 binary is a
+        # Node.js SEA (single executable application) build, and patchelf's
+        # rpath rewrite (--add-rpath and --set-rpath alike, patchelf 0.19.2)
+        # corrupts its ELF layout -- the result segfaults inside ld.so
+        # (dl_main) before main ever runs, on any machine, in or out of the
+        # build sandbox. Setting ONLY the interpreter with patchelf is safe
+        # (verified against the pristine upstream binary), so do exactly
+        # that, and supply the libraries the binary NEEDs (libatomic,
+        # libstdc++, libgcc_s from cc.lib) through the wrapper's
+        # LD_LIBRARY_PATH instead of an rpath. The bundled .node addons
+        # only need glibc + cc.lib libraries too.
+        patchelf --set-interpreter "${stdenv.cc.bintools.dynamicLinker}" "$out/libexec/t3/t3"
         # The binary resolves client/ and node_modules/ relative to itself, so
         # wrap rather than symlink into bin/.
-        makeWrapper "$out/libexec/t3/t3" "$out/bin/t3"
+        makeWrapper "$out/libexec/t3/t3" "$out/bin/t3" \
+          --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath [
+            stdenv.cc.cc.lib
+            zlib
+          ]}"
         runHook postInstall
       '';
 

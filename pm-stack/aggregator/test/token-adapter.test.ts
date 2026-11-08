@@ -33,6 +33,18 @@ describe("credential contract", () => {
     );
   });
 
+  test("credential value keys are checked as own properties for both reference kinds", () => {
+    const keys = ["token", "cookie", "value", "secret", "password", "apiKey", "api_key", "authorization"];
+    const refs = [{ kind: "bitwarden", name: "x" }, { kind: "file", path: "/tmp/t", mode: 0o600 }];
+    for (const ref of refs) {
+      for (const key of keys) {
+        const inherited = Object.assign(Object.create({ [key]: "sensitive" }), ref);
+        expect(validateCredentialRef(inherited)).toEqual(ref);
+        expect(() => validateCredentialRef({ ...ref, [key]: undefined })).toThrow(/references only/);
+      }
+    }
+  });
+
   test("a file reference without the 0600 contract is rejected", () => {
     expect(() => validateCredentialRef({ kind: "file", path: "/tmp/t", mode: 0o644 })).toThrow(/0600/);
     expect(() => validateCredentialRef({ kind: "vault", name: "x" })).toThrow(/unknown kind/);
@@ -201,6 +213,44 @@ describe("file-export adapter (the framework's first adapter)", () => {
         status: "ok",
         measuredAt: "2026-10-29T04:59:00Z",
         windows: [{ name: "5h" }],
+      },
+    });
+    expect(out.status).toBe("unparseable");
+    expect(out.value?.measuredAt).toBe("2026-10-29T04:30:00Z");
+  });
+
+  test("a null or undefined window element is unparseable (never throws), previous retained", () => {
+    for (const windows of [[null], [undefined]]) {
+      const out = collectFileExportAdapter({
+        now: NOW,
+        previous: PREV_ENTRY,
+        fileMtimeIso: "2026-10-29T04:59:00Z",
+        stale: false,
+        doc: {
+          service: "meta",
+          source: "file-export/meta-laptop",
+          status: "ok",
+          measuredAt: "2026-10-29T04:59:00Z",
+          windows: windows as never,
+        },
+      });
+      expect(out.status).toBe("unparseable");
+      expect(out.value?.measuredAt).toBe("2026-10-29T04:30:00Z");
+    }
+  });
+
+  test("a non-string window name is unparseable drift, not a healthy reading", () => {
+    const out = collectFileExportAdapter({
+      now: NOW,
+      previous: PREV_ENTRY,
+      fileMtimeIso: "2026-10-29T04:59:00Z",
+      stale: false,
+      doc: {
+        service: "meta",
+        source: "file-export/meta-laptop",
+        status: "ok",
+        measuredAt: "2026-10-29T04:59:00Z",
+        windows: [{ name: 42, usedPct: 1 }] as never,
       },
     });
     expect(out.status).toBe("unparseable");

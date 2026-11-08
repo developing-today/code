@@ -36,6 +36,7 @@
     ID_BIN = "${idPackage}/bin/id"
     TEST_BIN = "${integrationTestRunner}/bin/cli_integration_test"
     EXAMPLES_DIR = "${integrationTestRunner}/share/id-test/examples"
+    APPS_DIR = "${integrationTestRunner}/share/id-test/apps"
 
     start_all()
 
@@ -43,6 +44,7 @@
     server.succeed(f"test -x {ID_BIN}")
     server.succeed(f"test -x {TEST_BIN}")
     server.succeed(f"test -d {EXAMPLES_DIR}")
+    server.succeed(f"test -d {APPS_DIR}")
 
     # Run the full integration test suite (including serve_tests).
     # ID_BINARY overrides the compile-time CARGO_BIN_EXE_id path so the
@@ -50,6 +52,7 @@
     server.succeed(
         f"ID_BINARY={ID_BIN} "
         f"ID_TEST_EXAMPLES_DIR={EXAMPLES_DIR} "
+        f"ID_TEST_APPS_DIR={APPS_DIR} "
         f"{TEST_BIN} "
          f"--test-threads=2 --nocapture --format=terse 2>&1"
     )

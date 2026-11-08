@@ -1,10 +1,16 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
 import { spawn, type Subprocess } from "bun";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommentsStore, validateNewComment } from "../src/comments.ts";
-import { dnsSectionFromRegister, parseDnsRegister, summarizeDns } from "../src/dns.ts";
+import {
+  dnsSectionFromRegister,
+  dnsSectionFromRegisterJson,
+  isDnsSection,
+  parseDnsRegister,
+  summarizeDns,
+} from "../src/dns.ts";
 import type { SessionFeedEntry } from "../src/model.ts";
 import { PAGES } from "../src/pages.ts";
 import { agentIdentityOf, mergeRecords, parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
@@ -38,6 +44,25 @@ describe("dns register parser", () => {
     expect(entries.find((e) => e.domain === "noprice.example")?.priceUsd).toBeNull();
   });
 
+  test("rejects impossible calendar renewal dates, keeps the leap date (#2199)", () => {
+    const md = [
+      "# DNS / Domain Register",
+      "",
+      "| Domain | Registrar | DNS hosted at | Next renewal | Auto-renew | Renewal price (list) | Prior-year cost | Where used | Plan / status | Review? |",
+      "|---|---|---|---|---|---|---|---|---|---|",
+      "| feb30.example | Porkbun | Porkbun | 2026-02-30 | ON | $20.00 | unknown | Parked | Parked | REVIEW |",
+      "| month13.example | Porkbun | Porkbun | 2026-13-01 | ON | $30.00 | unknown | Parked | Parked | REVIEW |",
+      "| month00.example | Porkbun | Porkbun | 2026-00-10 | ON | $40.00 | unknown | Parked | Parked | REVIEW |",
+      "| apr31.example | Porkbun | Porkbun | 2026-04-31 | ON | $50.00 | unknown | Parked | Parked | REVIEW |",
+      "| leap.example | Porkbun | Porkbun | 2024-02-29 | ON | $5.00 | unknown | Parked | Parked | REVIEW |",
+      "| real.example | Porkbun | Porkbun | 2027-01-15 | ON | $10.00 | unknown | Parked | Parked | REVIEW |",
+    ].join("\n");
+    const entries = parseDnsRegister(md);
+    expect(entries.map((e) => e.domain)).toEqual(["leap.example", "real.example"]);
+    const section = dnsSectionFromRegister(md, "2026-10-25T00:00:00Z", "test");
+    expect(section?.totalAnnualListUsd).toBe(15);
+  });
+
   test("classifies active / earmarked / unused from the plan cell", () => {
     const entries = parseDnsRegister(REGISTER_MD);
     const byStatus = (s: string) => entries.filter((e) => e.status === s).map((e) => e.domain);
@@ -55,9 +80,233 @@ describe("dns register parser", () => {
     expect(summary.renewingSoon.map((e) => e.domain)).toEqual(["first.de"]);
   });
 
+  test("auto-renew summary counts ON, OFF, and unknown values from entries", () => {
+    const missingAutoRenew = {
+      ...FIXTURE_DNS.entries[0],
+      autoRenew: undefined as unknown as string,
+    };
+    const entries = [
+      { ...FIXTURE_DNS.entries[0], autoRenew: "ON" },
+      { ...FIXTURE_DNS.entries[1], autoRenew: "OFF" },
+      { ...FIXTURE_DNS.entries[2], autoRenew: "unknown" },
+      missingAutoRenew,
+    ];
+    const summary = summarizeDns({ ...FIXTURE_DNS, entries }, new Date("2026-12-28T00:00:00Z"));
+    expect(summary.autoRenew).toEqual({ on: 1, off: 1, unknown: 2 });
+  });
+
+  test("summary ages renewals by the Chicago day, not UTC (#1684)", () => {
+    // 2026-10-31T01:30:00Z is 20:30 CDT on 2026-10-30 in Chicago:
+    // the UTC day has already rolled over, the Chicago day has not.
+    // With the UTC derivation the domain renewing "today" (Chicago)
+    // was skipped by nextRenewal and dropped from renewingSoon.
+    const entry = (domain: string, renewal: string) => ({
+      domain,
+      registrar: "Porkbun",
+      dnsHost: "Porkbun",
+      renewal,
+      autoRenew: "ON",
+      priceUsd: 10,
+      priorYearCost: "unknown",
+      used: "test",
+      plan: "Active — test",
+      review: "",
+      status: "active" as const,
+    });
+    const section = {
+      generatedAt: "2026-10-31T01:30:00Z",
+      source: "test",
+      totalAnnualListUsd: 20,
+      entries: [entry("today.dev", "2026-10-30"), entry("tomorrow.dev", "2026-10-31")],
+    };
+    const summary = summarizeDns(section, new Date("2026-10-31T01:30:00Z"), 45);
+    expect(summary.nextRenewal?.domain).toBe("today.dev");
+    expect(summary.renewingSoon.map((e) => e.domain)).toEqual(["today.dev", "tomorrow.dev"]);
+  });
+
+  test("summary Chicago day holds across the spring DST boundary (#1684)", () => {
+    // 2026-03-08T01:30:00Z is 19:30 CST on 2026-03-07 — the evening
+    // before the spring-forward. Chicago "today" is still 03-07,
+    // and the 45-day horizon is a calendar count (addDaysYmd), so
+    // the cutoff lands on 2026-04-21 regardless of the lost hour.
+    const entry = (domain: string, renewal: string) => ({
+      domain,
+      registrar: "Porkbun",
+      dnsHost: "Porkbun",
+      renewal,
+      autoRenew: "ON",
+      priceUsd: 10,
+      priorYearCost: "unknown",
+      used: "test",
+      plan: "Active — test",
+      review: "",
+      status: "active" as const,
+    });
+    const section = {
+      generatedAt: "2026-03-08T01:30:00Z",
+      source: "test",
+      totalAnnualListUsd: 30,
+      entries: [entry("today.dev", "2026-03-07"), entry("cutoff.dev", "2026-04-21"), entry("beyond.dev", "2026-04-22")],
+    };
+    const summary = summarizeDns(section, new Date("2026-03-08T01:30:00Z"), 45);
+    expect(summary.nextRenewal?.domain).toBe("today.dev");
+    expect(summary.renewingSoon.map((e) => e.domain)).toEqual(["today.dev", "cutoff.dev"]);
+  });
+
   test("a file without the register table parses to nothing (fail-soft)", () => {
     expect(parseDnsRegister("# nothing here\n")).toEqual([]);
     expect(dnsSectionFromRegister("# nothing\n", "2026-10-25T00:00:00Z", "test")).toBeNull();
+  });
+
+  test("register.json section: JSON fields win, Markdown supplies editorial columns (#902 slice 2)", () => {
+    const mdEntries = parseDnsRegister(REGISTER_MD);
+    const json = JSON.stringify({
+      generated_at: "2026-11-01T16:26:34Z",
+      domains: [
+        {
+          domain: "first.de",
+          registrar: "Porkbun",
+          dns_hosted_at: "Porkbun",
+          next_renewal: "2027-02-09",
+          auto_renew: true,
+          renewal_price_usd: 4.07,
+          source: "porkbun-api",
+        },
+        {
+          domain: "active.example",
+          registrar: "Porkbun",
+          dns_hosted_at: "Cloudflare",
+          next_renewal: "2027-02-24",
+          auto_renew: false,
+          renewal_price_usd: 29.35,
+          source: "porkbun-api",
+        },
+        {
+          domain: "jsononly.example",
+          registrar: "Porkbun",
+          dns_hosted_at: "Porkbun",
+          next_renewal: "2027-03-01",
+          auto_renew: null,
+          renewal_price_usd: null,
+          source: "register-markdown",
+        },
+      ],
+    });
+    const section = dnsSectionFromRegisterJson(json, "2026-11-01T17:00:00Z", "test-json", mdEntries);
+    expect(section).not.toBeNull();
+    // JSON is authoritative and complete: a domain absent from the
+    // Markdown still renders; a Markdown-only domain does not.
+    expect(section?.entries.map((e) => e.domain)).toEqual(["first.de", "active.example", "jsononly.example"]);
+    expect(section?.totalAnnualListUsd).toBe(33.42);
+    const active = section?.entries.find((e) => e.domain === "active.example");
+    expect(active?.priceUsd).toBe(29.35);
+    expect(active?.autoRenew).toBe("OFF");
+    // Editorial columns come from the Markdown row for the same domain.
+    expect(active?.plan).toBe("Active — fleet infrastructure");
+    expect(active?.status).toBe("active");
+    const jsonOnly = section?.entries.find((e) => e.domain === "jsononly.example");
+    expect(jsonOnly?.autoRenew).toBe("unknown");
+    expect(jsonOnly?.priceUsd).toBeNull();
+    expect(jsonOnly?.status).toBe("unused");
+    expect(isDnsSection(section)).toBe(true);
+  });
+
+  test("register.json section: missing/malformed JSON yields null so the caller falls back (#902 slice 2)", () => {
+    const mdEntries = parseDnsRegister(REGISTER_MD);
+    expect(dnsSectionFromRegisterJson("{not json", "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
+    expect(dnsSectionFromRegisterJson('{"domains":[]}', "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
+    expect(dnsSectionFromRegisterJson('{"generated_at":"x"}', "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
+    const badRow = JSON.stringify({
+      domains: [
+        {
+          domain: "x.dev",
+          registrar: "Porkbun",
+          dns_hosted_at: "Porkbun",
+          next_renewal: "soon",
+          auto_renew: true,
+          renewal_price_usd: 1,
+        },
+      ],
+    });
+    expect(dnsSectionFromRegisterJson(badRow, "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
+    const dup = JSON.stringify({
+      domains: [
+        {
+          domain: "x.dev",
+          registrar: "Porkbun",
+          dns_hosted_at: "Porkbun",
+          next_renewal: "2027-01-01",
+          auto_renew: true,
+          renewal_price_usd: 1,
+        },
+        {
+          domain: "x.dev",
+          registrar: "Porkbun",
+          dns_hosted_at: "Porkbun",
+          next_renewal: "2027-01-02",
+          auto_renew: true,
+          renewal_price_usd: 2,
+        },
+      ],
+    });
+    expect(dnsSectionFromRegisterJson(dup, "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
+  });
+
+  test("isDnsSection owns the finite-number + status rules (#2412)", () => {
+    const good = dnsSectionFromRegister(REGISTER_MD, "2026-10-25T00:00:00Z", "test");
+    expect(good).not.toBeNull();
+    expect(isDnsSection(good)).toBe(true);
+    const noTotal = { ...good! } as Record<string, unknown>;
+    delete noTotal.totalAnnualListUsd;
+    expect(isDnsSection(noTotal)).toBe(false);
+    expect(isDnsSection({ ...good, totalAnnualListUsd: "46.29" })).toBe(false);
+    expect(isDnsSection({ ...good, totalAnnualListUsd: null })).toBe(false);
+    expect(isDnsSection({ ...good, totalAnnualListUsd: Number.NaN })).toBe(false);
+    expect(isDnsSection({ ...good, totalAnnualListUsd: Number.POSITIVE_INFINITY })).toBe(false);
+    const withEntry = (priceUsd: unknown) => ({
+      ...good,
+      entries: good!.entries.map((e, i) => (i === 0 ? { ...e, priceUsd } : e)),
+    });
+    expect(isDnsSection(withEntry("4.07"))).toBe(false);
+    expect(isDnsSection(withEntry(Number.NaN))).toBe(false);
+    expect(isDnsSection(withEntry(null))).toBe(true);
+    const withStatus = (status: unknown) => ({
+      ...good,
+      entries: good!.entries.map((e, i) => (i === 0 ? { ...e, status } : e)),
+    });
+    expect(isDnsSection(withStatus("bogus"))).toBe(false);
+    expect(isDnsSection(withStatus(undefined))).toBe(false);
+    expect(isDnsSection(withStatus("active"))).toBe(true);
+    expect(isDnsSection(withStatus("earmarked"))).toBe(true);
+    expect(isDnsSection(withStatus("unused"))).toBe(true);
+  });
+
+  test("isDnsSection rejects negative money, allows zero (#4226)", () => {
+    const good = dnsSectionFromRegister(REGISTER_MD, "2026-10-25T00:00:00Z", "test");
+    expect(good).not.toBeNull();
+    // Negative finite money passed the #2412 finiteness gate: a negative
+    // total renders as negative spend and records a negative snapshot.
+    expect(isDnsSection({ ...good, totalAnnualListUsd: -999 })).toBe(false);
+    expect(isDnsSection({ ...good, totalAnnualListUsd: -0.01 })).toBe(false);
+    // Zero is the control: a free tier totals 0 and stays valid.
+    expect(isDnsSection({ ...good, totalAnnualListUsd: 0 })).toBe(true);
+    const withEntry = (priceUsd: unknown) => ({
+      ...good,
+      entries: good!.entries.map((e, i) => (i === 0 ? { ...e, priceUsd } : e)),
+    });
+    expect(isDnsSection(withEntry(-4.07))).toBe(false);
+    expect(isDnsSection(withEntry(-0.01))).toBe(false);
+    expect(isDnsSection(withEntry(0))).toBe(true);
+    expect(isDnsSection(withEntry(null))).toBe(true);
+  });
+
+  test("isDnsSection rejects impossible generatedAt dates Date.parse rolls over (#3441)", () => {
+    const good = dnsSectionFromRegister(REGISTER_MD, "2026-10-25T00:00:00Z", "test");
+    expect(good).not.toBeNull();
+    expect(isDnsSection(good)).toBe(true);
+    for (const generatedAt of ["2026-02-30T00:00:00Z", "2026-02-29T00:00:00Z", "2026-04-31T00:00:00Z"]) {
+      expect(isDnsSection({ ...good, generatedAt })).toBe(false);
+    }
   });
 });
 
@@ -113,6 +362,35 @@ describe("session registry", () => {
     // A later merge with fewer tokens never lowers the cumulative total.
     expect(mergeRecords(merged, [a])[0].tokensTotal).toBe(250);
   });
+
+  test("sparse re-read never wipes stored fields (#1560)", () => {
+    const full = recordFromSessionEntry(
+      entry({
+        sessionId: "ses_full",
+        title: "Full title",
+        model: "opus-4-1",
+        directory: "/home/user/git/code",
+        parentId: "ses_parent",
+        createdAt: "2026-10-25T14:00:00Z",
+        lastActivityAt: "2026-10-25T15:00:00Z",
+      }),
+      500,
+    );
+    // A sparse feed entry: no title/model/directory/parentId stated.
+    const sparse = recordFromSessionEntry(entry({ sessionId: "ses_full" }));
+    expect(sparse.model).toBeUndefined();
+    expect(sparse.parentId).toBeNull();
+    const m = mergeRecords([full], [sparse])[0];
+    expect(m.model).toBe("opus-4-1");
+    expect(m.title).toBe("Full title");
+    expect(m.directory).toBe("/home/user/git/code");
+    expect(m.parentId).toBe("ses_parent");
+    // The sparse label is just the session-id fallback; the stored one survives.
+    expect(m.label).toBe("Full title");
+    // Present incoming values still win: a stated model replaces, a stated parent replaces.
+    expect(mergeRecords([full], [{ ...sparse, model: "sonnet" }])[0].model).toBe("sonnet");
+    expect(mergeRecords([full], [{ ...sparse, parentId: "ses_new_parent" }])[0].parentId).toBe("ses_new_parent");
+  });
 });
 
 // --- Comments store (#906 §2) ------------------------------------------------
@@ -158,6 +436,149 @@ describe("dashboard comments", () => {
     expect((await reloaded.all()).find((c) => c.id === gh.id)?.githubUrl).toContain("issuecomment-1");
   });
 
+  test("github result reports: empty refused, posted terminal, repeats idempotent (#1686)", async () => {
+    const dir2 = mkdtempSync(join(tmpdir(), "agg-comments-result-"));
+    const store = new CommentsStore(join(dir2, "comments.json"));
+    const addGh = () =>
+      store.add({
+        objectRef: "gh:developing-today/code#906",
+        kind: "github",
+        author: agent,
+        body: "posting this",
+        githubRef: "developing-today/code#906",
+      });
+
+    // Empty report on a pending comment: refused, state unchanged.
+    const pending = await addGh();
+    await expect(store.markGithubResult(pending.id, {})).rejects.toThrow("url or an error");
+    expect((await store.all()).find((c) => c.id === pending.id)?.githubState).toBe("pending");
+
+    // A report carrying both url and error: refused, unchanged.
+    await expect(store.markGithubResult(pending.id, { url: "https://github.com/x#1", error: "boom" })).rejects.toThrow(
+      "both",
+    );
+    expect((await store.all()).find((c) => c.id === pending.id)?.githubState).toBe("pending");
+
+    // Posted, then: an empty report and a later failure are both
+    // refused (posted is terminal); the same url repeats as a no-op;
+    // a different url conflicts.
+    const posted = await addGh();
+    await store.markGithubResult(posted.id, { url: "https://github.com/x#issuecomment-9" });
+    await expect(store.markGithubResult(posted.id, {})).rejects.toThrow("url or an error");
+    await expect(store.markGithubResult(posted.id, { error: "late failure" })).rejects.toThrow("already posted");
+    const repeat = await store.markGithubResult(posted.id, {
+      url: "https://github.com/x#issuecomment-9",
+    });
+    expect(repeat?.githubState).toBe("posted");
+    await expect(store.markGithubResult(posted.id, { url: "https://github.com/x#issuecomment-10" })).rejects.toThrow(
+      "different url",
+    );
+    const after = (await store.all()).find((c) => c.id === posted.id);
+    expect(after?.githubState).toBe("posted");
+    expect(after?.githubUrl).toBe("https://github.com/x#issuecomment-9");
+
+    // Failed is not terminal against success: a retry that lands
+    // moves failed -> posted; a repeat failure is a no-op.
+    const retried = await addGh();
+    await store.markGithubResult(retried.id, { error: "first attempt failed" });
+    const again = await store.markGithubResult(retried.id, { error: "second attempt failed" });
+    expect(again?.githubState).toBe("failed");
+    const landed = await store.markGithubResult(retried.id, {
+      url: "https://github.com/x#issuecomment-11",
+    });
+    expect(landed?.githubState).toBe("posted");
+  });
+
+  test("github result urls outside https://github.com/ are refused with state unchanged (#950)", async () => {
+    const dir3 = mkdtempSync(join(tmpdir(), "agg-comments-url-"));
+    const store = new CommentsStore(join(dir3, "comments.json"));
+    const addGh = () =>
+      store.add({
+        objectRef: "gh:developing-today/code#950",
+        kind: "github",
+        author: agent,
+        body: "posting this",
+        githubRef: "developing-today/code#950",
+      });
+
+    // Every non-github.com scheme/host is refused on a pending
+    // comment, with no githubUrl stored and state unchanged.
+    const pending = await addGh();
+    for (const bad of [
+      "javascript:alert(document.domain)",
+      "data:text/html,<script>alert(1)</script>",
+      "http://github.com/developing-today/code/issues/950#issuecomment-1",
+      "https://evil-github.com/developing-today/code#1",
+      "https://github.com.evil.com/#1",
+    ]) {
+      await expect(store.markGithubResult(pending.id, { url: bad })).rejects.toThrow("https://github.com/");
+      const row = (await store.all()).find((c) => c.id === pending.id);
+      expect(row?.githubState).toBe("pending");
+      expect(row?.githubUrl).toBeUndefined();
+    }
+
+    // The real flow still works: an https://github.com/ result URL
+    // is recorded and the comment posts.
+    const ok = await store.markGithubResult(pending.id, {
+      url: "https://github.com/developing-today/code/issues/950#issuecomment-1",
+    });
+    expect(ok?.githubState).toBe("posted");
+    expect(ok?.githubUrl).toBe("https://github.com/developing-today/code/issues/950#issuecomment-1");
+  });
+
+  test("a repeat report after a failed persist still lands the result on disk (#1686)", async () => {
+    // Codex P2 on PR 3062: markGithubResult flips the in-memory state
+    // before persist() runs. If that write fails, a repeat report hit
+    // the idempotent early return and acknowledged success while the
+    // on-disk comment stayed pending — after a restart it would post
+    // again and duplicate the GitHub comment. The repeat must flush
+    // the state to disk before returning.
+    const dir2 = mkdtempSync(join(tmpdir(), "agg-comments-flush-"));
+    const file2 = join(dir2, "comments.json");
+    const store2 = new CommentsStore(file2);
+    const addGh2 = () =>
+      store2.add({
+        objectRef: "gh:developing-today/code#1686",
+        kind: "github",
+        author: agent,
+        body: "posting this",
+        githubRef: "developing-today/code#1686",
+      });
+
+    // Break the filesystem under the store: the store's directory is
+    // replaced by a regular file, so mkdir/write inside persist fail.
+    const breakFs = () => {
+      renameSync(dir2, `${dir2}-moved`);
+      writeFileSync(dir2, "not a directory");
+    };
+    const fixFs = () => {
+      rmSync(dir2);
+      renameSync(`${dir2}-moved`, dir2);
+    };
+    const onDisk = async (id: string) => (await new CommentsStore(file2).all()).find((c) => c.id === id);
+
+    // posted path
+    const ghP = await addGh2();
+    breakFs();
+    await expect(store2.markGithubResult(ghP.id, { url: "https://github.com/x#issuecomment-21" })).rejects.toThrow();
+    fixFs();
+    expect((await onDisk(ghP.id))?.githubState).toBe("pending"); // the failed write never landed
+    const repeatP = await store2.markGithubResult(ghP.id, { url: "https://github.com/x#issuecomment-21" });
+    expect(repeatP?.githubState).toBe("posted");
+    expect((await onDisk(ghP.id))?.githubState).toBe("posted");
+    expect((await onDisk(ghP.id))?.githubUrl).toBe("https://github.com/x#issuecomment-21");
+
+    // failed path: same shape via the failed-state early return
+    const ghF = await addGh2();
+    breakFs();
+    await expect(store2.markGithubResult(ghF.id, { error: "first attempt failed" })).rejects.toThrow();
+    fixFs();
+    expect((await onDisk(ghF.id))?.githubState).toBe("pending");
+    const repeatF = await store2.markGithubResult(ghF.id, { error: "first attempt failed" });
+    expect(repeatF?.githubState).toBe("failed");
+    expect((await onDisk(ghF.id))?.githubState).toBe("failed");
+  });
+
   test("validation rejects anonymous authors, empty bodies, targetless github comments", () => {
     expect(validateNewComment({ objectRef: "x", kind: "note", body: "hi" }).ok).toBe(false);
     expect(validateNewComment({ objectRef: "x", kind: "note", author: drew, body: "  " }).ok).toBe(false);
@@ -196,14 +617,31 @@ describe("pages manifest + slice-3 renders", () => {
     expect(html).toContain("DNS register");
   });
 
-  test("dns page renders the three views + next renewal", () => {
+  test("dns page renders each domain once with status filters and data-derived auto-renew counts", () => {
     const html = renderDns(FIXTURE_DNS, fixtureSource().provenance());
     expect(html).toContain("Next renewal");
-    expect(html).toContain("1110x.de");
-    expect(html).toContain("Unused but earmarked");
-    expect(html).toContain("Completely unused");
-    expect(html).toContain("grandnag.us");
-    expect(html).toContain("security.cab");
+    for (const entry of FIXTURE_DNS.entries) {
+      expect(html.split(entry.domain).length - 1).toBe(1);
+    }
+    expect(html).toContain('data-dns-filter="active"');
+    expect(html).toContain('data-dns-filter="earmarked"');
+    expect(html).toContain('data-dns-filter="unused"');
+    expect(html).toContain('data-dns-filter="renewing-soon"');
+    expect(html).toContain("Auto-renew</strong><br>3 ON · 0 OFF · 1 unknown");
+    expect(html).not.toContain("Auto-renew is ON across the account portfolio");
+    expect(html).not.toContain("<details><summary>Full register");
+  });
+
+  test("dns next-renewal card links to the actual next-renewal row, not the first row", () => {
+    const past = { ...FIXTURE_DNS.entries[0], domain: "past.example", renewal: "2020-01-01" };
+    const upcoming = { ...FIXTURE_DNS.entries[0], domain: "upcoming.example", renewal: "2999-01-01" };
+    const section = { ...FIXTURE_DNS, entries: [past, upcoming] };
+    const html = renderDns(section, fixtureSource().provenance());
+    expect(html).not.toContain("See the first row");
+    expect(html).toContain('href="#dns-next-renewal"');
+    const rowStart = html.indexOf('id="dns-next-renewal"');
+    expect(rowStart).toBeGreaterThan(-1);
+    expect(html.slice(rowStart, rowStart + 500)).toContain("upcoming.example");
   });
 
   test("dns page without a section says so honestly", () => {
@@ -255,6 +693,7 @@ describe("opencode session-identity tool", () => {
 let proc: Subprocess<"ignore", "pipe", "inherit"> | null = null;
 let port = 0;
 const tmp = mkdtempSync(join(tmpdir(), "agg-slice3-"));
+const annotationsFile = join(tmp, "roadmap-annotations.json");
 
 beforeAll(async () => {
   port = 5200 + Math.floor(Math.random() * 800);
@@ -268,6 +707,7 @@ beforeAll(async () => {
       PM_AGG_PORT: String(port),
       PM_AGG_SOURCE: "fixtures",
       PM_AGG_COMMENTS_FILE: commentsFile,
+      PM_AGG_ROADMAP_ANNOTATIONS_FILE: annotationsFile,
       PM_AGG_REGISTRY_FILE: join(tmp, "registry.json"),
     },
     stdout: "pipe",
@@ -306,7 +746,8 @@ describe("slice-3 routes", () => {
     expect(dnsJson.totalAnnualListUsd).toBe(595.62);
     const sessions = await (await fetch(`http://127.0.0.1:${port}/sessions`)).text();
     expect(sessions).toContain("identity registry");
-    const registry = (await (await fetch(`http://127.0.0.1:${port}/api/registry.json`)).json()) as {
+    // window=all: fixture last-activity is a fixed date; the default 7-day window ages it out and fails this test on later run dates.
+    const registry = (await (await fetch(`http://127.0.0.1:${port}/api/registry.json?window=all`)).json()) as {
       records: { source: string }[];
       identities: { kind: string }[];
     };
@@ -378,6 +819,32 @@ describe("slice-3 routes", () => {
     expect(discuss).toContain("Post as GitHub comment");
   });
 
+  test("github-result endpoint refuses non-github.com urls with a 400 (#950)", async () => {
+    const post = (body: unknown) =>
+      fetch(`http://127.0.0.1:${port}/api/comments/github-result`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const author = { kind: "drew", id: "drew", label: "Drew" };
+    const ref = "gh:developing-today/code#950";
+    const created = (await (
+      await fetch(`http://127.0.0.1:${port}/api/comments`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          objectRef: ref,
+          kind: "github",
+          author,
+          body: "for the issue",
+          githubRef: "developing-today/code#950",
+        }),
+      })
+    ).json()) as { comment: { id: string } };
+    const bad = await post({ id: created.comment.id, url: "javascript:alert(document.domain)" });
+    expect(bad.status).toBe(400);
+  });
+
   test("item page carries the dashboard comments form + kinds explainer", async () => {
     const board = (await (await fetch(`http://127.0.0.1:${port}/api/board.json`)).json()) as {
       board: { id: string }[];
@@ -386,5 +853,61 @@ describe("slice-3 routes", () => {
     const html = await (await fetch(`http://127.0.0.1:${port}/item/${id}`)).text();
     expect(html).toContain("Dashboard comments");
     expect(html).toContain("cform");
+  });
+
+  test("roadmap annotations round-trip through API, timeline, drill-down, and JSON; aliases survive reshuffles", async () => {
+    const roadmap = (await (await fetch(`http://127.0.0.1:${port}/api/roadmap.json`)).json()) as {
+      rows: { subject: string; annotations: { body: string }[] }[];
+    };
+    expect(roadmap.rows.length).toBeGreaterThan(1);
+    const stableRef = roadmap.rows[0].subject;
+    const reshuffledRef = roadmap.rows[1].subject;
+    const post = (objectRef: string, body: string) =>
+      fetch(`http://127.0.0.1:${port}/api/roadmap/annotations`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          objectRef,
+          kind: "decision",
+          date: "2026-10-12",
+          author: { kind: "drew", id: "drew", label: "Drew" },
+          body,
+        }),
+      });
+
+    expect((await post(stableRef, "Moved after review")).status).toBe(201);
+    const alias = await fetch(`http://127.0.0.1:${port}/api/roadmap/annotations/alias`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ aliasRef: reshuffledRef, stableRef }),
+    });
+    expect(alias.status).toBe(200);
+    expect((await post(reshuffledRef, "Follow-up under the new row id")).status).toBe(201);
+
+    const json = (await (await fetch(`http://127.0.0.1:${port}/api/roadmap.json`)).json()) as {
+      rows: {
+        subject: string;
+        annotations: { body: string; date: string; kind: string; author: { label: string } }[];
+      }[];
+      annotationAliases: Record<string, string>;
+    };
+    const reshuffledRow = json.rows.find((row) => row.subject === reshuffledRef)!;
+    expect(reshuffledRow.annotations.map((annotation) => annotation.body)).toEqual([
+      "Moved after review",
+      "Follow-up under the new row id",
+    ]);
+    expect(reshuffledRow.annotations[0]).toMatchObject({
+      date: "2026-10-12",
+      kind: "decision",
+      author: { label: "Drew" },
+    });
+    expect(json.annotationAliases[reshuffledRef]).toBe(stableRef);
+
+    const detail = await (await fetch(`http://127.0.0.1:${port}/item/${encodeURIComponent(reshuffledRef)}`)).text();
+    expect(detail).toContain("Roadmap annotations");
+    expect(detail).toContain("Follow-up under the new row id");
+    expect(detail).toContain('name="date"');
+    const timeline = await (await fetch(`http://127.0.0.1:${port}/roadmap`)).text();
+    expect(timeline).toContain("Moved after review");
   });
 });

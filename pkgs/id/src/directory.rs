@@ -90,24 +90,11 @@ pub struct Account {
 
 /// A request the directory refuses, carried in the error so transports can
 /// choose a status without parsing messages.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum Refusal {
-    /// No valid credential, session or key was presented.
-    #[error("{0}")]
-    Unauthenticated(String),
-    /// The caller is known but may not do this.
-    #[error("{0}")]
-    Forbidden(String),
-    /// The named account, group or member does not exist.
-    #[error("{0}")]
-    NotFound(String),
-    /// The change clashes with what already exists.
-    #[error("{0}")]
-    Conflict(String),
-    /// Too many requests for the same thing in a short time.
-    #[error("{0}")]
-    RateLimited(String),
-}
+///
+/// The definition lives in `id-core` since the Phase 1 crate split
+/// (#3447) — leaf modules there (petname) produce it too — and it is
+/// re-exported here at its historical path.
+pub use id_core::Refusal;
 
 macro_rules! refuse {
     ($kind:ident, $($arg:tt)*) => {
@@ -483,8 +470,8 @@ impl Directory {
             })
             .collect();
         for (a, b, requests) in removals {
-            let formed_by = directory.friend_requests.get(&pair(&a, &b));
-            if directory.are_friends(&a, &b) && formed_by.is_some_and(|id| requests.contains(id)) {
+            let requests = directory.pair_bound_requests(&a, &b, &requests);
+            if directory.are_friends(&a, &b) || !requests.is_empty() {
                 directory.apply(&DirectoryEntry::FriendRemoved { a, b, requests })?;
             }
         }
@@ -538,9 +525,61 @@ impl Directory {
             let entry: DirectoryEntry = serde_json::from_str(line)
                 .with_context(|| format!("directory journal line {} is malformed", number + 1))?;
             directory
-                .apply(&entry)
+                .apply_replay(&entry)
                 .with_context(|| format!("directory journal line {} is refused", number + 1))?;
         }
+        Ok(directory)
+    }
+
+    /// Rebuild the directory from complete journal lines without modifying
+    /// the file. Used by read-only world replicas: the normal replay path
+    /// truncates a torn final line as writer recovery, but opening a replica
+    /// must not rewrite even a damaged directory sidecar.
+    ///
+    /// A torn final fragment is ignored (like [`Self::replay`]); a malformed
+    /// newline-terminated entry remains fatal. The artifact log is verified
+    /// without repair, and a signed friend removal that was stored before a
+    /// crash but not journaled is applied in memory (like writer open).
+    pub fn replay_read_only(path: &Path) -> Result<Self> {
+        let mut directory = Self::new();
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(error.into()),
+        };
+        let kept_len = bytes
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(0, |index| index + 1);
+        let text =
+            std::str::from_utf8(&bytes[..kept_len]).context("directory journal is not UTF-8")?;
+        for (number, line) in text.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let entry: DirectoryEntry = serde_json::from_str(line)
+                .with_context(|| format!("directory journal line {} is malformed", number + 1))?;
+            directory
+                .apply_replay(&entry)
+                .with_context(|| format!("directory journal line {} is refused", number + 1))?;
+        }
+        let artifacts = ArtifactLog::open_read_only(&artifact_path(path))?;
+        let removals: Vec<(String, String, Vec<String>)> = artifacts
+            .all()
+            .filter_map(|artifact| match artifact.parsed() {
+                Ok(Some(Kind::FriendRemove(removal))) => {
+                    Some((removal.a, removal.b, removal.requests))
+                }
+                _ => None,
+            })
+            .collect();
+        for (a, b, requests) in removals {
+            let formed_by = directory.friend_requests.get(&pair(&a, &b));
+            if directory.are_friends(&a, &b) && formed_by.is_some_and(|id| requests.contains(id)) {
+                directory.apply_replay(&DirectoryEntry::FriendRemoved { a, b, requests })?;
+            }
+        }
+        directory.artifacts = artifacts;
         Ok(directory)
     }
 
@@ -1032,6 +1071,227 @@ impl Directory {
         self.tiers[&Tier::Anonymous]
     }
 
+    /// Directory facts a read-only replica needs for spectator
+    /// authorization (F12.13 phase 4): everything
+    /// [`crate::world::WorldCore::effective_scopes`] consults for the given
+    /// capability subjects — account ceilings (tiers and group grants) and
+    /// the friendship graph — as entries the replica applies to an empty
+    /// directory. The caller passes every account appearing in the
+    /// replicated journal's capability chains; unknown subjects are skipped
+    /// (they read back under the anonymous tier, fail-closed).
+    ///
+    /// Account secrets never cross: signed-up accounts carry only their
+    /// stored digest, keyed accounts only their public ID. Friendships are
+    /// re-expressed without envelope IDs — the request/accept pair
+    /// validates as a unit, and only current friendships are exported, so
+    /// there is nothing to void. Groups export only when the groups a
+    /// subject's level flows through form a contiguous `1..=k` prefix (the
+    /// journal replays groups in creation order); group founders are the
+    /// lowest-ID account already holding admin, so no authority widens.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a group the subjects depend on cannot be represented as
+    /// such a prefix, so a gappy topology can never silently narrow a
+    /// subject's ceiling. Worlds without group grants (like the phase-4
+    /// friendship-delegation acceptance case) never hit this.
+    pub fn replica_facts_for(&self, subjects: &BTreeSet<String>) -> Result<Vec<DirectoryEntry>> {
+        // Groups that grant a subject some level, closed under nesting: a
+        // subject's level can flow through a nested group, and `MemberSet`
+        // refuses an unknown group.
+        let mut groups: BTreeSet<u64> = BTreeSet::new();
+        let mut stack: Vec<u64> = self
+            .groups
+            .keys()
+            .filter(|id| subjects.iter().any(|s| self.level_in(s, **id).is_some()))
+            .copied()
+            .collect();
+        while let Some(id) = stack.pop() {
+            if groups.insert(id) {
+                for ((_, member), _) in self
+                    .members
+                    .range((id, Member::Group { id: 0 })..=(id, Member::Group { id: u64::MAX }))
+                {
+                    if let Member::Group { id: nested } = member {
+                        stack.push(*nested);
+                    }
+                }
+            }
+        }
+        // Journal replay creates groups in order, so the export must be the
+        // contiguous prefix starting at group 1.
+        let ordered: Vec<u64> = groups.iter().copied().collect();
+        let contiguous = ordered
+            .iter()
+            .enumerate()
+            .all(|(index, id)| u64::try_from(index + 1).is_ok_and(|expected| expected == *id));
+        ensure!(
+            contiguous,
+            "replica export cannot represent non-contiguous group IDs {ordered:?}"
+        );
+        // Accounts to reproduce: the subjects that exist, plus founders of
+        // exported groups (`GroupCreated` refuses an unknown founder).
+        let mut accounts: BTreeSet<String> = subjects
+            .iter()
+            .filter(|id| self.accounts.contains_key(*id))
+            .cloned()
+            .collect();
+        let mut founders: BTreeMap<u64, String> = BTreeMap::new();
+        for id in &ordered {
+            // Admin can be inherited through nested-group membership; use
+            // the same effective-level calculation as `ensure_admins`.
+            let founder = self
+                .accounts
+                .keys()
+                .filter(|account| self.level_in(account.as_str(), *id) == Some(Level::Admin))
+                .min()
+                .cloned();
+            let Some(founder) = founder else {
+                anyhow::bail!("replica export cannot represent group {id} with no account admin");
+            };
+            accounts.insert(founder.clone());
+            founders.insert(*id, founder);
+        }
+        let mut entries = Vec::new();
+        let mut sorted_accounts: Vec<&String> = accounts.iter().collect();
+        sorted_accounts.sort();
+        for id in sorted_accounts {
+            let account = &self.accounts[id.as_str()];
+            if let Some(digest) = self.digests.get(id.as_str()) {
+                entries.push(DirectoryEntry::AccountSignedUp {
+                    id: (*id).clone(),
+                    name: account.name.clone(),
+                    digest: hex_encode(digest),
+                });
+            } else {
+                entries.push(DirectoryEntry::AccountKeyed {
+                    id: (*id).clone(),
+                    name: account.name.clone(),
+                });
+            }
+            // Ceilings read the verified tier (directly verified or via a
+            // confirmed email), so export the verified flag on that basis:
+            // the replica reaches the same ceiling either way.
+            if self.is_verified(id) {
+                entries.push(DirectoryEntry::AccountVerified { id: (*id).clone() });
+            }
+        }
+        // Non-default tiers ride along: ceilings intersect them.
+        let defaults = BTreeMap::from([
+            (Tier::Anonymous, WorldScopes::GUEST),
+            (Tier::Registered, WorldScopes::GUEST),
+            (
+                Tier::Verified,
+                WorldScopes::GUEST.union(WorldScopes::DELEGATE),
+            ),
+        ]);
+        for (tier, scopes) in &self.tiers {
+            if defaults.get(tier) != Some(scopes) {
+                entries.push(DirectoryEntry::TierSet {
+                    tier: *tier,
+                    scopes: scopes.bits(),
+                });
+            }
+        }
+        for id in &ordered {
+            let group = &self.groups[id];
+            entries.push(DirectoryEntry::GroupCreated {
+                id: *id,
+                name: group.name.clone(),
+                description: group.description.clone(),
+                scopes: group.scopes.bits(),
+                founder: founders[id].clone(),
+            });
+        }
+        // All groups exist before any nested `MemberSet` references them.
+        // Directory replay refuses a membership naming a not-yet-created
+        // group, even when both IDs belong to one contiguous replica prefix.
+        // Founder downgrades are collected here and emitted only after
+        // every group's memberships exist (see the deferral below).
+        let mut founder_downgrades: Vec<DirectoryEntry> = Vec::new();
+        for id in &ordered {
+            // Subject memberships reproduce subject ceilings; nested links
+            // reproduce the paths levels flow through. Other accounts stay
+            // out: the founder above already keeps an admin in place.
+            let mut memberships: Vec<(Member, Level)> = self
+                .members
+                .range(
+                    (*id, Member::Account { id: String::new() })
+                        ..=(*id, Member::Group { id: u64::MAX }),
+                )
+                .map(|((_, member), level)| (member.clone(), *level))
+                .filter(|(member, _)| match member {
+                    Member::Account { id } => subjects.contains(id),
+                    Member::Group { .. } => true,
+                })
+                .collect();
+            memberships.sort_by(|a, b| a.0.cmp(&b.0));
+            for (member, level) in memberships {
+                // The founder's admin comes from `GroupCreated` itself.
+                if member
+                    == (Member::Account {
+                        id: founders[id].clone(),
+                    })
+                    && level == Level::Admin
+                {
+                    continue;
+                }
+                let is_founder = member
+                    == (Member::Account {
+                        id: founders[id].clone(),
+                    });
+                let entry = DirectoryEntry::MemberSet {
+                    group: *id,
+                    member,
+                    level: Some(level),
+                };
+                // A founder whose direct level is below `Admin` was chosen
+                // because they hold the group's admin through an inherited
+                // path. Sorted order emits account memberships before
+                // nested-group ones, so the downgrade could land before
+                // the nested membership carrying that path exists, leaving
+                // the group momentarily admin-less — `checked_mode`
+                // rejects it through `ensure_admins` and replica startup
+                // fails. Defer founder downgrades until all memberships
+                // are in place.
+                if is_founder {
+                    founder_downgrades.push(entry);
+                } else {
+                    entries.push(entry);
+                }
+            }
+        }
+        entries.extend(founder_downgrades);
+        // Current friendships among the exported accounts. Preserve the
+        // request ID when one exists: a signed FriendRemove artifact uses
+        // it to distinguish this friendship from an older relationship
+        // between the same pair after the directory is projected.
+        let sorted: Vec<&String> = accounts.iter().collect();
+        let mut pairs: Vec<(&String, &String)> = Vec::new();
+        for (index, a) in sorted.iter().enumerate() {
+            for b in &sorted[index + 1..] {
+                if self.are_friends(a, b) {
+                    pairs.push((a, b));
+                }
+            }
+        }
+        for (a, b) in pairs {
+            let request = self.friend_requests.get(&pair(a, b)).cloned();
+            entries.push(DirectoryEntry::FriendRequested {
+                from: (*a).clone(),
+                to: (*b).clone(),
+                id: request.clone(),
+            });
+            entries.push(DirectoryEntry::FriendAccepted {
+                from: (*a).clone(),
+                to: (*b).clone(),
+                request,
+                id: None,
+            });
+        }
+        Ok(entries)
+    }
+
     /// The group with this ID, if it exists.
     #[must_use]
     pub fn group(&self, id: u64) -> Option<&Group> {
@@ -1391,14 +1651,17 @@ impl Directory {
     /// the chain wrongly, or breaks a directory rule.
     pub fn receive_artifact(&mut self, artifact: &SignedArtifact) -> Result<Stored> {
         let effect = match artifact.parsed()? {
-            Some(Kind::FriendRemove(removal))
-                if self.are_friends(&removal.a, &removal.b) || !removal.requests.is_empty() =>
-            {
-                Some(DirectoryEntry::FriendRemoved {
-                    a: removal.a,
-                    b: removal.b,
-                    requests: removal.requests,
-                })
+            Some(Kind::FriendRemove(removal)) => {
+                let requests = self.pair_bound_requests(&removal.a, &removal.b, &removal.requests);
+                if self.are_friends(&removal.a, &removal.b) || !requests.is_empty() {
+                    Some(DirectoryEntry::FriendRemoved {
+                        a: removal.a,
+                        b: removal.b,
+                        requests,
+                    })
+                } else {
+                    None
+                }
             }
             _ => None,
         };
@@ -1455,12 +1718,12 @@ impl Directory {
         Ok((id.to_owned(), key))
     }
 
-    fn insert_account(&mut self, id: &str, name: &str) -> Result<()> {
+    fn insert_account(&mut self, id: &str, name: &str, refuse_format: bool) -> Result<()> {
         self.accounts.insert(
             id.to_owned(),
             Account {
                 id: id.to_owned(),
-                name: clean_name(name)?,
+                name: clean_name_mode(name, refuse_format)?,
                 verified: false,
                 keys: BTreeSet::new(),
                 emails: BTreeSet::new(),
@@ -1479,7 +1742,27 @@ impl Directory {
     }
 
     pub(crate) fn apply(&mut self, entry: &DirectoryEntry) -> Result<()> {
-        let next = self.checked(entry)?;
+        self.apply_mode(entry, true)
+    }
+
+    /// Replay a historical journal entry. Entries accepted before the
+    /// category-Cf refusal (#1778) may carry format characters; replaying
+    /// them must not refuse, or a world whose journal predates the fix
+    /// can never reopen. New writes still go through `apply` and refuse.
+    fn apply_replay(&mut self, entry: &DirectoryEntry) -> Result<()> {
+        self.apply_mode(entry, false)
+    }
+
+    /// Apply a fact projected from the writer's already-admitted directory
+    /// to a read-only replica. It must use the same historical validation
+    /// as replay, not new-write validation: an old group name containing a
+    /// format character was valid when written and must remain loadable.
+    pub(crate) fn apply_replica_fact(&mut self, entry: &DirectoryEntry) -> Result<()> {
+        self.apply_replay(entry)
+    }
+
+    fn apply_mode(&mut self, entry: &DirectoryEntry, refuse_format: bool) -> Result<()> {
+        let next = self.checked_mode(entry, refuse_format)?;
         if let Some(path) = &self.journal {
             Self::append(path, entry)?;
         }
@@ -1488,13 +1771,21 @@ impl Directory {
     }
 
     fn checked(&self, entry: &DirectoryEntry) -> Result<Self> {
+        self.checked_mode(entry, true)
+    }
+
+    fn checked_mode(&self, entry: &DirectoryEntry, refuse_format: bool) -> Result<Self> {
         let mut next = self.clone();
-        next.change(entry)?;
+        next.change_mode(entry, refuse_format)?;
         next.ensure_admins()?;
         Ok(next)
     }
 
     fn change(&mut self, entry: &DirectoryEntry) -> Result<()> {
+        self.change_mode(entry, true)
+    }
+
+    fn change_mode(&mut self, entry: &DirectoryEntry, refuse_format: bool) -> Result<()> {
         match entry {
             DirectoryEntry::AccountSignedUp { id, name, digest } => {
                 ensure_account_id(id)?;
@@ -1504,7 +1795,7 @@ impl Directory {
                     "account already exists"
                 );
                 let digest = hex_to_array::<32>(digest).context("malformed account digest")?;
-                self.insert_account(id, name)?;
+                self.insert_account(id, name, refuse_format)?;
                 self.digests.insert(id.clone(), digest);
             }
             DirectoryEntry::AccountKeyed { id, name } => {
@@ -1514,7 +1805,7 @@ impl Directory {
                     Conflict,
                     "that key already belongs to an account"
                 );
-                self.insert_account(id, name)?;
+                self.insert_account(id, name, refuse_format)?;
             }
             DirectoryEntry::AccountVerified { id } => {
                 self.accounts
@@ -1585,8 +1876,8 @@ impl Directory {
                     *id,
                     Group {
                         id: *id,
-                        name: clean_name(name)?,
-                        description: clean_description(description)?,
+                        name: clean_name_mode(name, refuse_format)?,
+                        description: clean_description_mode(description, refuse_format)?,
                         scopes: permissions(*scopes)?,
                         public: false,
                     },
@@ -1608,8 +1899,8 @@ impl Directory {
                 description,
                 scopes,
             } => {
-                let name = clean_name(name)?;
-                let description = clean_description(description)?;
+                let name = clean_name_mode(name, refuse_format)?;
+                let description = clean_description_mode(description, refuse_format)?;
                 let scopes = permissions(*scopes)?;
                 let group = self.groups.get_mut(id).context("no such group")?;
                 group.name = name;
@@ -1696,6 +1987,7 @@ impl Directory {
                 }
             }
             DirectoryEntry::FriendRemoved { a, b, requests } => {
+                let requests = self.pair_bound_requests(a, b, requests);
                 let was_friends = self.friends.remove(&pair(a, b));
                 ensure!(was_friends || !requests.is_empty(), "not friends");
                 self.friend_requests.remove(&pair(a, b));
@@ -1718,7 +2010,36 @@ impl Directory {
         ids.extend(self.pending_id(b, a));
         ids.sort();
         ids.dedup();
+        debug_assert!(ids.len() <= artifact::MAX_FRIEND_REMOVE_REQUESTS);
         ids
+    }
+
+    /// Bind a removal's request IDs to the named pair (#4849): drop any ID
+    /// this server already knows belongs to another pair's pending or
+    /// formed-by request. Unknown IDs are kept so a legitimate
+    /// never-delivered removal still voids its own future delivery; a pair
+    /// with no friendship and no surviving IDs of its own is stored alone.
+    fn pair_bound_requests(&self, a: &str, b: &str, requests: &[String]) -> Vec<String> {
+        use std::collections::BTreeSet;
+        let target = pair(a, b);
+        let mut foreign: BTreeSet<&str> = BTreeSet::new();
+        for ((from, to), id) in &self.requests {
+            if pair(from, to) != target {
+                if let Some(id) = id {
+                    foreign.insert(id.as_str());
+                }
+            }
+        }
+        for (known_pair, id) in &self.friend_requests {
+            if *known_pair != target {
+                foreign.insert(id.as_str());
+            }
+        }
+        requests
+            .iter()
+            .filter(|id| !foreign.contains(id.as_str()))
+            .cloned()
+            .collect()
     }
 
     /// Whether two accounts are friends on this server.
@@ -1844,6 +2165,10 @@ fn permissions(bits: u8) -> Result<WorldScopes> {
 }
 
 fn clean_name(name: &str) -> Result<String> {
+    clean_name_mode(name, true)
+}
+
+fn clean_name_mode(name: &str, refuse_format: bool) -> Result<String> {
     let name = name.trim();
     ensure!(!name.is_empty(), "name must not be empty");
     ensure!(
@@ -1854,10 +2179,20 @@ fn clean_name(name: &str) -> Result<String> {
         !name.chars().any(char::is_control),
         "name must not contain control characters"
     );
+    if refuse_format {
+        ensure!(
+            !name.chars().any(crate::petname::is_format_char),
+            "name must not contain format characters"
+        );
+    }
     Ok(name.to_owned())
 }
 
 fn clean_description(description: &str) -> Result<String> {
+    clean_description_mode(description, true)
+}
+
+fn clean_description_mode(description: &str, refuse_format: bool) -> Result<String> {
     let description = description.trim();
     ensure!(
         description.chars().count() <= MAX_DESCRIPTION_CHARS,
@@ -1867,11 +2202,21 @@ fn clean_description(description: &str) -> Result<String> {
         !description.chars().any(|c| c.is_control() && c != '\n'),
         "description must not contain control characters"
     );
+    if refuse_format {
+        ensure!(
+            !description.chars().any(crate::petname::is_format_char),
+            "description must not contain format characters"
+        );
+    }
     Ok(description.to_owned())
 }
 
 pub(crate) fn hex_to_array<const N: usize>(text: &str) -> Option<[u8; N]> {
-    if text.len() != N * 2 || !text.is_ascii() {
+    // Every byte must be an ASCII hex digit (#2517): u8::from_str_radix
+    // also accepts a leading '+', so without this gate a byte 0x00-0x0f
+    // has two accepted spellings ('0x' and '+x') and key strings stop
+    // being canonical.
+    if text.len() != N * 2 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     let mut out = [0_u8; N];
@@ -1898,6 +2243,219 @@ mod tests {
         let (credential, _) = directory.sign_up(name).unwrap();
         let id = directory.account_for(&credential).unwrap();
         (id, credential)
+    }
+
+    #[test]
+    fn replica_facts_create_nested_groups_before_memberships_and_replay_old_names() {
+        let mut writer = Directory::new();
+        let (ann, ann_credential) = account(&mut writer, "Ann");
+        let (bo, bo_credential) = account(&mut writer, "Bo");
+        writer
+            .request_friend(&ann_credential, &bo, "replica-facts-test", 1)
+            .unwrap();
+        writer
+            .accept_friend(&bo_credential, &ann, "replica-facts-test", 2)
+            .unwrap();
+        let (outer, _) = writer
+            .create_group(&ann, "Outer", "nested", WorldScopes::JOIN)
+            .unwrap();
+        let (inner, _) = writer
+            .create_group(&ann, "Inner", "nested", WorldScopes::DELEGATE)
+            .unwrap();
+        writer
+            .set_member(
+                Actor::Server,
+                outer,
+                Member::Group { id: inner },
+                Some(Level::Admin),
+            )
+            .unwrap();
+        // The outer group now has no direct account admin; its admin is
+        // inherited through the nested group, which `ensure_admins` allows.
+        writer
+            .set_member(
+                Actor::Server,
+                outer,
+                Member::Account { id: ann.clone() },
+                None,
+            )
+            .unwrap();
+        writer
+            .set_member(
+                Actor::Server,
+                inner,
+                Member::Account { id: bo.clone() },
+                Some(Level::Read),
+            )
+            .unwrap();
+
+        // Historical directories may contain a format character accepted
+        // before #1778. Replay admits it; a replica projection must preserve
+        // it rather than passing it through the stricter new-write check.
+        writer
+            .apply_replay(&DirectoryEntry::GroupUpdated {
+                id: inner,
+                name: "Inner\u{200B}".to_owned(),
+                description: "nested".to_owned(),
+                scopes: WorldScopes::DELEGATE.bits(),
+            })
+            .unwrap();
+        let subjects = BTreeSet::from([bo.clone()]);
+        let facts = writer.replica_facts_for(&subjects).unwrap();
+        let group_creates: Vec<u64> = facts
+            .iter()
+            .filter_map(|entry| match entry {
+                DirectoryEntry::GroupCreated { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(group_creates, [outer, inner]);
+        let mut replica = Directory::new();
+        for fact in &facts {
+            replica.apply_replica_fact(fact).unwrap();
+        }
+        assert_eq!(replica.ceiling(&bo), writer.ceiling(&bo));
+        assert_eq!(replica.group(inner).unwrap().name, "Inner\u{200B}");
+        assert!(replica.are_friends(&ann, &bo));
+
+        // Preserve the friend-request ID in projected facts so a signed
+        // FriendRemove artifact can invalidate the projected relationship.
+        let removal = writer.remove_friend(&ann_credential, &bo).unwrap();
+        let dir = TempDir::new().unwrap();
+        let journal = dir.path().join("directory.jsonl");
+        let mut text = String::new();
+        for fact in &facts {
+            text.push_str(&serde_json::to_string(fact).unwrap());
+            text.push('\n');
+        }
+        std::fs::write(&journal, text).unwrap();
+        artifact::append(&artifact_path(&journal), &removal).unwrap();
+        let replayed = Directory::replay_read_only(&journal).unwrap();
+        assert!(!replayed.are_friends(&ann, &bo));
+    }
+
+    #[test]
+    fn replica_facts_restore_founder_with_direct_read_and_inherited_admin() {
+        // Codex P2 on PR #4708: a founder with direct `Read` membership
+        // who inherits `Admin` through a nested group could not be
+        // restored — the projection emitted the founder's `MemberSet`
+        // downgrade before the nested membership, so replay failed
+        // `ensure_admins` and replica startup failed.
+        let mut writer = Directory::new();
+        let (ann, _) = account(&mut writer, "Ann");
+        let (outer, _) = writer
+            .create_group(&ann, "Outer", "nested", WorldScopes::JOIN)
+            .unwrap();
+        let (inner, _) = writer
+            .create_group(&ann, "Inner", "nested", WorldScopes::DELEGATE)
+            .unwrap();
+        writer
+            .set_member(
+                Actor::Server,
+                outer,
+                Member::Group { id: inner },
+                Some(Level::Admin),
+            )
+            .unwrap();
+        writer
+            .set_member(
+                Actor::Server,
+                outer,
+                Member::Account { id: ann.clone() },
+                Some(Level::Read),
+            )
+            .unwrap();
+        // Ann's effective level in `outer` is Admin, inherited via her
+        // founder admin of `inner`; her direct level there is only Read.
+        assert_eq!(writer.level_in(&ann, outer), Some(Level::Admin));
+        let subjects = BTreeSet::from([ann.clone()]);
+        let facts = writer.replica_facts_for(&subjects).unwrap();
+        let mut replica = Directory::new();
+        for fact in &facts {
+            replica.apply_replica_fact(fact).unwrap();
+        }
+        assert_eq!(replica.level_in(&ann, outer), Some(Level::Admin));
+        assert_eq!(replica.ceiling(&ann), writer.ceiling(&ann));
+    }
+
+    #[test]
+    fn read_only_directory_open_validates_artifacts_without_a_directory_journal() {
+        let dir = TempDir::new().unwrap();
+        let journal = dir.path().join("directory.jsonl");
+        std::fs::write(artifact_path(&journal), b"not-an-artifact\n").unwrap();
+        assert!(Directory::replay_read_only(&journal).is_err());
+    }
+
+    #[test]
+    fn read_only_directory_open_decodes_only_complete_utf8_lines() {
+        let dir = TempDir::new().unwrap();
+        let journal = dir.path().join("directory.jsonl");
+        let entry = DirectoryEntry::AccountKeyed {
+            id: "01".repeat(32),
+            name: "Alice".to_owned(),
+        };
+        let mut bytes = serde_json::to_vec(&entry).unwrap();
+        bytes.push(b'\n');
+        bytes.extend_from_slice(&[0xe2, 0x80]);
+        std::fs::write(&journal, &bytes).unwrap();
+        let replayed = Directory::replay_read_only(&journal).unwrap();
+        assert_eq!(replayed.accounts().count(), 1);
+        assert_eq!(std::fs::read(&journal).unwrap(), bytes);
+    }
+
+    #[test]
+    fn test_cleaners_reject_format_characters_and_accept_plain_text() {
+        assert!(clean_name("Al\u{200B}ice").is_err());
+        assert!(clean_name("Alice\u{202E}Admin").is_err());
+        assert!(clean_description("Group\u{202E} description").is_err());
+
+        assert_eq!(clean_name("Alice").unwrap(), "Alice");
+        assert_eq!(
+            clean_description("Group description\nwith a newline").unwrap(),
+            "Group description\nwith a newline"
+        );
+    }
+
+    #[test]
+    fn replay_tolerates_pre_fix_format_characters_in_group_fields() {
+        // #1778 Codex P1: a journal written before the Cf refusal can
+        // legitimately contain format characters in a group name or
+        // description. Replay must reopen such a world, while new
+        // writes through the public path still refuse Cf.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("directory.jsonl");
+        let mut directory = Directory::new();
+        let (ann, _) = account_into(&mut directory, &path, "Ann");
+        let (group, entry) = directory
+            .create_group(&ann, "Crew", "hello", all())
+            .unwrap();
+        Directory::append(&path, &entry).unwrap();
+
+        let historical = DirectoryEntry::GroupUpdated {
+            id: group,
+            name: "Crew\u{202E}X".to_owned(),
+            description: "hi\u{200B} there".to_owned(),
+            scopes: all().bits(),
+        };
+        let mut line = serde_json::to_string(&historical).unwrap();
+        line.push('\n');
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str(&line);
+        std::fs::write(&path, text).unwrap();
+
+        let replayed = Directory::replay(&path).unwrap();
+        assert_eq!(replayed.group(group).unwrap().name, "Crew\u{202E}X");
+        assert_eq!(
+            replayed.group(group).unwrap().description,
+            "hi\u{200B} there"
+        );
+
+        assert!(
+            directory
+                .create_group(&ann, "Bad\u{200B}Name", "hello", all())
+                .is_err(),
+            "new writes must still refuse format characters"
+        );
     }
 
     #[test]
@@ -1970,6 +2528,82 @@ mod tests {
             matches!(stale.downcast_ref::<Refusal>(), Some(Refusal::Conflict(_))),
             "{stale:#}"
         );
+    }
+
+    #[test]
+    fn a_friend_removal_cannot_void_another_pairs_pending_request() {
+        let mut receiver = Directory::new();
+        let (ann, ann_credential) = account(&mut receiver, "Ann");
+        let (bo, _) = account(&mut receiver, "Bo");
+        let (cy, cy_credential) = account(&mut receiver, "Cy");
+        let (di, di_credential) = account(&mut receiver, "Di");
+        // The receiver already holds Cy/Di's pending request, so its ID is
+        // known to belong to another pair.
+        let (genuine, _) = receiver
+            .request_friend(&cy_credential, &di, "receiver", 1)
+            .unwrap();
+
+        // Ann signs a well-formed removal for Ann/Bo but names Cy/Di's
+        // pending envelope. The receiver stores the artifact but must not
+        // void the foreign ID.
+        let removal = SignedArtifact::sign(
+            &key_of(&ann_credential),
+            1,
+            "",
+            artifact::FRIEND_REMOVE,
+            json!({
+                "a": ann,
+                "b": bo,
+                "requests": [genuine.id.clone()]
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(receiver.receive_artifact(&removal).unwrap(), Stored::New);
+        assert!(!receiver.removed_requests.contains(&genuine.id));
+        assert!(!receiver.are_friends(&ann, &bo));
+        // The genuine pending request survives: Di can still accept it.
+        receiver
+            .accept_friend(&di_credential, &cy, "receiver", 2)
+            .unwrap();
+        assert!(receiver.are_friends(&cy, &di));
+    }
+
+    #[test]
+    fn receive_artifact_refuses_friend_removal_with_too_many_requests_without_storing_it() {
+        let mut directory = Directory::new();
+        let (ann, ann_credential) = account(&mut directory, "Ann");
+        let (bo, _) = account(&mut directory, "Bo");
+        let valid_id = |n: u8| format!("{n:032x}");
+        let cases = [
+            vec![valid_id(1), valid_id(2), valid_id(3), valid_id(4)],
+            vec!["g".repeat(32)],
+            vec!["a".repeat(31)],
+            vec!["a".repeat(33)],
+        ];
+
+        for requests in cases {
+            let removal = SignedArtifact::sign(
+                &key_of(&ann_credential),
+                1,
+                "",
+                artifact::FRIEND_REMOVE,
+                json!({
+                    "a": ann.clone(),
+                    "b": bo.clone(),
+                    "requests": requests
+                }),
+            )
+            .unwrap();
+            let before = directory.clone();
+
+            let error = directory.receive_artifact(&removal).unwrap_err();
+            assert!(
+                matches!(error.downcast_ref::<Refusal>(), Some(Refusal::Forbidden(_))),
+                "{error:#}"
+            );
+            assert_eq!(directory, before);
+        }
     }
 
     #[test]
@@ -2774,6 +3408,25 @@ mod tests {
     fn malformed_hex_is_refused() {
         assert!(hex_to_array::<32>("zz").is_none());
         assert!(hex_to_array::<32>(&"0".repeat(63)).is_none());
+    }
+
+    #[test]
+    fn plus_encoded_hex_is_refused() {
+        // #2517: '+' pairs decode identically to '0' pairs under
+        // from_str_radix, so they must be refused at the gate — the same
+        // bytes must have exactly one accepted spelling.
+        assert!(hex_to_array::<32>(&"+a".repeat(32)).is_none());
+        assert!(hex_to_array::<32>(&"+7".repeat(32)).is_none());
+        // A single '+' pair anywhere poisons the whole input.
+        let mut mixed = "0a".repeat(32);
+        mixed.replace_range(10..12, "+b");
+        assert!(hex_to_array::<32>(&mixed).is_none());
+        // Canonical hex in either case still decodes, identically.
+        assert_eq!(
+            hex_to_array::<32>(&"0a0b0c0d".repeat(8)),
+            hex_to_array::<32>(&"0A0B0C0D".repeat(8))
+        );
+        assert!(hex_to_array::<32>(&"0a0b0c0d".repeat(8)).is_some());
     }
 
     fn public_key(seed: u8) -> String {

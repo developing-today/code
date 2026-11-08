@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { parseProxyPort, parseAddressPortValue } from './proxy-port.mjs';
+import { createRequestBodyCollector } from './request-body.mjs';
 
 const PORT = parseProxyPort('ANTIGRAVITY_LS_PROXY_PORT', 18745);
 const HOST = process.env.ANTIGRAVITY_LS_PROXY_HOST || '127.0.0.1';
@@ -204,6 +205,50 @@ const findLanguageServerBinary = () => {
   return candidates[0];
 };
 
+// --- RPC timeout policy (#2102) -------------------------------------------
+// callRpc used to fetch the language server with no timeout, so a server
+// that passes heartbeat but never answers an RPC hung /v1/models and every
+// chat request forever. Every RPC is now bounded, including the
+// response-body read (the AbortSignal stays attached until the body is
+// consumed). Budgets are method-specific: the model catalog and trajectory
+// polls are cheap, cascade start/send queue work server-side, and
+// GetModelResponse carries long model generations, so it gets minutes.
+// Tests inject short budgets via ANTIGRAVITY_LS_RPC_TIMEOUTS (a JSON object
+// mapping method name -> milliseconds) and the cascade deadline via
+// ANTIGRAVITY_LS_CASCADE_DEADLINE_MS.
+const RPC_TIMEOUTS_MS = {
+  GetAvailableModels: 3_000,
+  StartCascade: 30_000,
+  SendUserCascadeMessage: 30_000,
+  GetCascadeTrajectorySteps: 5_000,
+  GetModelResponse: 300_000
+};
+const DEFAULT_RPC_TIMEOUT_MS = 30_000;
+
+const parseRpcTimeoutOverrides = () => {
+  try {
+    const parsed = JSON.parse(process.env.ANTIGRAVITY_LS_RPC_TIMEOUTS || '{}');
+    const out = {};
+    for (const [k, v] of Object.entries(parsed || {})) {
+      if (typeof v === 'number' && Number.isFinite(v) && v > 0) out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+};
+const RPC_TIMEOUT_OVERRIDES = parseRpcTimeoutOverrides();
+const rpcTimeoutMs = (method) =>
+  RPC_TIMEOUT_OVERRIDES[method] ?? RPC_TIMEOUTS_MS[method] ?? DEFAULT_RPC_TIMEOUT_MS;
+
+const parsePositiveMs = (raw, fallback) => {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+};
+// Cascade polling obeys a strict elapsed-time deadline, not an iteration
+// count: slow polls stretched the old 120-attempt loop far past 30s.
+const CASCADE_DEADLINE_MS = parsePositiveMs(process.env.ANTIGRAVITY_LS_CASCADE_DEADLINE_MS, 30_000);
+
 class LanguageServerManager {
   constructor() {
     this.managedChild = null;
@@ -369,25 +414,45 @@ class LanguageServerManager {
     throw new Error('Timed out waiting for managed Antigravity Language Server to initialize');
   }
 
-  async callRpc(method, payload) {
+  async callRpc(method, payload, timeoutCapMs) {
     const { port, token } = await this.ensureActive();
     const url = `http://127.0.0.1:${port}/exa.language_server_pb.LanguageServerService/${method}`;
+    // A caller with its own deadline (the cascade poll loop) may cap the
+    // per-method budget at the time it has left; the cap can only shrink it.
+    const timeoutMs = timeoutCapMs === undefined
+      ? rpcTimeoutMs(method)
+      : Math.min(rpcTimeoutMs(method), Math.max(1, timeoutCapMs));
+    // One signal for the whole RPC: it bounds the fetch AND the body read.
+    const signal = AbortSignal.timeout(timeoutMs);
+    const isTimeout = (err) => err?.name === 'TimeoutError' || err?.name === 'AbortError';
+    const timeoutError = () => new Error(`RPC ${method} timed out after ${timeoutMs}ms`);
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-codeium-csrf-token': token
-      },
-      body: JSON.stringify(payload)
-    });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`RPC ${method} returned HTTP ${res.status}: ${errText}`);
+    let res;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-codeium-csrf-token': token
+        },
+        body: JSON.stringify(payload),
+        signal
+      });
+    } catch (err) {
+      if (isTimeout(err)) throw timeoutError();
+      throw err;
     }
 
-    return await res.json();
+    try {
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`RPC ${method} returned HTTP ${res.status}: ${errText}`);
+      }
+      return await res.json();
+    } catch (err) {
+      if (isTimeout(err)) throw timeoutError();
+      throw err;
+    }
   }
 
   cleanup() {
@@ -747,10 +812,10 @@ const server = http.createServer(async (req, res) => {
 
   // Chat completions
   if (req.method === 'POST' && (pathname === '/v1/chat/completions' || pathname === '/chat/completions')) {
-    let bodyText = '';
+    const bodyCollector = createRequestBodyCollector(20 * 1024 * 1024);
     req.on('data', chunk => {
-      bodyText += chunk;
-      if (bodyText.length > 20 * 1024 * 1024) {
+      if (bodyCollector.tooLarge) return;
+      if (!bodyCollector.push(chunk)) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Request payload exceeds 20MB limit' }));
         req.destroy();
@@ -758,12 +823,20 @@ const server = http.createServer(async (req, res) => {
     });
 
     req.on('end', async () => {
+      if (bodyCollector.tooLarge) return;
+      const bodyText = bodyCollector.text();
       let body;
       try {
         body = JSON.parse(bodyText);
       } catch {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Invalid JSON request body' }));
+        return;
+      }
+
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON request body: expected an object' }));
         return;
       }
 
@@ -815,13 +888,30 @@ const server = http.createServer(async (req, res) => {
             }
           });
 
-          // Poll for completion
+          // Poll for completion, bounded by a strict elapsed-time
+          // deadline (#2102) instead of an iteration count.
           let completedResponse = null;
           let usageInfo = null;
+          const cascadeDeadline = Date.now() + CASCADE_DEADLINE_MS;
 
-          for (let attempt = 0; attempt < 120; attempt++) {
-            await new Promise(r => setTimeout(r, 250));
-            const trajectory = await lsManager.callRpc('GetCascadeTrajectorySteps', { cascadeId });
+          while (completedResponse === null && Date.now() < cascadeDeadline) {
+            // Every step of the poll is bounded by the time left to the
+            // deadline (Codex review on PR #4080): the sleep is capped,
+            // the poll RPC is capped, and a response that lands after
+            // the deadline is not accepted.
+            await new Promise(r => setTimeout(r, Math.min(250, cascadeDeadline - Date.now())));
+            const pollBudgetMs = cascadeDeadline - Date.now();
+            if (pollBudgetMs <= 0) break;
+            let trajectory;
+            try {
+              trajectory = await lsManager.callRpc('GetCascadeTrajectorySteps', { cascadeId }, pollBudgetMs);
+            } catch (err) {
+              // The poll hit the remaining-budget cap: that is the
+              // cascade deadline expiring, not an RPC failure.
+              if (Date.now() >= cascadeDeadline) break;
+              throw err;
+            }
+            if (Date.now() >= cascadeDeadline) break;
             const steps = trajectory?.steps || [];
             const lastStep = steps[steps.length - 1];
 
@@ -837,7 +927,7 @@ const server = http.createServer(async (req, res) => {
           }
 
           if (completedResponse === null) {
-            throw new Error('Cascade execution timed out after 30 seconds');
+            throw new Error(`Cascade execution timed out after ${CASCADE_DEADLINE_MS}ms`);
           }
 
           const inputTokens = parseInt(usageInfo?.inputTokens || '0', 10);

@@ -1,11 +1,39 @@
 package settings
 
-import "github.com/dezren39/mcpx/internal/defaults"
+import "github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 
 // transportSettings govern mcpx's own MCP server on the wire: what reaches
 // it, how long a quiet stream is kept alive, and how it shuts down.
 func transportSettings() []Setting {
 	return []Setting{
+		{
+			Path: "daemon.roots", Scope: ScopeDaemon, Kind: KindPathList, Default: "",
+			Commands: []string{"daemon"},
+			Name:     "Upstream roots",
+			Short:    "filesystem paths exposed to upstream servers through roots/list",
+			Long: "Explicit paths the daemon returns to an upstream server when it asks " +
+				"for roots/list and no calling host's roots can be relayed. Paths are " +
+				"exposed as file:// URIs; no roots are exposed by default. Relative paths " +
+				"are resolved from the daemon's working directory. Set daemon.roots in " +
+				"configuration or use --daemon-roots; use a JSON array for paths with spaces.",
+		},
+		{
+			Path: "transport.bearerToken", Scope: ScopeDaemon, Kind: KindString, Default: "",
+			Commands: []string{"daemon"},
+			Name:     "Bearer token",
+			Short:    "when set, every /v1 and /mcp request must carry this token as a Bearer credential",
+			Long: "Optional shared-secret auth for the daemon's HTTP surfaces. Unset (the " +
+				"default), the daemon behaves exactly as it always has: the socket's file " +
+				"permissions are the access control. Set, every /v1 and /mcp request -- on the " +
+				"socket and the loopback listeners alike -- must carry 'Authorization: Bearer " +
+				"<token>' or is refused 401; the comparison is constant-time. First-party " +
+				"callers (the CLI, and through it scripts and the plugin) read the same setting " +
+				"and attach the header. Source it from the environment " +
+				"(MCPX_TRANSPORT_BEARER_TOKEN) so the token need not live in a configuration " +
+				"file. A token shorter than 32 characters is refused at daemon startup. The " +
+				"value is never logged or echoed in an error. This is a static shared token by " +
+				"design -- not OAuth (#1950) and not per-server upstream auth (#1926).",
+		},
 		{
 			Path: "transport.allowedOrigins", Scope: ScopeDaemon, Kind: KindList,
 			Default: defaults.CSV(defaults.TransportAllowedOrigins), Repeatable: true,

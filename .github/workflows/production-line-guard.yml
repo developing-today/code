@@ -1,0 +1,42 @@
+name: production-line-guard
+
+# F11.10 regression guard (#1411): no production .rs file under pkgs/
+# (or apps/) may exceed 2,500 production lines. Pure bash/awk - no
+# nix, no toolchain - so this stays a seconds-long basic check.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/**"
+      - "apps/**"
+      - ".github/scripts/check-production-line-limit.sh"
+      - ".github/scripts/check-production-line-limit.test.sh"
+      - ".github/workflows/production-line-guard.yml"
+  pull_request:
+    paths:
+      - "pkgs/**"
+      - "apps/**"
+      - ".github/scripts/check-production-line-limit.sh"
+      - ".github/scripts/check-production-line-limit.test.sh"
+      - ".github/workflows/production-line-guard.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-line-guard-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  line-guard:
+    name: "basic: production line limit (2500)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Guard passes on this tree (#1411)
+        run: bash .github/scripts/check-production-line-limit.sh
+      - name: Guard contract tests (#1411)
+        run: bash .github/scripts/check-production-line-limit.test.sh

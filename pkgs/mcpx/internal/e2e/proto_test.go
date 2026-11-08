@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // askEnv is an installation whose one server asks questions back.

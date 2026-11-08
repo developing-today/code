@@ -22,6 +22,29 @@ type OpSpec = {
 
 /** Every /v1 operation, by name. */
 export const OPS: Record<string, OpSpec> = {
+  adapters_add: {
+    method: "POST",
+    path: "/v1/adapters",
+    params: {
+      name: { in: "body", required: true },
+      command: { in: "body", required: true },
+      runtime: { in: "body" },
+      args: { in: "body" },
+      env: { in: "body" },
+      description: { in: "body" },
+      tools: { in: "body" },
+      replace: { in: "body" },
+    },
+    response: "json",
+  },
+  adapters_remove: {
+    method: "DELETE",
+    path: "/v1/adapters/{name}",
+    params: {
+      name: { in: "path", required: true },
+    },
+    response: "json",
+  },
   artifact_delete: {
     method: "DELETE",
     path: "/v1/artifacts/{id}",
@@ -648,6 +671,12 @@ export const OPS: Record<string, OpSpec> = {
     },
     response: "json",
   },
+  sessions_read: {
+    method: "GET",
+    path: "/v1/sessions",
+    params: {},
+    response: "json",
+  },
   settings_get: {
     method: "GET",
     path: "/v1/settings/{path}",
@@ -771,6 +800,14 @@ export const OPS: Record<string, OpSpec> = {
     },
     response: "response",
   },
+  writes_clear: {
+    method: "POST",
+    path: "/v1/writes/{server}/clear",
+    params: {
+      server: { in: "path", required: true },
+    },
+    response: "json",
+  },
 }
 
 /** A refusal from the daemon, with the status and the body kept. */
@@ -860,6 +897,23 @@ export class DaemonOps {
     if (OPS[name].response === "response") return res
     const text = await res.text()
     return text ? JSON.parse(text) : undefined
+  }
+
+  /**
+   * Add an adapter declaration, live. `POST /v1/adapters`.
+   * Privileged: it changes the daemon rather than reading it.
+   */
+  adaptersAdd(args: { name: string; command: string; runtime?: string; args?: unknown[]; env?: Record<string, unknown>; description?: string; tools?: unknown[]; replace?: boolean }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("adapters_add", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Remove an adapter declaration, live. `DELETE /v1/adapters/{name}`.
+   * Privileged: it changes the daemon rather than reading it.
+   * Destructive: it cannot be undone, and other callers are affected.
+   */
+  adaptersRemove(args: { name: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("adapters_remove", args, opts) as Promise<unknown>
   }
 
   /**
@@ -1356,6 +1410,13 @@ export class DaemonOps {
   }
 
   /**
+   * The session inventory: every pool's live instances. `GET /v1/sessions`.
+   */
+  sessionsRead(args: Record<string, never> = {}, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("sessions_read", args, opts) as Promise<unknown>
+  }
+
+  /**
    * One setting. `GET /v1/settings/{path}`.
    */
   settingsGet(args: { path: string }, opts: CallOptions = {}): Promise<unknown> {
@@ -1455,5 +1516,13 @@ export class DaemonOps {
    */
   types(args: { ns?: string; instructions?: "0" | "1"; profile?: string; skipDefault?: "0" | "1"; allProfiles?: "0" | "1" } = {}, opts: CallOptions = {}): Promise<Response> {
     return this.invoke("types", args, opts) as Promise<Response>
+  }
+
+  /**
+   * Clear a server's unknown-write block. `POST /v1/writes/{server}/clear`.
+   * Privileged: it changes the daemon rather than reading it.
+   */
+  writesClear(args: { server: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("writes_clear", args, opts) as Promise<unknown>
   }
 }

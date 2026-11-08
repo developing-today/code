@@ -8,10 +8,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use p2panda_core::Hash;
 use proptest::prelude::*;
 
-use super::policy::{Delegation, Join, OnMemberRemoved, Policy, Removal, RoleRules, Template};
+use super::policy::{
+    Delegation, Join, OnMemberRemoved, Policy, Removal, RemoveModeKind, RemovePolicy, RoleRules,
+    SuccessorKind, Template,
+};
 use super::{
     Body, Create, Delegate, DeviceOp, Event, Key, MemberOp, Outcome, Pair, Projection, Refusal,
-    Role, fold, friendship_id,
+    RemoveMode, RemoveSuccessor, Role, TransferOpts, fold, friendship_id,
 };
 use crate::rejection::Reason;
 
@@ -119,7 +122,7 @@ fn remove(name: &str, by: u8, group: Hash, who: u8, after_names: &[&str]) -> Eve
         group,
         MemberOp::Remove {
             member: key(who),
-            successor: None,
+            mode: RemoveMode::Revoke,
         },
         after_names,
     )
@@ -757,7 +760,11 @@ fn remove_to(
         group,
         MemberOp::Remove {
             member: key(who),
-            successor: successor.map(key),
+            mode: successor.map_or(RemoveMode::Revoke, |successor| {
+                RemoveMode::Transfer(TransferOpts {
+                    successor: RemoveSuccessor::Member(key(successor)),
+                })
+            }),
         },
         after_names,
     )
@@ -963,16 +970,105 @@ fn test_an_admin_scoped_device_grant_stands_under_weak_remove() {
     );
 }
 
+/// Issue #162 (Drew's 2026-10-29 Option 1): authority is judged at the event's causal past in
+/// strong-remove (default) groups too — removal strength governs only voiding. An Admin
+/// authorizes an Admin-scoped device without having seen their own demotion to Write; the
+/// Admin status at the grant's position is what counts, so the grant stands. The demotion
+/// itself still takes effect at the head.
+#[test]
+fn test_an_admin_scoped_device_grant_stands_under_strong_remove_with_a_concurrent_demotion() {
+    let g = id("g");
+    let events = vec![
+        custom("g", 1, &[], with_removal(Removal::Strong, None)),
+        add("a0", 1, g, 2, Role::Admin, &["g"]),
+        device_add("dv0", 2, g, 50, Role::Admin, &["a0"]),
+        set_role("s0", 1, g, 2, Role::Write, &["a0"]),
+    ];
+    let strong = project(&events);
+    assert_eq!(outcome(&strong, "dv0"), Outcome::Applied);
+    assert!(
+        strong.active_devices(&g, &key(2)).contains(&key(50)),
+        "strong remove stands an Admin-scoped device grant concurrent with the Admin's demotion"
+    );
+    assert_eq!(outcome(&strong, "s0"), Outcome::Applied);
+    assert_eq!(
+        role_of(&strong, g, 2),
+        Some(Role::Write),
+        "the demotion itself still takes effect at the head"
+    );
+}
+
+/// Issue #162: the same causal-past rule for the access level. A Manage member adds a member
+/// without having seen their own demotion to Read; their role at the add's position is
+/// Manage, so the add stands under strong remove.
+
+#[test]
+fn test_a_member_add_stands_under_strong_remove_with_a_concurrent_demotion() {
+    let g = id("g");
+    let events = vec![
+        custom("g", 1, &[], with_removal(Removal::Strong, None)),
+        add("a0", 1, g, 2, Role::Manage, &["g"]),
+        add("a1", 2, g, 4, Role::Read, &["a0"]),
+        set_role("s0", 1, g, 2, Role::Read, &["a0"]),
+    ];
+    let strong = project(&events);
+    assert_eq!(
+        outcome(&strong, "a1"),
+        Outcome::Applied,
+        "the add is judged by the author's Manage standing at its own position"
+    );
+    assert_eq!(
+        role_of(&strong, g, 2),
+        Some(Role::Read),
+        "the demotion itself still takes effect at the head"
+    );
+}
+
+/// Issue #162 negative control: an event in the demotion's causal future IS judged at the
+/// demoted standing — causal-past judging honours only what the author had not seen, it
+/// does not freeze their original role forever.
+#[test]
+fn test_an_event_after_a_demotion_is_judged_at_the_demoted_role_under_strong_remove() {
+    let g = id("g");
+    let events = vec![
+        custom("g", 1, &[], with_removal(Removal::Strong, None)),
+        add("a0", 1, g, 2, Role::Admin, &["g"]),
+        set_role("s0", 1, g, 2, Role::Manage, &["a0"]),
+        add("a1", 2, g, 3, Role::Admin, &["s0"]),
+    ];
+    let strong = project(&events);
+    assert_eq!(
+        outcome(&strong, "a1"),
+        Outcome::Refused(Refusal::NotAdmin),
+        "an author who has seen their demotion may not add an Admin"
+    );
+}
+
 #[test]
 fn test_keep_prior_lets_a_grant_made_before_the_removal_stand() {
     let g = id("g");
     let mut events = chain_base(Some(Delegation::KeepPrior));
-    events.push(remove_to("x0", 1, g, 2, None, &["d1"]));
+    events.push(member(
+        "x0",
+        1,
+        g,
+        MemberOp::Remove {
+            member: key(2),
+            mode: RemoveMode::KeepPrior,
+        },
+        &["d1"],
+    ));
     events.push(delegate("d2", 3, g, 4, Role::Read, false, &["x0"]));
     let p = project(&events);
     assert_eq!(outcome(&p, "x0"), Outcome::Applied);
     assert_eq!(outcome(&p, "d2"), Outcome::Applied, "d1 was made before x0");
     assert!(p.grant_in_force(&id("d1")));
+    let retained = p
+        .grants_in_force()
+        .find(|grant| grant.id == id("d1"))
+        .expect("the kept grant is visible");
+    assert_eq!(retained.from, Some(key(2)));
+    assert!(retained.retained);
 }
 
 #[test]
@@ -1016,7 +1112,190 @@ fn test_transfer_hands_the_removed_members_grants_to_the_successor() {
 }
 
 #[test]
-fn test_transfer_without_a_successor_ends_the_grants() {
+fn test_transfer_resolves_each_supported_successor_category() {
+    let successors = [
+        RemoveSuccessor::Member(key(5)),
+        RemoveSuccessor::Admin,
+        RemoveSuccessor::Designated(key(5)),
+        RemoveSuccessor::Actor,
+    ];
+    for (index, successor) in successors.into_iter().enumerate() {
+        let create = id(&format!("g{index}"));
+        let events = vec![
+            event(
+                &format!("g{index}"),
+                1,
+                &[],
+                None,
+                Body::Create(Create {
+                    template: Template::Custom,
+                    policy: Policy::default(),
+                    members: Vec::new(),
+                    admins_on_create: false,
+                }),
+            ),
+            add("a0", 1, create, 2, Role::Manage, &[&format!("g{index}")]),
+            add("a1", 1, create, 3, Role::Read, &["a0"]),
+            add("a2", 1, create, 5, Role::Manage, &["a1"]),
+            delegate("d0", 1, create, 2, Role::Manage, true, &["a2"]),
+            delegate("d1", 2, create, 3, Role::Read, true, &["d0"]),
+            member(
+                "x0",
+                1,
+                create,
+                MemberOp::Remove {
+                    member: key(2),
+                    mode: RemoveMode::Transfer(TransferOpts { successor }),
+                },
+                &["d1"],
+            ),
+            delegate("d2", 3, create, 4, Role::Read, false, &["x0"]),
+        ];
+        let p = project(&events);
+        assert_eq!(
+            outcome(&p, "d2"),
+            Outcome::Applied,
+            "successor {successor:?} receives the transfer"
+        );
+        assert!(
+            !p.grant_in_force(&id("d1")),
+            "transferred origins are not listed as grants from the removed member"
+        );
+    }
+}
+
+#[test]
+fn test_reassign_to_group_keeps_the_grant_as_a_group_root_without_manage_authority() {
+    let g = id("g");
+    let events = vec![
+        custom("g", 1, &[], Policy::default()),
+        add("a0", 1, g, 2, Role::Manage, &["g"]),
+        add("a1", 1, g, 3, Role::Read, &["a0"]),
+        add("a2", 1, g, 4, Role::Read, &["a1"]),
+        delegate("d0", 1, g, 2, Role::Manage, true, &["a2"]),
+        delegate("d1", 2, g, 3, Role::Manage, true, &["d0"]),
+        member(
+            "x0",
+            1,
+            g,
+            MemberOp::Remove {
+                member: key(2),
+                mode: RemoveMode::ReassignToGroup,
+            },
+            &["d1"],
+        ),
+        delegate("d2", 3, g, 5, Role::Read, false, &["x0"]),
+        member(
+            "x1",
+            3,
+            g,
+            MemberOp::Remove {
+                member: key(4),
+                mode: RemoveMode::Revoke,
+            },
+            &["x0", "a2"],
+        ),
+    ];
+    let p = project(&events);
+    assert_eq!(
+        outcome(&p, "d2"),
+        Outcome::Applied,
+        "the group root reaches 3"
+    );
+    assert_eq!(outcome(&p, "x1"), Outcome::Refused(Refusal::NotManager));
+    assert_eq!(p.group(&g).unwrap().members.get(&key(3)), Some(&Role::Read));
+    assert!(!p.group(&g).unwrap().members.contains_key(&key(5)));
+    let reassigned = p
+        .grants_in_force()
+        .find(|grant| grant.id == id("d1"))
+        .expect("the re-anchored grant is visible");
+    assert_eq!(
+        reassigned.from, None,
+        "the group, not a synthetic account, is the root"
+    );
+    assert_eq!(reassigned.scope, Role::Manage);
+    assert!(reassigned.redelegate);
+    assert!(!reassigned.retained);
+}
+
+#[test]
+fn test_remove_policy_is_checked_even_for_entangled_removals() {
+    let g = id("g");
+    let policy = Policy {
+        remove_policy: RemovePolicy {
+            allowed_modes: vec![RemoveModeKind::Revoke, RemoveModeKind::Transfer],
+            allowed_successors: vec![SuccessorKind::Member],
+            default_mode: RemoveMode::Revoke,
+        },
+        ..Policy::default()
+    };
+    let p = project(&[
+        custom("g", 1, &[], policy),
+        add("a0", 1, g, 2, Role::Manage, &["g"]),
+        add("a1", 1, g, 3, Role::Manage, &["a0"]),
+        member(
+            "x0",
+            1,
+            g,
+            MemberOp::Remove {
+                member: key(2),
+                mode: RemoveMode::Revoke,
+            },
+            &["a1"],
+        ),
+        member(
+            "x1",
+            2,
+            g,
+            MemberOp::Remove {
+                member: key(3),
+                mode: RemoveMode::KeepPrior,
+            },
+            &["a1"],
+        ),
+    ]);
+    assert_eq!(
+        outcome(&p, "x1"),
+        Outcome::Refused(Refusal::RemoveModeNotAllowed(RemoveModeKind::KeepPrior))
+    );
+}
+
+#[test]
+fn test_remove_policy_rejects_a_disallowed_transfer_successor_kind() {
+    let g = id("g");
+    let policy = Policy {
+        remove_policy: RemovePolicy {
+            allowed_modes: vec![RemoveModeKind::Revoke, RemoveModeKind::Transfer],
+            allowed_successors: vec![SuccessorKind::Member],
+            default_mode: RemoveMode::Revoke,
+        },
+        ..Policy::default()
+    };
+    let p = project(&[
+        custom("g", 1, &[], policy),
+        add("a0", 1, g, 2, Role::Write, &["g"]),
+        delegate("d0", 1, g, 2, Role::Write, true, &["a0"]),
+        member(
+            "x0",
+            1,
+            g,
+            MemberOp::Remove {
+                member: key(2),
+                mode: RemoveMode::Transfer(TransferOpts {
+                    successor: RemoveSuccessor::Admin,
+                }),
+            },
+            &["d0"],
+        ),
+    ]);
+    assert_eq!(
+        outcome(&p, "x0"),
+        Outcome::Refused(Refusal::RemoveSuccessorNotAllowed(SuccessorKind::Admin))
+    );
+}
+
+#[test]
+fn test_revoke_ends_the_removed_members_grants() {
     let g = id("g");
     let mut events = chain_base(Some(Delegation::Transfer));
     events.push(remove_to("x0", 1, g, 2, None, &["d1"]));
@@ -1190,11 +1469,11 @@ fn test_a_veto_needs_manage_a_grant_it_has_seen() {
 
 /// The S2 spike's delegation DAG (`spikes/shared/s2-auth/src/delegation.rs`), with the owner 1,
 /// Joe 2, Dan 3, Jim 4, Zed 5, Yan 6, Quinn 7, Eve 8, Kim 9, Lou 10 and Xav 11. Joe is removed by
-/// s9. `alt` adds Dan's grant to Jim (s16). `successor` is named by the removal.
-fn s2_events(alt: bool, mode: Option<Delegation>, successor: Option<u8>) -> Vec<Event> {
+/// s9. `alt` adds Dan's grant to Jim (s16). The removal has an explicit per-removal mode.
+fn s2_events(alt: bool, remove_mode: RemoveMode) -> Vec<Event> {
     let g = id("s0");
     let mut events = vec![
-        custom("s0", 1, &[], with_mode(mode)),
+        custom("s0", 1, &[], with_mode(None)),
         add("s1", 1, g, 2, Role::Manage, &["s0"]),
         add("s2", 1, g, 3, Role::Manage, &["s1"]),
         delegate("s3", 1, g, 2, Role::Manage, true, &["s1"]),
@@ -1209,7 +1488,16 @@ fn s2_events(alt: bool, mode: Option<Delegation>, successor: Option<u8>) -> Vec<
         events.push(delegate("s16", 3, g, 4, Role::Manage, true, &["s4"]));
         removal_after.push("s16");
     }
-    events.push(remove_to("s9", 1, g, 2, successor, &removal_after));
+    events.push(member(
+        "s9",
+        1,
+        g,
+        MemberOp::Remove {
+            member: key(2),
+            mode: remove_mode,
+        },
+        &removal_after,
+    ));
     events.push(add("s10", 4, g, 5, Role::Manage, &["s9"]));
     events.push(add("s11", 4, g, 6, Role::Manage, &["s6"]));
     events.push(add("s12", 7, g, 8, Role::Read, &["s7", "s8"]));
@@ -1221,20 +1509,26 @@ fn s2_events(alt: bool, mode: Option<Delegation>, successor: Option<u8>) -> Vec<
 
 #[test]
 fn test_s2_delegation_scenarios_keep_their_results() {
-    // (alt chain, mode, successor, Joe to Jim stands at the head). Jim (4) and Quinn (7) are
+    // (alt chain, removal mode, Joe to Jim stands at the head). Jim (4) and Quinn (7) are
     // managers, so they are roots at their positions (design §7.2). Their later actions apply in
     // every mode. S2 had them vetoed, because it made only the owner a root. The mode still
     // decides the grant from Joe, which is the table's last column.
     let g = id("s0");
     let runs = [
-        (false, None, None, false),
-        (true, None, None, false),
-        (false, Some(Delegation::KeepPrior), None, true),
-        (false, Some(Delegation::Transfer), Some(3), false),
+        (false, RemoveMode::Revoke, false),
+        (true, RemoveMode::Revoke, false),
+        (false, RemoveMode::KeepPrior, true),
+        (
+            false,
+            RemoveMode::Transfer(TransferOpts {
+                successor: RemoveSuccessor::Member(key(3)),
+            }),
+            false,
+        ),
     ];
-    for (alt, mode, successor, joe_to_jim_stands) in runs {
-        let name = format!("alt {alt}, mode {mode:?}, successor {successor:?}");
-        let p = project(&s2_events(alt, mode, successor));
+    for (alt, remove_mode, joe_to_jim_stands) in runs {
+        let name = format!("alt {alt}, removal mode {remove_mode:?}");
+        let p = project(&s2_events(alt, remove_mode));
         assert_eq!(
             outcome(&p, "s10"),
             Outcome::Applied,
@@ -1252,7 +1546,7 @@ fn test_s2_delegation_scenarios_keep_their_results() {
         assert!(!members.contains_key(&key(2)), "{name}: Joe is removed");
         assert!(members.contains_key(&key(5)), "{name}: Zed");
     }
-    let p = project(&s2_events(false, None, None));
+    let p = project(&s2_events(false, RemoveMode::Revoke));
     assert_eq!(outcome(&p, "s14"), Outcome::Refused(Refusal::Attenuated));
     assert!(matches!(outcome(&p, "s15"), Outcome::Refused(_)));
     assert!(p.grant_in_force(&id("s3")));
@@ -1278,8 +1572,8 @@ fn pasts(events: &[Event]) -> BTreeMap<Hash, BTreeSet<Hash>> {
         .collect()
 }
 
-/// Random delegation scripts: groups in four modes, managers, grants, removals with an optional
-/// successor, and vetoes. Each step is (kind, author, target, scope, pick, mask).
+/// Random delegation scripts: groups with legacy policy values, managers, grants, removals with an
+/// explicit mode, and vetoes. Each step is (kind, author, target, scope, pick, mask).
 fn delegation_script() -> impl Strategy<Value = Vec<(u8, u8, u8, u8, u8, u8)>> {
     prop::collection::vec(
         (0u8..8, 1u8..=4, 1u8..=4, 0u8..4, any::<u8>(), any::<u8>()),
@@ -1360,7 +1654,13 @@ fn delegation_build(script: &[(u8, u8, u8, u8, u8, u8)]) -> Vec<Event> {
                 Some(group),
                 Body::Member(MemberOp::Remove {
                     member: key(target),
-                    successor: (mask % 3 == 0).then(|| key(pick % 5 + 1)),
+                    mode: (mask % 3 == 0)
+                        .then(|| {
+                            RemoveMode::Transfer(TransferOpts {
+                                successor: RemoveSuccessor::Member(key(pick % 5 + 1)),
+                            })
+                        })
+                        .unwrap_or(RemoveMode::Revoke),
                 }),
             ),
             _ => (Some(group), Body::Veto { grant }),
@@ -1398,7 +1698,7 @@ proptest! {
     }
 
     #[test]
-    fn prop_no_grant_survives_its_grantors_strong_removal_unless_the_mode_keeps_it(
+    fn prop_grant_visibility_follows_each_removals_mode(
         script in delegation_script(),
     ) {
         let events = delegation_build(&script);
@@ -1408,10 +1708,9 @@ proptest! {
             matches!(e.body, Body::Delegate(_)) && p.outcome(&e.id) == Some(&Outcome::Applied)
         });
         for grant in grants {
-            let (Some(group), Body::Delegate(delegate)) = (grant.group, &grant.body) else {
+            let (Some(group), Body::Delegate(_)) = (grant.group, &grant.body) else {
                 continue;
             };
-            let view = p.group(&group).unwrap();
             let grantor = grant.author;
             let removals: Vec<&Event> = events
                 .iter()
@@ -1435,28 +1734,31 @@ proptest! {
             if concurrent {
                 prop_assert!(!in_force, "a grant concurrent with its grantor's removal is void");
             }
-            match view.policy.delegation_mode() {
-                Delegation::Cascade => {
-                    let holds_at_head = view
-                        .members
-                        .get(&grantor)
-                        .is_some_and(|role| *role >= delegate.scope);
-                    if !removals.is_empty() && !holds_at_head {
-                        prop_assert!(!in_force, "cascade ends a grant its grantor no longer holds");
-                    }
+            let superseding_modes: Vec<RemoveMode> = removals
+                .iter()
+                .filter(|removal| pasts[&removal.id].contains(&grant.id))
+                .filter_map(|removal| match &removal.body {
+                    Body::Member(MemberOp::Remove { mode, .. }) => Some(*mode),
+                    _ => None,
+                })
+                .collect();
+            if !vetoed && !concurrent && !superseding_modes.is_empty() {
+                if superseding_modes.contains(&RemoveMode::Revoke)
+                    || superseding_modes
+                        .iter()
+                        .any(|mode| matches!(mode, RemoveMode::Transfer(_)))
+                {
+                    prop_assert!(!in_force, "revoke/transfer supersedes the original grant");
+                } else {
+                    prop_assert!(in_force, "keep-prior/reassign retains the grant");
                 }
-                Delegation::Transfer => {
-                    if !removals.is_empty() {
-                        prop_assert!(!in_force, "transfer supersedes the grantor's grants");
-                    }
-                }
-                Delegation::KeepPrior => {
-                    let before_every_removal =
-                        removals.iter().all(|r| pasts[&r.id].contains(&grant.id));
-                    if !vetoed && before_every_removal {
-                        prop_assert!(in_force, "keep_prior keeps a grant made before the removal");
-                    }
-                }
+            }
+            if in_force
+                && superseding_modes.contains(&RemoveMode::KeepPrior)
+                && !superseding_modes.contains(&RemoveMode::ReassignToGroup)
+            {
+                let grant = p.grants_in_force().find(|visible| visible.id == grant.id);
+                prop_assert!(grant.is_some_and(|grant| grant.retained));
             }
         }
     }
@@ -1558,7 +1860,7 @@ fn build(script: &[(u8, u8, u8, u8, u8, u8)]) -> Vec<Event> {
                 Some(group),
                 Body::Member(MemberOp::Remove {
                     member: key(target),
-                    successor: None,
+                    mode: RemoveMode::Revoke,
                 }),
             ),
             _ => (
@@ -1792,7 +2094,12 @@ fn test_an_admin_scoped_device_grant_is_applied_under_weak_remove_without_a_read
 fn test_a_device_authored_grant_stands_under_weak_remove_with_a_wide_removal_past() {
     let g = id("g");
     let events = vec![
-        custom("g", 1, &[], with_removal(Removal::Weak, Some(Delegation::KeepPrior))),
+        custom(
+            "g",
+            1,
+            &[],
+            with_removal(Removal::Weak, Some(Delegation::KeepPrior)),
+        ),
         add("a0", 1, g, 2, Role::Write, &["g"]),
         add("a1", 1, g, 3, Role::Write, &["a0"]),
         delegate("d0", 1, g, 2, Role::Write, true, &["a1"]),

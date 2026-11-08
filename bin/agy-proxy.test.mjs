@@ -11,7 +11,9 @@
 // $HOME/.local/bin/agy (the proxy's binary resolution reaches it when
 // no system agy exists) that speaks that protocol AND answers
 // `agy models` with a TSV list including a test-only model no static
-// array could contain: it emits an `init` event at spawn, then one
+// array could contain (startProxy also pins the stub via
+// AGY_PROXY_AGY_BIN so a host-installed agy can never shadow it,
+// #3355): it emits an `init` event at spawn, then one
 // reply per stdin line, keyed on markers in the prompt — a run that
 // dies non-zero must be reported as an error, never as a successful
 // 'stop' (in stream mode always, in non-stream mode also when the run
@@ -70,11 +72,19 @@ while IFS= read -r line; do
       printf '%s\\n' '{"event":"step_update","step_update":{"text_delta":"partial answer"}}'
       echo "stub agy: run failed midway" >&2
       exit 3 ;;
+    *FAILTAIL*)
+      if [ -n "$conv" ]; then
+        printf '%s' '{"event":"step_update","step_update":{"text_delta":"partial tail"}}'
+        echo "stub agy: tail run failed" >&2
+        exit 3
+      fi ;;
+    *SLOWME*)
+      sleep "\${AGY_STUB_SLOW_SECONDS:-0.75}" ;;
     *SIGKILLME*)
       kill -9 $$ ;;
   esac
   printf '%s\\n' '{"event":"step_update","step_update":{"text_delta":"Hello world"}}'
-  printf '%s\\n' '{"event":"result","result":{"conversation_id":"stub-conv-1","status":"SUCCESS","response":"Hello world","usage":{"input_tokens":100,"output_tokens":3,"total_tokens":103}}}'
+  printf '%s\\n' '{"event":"result","result":{"conversation_id":"stub-conv-1","status":"SUCCESS","response":"Hello world","usage":{"input_tokens":100,"output_tokens":3,"total_tokens":103,"cache_read_tokens":77}}}'
 done
 `;
 
@@ -99,6 +109,7 @@ const startProxy = async (extraEnv = {}) => {
       HOME: home,
       XDG_STATE_HOME: path.join(tmp, 'state'),
       AGY_PROXY_PORT: String(port),
+      AGY_PROXY_AGY_BIN: path.join(home, ".local", "bin", "agy"),
       ...extraEnv
     },
     stdio: ['ignore', 'pipe', 'pipe']
@@ -123,6 +134,19 @@ const post = (port, body, headers = {}) => fetch(`http://127.0.0.1:${port}/v1/ch
   headers: { 'Content-Type': 'application/json', ...headers },
   body: JSON.stringify(body)
 });
+
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+const waitForSessionPids = async (port, minCount) => {
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+    const pids = health.warm?.sessionPids ?? [];
+    if (pids.length >= minCount) return pids;
+    if (Date.now() > deadline) throw new Error(`expected ${minCount} live session workers, saw ${pids.length}`);
+    await delay(20);
+  }
+};
 
 const parseSse = (sse) => {
   const dataLines = sse.split('\n').filter(l => l.startsWith('data: '));
@@ -160,6 +184,19 @@ test('successful run is unchanged in both modes', async (t) => {
   assert.match(sse, /Hello world/);
   assert.match(sse, /"finish_reason":"stop"/);
   assert.ok(sse.trimEnd().endsWith('data: [DONE]'));
+});
+
+test('agy cache_read_tokens surfaces as prompt_tokens_details.cached_tokens in both shapes (#480)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  const messages = [{ role: 'user', content: 'hi' }];
+  const plain = JSON.parse(await (await post(port, { messages })).text());
+  assert.equal(plain.usage.prompt_tokens_details.cached_tokens, 77, 'non-streaming usage must surface the agy cache_read_tokens delta (opencode #394)');
+  const streamRes = await post(port, { messages, stream: true });
+  const events = parseSse(await streamRes.text());
+  const finish = events.find(e => e.choices && e.choices[0].finish_reason === 'stop');
+  assert.ok(finish, 'stream must carry a finish chunk');
+  assert.equal(finish.usage.prompt_tokens_details.cached_tokens, 77, 'streaming finish chunk must surface cached_tokens');
 });
 
 test('execution failure with no output: 502 non-stream, SSE error + [DONE] stream (#678)', async (t) => {
@@ -220,6 +257,29 @@ test('failed resume still retries once as a fresh conversation (#678)', async (t
   assert.match(sse, /"finish_reason":"stop"/);
 });
 
+test('unterminated final delta counts as output: failed resume is NOT retried fresh (#683)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  const messages = [{ role: 'user', content: 'please FAILTAIL now' }];
+  const headers = { 'x-conversation-id': 'conv-456' };
+
+  const plainRes = await post(port, { messages }, headers);
+  assert.equal(plainRes.status, 502, 'a resumed turn whose only output is an unterminated tail delta must fail, not silently retry as a fresh conversation');
+  const plainBody = JSON.parse(await plainRes.text());
+  assert.match(plainBody.stderr, /stub agy: tail run failed/);
+
+  const streamRes = await post(port, { messages, stream: true }, headers);
+  assert.equal(streamRes.status, 200);
+  const events = parseSse(await streamRes.text());
+  const deltaChunk = events.find(e => e.choices && e.choices[0].delta && e.choices[0].delta.content === 'partial tail');
+  assert.ok(deltaChunk, 'the unterminated tail delta must be delivered exactly like a terminated line');
+  const errorEvent = events.find(e => e.error);
+  assert.ok(errorEvent, 'stream must carry an error event');
+  assert.match(errorEvent.error.message, /tail run failed/);
+  const stopChunk = events.find(e => e.choices && e.choices[0].finish_reason === 'stop');
+  assert.equal(stopChunk, undefined, "no chunk may claim finish_reason 'stop'");
+});
+
 test('session requests reuse one resident worker (same pid across turns)', async (t) => {
   const { port, stop } = await startProxy();
   t.after(stop);
@@ -248,6 +308,114 @@ test('session requests reuse one resident worker (same pid across turns)', async
   const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
   assert.equal(health.engine, 'agy-stream-json-resident');
   assert.ok(health.warm.sessionPids.includes(Number(pid1)), 'health must list the live session worker pid');
+});
+
+test('TTL eviction skips a worker with a turn in flight, then evicts it after the turn settles', async (t) => {
+  const { port, stop } = await startProxy({
+    AGY_PROXY_WARM_SPARES: '0',
+    AGY_PROXY_SESSION_TTL_MS: '75',
+    AGY_STUB_SLOW_SECONDS: '0.5'
+  });
+  t.after(stop);
+
+  const busyPromise = post(port, { messages: [{ role: 'user', content: 'SLOWME ttl' }] }, {
+    'x-conversation-id': 'ttl-busy'
+  });
+  const [busyPid] = await waitForSessionPids(port, 1);
+  await delay(125); // worker is turn-busy and its spawn timestamp is TTL-expired
+
+  const trigger = await post(port, { messages: [{ role: 'user', content: 'trigger ttl sweep' }] }, {
+    'x-conversation-id': 'ttl-trigger'
+  });
+  assert.equal(trigger.status, 200);
+  await trigger.text();
+
+  const busy = await busyPromise;
+  assert.equal(busy.status, 200, 'the TTL sweep must not kill an in-flight turn');
+  assert.equal(Number(busy.headers.get('x-agy-worker-pid')), busyPid);
+  await busy.text();
+
+  await delay(100); // after turn completion lastUsedAt is refreshed; let that idle TTL expire
+  const after = await post(port, { messages: [{ role: 'user', content: 'trigger post-turn sweep' }] }, {
+    'x-conversation-id': 'ttl-after'
+  });
+  assert.equal(after.status, 200);
+  await after.text();
+  const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+  assert.ok(!health.warm.sessionPids.includes(busyPid), 'the now-idle worker is eligible on the next TTL sweep');
+});
+
+test('cap eviction chooses an idle LRU candidate instead of a busy older worker', async (t) => {
+  const { port, stop } = await startProxy({
+    AGY_PROXY_WARM_SPARES: '0',
+    AGY_PROXY_MAX_LIVE_WORKERS: '2',
+    AGY_PROXY_SESSION_TTL_MS: '60000',
+    AGY_STUB_SLOW_SECONDS: '0.8'
+  });
+  t.after(stop);
+
+  const busyPromise = post(port, { messages: [{ role: 'user', content: 'SLOWME cap-busy' }] }, {
+    'x-conversation-id': 'cap-busy'
+  });
+  const [busyPid] = await waitForSessionPids(port, 1);
+  await delay(75);
+
+  const idle = await post(port, { messages: [{ role: 'user', content: 'idle worker' }] }, {
+    'x-conversation-id': 'cap-idle'
+  });
+  assert.equal(idle.status, 200);
+  const idlePid = Number(idle.headers.get('x-agy-worker-pid'));
+  await idle.text();
+  assert.notEqual(idlePid, busyPid);
+
+  const trigger = await post(port, { messages: [{ role: 'user', content: 'trigger cap sweep' }] }, {
+    'x-conversation-id': 'cap-trigger'
+  });
+  assert.equal(trigger.status, 200);
+  await trigger.text();
+
+  const busy = await busyPromise;
+  assert.equal(busy.status, 200, 'cap pressure must not kill the busy LRU worker');
+  assert.equal(Number(busy.headers.get('x-agy-worker-pid')), busyPid);
+  await busy.text();
+  const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+  assert.ok(health.warm.sessionPids.includes(busyPid), 'busy worker remains live');
+  assert.ok(!health.warm.sessionPids.includes(idlePid), 'idle worker is selected for eviction');
+});
+
+test('cap eviction does nothing when every live worker has a turn in flight', async (t) => {
+  const { port, stop } = await startProxy({
+    AGY_PROXY_WARM_SPARES: '0',
+    AGY_PROXY_MAX_LIVE_WORKERS: '2',
+    AGY_PROXY_SESSION_TTL_MS: '60000',
+    AGY_STUB_SLOW_SECONDS: '0.8'
+  });
+  t.after(stop);
+
+  const firstPromise = post(port, { messages: [{ role: 'user', content: 'SLOWME all-busy-1' }] }, {
+    'x-conversation-id': 'all-busy-1'
+  });
+  const [firstPid] = await waitForSessionPids(port, 1);
+  await delay(75);
+  const secondPromise = post(port, { messages: [{ role: 'user', content: 'SLOWME all-busy-2' }] }, {
+    'x-conversation-id': 'all-busy-2'
+  });
+  const pids = await waitForSessionPids(port, 2);
+  const secondPid = pids.find(pid => pid !== firstPid);
+  assert.ok(secondPid);
+  await delay(75);
+
+  const trigger = await post(port, { messages: [{ role: 'user', content: 'trigger all-busy sweep' }] }, {
+    'x-conversation-id': 'all-busy-trigger'
+  });
+  assert.equal(trigger.status, 200);
+  await trigger.text();
+
+  const [first, second] = await Promise.all([firstPromise, secondPromise]);
+  assert.equal(first.status, 200, 'no busy worker is evicted when every candidate is busy');
+  assert.equal(second.status, 200, 'all busy turns survive cap pressure');
+  assert.equal(Number(first.headers.get('x-agy-worker-pid')), firstPid);
+  assert.equal(Number(second.headers.get('x-agy-worker-pid')), secondPid);
 });
 
 test('a pre-warmed spare is ready before the first stateless request', async (t) => {
@@ -364,4 +532,21 @@ test('live pull failure falls back to the last-known-good catalog; unknowns stil
   const badRes = await post(port, { model: 'gemini-9-nonexistent', messages });
   assert.equal(badRes.status, 400, 'unknown ids are 400 against the fallback list too');
   await badRes.text();
+});
+
+test('non-object JSON body is a 400 and the proxy stays alive (#2816)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  for (const bad of ['null', '[1,2]', '"x"', '42']) {
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: bad
+    });
+    assert.equal(res.status, 400, `body ${bad} must be a 400, got ${res.status}`);
+    await res.text();
+  }
+  const alive = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{bad json'
+  });
+  assert.equal(alive.status, 400, 'proxy must still serve after non-object bodies');
+  await alive.text();
 });

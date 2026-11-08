@@ -5,15 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/elicit"
-	"github.com/dezren39/mcpx/internal/events"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 )
 
 // InstallHooks connects every pool to the event bus and the question broker.
@@ -50,6 +52,16 @@ func (r *Registry) InstallHooks(bus *events.Bus, broker *elicit.Broker, roots []
 			if k != "" {
 				r.publish(events.Event{Kind: k, Server: server})
 			}
+			// A changed catalog can orphan an argument rule (#1986):
+			// note that this server's rules need a re-check. The
+			// check itself is deferred to the next genuine catalog
+			// observation -- refreshing here would acquire a pool
+			// instance solely for a diagnostic and can evict a
+			// session-scoped caller's live process. See
+			// noteDeadRuleRecheck.
+			if kind == "tools" {
+				r.noteDeadRuleRecheck(server)
+			}
 		},
 		OnResourceUpdated: func(server, uri string) {
 			r.publish(events.Event{Kind: events.ResourceUpdated, Server: server, URI: uri})
@@ -60,7 +72,7 @@ func (r *Registry) InstallHooks(bus *events.Bus, broker *elicit.Broker, roots []
 			// on it should hear so now rather than at its deadline.
 			if r.broker != nil {
 				_ = r.broker.Respond(elicit.Answer{
-					ID: id, Action: elicit.Accept, By: "server:" + server,
+					ID: brokerRowID(server, id), Action: elicit.Accept, By: "server:" + server,
 				})
 			}
 			r.publish(events.Event{
@@ -68,7 +80,14 @@ func (r *Registry) InstallHooks(bus *events.Bus, broker *elicit.Broker, roots []
 				Data: mustJSON(map[string]string{"elicitationId": id}),
 			})
 		},
-		Elicit: r.answerServer,
+	}
+	if broker != nil {
+		// The client declares sampling and elicitation.url only when this
+		// handler is installed. Form elicitation is answered with cancel by
+		// mcpclient itself, so a missing broker must not advertise the two
+		// capabilities that depend on it.
+		hooks.Elicit = r.answerServer
+		hooks.URLElicitation = r.urlElicitationsViaBroker
 	}
 	r.upstreamHooks(hooks)
 	// Under r.mu: Reload reads r.hooks and replaces r.pools under it.
@@ -83,6 +102,28 @@ func (r *Registry) InstallHooks(bus *events.Bus, broker *elicit.Broker, roots []
 		seen[p] = true
 		p.Hooks = hooks
 	}
+}
+
+// rootsFromPaths converts the daemon's explicitly configured filesystem roots
+// into MCP file URIs. Relative paths are resolved from the daemon's working
+// directory when it starts.
+func rootsFromPaths(paths []string) ([]mcpclient.Root, error) {
+	roots := make([]mcpclient.Root, 0, len(paths))
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return nil, fmt.Errorf("resolve daemon root %q: %w", path, err)
+		}
+		abs = filepath.Clean(abs)
+		roots = append(roots, mcpclient.Root{
+			URI:  (&url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}).String(),
+			Name: filepath.Base(abs),
+		})
+	}
+	return roots, nil
 }
 
 func (r *Registry) publish(e events.Event) {
@@ -159,6 +200,20 @@ func (r *Registry) answerServer(ctx context.Context, server, key, method string,
 	return nil, fmt.Errorf("mcpx does not implement %s", method)
 }
 
+// brokerRowID is the broker row key for a server-supplied elicitation
+// ID: the (server, elicitationId) pair, length-prefixed so the encoding
+// is unambiguous. Plain concatenation would collide whenever a server
+// name or an elicitation ID contains ":" -- server "a" with ID "b:c"
+// and server "a:b" with ID "c" would share one row, and a completion
+// from one could settle the other's question. An empty elicitationId
+// (a minted ID, already unique) stays bare.
+func brokerRowID(server, elicitationID string) string {
+	if elicitationID == "" {
+		return elicitationID
+	}
+	return strconv.Itoa(len(server)) + ":" + server + ":" + elicitationID
+}
+
 func (r *Registry) elicitViaBroker(ctx context.Context, server, key string, params json.RawMessage) (any, error) {
 	var p struct {
 		Mode            string          `json:"mode"`
@@ -174,8 +229,17 @@ func (r *Registry) elicitViaBroker(ctx context.Context, server, key string, para
 	if p.Mode == "url" {
 		mode = elicit.URL
 	}
+	// Broker rows are keyed by ID alone, and elicitationId is the
+	// upstream's own choice: two servers can pick the same one and the
+	// second OpenRequest would fail on the primary key (ELI-09). A
+	// server-supplied ID is therefore stored under brokerRowID;
+	// OnElicitationComplete composes the same row ID before it
+	// responds. Minted IDs (empty elicitationId) are already unique and
+	// stay bare. Rows opened under a bare ID before this fix are not
+	// migrated; they expire by TTL.
+	brokerID := brokerRowID(server, p.ElicitationID)
 	req, err := r.broker.OpenRequest(elicit.Request{
-		ID:        p.ElicitationID,
+		ID:        brokerID,
 		Server:    server,
 		Mode:      mode,
 		Message:   p.Message,
@@ -207,6 +271,37 @@ func (r *Registry) elicitViaBroker(ctx context.Context, server, key string, para
 		out["content"] = json.RawMessage(ans.Content)
 	}
 	return out, nil
+}
+
+// urlElicitationsViaBroker opens the URL elicitations an upstream's
+// -32042 tools/call error named (#2079, Phase 2 of #2077). Each entry
+// runs the existing elicitation/create path with synthesised url-mode
+// params -- no second URL flow -- sequentially, because elicitViaBroker
+// blocks on the broker answer. Every entry must be accepted before the
+// client retries the call; the first decline, cancel, or expiry stops
+// here with a named error and the remaining entries are never opened.
+func (r *Registry) urlElicitationsViaBroker(ctx context.Context, server, key string, elicitations []mcpclient.URLElicitation) (bool, error) {
+	if r.broker == nil {
+		return false, fmt.Errorf("mcpx cannot open URL elicitations from %s: no broker", server)
+	}
+	for _, e := range elicitations {
+		params, err := json.Marshal(map[string]any{
+			"mode": "url", "url": e.URL, "elicitationId": e.ElicitationID, "message": e.Message,
+		})
+		if err != nil {
+			return false, err
+		}
+		out, err := r.elicitViaBroker(ctx, server, key, params)
+		if err != nil {
+			return false, err
+		}
+		res, _ := out.(map[string]any)
+		action, _ := res["action"].(string)
+		if action != string(elicit.Accept) {
+			return false, fmt.Errorf("the URL elicitation %s from %s was %s", e.ElicitationID, server, action)
+		}
+	}
+	return true, nil
 }
 
 // sampleViaBroker turns a sampling request into a question for whatever is

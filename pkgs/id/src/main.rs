@@ -4,7 +4,7 @@
 //! using content-addressed storage backed by Iroh.
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
 // Import from library
 use id::{
@@ -23,36 +23,58 @@ use id::{
 /// 5. `DEBUG` env var (if truthy) → "debug"
 /// 6. Default → "warn"
 fn get_log_level(cli: &Cli) -> String {
+    resolve_log_level(
+        cli.debug,
+        cli.log_level.as_deref(),
+        std::env::var("RUST_LOG").ok().as_deref(),
+        std::env::var("LOG_LEVEL").ok().as_deref(),
+        std::env::var("DEBUG").ok().as_deref(),
+    )
+}
+
+/// Pure log-level resolution: the environment values are passed in (rather
+/// than read here) so tests can pin the full precedence table without
+/// mutating process environment in parallel. `Some("")` for `rust_log`
+/// means the variable is present, matching the previous `var().is_ok()`
+/// presence check; the empty-string result is the caller's signal to use
+/// the `RUST_LOG` value itself as the base filter.
+fn resolve_log_level(
+    debug_flag: bool,
+    log_level_flag: Option<&str>,
+    rust_log: Option<&str>,
+    log_level_env: Option<&str>,
+    debug_env: Option<&str>,
+) -> String {
     // 1. --debug flag takes highest precedence
-    if cli.debug {
+    if debug_flag {
         return "debug".to_owned();
     }
 
     // 2. --log-level flag
-    if let Some(ref level) = cli.log_level {
-        return level.clone();
+    if let Some(level) = log_level_flag {
+        return level.to_owned();
     }
 
     // 3. RUST_LOG env var - return empty to use EnvFilter's default behavior
-    if std::env::var("RUST_LOG").is_ok() {
+    if rust_log.is_some() {
         return String::new();
     }
 
     // 4. LOG_LEVEL env var
-    if let Ok(level) = std::env::var("LOG_LEVEL") {
-        return level;
+    if let Some(level) = log_level_env {
+        return level.to_owned();
     }
 
     // 5. DEBUG env var (truthy check)
-    if let Ok(debug) = std::env::var("DEBUG") {
+    if let Some(debug) = debug_env {
         let is_truthy = !debug.is_empty() && debug != "0" && debug.to_lowercase() != "false";
         if is_truthy {
             return "debug".to_owned();
         }
     }
 
-    // 6. Default to debug
-    "debug".to_owned()
+    // 6. Default to warn (as documented; --debug is the opt-in for debug)
+    "warn".to_owned()
 }
 
 /// Per-module overrides to suppress noisy third-party modules.
@@ -76,7 +98,26 @@ const NOISY_MODULE_FILTERS: &[&str] = &[
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse CLI first so we can use flags for logging configuration
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(id::cli::normalize_args(std::env::args_os()));
+
+    // #2145: `--web-listen` conflicts only with an *explicitly-set*
+    // `--bind`/`--port`; clap defaults must not count, so read the value
+    // sources from a matches pass (`Cli::parse` above already validated
+    // the arguments and would have exited on any error).
+    let (bind_explicit, port_explicit) = {
+        let matches = Cli::command().get_matches();
+        matches
+            .subcommand_matches("serve")
+            .map(|serve| {
+                (
+                    serve.value_source("bind")
+                        == Some(clap::parser::ValueSource::CommandLine),
+                    serve.value_source("port")
+                        == Some(clap::parser::ValueSource::CommandLine),
+                )
+            })
+            .unwrap_or((false, false))
+    };
 
     // Switch to the data directory if specified.
     // All data paths (.iroh-store, .iroh-key, .iroh-serve.lock) are CWD-relative,
@@ -162,6 +203,7 @@ async fn main() -> Result<()> {
             dht,
             iroh_port,
             bind,
+            web_listen,
             web_token,
             web_cookie_secure,
             world,
@@ -185,12 +227,14 @@ async fn main() -> Result<()> {
             roc_platform,
             world_native,
             world_source_only,
+            world_module_trust_keys,
             world_runtime,
             allow_node,
             open_writes,
         }) => {
             cmd_serve(ServeOptions {
                 ephemeral,
+                groups_log: cli.groups_log,
                 no_relay,
                 no_gossip,
                 web,
@@ -205,6 +249,9 @@ async fn main() -> Result<()> {
                 dht,
                 iroh_port,
                 bind,
+                web_listen,
+                bind_explicit,
+                port_explicit,
                 web_token,
                 web_cookie_secure,
                 world,
@@ -228,6 +275,7 @@ async fn main() -> Result<()> {
                 roc_platform,
                 world_native,
                 world_source_only,
+                world_module_trust_keys,
                 world_runtime,
                 allow_node,
                 open_writes,
@@ -397,6 +445,73 @@ async fn main() -> Result<()> {
                 no_relay,
             )
             .await
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_log_level;
+
+    #[test]
+    fn test_log_level_defaults_to_warn_without_flags_or_env() {
+        assert_eq!(resolve_log_level(false, None, None, None, None), "warn");
+    }
+
+    #[test]
+    fn test_log_level_debug_flag_wins_over_everything() {
+        assert_eq!(
+            resolve_log_level(true, Some("error"), Some("info"), Some("info"), None),
+            "debug"
+        );
+    }
+
+    #[test]
+    fn test_log_level_flag_beats_env() {
+        assert_eq!(
+            resolve_log_level(false, Some("error"), Some("info"), Some("info"), Some("1")),
+            "error"
+        );
+    }
+
+    #[test]
+    fn test_log_level_rust_log_presence_signals_env_filter() {
+        // Present (even empty) RUST_LOG yields the empty sentinel; the
+        // caller then uses the RUST_LOG value itself as the base filter.
+        assert_eq!(
+            resolve_log_level(false, None, Some("info"), Some("error"), Some("1")),
+            ""
+        );
+        assert_eq!(resolve_log_level(false, None, Some(""), None, None), "");
+    }
+
+    #[test]
+    fn test_log_level_log_level_env_beats_debug_env() {
+        assert_eq!(
+            resolve_log_level(false, None, None, Some("info"), Some("1")),
+            "info"
+        );
+    }
+
+    #[test]
+    fn test_log_level_debug_env_truthy_values() {
+        for value in ["1", "true", "TRUE", "yes"] {
+            assert_eq!(
+                resolve_log_level(false, None, None, None, Some(value)),
+                "debug",
+                "DEBUG={value}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_log_level_debug_env_falsey_values_fall_through_to_warn() {
+        for value in ["", "0", "false", "FALSE"] {
+            assert_eq!(
+                resolve_log_level(false, None, None, None, Some(value)),
+                "warn",
+                "DEBUG={value:?}"
+            );
         }
     }
 }

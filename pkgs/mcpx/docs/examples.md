@@ -14,6 +14,34 @@ Run them from `pkgs/mcpx`. The first run writes `mcpx-client.ts` and its
 declarations beside the script, which is how `mcpx run` works for any file;
 the `.gitignore` in that directory keeps them out of git.
 
+## Set up the demo server first
+
+Every script calls the `demo` namespace, which is not a public server: it
+is the deterministic fixture in `internal/testsupport/fakemcp`, and outside
+the test harness nothing configures it for you. From a clean checkout,
+build the fixture and `mcpx` itself, then give `mcpx` a config that maps
+`demo` to the fixture — the same arrangement `examples/examples_test.go`
+builds for itself:
+
+```sh
+cd pkgs/mcpx
+go build -o /tmp/mcpx-bin/mcpx ./cmd/mcpx
+go build -o /tmp/mcpx-bin/fakemcp ./internal/testsupport/fakemcp
+cat > /tmp/mcpx-bin/demo.json <<'JSON'
+{
+  "mcpServers": {
+    "demo": { "command": "/tmp/mcpx-bin/fakemcp" }
+  }
+}
+JSON
+export MCPX_CONFIG=/tmp/mcpx-bin/demo.json
+export PATH="/tmp/mcpx-bin:$PATH"
+```
+
+`MCPX_CONFIG` is how the `mcpx run` commands below pick that config up.
+With it set, the first example prints exactly what the page shows;
+without it, the same command fails, because no server answers to `demo`.
+
 ## Call one tool
 
 The whole shape: top-level `await`, one argument object, print the result.

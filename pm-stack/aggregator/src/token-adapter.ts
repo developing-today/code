@@ -22,6 +22,7 @@
 
 import type { QuotaCurrentEntry } from "./model.ts";
 import { entryFromFileExport, type FileExportDoc } from "./quota-gather-map.ts";
+import { isRecord } from "./validate.ts";
 
 export type AdapterFailureStatus = "session-expired" | "unparseable" | "transport-unavailable" | "fetch-failed";
 export type AdapterStatus = "ok" | AdapterFailureStatus;
@@ -55,7 +56,7 @@ export function validateCredentialRef(ref: unknown): CredentialRef {
   }
   const record = ref as Record<string, unknown>;
   for (const key of VALUE_BEARING_KEYS) {
-    if (key in record) {
+    if (Object.hasOwn(record, key)) {
       throw new AdapterError(
         "fetch-failed",
         `credential ref: carries a credential value under "${key}" — references only, never values`,
@@ -272,13 +273,21 @@ export function collectFileExportAdapter(opts: {
     return retainedOutcome("unparseable", previous, now, "ok", "file-export drift: windows missing or not an array");
   }
   for (const w of doc.windows) {
-    if (!w.name || typeof w.usedPct !== "number" || !Number.isFinite(w.usedPct)) {
+    if (!isRecord(w)) {
+      return retainedOutcome("unparseable", previous, now, "ok", "file-export drift: window element is not an object");
+    }
+    if (
+      typeof w.name !== "string" ||
+      w.name.length === 0 ||
+      typeof w.usedPct !== "number" ||
+      !Number.isFinite(w.usedPct)
+    ) {
       return retainedOutcome(
         "unparseable",
         previous,
         now,
         "ok",
-        `file-export drift: window ${String(w.name)} lacks a finite usedPct`,
+        `file-export drift: window ${String(w.name)} lacks a name or a finite usedPct`,
       );
     }
   }

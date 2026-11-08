@@ -8,7 +8,9 @@ anchor, records the repo material each item draws on, the issue that
 writes it, and which parts come from the generated reference.
 
 - Tracker: #1898. This map is part 1 of #1848; the first seven items'
-  content is #1848 part 2, still to write.
+  content was #1848 part 2, written by #4821 after #1848 closed
+  (tracker #1898 ruling, 2026-11-03: a replacement issue, not a
+  reopening).
 - Structure: Approach C from #1848 — about ten grouped pages, each
   item with its own fixed anchor (`page#anchor`), anchors set
   explicitly rather than derived from headings so a renamed heading
@@ -18,8 +20,8 @@ writes it, and which parts come from the generated reference.
 - Navigation order follows the notes. (#1848 open question 3 asks
   whether task order would be better; the notes' order stands until
   that is answered.)
-- Writing issues, in this repo's numbering: #1848 (configuration +
-  modes), #1851 (interfaces, CLI, MCP, binary, script, /v1),
+- Writing issues, in this repo's numbering: #4821 (configuration +
+  modes; the replacement for closed #1848), #1851 (interfaces, CLI, MCP, binary, script, /v1),
   #1855 (plugins), #1859 (FAQ). The generated reference is #1843.
   (#1848's body quotes the original dezren39/nix numbering —
   #146/#147/#148/#149 and #144 — for the same issues.)
@@ -47,13 +49,13 @@ relative to `pkgs/mcpx/`. Three corrections to the refs as quoted in
 
 | Notes line | Item (verbatim) | Page `#anchor` | Source material in the repo | Written by | Generated part (#1843) |
 | --- | --- | --- | --- | --- | --- |
-| 53 | common config | `configuration#common-config` | `docs/configuration.md` "Where a value can come from", "Scope", "Hot", "Reaching them"; `internal/config/config.go` (search path); `internal/cli/manual.go` entries `config`, `settings`, `init` | #1848 | link to the settings table; no copy |
-| 54 | server config | `configuration#server-config` | `internal/config/config.go` (server block); `docs/story.md` "Sharing and scope", "Profiles and aliases", "Remote servers without a shim"; `docs/configuration.md` "Servers"; `internal/cli/manual.go` `servers` | #1848 | open: a JSON Schema for the file (`pool.*` rows are generated) |
-| 55 | client config | `configuration#client-config` | `docs/configuration.md` "Scope: who reads it"; registry rows with scope `client` and `call` (`internal/settings/registry.go`) | #1848 | the client- and call-scoped settings, filtered from the registry |
-| 56 | env vars | `configuration#env-vars` | `docs/configuration.md` "variable" column; `docs/environment.md`, generated from `settings.ScriptEnv()` (`internal/settings/scriptenv.go`) and held to the setters by a test; the names neither source declares, listed below | #1848 | registry names and the script environment both generated; only the names neither declares are hand-written |
-| 57 | client modes | `modes#client-modes` | `docs/story.md` "Running without a daemon", "One daemon, many clients"; `docs/exec.md` "Where a script runs"; `AGENTS.md` "Profiles" | #1848 | — |
-| 58 | transport options | `modes#transport-options` | `docs/protocol.md` §5; `docs/story.md` "What each transport costs", "Server-sent events, not WebSockets", "Lossless reconnection", "Remote servers without a shim"; `docs/dependencies.md` "Network" | #1848 | — |
-| 59 | server modes | `modes#server-modes` | `docs/story.md` "mcpx speaks MCP", "Sharing and scope"; `docs/protocol.md` §5 | #1848 | — |
+| 53 | common config | `configuration#common-config` | `docs/configuration.md` "Where a value can come from", "Scope", "Hot", "Reaching them"; `internal/config/config.go` (search path); `internal/cli/manual.go` entries `config`, `settings`, `init` | #4821 | link to the settings table; no copy |
+| 54 | server config | `configuration#server-config` | `internal/config/config.go` (server block); `docs/story.md` "Sharing and scope", "Profiles and aliases", "Remote servers without a shim"; `docs/configuration.md` "Servers"; `internal/cli/manual.go` `servers` | #4821 | open: a JSON Schema for the file (`pool.*` rows are generated) |
+| 55 | client config | `configuration#client-config` | `docs/configuration.md` "Scope: who reads it"; registry rows with scope `client` and `call` (`internal/settings/registry.go`) | #4821 | the client- and call-scoped settings, filtered from the registry |
+| 56 | env vars | `configuration#env-vars` | `docs/configuration.md` "variable" column; `docs/environment.md`, generated from `settings.ScriptEnv()` (`internal/settings/scriptenv.go`) and held to the setters by a test; the names neither source declares, listed below | #4821 | registry names and the script environment both generated; only the names neither declares are hand-written |
+| 57 | client modes | `modes#client-modes` | `docs/story.md` "Running without a daemon", "One daemon, many clients"; `docs/exec.md` "Where a script runs"; `AGENTS.md` "Profiles" | #4821 | — |
+| 58 | transport options | `modes#transport-options` | `docs/protocol.md` §5; `docs/story.md` "What each transport costs", "Server-sent events, not WebSockets", "Lossless reconnection", "Remote servers without a shim"; `docs/dependencies.md` "Network" | #4821 | — |
+| 59 | server modes | `modes#server-modes` | `docs/story.md` "mcpx speaks MCP", "Sharing and scope"; `docs/protocol.md` §5 | #4821 | — |
 | 60 | abstract interfaces | `interfaces#abstract-interfaces` | `internal/api/ops*.go`; `docs/parity.md` | #1851 | the parity table |
 | 61 | client interfaces | `interfaces#client-interfaces` | `mcpx client`; `internal/codegen`; `plugin/opencode/mcpx/daemon.ts` (`DaemonClient`) | #1851 | — |
 | 62 | cli | `cli#cli` | `AGENTS.md` "The loop"; `cmd/mcpx/main.go` | #1851 | — |

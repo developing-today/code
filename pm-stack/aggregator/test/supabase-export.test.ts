@@ -3,11 +3,12 @@
 // billed state on the Supabase card; a missing, failed or stale
 // document reproduces the recorded prose exactly.
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import { applySupabaseExport, extractSaasServices, type SupabaseExportDoc } from "../src/saas-extract.ts";
+import { SnapshotStore } from "../src/snapshots.ts";
 import { liveSource } from "../src/sources/live.ts";
 
 const VIEW = `
@@ -36,9 +37,33 @@ function freshDoc(overrides: Partial<SupabaseExportDoc> = {}): SupabaseExportDoc
     project: "muse-dev",
     ref: "nltgxorqwxhgfzseiirt",
     metrics: [
-      { id: "db-size", label: "Database size", used: 1.154, limit: 0.5, unit: "gb", source: "management-api:/database/query pg_database_size", flag: "approaching-paid-trigger" },
-      { id: "egress", label: "Egress (cycle)", used: null, limit: 5, unit: "gb", source: "none", detail: "No Management API endpoint reports egress bytes." },
-      { id: "storage", label: "File storage", used: 0, limit: 1, unit: "gb", source: "management-api:/storage/buckets", detail: "0 buckets on the project" },
+      {
+        id: "db-size",
+        label: "Database size",
+        used: 1.154,
+        limit: 0.5,
+        unit: "gb",
+        source: "management-api:/database/query pg_database_size",
+        flag: "approaching-paid-trigger",
+      },
+      {
+        id: "egress",
+        label: "Egress (cycle)",
+        used: null,
+        limit: 5,
+        unit: "gb",
+        source: "none",
+        detail: "No Management API endpoint reports egress bytes.",
+      },
+      {
+        id: "storage",
+        label: "File storage",
+        used: 0,
+        limit: 1,
+        unit: "gb",
+        source: "management-api:/storage/buckets",
+        detail: "0 buckets on the project",
+      },
     ],
     billing: { plan: "free", billedUsd: 0, measured: true, source: "management-api:/billing/addons" },
     scope: [
@@ -82,18 +107,68 @@ describe("applySupabaseExport", () => {
   });
 
   test("billed is the export's measured addon read, not the hardcoded 0", () => {
-    const out = applySupabaseExport(extractSaasServices(VIEW), freshDoc({ billing: { plan: "free", billedUsd: 25, measured: true } }), NOW);
+    const out = applySupabaseExport(
+      extractSaasServices(VIEW),
+      freshDoc({ billing: { plan: "free", billedUsd: 25, measured: true } }),
+      NOW,
+    );
     expect(supabaseCard(out).billedUsd).toBe(25);
     expect(supabaseCard(out).plan).toContain("measured 2026-10-29T14:55:00Z");
   });
 
   test("an accepted export without a valid billing measurement clears billed to unknown", () => {
-    const noBilling = applySupabaseExport(extractSaasServices(VIEW), freshDoc({ billing: null as unknown as SupabaseExportDoc["billing"] }), NOW);
+    const noBilling = applySupabaseExport(
+      extractSaasServices(VIEW),
+      freshDoc({ billing: null as unknown as SupabaseExportDoc["billing"] }),
+      NOW,
+    );
     expect(supabaseCard(noBilling).billedUsd).toBeNull();
     expect(supabaseCard(noBilling).sourceClass).toBe("api"); // the rest of the overlay still applied
     expect(metricOf(noBilling, "db-size").used).toBe(1.154);
     const unmeasured = applySupabaseExport(extractSaasServices(VIEW), freshDoc({ billing: { plan: "free" } }), NOW);
     expect(supabaseCard(unmeasured).billedUsd).toBeNull();
+  });
+
+  test("negative billing is unknown without discarding valid metric measurements", () => {
+    const out = applySupabaseExport(
+      extractSaasServices(VIEW),
+      freshDoc({ billing: { plan: "free", billedUsd: -42.5, measured: true } }),
+      NOW,
+    );
+    expect(supabaseCard(out).billedUsd).toBeNull();
+    expect(supabaseCard(out).sourceClass).toBe("api");
+    expect(metricOf(out, "db-size").used).toBe(1.154);
+  });
+
+  test("a non-string measuredAt is a no-op before Date.parse coercion", () => {
+    const base = extractSaasServices(VIEW);
+    const expected = structuredClone(base);
+    const out = applySupabaseExport(base, freshDoc({ measuredAt: ["2026-10-29T14:55:00Z"] as unknown as string }), NOW);
+    expect(out).toEqual(expected);
+  });
+
+  test("a negative used value leaves that metric at its recorded fallback", () => {
+    const base = extractSaasServices(VIEW);
+    const recordedDb = structuredClone(metricOf(base, "db-size"));
+    const out = applySupabaseExport(
+      base,
+      freshDoc({
+        metrics: [
+          { id: "db-size", used: -3.25, limit: 0.5 },
+          { id: "storage", used: 0.25, limit: 1, unit: "gb" },
+        ],
+      }),
+      NOW,
+    );
+    expect(metricOf(out, "db-size")).toEqual(recordedDb);
+    expect(metricOf(out, "storage").used).toBe(0.25);
+  });
+
+  test("a negative limit leaves that metric at its recorded fallback", () => {
+    const base = extractSaasServices(VIEW);
+    const recordedDb = structuredClone(metricOf(base, "db-size"));
+    const out = applySupabaseExport(base, freshDoc({ metrics: [{ id: "db-size", used: 0.25, limit: -0.5 }] }), NOW);
+    expect(metricOf(out, "db-size")).toEqual(recordedDb);
   });
 
   test("a stale export falls back to exactly today's card", () => {
@@ -153,5 +228,103 @@ describe("live source usage(): the overlay reaches fleet-feed services too", () 
     expect(db.used).toBe(1.154);
     expect(db.limit).toBe(0.5);
     expect(supabaseCard(usage.services).billedUsd).toBe(0);
+  });
+
+  test("usage reads feed history without writing to a read-only snapshot store", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pm-supa-readonly-"));
+    const feedFile = join(dir, "fleet-feed.json");
+    const snapshotsDir = join(dir, "snapshots");
+    const nowIso = new Date().toISOString();
+    const record = {
+      ts: nowIso,
+      serviceId: "supabase",
+      metricId: "db-size",
+      value: 1.154,
+      unit: "gb",
+      source: "api",
+      observedBy: "fleet-feed-collector",
+    };
+    try {
+      await mkdir(snapshotsDir);
+      await chmod(snapshotsDir, 0o555);
+      await writeFile(
+        feedFile,
+        JSON.stringify({
+          version: 1,
+          generatedAt: nowIso,
+          quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+          attention: [],
+          saas: extractSaasServices(VIEW),
+          snapshots: [record],
+        }),
+      );
+      const cfg = loadConfig({
+        PM_AGG_SOURCE: "live",
+        PM_AGG_FEED_FILE: feedFile,
+        PM_AGG_SNAPSHOTS_DIR: snapshotsDir,
+        PM_AGG_SUPABASE_EXPORT: join(dir, "latest.json"),
+        PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
+        PM_AGG_COMMENTS_FILE: join(dir, "comments.json"),
+        PM_AGG_OPENCHAMBER_STATE: join(dir, "no-state.json"),
+        PM_PROJECTOR_URL: "off",
+        KANEO_ADMIN_EMAIL: "",
+        KANEO_ADMIN_PASSWORD: "",
+        GRIST_API_KEY: "",
+      });
+      const usage = await liveSource(cfg).usage();
+      expect(usage.services.some((service) => service.id === "supabase")).toBe(true);
+      expect(await readdir(snapshotsDir)).toEqual([]);
+    } finally {
+      await chmod(snapshotsDir, 0o755).catch(() => {});
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("background ingestion lands feed records idempotently", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pm-supa-ingest-"));
+    const feedFile = join(dir, "fleet-feed.json");
+    const snapshotsDir = join(dir, "snapshots");
+    const nowIso = new Date().toISOString();
+    const record = {
+      ts: nowIso,
+      serviceId: "supabase",
+      metricId: "db-size",
+      value: 1.154,
+      unit: "gb",
+      source: "api",
+      observedBy: "fleet-feed-collector",
+    };
+    try {
+      await writeFile(
+        feedFile,
+        JSON.stringify({
+          version: 1,
+          generatedAt: nowIso,
+          quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+          attention: [],
+          saas: extractSaasServices(VIEW),
+          snapshots: [record],
+        }),
+      );
+      const cfg = loadConfig({
+        PM_AGG_SOURCE: "live",
+        PM_AGG_FEED_FILE: feedFile,
+        PM_AGG_SNAPSHOTS_DIR: snapshotsDir,
+        PM_AGG_SUPABASE_EXPORT: join(dir, "latest.json"),
+        PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
+        PM_AGG_COMMENTS_FILE: join(dir, "comments.json"),
+        PM_AGG_OPENCHAMBER_STATE: join(dir, "no-state.json"),
+        PM_PROJECTOR_URL: "off",
+        KANEO_ADMIN_EMAIL: "",
+        KANEO_ADMIN_PASSWORD: "",
+        GRIST_API_KEY: "",
+      });
+      const source = liveSource(cfg);
+      expect(await source.ingestSnapshots?.()).toBe(1);
+      expect(await source.ingestSnapshots?.()).toBe(0);
+      expect(await new SnapshotStore(snapshotsDir).byService()).toMatchObject({ supabase: [record] });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

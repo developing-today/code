@@ -2,7 +2,7 @@
 
 ## Live today
 
-- **Control UI / WebChat** — the gateway UI on the tailnet: `http://amd-6.raptor-pumpkinseed.ts.net:18789/` (token auth; token at `~/.secrets/openclaw/gateway-token`). Also the `openclaw` CLI on this laptop (`openclaw agent --message "…"`, `openclaw status`, `openclaw doctor`).
+- **Control UI / WebChat** — the gateway UI on the tailnet: `http://amd-6.raptor-pumpkinseed.ts.net:18789/` (token auth; token at `/run/secrets/openclaw/gateway-token`). Also the `openclaw` CLI on this laptop (`openclaw agent --message "…"`, `openclaw status`, `openclaw doctor`).
 - **ACP coding sessions** from any connected surface: `/acp spawn opencode` (the only ACP harness wired so far; Claude/Codex run via their native runtime plugins).
 
 ## Plugins loaded, channels pending Drew's one-time setup

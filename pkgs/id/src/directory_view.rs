@@ -617,16 +617,31 @@ pub fn parse_line(line: &str) -> Result<Line> {
     let (word, rest) = split_first(line);
     let words: Vec<&str> = rest.split_whitespace().collect();
     let (action, pairs) = match word {
-        "help" | "?" => return Ok(Line::Help),
-        "quit" | "exit" => return Ok(Line::Quit),
-        "view" => ("view", Vec::new()),
+        "help" | "?" => {
+            no_args(&words, word)?;
+            return Ok(Line::Help);
+        }
+        "quit" | "exit" => {
+            no_args(&words, word)?;
+            return Ok(Line::Quit);
+        }
+        "view" => {
+            no_args(&words, "view")?;
+            ("view", Vec::new())
+        }
         "signup" => ("sign_up", vec![("name", text_arg(rest, "signup NAME")?)]),
         "keysignup" => (
             "sign_up_key",
             vec![("name", text_arg(rest, "keysignup NAME")?)],
         ),
-        "session" => ("open_session", Vec::new()),
-        "signout" => ("sign_out", Vec::new()),
+        "session" => {
+            no_args(&words, "session")?;
+            ("open_session", Vec::new())
+        }
+        "signout" => {
+            no_args(&words, "signout")?;
+            ("sign_out", Vec::new())
+        }
         "addkey" => {
             let [key] = words_n(&words, "addkey HEX")?;
             ("add_key", vec![("key", key)])
@@ -831,6 +846,19 @@ fn text_arg(rest: &str, usage: &str) -> Result<String> {
         bail!("usage: {usage}");
     }
     Ok(text.to_owned())
+}
+
+/// The no-argument commands (`view`, `session`, `signout`, `help`,
+/// `quit` and their aliases) refuse any trailing text instead of
+/// silently ignoring it (#1803): a mistyped or pasted line must not
+/// perform an action the user did not ask for -- the worst case is
+/// `signout junk` ending a session the user expected to be refused.
+fn no_args(words: &[&str], command: &str) -> Result<()> {
+    if words.is_empty() {
+        Ok(())
+    } else {
+        bail!("usage: {command} (takes no arguments)")
+    }
 }
 
 fn words_n<const N: usize>(words: &[&str], usage: &str) -> Result<[String; N]> {
@@ -2309,6 +2337,45 @@ mod tests {
         ] {
             assert!(parse_line(line).is_err(), "{line:?} should be refused");
         }
+    }
+
+    #[test]
+    fn a_no_argument_command_refuses_trailing_text() {
+        // #1803: trailing text on a no-argument command is refused
+        // with its usage, never silently ignored.
+        for line in [
+            "view junk",
+            "session junk",
+            "signout junk",
+            "help junk",
+            "? junk",
+            "quit junk",
+            "exit junk",
+            "signout  two words",
+        ] {
+            let err = parse_line(line).unwrap_err();
+            assert!(
+                err.to_string().contains("takes no arguments"),
+                "{line:?} refused with its usage, got: {err}"
+            );
+        }
+        // The bare forms keep working exactly as before.
+        assert_eq!(parse_line("help").unwrap(), Line::Help);
+        assert_eq!(parse_line("?").unwrap(), Line::Help);
+        assert_eq!(parse_line("quit").unwrap(), Line::Quit);
+        assert_eq!(parse_line("exit").unwrap(), Line::Quit);
+        assert_eq!(
+            parse_line("view").unwrap(),
+            Line::Action(DirectoryAction::View)
+        );
+        assert_eq!(
+            parse_line("session").unwrap(),
+            Line::Action(DirectoryAction::OpenSession)
+        );
+        assert_eq!(
+            parse_line("signout").unwrap(),
+            Line::Action(DirectoryAction::SignOut)
+        );
     }
 
     #[test]

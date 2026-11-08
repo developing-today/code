@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/dashboard"
-	"github.com/dezren39/mcpx/internal/logstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/dashboard"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
 )
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {

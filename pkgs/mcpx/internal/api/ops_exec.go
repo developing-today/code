@@ -10,8 +10,9 @@ func execOps() []Op {
 	return []Op{
 		{
 			Name: "exec", Method: "POST", Path: "/v1/exec",
-			Command: "exec",
-			Summary: "Run TypeScript on the daemon",
+			Permission: PermissionAdmin,
+			Command:    "exec",
+			Summary:    "Run TypeScript on the daemon",
 			Description: "The same execution `mcpx exec` performs, hosted by the daemon " +
 				"instead of by the CLI. That is what lets a caller with no mcpx " +
 				"binary run a script, and what makes a daemon on another machine " +
@@ -35,11 +36,13 @@ func execOps() []Op {
 		},
 		{
 			Name: "artifact_put", Method: "POST", Path: "/v1/artifacts",
-			Summary: "Store a file a script produced",
+			Permission: PermissionAdmin,
+			Summary:    "Store a file a script produced",
 			Description: "What artifact() in a generated client calls. The body is the " +
 				"bytes; a caller on the daemon's own filesystem may instead send " +
-				"X-Mcpx-Path and have the file hardlinked, which is why handing back " +
-				"a large local file costs an inode rather than a copy. Content is " +
+				"X-Mcpx-Path so the daemon can read and copy the file into the store. " +
+				"This avoids uploading the body over the client transport, but the " +
+				"file is still read, hashed, and written. Content is " +
 				"addressed by sha256 and served by a separate random id, because a " +
 				"content hash is guessable by anyone who can guess the content.",
 			Admin: true, Mutating: true,
@@ -55,6 +58,7 @@ func execOps() []Op {
 		},
 		{
 			Name: "artifacts_list", Method: "GET", Path: "/v1/artifacts",
+			Permission:  PermissionRead,
 			CLI:         "artifact list",
 			Summary:     "Files scripts produced, newest first",
 			Description: "Filter by run to collect one execution's output, or by session.",
@@ -66,7 +70,8 @@ func execOps() []Op {
 		},
 		{
 			Name: "artifact_get", Method: "GET", Path: "/v1/artifacts/{id}",
-			Summary: "Fetch one artifact's bytes",
+			Permission: PermissionRead,
+			Summary:    "Fetch one artifact's bytes",
 			Description: "Range requests are supported, so reading the tail of a large " +
 				"artifact is cheap. The response carries the recorded content type " +
 				"and a Content-Disposition naming the sanitised filename.",
@@ -77,6 +82,7 @@ func execOps() []Op {
 		},
 		{
 			Name: "artifact_delete", Method: "DELETE", Path: "/v1/artifacts/{id}",
+			Permission: PermissionAdmin,
 			Idempotent: true,
 			Summary:    "Forget one artifact",
 			Description: "The registration goes, and the body with it once no other " +
@@ -111,6 +117,19 @@ const execOptionsSchema = `{"type":"object","properties":{
   "sharedFs":{"type":"string","description":"a directory the caller can read: place artifacts there instead of transferring them"},
   "dir":{"type":"string","description":"where to write this run's artifacts for the caller"}
 },"additionalProperties":false},
+"deps":{"type":"object","properties":{
+  "packages":{"type":"array","items":{"type":"string"},"description":"explicit specifiers: name or name@version"},
+  "manifest":{"type":"string","description":"the manifest's text, already comment-stripped when it came from a package.jsonc"},
+  "manifestName":{"type":"string","description":"the filename to write the manifest as: package.json by default"},
+  "manifestDir":{"type":"string","description":"the directory the manifest was read from, on the caller's filesystem: the resolution base for its local file:/link: artifacts"},
+  "packageDirs":{"type":"object","additionalProperties":{"type":"string"},"description":"per-package resolution base for relative local specifiers, when a package's origin layer differs from the manifest's directory (a config-layer package's configuration directory)"},
+  "lockfile":{"type":"string","contentEncoding":"base64","description":"the lockfile's content (base64, as a Go []byte crosses JSON), honoured frozen and never rewritten"},
+  "lockfileName":{"type":"string","description":"the filename to write the lockfile as, such as bun.lock"},
+  "lockfiles":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"content":{"type":"string","contentEncoding":"base64"}},"additionalProperties":false},"description":"every lockfile found beside the manifest; which one governs depends on the runtime that finally executes"},
+  "npmrc":{"type":"string","contentEncoding":"base64","description":"the project .npmrc content (base64, as a Go []byte crosses JSON), written beside the materialised manifest so the isolated install reads the project registry settings"},
+  "source":{"type":"string","description":"the resolved deps.source, carried so the daemon materialises the same set the caller judged"},
+  "autoInstall":{"type":"string","enum":["off","fallback","always"],"description":"the resolved deps.autoInstall"}
+},"additionalProperties":false,"description":"the script's dependency set (#1913): where its packages come from"},
 "task":{"type":"object","properties":{"ttl":{"type":"integer","description":"milliseconds the result is kept"}},"additionalProperties":false},
 "ns":{"type":"array","items":{"type":"string"},"description":"restrict the generated client to these namespaces"},
 "args":{"type":"array","items":{"type":"string"},"description":"arguments handed to the script"},

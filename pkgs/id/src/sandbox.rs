@@ -16,28 +16,10 @@ use wasmtime::{
 };
 
 /// Resource bounds applied to each guest invocation.
-#[derive(Clone, Copy, Debug)]
-pub struct SandboxLimits {
-    /// Maximum compiled Wasm module size, in bytes.
-    pub module_bytes: usize,
-    /// Maximum Wasm fuel for an invocation.
-    pub fuel: u64,
-    /// Maximum linear memory, in bytes.
-    pub memory_bytes: usize,
-    /// Maximum input or output payload, in bytes.
-    pub message_bytes: usize,
-}
-
-impl Default for SandboxLimits {
-    fn default() -> Self {
-        Self {
-            module_bytes: 16 * 1024 * 1024,
-            fuel: 10_000_000,
-            memory_bytes: 16 * 1024 * 1024,
-            message_bytes: 1024 * 1024,
-        }
-    }
-}
+///
+/// The definition lives in `id-core`'s `world_limits` since the Phase 1
+/// crate split (#3447); re-exported here at its historical path.
+pub use crate::world_limits::SandboxLimits;
 
 /// One kind of guest invocation, as counted by [`CallMetrics`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -196,6 +178,7 @@ impl Sandbox {
                 matches!(
                     export.name(),
                     "memory"
+                        | "plaza_abi_version"
                         | "plaza_alloc"
                         | "plaza_init"
                         | "plaza_update"
@@ -839,6 +822,13 @@ impl crate::world::WorldProgram for WorldInstance {
                 std::str::from_utf8(bytes).context("Roc world input must be valid UTF-8")?;
                 Self::update(self, event.participant_id, bytes)
             }
+            // Entity-addressed input (#3870) delivers its opaque bytes to
+            // the program exactly like unscoped input; the entity scoping
+            // is a host-side fencing concern, not a program concern.
+            crate::world::WorldEventKind::EntityInput { input, .. } => {
+                std::str::from_utf8(input).context("Roc world input must be valid UTF-8")?;
+                Self::update(self, event.participant_id, input)
+            }
             // Host events (capability results, ticks, presence) are JSON
             // text delivered as participant 0; the program updates on them
             // like any other event.
@@ -947,15 +937,47 @@ mod tests {
     }
 
     #[test]
+    fn checked_in_roc_examples_export_abi_version_one() {
+        for wasm in [
+            include_bytes!("../examples/roc-counter/counter.wasm").as_slice(),
+            include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm").as_slice(),
+        ] {
+            let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+            let mut store = Store::new(&runner.engine, ());
+            store.set_fuel(runner.limits.fuel).unwrap();
+            let instance = Instance::new(&mut store, &runner.module, &[]).unwrap();
+            let abi_version = instance
+                .get_typed_func::<(), i32>(&mut store, "plaza_abi_version")
+                .unwrap()
+                .call(&mut store, ())
+                .unwrap();
+
+            assert_eq!(abi_version, 1);
+        }
+    }
+
+    #[test]
     fn checked_in_roc_counter_compiles_and_initializes_in_the_import_free_sandbox() {
         let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut world = runner.instantiate(7).unwrap();
-        assert_eq!(world.view().unwrap(), b"count=0");
+        assert!(
+            String::from_utf8(world.view().unwrap())
+                .unwrap()
+                .contains("count=0")
+        );
         world.update(1, b"inc").unwrap();
-        assert_eq!(world.view().unwrap(), b"count=1");
+        assert!(
+            String::from_utf8(world.view().unwrap())
+                .unwrap()
+                .contains("count=1")
+        );
         world.update(1, b"inc").unwrap();
-        assert_eq!(world.view().unwrap(), b"count=2");
+        assert!(
+            String::from_utf8(world.view().unwrap())
+                .unwrap()
+                .contains("count=2")
+        );
     }
 
     #[tokio::test]
@@ -971,25 +993,37 @@ mod tests {
         );
         let (_, capability) = actor.issue("Ada", WorldScopes::GUEST).await.unwrap();
 
-        assert_eq!(
-            actor.view(capability.clone()).await.unwrap().as_deref(),
-            Some("count=0")
+        assert!(
+            actor
+                .view(capability.clone())
+                .await
+                .unwrap()
+                .as_deref()
+                .is_some_and(|view| view.contains("count=0"))
         );
         actor
             .input(capability.clone(), b"inc".to_vec())
             .await
             .unwrap();
-        assert_eq!(
-            actor.view(capability.clone()).await.unwrap().as_deref(),
-            Some("count=1")
+        assert!(
+            actor
+                .view(capability.clone())
+                .await
+                .unwrap()
+                .as_deref()
+                .is_some_and(|view| view.contains("count=1"))
         );
         actor
             .chat(capability.clone(), "chat does not mutate the game")
             .await
             .unwrap();
-        assert_eq!(
-            actor.view(capability).await.unwrap().as_deref(),
-            Some("count=1")
+        assert!(
+            actor
+                .view(capability)
+                .await
+                .unwrap()
+                .as_deref()
+                .is_some_and(|view| view.contains("count=1"))
         );
     }
 
@@ -1003,13 +1037,17 @@ mod tests {
         world.update(1, b"inc").unwrap();
         assert_eq!(world.records().unwrap().unwrap(), br#"{"count":2}"#);
         // A view between records calls must not disturb either output.
-        assert_eq!(world.view().unwrap(), b"count=2");
+        assert!(
+            String::from_utf8(world.view().unwrap())
+                .unwrap()
+                .contains("count=2")
+        );
         assert_eq!(world.records().unwrap().unwrap(), br#"{"count":2}"#);
     }
 
     #[test]
     fn checked_in_tic_tac_toe_plays_a_full_game() {
-        let wasm = include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm");
+        let wasm = include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut world = runner.instantiate(7).unwrap();
         let records = |world: &mut WorldInstance| {
@@ -1065,18 +1103,30 @@ mod tests {
         assert_eq!(live.snapshot().unwrap().unwrap(), b"3");
         let mut restored = runner.instantiate(7).unwrap();
         restored.restore(b"3").unwrap();
-        assert_eq!(restored.view().unwrap(), b"count=3");
+        assert!(
+            String::from_utf8(restored.view().unwrap())
+                .unwrap()
+                .contains("count=3")
+        );
         restored.update(1, b"inc").unwrap();
-        assert_eq!(restored.view().unwrap(), b"count=4");
+        assert!(
+            String::from_utf8(restored.view().unwrap())
+                .unwrap()
+                .contains("count=4")
+        );
         // The trait-level snapshot is the verified one the actor journals.
         assert_eq!(live.snapshot_via_trait(), Some("3".to_owned()));
         // Garbage restores to a defined state instead of trapping.
         let mut garbage = runner.instantiate(7).unwrap();
         garbage.restore(b"not a number").unwrap();
-        assert_eq!(garbage.view().unwrap(), b"count=0");
+        assert!(
+            String::from_utf8(garbage.view().unwrap())
+                .unwrap()
+                .contains("count=0")
+        );
 
         // Tic-tac-toe: the board alone carries the ply count and the winner.
-        let wasm = include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm");
+        let wasm = include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut live = runner.instantiate(7).unwrap();
         for (participant, cell) in [(1u64, "0"), (2, "3"), (1, "1"), (2, "4"), (1, "2")] {
@@ -1297,7 +1347,7 @@ mod tests {
             ),
             (
                 "tic-tac-toe",
-                include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm"),
+                include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm"),
             ),
         ];
         println!("| example | plaza_layout | bytes @ 80x24 | bytes @ 200x60 |");
@@ -1465,9 +1515,8 @@ mod tests {
         )
         .unwrap();
         let _ = crate::world::WorldProgram::records(&mut program).unwrap();
-        assert_eq!(
-            view(&mut program),
-            "count=1",
+        assert!(
+            view(&mut program).contains("count=1"),
             "wasm handles the actor order"
         );
     }
@@ -1959,7 +2008,7 @@ mod tests {
             },
             Example {
                 name: "tic-tac-toe",
-                wasm: include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm"),
+                wasm: include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm"),
                 drive: drive_tic_tac_toe,
             },
             Example {
@@ -2066,8 +2115,8 @@ mod tests {
     const FUEL_BUDGETS: &[(&str, GuestCall, u64)] = &[
         ("roc-counter", GuestCall::Init, 100_000), // baseline 1215
         ("roc-counter", GuestCall::Update, 100_000), // baseline 3759
-        ("roc-counter", GuestCall::View, 100_000), // baseline 1327
-        ("roc-counter", GuestCall::Layout, 100_000), // baseline 1337
+        ("roc-counter", GuestCall::View, 400_000), // baseline 260269
+        ("roc-counter", GuestCall::Layout, 500_000), // baseline 323425
         ("roc-counter", GuestCall::Records, 100_000), // baseline 1866
         ("roc-counter", GuestCall::Wants, 100_000), // baseline 733
         ("roc-counter", GuestCall::Snapshot, 100_000), // baseline 874

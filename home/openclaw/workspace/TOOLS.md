@@ -36,4 +36,4 @@ For real coding, spawn an ACP session instead of improvising: `/acp spawn openco
 
 - The system flake is `~/code/flake.nix`; host `amd`. Apply user-level changes with the Home Manager activation package from that flake; full `sudo nixos-rebuild switch --flake ~/code#amd` is Drew's to run (sudo needs his password).
 - Never scatter code in $HOME — code goes in developing-today/code (private/sensitive material: dezren39/hatch-personal).
-- Secrets are referenced **by name only** (Bitwarden Secrets Manager / sops under `/run/secrets/agent-auth/`). Never write a secret value into a file, commit, chat, or log. This gateway's own token lives at `~/.secrets/openclaw/gateway-token` (0600, not in git, not in the Nix store).
+- Secrets are referenced **by name only** (Bitwarden Secrets Manager / sops under `/run/secrets/agent-auth/`). Never write a secret value into a file, commit, chat, or log. This gateway's own token lives at `/run/secrets/openclaw/gateway-token` (0600, not in git, not in the Nix store).

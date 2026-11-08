@@ -10,7 +10,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/catalog"
+	"github.com/developing-today/code/pkgs/mcpx/internal/catalog"
 )
 
 // CmdEmbeddings implements the `mcpx embeddings` CLI commands.
@@ -39,6 +39,7 @@ func (a *App) CmdEmbeddings(ctx context.Context, args []string) error {
 				httpReq, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(ep, "/")+"/v1/embeddings", bytes.NewReader(reqBody))
 				if err == nil {
 					httpReq.Header.Set("Content-Type", "application/json")
+					c.authorize(httpReq)
 					resp, err := http.DefaultClient.Do(httpReq)
 					if err == nil && resp.StatusCode == http.StatusOK {
 						defer resp.Body.Close()
@@ -91,6 +92,7 @@ func (a *App) CmdEmbeddings(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		c.authorize(httpReq)
 		resp, err := http.DefaultClient.Do(httpReq)
 		if err != nil {
 			return err
@@ -141,6 +143,7 @@ func (a *App) CmdEmbeddings(ctx context.Context, args []string) error {
 			return err
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
+		c.authorize(httpReq)
 		resp, err := http.DefaultClient.Do(httpReq)
 		if err != nil {
 			return err

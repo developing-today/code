@@ -171,6 +171,30 @@ describe("quota-current overlay", () => {
     expect(cline.windows[0].percent).toBe(69); // dated read, not the aged gatherer value
   });
 
+  test("a retained entry is stale immediately, even inside the freshness bound (#1268)", () => {
+    // One tick is 15 min and the freshness bound is 20, so a retained
+    // entry's measuredAt alone would read fresh for ~5 min after the
+    // failed tick; the retention stamp is what surfaces the failure.
+    const at = iso(5 * 60_000);
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({
+          serviceId: "cline-pass:cline-pass",
+          measuredAt: at,
+          windows: [win("monthly", 71, at)],
+          retainedFromFailedTick: iso(1 * 60_000),
+        }),
+      ]),
+      NOW,
+    );
+    const cline = out.pools.find((p) => p.id === "cline-pass:cline-pass")!;
+    expect(cline.state).toBe("stale");
+    expect(cline.freshness).toEqual({ measuredAt: at, source: "openchamber-quota", state: "stale" });
+    expect(cline.windows[0].percent).toBe(69); // dated read, not the retained gatherer value
+    expect(out.gatherer?.providers.find((p) => p.serviceId === "cline-pass:cline-pass")?.state).toBe("stale");
+  });
+
   test("an ok entry dated past the future-skew tolerance is stale, windows untouched (#1541)", () => {
     for (const futureMs of [60 * 60_000, 30 * 24 * 60 * 60_000]) {
       const futureAt = iso(-futureMs);
@@ -271,6 +295,78 @@ describe("quota-current overlay", () => {
     expect(view.pools.find((p) => p.id === "meta:high-usage")!.windows[0].percent).toBe(100);
     expect(view.gatherer).toBeUndefined();
   });
+
+  test("malformed providers and windows are dropped without losing valid provider overlays", () => {
+    const doc = JSON.parse(
+      JSON.stringify(
+        file([
+          entry({ serviceId: "meta:high-usage", windows: [win("weekly", 42, iso(5 * 60_000))] }),
+          entry({ serviceId: "openai:codex", windows: [win("7-day", 17, iso(5 * 60_000))] }),
+        ]),
+      ),
+    );
+    doc.providers[0].windows.push(
+      null,
+      { ...doc.providers[0].windows[0], name: 42 },
+      { ...doc.providers[0].windows[0], resetsAt: { invalid: true } },
+    );
+    doc.providers.push(null);
+
+    const parsed = parseQuotaCurrent(doc);
+    expect(parsed?.sanitized).toEqual({ droppedProviders: 1, droppedWindows: 3 });
+    expect(parsed?.providers).toHaveLength(2);
+    const out = overlayQuotaCurrent(baseView(), parsed!, NOW);
+    expect(out.pools.find((p) => p.id === "meta:high-usage")?.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["weekly", 42],
+    ]);
+    expect(out.pools.find((p) => p.id === "openai:codex")?.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["7-day", 17],
+    ]);
+  });
+
+  test("an ok entry whose windows are entirely malformed is downgraded so a valid fresh sibling supplies the headline", () => {
+    const doc = JSON.parse(
+      JSON.stringify(
+        file([
+          entry({
+            serviceId: "openai:codex",
+            measuredAt: iso(1 * 60_000),
+            windows: [win("7-day", 55, iso(1 * 60_000))],
+          }),
+          entry({
+            serviceId: "openai:codex",
+            measuredAt: iso(5 * 60_000),
+            windows: [win("7-day", 80, iso(5 * 60_000))],
+          }),
+        ]),
+      ),
+    );
+    doc.providers[0].windows = [null];
+
+    const parsed = parseQuotaCurrent(doc);
+    expect(parsed?.providers[0].state).toBe("error");
+    const out = overlayQuotaCurrent(baseView(), parsed!, NOW);
+    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    // The base pool's dated 11% must not be re-stamped as fresh, and the
+    // older valid read (80%) supplies the headline instead.
+    expect(pool.windows.map((w) => [w.name, w.percent])).toEqual([["7-day", 80]]);
+    expect(pool.freshness?.state).toBe("ok");
+    expect(pool.freshness?.measuredAt).toBe(iso(5 * 60_000));
+  });
+
+  test("a sole ok entry whose windows are entirely malformed surfaces as an error, never as fresh provenance", () => {
+    const doc = JSON.parse(
+      JSON.stringify(file([entry({ serviceId: "openai:codex", windows: [win("7-day", 55, iso(5 * 60_000))] })])),
+    );
+    doc.providers[0].windows = [null, { bogus: true }];
+
+    const parsed = parseQuotaCurrent(doc);
+    const out = overlayQuotaCurrent(baseView(), parsed!, NOW);
+    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    expect(pool.state).toBe("error");
+    expect(pool.freshness?.state).toBe("error");
+    expect(pool.windows.map((w) => w.percent)).toEqual([11]);
+  });
 });
 
 describe("parseQuotaCurrent", () => {
@@ -344,7 +440,16 @@ describe("overlayTursoUsage (#1049)", () => {
     const at = iso(5 * 60_000);
     const out = overlayTursoUsage(
       [tursoSvc()],
-      file([entry({ serviceId: "turso", providerId: "turso", source: "turso-api", state: "error", measuredAt: at, error: "turso /usage HTTP 401" })]),
+      file([
+        entry({
+          serviceId: "turso",
+          providerId: "turso",
+          source: "turso-api",
+          state: "error",
+          measuredAt: at,
+          error: "turso /usage HTTP 401",
+        }),
+      ]),
       NOW,
     );
     expect(out[0].measuredAt).toBe("2026-10-20T00:00:00.000Z");
@@ -359,7 +464,432 @@ describe("overlayTursoUsage (#1049)", () => {
     const arr = [other];
     const at = iso(5 * 60_000);
     expect(
-      overlayTursoUsage(arr, file([entry({ serviceId: "turso", providerId: "turso", source: "turso-api", measuredAt: at, windows: [tursoWin("databases", 3, 3, at)] })]), NOW),
+      overlayTursoUsage(
+        arr,
+        file([
+          entry({
+            serviceId: "turso",
+            providerId: "turso",
+            source: "turso-api",
+            measuredAt: at,
+            windows: [tursoWin("databases", 3, 3, at)],
+          }),
+        ]),
+        NOW,
+      ),
     ).toBe(arr);
+  });
+});
+
+describe("per-credential quota rows (#1113)", () => {
+  const twoLogins = (aPct: number, bPct: number, bMeasured = iso(2 * 60_000)) =>
+    file([
+      entry({
+        serviceId: "openai:codex",
+        providerId: "openai-main",
+        credentialLabel: "OpenAI",
+        windows: [win("weekly", aPct, iso(5 * 60_000))],
+      }),
+      entry({
+        serviceId: "openai:codex",
+        providerId: "openai-second",
+        credentialLabel: "OpenAI 2",
+        measuredAt: bMeasured,
+        windows: [win("weekly", bPct, bMeasured)],
+      }),
+    ]);
+
+  test("two logins with genuinely differing quotas split into rows; headline stays the newest read", () => {
+    const out = overlayQuotaCurrent(baseView(), twoLogins(30, 80), NOW);
+    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    expect(pool.windows.map((w) => w.percent)).toEqual([80]);
+    expect(pool.credentials).toHaveLength(2);
+    const byLabel = new Map(pool.credentials!.map((c) => [c.label, c]));
+    expect(byLabel.get("OpenAI")!.windows.map((w) => w.percent)).toEqual([30]);
+    expect(byLabel.get("OpenAI 2")!.windows.map((w) => w.percent)).toEqual([80]);
+    expect(byLabel.get("OpenAI 2")!.freshness.state).toBe("ok");
+  });
+
+  test("two logins sharing one pool read do not split", () => {
+    const out = overlayQuotaCurrent(baseView(), twoLogins(42, 42), NOW);
+    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    expect(pool.credentials).toBeUndefined();
+  });
+
+  test("a credential whose newest read is an error surfaces as an error row beside the ok one", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({
+          serviceId: "openai:codex",
+          providerId: "openai-main",
+          credentialLabel: "OpenAI",
+          windows: [win("weekly", 30, iso(5 * 60_000))],
+        }),
+        entry({
+          serviceId: "openai:codex",
+          providerId: "openai-second",
+          credentialLabel: "OpenAI 2",
+          state: "error",
+          measuredAt: iso(1 * 60_000),
+          error: "Sign in with ChatGPT only",
+        }),
+      ]),
+      NOW,
+    );
+    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    expect(pool.windows.map((w) => w.percent)).toEqual([30]); // headline from the ok login
+    const err = pool.credentials!.find((c) => c.label === "OpenAI 2")!;
+    expect(err.freshness.state).toBe("error");
+    expect(err.freshness.error).toContain("Sign in with ChatGPT");
+    expect(err.windows).toEqual([]);
+  });
+
+  test("a single credential never produces rows", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({
+          serviceId: "openai:codex",
+          providerId: "openai-main",
+          credentialLabel: "OpenAI",
+          windows: [win("weekly", 30, iso(5 * 60_000))],
+        }),
+      ]),
+      NOW,
+    );
+    expect(out.pools.find((p) => p.id === "openai:codex")!.credentials).toBeUndefined();
+  });
+
+  test("pool card renders one line per credential row", async () => {
+    const { renderQuota } = await import("../src/render.ts");
+    const out = overlayQuotaCurrent(baseView(), twoLogins(30, 80), NOW);
+    const prov = {
+      board: "",
+      roadmap: "",
+      items: "",
+      comments: "",
+      quota: "",
+      usage: "",
+      attention: "",
+      orchestration: "",
+      dns: "",
+      registry: "",
+      aa: "",
+    };
+    const html = renderQuota(out, prov);
+    expect(html).toContain("credential OpenAI:");
+    expect(html).toContain("credential OpenAI 2:");
+    expect(html).toContain("weekly 80%");
+  });
+});
+
+describe("per-credential rows: Codex findings on PR #2978", () => {
+  test("distinct credentialIds with identical labels still split when quotas differ", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({
+          serviceId: "openai:codex",
+          providerId: "openai-main",
+          credentialId: "cred-a",
+          credentialLabel: "OpenAI",
+          windows: [win("weekly", 30, iso(5 * 60_000))],
+        }),
+        entry({
+          serviceId: "openai:codex",
+          providerId: "openai-main",
+          credentialId: "cred-b",
+          credentialLabel: "OpenAI",
+          measuredAt: iso(2 * 60_000),
+          windows: [win("weekly", 80, iso(2 * 60_000))],
+        }),
+      ]),
+      NOW,
+    );
+    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    expect(pool.credentials).toHaveLength(2);
+    expect(pool.credentials!.map((c) => c.credentialId).sort()).toEqual(["cred-a", "cred-b"]);
+    expect(pool.credentials!.map((c) => c.windows[0].percent).sort((a, b) => a - b)).toEqual([30, 80]);
+  });
+
+  test("reset drift under the tolerance does not split a shared read", () => {
+    const mk = (cred: string, label: string, resetsAt: string, measuredAt: string) =>
+      entry({
+        serviceId: "openai:codex",
+        providerId: "openai-main",
+        credentialId: cred,
+        credentialLabel: label,
+        measuredAt,
+        windows: [{ ...win("weekly", 42, measuredAt), resetsAt }],
+      });
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        mk("cred-a", "OpenAI", "2026-10-27T12:00:00.000Z", iso(5 * 60_000)),
+        mk("cred-b", "OpenAI 2", "2026-10-27T12:00:00.700Z", iso(2 * 60_000)),
+      ]),
+      NOW,
+    );
+    expect(out.pools.find((p) => p.id === "openai:codex")!.credentials).toBeUndefined();
+  });
+
+  test("resets genuinely apart still split even at equal percent", () => {
+    const mk = (cred: string, label: string, resetsAt: string, measuredAt: string) =>
+      entry({
+        serviceId: "openai:codex",
+        providerId: "openai-main",
+        credentialId: cred,
+        credentialLabel: label,
+        measuredAt,
+        windows: [{ ...win("weekly", 42, measuredAt), resetsAt }],
+      });
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        mk("cred-a", "OpenAI", "2026-10-27T12:00:00.000Z", iso(5 * 60_000)),
+        mk("cred-b", "OpenAI 2", "2026-10-27T18:00:00.000Z", iso(2 * 60_000)),
+      ]),
+      NOW,
+    );
+    expect(out.pools.find((p) => p.id === "openai:codex")!.credentials).toHaveLength(2);
+  });
+});
+
+describe("stale-path newest pick is finite-gated (#2253)", () => {
+  const staleRead = () =>
+    entry({ serviceId: "meta:high-usage", measuredAt: iso(2 * 3_600_000), source: "real-src", windows: [] });
+  const garbageRead = () =>
+    entry({ serviceId: "meta:high-usage", measuredAt: "not-a-date", source: "garbage-src", windows: [] });
+
+  test("a garbage measuredAt listed first does not shadow the real stale read", () => {
+    const out = overlayQuotaCurrent(baseView(), file([garbageRead(), staleRead()]), NOW);
+    const p = out.pools.find((x) => x.id === "meta:high-usage")!;
+    expect(p.freshness).toEqual({ measuredAt: iso(2 * 3_600_000), source: "real-src", state: "stale" });
+  });
+
+  test("a garbage measuredAt listed last gives the same winner (order independence)", () => {
+    const out = overlayQuotaCurrent(baseView(), file([staleRead(), garbageRead()]), NOW);
+    const p = out.pools.find((x) => x.id === "meta:high-usage")!;
+    expect(p.freshness).toEqual({ measuredAt: iso(2 * 3_600_000), source: "real-src", state: "stale" });
+  });
+
+  test("a +30d future entry does not outrank a real 1h-old stale read", () => {
+    const future = entry({
+      serviceId: "meta:high-usage",
+      measuredAt: new Date(NOW.getTime() + 30 * 86_400_000).toISOString(),
+      source: "future-src",
+      windows: [],
+    });
+    const real = entry({ serviceId: "meta:high-usage", measuredAt: iso(3_600_000), source: "real-src", windows: [] });
+    const out = overlayQuotaCurrent(baseView(), file([future, real]), NOW);
+    const p = out.pools.find((x) => x.id === "meta:high-usage")!;
+    expect(p.freshness).toEqual({ measuredAt: iso(3_600_000), source: "real-src", state: "stale" });
+  });
+
+  test("parseQuotaCurrent still accepts a document carrying a garbage entry (lenient parse)", () => {
+    const doc = file([garbageRead(), staleRead()]);
+    expect(parseQuotaCurrent(JSON.parse(JSON.stringify(doc)))).not.toBeNull();
+  });
+});
+
+describe("overlay: alternate ChatGPT pool (openai.alternate)", () => {
+  test("gatherer windows land on the alternate pool, never on the main pool", () => {
+    const view = baseView();
+    view.pools.push(pool("openai.alternate", []));
+    const out = overlayQuotaCurrent(
+      view,
+      file([
+        entry({
+          providerId: "openai.alternate",
+          serviceId: "openai.alternate",
+          credentialLabel: "OpenAI Alternate (Student - popesdrew)",
+          windows: [win("5h", 100, iso(5 * 60_000)), win("weekly", 42, iso(5 * 60_000))],
+        }),
+      ]),
+      NOW,
+    );
+    const alt = out.pools.find((p) => p.id === "openai.alternate")!;
+    expect(alt.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["5-hour", 100],
+      ["weekly", 42],
+    ]);
+    // The main account's pool keeps its own read, untouched.
+    const main = out.pools.find((p) => p.id === "openai:codex")!;
+    expect(main.windows[0].percent).toBe(11);
+  });
+});
+
+describe("overlay: split gatherer rows land on the four split hub pools (#1331)", () => {
+  test("Go per-workspace + Antigravity per-pool rows map with freshness and values", () => {
+    const view = baseView();
+    view.pools.push(
+      pool("opencode-go:personal", []),
+      pool("opencode-go:lab", []),
+      pool("antigravity:gemini", []),
+      pool("antigravity:claude-gpt", []),
+    );
+    const out = overlayQuotaCurrent(
+      view,
+      file([
+        entry({
+          providerId: "opencode-go",
+          serviceId: "opencode-go:personal",
+          credentialId: "cred_personal",
+          credentialLabel: "Personal",
+          windows: [win("monthly", 62.5, iso(5 * 60_000))],
+        }),
+        entry({
+          providerId: "opencode-go",
+          serviceId: "opencode-go:lab",
+          credentialId: "cred_lab",
+          credentialLabel: "Lab",
+          windows: [win("monthly", 50, iso(5 * 60_000))],
+        }),
+        entry({
+          providerId: "antigravity",
+          serviceId: "antigravity:gemini",
+          windows: [win("weekly", 40, iso(5 * 60_000))],
+        }),
+        entry({
+          providerId: "antigravity",
+          serviceId: "antigravity:claude-gpt",
+          windows: [win("weekly", 90, iso(5 * 60_000))],
+        }),
+      ]),
+      NOW,
+    );
+    const byId = new Map(out.pools.map((p) => [p.id, p]));
+    expect(byId.get("opencode-go:personal")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 62.5]]);
+    expect(byId.get("opencode-go:lab")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 50]]);
+    expect(byId.get("antigravity:gemini")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 40]]);
+    expect(byId.get("antigravity:claude-gpt")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 90]]);
+    for (const id of ["opencode-go:personal", "opencode-go:lab", "antigravity:gemini", "antigravity:claude-gpt"]) {
+      expect(byId.get(id)!.freshness).toEqual({
+        measuredAt: iso(5 * 60_000),
+        source: "openchamber-quota",
+        state: "ok",
+      });
+    }
+  });
+});
+
+describe("out-of-range pctOfLimit drops, never clamps (#2582)", () => {
+  test("a fresh ok read at 150% does not wall the pool: the window drops and prior windows stand", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([entry({ serviceId: "anthropic:claude-pro", windows: [win("weekly", 150, iso(5 * 60_000))] })]),
+      NOW,
+    );
+    const poolOut = out.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    expect(poolOut.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 68]]);
+    expect(poolOut.state).toBe("healthy");
+    expect(poolOut.freshness?.state).toBe("ok");
+    expect(out.choices.doNotStart).not.toContain("anthropic:claude-pro");
+  });
+
+  test("a fresh ok read at -20% drops the same way instead of publishing negative usage", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([entry({ serviceId: "anthropic:claude-pro", windows: [win("weekly", -20, iso(5 * 60_000))] })]),
+      NOW,
+    );
+    const poolOut = out.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    expect(poolOut.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 68]]);
+    expect(poolOut.state).toBe("healthy");
+  });
+
+  test("a mixed entry applies only its in-range windows", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({
+          serviceId: "anthropic:claude-pro",
+          windows: [win("5h", 42, iso(5 * 60_000)), win("weekly", 150, iso(5 * 60_000))],
+        }),
+      ]),
+      NOW,
+    );
+    const poolOut = out.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    expect(poolOut.windows.map((w) => [w.name, w.percent])).toEqual([["5-hour", 42]]);
+  });
+
+  test("the boundary values 0 and 100 stay usable", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({
+          serviceId: "anthropic:claude-pro",
+          windows: [win("5h", 0, iso(5 * 60_000)), win("weekly", 100, iso(5 * 60_000))],
+        }),
+      ]),
+      NOW,
+    );
+    const poolOut = out.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    expect(poolOut.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["5-hour", 0],
+      ["weekly", 100],
+    ]);
+  });
+
+  describe("overlayTursoUsage percent gate", () => {
+    const tursoSvc = (): SaasService => ({
+      id: "turso",
+      name: "Turso",
+      group: "database",
+      plan: "Starter Free $0",
+      status: "active",
+      metrics: [
+        { id: "databases", label: "Databases", used: 1, limit: 100, unit: "count", percent: 1, highlight: true },
+      ],
+      paygEstimate: null,
+      measuredAt: "2026-10-20T00:00:00.000Z",
+      sourceClass: "manual",
+      sourceNote: "quota-view.md Part (b)",
+      nextDate: "2026-10-31 cycle end",
+      cadenceDays: 7,
+      conflicts: [],
+      reads: [],
+    });
+    const tursoPct = (pct: unknown) => {
+      const at = iso(5 * 60_000);
+      const out = overlayTursoUsage(
+        [tursoSvc()],
+        file([
+          entry({
+            serviceId: "turso",
+            providerId: "turso",
+            source: "turso-api",
+            measuredAt: at,
+            windows: [
+              {
+                name: "databases",
+                value: 3,
+                pctOfLimit: pct as number,
+                valueLabel: null,
+                windowSeconds: 2_678_400,
+                resetsAt: "2026-11-01T04:00:00.000Z",
+                measuredAt: at,
+                source: "turso-api",
+                state: "ok" as const,
+              },
+            ],
+          }),
+        ]),
+        NOW,
+      );
+      return out[0].metrics.find((m) => m.id === "databases")!;
+    };
+
+    test("percent is omitted for out-of-range or non-numeric pctOfLimit, present in range", () => {
+      for (const bad of [150, -20, "42", Number.NaN]) {
+        const metric = tursoPct(bad);
+        expect(metric.used).toBe(3);
+        expect(metric).not.toHaveProperty("percent");
+      }
+      expect(tursoPct(42).percent).toBe(42);
+      expect(tursoPct(0).percent).toBe(0);
+      expect(tursoPct(100).percent).toBe(100);
+    });
   });
 });

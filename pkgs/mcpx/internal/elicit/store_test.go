@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
 )
 
 func perm(t *testing.T, path string) os.FileMode {

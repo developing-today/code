@@ -90,6 +90,23 @@ export interface ProjectPoolItem {
   horizon: string | null;
   /** The Project's "Kind" field (Task | Epic) — not the GhItem kind. */
   kind: string | null;
+  /** Issue graph edges (#2399, part 1 of #1122): the data contract the
+   *  weighted render (part 2, #2400) consumes. All edges are issue-only
+   *  (PRs and drafts never carry them) and all are absence-friendly: a
+   *  missing edge means "GitHub has none", never an error. Refs use the
+   *  same "owner/repo#123" canonical key as ref. */
+  /** Sub-issue parent of the linked issue. Absent when it has none. */
+  parentRef?: RefKey;
+  /** Refs this item is blocked by (GitHub "blocked by"). Absent when none. */
+  blockedBy?: RefKey[];
+  /** Refs this item blocks (GitHub "blocks"). Absent when none. */
+  blocks?: RefKey[];
+  /** Epic membership: the nearest sub-issue ancestor (following
+   *  parentRef chains within the fetched pool) whose pool item has
+   *  Project Kind "Epic". Absent for epics themselves, for items with
+   *  no epic ancestor, and when the parent chain leaves the pool (the
+   *  collector only knows Kind for items on the board). */
+  epicRef?: RefKey;
 }
 
 export type CommentKind = "issue_comment" | "review" | "review_comment";
@@ -146,8 +163,6 @@ export interface BoardItem {
   kaneoUrl?: string;
   /** Every linked issue/PR, from any of the four repos. */
   links: Link[];
-  /** Pad notes linked to the item (planning layer), by title + URL. */
-  notes?: { title: string; url: string }[];
 }
 
 /** One row of the Grist "Roadmap" table (doc "Program roadmap"). */
@@ -190,7 +205,7 @@ export interface Provenance {
 export interface ProvenanceFacet {
   /** The provenance string, unchanged — also the chip's tooltip. */
   text: string;
-  state: "live" | "fixtures" | "stale" | "absent" | "invalid";
+  state: "live" | "fixtures" | "stale" | "absent" | "invalid" | "error";
   ageMs?: number;
   count?: number;
   countLabel?: string;
@@ -240,6 +255,27 @@ export interface QuotaPool {
   /** Gatherer freshness for this pool (#1151), set when
    * quota-current.json carried an entry for it. */
   freshness?: PoolFreshness;
+  /** Per-credential rows (#1113): set only when the gatherer carried
+   * two or more credentials for this pool's service whose reads
+   * genuinely differ (windows or state). Absent when the credentials
+   * share one pool read — never a fake split. The pool's own windows
+   * stay the headline. */
+  credentials?: QuotaCredentialRow[];
+}
+
+/** One credential's own quota read within a pool (#1113). */
+export interface QuotaCredentialRow {
+  /** The gatherer's credential label (e.g. "OpenAI 2"), or the
+   * provider name/id when the entry carried no label. */
+  label: string;
+  /** The stable credential id, when the entry carried one. Rows are
+   * keyed by this, never by label alone (#2978 Codex finding). */
+  credentialId?: string;
+  providerId: string;
+  /** This credential's percent windows; empty when its newest read
+   * is an error or stale — the state rides on freshness instead. */
+  windows: QuotaWindow[];
+  freshness: PoolFreshness;
 }
 
 /** Per-pool freshness from the quota gatherer (#1151). */
@@ -284,9 +320,28 @@ export interface BurnSegment {
 
 export interface QuotaView {
   pools: QuotaPool[];
+  /** Safe per-credential lifecycle status from the configured provider set. */
+  credentialLifecycle?: import("./credential-lifecycle.ts").CredentialLifecycleRow[];
   /** Gatherer overlay provenance (#1151); absent when no
    * quota-current.json was read. Additive for existing consumers. */
   gatherer?: GathererSummary;
+  /** Feed-load sanitization counts (#2429/#3921): present only when the
+   * loader dropped malformed pools, credentials, windows, active sessions,
+   * or burn segments, so an
+   * incomplete read is distinguishable from a successful empty one
+   * in the public payload (/api/quota.json projects this view). Optional
+   * pool freshness and burn-rate drops are counted without dropping the pool.
+   * Additive for existing consumers. */
+  dropped?: {
+    pools: number;
+    credentials: number;
+    windows: number;
+    activeSessions: number;
+    burn: number;
+    poolFreshness: number;
+    burnTokensPerMin: number;
+    credentialLifecycle?: number;
+  };
   burn: BurnSegment[];
   /** Guidance for choosing the next pool (burn order + reset rules). */
   choices: {
@@ -392,7 +447,7 @@ export interface JulesSummary {
   at: string | null;
   /** Sessions the keeper currently tracks in its `items` map. */
   tracked: number;
-  /** Totals from the keeper's freshest run note, when it parses. */
+  /** Totals from the note written by the keeper's last run, when it parses. */
   total?: number;
   completed?: number;
   failed?: number;
@@ -408,7 +463,9 @@ export function refKey(ref: GhRef): RefKey {
 export function parseRef(key: RefKey): GhRef {
   const m = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(key);
   if (!m) throw new Error(`not a repo-qualified ref: ${key}`);
-  return { repo: m[1], number: Number(m[2]) };
+  const number = Number(m[2]);
+  if (!Number.isSafeInteger(number)) throw new Error(`ref number is not a safe integer: ${key}`);
+  return { repo: m[1], number };
 }
 
 const GH_URL = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)/g;
@@ -666,14 +723,14 @@ export interface DnsSection {
 }
 
 // ---------------------------------------------------------------------------
-// AA cost explorer: the Artificial Analysis workbook data (Supabase
+// AA cost explorer: the Artificial Analysis import data (Supabase
 // `ainventory`, latest import batch) as the collector embeds it in the
-// fleet feed. The figures are the workbook snapshot's — AA Intelligence
+// fleet feed. The figures are the import snapshot's — AA Intelligence
 // Index v4.3.2, Test_Runs snapshots of Sep–Oct 2026 — not a live AA pull;
 // the section's provenance says exactly which batch and files they are.
 // ---------------------------------------------------------------------------
 
-/** One workbook source file behind the AA section (freshness evidence). */
+/** One import source file behind the AA section (freshness evidence). */
 export interface AaSourceInfo {
   name: string;
   kind: string;
@@ -732,7 +789,7 @@ export interface AaThreshold {
 export interface AaConfig {
   modelName: string;
   benchmark: string;
-  /** The workbook's effort label, verbatim (e.g. "Adaptive Reasoning,
+  /** The import's effort label, verbatim (e.g. "Adaptive Reasoning,
    * High Effort, Default Fallback") — never shortened or invented. */
   effort: string | null;
   intelligence: number | null;
@@ -741,7 +798,7 @@ export interface AaConfig {
 }
 
 /** One Test_Runs row, mapped by the sheet's own header row: per-config
- * timing. Null timing = the workbook never measured it — the page says
+ * timing. Null timing = the import never measured it — the page says
  * "not measured", it does not estimate. */
 export interface AaTestRun {
   testRunKey: string;
@@ -758,7 +815,7 @@ export interface AaTestRun {
 
 /**
  * One Coding Agent Index row of ainventory.benchmark_results (the
- * workbook's Coding_Agent_Results import): a model + effort + agent
+ * import's Coding_Agent_Results rows): a model + effort + agent
  * harness observation, kept strictly separate from the AA Intelligence
  * Index — no score conversion between the indexes (the ChatGPT
  * explorers' cross-benchmark rule). Component scores are the published
@@ -855,15 +912,15 @@ export interface AaPoint {
   ttft: number | null;
   pointsPerDollar: number | null;
   pointsPerSecond: number | null;
-  /** score / cost, computed when the workbook's own column is absent. */
+  /** score / cost, computed when the import's own column is absent. */
   scorePerDollar: number | null;
-  /** score / time, computed when the workbook's own column is absent. */
+  /** score / time, computed when the import's own column is absent. */
   scorePerSecond: number | null;
   eligible: boolean;
   qualStatus: string | null;
   /** Agent harness (CAI points only; null on AA points). */
   harness: string | null;
-  /** Total tokens per task (CAI points only; the workbook's AA rows
+  /** Total tokens per task (CAI points only; the import's AA rows
    * do not carry a per-task token count). */
   tokensPerTask: number | null;
   /** CAI component scores as published fractions (CAI points only). */
@@ -884,7 +941,7 @@ export interface AaPoint {
  * (route ids whose expanded leaves include it), the plan the provider
  * door belongs to (collector-carried registry facts — see
  * AA_PLAN_FACTS in src/aa.ts), and its best AA measurement when the
- * workbook measured a model of the same normalized name. Assembled by
+ * import measured a model of the same normalized name. Assembled by
  * aaCatalogFromConfig() in src/aa.ts.
  */
 export interface AaCatalogEntry {
@@ -952,7 +1009,7 @@ export interface AaSection {
   status: "ok";
   /** ISO timestamp of the collector run that built the section. */
   generatedAt: string;
-  /** ainventory import batch (v_latest_workbook_batch) the rows came from. */
+  /** ainventory import batch (v_latest_import_batch) the rows came from. */
   batch: string;
   sources: AaSourceInfo[];
   rankings: AaRanking[];
@@ -971,11 +1028,18 @@ export interface AaSection {
   /** Current token prices from the ainventory price event log
    * (v_current_prices); absent on the same condition as cai. */
   prices?: AaPrice[];
+  /** Set by the collector when this section is the last good payload
+   * re-served after a failed collection (code#3332); absent on a fresh
+   * build. generatedAt stays the good build's time. */
+  stale?: boolean;
+  /** Why the latest collection failed, when stale. */
+  staleReason?: string;
 }
 
 /** The section's degraded form: the collector could not reach Supabase
- * (or the payload failed its check) — the page renders the reason
- * instead of stale numbers, and the feed never fails over it. */
+ * (or the payload failed its check) and no last good payload exists
+ * to fall back to (code#3332) — the page renders the reason, and the
+ * feed never fails over it. */
 export interface AaAbsentSection {
   status: "absent";
   reason: string;
@@ -1021,6 +1085,10 @@ export interface DashComment {
   githubState?: "pending" | "posted" | "failed";
   /** kind "github", once posted: the live comment URL. */
   githubUrl?: string;
+  /** kind "github", when githubState is "failed": the last error a
+   *  fleet poster reported (#1210), rendered so a failed comment
+   *  shows why it failed, not just that it did. Cleared on posting. */
+  githubError?: string;
 }
 
 /** Runtime families the session registry tracks. */
@@ -1137,6 +1205,15 @@ export interface DatedRead {
 }
 
 /** One family-2 service: a card on the hub, a page at /quota/service/<id>. */
+export interface ServiceSources {
+  /** The quota-view.md Part (b) section this card was built from, e.g. "### Turso". */
+  quotaViewSection: string;
+  /** The Summary (b) tracker row's first cell, or null when the service has no row. */
+  trackerRow: string | null;
+  /** The evidence-baseline research record behind the card's interpretation. */
+  baselineDoc: string;
+}
+
 export interface SaasService {
   id: string;
   name: string;
@@ -1156,6 +1233,8 @@ export interface SaasService {
   sourceClass: UsageSourceClass;
   /** Where the card's facts came from, human-readable. */
   sourceNote: string;
+  /** Research provenance behind the card (#1058): tracker row, baseline, quota-view section. */
+  sources?: ServiceSources;
   /** Renewal/reset as recorded (may be prose, e.g. "cycle ends 2026-10-31"). */
   nextDate?: string | null;
   /** Expected re-measure cadence in days; older reads render stale. */
@@ -1200,7 +1279,7 @@ export interface ChargeRow {
  * projected unbilled PAYG over $5 (unbilled accrual only, Q3 default).
  */
 export interface AttentionFlag {
-  kind: "over-limit" | "payg-unbilled" | "unmatched-charge";
+  kind: "over-limit" | "payg-unbilled" | "unmatched-charge" | "credential-lifecycle";
   label: string;
   detail: string;
   href: string;
@@ -1239,9 +1318,22 @@ export interface QuotaCurrentEntry {
   serviceId: string;
   credentialId?: string;
   credentialLabel?: string;
+  /** Internal provenance marker: this row came from the configured quota-credential registry. */
+  credentialWatch?: boolean;
+  /** Present only when the provider exposes an authoritative expiry instant. */
+  credentialExpiresAt?: string;
+  /** Provenance class for the provider's credential source; never a credential value. */
+  credentialSource?: "claude-code" | "opencode" | "environment";
   planLabel?: string;
   state: "ok" | "error" | "unconfigured";
   measuredAt: string;
+  /** #1268: ISO time of the tick that retained this entry from the
+   *  previous tick after the provider's run errored. The data is
+   *  last-known, never a fresh read: readers classify it stale
+   *  regardless of measuredAt freshness (a retained entry is usually
+   *  only one tick old, well inside the freshness bound). Absent on
+   *  fresh reads. */
+  retainedFromFailedTick?: string;
   source: string;
   error?: string;
   windows: QuotaCurrentWindow[];
@@ -1265,6 +1357,8 @@ export interface QuotaCurrentFile {
   source: string;
   heartbeat: QuotaGatherHeartbeat;
   providers: QuotaCurrentEntry[];
+  /** Parser diagnostics for malformed entries removed at the ingest boundary. */
+  sanitized?: { droppedProviders: number; droppedWindows: number };
 }
 
 /**

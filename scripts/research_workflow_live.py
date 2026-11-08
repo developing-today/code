@@ -392,6 +392,8 @@ def check_receipt(package, root, entry):
     ):
         fail(f"Receipt note must be notes/<note-id>.md: {entry['note']}")
     single_line(entry["reason"], "Receipt reason")
+    if entry["disposition"] == "deferred" and "Revisit when:" not in entry["reason"]:
+        fail("A deferred receipt's reason must carry a 'Revisit when: <event>' trigger")
     if not isinstance(entry["scanned"], list) or not all(
         isinstance(x, dict)
         and set(x) == {"ref", "sha"}

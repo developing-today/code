@@ -20,15 +20,12 @@ name: lab-ops-hub
 # deliberately no `npm install` step.
 
 on:
-  pull_request:
-    paths:
-      - "pkgs/lab-ops-hub/**"
-      - ".github/workflows/lab-ops-hub.yml"
   push:
     branches: [main]
     paths:
       - "pkgs/lab-ops-hub/**"
       - ".github/workflows/lab-ops-hub.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read

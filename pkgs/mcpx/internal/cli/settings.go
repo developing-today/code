@@ -12,8 +12,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // Settings resolves every setting for this invocation.

@@ -32,6 +32,8 @@ git -C "$SRC/.." rev-parse HEAD                # da80c05b95269926bf58121cf6a2d3d
 
 `sqlx` is absent from the build. `cargo tree -i sqlx` reports no match, and `store_traits`'s `test_the_lock_has_no_sqlite_with_logsync_wired` fails if `Cargo.lock` names `sqlx`, `sqlite`, `rusqlite` or `libsqlite3-sys`, or if the `p2panda-store` line above loses `default-features = false`.
 
+**Workspace exclusion.** Both vendored crates are listed in the root manifest's `[workspace] exclude`. Without that, Cargo treats path dependencies inside the workspace directory as members, and a member's feature graph joins the lock resolve: this crate's `test_utils` feature forwards to `p2panda-store/test_utils`, whose `sqlite` feature pulls the whole `sqlx` family into `Cargo.lock` even though no build here enables it. That is how `sqlx-sqlite` entered the lock at the #3447 workspace conversion (#4015); the exclusion plus a `cargo update -w` re-resolve removed it, with no version changes.
+
 **To update.** Change the rev in the three places it appears (this file, the two git lines in `vendor/p2panda-sync/Cargo.toml`, and the git lines in `pkgs/id/Cargo.toml`). Then copy the crate again and reapply the changes above.
 
 ## p2panda-encryption 0.7.1 (DataScheme fork)

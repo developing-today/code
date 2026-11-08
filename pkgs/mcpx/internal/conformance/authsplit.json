@@ -1,0 +1,442 @@
+{
+  "about": "The authorization rows split along accepts-vs-refuses (#1972): a permissive interface (#1950) satisfies a 'permissive' row-side; a 'validation' row-side needs a real check, named here. Checks: invalid, expired, wrong-resource, scope.",
+  "checks": [
+    "invalid",
+    "expired",
+    "wrong-resource",
+    "scope"
+  ],
+  "rows": {
+    "authorization-custom-auth-may": {
+      "server": {
+        "verdict": "permissive"
+      },
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authorization-http-should-conform-stdio-should-not": {
+      "server": {
+        "verdict": "permissive"
+      },
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-2025-03-26-implementation-reqs": {
+      "server": {
+        "verdict": "validation",
+        "checks": [
+          "expired"
+        ],
+        "why": "token rotation and limited lifetimes are enforced server-side"
+      },
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-2025-03-26-security-list": {
+      "server": {
+        "verdict": "validation",
+        "checks": [
+          "invalid",
+          "expired"
+        ],
+        "why": "servers enforce token expiration and validate redirect URIs"
+      },
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-401-when-unauthorized": {
+      "server": {
+        "verdict": "validation",
+        "checks": [
+          "invalid"
+        ],
+        "why": "an unproven or invalid credential must be refused with 401"
+      }
+    },
+    "authz-401-www-authenticate": {
+      "server": {
+        "verdict": "validation",
+        "checks": [
+          "invalid"
+        ],
+        "why": "the 401 refusal must carry the WWW-Authenticate metadata pointer"
+      }
+    },
+    "authz-accept-only-own-tokens": {
+      "server": {
+        "verdict": "validation",
+        "checks": [
+          "wrong-resource"
+        ],
+        "why": "only tokens valid for this server's resources may be accepted"
+      }
+    },
+    "authz-all-scopes-single-challenge": {
+      "server": {
+        "verdict": "validation",
+        "checks": [
+          "scope"
+        ],
+        "why": "one refusal challenge listing every scope the operation needs"
+      }
+    },
+    "authz-alt-transport-best-practice": {
+      "server": {
+        "verdict": "permissive"
+      },
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-as-metadata-rfc8414": {
+      "server": {
+        "verdict": "permissive"
+      },
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-as-metadata-rfc8414-or-oidc": {
+      "server": {
+        "verdict": "permissive"
+      },
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-base-url-discards-path": {
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-bearer-header": {
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-canonical-uri-guidance": {
+      "server": {
+        "verdict": "permissive"
+      },
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-cimd": {
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-client-as-discovery-order": {
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-client-parses-www-authenticate": {
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-client-per-as-registration-state": {
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-client-registration-required": {
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-client-rfc8414-discovery": {
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-client-sends-only-own-as-tokens": {
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-client-validates-issuer-in-metadata": {
+      "client": {
+        "verdict": "permissive",
+        "why": "metadata is checked deterministically; no credential is inspected"
+      }
+    },
+    "authz-credentials-bound-to-issuer": {
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-dcr-application-type": {
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-dcr-may-deprecated": {
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-dcr-should": {
+      "server": {
+        "verdict": "permissive"
+      },
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-default-endpoints-fallback": {
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-error-status-codes": {
+      "server": {
+        "verdict": "validation",
+        "checks": [
+          "invalid",
+          "expired",
+          "wrong-resource",
+          "scope"
+        ],
+        "why": "the refusal status code (401/403/400) for every authorization error"
+      }
+    },
+    "authz-follow-security-considerations": {
+      "server": {
+        "verdict": "permissive"
+      },
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-grant-types": {
+      "server": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-http-should-conform": {
+      "server": {
+        "verdict": "permissive"
+      },
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-https-and-redirect-uris": {
+      "server": {
+        "verdict": "permissive"
+      },
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-implement-oauth21": {
+      "server": {
+        "verdict": "permissive"
+      },
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-insufficient-scope-403": {
+      "server": {
+        "verdict": "validation",
+        "checks": [
+          "scope"
+        ],
+        "why": "insufficient scope must be refused with 403 insufficient_scope"
+      }
+    },
+    "authz-iss-validation": {
+      "client": {
+        "verdict": "permissive",
+        "why": "discovery/issuer metadata is checked deterministically; no credential is inspected"
+      }
+    },
+    "authz-no-token-in-query": {
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-no-token-passthrough": {
+      "server": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-open-redirection": {
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-optional": {
+      "server": {
+        "verdict": "permissive"
+      },
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-pkce": {
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-pkce-verify-s256": {
+      "client": {
+        "verdict": "permissive",
+        "why": "the client refuses to proceed on AS capability, not on a presented credential"
+      }
+    },
+    "authz-preregistration": {
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-prm-discovery-header-or-well-known": {
+      "server": {
+        "verdict": "permissive"
+      },
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-prm-lists-authorization-servers": {
+      "server": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-proxy-consent-per-client": {
+      "server": {
+        "verdict": "permissive",
+        "why": "user consent is a flow gate, not a credential check; no credential is inspected"
+      }
+    },
+    "authz-refresh-tokens": {
+      "server": {
+        "verdict": "permissive"
+      },
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-registration-priority": {
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-resource-indicator": {
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-rfc8414-server-should-client-must": {
+      "server": {
+        "verdict": "permissive"
+      },
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-scope-in-challenge": {
+      "server": {
+        "verdict": "validation",
+        "checks": [
+          "scope"
+        ],
+        "why": "the refusal challenge must name the scope required"
+      },
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-scope-selection-order": {
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-secure-token-storage": {
+      "server": {
+        "verdict": "permissive"
+      },
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-server-prm-rfc9728": {
+      "server": {
+        "verdict": "permissive"
+      },
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-server-scope-hierarchy": {
+      "server": {
+        "verdict": "validation",
+        "checks": [
+          "scope"
+        ],
+        "why": "scope hierarchies must be accounted for when enforcing scope"
+      }
+    },
+    "authz-server-validates-audience": {
+      "server": {
+        "verdict": "validation",
+        "checks": [
+          "wrong-resource"
+        ],
+        "why": "the token must be issued for this server as audience"
+      }
+    },
+    "authz-server-validates-token": {
+      "server": {
+        "verdict": "validation",
+        "checks": [
+          "invalid",
+          "expired"
+        ],
+        "why": "tokens are validated; invalid or expired ones must get 401"
+      }
+    },
+    "authz-stdio-use-environment": {
+      "server": {
+        "verdict": "permissive"
+      },
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "authz-step-up": {
+      "client": {
+        "verdict": "permissive",
+        "why": "the client reacts to a refusal it is given; it validates nothing itself"
+      }
+    },
+    "authz-third-party-session-binding": {
+      "server": {
+        "verdict": "validation",
+        "checks": [
+          "invalid",
+          "expired"
+        ],
+        "why": "third-party token status validated and expiration handled"
+      }
+    },
+    "authz-token-every-request": {
+      "client": {
+        "verdict": "permissive"
+      }
+    },
+    "streamable-http-auth-discovery-version-header": {
+      "client": {
+        "verdict": "permissive"
+      }
+    }
+  }
+}

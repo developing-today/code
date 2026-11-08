@@ -11,6 +11,7 @@
 // first), GET /api/permission/request -> { data: PermissionRequest[] },
 // GET /api/session/{id}/form -> { data: Form[] }.
 import type { SessionFeedEntry, SessionSource } from "../model.ts";
+import { GENERATED_AT_FUTURE_SKEW_MS } from "../feed.ts";
 
 export interface OpenCodeTarget {
   baseUrl: string;
@@ -60,12 +61,32 @@ interface V2PermissionRequest {
   [k: string]: unknown;
 }
 
-interface V2Form {
-  title?: string;
-  name?: string;
-  questions?: { question?: string; label?: string }[];
-  fields?: { label?: string; name?: string }[];
-  [k: string]: unknown;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function records(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function isV2Session(value: unknown): value is V2Session {
+  return isRecord(value) && typeof value.id === "string" && value.id.trim().length > 0;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    const text = nonEmptyString(value);
+    if (text !== undefined) return text;
+  }
+  return undefined;
+}
+
+function finiteNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 async function getJson<T>(target: OpenCodeTarget, path: string, timeoutMs = 10_000): Promise<T | null> {
@@ -83,8 +104,24 @@ async function getJson<T>(target: OpenCodeTarget, path: string, timeoutMs = 10_0
   }
 }
 
-const iso = (ms: number | undefined): string | null =>
-  typeof ms === "number" && ms > 0 ? new Date(ms).toISOString() : null;
+// JS Dates cover +/-8.64e15 ms; a server-supplied stamp outside
+// that range makes toISOString() throw RangeError, and one bad
+// session used to drop every session from its server (#2286).
+// One shared predicate gates both iso() and the freshness
+// inclusion below: finite, positive, in Date range.
+const MAX_DATE_MS = 8.64e15;
+const validMs = (ms: number | undefined): boolean =>
+  typeof ms === "number" && Number.isFinite(ms) && ms > 0 && ms <= MAX_DATE_MS;
+
+const iso = (ms: number | undefined): string | null => (validMs(ms) ? new Date(ms as number).toISOString() : null);
+
+// A stamp more than the aggregator-wide skew tolerance ahead of now is
+// "future" (#4180): it earns no freshness inclusion and maps to a null
+// lastActivityAt, the same treatment as an invalid stamp, so a
+// clock-skewed server cannot pin the attention feed or poison
+// lastActivityAt-sorted consumers. Within-skew stamps keep their value.
+const beyondSkew = (ms: number | undefined, now: number): boolean =>
+  typeof ms === "number" && Number.isFinite(ms) && ms - now > GENERATED_AT_FUTURE_SKEW_MS;
 
 function errText(e: unknown): string | null {
   if (!e) return null;
@@ -111,31 +148,34 @@ export interface MappedSessions {
 /**
  * Map one server's sessions to feed entries. Inclusion (per #890):
  * sessions in the active set, sessions with a pending permission
- * request, and sessions updated within 12 h.
+ * request, and sessions updated within 12 h — but a stamp more than
+ * the skew tolerance ahead of now earns no freshness inclusion (#4180).
  */
 export async function mapServerSessions(
   target: OpenCodeTarget,
   now = Date.now(),
   opts: { messageLimit?: number; maxDetailed?: number; source?: SessionSource } = {},
 ): Promise<MappedSessions | null> {
-  const list = await getJson<{ data: V2Session[] }>(target, "/api/session?limit=100");
-  if (!list?.data) return null;
-  const sessions = list.data;
+  const list = await getJson<unknown>(target, "/api/session?limit=100");
+  if (!isRecord(list) || !Array.isArray(list.data)) return null;
+  const sessions = list.data.filter(isV2Session);
 
-  const activeResp = await getJson<{ data: Record<string, unknown> }>(target, "/api/session/active");
-  const activeIds = new Set(Object.keys(activeResp?.data ?? {}));
+  const activeResp = await getJson<unknown>(target, "/api/session/active");
+  const activeData = isRecord(activeResp) && isRecord(activeResp.data) ? activeResp.data : {};
+  const activeIds = new Set(Object.keys(activeData));
 
-  const permResp = await getJson<{ data: V2PermissionRequest[] }>(target, "/api/permission/request");
+  const permResp = await getJson<unknown>(target, "/api/permission/request");
   const pendingBySession = new Map<string, V2PermissionRequest>();
-  for (const p of permResp?.data ?? []) {
-    const sid = p.sessionID ?? p.sessionId;
-    if (sid && !pendingBySession.has(sid)) pendingBySession.set(sid, p);
+  const permissionRows = isRecord(permResp) ? records(permResp.data) : [];
+  for (const row of permissionRows) {
+    const sid = firstString(row.sessionID, row.sessionId);
+    if (sid && !pendingBySession.has(sid)) pendingBySession.set(sid, row as V2PermissionRequest);
   }
 
   const tokensBySession = new Map<string, number>();
   for (const s of sessions) {
-    const t = s.tokens ?? {};
-    tokensBySession.set(s.id, (t.input ?? 0) + (t.output ?? 0) + (t.reasoning ?? 0));
+    const t = isRecord(s.tokens) ? s.tokens : {};
+    tokensBySession.set(s.id, finiteNumber(t.input) + finiteNumber(t.output) + finiteNumber(t.reasoning));
   }
 
   const included = sessions
@@ -143,14 +183,18 @@ export async function mapServerSessions(
       (s) =>
         activeIds.has(s.id) ||
         pendingBySession.has(s.id) ||
-        (typeof s.time?.updated === "number" && now - s.time.updated <= ATTENTION_WINDOW_MS),
+        (validMs(s.time?.updated) &&
+          now - (s.time?.updated as number) <= ATTENTION_WINDOW_MS &&
+          !beyondSkew(s.time?.updated, now)),
     )
     .sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
     .slice(0, opts.maxDetailed ?? 60);
 
   const entries: SessionFeedEntry[] = [];
   for (const s of included) {
-    entries.push(await mapOne(target, s, activeIds, pendingBySession.get(s.id), opts.messageLimit ?? 40, opts.source));
+    entries.push(
+      await mapOne(target, s, activeIds, pendingBySession.get(s.id), opts.messageLimit ?? 40, opts.source, now),
+    );
   }
   return { entries, tokensBySession, activeIds };
 }
@@ -161,7 +205,8 @@ async function mapOne(
   activeIds: Set<string>,
   pending: V2PermissionRequest | undefined,
   messageLimit: number,
-  source?: SessionSource,
+  source: SessionSource | undefined,
+  now: number,
 ): Promise<SessionFeedEntry> {
   const entry: SessionFeedEntry = {
     sessionId: s.id,
@@ -176,24 +221,31 @@ async function mapOne(
     directory: s.location?.directory,
     model: s.model?.id,
     provider: s.model?.providerID,
-    lastActivityAt: iso(s.time?.updated),
+    lastActivityAt: beyondSkew(s.time?.updated, now) ? null : iso(s.time?.updated),
     activeToolCalls: 0,
   };
 
   if (pending) {
-    const what = pending.title ?? pending.description ?? pending.tool ?? "tool call";
+    const what = firstString(pending.title, pending.description, pending.tool) ?? "tool call";
     entry.awaitingQuestion = `Permission pending: ${what}`;
   }
 
-  const forms = await getJson<{ data: V2Form[] }>(target, `/api/session/${s.id}/form`);
-  const openForm = (forms?.data ?? [])[0];
+  const forms = await getJson<unknown>(target, `/api/session/${s.id}/form`);
+  const formRows = isRecord(forms) ? records(forms.data) : [];
+  const openForm = formRows[0];
   if (!entry.awaitingQuestion && openForm) {
-    const q = openForm.questions?.[0]?.question ?? openForm.fields?.[0]?.label ?? openForm.title ?? openForm.name;
-    entry.awaitingQuestion = `Form open: ${q ?? "session form awaiting input"}`;
+    const question = records(openForm.questions)[0];
+    const field = records(openForm.fields)[0];
+    const text = firstString(question?.question, field?.label, openForm.title, openForm.name);
+    entry.awaitingQuestion = `Form open: ${text ?? "session form awaiting input"}`;
   }
 
-  const msgs = await getJson<{ data: V2Message[] }>(target, `/api/session/${s.id}/message?limit=${messageLimit}`);
-  const data = msgs?.data ?? [];
+  const msgs = await getJson<unknown>(target, `/api/session/${s.id}/message?limit=${messageLimit}`);
+  const messageRows = isRecord(msgs) ? records(msgs.data) : [];
+  const data = messageRows.map((message) => ({
+    ...message,
+    content: records(message.content),
+  })) as unknown as V2Message[];
   entry.messageCount = data.length;
 
   // Newest first. The "last turn" runs from the head back to (but not

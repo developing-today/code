@@ -12,3 +12,8 @@
 
 **Learning:** Line start position arrays in editors are strictly monotonically increasing. Using `lineStarts.includes()` or `Array.prototype.filter()` iterates over the entire document's lines (O(N) time and O(N) allocations), and nested calls like `filter` with `indexOf` create O(N^2) bottlenecks.
 **Action:** Use binary search to locate line boundaries in O(log N) time and `Array.prototype.slice()` to extract selected line ranges in O(M) time without full array scans.
+
+## 2026-10-31 - [Lazy Subject Kind Resolution in Event Store Searches]
+
+**Learning:** `search_store_terms` eager-loaded `store.event_by_id` for every unique subject in live claims up front even when no `Term::SubjectKind` query term was present. In addition to O(subjects) redundant database reads per search, unrelated unreadable or unindexed events aborted pure name/author searches with errors.
+**Action:** Always check whether query terms actually require subject kind resolution before opening store transactions, and lazily resolve and memoize kinds on demand within kind-filtering closures.

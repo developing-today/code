@@ -18,9 +18,9 @@ import (
 	"text/tabwriter"
 	"unicode/utf8"
 
-	"github.com/dezren39/mcpx/internal/api"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // opGroup is one generated command: every /v1 operation, not covered by a
@@ -539,6 +539,7 @@ func (c *Client) streamOp(ctx context.Context, method, path string, body []byte,
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "text/event-stream")
+	c.authorize(req)
 	resp, err := (&http.Client{Transport: c.hc.Transport}).Do(req)
 	if err != nil {
 		if isDialErr(err) {

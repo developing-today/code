@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/elicit"
-	"github.com/dezren39/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 )
 
 // #1677: elicit.opened / elicit.answered carry a summary only -- id,

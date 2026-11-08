@@ -13,6 +13,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -56,6 +57,7 @@ if (args[0] === 'serve') {
   if (process.env.STUB_SERVE_FAIL === '1') process.exit(3);
   const log = (line) => { if (process.env.STUB_LOG) fs.appendFileSync(process.env.STUB_LOG, line + '\\n'); };
   let buf = '';
+  let stubSessN = 0;
   process.stdin.on('data', (d) => {
     buf += d.toString('utf-8');
     let i;
@@ -70,12 +72,13 @@ if (args[0] === 'serve') {
         reply({ serverInfo: { name: 'stub-muse', version: '0' } });
       } else if (msg.method === 'session/start') {
         log('START ' + msg.params.modelId);
-        reply({ session: { sessionId: 'stub-session-1' } });
+        reply({ session: { sessionId: 'stub-session-' + (++stubSessN) } });
       } else if (msg.method === 'session/resume') {
         log('RESUME ' + msg.params.sessionId);
         reply({ session: { sessionId: msg.params.sessionId } });
       } else if (msg.method === 'turn/start') {
         const text = (msg.params.input || []).map(p => p.text || '').join('');
+        if (text.includes('KILLHOST')) { log('KILLED ' + text); process.kill(process.pid, 'SIGKILL'); }
         log('TURN ' + text);
         const sid = msg.params.sessionId;
         const turnId = msg.params.commandId;
@@ -96,6 +99,24 @@ if (args[0] === 'serve') {
   let prompt = '';
   try { prompt = fs.readFileSync(promptFile, 'utf-8'); } catch {}
   const line = (o) => console.log(JSON.stringify(o));
+  if (process.env.STUB_LOG) fs.appendFileSync(process.env.STUB_LOG, 'EXECPID ' + process.pid + String.fromCharCode(10));
+  if (prompt.includes('HANGAFTERDONE')) {
+    line({ payload_type: 'run.output.delta', payload: { text: 'Hel' } });
+    line({ payload_type: 'run.terminal.completed', payload: { terminal: 'completed', text: 'Hello world' } });
+    setInterval(() => {}, 1000);
+    return;
+  }
+  if (prompt.includes('HANGTERMI')) { process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); return; }
+  if (prompt.includes('HANGME')) { setInterval(() => {}, 1000); return; }
+  if (prompt.includes('HANGDESCENDANT')) {
+    // A descendant that inherits our stdout/stderr and outlives us: the
+    // proxy's child 'close' event waits on those pipes, so killing this
+    // process alone never settles the request (Codex P2 on PR #4242).
+    const descendant = require('child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' });
+    if (process.env.STUB_LOG) fs.appendFileSync(process.env.STUB_LOG, 'DESCPID ' + descendant.pid + String.fromCharCode(10));
+    setInterval(() => {}, 1000);
+    return;
+  }
   if (prompt.includes('FAILME')) { console.error('stub muse: auth expired'); process.exit(3); }
   if (prompt.includes('FAILPARTIAL')) {
     line({ payload_type: 'run.output.delta', payload: { text: 'partial answer' } });
@@ -138,6 +159,12 @@ const startProxy = async (extraEnv = {}) => {
   fs.mkdirSync(stubDir);
   fs.mkdirSync(path.join(tmp, 'home'));
   fs.writeFileSync(path.join(stubDir, 'muse'), STUB, { mode: 0o755 });
+  // The proxy prefers $HOME/.local/bin/muse over PATH, and on NixOS hosts
+  // /run/current-system/sw/bin/muse exists and would shadow the stub with
+  // the real CLI. Plant the stub at the preferred path too so the harness
+  // is hermetic on those hosts.
+  fs.mkdirSync(path.join(tmp, 'home', '.local', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'home', '.local', 'bin', 'muse'), STUB, { mode: 0o755 });
   const port = await freePort();
   const logFile = path.join(tmp, 'stub.log');
   const child = spawn(process.execPath, [path.join(binDir, 'muse-proxy.mjs')], {
@@ -165,7 +192,7 @@ const startProxy = async (extraEnv = {}) => {
     if (Date.now() > deadline) throw new Error(`proxy did not start:\n${log}`);
     await new Promise(r => setTimeout(r, 50));
   }
-  return { port, stop: () => child.kill('SIGKILL'), logFile };
+  return { port, stop: () => child.kill('SIGKILL'), logFile, home: path.join(tmp, 'home') };
 };
 
 const chat = async (port, body) => {
@@ -363,6 +390,58 @@ test('warm serve path: streaming turn streams the MSP deltas (#480)', async (t) 
   assert.equal(finish, 'stop');
 });
 
+test('two concurrent conversations stay isolated: separate sessions, tail-only turns (#480)', async (t) => {
+  const { port, stop, logFile } = await startProxy({ MUSE_PROXY_WARM: '1' });
+  t.after(stop);
+  const convA = [{ role: 'user', content: 'alpha one' }];
+  const convB = [{ role: 'user', content: 'gamma one' }];
+  const [a1, b1] = await Promise.all([
+    chat(port, { model: 'muse-spark-1.3', messages: convA }).then(r => JSON.parse(r)),
+    chat(port, { model: 'muse-spark-1.3', messages: convB }).then(r => JSON.parse(r))
+  ]);
+  assert.equal(a1.choices[0].message.content, 'RE:alpha one');
+  assert.equal(b1.choices[0].message.content, 'RE:gamma one');
+  const a2 = JSON.parse(await chat(port, {
+    model: 'muse-spark-1.3',
+    messages: [...convA, { role: 'assistant', content: 'RE:alpha one' }, { role: 'user', content: 'alpha two' }]
+  }));
+  const b2 = JSON.parse(await chat(port, {
+    model: 'muse-spark-1.3',
+    messages: [...convB, { role: 'assistant', content: 'RE:gamma one' }, { role: 'user', content: 'gamma two' }]
+  }));
+  assert.equal(a2.choices[0].message.content, 'RE:alpha two');
+  assert.equal(b2.choices[0].message.content, 'RE:gamma two');
+  const log = fs.readFileSync(logFile, 'utf-8').trim().split('\n');
+  assert.equal(log.filter(l => l.startsWith('START')).length, 2, 'each conversation key must own a separate MSP session');
+  const turns = log.filter(l => l.startsWith('TURN')).map(l => l.slice(5)).sort();
+  assert.deepEqual(turns, ['alpha one', 'alpha two', 'gamma one', 'gamma two'], 'every turn after the first must send only its own conversation\'s new tail — no cross-conversation history');
+});
+
+test('warm host killed mid-turn degrades to a successful cold exec request (#480)', async (t) => {
+  const { port, stop, logFile } = await startProxy({ MUSE_PROXY_WARM: '1' });
+  t.after(stop);
+  const turn1 = JSON.parse(await chat(port, {
+    model: 'muse-spark-1.3',
+    messages: [{ role: 'user', content: 'alpha one' }]
+  }));
+  assert.equal(turn1.choices[0].message.content, 'RE:alpha one', 'turn 1 must be served warm');
+  // Turn 2's new message kills the warm serve host mid-turn (before any
+  // delta is committed); the request must degrade to the cold exec path
+  // and still answer, not surface a client-visible error (#480 spike
+  // criterion 4).
+  const turn2 = JSON.parse(await chat(port, {
+    model: 'muse-spark-1.3',
+    messages: [
+      { role: 'user', content: 'alpha one' },
+      { role: 'assistant', content: 'RE:alpha one' },
+      { role: 'user', content: 'KILLHOST now' }
+    ]
+  }));
+  assert.equal(turn2.choices[0].message.content, 'Hello world', 'exec stub answer proves the cold fallback ran after the warm host died');
+  const log = fs.readFileSync(logFile, 'utf-8');
+  assert.match(log, /KILLED KILLHOST now/, 'the warm host must actually have been killed mid-turn');
+});
+
 test('warm serve failure falls back to the exec path (#480)', async (t) => {
   const { port, stop } = await startProxy({ MUSE_PROXY_WARM: '1', STUB_SERVE_FAIL: '1' });
   t.after(stop);
@@ -447,4 +526,694 @@ test('flag probe: 1.4.13-shaped help — warm serve spawn passes --disable-reque
   const serveArgv = argvLines(logFile, 'serve');
   assert.equal(serveArgv.length, 1);
   assert.ok(serveArgv[0].includes('--disable-request-user-input'), 'advertised flag must be passed');
+});
+
+// --- Direct mode (#2753) ----------------------------------------------------
+// The proxy exchanges the Muse CLI account token (`dca:...` in the temp
+// HOME's .config/muse/auth.json) at a stub Meta API's /muse-code/key for a
+// minted key, then speaks the Responses API upstream. The stub records
+// every request so the tests can assert the exchange shape, the minted-key
+// Authorization, the translation, and that Meta answering (even with 429)
+// never falls back to a `muse exec` burn.
+
+const RESPONSES_FIXTURE = {
+  id: 'resp_stub',
+  object: 'response',
+  status: 'completed',
+  model: 'muse-spark-1.3',
+  output: [
+    { type: 'message', id: 'msg_1', role: 'assistant', content: [{ type: 'output_text', text: 'Hello direct' }] },
+    { type: 'function_call', id: 'fc_1', call_id: 'call_123', name: 'get_weather', arguments: '{"city":"Osseo"}', status: 'completed' }
+  ],
+  usage: { input_tokens: 13, output_tokens: 9, total_tokens: 22, input_tokens_details: { cached_tokens: 4 } }
+};
+
+const RESPONSES_SSE_FIXTURE = [
+  ['response.output_text.delta', { type: 'response.output_text.delta', delta: 'Hello ' }],
+  ['response.output_text.delta', { type: 'response.output_text.delta', delta: 'stream' }],
+  ['response.output_item.added', { type: 'response.output_item.added', item: { type: 'function_call', id: 'fc_1', call_id: 'call_9', name: 'get_weather', arguments: '' } }],
+  ['response.function_call_arguments.delta', { type: 'response.function_call_arguments.delta', item_id: 'fc_1', delta: '{"city":' }],
+  ['response.function_call_arguments.delta', { type: 'response.function_call_arguments.delta', item_id: 'fc_1', delta: '"Osseo"}' }],
+  ['response.completed', {
+    type: 'response.completed',
+    response: {
+      id: 'resp_stream',
+      status: 'completed',
+      output: [
+        { type: 'message', content: [{ type: 'output_text', text: 'Hello stream' }] },
+        { type: 'function_call', call_id: 'call_9', name: 'get_weather', arguments: '{"city":"Osseo"}' }
+      ],
+      usage: { input_tokens: 11, output_tokens: 6, total_tokens: 17 }
+    }
+  }]
+].map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join('');
+
+const startMetaStub = async (mode) => {
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', () => {
+      requests.push({ method: req.method, url: req.url, headers: req.headers, body });
+      if (req.url === '/muse-code/key') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          api_key: 'LLM|stub-minted',
+          is_subs_active: true,
+          require_payment: false,
+          subs_tier_name: 'Muse Code High Usage'
+        }));
+        return;
+      }
+      if (req.url === '/v1/responses') {
+        if (mode === 'attest') {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { code: 'client_attestation_denied', message: 'This API key is billed to a Muse Code subscription. Muse Code subscriptions cover requests from the Muse Code client only.', type: 'permission_error' } }));
+          return;
+        }
+        if (mode === '429') {
+          res.writeHead(429, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'Subscription quota exhausted', type: 'rate_limit_error' } }));
+          return;
+        }
+        if (mode === 'echo') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ received: JSON.parse(body || '{}'), authorization: req.headers.authorization }));
+          return;
+        }
+        if (mode === 'failed-empty' || mode === 'failed-partial') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            id: 'resp_failed',
+            object: 'response',
+            status: 'failed',
+            error: { message: 'stub upstream boom', type: 'server_error' },
+            output: mode === 'failed-partial'
+              ? [{ type: 'message', id: 'msg_p', role: 'assistant', content: [{ type: 'output_text', text: 'partial text that must not mask the failure' }] }]
+              : []
+          }));
+          return;
+        }
+        if (mode === 'incomplete-filter' || mode === 'incomplete-max') {
+          const reason = mode === 'incomplete-max' ? 'max_output_tokens' : 'content_filter';
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            id: 'resp_incomplete',
+            object: 'response',
+            status: 'incomplete',
+            incomplete_details: { reason },
+            output: [{ type: 'message', id: 'msg_i', role: 'assistant', content: [{ type: 'output_text', text: 'cut off but usable' }] }]
+          }));
+          return;
+        }
+        let parsed = {};
+        try { parsed = JSON.parse(body || '{}'); } catch { /* keep empty */ }
+        if (parsed.stream) {
+          res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+          res.end(mode === 'shell' ? RESPONSES_SSE_FIXTURE.replaceAll('get_weather', 'run_command') : RESPONSES_SSE_FIXTURE);
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(mode === 'shell'
+          ? JSON.stringify(RESPONSES_FIXTURE).replaceAll('get_weather', 'run_command')
+          : JSON.stringify(RESPONSES_FIXTURE));
+        return;
+      }
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'stub: unknown route' } }));
+    });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  return { url: `http://127.0.0.1:${port}`, requests, close: () => server.close() };
+};
+
+const writeStubAuth = (home) => {
+  const dir = path.join(home, '.config', 'muse');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({
+    schema_version: 1,
+    providers: {
+      meta: {
+        access_token: 'dca:stub-account-token',
+        mechanism: 'oauth',
+        obtained_via: 'device_code'
+      }
+    }
+  }));
+};
+
+const parseChatSse = (sse) => {
+  const chunks = [];
+  let done = false;
+  for (const line of sse.split('\n')) {
+    if (line === 'data: [DONE]') { done = true; continue; }
+    if (line.startsWith('data: ')) chunks.push(JSON.parse(line.slice('data: '.length)));
+  }
+  return { chunks, done };
+};
+
+test('direct mode: one exchange mints the key, chat is translated to Responses and back (#2753)', async (t) => {
+  const meta = await startMetaStub('chat');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const body = {
+    model: 'muse-spark-1.3',
+    reasoning_effort: 'max',
+    max_tokens: 64,
+    messages: [
+      { role: 'system', content: 'Be terse.' },
+      { role: 'user', content: 'weather in Osseo?' },
+      { role: 'assistant', content: '', tool_calls: [{ id: 'call_0', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Osseo"}' } }] },
+      { role: 'tool', tool_call_id: 'call_0', content: 'sunny' },
+      { role: 'user', content: 'thanks, and tomorrow?' }
+    ],
+    tools: [{ type: 'function', function: { name: 'get_weather', description: 'Get weather', parameters: { type: 'object', properties: { city: { type: 'string' } } } } }],
+    tool_choice: { type: 'function', function: { name: 'get_weather' } }
+  };
+  const plain = JSON.parse(await chat(port, body));
+  assert.equal(plain.model, 'muse-spark-1.3-max', 'model is the fullName the exec/warm handlers compute');
+  assert.equal(plain.choices[0].message.content, 'Hello direct');
+  assert.deepEqual(plain.choices[0].message.tool_calls, [{
+    id: 'call_123',
+    type: 'function',
+    function: { name: 'get_weather', arguments: '{"city":"Osseo"}' }
+  }]);
+  assert.equal(plain.choices[0].finish_reason, 'tool_calls');
+  assert.equal(plain.usage.prompt_tokens, 13);
+  assert.equal(plain.usage.completion_tokens, 9);
+  assert.equal(plain.usage.total_tokens, 22);
+  assert.equal(plain.usage.prompt_tokens_details.cached_tokens, 4);
+
+  // A second call must reuse the cached minted key: still one exchange.
+  const again = JSON.parse(await chat(port, { messages: [{ role: 'user', content: 'hi again' }] }));
+  assert.equal(again.choices[0].message.content, 'Hello direct');
+
+  const exchanges = meta.requests.filter(r => r.url === '/muse-code/key');
+  assert.equal(exchanges.length, 1, 'two chat calls must share one cached exchange');
+  assert.equal(exchanges[0].method, 'POST');
+  assert.equal(exchanges[0].headers.authorization, 'Bearer dca:stub-account-token');
+  assert.equal(exchanges[0].headers['x-api-version'], '1.0.0');
+  assert.deepEqual(JSON.parse(exchanges[0].body), { onboard: false });
+
+  const upstream = meta.requests.filter(r => r.url === '/v1/responses');
+  assert.equal(upstream.length, 2);
+  for (const r of upstream) {
+    assert.equal(r.headers.authorization, 'Bearer LLM|stub-minted', 'upstream sees the minted key, never the account token');
+  }
+  const sent = JSON.parse(upstream[0].body);
+  assert.equal(sent.model, 'muse-spark-1.3');
+  assert.equal(sent.instructions, 'Be terse.');
+  assert.equal(sent.store, false);
+  assert.deepEqual(sent.reasoning, { effort: 'xhigh' }, 'max clamps to the Responses ceiling xhigh');
+  assert.equal(sent.max_output_tokens, 64);
+  const fnCall = sent.input.find(i => i.type === 'function_call');
+  assert.equal(fnCall.call_id, 'call_0');
+  assert.equal(fnCall.name, 'get_weather');
+  const fnOut = sent.input.find(i => i.type === 'function_call_output');
+  assert.equal(fnOut.call_id, 'call_0');
+  assert.equal(fnOut.output, 'sunny');
+  assert.deepEqual(sent.tools, [{
+    type: 'function',
+    name: 'get_weather',
+    description: 'Get weather',
+    parameters: { type: 'object', properties: { city: { type: 'string' } } }
+  }]);
+  assert.deepEqual(sent.tool_choice, { type: 'function', name: 'get_weather' });
+
+  const healthRes = await fetch(`http://127.0.0.1:${port}/health`);
+  const health = await healthRes.json();
+  assert.equal(health.direct.enabled, true);
+  assert.equal(health.direct.credentialFound, true);
+  assert.equal(health.direct.mintedKeyCached, true);
+  assert.equal(health.direct.subsTier, 'Muse Code High Usage');
+  assert.equal(health.direct.subsActive, true);
+});
+
+test('direct mode: failed/incomplete upstream bodies are 500 errors, never a 200 stop (#2780)', async (t) => {
+  const postChat = (port) => fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'muse-spark-1.3', messages: [{ role: 'user', content: 'hi' }] })
+  });
+  for (const [mode, match] of [
+    ['failed-empty', /stub upstream boom/],
+    ['failed-partial', /stub upstream boom/],
+    ['incomplete-filter', /incomplete: content_filter/],
+  ]) {
+    const meta = await startMetaStub(mode);
+    const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+    try {
+      writeStubAuth(home);
+      const plainRes = await postChat(port);
+      assert.equal(plainRes.status, 500, `${mode}: non-stream must be a 500, not a 200 'stop'`);
+      const plainBody = JSON.parse(await plainRes.text());
+      assert.match(plainBody.error.message, match, `${mode}: error must carry the upstream cause`);
+      assert.ok(!('choices' in plainBody), `${mode}: no masked completion may be present`);
+    } finally {
+      stop();
+      meta.close();
+    }
+  }
+
+  const meta = await startMetaStub('incomplete-max');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+  const maxRes = await postChat(port);
+  assert.equal(maxRes.status, 200, 'incomplete/max_output_tokens stays a 200');
+  const maxBody = JSON.parse(await maxRes.text());
+  assert.equal(maxBody.choices[0].finish_reason, 'length');
+  assert.equal(maxBody.choices[0].message.content, 'cut off but usable');
+});
+
+test('direct mode: Responses SSE is translated into chat chunks with tool calls (#2753)', async (t) => {
+  const meta = await startMetaStub('chat');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const { chunks, done } = parseChatSse(await chat(port, {
+    messages: [{ role: 'user', content: 'weather?' }],
+    stream: true
+  }));
+  assert.ok(done, 'stream terminates with [DONE]');
+  const content = chunks.map(c => c.choices[0].delta.content || '').join('');
+  assert.equal(content, 'Hello stream');
+  const toolHeads = chunks.flatMap(c => c.choices[0].delta.tool_calls || []).filter(tc => tc.id);
+  assert.equal(toolHeads.length, 1);
+  assert.equal(toolHeads[0].id, 'call_9');
+  assert.equal(toolHeads[0].function.name, 'get_weather');
+  const toolArgs = chunks.flatMap(c => c.choices[0].delta.tool_calls || [])
+    .map(tc => (tc.function && tc.function.arguments) || '')
+    .join('');
+  assert.equal(toolArgs, '{"city":"Osseo"}');
+  const final = chunks.find(c => c.choices[0].finish_reason);
+  assert.equal(final.choices[0].finish_reason, 'tool_calls');
+  assert.equal(final.usage.prompt_tokens, 11);
+  assert.equal(final.usage.completion_tokens, 6);
+  assert.equal(final.usage.total_tokens, 17);
+});
+
+test('direct mode: upstream 429 passes through and never falls back to exec (#2753)', async (t) => {
+  const meta = await startMetaStub('429');
+  t.after(() => meta.close());
+  const { port, stop, home, logFile } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] })
+  });
+  assert.equal(res.status, 429, 'the upstream status is returned as-is');
+  const body = JSON.parse(await res.text());
+  assert.match(body.error.message, /Subscription quota exhausted/);
+  assert.equal(meta.requests.filter(r => r.url === '/v1/responses').length, 1, 'a quota wall is never retried');
+  const stubLog = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf-8') : '';
+  assert.ok(!stubLog.includes('--prompt-file'), 'no muse exec invocation after Meta answered');
+});
+
+test('direct mode: the shell tool is aliased upstream and its calls translate back', async (t) => {
+  const meta = await startMetaStub('shell');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const plain = JSON.parse(await chat(port, {
+    messages: [
+      { role: 'user', content: 'run echo hi' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'call_0', type: 'function', function: { name: 'shell', arguments: '{"command":"echo hi"}' } }] },
+      { role: 'tool', tool_call_id: 'call_0', content: 'hi' },
+      { role: 'user', content: 'what did it print?' }
+    ],
+    tools: [{ type: 'function', function: { name: 'shell', description: 'Run a shell command', parameters: { type: 'object', properties: { command: { type: 'string' } } } } }]
+  }));
+  const upstream = JSON.parse(meta.requests.filter(r => r.url === '/v1/responses')[0].body);
+  assert.deepEqual(upstream.tools.map(x => x.name), ['run_command'], 'the shell tool is presented upstream under its alias');
+  const historyCall = upstream.input.find(i => i.type === 'function_call');
+  assert.equal(historyCall.name, 'run_command', 'history tool calls are aliased too');
+  assert.equal(plain.choices[0].message.tool_calls[0].function.name, 'shell', 'the model call is translated back to the client name');
+});
+
+test('direct mode: an attestation denial falls back to the CLI door', async (t) => {
+  const meta = await startMetaStub('attest');
+  t.after(() => meta.close());
+  const { port, stop, home, logFile } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const plain = JSON.parse(await chat(port, { messages: [{ role: 'user', content: 'hi' }] }));
+  assert.equal(plain.choices[0].message.content, 'Hello world', 'exec stub answer proves the CLI fallback ran');
+  const stubLog = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf-8') : '';
+  assert.ok(stubLog.includes('--prompt-file'), 'the CLI door took over after the denial');
+});
+
+test('direct mode: /v1/responses passes the body through verbatim, swapping only Authorization (#2753)', async (t) => {
+  const meta = await startMetaStub('echo');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const clientBody = {
+    model: 'muse-wonder-1.0',
+    input: [{ role: 'user', content: 'hi' }],
+    stream: false,
+    custom_field: { a: 1 }
+  };
+  const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer client-token-must-be-dropped' },
+    body: JSON.stringify(clientBody)
+  });
+  assert.equal(res.status, 200);
+  const echoed = JSON.parse(await res.text());
+  assert.deepEqual(echoed.received, clientBody, 'the upstream body is the client body verbatim');
+  assert.equal(echoed.authorization, 'Bearer LLM|stub-minted');
+  const upstream = meta.requests.filter(r => r.url === '/v1/responses');
+  assert.equal(upstream.length, 1);
+  assert.equal(upstream[0].body, JSON.stringify(clientBody), 'byte-for-byte passthrough on the wire');
+});
+
+test('direct mode: /v1/responses aliases the shell tool and translates calls back', async (t) => {
+  const meta = await startMetaStub('shell');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const clientBody = {
+    model: 'muse-spark-1.3',
+    stream: false,
+    input: [
+      { type: 'function_call', call_id: 'call_0', name: 'shell', arguments: '{"command":"echo hi"}' },
+      { type: 'function_call_output', call_id: 'call_0', output: 'hi' },
+      { role: 'user', content: 'what did it print?' }
+    ],
+    tools: [{ type: 'function', name: 'shell', description: 'Run a shell command', parameters: { type: 'object', properties: { command: { type: 'string' } } } }]
+  };
+  const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer <redacted>' },
+    body: JSON.stringify(clientBody)
+  });
+  assert.equal(res.status, 200);
+  const upstream = JSON.parse(meta.requests.filter(r => r.url === '/v1/responses')[0].body);
+  assert.equal(upstream.tools[0].name, 'run_command', 'the tool definition is aliased upstream');
+  assert.equal(upstream.input[0].name, 'run_command', 'history function calls are aliased upstream');
+  const respBody = JSON.parse(await res.text());
+  const call = respBody.output.find(i => i.type === 'function_call');
+  assert.equal(call.name, 'shell', 'the returned call is translated back to the client name');
+});
+
+test('direct mode: /v1/responses streaming translates aliased tool calls back', async (t) => {
+  const meta = await startMetaStub('shell');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer <redacted>' },
+    body: JSON.stringify({
+      model: 'muse-spark-1.3',
+      stream: true,
+      input: [{ role: 'user', content: 'hi' }],
+      tools: [{ type: 'function', name: 'shell', description: 'Run', parameters: { type: 'object' } }]
+    })
+  });
+  assert.equal(res.status, 200);
+  const sse = await res.text();
+  assert.ok(sse.includes('"name":"shell"'), 'the streamed function_call carries the client name');
+  assert.ok(!sse.includes('run_command'), 'the alias never leaks to the client');
+});
+
+test('direct mode: MUSE_PROXY_DIRECT=0 leaves the exec path in charge (#2753)', async (t) => {
+  const meta = await startMetaStub('chat');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({
+    MUSE_PROXY_META_API_BASE: meta.url,
+    MUSE_PROXY_DIRECT: '0'
+  });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const plain = JSON.parse(await chat(port, { messages: [{ role: 'user', content: 'hi' }] }));
+  assert.equal(plain.choices[0].message.content, 'Hello world', 'exec stub answer proves the CLI path ran');
+  assert.equal(meta.requests.length, 0, 'the Meta API stub is never contacted');
+});
+
+test('direct mode: missing auth.json leaves the exec path in charge (#2753)', async (t) => {
+  const meta = await startMetaStub('chat');
+  t.after(() => meta.close());
+  const { port, stop } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+
+  const plain = JSON.parse(await chat(port, { messages: [{ role: 'user', content: 'hi' }] }));
+  assert.equal(plain.choices[0].message.content, 'Hello world', 'exec stub answer proves the CLI path ran');
+  assert.equal(meta.requests.length, 0, 'no credential means no exchange attempt');
+
+  const healthRes = await fetch(`http://127.0.0.1:${port}/health`);
+  const health = await healthRes.json();
+  assert.equal(health.direct.enabled, true);
+  assert.equal(health.direct.credentialFound, false);
+  assert.equal(health.direct.mintedKeyCached, false);
+});
+
+test('direct mode: contributor ids reach upstream verbatim, effort suffix parses after contributor (#2753)', async (t) => {
+  const meta = await startMetaStub('chat');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const wonder = JSON.parse(await chat(port, {
+    model: 'muse-wonder-1.0-contributor-high',
+    messages: [{ role: 'user', content: 'hi' }]
+  }));
+  assert.equal(wonder.model, 'muse-wonder-1.0-contributor-high');
+
+  const spark = JSON.parse(await chat(port, {
+    model: 'muse-spark-1.3-contributor',
+    messages: [{ role: 'user', content: 'hi' }]
+  }));
+  assert.equal(spark.model, 'muse-spark-1.3-contributor-high', 'no explicit effort means the default effort, contributor intact');
+
+  const plainBase = JSON.parse(await chat(port, {
+    model: 'muse-spark-1.3',
+    messages: [{ role: 'user', content: 'hi' }]
+  }));
+  assert.equal(plainBase.model, 'muse-spark-1.3-high', 'a plain request is NOT rewritten to contributor');
+
+  const sent = meta.requests.filter(r => r.url === '/v1/responses').map(r => JSON.parse(r.body));
+  assert.equal(sent.length, 3);
+  assert.equal(sent[0].model, 'muse-wonder-1.0-contributor', 'contributor id goes upstream verbatim');
+  assert.deepEqual(sent[0].reasoning, { effort: 'high' }, 'the effort suffix after -contributor is the effort');
+  assert.equal(sent[1].model, 'muse-spark-1.3-contributor');
+  assert.deepEqual(sent[1].reasoning, { effort: 'high' });
+  assert.equal(sent[2].model, 'muse-spark-1.3', 'plain base model stays plain upstream');
+});
+
+test('non-object JSON body is a 400 and the proxy stays alive (#2816)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  for (const bad of ['null', '[1,2]', '"x"', '42']) {
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: bad
+    });
+    assert.equal(res.status, 400, `body ${bad} must be a 400, got ${res.status}`);
+    await res.text();
+  }
+  const alive = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{bad json'
+  });
+  assert.equal(alive.status, 400, 'proxy must still serve after non-object bodies');
+  await alive.text();
+});
+
+test('warm chain map self-deletes settled entries; same-key turns stay ordered (#2407)', async (t) => {
+  const { port, stop, logFile } = await startProxy({ MUSE_PROXY_WARM: '1' });
+  t.after(stop);
+  const chainsNow = async () => (await (await fetch('http://127.0.0.1:' + port + '/health')).json()).warm.chains;
+  const waitChainsEmpty = async () => {
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      const n = await chainsNow();
+      if (n === 0) return;
+      if (Date.now() > deadline) assert.fail('warmChains map must be empty after settle, got ' + n);
+      await new Promise(r => setTimeout(r, 50));
+    }
+  };
+
+  // Two distinct conversation keys through enqueueWarm.
+  for (const first of ['leak alpha', 'leak gamma']) {
+    const res = JSON.parse(await chat(port, { model: 'muse-spark-1.3', messages: [{ role: 'user', content: first }] }));
+    assert.equal(res.choices[0].message.content, 'RE:' + first);
+  }
+  await waitChainsEmpty();
+
+  // Same key: turn 2 enqueued while turn 1 is in flight runs after it, on
+  // the same single MSP session, in order.
+  const p1 = chat(port, { model: 'muse-spark-1.3', messages: [{ role: 'user', content: 'order one' }] });
+  await new Promise(r => setTimeout(r, 50));
+  const p2 = chat(port, {
+    model: 'muse-spark-1.3',
+    messages: [
+      { role: 'user', content: 'order one' },
+      { role: 'assistant', content: 'RE:order one' },
+      { role: 'user', content: 'order two' }
+    ]
+  });
+  const [t1, t2] = await Promise.all([p1.then(r => JSON.parse(r)), p2.then(r => JSON.parse(r))]);
+  assert.equal(t1.choices[0].message.content, 'RE:order one');
+  assert.equal(t2.choices[0].message.content, 'RE:order two');
+  const log = fs.readFileSync(logFile, 'utf-8').trim().split('\n');
+  const turns = log.filter(l => l.startsWith('TURN')).map(l => l.slice(5));
+  assert.deepEqual(turns.slice(-2), ['order one', 'order two'], 'same-key turns must run in enqueue order');
+  await waitChainsEmpty();
+});
+
+// ---------------------------------------------------------------------------
+// Exec-fallback turn deadline (#2159): a hung muse exec child must be
+// killed (SIGTERM, then SIGKILL after the grace), the request must
+// settle with the existing error shape, and the timeout must never be
+// reported as a silent successful stop.
+// ---------------------------------------------------------------------------
+
+const postChat = (port, body, signal) => fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+  signal
+});
+
+const waitForCondition = async (fn, timeoutMs = 10000) => {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const v = fn();
+    if (v) return v;
+    if (Date.now() > deadline) throw new Error('waitForCondition timed out');
+    await new Promise(r => setTimeout(r, 50));
+  }
+};
+
+const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+const stubExecPid = (logFile) => {
+  try {
+    const m = fs.readFileSync(logFile, 'utf-8').match(/EXECPID (\d+)/);
+    return m ? Number(m[1]) : null;
+  } catch { return null; }
+};
+
+const stubPromptFile = (logFile) => {
+  const m = fs.readFileSync(logFile, 'utf-8').match(/--prompt-file (\S+)/);
+  return m ? m[1] : null;
+};
+
+test('exec deadline: never-exiting child is killed, request 500s with the timeout, prompt file removed (#2159)', async (t) => {
+  const { port, stop, logFile } = await startProxy({ MUSE_PROXY_EXEC_TURN_TIMEOUT_MS: '300' });
+  t.after(stop);
+  const res = await postChat(port, { messages: [{ role: 'user', content: 'please HANGME now' }] });
+  assert.equal(res.status, 500);
+  const body = JSON.parse(await res.text());
+  assert.match(body.error.message, /muse exec turn timed out after 300ms/);
+  const pid = stubExecPid(logFile);
+  assert.ok(pid, 'stub exec pid recorded');
+  await waitForCondition(() => !pidAlive(pid));
+  const promptFile = stubPromptFile(logFile);
+  assert.ok(promptFile, 'prompt file path recorded in stub argv log');
+  assert.equal(fs.existsSync(promptFile), false, 'prompt file must be unlinked on the deadline path');
+});
+
+test('exec deadline: request settles at deadline+grace even when a descendant holds the stdio pipes (#2159)', async (t) => {
+  const { port, stop, logFile } = await startProxy({ MUSE_PROXY_EXEC_TURN_TIMEOUT_MS: '300' });
+  t.after(stop);
+  const started = Date.now();
+  let res = null;
+  try {
+    res = await postChat(port, { messages: [{ role: 'user', content: 'please HANGDESCENDANT now' }] }, AbortSignal.timeout(20000));
+  } catch { /* aborted: settlement was not bounded */ }
+  assert.ok(res, 'request must settle at deadline + kill grace, not when the descendant exits');
+  assert.equal(res.status, 500);
+  const body = JSON.parse(await res.text());
+  assert.match(body.error.message, /muse exec turn timed out after 300ms/);
+  assert.ok(Date.now() - started < 15000, 'settlement must be bounded independently of the descendant lifetime');
+  const pid = stubExecPid(logFile);
+  assert.ok(pid, 'stub exec pid recorded');
+  await waitForCondition(() => !pidAlive(pid));
+  const promptFile = stubPromptFile(logFile);
+  assert.ok(promptFile, 'prompt file path recorded in stub argv log');
+  assert.equal(fs.existsSync(promptFile), false, 'prompt file must be unlinked on the independent settle path');
+  const dm = fs.readFileSync(logFile, 'utf-8').match(/DESCPID (\d+)/);
+  assert.ok(dm, 'descendant pid recorded');
+  try { process.kill(Number(dm[1]), 'SIGKILL'); } catch { /* already gone */ }
+});
+
+test('exec deadline: streaming request gets an SSE-framed timeout error + [DONE] (#2159)', async (t) => {
+  const { port, stop } = await startProxy({ MUSE_PROXY_EXEC_TURN_TIMEOUT_MS: '300' });
+  t.after(stop);
+  const res = await postChat(port, { messages: [{ role: 'user', content: 'please HANGME now' }], stream: true });
+  assert.equal(res.status, 200);
+  const sse = await res.text();
+  assert.match(sse, /muse exec turn timed out after 300ms/);
+  assert.ok(sse.trimEnd().endsWith('data: [DONE]'), `stream must end with [DONE], got: ${JSON.stringify(sse)}`);
+});
+
+test('exec deadline: SIGTERM-ignoring child is SIGKILLed after the grace (#2159)', async (t) => {
+  const { port, stop, logFile } = await startProxy({ MUSE_PROXY_EXEC_TURN_TIMEOUT_MS: '300' });
+  t.after(stop);
+  const started = Date.now();
+  const res = await postChat(port, { messages: [{ role: 'user', content: 'please HANGTERMI now' }] });
+  assert.equal(res.status, 500);
+  const body = JSON.parse(await res.text());
+  assert.match(body.error.message, /muse exec turn timed out after 300ms/);
+  assert.ok(Date.now() - started >= 3000, 'SIGKILL escalation must wait the 3000ms grace');
+  const pid = stubExecPid(logFile);
+  assert.ok(pid && !pidAlive(pid), 'SIGTERM-ignoring child must be dead after the grace');
+});
+
+test('exec deadline: completed-then-hangs child is a timeout failure, not a stop (#2159)', async (t) => {
+  const { port, stop } = await startProxy({ MUSE_PROXY_EXEC_TURN_TIMEOUT_MS: '300' });
+  t.after(stop);
+  const res = await postChat(port, { messages: [{ role: 'user', content: 'please HANGAFTERDONE now' }] });
+  assert.equal(res.status, 500, 'a completed terminal event must not mask the deadline');
+  const body = JSON.parse(await res.text());
+  assert.match(body.error.message, /muse exec turn timed out after 300ms/);
+});
+
+test('exec deadline: a normal child inside the deadline is unaffected (#2159)', async (t) => {
+  const { port, stop } = await startProxy({ MUSE_PROXY_EXEC_TURN_TIMEOUT_MS: '5000' });
+  t.after(stop);
+  const plain = JSON.parse(await chat(port, { messages: [{ role: 'user', content: 'hi' }] }));
+  assert.equal(plain.choices[0].message.content, 'Hello world');
+});
+
+test('exec deadline: an override above Node timer limit falls back to the default, not a ~1ms timeout (#2159)', async (t) => {
+  const { port, stop } = await startProxy({ MUSE_PROXY_EXEC_TURN_TIMEOUT_MS: '2147483648' });
+  t.after(stop);
+  const plain = JSON.parse(await chat(port, { messages: [{ role: 'user', content: 'hi' }] }));
+  assert.equal(plain.choices[0].message.content, 'Hello world');
+});
+
+test('exec disconnect: client disconnect kills the child via the shared helper (#2159)', async (t) => {
+  const { port, stop, logFile } = await startProxy();
+  t.after(stop);
+  const ac = new AbortController();
+  const pending = postChat(port, { messages: [{ role: 'user', content: 'please HANGME now' }] }, ac.signal)
+    .catch(() => null);
+  const pid = await waitForCondition(() => stubExecPid(logFile));
+  assert.ok(pidAlive(pid), 'child runs while the request is open');
+  ac.abort();
+  await pending;
+  await waitForCondition(() => !pidAlive(pid));
 });

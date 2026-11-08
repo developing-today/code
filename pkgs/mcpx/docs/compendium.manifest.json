@@ -372,7 +372,7 @@
       "path": "docs/configuration.md",
       "chapter": null,
       "role": "included",
-      "lines": 636,
+      "lines": 1103,
       "note": "reference (#144) and L2 (#146); the book links to it rather than duplicating it. internal/settings/docs_test.go reads it"
     },
     {
@@ -649,6 +649,48 @@
       "note": "lessons learned while building mcpx: verification and diagnostics traps"
     },
     {
+      "path": "docs/research-and-findings.md",
+      "chapter": "research-and-findings",
+      "role": "chapter-source",
+      "lines": 285,
+      "note": "the #1871 research chapter: findings by topic, provenance-tagged, with the harvesting process"
+    },
+    {
+      "path": "docs/SUMMARY.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 105,
+      "note": "mdBook navigation index for the .#mcpx-docs book (#1939 Approach C); the generator reads it, it is not a chapter"
+    },
+    {
+      "path": "docs/testing.md",
+      "chapter": "maintaining-these-docs",
+      "role": "chapter-source",
+      "lines": 90,
+      "note": "the contributor test policy agents load (#1976): what to run, a test per bug, guards, flakes; states the sibling issues' decisions and links them"
+    },
+    {
+      "path": "docs/testing/inventory.md",
+      "chapter": "maintaining-these-docs",
+      "role": "chapter-source",
+      "lines": 123,
+      "note": "the per-package test inventory the policy page points at (#1960 deliverable 1); was merged without a manifest entry, which this PR repairs"
+    },
+    {
+      "path": "docs/testing/feature-inventory.md",
+      "chapter": "maintaining-these-docs",
+      "role": "chapter-source",
+      "lines": 200,
+      "note": "the feature-to-integration-test inventory for #1978, enumerated from the registries on main; was merged without a manifest entry, which this PR repairs"
+    },
+    {
+      "path": "internal/AGENTS.md",
+      "chapter": null,
+      "role": "included",
+      "lines": 20,
+      "note": "the nested agent instruction file (#1976): opencode attaches it when a file under internal/ is read, so contributors get the test rules without loading them for users; points at docs/testing.md"
+    },
+    {
       "path": "internal/mcpspec/schema/README.md",
       "chapter": null,
       "role": "not-compendium",
@@ -796,6 +838,20 @@
       "note": "the binary: what it is, how it is built and shipped"
     },
     {
+      "path": "docs/changes/artifact-copy-semantics.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 3,
+      "note": "docs-history change fragment for #3064 (artifact copy semantics); history metadata consumed by the docs-history tooling, not a compendium page"
+    },
+    {
+      "path": "docs/changes/prototasks-cancel-grace.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 3,
+      "note": "docs-history change fragment for #2499 (protoTasks.cancelGrace); history metadata consumed by the docs-history tooling, not a compendium page"
+    },
+    {
       "path": "docs/cli.md",
       "chapter": "designs",
       "role": "chapter-source",
@@ -848,7 +904,7 @@
       "path": "docs/level-2-page-map.md",
       "chapter": "maintaining-these-docs",
       "role": "chapter-source",
-      "lines": 152,
+      "lines": 154,
       "note": "the map of level-2 guide pages (#146-#148): which page covers what"
     },
     {
@@ -857,6 +913,13 @@
       "role": "chapter-source",
       "lines": 217,
       "note": "MCP as mcpx speaks it: the protocol surface in one page"
+    },
+    {
+      "path": "docs/modes.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 148,
+      "note": "modes: how a client reaches a daemon, how the daemon reaches a server, and mcpx itself as a server — the level-2 guide (#4821)"
     },
     {
       "path": "docs/opencode-plugin-v2.md",

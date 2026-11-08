@@ -31,6 +31,13 @@ Each roadmap file groups its items by horizon.
 | Later   | The direction is chosen, the shape is not. Details are allowed to be missing. |
 | Ideas   | Written down so it is not lost. No commitment, and it may be dropped.         |
 
+### Milestones and iterations
+
+For roadmap work, the fleet does not use GitHub milestones or Project iterations.
+Horizon (the Project field and the [#899 priority ladder](https://github.com/developing-today/code/issues/899)), together with Project start and target dates, is the planning mechanism; do not create milestones for roadmap work. Revisit this decision if a release train needs a named cut.
+
+The existing open milestone in `dezren39/nix` is an exception, not a precedent for roadmap tracking; this decision does not change it.
+
 Each item has a status.
 
 | Status        | Meaning                                                               |
@@ -40,8 +47,8 @@ Each item has a status.
 | `shaped`      | The direction is decided. A design record exists or is being written. |
 | `planned`     | A plan with steps exists and the issues are filed.                    |
 | `in-progress` | At least one PR for it is open or merged.                             |
-| `shipped`     | Done. The row moves to the "Done" table with the date and the PR.     |
-| `dropped`     | Decided against. The row moves to the "Done" table with the reason.   |
+| `shipped`     | Done. Close the linked GitHub issue; keep the row in the roadmap.     |
+| `dropped`     | Decided against. Close the linked GitHub issue; keep the row.         |
 
 A roadmap row records intent. It is not a go-ahead to build the thing, and it does not settle a product question. Wherever this repo says a maintainer decides, a row at `proposed` or earlier still waits for that decision.
 
@@ -50,8 +57,14 @@ A roadmap row records intent. It is not a go-ahead to build the thing, and it do
 1. Add a new idea as one row under Ideas. One sentence of intent is enough.
 2. Change a row's horizon or status in the same PR as the work that causes the change.
 3. Link every row to its issues. When a design or plan exists, link that too.
-4. When a row ships or is dropped, move it to the "Done" table. Do not delete rows, since the history is useful.
+4. When a row ships or is dropped, set its status accordingly and close its linked GitHub issue. Keep the row in its roadmap; do not move it to a "Done" table or delete it.
 5. Open an issue for every item in Now, so the work can be picked up and tracked there. The roadmap links to issues and does not copy their content.
+
+## Epics
+
+New program-level work uses the [epic issue template](../.github/ISSUE_TEMPLATE/epic.md) and its [intake checklist](templates/epic-intake.md). The template carries the epic and component labels and prompts for Project #4 fields, a measurable definition of done, and a named owner. File children as native sub-issues during intake; the `Part of epic: #…` line in each child is only the readable mirror.
+
+Run `bun run scripts/check-epic-conformance.ts` from `pm-stack/aggregator/` to audit open epics. It reports missing labels, Project #4 membership, a definition of done, or a named owner. Project membership is checked only when `gh` has `read:project`; otherwise the audit says it was skipped. Verify the actual Area, Horizon, and Kind values in the Project UI.
 
 ## Templates
 

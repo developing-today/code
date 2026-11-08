@@ -36,7 +36,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 | PLG-13 | `shell.env` hook vs `shell.hook("create.before")` without session | `opencode v1 has` `opencode v2 has` `mcpx missing` | `opencode v1 sessionID, callID · v2 neither` | ✗ — `MCPX_SESSION_ID` lost under v2 (#47) | + high | M | high |
 | PLG-14 | v1 `shell.env` has no session id on PTY terminals | `opencode v1 has` | `opencode v1 bash tool and ! shell ✓ · PTY —` | partial — terminal-run `mcpx` gets no session | + low | S | low |
 | PLG-15 | v2 per-session environment route replaces the whole env | `opencode v2 has` | `opencode v2 only; TUI-owned; in-memory` | n/a — docs propose it; it would break shells | − harmful | S | high |
-| PLG-16 | `experimental.chat.system.transform` output is `{system: string[]}` | `opencode v1 has` `mcpx missing` | `opencode v1 ✓ · v2 no hook of that name` | ✗ broken — writes `output.parts`; never injected (#217) | + med | S | med |
+| PLG-16 | `experimental.chat.system.transform` output is `{system: string[]}` | `opencode v1 has` `mcpx has` | `opencode v1 ✓ · v2 no hook of that name` | ✓ fixed — pushes the text onto `output.system` (#1938; regression test `plugin/opencode/mcpx/instructions.test.ts`) | + med | S | med |
 | PLG-17 | v2 `session.hook("context")` edits system, messages, tools | `opencode v2 has` | `opencode v1 three hooks · v2 one; invented tools dropped` | n/a — not used | + med | S | med |
 | PLG-18 | `chat.message` vs `session.hook("prompt")` | `opencode v1 has` `opencode v2 has` | `opencode v1 chat.message · v2 prompt` | n/a — not used | + low | S | low |
 | PLG-19 | `chat.params`/`chat.headers` vs `context.options`/`model.request.headers` | `opencode v1 has` `opencode v2 has` | `opencode v1 two hooks · v2 context, model.request (+ v2-only)` | n/a — not used | + low | S | low |
@@ -55,7 +55,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 | PLG-32 | Plugin storage | `opencode v1 has` `opencode v2 has` | `opencode v1 TUI kv only · v2 ctx.storage` | n/a — own remember file | + low | S | low |
 | PLG-33 | Calling a model from a plugin | `opencode v1 has` `opencode v2 has` | `opencode v1 full turn · v2 ctx.generate.text` | n/a — not examined | + med | M | low |
 | PLG-34 | Plugins add or change MCP servers (Location-scoped) | `opencode v2 has` | `opencode v1 config hook · v2 ctx.mcp.transform/reload/list` | n/a — not used | + med | S | med |
-| PLG-35 | `?codemode=false` appended to remote MCP URLs | `opencode v2 has` `mcpx missing` | `opencode v2 client` | ✗ — neither sends nor honours it (#218) | + med | M | med |
+| PLG-35 | `?codemode=false` appended to remote MCP URLs | `opencode v2 has` `mcpx honours, does not send` | `opencode v2 client` | ◐ — honoured on `/mcp` (raw tools, namespaced); mcpx as a client still does not send it (#1940) | + med | M | med |
 | PLG-36 | Hooks and permission checks per child call in code mode | `opencode v1 has` `opencode v2 has` `mcpx missing` | `opencode v1/v2 per child · mcpx one opaque call` | ✗ — script calls bypass opencode permissions (#218) | + high | L | high |
 | PLG-37 | Live status of each child call during a script | `opencode v1 has` `opencode v2 has` `mcpx missing` | `opencode v1 metadata · v2 progress` | ✗ — plugin makes one blocking POST (#218) | + med | S | low |
 | PLG-38 | Cancelling in the harness stops the script | `opencode v1 has` `opencode v2 has` `mcpx missing` | `opencode v1 abort signal · v2 fiber interrupt` | ✗ — plugin ignores the abort signal (#218) | + med | S | med |
@@ -284,14 +284,15 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 
 ## PLG-16 `experimental.chat.system.transform` output is `{system: string[]}`
 
-- **What.** v1 triggers the hook with `output = { system }`, an array of strings. mcpx's handler reads `output.parts`,
-  finds nothing, and returns, so the plugin's `instructions` option has never injected anything.
+- **What.** v1 triggers the hook with `output = { system }`, an array of strings. mcpx's handler read `output.parts`,
+  found nothing, and returned, so the plugin's `instructions` option never injected anything. Fixed by #1938: the
+  handler now pushes the text onto `output.system`, with a regression test against v1's real call shape.
 - **Where.** opencode v1 (both trigger sites pass `{system}`); v2 has no hook of this name.
 - **mcpx @ 05c78b2.** `const parts = (output as any)?.parts; if (Array.isArray(parts)) parts.push({ type: "text", text })`
   (`plugin/opencode/mcpx-session.ts:745-746`, hook at `:737`).
 - **Value to mcpx.** + med: a one-line fix, `output.system.push(text)`.
 - **Effort.** S.
-- **Risk.** Med: users who set `instructions: true` believe the model is told about mcpx; it is not.
+- **Risk.** Was Med: users who set `instructions: true` believed the model was told about mcpx; it was not. Resolved by #1938.
 - **Detail.** v1 request preparation re-joins extra system entries into one message when a plugin pushes more than one
   (`v1:packages/opencode/src/session/llm/request.ts:74`). The v2 analogue is `session.hook("context")`, whose `system` is
   `Array<SystemPart>` (`{type: "text", text}`): the shape mcpx pushes, on a different key (PLG-17).
@@ -556,6 +557,14 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **mcpx @ 05c78b2.** Neither sends nor honours it: `/mcp` (`proto.mcpPath`, `internal/defaults/defaults.json:77`) always
   exposes mcpx's meta-tools (`internal/mcpserver/server.go:1-13`). Whether `/mcp` tolerates unknown query parameters was
   not examined.
+- **Update (2026-10-31, #1940 / task 3240).** Honoured now: `ServeHTTP` reads `codemode=false` from the request URL
+  (`internal/mcpserver/codemode.go`); that request's tools/list is every upstream tool flat under
+  `<namespace>_<tool>` (the registry's Native spelling), the gateway tools are absent from it, and tools/call routes a
+  raw name to its upstream under the upstream's own name via `Backend.Call`. The backend half is
+  `mcpBackend.RawTools` (`internal/cli/serve.go`), listing each visible namespace through the same
+  `UpstreamTools` pass-through uses; a namespace that cannot be listed fails the whole list rather than serving a
+  partial catalogue. Absence, and any value other than exactly `false`, change nothing. Still open: mcpx as a
+  *client* does not send the parameter to Cloudflare-style servers.
 - **Value to mcpx.** + med: honouring it by exposing every upstream tool flat (namespaced) would let v2's code mode
   orchestrate mcpx's pooled servers directly, keeping mcpx's per-caller isolation under v2's catalogue. As a client, mcpx
   could send it to Cloudflare-style servers so its own codegen sees raw tools.

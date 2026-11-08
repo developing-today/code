@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // The revision matrix is a claim about the specification, and the schemas
@@ -141,6 +141,18 @@ func TestAClientIsNeverSentSomethingItDidNotDeclare(t *testing.T) {
 			peer("2025-06-18", `{"elicitation":{"url":{}}}`), "form", true, false},
 		{"malformed declaration on 2025-11-25 reads as undeclared",
 			peer("2025-11-25", `{"elicitation":"yes"}`), "form", false, false},
+		{"null declaration on 2025-11-25 grants no form",
+			peer("2025-11-25", `{"elicitation":null}`), "form", false, false},
+		{"null declaration on 2026-07-28 grants no form",
+			peer("2026-07-28", `{"elicitation":null}`), "form", false, false},
+		{"null declaration on 2026-07-28 grants no url",
+			peer("2026-07-28", `{"elicitation":null}`), "url", false, false},
+		{"form null on 2025-11-25 grants no form",
+			peer("2025-11-25", `{"elicitation":{"form":null}}`), "form", false, false},
+		{"url null on 2025-11-25 grants no url",
+			peer("2025-11-25", `{"elicitation":{"url":null}}`), "url", false, false},
+		{"url null on 2025-11-25 grants no form either",
+			peer("2025-11-25", `{"elicitation":{"url":null}}`), "form", false, false},
 		{"nothing declared",
 			peer("2026-07-28", `{}`), "form", false, false},
 		{"sampling only",

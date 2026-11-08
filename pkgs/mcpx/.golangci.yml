@@ -1,0 +1,16 @@
+# golangci-lint configuration for mcpx (#1996).
+#
+# Deliberately not `default: all`: gosec and the other opinionated sets are
+# not blocking here, and turning them on without triaging their findings
+# would make the leg fail on day one for reasons nobody chose. The standard
+# set (errcheck, govet, ineffassign, staticcheck, unused) is blocking, and
+# staticcheck runs every check it has, including the style and quickfix
+# classes it leaves off by default.
+version: "2"
+
+linters:
+  default: standard
+  settings:
+    staticcheck:
+      checks:
+        - all

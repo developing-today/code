@@ -18,12 +18,11 @@ package pool
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"net/url"
 	"os"
 	"sort"
@@ -33,13 +32,31 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/mcpauth"
-	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpauth"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
+
+const maxSchemaTTL = 24 * time.Hour
 
 // Version reported to MCP servers during initialize.
 var Version = "dev"
+
+// ownServerName is the identity mcpx's own MCP server reports in
+// serverInfo during initialize: internal/cli builds it with this name
+// (mcpserver.New(backend, "mcpx", version)). An upstream answering to
+// it is this daemon, another mcpx, or a proxy of one (#1877).
+const ownServerName = "mcpx"
+
+// OwnInstanceID is the instance identity of the MCP server this
+// process itself serves, wired by internal/cli at startup (#1877).
+// The self-connection guard compares an mcpx-claiming upstream's
+// reported instance against it: equal is this very daemon (refuse),
+// different is a distinct mcpx daemon (admit -- self-composition
+// across daemons is a topology #1877 wants made safe, not banned).
+// Empty means this process has not wired an identity, and the guard
+// falls back to convicting on the aggregate surface alone.
+var OwnInstanceID string
 
 // Trace, when set, receives a line per tool call naming the instance that
 // served it. The daemon wires this to its logger when MCPX_TRACE is set.
@@ -65,6 +82,17 @@ type Instance struct {
 	// key is the scope-resolved identity this instance serves. One live
 	// instance per distinct key.
 	key string
+	// root is the scope-resolved directory stored at creation
+	// (decision 0004 §2): the spawn cwd for stdio instances without a
+	// config cwd, read from the instance at every (re)start and never
+	// re-resolved at redial. "" when the scope has no root.
+	root string
+	// execStamp and execIdentity identify the executable actually used by
+	// this instance. Scope-rooted relative commands can differ per instance,
+	// so their exec watch cannot use one pool-wide identity.
+	execStamp    config.ExecStamp
+	execIdentity string
+	execMissing  bool
 	// holders counts current callers. Exclusive sharing admits one; shared
 	// sharing admits any number.
 	holders   int
@@ -97,6 +125,10 @@ type Instance struct {
 
 // Trace is this instance's identifier, carried by every record about it.
 func (i *Instance) Trace() string { return i.trace }
+
+// Root is the scope-resolved directory this instance was created with
+// (decision 0004 §2), "" when its scope has none.
+func (i *Instance) Root() string { return i.root }
 
 // PID returns the child process id for stdio instances, 0 otherwise.
 func (i *Instance) PID() int {
@@ -153,6 +185,14 @@ type Pool struct {
 	// background. See WaitDrained.
 	draining sync.WaitGroup
 
+	// reqLimiter is this pool's one per-server rate-limit budget for
+	// sampling and elicitation (#2192), built lazily from the hooks'
+	// limits and handed to every client this pool creates. reqLimMu
+	// guards it alone: installServerHooks is called with p.mu held on
+	// the handoff path, so this must not take p.mu.
+	reqLimMu   sync.Mutex
+	reqLimiter *mcpclient.ServerRequestLimiter
+
 	mu        sync.Mutex
 	cond      *sync.Cond
 	instances []*Instance
@@ -191,9 +231,10 @@ type Pool struct {
 
 	// watched counts, per upstream resource URI, the subscribers that want
 	// its updates; watchKey is the scope key they were resolved under.
-	watchMu  sync.Mutex
-	watched  map[string]int
-	watchKey string
+	watchMu   sync.Mutex
+	watched   map[string]int
+	watchKey  string
+	watchRoot string
 
 	// noLegacy is set once a legacy-only start failed under protocol:
 	// follow; legacy callers then share the modern session.
@@ -226,12 +267,16 @@ func (p *Pool) Namespace() string { return p.cfg.Namespace }
 
 var errClosed = errors.New("pool closed")
 
-// Acquire borrows an instance for a resolved scope key.
+// Acquire borrows an instance for a resolved scope.
 //
 // The key decides *which* process; Sharing decides whether that process may
 // serve more than one caller at once. Those are independent, which is why they
-// are separate config axes.
-func (p *Pool) Acquire(ctx context.Context, key string) (*Lease, error) {
+// are separate config axes. The resolved root rides along so a new
+// instance is created rooted (decision 0004 §2); an existing instance
+// keeps the root it was created with, which cannot differ, since the
+// root is a pure function of the key.
+func (p *Pool) Acquire(ctx context.Context, rs config.ResolvedScope) (*Lease, error) {
+	key := rs.Key
 	exclusive := p.cfg.Sharing == config.SharingExclusive
 	legacy := p.followLegacy(ctx)
 
@@ -274,7 +319,7 @@ func (p *Pool) Acquire(ctx context.Context, key string) (*Lease, error) {
 			}
 			p.mu.Unlock()
 
-			in, err := p.startLane(ctx, legacy)
+			in, err := p.startLane(ctx, legacy, rs)
 
 			p.mu.Lock()
 			p.starting--
@@ -494,7 +539,9 @@ func (p *Pool) reapDeadLocked() {
 	p.instances = kept
 }
 
-func (p *Pool) start(ctx context.Context) (*Instance, error) { return p.startLane(ctx, false) }
+func (p *Pool) start(ctx context.Context) (*Instance, error) {
+	return p.startLane(ctx, false, config.ResolvedScope{})
+}
 
 // installServerHooks wires what a server may ask of mcpx into the options its
 // session is opened with. It must run before the handshake, where a server
@@ -514,8 +561,39 @@ func (p *Pool) installServerHooks(opts *mcpclient.Options, ref *instanceRef) {
 			return h.Elicit(ctx, p.cfg.Name, ref.key(), method, params)
 		}
 	}
+	if h.URLElicitation != nil {
+		opts.OnURLElicitationRequired = func(ctx context.Context, elicitations []mcpclient.URLElicitation) (bool, error) {
+			// Same budget pause as OnServerRequest: while a person or
+			// agent answers, the interrupted call is not using its budget.
+			if in := ref.ptr.Load(); in != nil {
+				defer in.questions.asking()()
+			}
+			return h.URLElicitation(ctx, p.cfg.Name, ref.key(), elicitations)
+		}
+	}
 	opts.Roots = h.Roots
 	opts.ProbeTimeout = h.ProbeTimeout
+	opts.ServerName = p.cfg.Name
+	opts.RequestLimits = h.RequestLimits
+	opts.RequestLimitsSet = h.RequestLimitsSet
+	opts.ServerLimiter = p.serverLimiter()
+}
+
+// serverLimiter returns the pool's shared rate-limit budget, building
+// it from the hooks' limits on first use. One pool serves one
+// configured server, so the budget is keyed by that configuration by
+// construction -- never by a name the server claims for itself.
+func (p *Pool) serverLimiter() *mcpclient.ServerRequestLimiter {
+	p.reqLimMu.Lock()
+	defer p.reqLimMu.Unlock()
+	if p.reqLimiter == nil {
+		lim := mcpclient.DefaultRequestLimits()
+		if p.Hooks != nil && (p.Hooks.RequestLimitsSet || p.Hooks.RequestLimits != (mcpclient.RequestLimits{})) {
+			lim = p.Hooks.RequestLimits
+		}
+		p.reqLimiter = mcpclient.NewServerRequestLimiter(lim)
+	}
+	return p.reqLimiter
 }
 
 // subscribeServerEvents routes what a session volunteers to the pool's hooks.
@@ -527,13 +605,23 @@ func (p *Pool) subscribeServerEvents(cl *mcpclient.Client) {
 }
 
 // startLane starts an instance; legacy starts it legacy-only, for a legacy
-// caller under protocol: follow.
-func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
+// caller under protocol: follow. rs is the resolved scope the instance
+// serves: its root is stored on the instance at creation and read back
+// for every restart, never re-resolved (decision 0004 §2).
+func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedScope) (*Instance, error) {
 	sctx, cancel := context.WithTimeout(ctx, p.cfg.StartTimeout)
 	defer cancel()
 	launched := time.Now()
 
-	tr, err := p.dial()
+	spawnCwd, cwdSource := SpawnCwd(p.cfg.Cwd, rs.Root)
+	if !p.cfg.Stdio() {
+		// No process, no cwd: the root is recorded, but nothing spawns
+		// anywhere, so the daemon-cwd source is the honest one.
+		spawnCwd, cwdSource = "", "daemon"
+	}
+	execStamp, execIdentity, _ := p.cfg.ExecStateAt(spawnCwd)
+
+	tr, err := p.dial(sctx, rs.Root)
 	if err != nil {
 		return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 	}
@@ -573,7 +661,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 		// transport; going straight there saves the two refused POSTs.
 		if cl, tr, err = p.connectSSE(sctx, tr, opts); err == nil {
 			source = mcpclient.SourceCache
-		} else if tr, err = p.dial(); err != nil {
+		} else if tr, err = p.dial(sctx, rs.Root); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 	}
@@ -604,7 +692,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 		// that hears initialize first -- and the cache is what keeps this
 		// from happening on every start.
 		_ = tr.Close()
-		if tr, err = p.dial(); err != nil {
+		if tr, err = p.dial(sctx, rs.Root); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 		opts.Preference, opts.Cached = mcpclient.ForceLegacy, ""
@@ -617,6 +705,12 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 	if err != nil {
 		_ = tr.Close()
 		return nil, fmt.Errorf("server %q: %w", p.cfg.Name, p.oauthWaitError(err))
+	}
+	// Self-connection loop guard (#1877): see guardSelfConnection.
+	if cl.ServerInfo.Name == ownServerName {
+		if err := p.guardSelfConnection(sctx, cl, tr); err != nil {
+			return nil, err
+		}
 	}
 	if cl.CachedEraWrong {
 		lifecycle("server.era.stale", map[string]any{
@@ -648,16 +742,26 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 	p.mu.Unlock()
 
 	in := &Instance{
-		ID:         id,
-		Client:     cl,
-		transport:  tr,
-		trace:      newTraceID("srv"),
-		startedAt:  time.Now(),
-		lastUsed:   time.Now(),
-		eraSource:  source,
-		legacyLane: legacy,
+		ID:           id,
+		Client:       cl,
+		transport:    tr,
+		key:          rs.Key,
+		root:         rs.Root,
+		execStamp:    execStamp,
+		execIdentity: execIdentity,
+		trace:        newTraceID("srv"),
+		startedAt:    time.Now(),
+		lastUsed:     time.Now(),
+		eraSource:    source,
+		legacyLane:   legacy,
 	}
 	ref.set(in)
+	// One line per spawn (decision 0004 §6): which server, serving
+	// which scope key, rooted where, and where its cwd came from.
+	lifecycle("server.spawn", map[string]any{
+		"server": p.cfg.Name, "instance": in.ID, "key": rs.Key,
+		"root": rs.Root, "cwd": spawnCwd, "cwdSource": cwdSource,
+	})
 	// A replacement instance -- after a restart, a crash, an eviction --
 	// knows nothing of what its predecessor was subscribed to.
 	p.resubscribe(sctx, in)
@@ -665,13 +769,134 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 		"server": p.cfg.Name, "instance": in.ID, "pid": in.PID(),
 		"trace": in.trace, "sharing": string(p.cfg.Sharing), "scope": string(p.cfg.Scope),
 		"transport": transportName(p.cfg),
-		"era":       string(cl.Era), "negotiated": cl.Negotiated, "eraSource": source,
+		"key":       rs.Key, "root": rs.Root, "cwdSource": cwdSource,
+		"era": string(cl.Era), "negotiated": cl.Negotiated, "eraSource": source,
 		// Time to ready, not time to spawn: the event fires after the
 		// handshake has answered, so this is when the server could first
 		// take a call.
 		"readyMs": float64(time.Since(launched).Microseconds()) / 1000,
 	})
 	return in, nil
+}
+
+// ownMetaTools are the tools mcpx's aggregate MCP surface always
+// carries (mcpserver.Server.Tools, non-ExtrasOnly). Their presence in
+// an upstream's catalogue is what makes that upstream mcpx itself
+// rather than a namesake.
+var ownMetaTools = map[string]bool{
+	"mcpx_namespaces": true, "mcpx_catalog": true, "mcpx_types": true,
+	"mcpx_search": true, "mcpx_call": true, "mcpx_exec": true,
+	"mcpx_log": true, "mcpx_stats": true, "mcpx_registry": true,
+	"mcpx_status": true, "mcpx_batch": true,
+}
+
+// ownReactiveTools are the activation pair mcpx's reactive surface
+// (mcpserver.reactiveSurface) exposes before any tool is activated:
+// request_tools searches and activates the aggregate's tools, and
+// batch_call executes across them. A reactive aggregate initially
+// lists neither the mcpx_* tools nor its upstreams' tools, so the
+// pair -- both names together, never either alone -- is its identity
+// independently of which tools happen to be activated right now
+// (Codex review on PR 2975).
+var ownReactiveTools = []string{"request_tools", "batch_call"}
+
+// guardSelfConnection decides whether an upstream that identifies as
+// mcpx may be served (#1877). Identity decides first, when both sides
+// report one: an instance equal to this process's own is this daemon
+// connecting to itself -- the loop that grows tools/list on every
+// reload -- and is refused without ever listing its tools; a
+// different instance is a distinct mcpx daemon, admitted as a peer
+// (its catalogue is finite: the aggregate meta tools plus its own
+// upstreams, none of them this daemon). When either side reports no
+// instance -- an mcpx predating instance identity, or a process that
+// never wired one -- identity cannot clear the claimant, so the
+// aggregate surface decides instead (refuseIfAggregate): a claimant
+// serving mcpx's meta tools with no distinguishable identity is
+// treated as self, the safe side of the ambiguity.
+func (p *Pool) guardSelfConnection(ctx context.Context, cl *mcpclient.Client, tr mcpclient.Transport) error {
+	own, peer := OwnInstanceID, cl.ServerInfo.Instance
+	if own != "" && peer != "" {
+		if peer != own {
+			lifecycle("server.peer_mcpx_admitted", map[string]any{
+				"server": p.cfg.Name, "serverInfoName": cl.ServerInfo.Name,
+				"serverInfoVersion": cl.ServerInfo.Version, "instance": peer,
+			})
+			return nil
+		}
+		err := fmt.Errorf("server %q: refusing self-connection: upstream is this daemon itself (instance %q matches this process); an entry pointing at mcpx's own MCP endpoint would proxy mcpx's tools back into mcpx and grow tools/list on every reload (#1877)", p.cfg.Name, peer)
+		lifecycle("server.self_connection_refused", map[string]any{
+			"server": p.cfg.Name, "serverInfoName": cl.ServerInfo.Name,
+			"serverInfoVersion": cl.ServerInfo.Version, "instance": peer, "via": "instance",
+		})
+		p.dropSchemas(err)
+		_ = cl.Close()
+		_ = tr.Close()
+		return err
+	}
+	return p.refuseIfAggregate(ctx, cl, tr)
+}
+
+// refuseIfAggregate lists a self-claiming upstream's tools once and
+// refuses the instance when the aggregate meta surface is among them
+// (#1877). It also drops any cached catalogue for this server: an
+// installation upgraded with a self entry already in its schema cache
+// would otherwise keep advertising the proxied tools indefinitely.
+// A claimant whose tools cannot be listed is refused too -- the
+// identity check could not clear it, and a catalogue that cannot be
+// listed could not be served either.
+func (p *Pool) refuseIfAggregate(ctx context.Context, cl *mcpclient.Client, tr mcpclient.Transport) error {
+	tools, lerr := cl.ListTools(ctx)
+	meta := ""
+	if lerr == nil {
+		names := make(map[string]bool, len(tools))
+		for _, t := range tools {
+			names[t.Name] = true
+			if ownMetaTools[t.Name] && meta == "" {
+				meta = t.Name
+			}
+		}
+		if meta == "" {
+			reactive := true
+			for _, n := range ownReactiveTools {
+				if !names[n] {
+					reactive = false
+					break
+				}
+			}
+			if reactive {
+				meta = "request_tools+batch_call (reactive surface)"
+			}
+		}
+		if meta == "" {
+			lifecycle("server.namesake_admitted", map[string]any{
+				"server": p.cfg.Name, "serverInfoName": cl.ServerInfo.Name,
+				"serverInfoVersion": cl.ServerInfo.Version,
+			})
+			return nil
+		}
+	}
+	err := fmt.Errorf("server %q: refusing self-connection: upstream identifies as %q (mcpx itself) and serves mcpx's aggregate surface (%s); an entry pointing at mcpx's own MCP endpoint would proxy mcpx's tools back into mcpx and grow tools/list on every reload (#1877)", p.cfg.Name, cl.ServerInfo.Name, meta)
+	if lerr != nil {
+		err = fmt.Errorf("server %q: refusing self-connection: upstream identifies as %q (mcpx itself) and its tools could not be listed to clear the identity check: %w (#1877)", p.cfg.Name, cl.ServerInfo.Name, lerr)
+	}
+	lifecycle("server.self_connection_refused", map[string]any{
+		"server": p.cfg.Name, "serverInfoName": cl.ServerInfo.Name,
+		"serverInfoVersion": cl.ServerInfo.Version, "metaTool": meta,
+	})
+	p.dropSchemas(err)
+	_ = cl.Close()
+	_ = tr.Close()
+	return err
+}
+
+// dropSchemas forgets the cached catalogue and records why, so a
+// refused server stops being advertised from cache (#1877).
+func (p *Pool) dropSchemas(err error) {
+	p.schemaMu.Lock()
+	p.tools, p.resources, p.prompts = nil, nil, nil
+	p.instructions, p.schemaAt, p.schemaDeadline = "", time.Time{}, time.Time{}
+	p.schemaErr = err
+	p.schemaMu.Unlock()
 }
 
 // connectSSE closes tr and connects over the HTTP+SSE transport instead,
@@ -695,8 +920,28 @@ func (p *Pool) connectSSE(ctx context.Context, tr mcpclient.Transport, opts mcpc
 	return cl, sse, nil
 }
 
-// dial creates the transport for one instance.
-func (p *Pool) dial() (mcpclient.Transport, error) {
+// SpawnCwd is the spawn-cwd decision of decision 0004 §3 as a pure
+// function: an explicit config cwd wins, then the instance's resolved
+// scope root, else unset, so the child inherits the daemon's cwd.
+// source names the rule that fired: "config", "scope" or "daemon".
+func SpawnCwd(configCwd, root string) (cwd, source string) {
+	switch {
+	case configCwd != "":
+		return configCwd, "config"
+	case root != "":
+		return root, "scope"
+	default:
+		return "", "daemon"
+	}
+}
+
+// dial creates the transport for one instance. ctx is the caller's
+// startup context: it bounds any nix: program-spec resolution at spawn,
+// so a slow build cannot outlive the startup budget that owns it. root
+// is the spawning instance's resolved scope root, stored on the
+// instance at creation -- never re-resolved here (decision 0004 §2).
+func (p *Pool) dial(ctx context.Context, root string) (mcpclient.Transport, error) {
+	spawnCwd, _ := SpawnCwd(p.cfg.Cwd, root)
 	auth, err := p.resolveAuth()
 	if err != nil {
 		return nil, err
@@ -707,8 +952,9 @@ func (p *Pool) dial() (mcpclient.Transport, error) {
 			Command:    p.cfg.Command,
 			Args:       p.cfg.Args,
 			Env:        overlay(overlay(p.cfg.Env, p.runtimeEnv()), auth.Env),
-			Cwd:        p.cfg.Cwd,
+			Cwd:        spawnCwd,
 			InheritEnv: true,
+			Context:    ctx,
 		})
 	}
 	if p.cfg.Stdio() {
@@ -716,8 +962,9 @@ func (p *Pool) dial() (mcpclient.Transport, error) {
 			Command:    p.cfg.Command,
 			Args:       p.cfg.Args,
 			Env:        overlay(overlay(p.cfg.Env, p.runtimeEnv()), auth.Env),
-			Cwd:        p.cfg.Cwd,
+			Cwd:        spawnCwd,
 			InheritEnv: true,
+			Context:    ctx,
 		})
 	}
 	ho, err := p.httpOptions()
@@ -872,7 +1119,7 @@ func (p *Pool) refreshSchemas(ctx context.Context, staleGen *time.Time) ([]mcpcl
 	// for anything narrower it is a throwaway, stopped again below so a
 	// per-session server does not keep a process nobody asked for.
 	key := p.schemaKey()
-	lease, err := p.Acquire(ctx, key)
+	lease, err := p.Acquire(ctx, config.ResolvedScope{Key: key})
 	if err != nil {
 		return p.refreshFailed(staleGen, err)
 	}
@@ -918,8 +1165,10 @@ func (p *Pool) refreshSchemas(ctx context.Context, staleGen *time.Time) ([]mcpcl
 	// deadline is the earliest among the lists actually fetched in this
 	// refresh: a list that declared no ttlMs -- or 0, or a negative --
 	// makes the catalogue stale immediately; an unfetched kind (or one
-	// whose list error was swallowed) contributes nothing. Legacy
-	// refreshes keep a zero deadline: their cache never expires.
+	// whose list error was swallowed) contributes nothing. Positive modern
+	// hints are capped before duration conversion to bound freshness and
+	// prevent overflow. Legacy refreshes keep a zero deadline: their cache
+	// never expires.
 	fetchedAt := time.Now()
 	var deadline time.Time
 	var private bool
@@ -944,6 +1193,9 @@ func (p *Pool) refreshSchemas(ctx context.Context, staleGen *time.Time) ([]mcpcl
 		}
 		if minTTL < 0 {
 			minTTL = 0
+		}
+		if maxTTL := maxSchemaTTL.Milliseconds(); minTTL > maxTTL {
+			minTTL = maxTTL
 		}
 		deadline = fetchedAt.Add(time.Duration(minTTL) * time.Millisecond)
 	}
@@ -987,11 +1239,13 @@ func (p *Pool) schemaKey() string {
 
 // SetSchemas seeds the cache from disk so the daemon can answer discovery
 // queries without starting a single child process. The deadline and
-// scope are the ones the persisted entry carried (#1603): the deadline
-// is absolute, so a seed whose deadline has already passed starts
-// expired and the first Schemas call re-reads instead of serving it as
-// fresh.
+// scope are the ones the persisted entry carried (#1603), except that an
+// overlong deadline is bounded to 24 hours after the fetch time. The
+// deadline is absolute, so a seed whose deadline has already passed
+// starts expired and the first Schemas call re-reads instead of serving
+// it as fresh.
 func (p *Pool) SetSchemas(tools []mcpclient.Tool, resources []mcpclient.Resource, prompts []mcpclient.Prompt, instructions string, at time.Time, deadline time.Time, private bool) {
+	deadline = boundedSchemaDeadline(at, deadline)
 	p.schemaMu.Lock()
 	p.tools, p.resources, p.prompts = tools, resources, prompts
 	p.instructions, p.schemaAt, p.schemaErr = instructions, at, nil
@@ -999,11 +1253,35 @@ func (p *Pool) SetSchemas(tools []mcpclient.Tool, resources []mcpclient.Resource
 	p.schemaMu.Unlock()
 }
 
+// boundedSchemaDeadline keeps disk-seeded caches under the same freshness
+// ceiling as deadlines computed from modern upstream ttlMs hints. Older
+// cache files may already contain an unbounded deadline; zero (legacy) and
+// already-earlier deadlines retain their existing semantics.
+func boundedSchemaDeadline(at, deadline time.Time) time.Time {
+	if !at.IsZero() && !deadline.IsZero() && deadline.After(at.Add(maxSchemaTTL)) {
+		return at.Add(maxSchemaTTL)
+	}
+	return deadline
+}
+
 // Instructions returns the server's own guidance, cached from initialize.
 func (p *Pool) Instructions() string {
 	p.schemaMu.RLock()
 	defer p.schemaMu.RUnlock()
 	return p.instructions
+}
+
+// SchemaExpired reports whether the cached catalogue has passed the
+// freshness deadline a modern upstream set for it (#1602). A cache
+// with no deadline (legacy upstream, or none fetched yet) never
+// expires. Callers that must not decide from stale data — the write
+// policy gate (#1979) classifying a call by its annotations — check
+// this and refresh first; RefreshSchemas returns a refresh error
+// rather than serving the stale catalogue, so they can fail closed.
+func (p *Pool) SchemaExpired() bool {
+	p.schemaMu.RLock()
+	defer p.schemaMu.RUnlock()
+	return !p.schemaAt.IsZero() && !p.schemaDeadline.IsZero() && !time.Now().Before(p.schemaDeadline)
 }
 
 // CachedSchemas returns whatever is cached without triggering a fetch.
@@ -1070,13 +1348,13 @@ func (p *Pool) CachedPrompts() []mcpclient.Prompt {
 }
 
 // GetPrompt renders one prompt on a leased instance.
-func (p *Pool) GetPrompt(ctx context.Context, sessionKey, name string, args map[string]string) (json.RawMessage, error) {
-	lease, err := p.Acquire(ctx, sessionKey)
+func (p *Pool) GetPrompt(ctx context.Context, rs config.ResolvedScope, name string, args map[string]string) (json.RawMessage, error) {
+	lease, err := p.Acquire(ctx, rs)
 	if err != nil {
 		return nil, err
 	}
 	defer lease.Release()
-	cctx, finish := p.upstream(ctx, sessionKey, lease)
+	cctx, finish := p.upstream(ctx, rs.Key, lease)
 	res, err := lease.Client().GetPrompt(cctx, name, args)
 	return res, finish(err)
 }
@@ -1098,7 +1376,12 @@ type Hooks struct {
 	// connection serves one key, so whoever is calling on that key is who
 	// the server is asking.
 	Elicit func(ctx context.Context, server, key, method string, params json.RawMessage) (any, error)
-	Roots  []mcpclient.Root
+	// URLElicitation opens the URL elicitations an upstream's -32042
+	// tools/call error names, parallel to Elicit: server and key say
+	// which connection's call was interrupted. True only when every
+	// entry was accepted; anything else fails the call with no retry.
+	URLElicitation func(ctx context.Context, server, key string, elicitations []mcpclient.URLElicitation) (bool, error)
+	Roots          []mcpclient.Root
 	// LogLevel is requested from every server that supports logging.
 	LogLevel string
 	// Protocol is the era preference for a server whose config names none.
@@ -1109,6 +1392,13 @@ type Hooks struct {
 	// Eras remembers each server configuration's era across starts. Nil
 	// means every start probes.
 	Eras EraStore
+	// RequestLimits bounds each server's sampling and elicitation
+	// requests (#2192). The zero value means mcpclient's defaults,
+	// unless RequestLimitsSet marks it explicitly supplied.
+	RequestLimits mcpclient.RequestLimits
+	// RequestLimitsSet marks RequestLimits as explicitly supplied,
+	// including all-zero (enforcement disabled).
+	RequestLimitsSet bool
 }
 
 func (h *Hooks) notifications(server string) mcpclient.Notifications {
@@ -1150,8 +1440,9 @@ func (p *Pool) Preference() mcpclient.Preference {
 }
 
 // Call runs a tool on a leased instance.
-func (p *Pool) Call(ctx context.Context, sessionKey, tool string, args any) (json.RawMessage, error) {
-	lease, err := p.Acquire(ctx, sessionKey)
+func (p *Pool) Call(ctx context.Context, rs config.ResolvedScope, tool string, args any) (json.RawMessage, error) {
+	sessionKey := rs.Key
+	lease, err := p.Acquire(ctx, rs)
 	if err != nil {
 		return nil, err
 	}
@@ -1160,6 +1451,18 @@ func (p *Pool) Call(ctx context.Context, sessionKey, tool string, args any) (jso
 	if Trace != nil {
 		Trace("call %s.%s session=%q instance=%s pid=%d", p.cfg.Name, tool, sessionKey, lease.inst.ID, lease.inst.PID())
 	}
+
+	// The serving client may never have listed the catalogue itself --
+	// refreshSchemas lists on the schema lease's instance, which for
+	// session- or call-scoped scopes is a throwaway, and a restarted
+	// global instance starts empty behind the retained cache. Seed its
+	// taskSupport snapshot from the cached catalogue so a "required"
+	// tool is recognised on the client that actually serves the call
+	// (#1556 Codex review).
+	p.schemaMu.RLock()
+	catalogue := p.tools
+	p.schemaMu.RUnlock()
+	lease.Client().SeedToolExec(catalogue)
 
 	cctx, finish := p.upstream(ctx, sessionKey, lease)
 	started := time.Now()
@@ -1184,14 +1487,14 @@ func (p *Pool) Call(ctx context.Context, sessionKey, tool string, args any) (jso
 }
 
 // ReadResource reads a resource URI on a leased instance.
-func (p *Pool) ReadResource(ctx context.Context, sessionKey, uri string) (json.RawMessage, error) {
-	lease, err := p.Acquire(ctx, sessionKey)
+func (p *Pool) ReadResource(ctx context.Context, rs config.ResolvedScope, uri string) (json.RawMessage, error) {
+	lease, err := p.Acquire(ctx, rs)
 	if err != nil {
 		return nil, err
 	}
 	defer lease.Release()
 
-	cctx, finish := p.upstream(ctx, sessionKey, lease)
+	cctx, finish := p.upstream(ctx, rs.Key, lease)
 	res, err := lease.Client().ReadResource(cctx, uri)
 	return res, p.replacedErr(lease.inst, finish(err))
 }
@@ -1233,18 +1536,34 @@ func (p *Pool) ReapIdle(now time.Time) int {
 	return len(stop)
 }
 
+// signalProcess probes pid with signal 0: it reports whether the process
+// exists without affecting it. It is the seam tests inject through
+// keyPIDAliveProbed so the EPERM cases are deterministic (#2336).
+func signalProcess(pid int) error {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	return proc.Signal(syscall.Signal(0))
+}
+
 // keyPIDAlive reports whether the process a pid-scoped key names still exists.
 // An unparseable key is treated as alive so a bug here cannot kill instances.
 func keyPIDAlive(key string) bool {
+	return keyPIDAliveProbed(key, signalProcess)
+}
+
+// keyPIDAliveProbed is keyPIDAlive with the signal-0 probe injected. A probe
+// error of EPERM means the process exists but is owned by someone else: it is
+// alive, exactly as daemon.ProcessAlive already treats it (#2336). Any other
+// probe error (ESRCH above all) means the process is gone.
+func keyPIDAliveProbed(key string, probe func(int) error) bool {
 	pid, ok := config.PIDOf(key)
 	if !ok {
 		return true
 	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return proc.Signal(syscall.Signal(0)) == nil
+	err := probe(pid)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 // InstanceStatus is a diagnostic snapshot.
@@ -1253,6 +1572,7 @@ type InstanceStatus struct {
 	PID       int    `json:"pid,omitempty"`
 	Holders   int    `json:"holders"`
 	Key       string `json:"key,omitempty"`
+	Root      string `json:"root,omitempty"`
 	Calls     int64  `json:"calls"`
 	UptimeSec int    `json:"uptimeSec"`
 	IdleSec   int    `json:"idleSec"`
@@ -1297,6 +1617,7 @@ func (p *Pool) Status() Status {
 			PID:       in.PID(),
 			Holders:   in.holders,
 			Key:       in.key,
+			Root:      in.root,
 			Calls:     in.calls.Load(),
 			UptimeSec: int(now.Sub(in.startedAt).Seconds()),
 			IdleSec:   int(now.Sub(in.lastUsed).Seconds()),
@@ -1396,11 +1717,13 @@ func (p *Pool) Restart(ctx context.Context, lazy bool) RestartResult {
 		return res
 	}
 	var keys []string
+	roots := map[string]string{}
 	seen := map[string]bool{}
 	for _, in := range stop {
 		if !seen[in.key] {
 			seen[in.key] = true
 			keys = append(keys, in.key)
+			roots[in.key] = in.root
 		}
 	}
 	for _, in := range retiring {
@@ -1427,7 +1750,7 @@ func (p *Pool) Restart(ctx context.Context, lazy bool) RestartResult {
 			res.Skipped = append(res.Skipped, RestartFailure{Key: key, Error: "owning process has exited"})
 			continue
 		}
-		id, err := p.startFor(ctx, key)
+		id, err := p.startFor(ctx, config.ResolvedScope{Key: key, Root: roots[key]})
 		if err != nil {
 			res.Failed = append(res.Failed, RestartFailure{Key: key, Error: err.Error()})
 			continue
@@ -1446,8 +1769,8 @@ type RestartFailure struct {
 // startFor brings up the instance for key and lets it go idle. Acquire, not
 // start, so capacity, a concurrent caller and a subscription monitor
 // replacing the same key all converge on one process.
-func (p *Pool) startFor(ctx context.Context, key string) (string, error) {
-	lease, err := p.Acquire(ctx, key)
+func (p *Pool) startFor(ctx context.Context, rs config.ResolvedScope) (string, error) {
+	lease, err := p.Acquire(ctx, rs)
 	if err != nil {
 		return "", err
 	}
@@ -1544,7 +1867,7 @@ func (p *Pool) closeDrained(drain time.Duration, stopReason, callErr string) {
 // does not depend on the logging package.
 func newTraceID(prefix string) string {
 	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	if _, err := RandSource.Read(b[:]); err != nil {
 		return prefix + "-0000000000000000"
 	}
 	return prefix + "-" + hex.EncodeToString(b[:])

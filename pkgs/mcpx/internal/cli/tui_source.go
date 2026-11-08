@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/logstore"
-	"github.com/dezren39/mcpx/internal/opencode"
-	"github.com/dezren39/mcpx/internal/tui"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/opencode"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tui"
 )
 
 // Stats renders one dimension of the log as a grid.

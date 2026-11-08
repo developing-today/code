@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/artifacts"
+	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
 )
 
 func asErr(err error, target any) bool { return errors.As(err, target) }

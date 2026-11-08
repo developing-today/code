@@ -19,25 +19,24 @@ ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4
 
 FROM ${GO_IMAGE} AS build
 
-# Static linking is the goal, and this is the switch that gets there -- but
-# the goal is recorded here, not decided here, so it defaults to the value an
-# ordinary Go build already uses.
-#
-# What a default build does today: CGO_ENABLED is unset, which means *enabled*
-# on a native build, so `internal/logging/trace.go`'s os/user resolves through
-# getpwuid_r and net's resolver through getaddrinfo. The binary links against
-# glibc, which is why the runtime stage is the same Debian the builder is.
-#
-# Flipping this to 0 was tested rather than guessed: it builds, the binary is
-# fully static ("not a dynamic executable"), it is the same size to within a
-# hundred bytes, and `--version`, `ls`, `call` and `exec` all work. So mcpx is
-# not what stands between this image and a static one -- bun is, a
-# dynamically linked distribution binary. The behavioural change is
-# real but external: pure-Go os/user parses /etc/passwd instead of asking NSS,
-# and the resolver stops honouring nsswitch.conf. Neither matters inside this
-# image; both matter to somebody. docs/container.md has the measurements.
-ARG CGO_ENABLED=1
-ARG VERSION=0.1.0
+# The mcpx this image ships is a static build (#1987). Flipping this to 0
+# was tested rather than guessed: it builds, the binary is fully static
+# ("not a dynamic executable"), it is the same size to within a hundred
+# bytes, and `--version`, `ls`, `call` and `exec` all work. The behavioural
+# change is real but external: pure-Go os/user parses /etc/passwd instead
+# of asking NSS, and the resolver stops honouring nsswitch.conf. Neither
+# matters inside this image; both matter to somebody on a host, so the
+# host artifacts keep their own policy -- docs/container.md section 4 has
+# the measurements and the policy record. The runtime stage is still the
+# same Debian the builder uses, but no longer because mcpx needs its
+# glibc: bun (below) is a dynamically linked distribution binary.
+# Pass --build-arg CGO_ENABLED=1 for the old glibc-linked build.
+ARG CGO_ENABLED=0
+# The version's single source is pkgs/mcpx/VERSION (decision 0005 §3);
+# the release workflow passes its contents as --build-arg VERSION=...
+# The default here is the dev sentinel, matching cmd/mcpx/main.go, so
+# a plain `docker build` does not impersonate a release.
+ARG VERSION=0.0.0-dev
 ENV CGO_ENABLED=${CGO_ENABLED}
 
 WORKDIR /src
@@ -51,6 +50,11 @@ COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/mcpx ./cmd/mcpx
+
+# A static default that silently stops being static is worse than none:
+# fail the image build if the binary does not record the CGO_ENABLED it
+# was built with.
+RUN go version -m /out/mcpx | grep -q "CGO_ENABLED=${CGO_ENABLED}"
 
 # ---- javascript runtime ---------------------------------------------------
 

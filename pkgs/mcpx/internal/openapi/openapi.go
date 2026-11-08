@@ -288,7 +288,14 @@ func Build(spec *Spec, opt Options) (*API, error) {
 	seen := map[string]bool{}
 	for _, path := range paths {
 		item := spec.Paths[path]
-		for method, op := range item.operations() {
+		operations := item.operations()
+		operationMethods := make([]string, 0, len(operations))
+		for method := range operations {
+			operationMethods = append(operationMethods, method)
+		}
+		sort.Strings(operationMethods)
+		for _, method := range operationMethods {
+			op := operations[method]
 			if !allowed[method] {
 				continue
 			}
@@ -309,7 +316,10 @@ func Build(spec *Spec, opt Options) (*API, error) {
 			}
 			seen[toolName] = true
 
-			params := append(append([]Parameter{}, item.Parameters...), op.Parameters...)
+			params, perr := resolveParams(toolName, item.Parameters, op.Parameters)
+			if perr != nil {
+				return nil, perr
+			}
 			tool := Tool{
 				Name:        toolName,
 				Description: describe(method, path, op),
@@ -454,6 +464,45 @@ func firstSentences(s string, n int) string {
 	return s
 }
 
+// resolveParams merges a path item's parameters with an operation's
+// under the OpenAPI parameter-identity rule: a parameter is identified
+// by the pair (name, location), and an operation-level parameter with
+// the same pair as a path-level one REPLACES it (the operation wins),
+// rather than duplicating it. Concatenating the two lists without the
+// rule published a schema whose required list named the parameter
+// twice -- not valid JSON Schema -- for a normal, spec-endorsed
+// pattern (#1669).
+//
+// The flat tool model keys arguments by name alone, so a name that
+// appears in two different locations cannot be represented honestly:
+// the schema would show one property while Call sent the value to
+// both places. That shape is a Build error naming the tool, the
+// parameter and the two locations, so the schema and the wire can
+// never silently disagree.
+func resolveParams(tool string, pathLevel, opLevel []Parameter) ([]Parameter, error) {
+	out := make([]Parameter, 0, len(pathLevel)+len(opLevel))
+	byPair := make(map[[2]string]int, len(pathLevel)+len(opLevel))
+	byName := make(map[string]string, len(pathLevel)+len(opLevel))
+	for _, list := range [][]Parameter{pathLevel, opLevel} {
+		for _, p := range list {
+			if prev, seen := byName[p.Name]; seen && prev != p.In {
+				return nil, fmt.Errorf("%s: parameter %q appears in both the %s and %s locations; "+
+					"a tool's arguments are keyed by name alone, so one name cannot stand for two "+
+					"parameters -- rename one of them in the document", tool, p.Name, prev, p.In)
+			}
+			byName[p.Name] = p.In
+			pair := [2]string{p.Name, p.In}
+			if i, dup := byPair[pair]; dup {
+				out[i] = p // the later declaration replaces the earlier one
+				continue
+			}
+			byPair[pair] = len(out)
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
 // buildSchema renders an operation's arguments as one JSON Schema object.
 //
 // Path, query and header parameters and the request body are flattened into
@@ -495,10 +544,26 @@ func buildSchema(params []Parameter, op *Operation) json.RawMessage {
 	}
 
 	if op.RequestBody != nil {
-		for media, c := range op.RequestBody.Content {
+		mediaTypes := make([]string, 0, len(op.RequestBody.Content))
+		for media := range op.RequestBody.Content {
 			if !strings.Contains(media, "json") {
 				continue
 			}
+			mediaTypes = append(mediaTypes, media)
+		}
+		sort.Strings(mediaTypes)
+		selectedMedia := ""
+		for _, media := range mediaTypes {
+			if media == "application/json" {
+				selectedMedia = media
+				break
+			}
+		}
+		if selectedMedia == "" && len(mediaTypes) > 0 {
+			selectedMedia = mediaTypes[0]
+		}
+		if selectedMedia != "" {
+			c := op.RequestBody.Content[selectedMedia]
 			entry := map[string]any{"description": "the request body"}
 			for k, v := range c.Schema {
 				entry[k] = v
@@ -507,7 +572,6 @@ func buildSchema(params []Parameter, op *Operation) json.RawMessage {
 			if op.RequestBody.Required {
 				required = append(required, "body")
 			}
-			break
 		}
 	}
 

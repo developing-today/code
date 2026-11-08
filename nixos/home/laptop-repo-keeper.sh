@@ -9,9 +9,16 @@
 #     (a dirty primary on the wrong branch is reported, never forced)
 #   - commits tracked-file changes on the default branch —
 #     all-or-nothing: a tree containing a secret-shaped tracked
-#     path is reported, never committed. Untracked files are only
-#     counted here; the daily laptop-untracked-review classifies
-#     them (oversized ones belong to the backup scripts)
+#     path or tracked backup/residue path is reported, never committed.
+#     Untracked files are only counted here; the daily
+#     laptop-untracked-review classifies them (oversized ones belong
+#     to the backup scripts)
+#     A snapshot is only ever committed on an up-to-date base: if
+#     the primary is behind origin, committing would put it ahead
+#     AND behind at once (diverged), after which this keeper can
+#     only report it and pm-git-sync can no longer fast-forward —
+#     the 2026-11-02 code#4464 divergence. Behind + dirty is
+#     reported loudly and left uncommitted for reconciliation.
 #   - pulls fast-forward when behind, pushes when ahead; never
 #     force-pushes, never merges, never rebases
 # Worktrees are counted for the report but never touched: they are
@@ -25,6 +32,7 @@ REPORT_DIR="$HOME/backups/repo-keeper"
 mkdir -p "$REPORT_DIR"
 TS="$(date '+%Y-%m-%d %H:%M %Z')"
 SECRET_RE='\.env|secret|credential|\.pem$|\.key$|id_rsa|id_ed25519'
+RESIDUE_RE='(^|/)([^/]*\.bak(-[^/]*)?|[^/]*\.backup|\.pre-warm[^/]*|resume-build|[^/]*\.mjs\.new)$'
 BIG_TRACKED=26214400 # 25 MiB
 LINES=()
 say() {
@@ -78,7 +86,10 @@ for d in "${REPOS[@]}"; do
   # its default — never flag it, never move it.
   if [ "$has_origin" -eq 0 ]; then
     db="$(g branch --show-current)"
-    [ -z "$db" ] && db=main
+    if [ -z "$db" ]; then
+      say "- $name: detached HEAD without origin — skipped"
+      continue
+    fi
   fi
   if [ "$has_origin" -eq 1 ]; then
     timeout 60 git -C "$d" fetch -q --prune origin 2>/dev/null || say "- $name: FETCH FAILED — continuing with local state"
@@ -93,6 +104,13 @@ for d in "${REPOS[@]}"; do
     [ -n "$big" ] && say "- $name: LARGE TRACKED FILES: $big"
   fi
   wt="$(g worktree list | wc -l)"
+  # Ahead/behind is needed BEFORE the snapshot step (see header):
+  # the counts are recomputed after it for the pull/push steps.
+  counts="0 0"
+  if [ "$has_origin" -eq 1 ]; then
+    counts="$(g rev-list --left-right --count "$db...origin/$db" 2>/dev/null || echo '0 0')"
+  fi
+  read -r ahead behind <<<"$counts"
   if [ "$br" != "$db" ]; then
     if [ "$dirty" -eq 0 ]; then
       if g checkout -q "$db"; then
@@ -108,7 +126,14 @@ for d in "${REPOS[@]}"; do
     fi
   fi
   if [ "$dirty" -gt 0 ]; then
-    if g status --porcelain | grep -v '^??' | grep -Eiq "$SECRET_RE"; then
+    residue="$(g ls-files | grep -Ei "$RESIDUE_RE" || true)"
+    if [ "${behind:-0}" -gt 0 ]; then
+      say "- $name: DIRTY ($dirty tracked entries) NOT committed — $behind commit(s) behind origin/$db; a snapshot on a stale base would diverge the primary (code#4464) — reconcile first"
+    elif [ -n "$residue" ]; then
+      residue_list="$(printf '%s' "$residue" | tr '\n' ' ')"
+      say "- $name: TRACKED RESIDUE NOT committed — move these paths to a dated residue directory first: $residue_list"
+    # Expand untracked directories so nested secret-shaped paths are checked.
+    elif g status --porcelain --untracked-files=all | grep -Eiq "$SECRET_RE"; then
       say "- $name: DIRTY ($dirty tracked entries) NOT committed — secret-shaped path present"
     elif g add -u && g commit -q -m "repo-keeper: snapshot $name $TS"; then
       say "- $name: committed $dirty tracked entries on $db"

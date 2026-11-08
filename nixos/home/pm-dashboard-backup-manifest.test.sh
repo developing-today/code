@@ -26,8 +26,8 @@
 #   * dump-ran-no-dir — the dump step ran (stub script, exit 0) but
 #     produced no dumps dir: db-dumps is conditionally REQUIRED, so
 #     the run fails naming db-dumps, cursor unchanged.
-#   * dump-ran-with-dir — the dump step produced its dir: db-dumps
-#     recorded required + present, run completes.
+#   * dump-ran-with-dir — the dump step produced its dir: the staged
+#     db-dumps member is recorded required + present, run completes.
 set -uo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -96,8 +96,8 @@ chmod +x "$BIN/bws" "$BIN/journalctl" "$BIN/rclone"
 DUMPBIN="$TMP_ROOT/dump-bin"
 mkdir -p "$DUMPBIN"
 { printf '#!%s\n' "$BASH"; cat <<'STUB'
-mkdir -p "$HOME/backups/db-dumps/$1"
-printf 'dump bytes\n' >"$HOME/backups/db-dumps/$1/dump.sql"
+mkdir -p "$HOME/backups/pm-stack/$1"
+printf 'dump bytes\n' >"$HOME/backups/pm-stack/$1/dump.sql"
 exit 0
 STUB
 } >"$DUMPBIN/dump-with-dir.sh"

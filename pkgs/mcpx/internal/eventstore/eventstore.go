@@ -26,7 +26,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/dezren39/mcpx/internal/schemaval"
+	"github.com/developing-today/code/pkgs/mcpx/internal/schemaval"
 )
 
 // Named rejection errors. A writer that invents a kind, or writes data

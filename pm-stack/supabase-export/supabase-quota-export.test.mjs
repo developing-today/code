@@ -23,7 +23,7 @@ function response(status, body) {
 }
 
 /** Fake Management API: muse-dev answers like the live probe of 2026-10-29. */
-function fakeFetch({ dbBytes = 1_153_939_123, bucketCount = 0, addonsStatus = 200 } = {}) {
+function fakeFetch({ dbBytes = 1_153_939_123, bucketCount = 0, addonsStatus = 200, addons = [] } = {}) {
   const calls = [];
   const impl = async (url, init) => {
     calls.push({ url, method: init?.method ?? "GET", authorization: init?.headers?.Authorization });
@@ -42,7 +42,7 @@ function fakeFetch({ dbBytes = 1_153_939_123, bucketCount = 0, addonsStatus = 20
     if (path === `/projects/${REF}/database/query`) return response(dbBytes == null ? 500 : 201, [{ bytes: dbBytes }]);
     if (path === `/projects/${REF}/storage/buckets`) return response(200, Array.from({ length: bucketCount }, (_, i) => ({ id: `b${i}` })));
     if (path === `/projects/${REF}/analytics/endpoints/usage.api-requests-count`) return response(200, { result: [{ count: 185893 }] });
-    if (path === `/projects/${REF}/billing/addons`) return response(addonsStatus, { selected_addons: [], available_addons: [] });
+    if (path === `/projects/${REF}/billing/addons`) return response(addonsStatus, { selected_addons: addons, available_addons: [] });
     if (path === `/organizations/crwkmndylaagtbprrljn`) return response(403, { message: "Forbidden" });
     return response(404, { message: `Cannot GET ${path}` });
   };
@@ -129,6 +129,25 @@ describe("supabase-quota-export", () => {
     expect(parseRequestCount({ result: [] })).toBeNull();
     expect(() => billedFromAddons({})).toThrow(ExportError);
     expect(billedFromAddons({ selected_addons: [{ price: { amount: 25 } }] })).toBe(25);
+  });
+
+  test("billedFromAddons fails closed on unpriced or negative selected addons (#2492)", () => {
+    expect(() => billedFromAddons({ selected_addons: [{}] })).toThrow(ExportError);
+    expect(() => billedFromAddons({ selected_addons: [{ price: {} }] })).toThrow(ExportError);
+    expect(() => billedFromAddons({ selected_addons: [{ price: { amount: null } }] })).toThrow(ExportError);
+    expect(() => billedFromAddons({ selected_addons: [{ price: { amount: "25" } }] })).toThrow(ExportError);
+    expect(() => billedFromAddons({ selected_addons: [{ price: { amount: -25 } }] })).toThrow(ExportError);
+    expect(() => billedFromAddons({ selected_addons: [{ price: { amount: 25 } }, { price: {} }] })).toThrow(ExportError);
+    expect(billedFromAddons({ selected_addons: [] })).toBe(0);
+    expect(billedFromAddons({ selected_addons: [{ price: { amount: 0 } }] })).toBe(0);
+    expect(billedFromAddons({ selected_addons: [{ price: { amount: 25 } }, { price: { amount: 5 } }] })).toBe(30);
+  });
+
+  test("a drifted addon yields billing null while metrics still publish (#2492)", async () => {
+    const { impl } = fakeFetch({ addons: [{ price: { amount: 25 } }, { name: "unpriced-addon" }] });
+    const doc = await run({ token: "sbp_fake", ref: REF, fetchImpl: impl });
+    expect(doc.billing).toBeNull();
+    expect(doc.metrics.find((m) => m.id === "db-size").used).toBeCloseTo(1.154, 2);
   });
 
   test("buildMetrics never emits a paid trigger for an unmeasured metric", () => {

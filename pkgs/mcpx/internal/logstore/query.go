@@ -4,12 +4,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"log/slog"
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
 )
 
 // Record is one indexed line, rehydrated far enough to be rendered by the

@@ -36,8 +36,11 @@ test-shard-2
 test-shard-3
 test-web-unit
 test-web-typecheck
+roc-test
+roc-examples
 crash-gate-sampled
 crash-gate-sweep
 crash-gate-control
 crash-gate-ingest
+just-recipes-drift
 doc

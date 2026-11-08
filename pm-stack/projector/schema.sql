@@ -105,6 +105,24 @@ CREATE TABLE IF NOT EXISTS pmp_deliveries (
   detail      TEXT
 );
 
+-- Keep the first failed attempt separately so a later successful retry can
+-- update pmp_deliveries without erasing the original failure evidence.
+CREATE TABLE IF NOT EXISTS pmp_delivery_errors (
+  delivery_id TEXT PRIMARY KEY,
+  event       TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  outcome     TEXT NOT NULL CHECK (outcome = 'error'),
+  detail      TEXT
+);
+
+-- Preserve error rows created by earlier versions before retries can replace
+-- their current outcome in pmp_deliveries. INSERT OR IGNORE makes this safe on
+-- every idempotent migrate() run.
+INSERT OR IGNORE INTO pmp_delivery_errors (delivery_id, event, received_at, outcome, detail)
+SELECT delivery_id, event, received_at, outcome, detail
+FROM pmp_deliveries
+WHERE outcome = 'error';
+
 -- ---------------------------------------------------------------------------
 -- Reconciliation cursors, one per (repo, stream). Idempotent upserts keyed by
 -- repo-qualified IDs are the safety net; these cursors make the poll cheap.

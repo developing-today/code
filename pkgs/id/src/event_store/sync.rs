@@ -425,7 +425,9 @@ async fn wait_for_commit(signal: &CommitSignal, committed: usize) {
     }
 }
 
-/// Writes one message as frames, or closes the connection if the cut is due.
+/// Writes one message as frames, or closes the connection if the cut is due. Session messages are
+/// non-empty: the initiator starts with `full_range`, and each non-empty incoming message produces
+/// at least one reply entry; `read_flight` rejects an empty incoming message before that point.
 async fn write_flight(
     send: &mut SendStream,
     conn: Option<&Connection>,
@@ -499,6 +501,7 @@ async fn read_flight(recv: &mut RecvStream, budget: &mut ReadBudget) -> Result<V
             break;
         }
     }
+    ensure!(!entries.is_empty(), "peer sent an empty flight");
     check_bounds(&entries)?;
     Ok(entries)
 }
@@ -669,8 +672,7 @@ async fn run_session<S: RangeStore>(
     };
 
     let receiving = async {
-        let received =
-            receive_data(recv, &store, &mut need, now_ms, &commits, batch_bytes).await;
+        let received = receive_data(recv, &store, &mut need, now_ms, &commits, batch_bytes).await;
         // Signal on every exit, error included: the sending half waits for this
         // signal before it can finish, and a failed receive must not hold the
         // session open until its deadline.
@@ -851,6 +853,9 @@ mod tests {
                 tag: None,
                 document: None,
                 removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
             };
             events.push(chain::sign(&key, seq, backlink, Some(body), ext).unwrap());
         }
@@ -882,6 +887,85 @@ mod tests {
             .into_iter()
             .map(|e| e.1)
             .collect()
+    }
+
+    /// A peer that sends the zero-count `[0, 0]` frame cannot end reconciliation as all-skip.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_read_flight_rejects_empty_flight() {
+        let server = endpoint(vec![ALPN.to_vec()]).await.unwrap();
+        let client = endpoint(vec![]).await.unwrap();
+        let target = loopback_addr(&server);
+        let peer = tokio::spawn(async move {
+            let incoming = server.accept().await.unwrap();
+            let conn = incoming.await.unwrap();
+            let (mut send, _recv) = conn.accept_bi().await.unwrap();
+            send.write_all(&2u32.to_be_bytes()).await.unwrap();
+            send.write_all(&[0, 0]).await.unwrap();
+            send.finish().unwrap();
+            // Stay alive until the client closes: dropping the endpoint here would tear
+            // the connection down before the client has read the flight.
+            conn.closed().await;
+        });
+
+        let conn = client.connect(target, ALPN).await.unwrap();
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        // A stream is announced to the peer only once it carries data, and the peer
+        // accept_bi waits for that announcement. One byte announces this stream; the
+        // peer never reads our half.
+        send.write_all(&[0]).await.unwrap();
+        let mut budget = ReadBudget {
+            budget: 64,
+            read: 0,
+        };
+        let err = read_flight(&mut recv, &mut budget)
+            .await
+            .expect_err("the empty flight was accepted");
+        assert!(err.to_string().contains("empty flight"), "{err:#}");
+
+        conn.close(0u32.into(), b"done");
+        client.close().await;
+        peer.await.unwrap();
+    }
+
+    /// Refusing an empty first flight prevents a session from reporting a successful zero transfer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_empty_first_flight_fails_the_session() {
+        let (_dir, mut store) = open();
+        populate(&mut store, &[(1, 1)]);
+        let before = ids(&store);
+        let server = endpoint(vec![ALPN.to_vec()]).await.unwrap();
+        let client = endpoint(vec![]).await.unwrap();
+        let target = loopback_addr(&server);
+        let peer = tokio::spawn(async move {
+            let incoming = server.accept().await.unwrap();
+            let conn = incoming.await.unwrap();
+            let (mut send, _recv) = conn.accept_bi().await.unwrap();
+            send.write_all(&2u32.to_be_bytes()).await.unwrap();
+            send.write_all(&[0, 0]).await.unwrap();
+            send.finish().unwrap();
+            // Stay alive until the client closes: dropping the endpoint here would tear
+            // the connection down before the client has read the flight.
+            conn.closed().await;
+        });
+
+        let conn = client.connect(target, ALPN).await.unwrap();
+        let outcome = sync_over(
+            &mut store,
+            &conn,
+            true,
+            Params::default(),
+            NOW,
+            Duration::from_secs(5),
+            &testing::open_gate(),
+        )
+        .await;
+        let err = outcome.expect_err("the empty first flight completed a session");
+        assert!(err.to_string().contains("empty flight"), "{err:#}");
+        assert_eq!(ids(&store), before, "the refused session changed the store");
+
+        conn.close(0u32.into(), b"done");
+        client.close().await;
+        peer.await.unwrap();
     }
 
     /// Runs one session on each side of a loopback connection. The dialer is `a`. Both sessions
@@ -988,6 +1072,8 @@ mod tests {
             a.sync_entries().unwrap().is_empty(),
             "a fresh store reads as empty"
         );
+        // Each side still sends one full-range entry, so matching empty stores end via a genuine
+        // non-empty all-skip flight rather than a zero-entry flight.
         let (da, db) = loopback(
             &mut a,
             &mut b,
@@ -1022,6 +1108,9 @@ mod tests {
                 tag: None,
                 document: None,
                 removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
             },
         )
         .unwrap();
@@ -1064,6 +1153,9 @@ mod tests {
                 tag: None,
                 document: None,
                 removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
             },
         )
         .unwrap();
@@ -1110,6 +1202,9 @@ mod tests {
                 tag: None,
                 document: None,
                 removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
             },
         )
         .unwrap();
@@ -1653,6 +1748,38 @@ mod tests {
             "the dialer's session ends with the refusal"
         );
         assert_eq!(ids(&b), before_b, "no event crossed to the stranger");
+        assert_eq!(ids(&a), before_a, "the server's store is unchanged");
+    }
+
+    /// #2245: a peer blocked by key is refused by the acceptor's gate
+    /// before any event is sent, under the open policy included. Both
+    /// sides end with an error, and neither store changes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_blocked_peer_range_session_is_refused_and_sends_no_event() {
+        let (_da, mut a) = open();
+        let (_db, mut b) = open();
+        populate(&mut a, &[(1, 4)]);
+        let (before_a, before_b) = (ids(&a), ids(&b));
+        let gate = testing::open_gate()
+            .with_blocks(testing::stub_blocks(&[*testing::key(0xd1).public().as_bytes()], &[]));
+        let (dialer, acceptor) = loopback_gated(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+            &gate,
+            testing::key(0xd1),
+        )
+        .await
+        .unwrap();
+        let refused = acceptor.expect_err("a blocked peer was served events");
+        assert!(
+            refused.downcast_ref::<PullRefused>().is_some(),
+            "{refused:#}"
+        );
+        assert!(dialer.is_err(), "the dialer's session ends with the refusal");
+        assert_eq!(ids(&b), before_b, "no event crossed to the blocked peer");
         assert_eq!(ids(&a), before_a, "the server's store is unchanged");
     }
 

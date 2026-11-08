@@ -78,12 +78,15 @@ type Notification struct {
 
 // canAsk reports whether this request should go through the Asker at all.
 //
-// Only for a client that declared it can answer something. A client that
+// Only for a client that declared it can answer something -- or a
+// 2025-11-25 client that declared elicitation.url alone, which answers
+// nothing inline but is owed -32042 for an undeliverable URL question.
+// A client that
 // declared neither elicitation nor sampling gets the direct path and the
 // broker's own routing, unchanged -- which is the behaviour that works
 // today and must keep working, because most MCP hosts implement neither.
 func (s *Server) canAsk(ctx context.Context, c *Conn, p Peer) bool {
-	if s.Ask == nil || !p.AnswersInline() {
+	if s.Ask == nil || (!p.AnswersInline() && !p.eligibleURLElicitationRequired()) {
 		return false
 	}
 	// A modern client is never sent anything: it is handed the question
@@ -91,7 +94,13 @@ func (s *Server) canAsk(ctx context.Context, c *Conn, p Peer) bool {
 	// Streamable HTTP that is a property of the exchange rather than of the
 	// connection -- the frame goes out on the response stream of the
 	// request that is waiting for it.
-	return p.Modern || senderFrom(ctx) != nil || c.canPush()
+	// A 2025-11-25 host that declared elicitation.url is also admitted
+	// when no channel exists: a URL question pending for its call is
+	// answered with -32042 (see url_required.go) instead of silently
+	// falling through to the ordinary path, where the question would
+	// sit with the broker until the call timed out generically (#2080).
+	return p.Modern || senderFrom(ctx) != nil || c.canPush() ||
+		p.eligibleURLElicitationRequired()
 }
 
 // resumeOf reads the two fields a modern client sends when answering.
@@ -185,6 +194,18 @@ func (s *Server) viaAsk(ctx context.Context, c *Conn, req request, peer Peer) *r
 			return finishedAsk(req, out, peer, s.passCall(ctx, req))
 		}
 
+		// Undeliverable URL question, entry trigger (#2080): this host
+		// declared elicitation.url at 2025-11-25 but there is no channel
+		// to ask it on, so a pending URL question of this call can never
+		// be delivered inline. Answer -32042 listing exactly those
+		// questions; the broker KEEPS them (no Abandon) -- the host
+		// completes them out of band and retries, mirroring the client
+		// flow of #2079.
+		if senderFrom(ctx) == nil && !c.canPush() {
+			if resp := urlRequiredResponse(req, peer, out.Questions); resp != nil {
+				return resp
+			}
+		}
 		sendable := sendableTo(out.Questions, peer)
 		if len(sendable) == 0 && len(out.Notifications) > 0 {
 			continue // Poll returned to deliver these; go straight back
@@ -249,6 +270,7 @@ func (s *Server) viaAsk(ctx context.Context, c *Conn, req request, peer Peer) *r
 			return reply(inputRequired(sendable, state, peer))
 		}
 
+		noPushURL := false
 		answers := map[string]json.RawMessage{}
 		// The question itself is bounded by the same deadline: a client
 		// that never answers must not hold the call past AskTimeout, and
@@ -260,6 +282,16 @@ func (s *Server) viaAsk(ctx context.Context, c *Conn, req request, peer Peer) *r
 				if errors.Is(aerr, ErrNoPush) {
 					// This transport cannot carry a request to the client.
 					// The broker keeps the question; stop trying to ask.
+					// URL eligibility comes from the whole pending set,
+					// not just the question that failed first: a form
+					// question queued ahead of a URL one must not mask
+					// the -32042 the URL question is owed.
+					for _, pending := range sendable {
+						if pending.Method == "elicitation/create" && pending.Mode == "url" {
+							noPushURL = true
+							break
+						}
+					}
 					break
 				}
 				continue
@@ -267,6 +299,19 @@ func (s *Server) viaAsk(ctx context.Context, c *Conn, req request, peer Peer) *r
 			answers[q.ID] = raw
 		}
 		cancelAsk()
+		if noPushURL {
+			// In-loop trigger (#2080): askClient could not push a URL
+			// question to a 2025-11-25 host that declared
+			// elicitation.url. Answer -32042 with this call's pending
+			// URL questions instead of waiting out the timeout and
+			// failing generically; the broker keeps the questions.
+			if resp := urlRequiredResponse(req, peer, sendable); resp != nil {
+				if len(answers) > 0 {
+					_ = s.Ask.Reply(ctx, callID, answers)
+				}
+				return resp
+			}
+		}
 		if len(answers) > 0 {
 			// The questions still open, to undo wireKey's renaming.
 			if open, perr := s.Ask.Poll(ctx, callID, time.Millisecond); perr == nil {
@@ -337,8 +382,8 @@ func (s *Server) beginAsk(ctx context.Context, req request, peer Peer) (id strin
 
 // finishedAsk is the answer to a request whose asked call has finished.
 //
-// pass says the request is a pass-through upstream's tools/call, the one case
-// an upstream's JSON-RPC error is relayed as itself.
+// pass says the request is a direct upstream tools/call (pass-through or
+// raw), the one case an upstream's JSON-RPC error is relayed as itself.
 func finishedAsk(req request, out Outcome, peer Peer, pass bool) *response {
 	fail := func(code int, msg string) *response {
 		return &response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: code, Message: msg}}
@@ -346,6 +391,13 @@ func finishedAsk(req request, out Outcome, peer Peer, pass bool) *response {
 	// An upstream error carried whole -- -32021 with its requiredCapabilities
 	// -- is relayed as itself on every path.
 	if up := (*UpstreamError)(nil); errors.As(out.Err, &up) {
+		// An upstream -32042 is relayed only to a host that declared
+		// elicitation.url at 2025-11-25 (#2080): to anyone else the
+		// code would name elicitations it never agreed to open, so
+		// the call fails generically instead.
+		if up.Code == codeURLElicitationRequired && !peer.eligibleURLElicitationRequired() {
+			return fail(codeInternal, up.Message)
+		}
 		return up.relay(req.ID)
 	}
 	if pass && out.Upstream != nil && req.Method == "tools/call" {
@@ -372,7 +424,11 @@ func finishedAsk(req request, out Outcome, peer Peer, pass bool) *response {
 	return &response{JSONRPC: "2.0", ID: req.ID, Result: askResult(req, out)}
 }
 
-// passCall reports whether req is a tools/call of a pass-through tool.
+// passCall reports whether req is a tools/call of a direct upstream tool:
+// a pass-through tool, or a raw (codemode=false) tool on a raw request.
+// Both are the upstream's own call, so an upstream JSON-RPC error the
+// bridge brings back is relayed as itself rather than flattened into a
+// tool result.
 func (s *Server) passCall(ctx context.Context, req request) bool {
 	if req.Method != "tools/call" {
 		return false
@@ -381,8 +437,11 @@ func (s *Server) passCall(ctx context.Context, req request) bool {
 		Name string `json:"name"`
 	}
 	_ = json.Unmarshal(req.Params, &p)
-	ok, _ := s.isPassTool(ctx, p.Name)
-	return ok
+	if ok, _ := s.isPassTool(ctx, p.Name); ok {
+		return true
+	}
+	_, isRaw, err := s.rawOwner(ctx, p.Name)
+	return err == nil && isRaw
 }
 
 // sendableTo picks the questions this client may be sent.

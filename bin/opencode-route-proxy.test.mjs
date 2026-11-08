@@ -7,7 +7,7 @@
 // purely by routing, and every attempt must land in the fixture
 // route_attempt ledger with session_id NULL (the zero-session proof).
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { createServer } from "node:http";
 import net from "node:net";
@@ -49,6 +49,7 @@ const makeLeaf = (name, expectedKey) => {
         body = JSON.parse(raw || "{}");
       } catch {}
       leaf.last = { headers: req.headers, body, url: req.url };
+      if (leaf.mode === "slow") return;
       if (req.headers.authorization !== `Bearer ${expectedKey}`) {
         res.writeHead(401, { "content-type": "application/json" });
         return res.end(JSON.stringify({ error: { message: "bad key" } }));
@@ -124,7 +125,9 @@ const ROUTE_ATTEMPT_SCHEMA = `CREATE TABLE route_attempt (
   quota text, tokens_estimated integer, error_body text, hedged integer,
   cost_usd real)`;
 
-const startProxy = async () => {
+const startProxy = async (arg = {}) => {
+  const timeout = typeof arg === "string" ? arg : "15000";
+  const pinnedNow = arg && typeof arg === "object" ? arg.nowMs : undefined;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "route-proxy-test-"));
   const leafA = await makeLeaf("LEAF-A", "key-a");
   const leafB = await makeLeaf("LEAF-B", "key-b");
@@ -151,12 +154,15 @@ const startProxy = async () => {
     "leafA": {
       "npm": "@ai-sdk/openai-compatible",
       "options": { "baseURL": "http://127.0.0.1:${leafA.port}/v1", "apiKey": "key-a" },
-      "models": { "m-a": { "variants": { "high": { "options": { "reasoning_effort": "high" } } } } },
+      "models": { "m-a": { "variants": { "high": { "options": { "reasoning_effort": "high" } } } }, "m-g": {} },
     },
     "leafB": {
       "npm": "@ai-sdk/openai-compatible",
       "options": { "baseURL": "http://127.0.0.1:${leafB.port}/v1" },
-      "models": { "m-b": {} },
+      "models": { "m-b": {}, "m-g": {} },
+    },
+    "openai": {
+      "models": { "m-gpt": {} },
     },
     "leafOff": {
       "npm": "@ai-sdk/openai-compatible",
@@ -165,11 +171,43 @@ const startProxy = async () => {
     },
   },
   "experimental": {
+    "provider_routes": {
+      "grp-ordered": { "providers": ["leafB", "leafA"], "selection": "ordered" },
+      "grp-rr": { "providers": ["leafA", "leafB"], "selection": "round-robin" },
+      "grp-weighted": { "providers": ["leafA", "leafB"], "selection": "weighted", "weights": { "leafA": 0, "leafB": 1 } },
+    },
+    "model_route_windows": {
+      "peak": { "daysOfWeek": ["mon", "tue", "wed", "thu", "fri"], "start": "01:00", "end": "04:00", "timezone": "UTC" },
+      "overnight": { "daysOfWeek": ["fri"], "start": "22:00", "end": "02:00", "timezone": "UTC" },
+      "bad-start-2400": { "start": "24:00", "end": "12:00", "timezone": "UTC" },
+      "bad-end-2460": { "start": "09:00", "end": "24:60", "timezone": "UTC" },
+      "bad-wrap-99": { "start": "99:99", "end": "99:98", "timezone": "UTC" },
+      "bad-start-2500": { "start": "25:00", "end": "12:00", "timezone": "UTC" },
+      "bad-end-2500": { "start": "09:00", "end": "25:00", "timezone": "UTC" },
+      "edge-early": { "start": "00:00", "end": "00:02", "timezone": "UTC" },
+      "edge-late": { "start": "23:58", "end": "23:59", "timezone": "UTC" },
+    },
     "model_routes": {
       "t-ordered": { "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
       "t-variant": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "variants": { "medium": "high" } } ] },
       "t-nested": { "selection": "ordered", "targets": ["opencode-route/t-ordered"] },
       "t-disabled": { "selection": "ordered", "targets": ["leafOff/m-b", "leafB/m-b"] },
+      "t-window": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "peak" }, "leafB/m-b" ] },
+      "t-window-inv": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": { "name": "peak", "invert": true } }, "leafB/m-b" ] },
+      "t-window-unknown": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "no-such-window" }, "leafB/m-b" ] },
+      "t-window-overnight": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "overnight" }, "leafB/m-b" ] },
+      "t-window-bad-start": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "bad-start-2400" }, "leafB/m-b" ] },
+      "t-window-bad-end": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "bad-end-2460" }, "leafB/m-b" ] },
+      "t-window-bad-wrap": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "bad-wrap-99" }, "leafB/m-b" ] },
+      "t-window-bad-start2500": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "bad-start-2500" }, "leafB/m-b" ] },
+      "t-window-bad-end2500": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "bad-end-2500" }, "leafB/m-b" ] },
+      "t-window-edge-early": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "edge-early" }, "leafB/m-b" ] },
+      "t-window-edge-late": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "edge-late" }, "leafB/m-b" ] },
+      "t-group": { "selection": "ordered", "targets": ["grp-ordered/m-g"] },
+      "t-group-rr": { "selection": "ordered", "targets": ["grp-rr/m-g"] },
+      "t-group-weighted": { "selection": "ordered", "targets": ["grp-weighted/m-g"] },
+      "t-group-skip": { "selection": "ordered", "targets": ["grp-ordered/m-a"] },
+      "t-openai-default": { "selection": "ordered", "targets": ["openai/m-gpt"] },
     },
   },
 }`,
@@ -182,7 +220,10 @@ const startProxy = async () => {
     OPENCODE_ROUTE_PROXY_PORT: String(port),
     OPENCODE_ROUTE_PROXY_CONFIG: configPath,
     OPENCODE_ROUTE_PROXY_DB: dbPath,
-    OPENCODE_ROUTE_PROXY_TIMEOUT_MS: "15000",
+    OPENCODE_ROUTE_PROXY_TIMEOUT_MS: timeout,
+    ...(pinnedNow
+      ? { OPENCODE_ROUTE_PROXY_NOW_MS: String(pinnedNow) }
+      : {}),
   };
   const child = spawn(
     process.execPath,
@@ -222,13 +263,41 @@ const startProxy = async () => {
     leafA.server.close();
     leafB.server.close();
   };
-  return { base, post, attempts, leafA, leafB, cleanup };
+  return { base, post, attempts, leafA, leafB, cleanup, log: () => log };
 };
 
 const MSGS = [
   { role: "system", content: "be terse" },
   { role: "user", content: "hello" },
 ];
+
+test("invalid timeout exits at startup with a useful diagnostic", () => {
+  for (const raw of ["0", "-1", "1.5", "1e3", "0x10", " 100", "2147483648", "3000000000", "abc", "nope"]) {
+    const result = spawnSync(process.execPath, [path.join(binDir, "opencode-route-proxy.mjs")], {
+      env: { ...process.env, OPENCODE_ROUTE_PROXY_PORT: "18750", OPENCODE_ROUTE_PROXY_TIMEOUT_MS: raw },
+      encoding: "utf8", timeout: 5000,
+    });
+    assert.equal(result.status, 1, result.stderr);
+    assert.ok(result.stderr.includes("OPENCODE_ROUTE_PROXY_TIMEOUT_MS"));
+    assert.ok(result.stderr.includes(`"${raw}"`));
+    assert.doesNotMatch(result.stdout, /listening/i);
+  }
+});
+
+test("configured deadline aborts a slow leaf", async () => {
+  const p = await startProxy("150");
+  try {
+    p.leafA.mode = "slow";
+    const start = Date.now();
+    const res = await p.post({ model: "opencode-route/t-variant", messages: MSGS });
+    assert.ok(res.status >= 500, `unexpected status ${res.status}`);
+    assert.ok(Date.now() - start < 3000, "deadline did not abort the slow leaf promptly");
+    assert.equal(p.leafA.hits, 1);
+    assert.equal(p.attempts()[0].outcome, "timeout");
+  } finally {
+    await p.cleanup();
+  }
+});
 
 test("health and model list are served locally", async () => {
   const p = await startProxy();
@@ -356,6 +425,306 @@ test("unknown route and malformed bodies are rejected", async () => {
     assert.match((await res.json()).error.message, /unknown route/);
     const bad = await p.post({ model: "opencode-route/t-ordered", messages: "x" });
     assert.equal(bad.status, 400);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+// Window gates (#3225): the fixture "peak" window is Mon-Fri
+// 01:00-04:00 UTC. 2026-11-04 is a Wednesday.
+const IN_PEAK = Date.UTC(2026, 10, 4, 2, 30);
+const OUT_PEAK = Date.UTC(2026, 10, 4, 12, 0);
+
+test("window-gated target is expanded inside its window", async () => {
+  const p = await startProxy({ nowMs: IN_PEAK });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    const rows = p.attempts();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].provider_id, "leafA");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("window-gated target is excluded outside its window", async () => {
+  const p = await startProxy({ nowMs: OUT_PEAK });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+    const rows = p.attempts();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].provider_id, "leafB");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("inverted window gate is eligible only outside the window", async () => {
+  const inP = await startProxy({ nowMs: IN_PEAK });
+  try {
+    const res = await inP.post({
+      model: "opencode-route/t-window-inv",
+      messages: MSGS,
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+  } finally {
+    await inP.cleanup();
+  }
+  const outP = await startProxy({ nowMs: OUT_PEAK });
+  try {
+    const res = await outP.post({
+      model: "opencode-route/t-window-inv",
+      messages: MSGS,
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+  } finally {
+    await outP.cleanup();
+  }
+});
+
+test("a gate naming an unknown window fails closed", async () => {
+  const p = await startProxy({ nowMs: IN_PEAK });
+  try {
+    const res = await p.post({
+      model: "opencode-route/t-window-unknown",
+      messages: MSGS,
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+    const rows = p.attempts();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].provider_id, "leafB");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+// Overnight windows (#3874): the fixture "overnight" window is
+// Fri 22:00-02:00 UTC. 2026-11-06 is a Friday, 2026-11-07 a Saturday.
+// The after-midnight leg belongs to the day the window opened.
+const FRI_2300 = Date.UTC(2026, 10, 6, 23, 0);
+const SAT_0100 = Date.UTC(2026, 10, 7, 1, 0);
+const FRI_0100 = Date.UTC(2026, 10, 6, 1, 0);
+const SAT_2300 = Date.UTC(2026, 10, 7, 23, 0);
+
+test("overnight window is active on its opening evening", async () => {
+  const p = await startProxy({ nowMs: FRI_2300 });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window-overnight", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("overnight window stays active on the after-midnight leg", async () => {
+  const p = await startProxy({ nowMs: SAT_0100 });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window-overnight", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("overnight window is inactive on an unlisted day's after-midnight leg", async () => {
+  const p = await startProxy({ nowMs: FRI_0100 });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window-overnight", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("overnight window is inactive on an unlisted evening", async () => {
+  const p = await startProxy({ nowMs: SAT_2300 });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window-overnight", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("provider route (ordered) expands to member providers in group order", async () => {
+  const p = await startProxy();
+  try {
+    const res = await p.post({ model: "opencode-route/t-group", messages: MSGS });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    // grp-ordered lists leafB first; the attempt must be recorded
+    // under the concrete member, never under the group id (#3256).
+    assert.equal(json.choices[0].message.content, "LEAF-B");
+    const rows = p.attempts();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].provider_id, "leafB");
+    assert.equal(rows[0].model_id, "m-g");
+    assert.equal(rows[0].outcome, "success");
+    assert.equal(rows[0].session_id, null);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("provider route (round-robin) rotates the starting member", async () => {
+  const p = await startProxy();
+  try {
+    const first = await (await p.post({ model: "opencode-route/t-group-rr", messages: MSGS })).json();
+    const second = await (await p.post({ model: "opencode-route/t-group-rr", messages: MSGS })).json();
+    assert.equal(first.choices[0].message.content, "LEAF-A");
+    assert.equal(second.choices[0].message.content, "LEAF-B");
+    assert.deepEqual(
+      p.attempts().map((r) => r.provider_id),
+      ["leafA", "leafB"],
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("provider route (weighted) honors weights keyed by member provider id", async () => {
+  const p = await startProxy();
+  try {
+    const res = await p.post({ model: "opencode-route/t-group-weighted", messages: MSGS });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    // leafA carries weight 0 in grp-weighted, leafB weight 1.
+    assert.equal(json.choices[0].message.content, "LEAF-B");
+    assert.equal(p.attempts()[0].provider_id, "leafB");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("provider route skips a member whose catalog lacks the model", async () => {
+  const p = await startProxy();
+  try {
+    const res = await p.post({ model: "opencode-route/t-group-skip", messages: MSGS });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    // grp-ordered is [leafB, leafA], but only leafA offers m-a.
+    assert.equal(json.choices[0].message.content, "LEAF-A");
+    assert.deepEqual(
+      p.attempts().map((r) => r.provider_id),
+      ["leafA"],
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("empty-shell openai block resolves the built-in endpoint default", async () => {
+  const p = await startProxy();
+  try {
+    // The fixture openai block is an empty shell (models only, no
+    // npm/options/baseURL) and no credential is stored for it, so a
+    // resolved endpoint surfaces as a credential failure — while an
+    // unresolved one would surface as UnknownProvider (#3256). The
+    // check order in callLeaf (endpoint first, credential second)
+    // makes this a network-free proof the default resolved.
+    const res = await p.post({ model: "opencode-route/t-openai-default", messages: MSGS });
+    assert.equal(res.status, 502);
+    const rows = p.attempts();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].provider_id, "openai");
+    assert.equal(rows[0].error_tag, "Authentication");
+    assert.notEqual(rows[0].error_tag, "UnknownProvider");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+// Range checks (#4259): out-of-range window times fail closed (never
+// active) as a window start and as a window end. Each case pins `now`
+// where the old shape-only parseHHMM misread the window as active:
+// 24:00-12:00 and 25:00-12:00 wrap into the after-midnight leg at
+// 02:30, 09:00-24:60 / 09:00-25:00 cover 23:30 and 12:00, and
+// 99:99-99:98 was always-on.
+test("out-of-range window times fail closed as start and as end", async () => {
+  const AT_0230 = Date.UTC(2026, 10, 4, 2, 30);
+  const AT_1200 = Date.UTC(2026, 10, 4, 12, 0);
+  const AT_2330 = Date.UTC(2026, 10, 4, 23, 30);
+  const cases = [
+    ["t-window-bad-start", AT_0230],
+    ["t-window-bad-start2500", AT_0230],
+    ["t-window-bad-wrap", AT_0230],
+    ["t-window-bad-wrap", AT_1200],
+    ["t-window-bad-wrap", AT_2330],
+    ["t-window-bad-end", AT_2330],
+    ["t-window-bad-end", AT_1200],
+    ["t-window-bad-end2500", AT_1200],
+    ["t-window-bad-end2500", AT_2330],
+  ];
+  for (const [route, nowMs] of cases) {
+    const p = await startProxy({ nowMs });
+    try {
+      const res = await p.post({ model: `opencode-route/${route}`, messages: MSGS });
+      assert.equal(res.status, 200, route);
+      assert.equal((await res.json()).choices[0].message.content, "LEAF-B", `${route} at ${new Date(nowMs).toISOString()}`);
+      assert.deepEqual(
+        p.attempts().map((r) => r.provider_id),
+        ["leafB"],
+        route,
+      );
+    } finally {
+      await p.cleanup();
+    }
+  }
+});
+
+test("boundary times 00:00 and 23:59 remain valid windows", async () => {
+  const AT_0001 = Date.UTC(2026, 10, 4, 0, 1);
+  const AT_2358 = Date.UTC(2026, 10, 4, 23, 58);
+  const AT_1200 = Date.UTC(2026, 10, 4, 12, 0);
+  const early = await startProxy({ nowMs: AT_0001 });
+  try {
+    const res = await early.post({ model: "opencode-route/t-window-edge-early", messages: MSGS });
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+  } finally {
+    await early.cleanup();
+  }
+  const late = await startProxy({ nowMs: AT_2358 });
+  try {
+    const res = await late.post({ model: "opencode-route/t-window-edge-late", messages: MSGS });
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+  } finally {
+    await late.cleanup();
+  }
+  const mid = await startProxy({ nowMs: AT_1200 });
+  try {
+    for (const route of ["t-window-edge-early", "t-window-edge-late"]) {
+      const res = await mid.post({ model: `opencode-route/${route}`, messages: MSGS });
+      assert.equal((await res.json()).choices[0].message.content, "LEAF-B", route);
+    }
+  } finally {
+    await mid.cleanup();
+  }
+});
+
+test("config load names invalid windows instead of silently evaluating them", async () => {
+  const p = await startProxy({ nowMs: Date.UTC(2026, 10, 4, 2, 30) });
+  try {
+    await p.post({ model: "opencode-route/t-window-bad-wrap", messages: MSGS });
+    let log = "";
+    for (let i = 0; i < 20; i++) {
+      log = p.log();
+      if (log.includes("bad-wrap-99") && log.includes("99:99")) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(log.includes("bad-wrap-99"), `log names the window:\n${log}`);
+    assert.ok(log.includes("99:99"), `log names the bad value:\n${log}`);
+    assert.ok(log.includes("bad-start-2400"), `log names each bad window:\n${log}`);
   } finally {
     await p.cleanup();
   }

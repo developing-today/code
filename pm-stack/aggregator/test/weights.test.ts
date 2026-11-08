@@ -22,6 +22,34 @@ describe("effortWeight (#1108 slice 1)", () => {
     expect(effortWeight(["kind/task"])).toBeNull();
     expect(effortWeight(["effort/xl"])).toBeNull();
   });
+
+  test("unsized: prototype-chain members are not weights (#2734)", () => {
+    expect(effortWeight(["effort/constructor"])).toBeNull();
+    expect(effortWeight(["effort/__proto__"])).toBeNull();
+    expect(effortWeight(["effort/hasOwnProperty"])).toBeNull();
+    expect(effortWeight(["effort/toString"])).toBeNull();
+  });
+
+  test("prototype-labelled items count as unsized with numeric totals (#2734)", () => {
+    const s = summarizeWeights([
+      item("closed", ["effort/constructor"]),
+      item("open", ["effort/__proto__", "kind/task"]),
+      item("open", ["effort/xs"]), // 1 open, the only sized item
+    ]);
+    expect(s.totalWeight).toBe(1);
+    expect(s.closedWeight).toBe(0);
+    expect(s.openWeight).toBe(1);
+    expect(typeof s.totalWeight).toBe("number");
+    expect(typeof s.closedWeight).toBe("number");
+    expect(s.unsizedCount).toBe(2);
+    expect(s.unsizedClosedCount).toBe(1);
+    expect(s.unsizedOpenCount).toBe(1);
+    expect(s.weightedPct).toBe(0);
+    const line = weightedLine(s);
+    expect(line).not.toContain("function");
+    expect(line).not.toContain("[object Object]");
+    expect(line).toContain("2 unsized");
+  });
 });
 
 describe("modeOf", () => {
@@ -52,11 +80,7 @@ describe("summarizeWeights", () => {
   });
 
   test("unsized items are counted separately, never zero-weighted silently", () => {
-    const s = summarizeWeights([
-      item("closed", ["effort/s"]),
-      item("closed", []),
-      item("open", ["kind/task"]),
-    ]);
+    const s = summarizeWeights([item("closed", ["effort/s"]), item("closed", []), item("open", ["kind/task"])]);
     expect(s.totalWeight).toBe(4);
     expect(s.weightedPct).toBe(100);
     expect(s.unsizedCount).toBe(2);

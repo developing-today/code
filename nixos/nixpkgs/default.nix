@@ -20,6 +20,70 @@
     overlays = [
       inputs.self.vimOverlay.${system}
       inputs.yazi.overlays.default
+      # TEMPORARY (code#4167, found via code#2715): awscli 1.44.21
+      # fails pythonRuntimeDepsCheck on the current pins -- it pins
+      # botocore==1.42.31 and s3transfer>=0.16.0,<0.17.0, but every
+      # pin now ships botocore 1.43.79 and s3transfer 0.19.2 (the tree
+      # is mid-transition). awscli's own expression notes botocore
+      # must not be relaxed (the two are developed in lockstep), so
+      # give awscli dedicated botocore/s3transfer derivations rolled
+      # back to the versions it pins; the set's botocore/s3transfer
+      # stay current for all other consumers. Remove once stock
+      # awscli passes the check again; tracked in code#4167.
+      (
+        final: prev:
+        let
+          botocore_1_42_31 = prev.python3Packages.botocore.overridePythonAttrs (old: {
+            version = "1.42.31";
+            src = prev.fetchFromGitHub {
+              owner = "boto";
+              repo = "botocore";
+              tag = "1.42.31";
+              hash = "sha256-avuv1uXKMeSr3SL+BI9XW8tDCQM/dlXFn590di3S03k=";
+            };
+          });
+          s3transfer_0_16_0 = prev.python3Packages.s3transfer.overridePythonAttrs (old: {
+            # s3transfer itself depends on the set's botocore; point it
+            # at the pinned one too, or awscli's closure contains both
+            # botocores and pythonCatchConflictsPhase fails the build.
+            dependencies = map (d: if (d.pname or "") == "botocore" then botocore_1_42_31 else d) (
+              old.dependencies or [ ]
+            );
+            version = "0.16.0";
+            src = prev.fetchFromGitHub {
+              owner = "boto";
+              repo = "s3transfer";
+              tag = "0.16.0";
+              hash = "sha256-dpDlsZtLjd6r4kLkIDPG6ZPFFs6/4elYiHk2HDpa9+4=";
+            };
+          });
+        in
+        {
+          awscli = prev.awscli.overridePythonAttrs (old: {
+            # The expression's installCheck greps `aws --version` for
+            # the SET's botocore version; with the pairing overridden
+            # it must grep for the pinned one instead (same assertion,
+            # pairing actually in force).
+            installCheckPhase = ''
+              runHook preInstallCheck
+
+              $out/bin/aws --version | grep "1.42.31"
+              $out/bin/aws --version | grep "1.44.21"
+
+              runHook postInstallCheck
+            '';
+            dependencies = map (
+              d:
+              if (d.pname or "") == "botocore" then
+                botocore_1_42_31
+              else if (d.pname or "") == "s3transfer" then
+                s3transfer_0_16_0
+              else
+                d
+            ) old.dependencies;
+          });
+        }
+      )
       # Provides pkgs.openclaw + pkgs.openclawPackages for home/openclaw.
       inputs.nix-openclaw.overlays.default
       # inputs.waybar.overlays.default # ?? !! style.css

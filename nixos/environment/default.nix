@@ -636,7 +636,7 @@ in
       librepcb
       horizon-eda
       # geda # removed from nixpkgs 2026-07-26: unmaintained upstream
-      gerbv
+      # gerbv # depends on gtk2, removed from nixpkgs (broken: gtk2 final release 2020)
 
       # Mechanical CAD / STEP + FreeCAD inspection
       # Used for vendor mechanical design files during hardware research, e.g.
@@ -956,7 +956,7 @@ in
       # Default would be pkgs.hyprland (0.56.2). Its queries (clients,
       # activewindow) are still valid IPC commands on master.
       (grimblast.override { hyprland = hyprland-master; })
-      gtk2
+      # gtk2 # removed from nixpkgs: marked broken (final release 2.24.33, Dec 2020); migrate to gtk3/gtk4
       gtk3
       gtk4
       #hackgen-nf-font

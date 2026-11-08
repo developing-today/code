@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/api"
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // routePattern finds every route the daemon registers.
@@ -18,7 +18,10 @@ import (
 // will not say what has been registered on it and the alternative -- a
 // parallel list of patterns kept by hand -- is exactly the drift this test
 // exists to catch.
-var routePattern = regexp.MustCompile(`mux\.HandleFunc\("([A-Z]+) (/v1[^"]*)"`)
+// Both registration idioms: mux.HandleFunc for the unfunneled past, s.route
+// for the authorisation funnel (every declared operation registers through
+// s.route, which records the permission decision before the handler runs).
+var routePattern = regexp.MustCompile(`(?:mux\.HandleFunc|s\.route\(mux),\s*"([A-Z]+) (/v1[^"]*)"`)
 
 func daemonRoutes(t *testing.T) map[string]string {
 	t.Helper()

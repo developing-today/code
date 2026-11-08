@@ -767,7 +767,7 @@ pub fn render_settings(node_id: &str) -> String {
 }
 
 /// Render a browser presentation for the optional multiplayer world.
-pub fn render_world_page(assets: &AssetUrls) -> String {
+pub fn render_world_page(assets: &AssetUrls, world_socket: Option<&str>) -> String {
     let content = r#"
 <section data-world-app class="space-y-5" aria-labelledby="world-title">
   <nav aria-label="World documents" class="text-sm">
@@ -798,29 +798,33 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
     </label>
     <div class="flex flex-wrap gap-2">
       <button data-world-join class="btn btn-primary" type="button">Join world</button>
+      <button data-world-host-view class="btn btn-secondary" type="button">View as host (read-only)</button>
       <button data-world-copy class="btn btn-ghost" type="button">Copy capability</button>
     </div>
     <div data-world-invite-output hidden>
       <p class="text-sm">This bearer capability grants guest access. Share it privately.</p>
     </div>
-    <details>
-      <summary class="cursor-pointer text-sm">Host: create a guest invite</summary>
-      <div class="mt-3 flex flex-wrap gap-2">
+    <section class="rounded border border-base-300 p-3 space-y-3">
+      <h2 class="font-bold">Host controls</h2>
+      <div class="flex flex-wrap gap-2">
         <input data-world-admin class="input input-bordered font-mono" type="password" autocomplete="off" aria-label="World admin token" placeholder="World admin token">
-        <button data-world-invite class="btn btn-secondary" type="button">Create invite</button>
+        <button data-world-invite class="btn btn-secondary" type="button">Create guest invite</button>
       </div>
-      <div class="mt-3 flex flex-wrap items-center gap-2">
+    </section>
+    <section class="rounded border border-base-300 p-3 space-y-3">
+      <h2 class="font-bold">Install or update program</h2>
+      <div class="flex flex-wrap items-center gap-2">
         <input data-world-module class="file-input file-input-bordered" type="file" accept=".wasm,application/wasm" aria-label="Wasm world module">
         <input data-world-seed class="input input-bordered w-24" type="number" value="1" aria-label="World seed">
         <button data-world-install class="btn btn-warning" type="button">Install Wasm module</button>
       </div>
-      <div class="mt-3 flex flex-wrap items-center gap-2">
+      <div class="flex flex-wrap items-center gap-2">
         <input data-world-source class="file-input file-input-bordered" type="file" accept=".roc,text/plain" multiple aria-label="Roc world sources">
         <button data-world-compile class="btn btn-warning" type="button">Compile &amp; install Roc sources</button>
       </div>
       <p class="text-xs opacity-60">Choose main.roc and up to 7 additional .roc files. Each file is limited to 128 KiB and all sources together to 256 KiB. Compilation runs on the host (up to 120 seconds).</p>
       <p class="text-xs opacity-60">Uploads run in the host's import-free Wasmtime sandbox. The current world restarts at its module seed.</p>
-    </details>
+    </section>
   </section>
 
   <section class="grid gap-4 md:grid-cols-2">
@@ -853,7 +857,23 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
   </section>
 </section>
 "#;
-    render_page("World", content, "", assets)
+    // The frontend connects to the app's configured live channel:
+    // the socket travels on the root element as a data attribute
+    // (data-world-socket), which world.ts reads instead of a
+    // hardcoded path (Codex P1 on #3894). No socket declared: no
+    // attribute, and the frontend keeps its historical default.
+    let content = match world_socket {
+        Some(socket) => content.replacen(
+            "data-world-app",
+            &format!(
+                "data-world-app data-world-socket=\"{}\"",
+                html_escape(socket)
+            ),
+            1,
+        ),
+        None => content.to_owned(),
+    };
+    render_page("World", &content, "", assets)
 }
 
 /// Render the peers page showing discovered peers.
@@ -1072,10 +1092,13 @@ mod tests {
 
     #[test]
     fn test_render_world_page_exposes_presentation_controls() {
-        let html = render_world_page(&AssetUrls::default());
+        let html = render_world_page(&AssetUrls::default(), Some("/ws/arena"));
+        assert!(html.contains("data-world-socket=\"/ws/arena\""));
         assert!(html.contains("data-world-app"));
         assert!(html.contains("data-world-invite"));
         assert!(html.contains("data-world-join"));
+        assert!(html.contains("data-world-host-view"));
+        assert!(html.contains("Install or update program"));
         assert!(html.contains("data-world-world"));
         assert!(html.contains("data-world-chat-form"));
         assert!(html.contains("data-world-input-form"));

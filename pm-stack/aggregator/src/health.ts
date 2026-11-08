@@ -18,13 +18,20 @@
 //   reports "fixtures", which is also the degraded-state test fixture.
 import type { PendingCommentCounts } from "./comments.ts";
 import type { Config } from "./config.ts";
-import { ageMsText, GENERATED_AT_FUTURE_SKEW_MS, type FleetFeed, type SectionDiagnosis } from "./feed.ts";
+import { unreportedCheckoutDrift, type CheckoutDrift } from "./checkout-drift.ts";
+import {
+  ageMsText,
+  FEED_STALE_MS,
+  GENERATED_AT_FUTURE_SKEW_MS,
+  type FeedSectionStatus,
+  type FleetFeed,
+  type SectionDiagnosis,
+} from "./feed.ts";
 import type { GhItem, ProvenanceDetail, RefKey } from "./model.ts";
 import { PAGES } from "./pages.ts";
 import { buildServices, type ServiceDef } from "./topology.ts";
+import { fetchRfaState, rfaHealthDown, rfaHealthFacet, type RfaHealthFacet, type RfaState } from "./sources/ready-for-agent.ts";
 
-/** Same staleness threshold live.ts applies to feed-backed facets. */
-const FEED_STALE_MS = 15 * 60_000;
 /** Orchestration cadence: hourly; next run is an expectation, not a promise. */
 const ORCHESTRATION_CADENCE_MS = 3_600_000;
 
@@ -104,7 +111,9 @@ export interface ServiceHealth {
 export interface FeedSectionHealth {
   key: string;
   present: boolean;
-  /** The timestamp the age is measured from (the section's own when it has one). */
+  /** `unknown` means an older collector did not publish outcome metadata. */
+  status: FeedSectionStatus | "unknown";
+  /** The timestamp the age is measured from (latest collection attempt when available). */
   generatedAt?: string;
   ageMs?: number;
   note?: string;
@@ -160,6 +169,10 @@ export interface HealthView {
     generatedAt: string | null;
     fileMtime: string | null;
     ageMs: number | null;
+    /** #1116 item 3: the collector checkout's drift vs origin/main,
+     *  as reported in the feed; "unknown" with a reason when the feed
+     *  carries no report — never a silently invented state. */
+    checkout: CheckoutDrift;
     sections: FeedSectionHealth[];
   };
   jobs: {
@@ -180,6 +193,12 @@ export interface HealthView {
   /** Dashboard comment loops (#1145): pending triage/posting counts,
    *  so an unworked comment queue is visible on /health. */
   comments: PendingCommentCounts;
+  /** ready-for-agent harness facet (#1203): live GraphQL state —
+   *  registered repositories, backend readiness, work-item counts —
+   *  from src/sources/ready-for-agent.ts, not just the topology
+   *  probe's HTTP 200. "down" with the error when the harness cannot
+   *  be read; never an invented state. */
+  rfa: RfaHealthFacet;
 }
 
 // --- Render registry -------------------------------------------------------
@@ -195,6 +214,13 @@ export function recordRender(route: string, ok: boolean, at = Date.now()): void 
 
 export function renderRegistrySize(): number {
   return renderLog.size;
+}
+
+/** The render registry as PageHealth rows (#1497: the /pages live
+ * index renders exactly this — last-rendered + ok per manifest page,
+ * straight from the same registry /health reports). */
+export function pageRenderHealth(now = Date.now()): PageHealth[] {
+  return pageHealth(now);
 }
 
 function pageHealth(now: number): PageHealth[] {
@@ -217,27 +243,61 @@ function feedSections(feed: FleetFeed | null, now: number): FeedSectionHealth[] 
   if (!feed) return [];
   const from = (generatedAt: string | undefined, present: boolean, note?: string): Partial<FeedSectionHealth> => {
     const ts = generatedAt ?? feed.generatedAt;
-    return { present, generatedAt: ts, ageMs: Math.max(0, now - Date.parse(ts)), ...(note ? { note } : {}) };
+    const parsed = Date.parse(ts);
+    // Section stamps get the same validation as the top-level one
+    // (#2242, mirroring #1564): an unparseable stamp must not render
+    // as ageMs NaN/null, and a stamp beyond the future-skew bound
+    // must not render as ageMs 0 (maximally fresh) for as long as
+    // the skew lasts. Either way the section reports absent with a
+    // legible note instead of a fabricated age.
+    if (!Number.isFinite(parsed)) {
+      return { present: false, generatedAt: ts, note: `invalid generatedAt (${ts})` };
+    }
+    if (parsed - now > GENERATED_AT_FUTURE_SKEW_MS) {
+      return {
+        present: false,
+        generatedAt: ts,
+        note: `generatedAt (${ts}) is ${ageMsText(parsed - now)} in the future — never fresh`,
+      };
+    }
+    return { present, generatedAt: ts, ageMs: Math.max(0, now - parsed), ...(note ? { note } : {}) };
   };
   const aa = feed.aa;
   const aaNote =
     aa && "status" in aa && aa.status === "absent"
       ? `absent form: ${"reason" in aa ? String(aa.reason) : "no reason given"}`
       : undefined;
+  const section = (key: string, generatedAt: string | undefined, present: boolean, note?: string) => {
+    const outcome = feed.meta?.sections[key];
+    const outcomeNote =
+      outcome?.status === "error"
+        ? outcome.error
+        : outcome?.status === "skipped"
+          ? "intentionally skipped by collector"
+          : undefined;
+    return {
+      key,
+      status: outcome?.status ?? "unknown",
+      ...from(outcome?.at ?? generatedAt, present, outcomeNote ?? note),
+    } as FeedSectionHealth;
+  };
   return [
-    { key: "quota", ...from(undefined, true) },
-    { key: "attention", ...from(undefined, true) },
-    { key: "orchestration", ...from(feed.orchestration?.generatedAt, feed.orchestration !== undefined) },
-    { key: "dns", ...from(feed.dns?.generatedAt, feed.dns !== undefined) },
-    { key: "registry", ...from(undefined, feed.registry !== undefined) },
-    { key: "projects", ...from(undefined, feed.projects !== undefined) },
-    { key: "saas", ...from(undefined, feed.saas !== undefined) },
-    { key: "payg", ...from(undefined, feed.payg !== undefined) },
-    { key: "charges", ...from(undefined, feed.charges !== undefined) },
-    { key: "subscriptions", ...from(undefined, feed.subscriptions !== undefined) },
-    { key: "snapshots", ...from(undefined, feed.snapshots !== undefined) },
-    { key: "aa", ...from(aa?.generatedAt, aa !== undefined, aaNote) },
-  ] as FeedSectionHealth[];
+    section("quota", undefined, true),
+    section("attention", undefined, true),
+    section("orchestration", feed.orchestration?.generatedAt, feed.orchestration !== undefined),
+    section("dns", feed.dns?.generatedAt, feed.dns !== undefined),
+    section("julesSummary", undefined, feed.julesSummary !== undefined),
+    section("registry", undefined, feed.registry !== undefined),
+    section("projects", undefined, feed.projects !== undefined),
+    section("coverage", undefined, feed.coverage !== undefined),
+    section("saas", undefined, feed.saas !== undefined),
+    section("payg", undefined, feed.payg !== undefined),
+    section("charges", undefined, feed.charges !== undefined),
+    section("chargesAttention", undefined, feed.chargesAttention !== undefined),
+    section("subscriptions", undefined, feed.subscriptions !== undefined),
+    section("snapshots", undefined, feed.snapshots !== undefined),
+    section("aa", aa?.generatedAt, aa !== undefined, aaNote),
+  ];
 }
 
 // --- Assembly ---------------------------------------------------------------
@@ -260,6 +320,8 @@ export interface HealthDeps {
   fetcher?: ProbeFetch;
   cache?: ProbeCache;
   now?: number;
+  /** #1203 test seam: replace the live harness read. */
+  rfaState?: () => Promise<RfaState>;
 }
 
 export function resolveBuildVersion(env: Record<string, string | undefined> = process.env): string {
@@ -298,8 +360,8 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
                 ok: false,
                 detail: `feed generatedAt ${feed.generatedAt} is >60s in the future — never fresh`,
               }
-            : feedAgeMs !== null && feedAgeMs > FEED_STALE_MS
-              ? { state: "stale", ok: false, detail: `feed ${ageMsText(feedAgeMs)} — past the 15m freshness threshold` }
+            : feedAgeMs !== null && feedAgeMs >= FEED_STALE_MS
+              ? { state: "stale", ok: false, detail: `feed ${ageMsText(feedAgeMs)} — at or past the 5m freshness threshold` }
               : { state: "up", ok: true, detail: `feed ${feedAgeMs !== null ? ageMsText(feedAgeMs) : ""}`.trim() };
     } else if (def.probe === "section") {
       if (!diagnosis) {
@@ -355,9 +417,32 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
     });
   }
 
+  // #1203: the harness facet — a real GraphQL read of the dispatch
+  // layer (cached 60 s inside fetchRfaState), reported down with its
+  // error rather than hidden when the harness cannot be read.
+  let rfa: RfaHealthFacet;
+  if (inputs.mode === "fixtures") {
+    rfa = { state: "fixtures", detail: "fixtures mode — no live harness read", repositories: [], backends: [] };
+  } else {
+    try {
+      const state = deps.rfaState ? await deps.rfaState() : await fetchRfaState(cfg.readyForAgent.baseUrl);
+      rfa = rfaHealthFacet(state);
+    } catch (err) {
+      rfa = rfaHealthDown(`harness read failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  const checkout = feed?.checkout ?? unreportedCheckoutDrift();
+  const sectionHealth = feedSections(feed, now);
   const degraded =
     inputs.mode === "live" &&
-    (services.some((s) => s.ok === false) || (feedAgeMs !== null && feedAgeMs > FEED_STALE_MS));
+    (services.some((s) => s.ok === false) ||
+      (feedAgeMs !== null && feedAgeMs >= FEED_STALE_MS) ||
+      checkout.state === "behind" ||
+      // #1203: a harness whose GraphQL cannot be read (or whose backend
+      // is not READY) is a degraded dependency, not an invisible one.
+      rfa.state === "down" ||
+      sectionHealth.some((section) => section.status === "error"));
 
   return {
     status: "ok",
@@ -371,7 +456,8 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
       generatedAt: feed?.generatedAt ?? null,
       fileMtime: inputs.feedFileMtimeMs !== null ? new Date(inputs.feedFileMtimeMs).toISOString() : null,
       ageMs: feedAgeMs,
-      sections: feedSections(feed, now),
+      checkout,
+      sections: sectionHealth,
     },
     jobs: {
       orchestration: {
@@ -391,6 +477,7 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
       },
     },
     pages: pageHealth(now),
+    rfa,
     facets: inputs.detail ?? null,
     itemsCoverage: inputs.itemsCoverage ?? null,
     comments: inputs.comments ?? { pendingMessages: 0, pendingGithub: 0, total: 0 },
