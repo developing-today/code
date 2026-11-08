@@ -1934,14 +1934,13 @@ export function sessionRecordLine(
   const parent = r.parentId
     ? ` · sub of <a href="/sessions?id=${encodeURIComponent(r.parentId)}#${encodeURIComponent(r.parentId)}">${esc(r.parentId)}</a>`
     : "";
-  const renderedRefs = r.taskRefs.flatMap((ref) => {
-    try {
-      return [`<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`];
-    } catch {
-      // A malformed ref may still exist in an older or ungated in-memory
-      // record. Keep the session visible and omit only the invalid link.
-      return [];
-    }
+  const renderedRefs = r.taskRefs.map((ref) => {
+    // #6243 (ref contract rule 4, #6242): a malformed ref may still
+    // exist in an older or ungated in-memory record. Keep the session
+    // visible and render the invalid ref as plain text — the same
+    // treatment tierItemCard (#6149) and poolRefLink give it — never
+    // a throw, and never silently omitted.
+    return isValidRef(ref) ? `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>` : esc(ref);
   });
   const refs = renderedRefs.length ? ` · ${renderedRefs.join(" ")}` : "";
   // #1156: live records carry the session action set on the merged
