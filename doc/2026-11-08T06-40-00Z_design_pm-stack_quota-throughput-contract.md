@@ -63,9 +63,18 @@ the pm-stack NixOS module (the sandbox producer was retired
   (cumulative tokens of the sessions `poolBurn` attributes to the
   pool at each collection). Today's quota sources emit only
   percent/USD windows, so (b) is the derivation that fires live
-  and (a) is armed for the first tokens-unit window source. A
-  shrinking active set makes (b)'s delta negative and yields no
-  rate.
+  and (a) is armed for the first tokens-unit window source. (b)
+  diffs **matching session counters only** — the per-session
+  cumulative counters recorded with each pool-token observation:
+  a session that resumed between collections does not inject its
+  historical tokens into the delta, a session that ended does not
+  subtract its own, and a pair that cannot be compared that way
+  (a missing per-session breakdown on either side, or every
+  matching counter reset) yields no rate. (b) is also freshness-
+  bounded: the newest observation of the pair must be within
+  `RATE_WINDOW_MS` of the collection instant, so an idle pool or
+  an unreachable server stops publishing its last measured rate
+  instead of carrying it for the observation retention period.
 - Pools without a qualifying pair **omit the field**. Fixture rates
   (`src/sources/fixtures.ts`) exist only in fixture data and never
   reach a live pool.

@@ -104,25 +104,76 @@ describe("observationsFromPools + mergeObservations (collector mapping)", () => 
 });
 
 describe("measured rates from live session-token attribution (PR #7354 Codex P2)", () => {
-  const tok = (pool: string, activeTokens: number, at: string): PoolTokenObservation => ({
+  const tok = (
+    pool: string,
+    activeTokens: number,
+    at: string,
+    sessionTokens?: Record<string, number>,
+  ): PoolTokenObservation => ({
     pool,
     provider: "meta",
     activeTokens,
+    ...(sessionTokens ? { sessionTokens } : {}),
     at,
   });
 
   test("rate is the delta of consecutive pool token totals over their minutes", () => {
-    const rates = deriveMeasuredRatesFromPoolTokens([tok("claude", 1000, T0), tok("claude", 1600, T1)]);
+    const rates = deriveMeasuredRatesFromPoolTokens([
+      tok("claude", 1000, T0, { s1: 1000 }),
+      tok("claude", 1600, T1, { s1: 1600 }),
+    ]);
     expect(rates.get("claude")).toBe(10);
   });
 
   test("shrinking active set, stale pair, and single read yield no rate", () => {
-    expect(deriveMeasuredRatesFromPoolTokens([tok("a", 900, T0), tok("a", 100, T1)]).size).toBe(0);
+    expect(
+      deriveMeasuredRatesFromPoolTokens([tok("a", 900, T0, { s1: 900 }), tok("a", 100, T1, { s1: 100 })]).size,
+    ).toBe(0);
     const stale = new Date(Date.parse(T0) + RATE_WINDOW_MS + 60000).toISOString();
-    expect(deriveMeasuredRatesFromPoolTokens([tok("a", 100, T0), tok("a", 200, stale)]).size).toBe(0);
-    expect(deriveMeasuredRatesFromPoolTokens([tok("a", 100, T0)]).size).toBe(0);
+    expect(
+      deriveMeasuredRatesFromPoolTokens([tok("a", 100, T0, { s1: 100 }), tok("a", 200, stale, { s1: 200 })]).size,
+    ).toBe(0);
+    expect(deriveMeasuredRatesFromPoolTokens([tok("a", 100, T0, { s1: 100 })]).size).toBe(0);
     const merged = mergePoolTokenObservations([tok("a", 100, T0)], [tok("a", 100, T0)], Date.parse(T2));
     expect(merged).toHaveLength(1);
+  });
+
+  test("a resumed session's historical tokens are not counted as new burn (Codex round 2)", () => {
+    // s2 resumes between collections carrying 1,000,000 historical
+    // tokens; only s1 was present in both reads, so the measured
+    // delta is s1's +60 over 60 min — not the aggregate jump.
+    const rates = deriveMeasuredRatesFromPoolTokens([
+      tok("claude", 100, T0, { s1: 100 }),
+      tok("claude", 1000160, T1, { s1: 160, s2: 1000000 }),
+    ]);
+    expect(rates.get("claude")).toBe(1);
+  });
+
+  test("an ended session's tokens are not subtracted from the delta (Codex round 2)", () => {
+    const rates = deriveMeasuredRatesFromPoolTokens([
+      tok("claude", 600, T0, { s1: 100, s2: 500 }),
+      tok("claude", 160, T1, { s1: 160 }),
+    ]);
+    expect(rates.get("claude")).toBe(1);
+  });
+
+  test("reset counters and legacy observations without counters yield no rate (Codex round 2)", () => {
+    expect(
+      deriveMeasuredRatesFromPoolTokens([tok("a", 1000, T0, { s1: 1000 }), tok("a", 10, T1, { s1: 10 })]).size,
+    ).toBe(0);
+    expect(deriveMeasuredRatesFromPoolTokens([tok("a", 100, T0), tok("a", 200, T1, { s1: 200 })]).size).toBe(0);
+    expect(deriveMeasuredRatesFromPoolTokens([tok("a", 100, T0, { s1: 100 }), tok("a", 200, T1)]).size).toBe(0);
+  });
+
+  test("a rate expires relative to the collection instant, not the pair (Codex round 2)", () => {
+    const pair = [tok("a", 100, T0, { s1: 100 }), tok("a", 700, T1, { s1: 700 })];
+    // Pair itself is 60 min apart and valid while current...
+    expect(deriveMeasuredRatesFromPoolTokens(pair, Date.parse(T1) + 30 * 60000).get("a")).toBe(10);
+    // ...but once the newest reading is older than RATE_WINDOW_MS
+    // relative to the collection, the pool publishes no rate.
+    expect(deriveMeasuredRatesFromPoolTokens(pair, Date.parse(T1) + RATE_WINDOW_MS + 60000).size).toBe(0);
+    // Without a supplied collection instant, no freshness check applies.
+    expect(deriveMeasuredRatesFromPoolTokens(pair).get("a")).toBe(10);
   });
 });
 

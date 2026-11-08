@@ -749,6 +749,10 @@ async function main(): Promise<void> {
             pool: pool.id,
             provider: pool.provider,
             activeTokens: sessions.reduce((sum, s) => sum + s.tokens, 0),
+            // Per-session cumulative counters behind the total, so
+            // the rate derivation can diff MATCHING sessions only
+            // (PR #7354 Codex round 2) instead of the raw totals.
+            sessionTokens: Object.fromEntries(sessions.map((s) => [s.session, s.tokens])),
             at: now.toISOString(),
           });
         }
@@ -1030,7 +1034,7 @@ async function main(): Promise<void> {
     burnSegments = derived.segments;
     // Measured rates: tokens-window pairs where a source provides
     // them; otherwise the live session-attribution totals (#3933).
-    const sessionRates = deriveMeasuredRatesFromPoolTokens(mergedPoolTokens);
+    const sessionRates = deriveMeasuredRatesFromPoolTokens(mergedPoolTokens, now.getTime());
     let ratesSet = 0;
     for (const pool of pools) {
       const rate = derived.burnTokensPerMin.get(pool.id) ?? sessionRates.get(pool.id);

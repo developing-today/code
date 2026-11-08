@@ -31,9 +31,21 @@
 // measured token stream is OpenCode session attribution
 // (poolBurn over tokensBySession): PoolTokenObservation carries
 // the per-pool sum of active sessions' cumulative tokens at each
-// collection, and deriveMeasuredRatesFromPoolTokens turns
-// consecutive sums into the measured rate. A shrinking active set
-// makes the delta negative and yields no rate — never a guess.
+// collection PLUS the per-session counters behind the sum, and
+// deriveMeasuredRatesFromPoolTokens turns a pair of observations
+// into the measured rate from the MATCHING session counters only
+// (Codex round 2 on PR #7354): a session that resumed between
+// collections must not inject its historical tokens into the
+// delta, and a session that ended must not subtract its own. A
+// pair whose counters cannot be compared — a missing per-session
+// breakdown on either side, or every matching counter reset —
+// yields no rate, never a guess. A rate is also only as current
+// as its newest reading: when the caller supplies the collection
+// instant, a pair whose last observation is older than
+// RATE_WINDOW_MS relative to it yields no rate, however close
+// the pair itself is (an idle pool or an unreachable server must
+// not keep publishing its last throughput for the 35-day
+// retention period).
 import type { BurnSegment, QuotaPool } from "./model.ts";
 
 /** One pool window as observed at one collection instant. */
@@ -153,11 +165,17 @@ export interface BurnHistory {
 
 /** One pool's live token total at one collection instant: the sum
  * of cumulative tokens over the sessions attributed to the pool
- * right now (the collector's poolBurn attribution). */
+ * right now (the collector's poolBurn attribution). sessionTokens
+ * carries the per-session cumulative counters behind the sum
+ * (session id -> tokens) so rate derivation can compare MATCHING
+ * sessions across a pair of observations; observations persisted
+ * before the field existed do not carry it, and a pair involving
+ * one of those cannot be compared honestly (no rate). */
 export interface PoolTokenObservation {
   pool: string;
   provider: string;
   activeTokens: number;
+  sessionTokens?: Record<string, number>;
   at: string;
 }
 
@@ -172,7 +190,17 @@ export function mergePoolTokenObservations(
     if (!Number.isFinite(o.activeTokens) || o.activeTokens < 0) continue;
     const t = Date.parse(o.at);
     if (!Number.isFinite(t) || nowMs - t > OBSERVATION_RETENTION_MS) continue;
-    byKey.set(`${o.pool}${o.at}`, o);
+    const clean: PoolTokenObservation = { ...o };
+    if (o.sessionTokens && typeof o.sessionTokens === "object") {
+      const counters: Record<string, number> = {};
+      for (const [id, tokens] of Object.entries(o.sessionTokens)) {
+        if (typeof tokens === "number" && Number.isFinite(tokens) && tokens >= 0) counters[id] = tokens;
+      }
+      clean.sessionTokens = counters;
+    } else {
+      delete clean.sessionTokens;
+    }
+    byKey.set(`${o.pool}${o.at}`, clean);
   }
   const groups = new Map<string, PoolTokenObservation[]>();
   for (const o of byKey.values()) {
@@ -189,13 +217,27 @@ export function mergePoolTokenObservations(
   return out;
 }
 
-/** Measured tokens/min from pool token totals: the delta between
- * the two most recent totals, at most RATE_WINDOW_MS apart and
- * non-negative. Sessions that ended between reads remove their
- * tokens from the total, so a negative delta (or a stale pair)
- * yields no rate for that pool. */
+/** Measured tokens/min from pool token observations: the delta
+ * between the two most recent observations, at most
+ * RATE_WINDOW_MS apart, computed from MATCHING session counters
+ * only — the sessions present in BOTH observations, each
+ * contributing its own counter delta (a counter that went down
+ * was reset or replaced and contributes nothing measurable).
+ * Aggregate totals are never diffed: the active set changes
+ * between collections, so a totals delta counts a resumed
+ * session's whole history as new burn and subtracts an ended
+ * session's tokens from it. No comparable pair — either side
+ * missing its per-session breakdown, no matching session, or
+ * every matching counter reset — yields no rate for that pool.
+ * When nowMs (the collection instant) is supplied, the pair must
+ * also be CURRENT: a newest observation older than
+ * RATE_WINDOW_MS relative to nowMs yields no rate, so an idle
+ * pool or an unreachable server stops publishing its last
+ * measured throughput instead of carrying it for the retention
+ * period. */
 export function deriveMeasuredRatesFromPoolTokens(
   observations: PoolTokenObservation[],
+  nowMs?: number,
 ): Map<string, number> {
   const groups = new Map<string, PoolTokenObservation[]>();
   for (const o of observations) {
@@ -209,11 +251,22 @@ export function deriveMeasuredRatesFromPoolTokens(
     const prev = sorted[sorted.length - 2];
     const last = sorted[sorted.length - 1];
     if (!prev || !last || prev === last) continue;
+    if (nowMs !== undefined && Number.isFinite(nowMs) && nowMs - Date.parse(last.at) > RATE_WINDOW_MS) continue;
     const dtMs = Date.parse(last.at) - Date.parse(prev.at);
-    const delta = last.activeTokens - prev.activeTokens;
-    if (dtMs > 0 && dtMs <= RATE_WINDOW_MS && delta >= 0) {
-      rates.set(pool, delta / (dtMs / 60000));
+    if (!(dtMs > 0 && dtMs <= RATE_WINDOW_MS)) continue;
+    if (!prev.sessionTokens || !last.sessionTokens) continue;
+    let delta = 0;
+    let measured = 0;
+    for (const [id, before] of Object.entries(prev.sessionTokens)) {
+      const after = last.sessionTokens[id];
+      if (after === undefined) continue;
+      const diff = after - before;
+      if (diff < 0) continue; // counter reset/replaced: not measurable
+      delta += diff;
+      measured += 1;
     }
+    if (measured === 0) continue;
+    rates.set(pool, delta / (dtMs / 60000));
   }
   return rates;
 }
