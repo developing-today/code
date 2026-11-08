@@ -184,20 +184,6 @@ export function diffCoverage(current: CoverageReport, baseline: CoverageReport |
 }
 
 /**
- * The next snapshot file after observing `current`. Within the week the
- * stored baseline is untouched, `current` simply refreshes, and the
- * week's first report stays frozen in `weekly`; once the week anchored
- * at `anchorAt` has elapsed, the frozen weekly report becomes the
- * baseline (the delta the panel shows), the fresh report takes its
- * place as both `current` and the new week's frozen report, and a new
- * week anchors at `now`. The anchor is what makes the week a week:
- * `current` refreshes (new generatedAt) on every changed read, so its
- * timestamp can never be the rotation clock - and its values can never
- * be the baseline either, or the delta would measure only the time
- * since the last refresh instead of the week.
- */
-
-/**
  * A stored anchor is usable only if it is a string that parses as a
  * real calendar date. `new Date()` alone is not enough: it yields NaN
  * for garbage ("not-a-date") but silently rolls an impossible date
@@ -214,6 +200,19 @@ export function isValidAnchorAt(value: unknown): value is string {
   return true;
 }
 
+/**
+ * The next snapshot file after observing `current`. Within the week the
+ * stored baseline is untouched, `current` simply refreshes, and the
+ * week's first report stays frozen in `weekly`; once the week anchored
+ * at `anchorAt` has elapsed, the frozen weekly report becomes the
+ * baseline (the delta the panel shows), the fresh report takes its
+ * place as both `current` and the new week's frozen report, and a new
+ * week anchors at `now`. The anchor is what makes the week a week:
+ * `current` refreshes (new generatedAt) on every changed read, so its
+ * timestamp can never be the rotation clock - and its values can never
+ * be the baseline either, or the delta would measure only the time
+ * since the last refresh instead of the week.
+ */
 export function nextCoverageSnapshot(
   stored: CoverageSnapshotFile | null,
   current: CoverageReport,
@@ -298,8 +297,6 @@ export class CoverageSnapshotStore {
   async read(): Promise<CoverageSnapshotFile | null> {
     try {
       const parsed: unknown = JSON.parse(await readFile(this.file, "utf8"));
-      // The #4140 whole-file gate now also rejects a present-but-unusable
-      // anchorAt (#5196), so a poisoned anchor reads as absent here too.
       return isCoverageSnapshotFile(parsed) ? parsed : null;
     } catch {
       return null;
