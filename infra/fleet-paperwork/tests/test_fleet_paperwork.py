@@ -202,5 +202,144 @@ class TestGenericCommandArgs(unittest.TestCase):
             fp.main(["token"])
 
 
+class TestResponseShapes(unittest.TestCase):
+    """#6864: parseable-but-wrong-shaped API bodies die with the tool's
+    own diagnostic (method, URL, HTTP status, shape) — never a raw
+    AttributeError/KeyError/TypeError, including inside http()'s own
+    error handler. Transport (http_raw) is stubbed, as in the probe.
+    """
+
+    def call_http(self, status, raw, **kw):
+        import io
+        from contextlib import redirect_stderr
+
+        err = io.StringIO()
+        result = None
+        with unittest.mock.patch.object(fp, "http_raw", return_value=(status, raw)):
+            with redirect_stderr(err):
+                try:
+                    result = fp.http("GET", "/repos/x/y/issues/1", "tok", **kw)
+                except SystemExit:
+                    result = None
+                    return "died", err.getvalue()
+        return result, err.getvalue()
+
+    def test_error_body_list_dies_with_status_and_shape(self):
+        outcome, err = self.call_http(403, '["a","b"]')
+        self.assertEqual(outcome, "died")
+        self.assertIn("HTTP 403", err)
+        self.assertIn("array", err)
+        self.assertIn('["a","b"]', err)  # raw excerpt still surfaced
+
+    def test_error_body_string_and_number_die_cleanly(self):
+        for raw, shape in [('"edge string"', "string"), ("42", "number")]:
+            with self.subTest(raw=raw):
+                outcome, err = self.call_http(502, raw)
+                self.assertEqual(outcome, "died")
+                self.assertIn("HTTP 502", err)
+                self.assertIn(shape, err)
+
+    def test_error_body_object_keeps_message(self):
+        outcome, err = self.call_http(403, '{"message": "boom-rate"}')
+        self.assertEqual(outcome, "died")
+        self.assertIn("boom-rate", err)
+
+    def test_success_body_wrong_shape_dies_naming_shape(self):
+        for raw, shape in [('"weird"', "string"), ('["weird"]', "array"), ("42", "number")]:
+            with self.subTest(raw=raw):
+                outcome, err = self.call_http(200, raw)
+                self.assertEqual(outcome, "died")
+                self.assertIn("expected a JSON object", err)
+                self.assertIn(shape, err)
+
+    def test_success_body_not_json_dies_cleanly(self):
+        outcome, err = self.call_http(200, "not json")
+        self.assertEqual(outcome, "died")
+        self.assertIn("not JSON", err)
+
+    def test_success_object_and_expected_array_pass(self):
+        result, _ = self.call_http(200, '{"a": 1}')
+        self.assertEqual(result, (200, {"a": 1}))
+        result, _ = self.call_http(200, '[{"id": 1}]', expect=list)
+        self.assertEqual(result, (200, [{"id": 1}]))
+
+    def test_installations_dict_instead_of_list_dies(self):
+        client = object.__new__(fp.AppClient)
+        client.jwt = "jwt"
+        client._installations = None
+        with unittest.mock.patch.object(
+            fp, "http", return_value=(200, {"installations": []})
+        ):
+            # Bypass the real http() shape guard to prove the call site
+            # asks for a list: the stub ignores expect, so instead assert
+            # the real guard fires via http_raw.
+            pass
+        with unittest.mock.patch.object(
+            fp, "http_raw", return_value=(200, '{"installations": []}')
+        ):
+            with self.assertRaises(SystemExit):
+                client.installations()
+
+    def test_installations_string_item_dies(self):
+        client = object.__new__(fp.AppClient)
+        client.jwt = "jwt"
+        client._installations = None
+        with unittest.mock.patch.object(
+            fp, "http_raw", return_value=(200, '["a-string-item"]')
+        ):
+            with self.assertRaises(SystemExit):
+                client.installations()
+
+    def test_installation_for_tolerates_null_account(self):
+        client = object.__new__(fp.AppClient)
+        client._installations = [
+            {"id": 1, "account": None},
+            {"id": 2, "account": {"login": "Developing-Today"}},
+        ]
+        inst = client.installation_for("developing-today")
+        self.assertEqual(inst["id"], 2)
+
+    def test_assert_repo_in_scope_dies_on_entry_without_full_name(self):
+        client = object.__new__(fp.AppClient)
+        with unittest.mock.patch.object(
+            fp.AppClient, "token_for", return_value="tok"
+        ), unittest.mock.patch.object(
+            fp,
+            "http",
+            return_value=(
+                200,
+                {"repositories": [{"name": "no-full-name"}], "total_count": 1},
+            ),
+        ):
+            with self.assertRaises(SystemExit):
+                client.assert_repo_in_scope("developing-today/code")
+
+    def test_assert_repo_in_scope_happy_path(self):
+        client = object.__new__(fp.AppClient)
+        with unittest.mock.patch.object(
+            fp.AppClient, "token_for", return_value="tok"
+        ), unittest.mock.patch.object(
+            fp,
+            "http",
+            return_value=(
+                200,
+                {
+                    "repositories": [{"full_name": "developing-today/code"}],
+                    "total_count": 1,
+                },
+            ),
+        ):
+            client.assert_repo_in_scope("developing-today/code")  # no SystemExit
+
+    def test_find_by_exact_title_skips_non_object_items(self):
+        def fake_http(method, path, token, payload=None, **kw):
+            return 200, {"items": ["bare-string", {"title": "T", "number": 5}]}
+
+        with unittest.mock.patch.object(fp, "http", fake_http):
+            hit = fp.find_by_exact_title(_FakeClient(), "developing-today/code", "T")
+        self.assertEqual(hit["number"], 5)
+
+
+
 if __name__ == "__main__":
     unittest.main()
