@@ -2042,6 +2042,14 @@ pub(crate) async fn list_document_names(
     Ok(names)
 }
 
+/// The on-wire size of one name in a `documents` frame: its JSON
+/// string encoding (quotes and escapes included) plus the separator.
+/// Raw byte length is not enough — a quote-heavy name grows when
+/// serialized, and the frame budget is a serialized budget.
+fn document_name_wire_size(name: &str) -> usize {
+    serde_json::to_vec(name).map_or(name.len() + 2, |bytes| bytes.len()) + 1
+}
+
 /// One page of document names under the records byte-page rule: the
 /// page's `next_after` is the last name *included*, so the exclusive
 /// continuation never skips a name.
@@ -2052,7 +2060,7 @@ pub(crate) fn document_names_page(
     let mut used = 0usize;
     let mut more = false;
     for name in names {
-        let size = name.len() + 1;
+        let size = document_name_wire_size(name);
         if used + size > MAX_RECORDS_PAGE_BYTES {
             if page.is_empty() {
                 return Err("a document name is too large to serve in one page");
@@ -2065,6 +2073,62 @@ pub(crate) fn document_names_page(
     }
     let next_after = if more { page.last().cloned() } else { None };
     Ok((page, next_after))
+}
+
+/// Bounded selection of one documents page from a name stream
+/// (Codex P2 on PR #7678): collecting and sorting the whole store to
+/// serve a bounded page does not scale, so candidates are held in a
+/// max-heap whose serialized size stays within the page budget;
+/// larger names are evicted as smaller ones arrive. Eviction is
+/// tracked so the continuation cursor never skips an evicted name:
+/// the cursor only ever names a served name that sorts before every
+/// evicted name, or the last served name below the smallest evicted
+/// name.
+#[derive(Default)]
+pub(crate) struct DocumentPageSelector {
+    heap: std::collections::BinaryHeap<String>,
+    heap_bytes: usize,
+    min_evicted: Option<String>,
+}
+
+impl DocumentPageSelector {
+    pub(crate) fn push(&mut self, name: String) {
+        self.heap_bytes += document_name_wire_size(&name);
+        self.heap.push(name);
+        while self.heap_bytes > MAX_RECORDS_PAGE_BYTES && self.heap.len() > 1 {
+            let evicted = self.heap.pop().unwrap_or_default();
+            self.heap_bytes -= document_name_wire_size(&evicted);
+            if self
+                .min_evicted
+                .as_deref()
+                .is_none_or(|min| evicted.as_str() < min)
+            {
+                self.min_evicted = Some(evicted);
+            }
+        }
+    }
+
+    pub(crate) fn finish(self) -> Result<(Vec<String>, Option<String>), &'static str> {
+        let mut candidates: Vec<String> = self.heap.into_vec();
+        candidates.sort();
+        let (mut page, mut next_after) = document_names_page(&candidates)?;
+        if let Some(min_evicted) = &self.min_evicted {
+            if page.iter().any(|name| name.as_str() > min_evicted.as_str()) {
+                // A served name sorts after an evicted one: resuming after
+                // it would skip the evicted name. Serve only the names
+                // below the smallest evicted name; the rest follow on the
+                // continuation.
+                let cut = page.partition_point(|name| name.as_str() < min_evicted.as_str());
+                page.truncate(cut);
+                next_after = page.last().cloned();
+            } else if next_after.is_none() {
+                // The whole candidate set was served, but evicted names
+                // follow it.
+                next_after = page.last().cloned();
+            }
+        }
+        Ok((page, next_after))
+    }
 }
 
 /// Read one public document as (byte size, UTF-8 text), enforcing the
@@ -2162,10 +2226,26 @@ async fn documents_session<I: SessionIo>(
     let Some(store) = store else {
         return Err("documents unavailable");
     };
-    let names = list_document_names(store, prefix, after)
+    let mut tags = store
+        .tags()
+        .list()
         .await
         .map_err(|_| "documents unavailable")?;
-    let (names, next_after) = document_names_page(&names)?;
+    let mut selector = DocumentPageSelector::default();
+    while let Some(item) = tags.next().await {
+        let item = item.map_err(|_| "documents unavailable")?;
+        let Ok(name) = std::str::from_utf8(item.name.as_ref()) else {
+            continue;
+        };
+        if !is_public_document_name(name) || prefix.is_some_and(|p| !name.starts_with(p)) {
+            continue;
+        }
+        if after.is_some_and(|a| name <= a) {
+            continue;
+        }
+        selector.push(name.to_owned());
+    }
+    let (names, next_after) = selector.finish()?;
     if !send_json(meter, io, &ServerFrame::Documents { names, next_after }).await {
         return Err("connection closed");
     }

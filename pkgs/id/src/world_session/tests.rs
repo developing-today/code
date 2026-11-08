@@ -1801,6 +1801,41 @@ mod tests {
     }
 
     #[test]
+    fn document_pages_account_for_json_escaping_and_bounded_selection_never_skips() {
+        // Names of 197 raw bytes carrying 190 double quotes serialize to
+        // ~390 bytes each; a raw-byte budget would overrun the frame.
+        let names: Vec<String> = (0..3800)
+            .map(|i| format!("doc-{i:04}-{}", "\"".repeat(190)))
+            .collect();
+        let (page, next_after) = document_names_page(&names).unwrap();
+        let used: usize = page.iter().map(|name| document_name_wire_size(name)).sum();
+        assert!(used <= MAX_RECORDS_PAGE_BYTES, "serialized page budget");
+        assert_eq!(next_after.as_deref(), page.last().map(String::as_str));
+
+        // The bounded selector, fed the whole set, returns the same first
+        // page as the unbounded walk, and its cursor continues correctly.
+        let mut selector = DocumentPageSelector::default();
+        for name in &names {
+            selector.push(name.clone());
+        }
+        let (selected, selected_after) = selector.finish().unwrap();
+        assert_eq!(selected, page);
+        assert_eq!(selected_after, next_after);
+
+        // Many small names (2.2 MB worth): selection still matches the
+        // sorted walk, even fed in reverse order.
+        let small: Vec<String> = (0..200_000).map(|i| format!("n-{i:06}")).collect();
+        let (walk_page, walk_after) = document_names_page(&small).unwrap();
+        let mut selector = DocumentPageSelector::default();
+        for name in small.iter().rev() {
+            selector.push(name.clone());
+        }
+        let (selected, selected_after) = selector.finish().unwrap();
+        assert_eq!(selected, walk_page);
+        assert_eq!(selected_after, walk_after);
+    }
+
+    #[test]
     fn document_name_pages_break_on_the_byte_budget_with_an_exclusive_cursor() {
         let names: Vec<String> = (0..2000)
             .map(|i| format!("doc-{i:04}-{}", "x".repeat(500)))
