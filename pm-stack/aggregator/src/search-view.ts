@@ -1,4 +1,5 @@
 import type { BoardItem, DnsSection, GhItem, RefKey, RoadmapRow, SaasService, SessionRecord, TierItem } from "./model.ts";
+import { isValidRef } from "./model.ts";
 
 export interface SearchResult {
   kind: "board" | "roadmap" | "registry" | "dns" | "service" | "tier";
@@ -20,8 +21,13 @@ export interface SearchExtras {
   tierItems?: TierItem[];
 }
 
-function includesQuery(query: string, values: (string | undefined)[]): boolean {
-  return values.some((value) => value?.toLowerCase().includes(query));
+function includesQuery(query: string, values: unknown[]): boolean {
+  // Codex P2 on PR #7331: accepted records can carry non-string optional
+  // fields (an unvalidated registry `model: 7`, a DNS `registrar`, ...);
+  // `value?.toLowerCase()` only guards nullish values and threw on those,
+  // taking down /search and /api/search.json for every query that reached
+  // the field. Only strings are searchable.
+  return values.some((value) => typeof value === "string" && value.toLowerCase().includes(query));
 }
 
 /** Anchor id for a register row on /dns (dnsTable renders the same id). */
@@ -124,7 +130,7 @@ export function searchWork(
         id: record.id,
         title,
         summary: `${record.agentLabel} · ${record.status}`,
-        refs: record.taskRefs,
+        refs: record.taskRefs.filter(isValidRef),
         href: sessionHref(record.id),
       });
     }
@@ -167,7 +173,11 @@ export function searchWork(
         id: item.id,
         title: item.title,
         summary: `${item.source} · ${item.state ?? item.kind}`,
-        refs: item.ref ? [item.ref] : [],
+        // Codex P1 on PR #7331: a tier ref can be a tracked-goal id or
+        // another non-GitHub key; passing it on as a badge ref made
+        // renderSearch's refUrl throw and failed the whole /search
+        // request. Only owner/repo#N refs become GitHub badges.
+        refs: item.ref && isValidRef(item.ref) ? [item.ref] : [],
         href: tierHref(item),
       });
     }

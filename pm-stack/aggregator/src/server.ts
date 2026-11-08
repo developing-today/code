@@ -65,6 +65,7 @@ import {
   type RoadmapReconciliation,
 } from "./roadmap-reconcile.ts";
 import type { Comment, DashComment, GhItem, ProjectPoolItem, QuotaView, RefKey, UsageView } from "./model.ts";
+import { isValidRef } from "./model.ts";
 import { buildEpicRollups } from "./epics.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
@@ -567,9 +568,14 @@ async function searchContext(query: string) {
     source.usage().catch(() => null),
     source.orchestration().catch(() => null),
   ]);
-  const refs = [...new Set([...allRefs(board), ...allRefs(rows)])];
-  const items = await source.items(refs);
   const tierItems = orchestration ? [...orchestration.tiers.needsDrew, ...orchestration.tiers.needsOrchestrator] : [];
+  // Codex P2 on PR #7331: refs carried only by the slice-2 sources
+  // (registry taskRefs, tier-item refs) join the resolution set, or
+  // their search badges always render unresolved even when the live
+  // pool/projector could resolve them.
+  const extraRefs = [...registry.flatMap((record) => record.taskRefs), ...tierItems.map((item) => item.ref)].filter(isValidRef);
+  const refs = [...new Set([...allRefs(board), ...allRefs(rows), ...extraRefs])];
+  const items = await source.items(refs);
   const extras = { registry, dns, services: usage?.services ?? [], tierItems };
   return { query, results: searchWork(board, rows, items, query, extras), items };
 }
