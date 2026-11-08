@@ -770,6 +770,40 @@ describe("actions HTTP round-trip (fixture consumer)", () => {
     expect((await post("/api/actions", { ...body, clientToken: "ct-http-bad-2", author: undefined })).status).toBe(400);
   });
 
+  test("/api/actions.json?state=all returns applied history; unknown state 400s (#4620)", async () => {
+    const body = {
+      clientToken: "ct-http-state-all-1",
+      kind: "triage",
+      verb: "acknowledge",
+      objectRef: "orch:state-all-item",
+      author: drew,
+      payload: {},
+    };
+    const created = await post("/api/actions", body);
+    expect(created.status).toBe(201);
+    const { action } = (await created.json()) as { action: DashAction };
+    const result = await post("/api/actions/result", {
+      id: action.id,
+      outcome: "applied",
+      byRun: "orch-fixture-state-all",
+      note: "applied for the #4620 history-read regression test",
+    });
+    expect(result.status).toBe(200);
+
+    const listFor = async (qs: string) =>
+      ((await (await fetch(`http://127.0.0.1:${port}/api/actions.json?${qs}`)).json()) as { actions: DashAction[] })
+        .actions.map((a) => a.id);
+
+    // The regression: state=all must return the applied record, not [].
+    expect(await listFor("state=all")).toContain(action.id);
+    // Concrete history states return history too.
+    expect(await listFor("state=applied")).toContain(action.id);
+    // state=new behaviour is unchanged: the applied record is not pending.
+    expect(await listFor("state=new")).not.toContain(action.id);
+    // An unknown state is a 400, never a silent false zero.
+    expect((await fetch(`http://127.0.0.1:${port}/api/actions.json?state=bogus`)).status).toBe(400);
+  });
+
   test("duplicate answer response includes the persisted audit pointer", async () => {
     const body = {
       clientToken: "ct-session-answer-1",
