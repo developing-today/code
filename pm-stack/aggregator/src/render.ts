@@ -6650,7 +6650,18 @@ function epicGraphAnchor(ref: RefKey): string {
   return `epic-graph-${ref.replace(/[^a-zA-Z0-9]+/g, "-")}`;
 }
 
-function epicGraphSectionHtml(items: ProjectPoolItem[], selectorItems: ProjectPoolItem[] = items): string {
+interface EpicGraphActionContext {
+  orchestration?: OrchestrationSection | null;
+  actionsByObject?: Map<string, DashAction[]>;
+  identities?: AuthorIdentity[];
+  orchestrationState?: string;
+}
+
+function epicGraphSectionHtml(
+  items: ProjectPoolItem[],
+  selectorItems: ProjectPoolItem[] = items,
+  actionContext?: EpicGraphActionContext,
+): string {
   // Selector entries and rendered sections are scoped to the project's
   // own pool (selectorItems = detail.poolItems): on a normal project
   // request the caller passes the entire org pool as `items` for
@@ -6675,11 +6686,61 @@ function epicGraphSectionHtml(items: ProjectPoolItem[], selectorItems: ProjectPo
         `<li><a href="#${epicGraphAnchor(e.ref)}">${esc(e.title)}</a> <span class="muted">${esc(e.ref)} · ${e.itemCount} item${e.itemCount === 1 ? "" : "s"} · ${e.blockedCount} blocked · ${e.doneCount} done</span></li>`,
     )
     .join("")}</ul></nav>`;
-  const sections = selector.map((entry) => epicGraphOneHtml(items, entry)).join("");
+  const sections = selector.map((entry) => epicGraphOneHtml(items, entry, actionContext)).join("");
   return `<h3>Per-epic dependency graph</h3>${selectorHtml}${sections}`;
 }
 
-function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epicSelector>[number]): string {
+function graphNodeActionsHtml(nodeRef: RefKey, context?: EpicGraphActionContext): string {
+  const section = context?.orchestration;
+  const drewItem = section?.tiers.needsDrew.find((item) => item.ref === nodeRef);
+  const orchestratorItem = section?.tiers.needsOrchestrator.find((item) => item.ref === nodeRef);
+  const item = drewItem ?? orchestratorItem;
+  if (!item) {
+    return `<p class="muted epic-graph-actions">No inline action: this item is not in the currently published Needs User or Needs Orchestrator tier.</p>`;
+  }
+
+  const tier = drewItem ? "needs-drew" : "needs-orchestrator";
+  const objectRef = tierItemObjectRef(item);
+  const actions = context?.actionsByObject?.get(objectRef);
+  const state = cardState(actions);
+  const disabledReason = item.source === "watchdog" || context?.orchestrationState === "live"
+    ? undefined
+    : `the tier source is ${context?.orchestrationState ?? "unavailable"}, so this item cannot be confirmed against the orchestrator's current published queues`;
+  const controls = context?.identities
+    ? triageActionsHtml(
+        objectRef,
+        tier,
+        { identities: context.identities, ...(disabledReason ? { disabledReason } : {}) },
+        tier === "needs-drew" ? needsUserFormsHtml(item, objectRef, Date.now(), state) : "",
+        state,
+      )
+    : `<p class="muted">Inline actions unavailable: no dashboard author identity is configured.</p>`;
+  const history = `${actionBadgesHtml(actions)}<details class="carddetail"><summary>Action history</summary>${actionHistoryHtml(actions)}</details>`;
+
+  let sessionControls = "";
+  if (item.sessionId) {
+    const sessionSource = item.source === "claude" ? "claude-code" : item.source;
+    const support = sessionVerbSupport(sessionSource);
+    if (!context?.identities) {
+      sessionControls = `<p class="muted">Session action unavailable: no dashboard author identity is configured.</p>`;
+    } else if (support.some((entry) => !entry.reason)) {
+      const sessionRef = sessionObjectRef(item.sessionId);
+      const sessionActions = context?.actionsByObject?.get(sessionRef);
+      sessionControls = `${actionBadgesHtml(sessionActions)}${sessionActionsHtml(item.sessionId, sessionSource, { identities: context.identities })}<details class="carddetail"><summary>Session action history</summary>${actionHistoryHtml(sessionActions)}</details>`;
+    } else {
+      const reason = support.find((entry) => entry.reason)?.reason ?? "this published item has no supported live session control channel";
+      sessionControls = `<p class="muted">Session action unavailable: ${esc(reason)}.</p>`;
+    }
+  }
+
+  return `<div class="epic-graph-actions"><span class="badge ${tier === "needs-drew" ? "drew" : "orch"}">${tier === "needs-drew" ? "Needs User" : "Needs Orchestrator"}</span>${history}${controls}${sessionControls}</div>`;
+}
+
+function epicGraphOneHtml(
+  items: ProjectPoolItem[],
+  entry: ReturnType<typeof epicSelector>[number],
+  actionContext?: EpicGraphActionContext,
+): string {
   const g = epicGraph(items, entry.ref);
   const heading = `<h4 id="${epicGraphAnchor(entry.ref)}">${esc(entry.title)} <span class="muted">(${esc(entry.ref)})</span></h4>`;
   if (g.status === "unavailable" || !g.epic) {
@@ -6691,6 +6752,32 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
     return held === undefined || held.state === "open";
   };
   const summary = `<p class="muted"><strong>${g.memberCount} item${g.memberCount === 1 ? "" : "s"} in this epic</strong> · ${g.blockedCount} blocked on an unresolved blocker · ${g.externalCount} one-hop reference${g.externalCount === 1 ? "" : "s"} outside this pool (unresolved — status unknown, never counted as resolved).</p>`;
+  const cycleGroupsHtml = g.cycleGroups.length
+    ? `<div class="epic-graph-cycle-groups">${g.cycleGroups
+        .map((group) => {
+          const members = group.members
+            .map((ref) => {
+              const member = poolByRef.get(ref);
+              return `<li>${poolRefLink(ref)}${member?.title ? ` — ${esc(member.title)}` : ""}</li>`;
+            })
+            .join("");
+          const explanation = group.kind === "dependency"
+            ? "The dependency data is contradictory. Resolving one member alone does not clear this cycle; correct the cycle edges."
+            : "The parent links are cyclic. These members are one hierarchy warning group, not independent roots; correct the parent edges.";
+          return `<section class="banner" role="alert"><strong>⚠ ${esc(group.name)}</strong><p>${explanation}</p><ul>${members}</ul></section>`;
+        })
+        .join("")}</div>`
+    : "";
+  const edgeDiagnosticsHtml = g.edgeDiagnostics.length
+    ? `<section class="banner" role="status"><strong>⚠ Relation edge data needs review</strong><ul>${g.edgeDiagnostics
+        .map((diagnostic) => {
+          const relation = diagnostic.relation === "parent" ? "parent" : diagnostic.relation === "blockedBy" ? "blocked-by" : "blocks";
+          const issue = diagnostic.target === null ? "endpoint unavailable" : `malformed endpoint <code>${esc(diagnostic.target)}</code>`;
+          const state = diagnostic.state === "unavailable" ? "Unavailable edge data" : "Malformed relation reference";
+          return `<li>${state}: ${poolRefLink(diagnostic.sourceRef)} ${relation} edge — ${issue}; it was not treated as an external issue.</li>`;
+        })
+        .join("")}</ul></section>`
+    : "";
   const truncatedHtml = g.truncated
     ? `<p class="muted">Truncated: this graph shows ${g.nodes.length} of ${g.totalNodes} nodes (cap ${EPIC_GRAPH_DEFAULT_CAP}). The counts above cover the full set; a capped graph is not complete.</p>`
     : "";
@@ -6772,11 +6859,12 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
         : "blocks: none observed";
       const name = n.title ? `${esc(n.title)}` : "(outside this pool — no title in this feed)";
       const nodeRef = isValidRef(n.ref) ? `<a href="${esc(n.issueUrl)}">${esc(n.ref)}</a>` : esc(n.ref);
-      return `<li>${nodeRef} ${name} — ${stateText}; ${blockedBy}; ${blocks}</li>`;
+      const actions = isValidRef(n.ref) ? graphNodeActionsHtml(n.ref, actionContext) : "";
+      return `<li>${nodeRef} ${name} — ${stateText}; ${blockedBy}; ${blocks}${actions}</li>`;
     })
     .join("")}</ul>`;
 
-  return `<section>${heading}${summary}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Blocked in this epic</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
+  return `<section>${heading}${summary}${cycleGroupsHtml}${edgeDiagnosticsHtml}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Blocked in this epic</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
 }
 
 export function renderProgramProject(
@@ -6785,6 +6873,7 @@ export function renderProgramProject(
   provenance: Provenance,
   provDetail?: ProvenanceDetail,
   epicPool: ProjectPoolItem[] = detail.poolItems,
+  graphActions?: EpicGraphActionContext,
 ): string {
   const { config } = detail;
   const linkBits: string[] = [];
@@ -6850,7 +6939,7 @@ export function renderProgramProject(
     const epicHtml = epics.length
       ? `<h3>Epics — weighted progress</h3><p class="muted"><strong>${esc(weightedLine(epicW))}</strong></p>${epicRows}`
       : "";
-    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${poolGraphHtml(detail.poolItems, allW)}${epicGraphSectionHtml(epicPool, detail.poolItems)}${cards}${more}`;
+    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${poolGraphHtml(detail.poolItems, allW)}${epicGraphSectionHtml(epicPool, detail.poolItems, graphActions)}${cards}${more}`;
   }
 
   let roadmapHtml: string;
@@ -6915,7 +7004,7 @@ ${editorialHtml}`;
     body,
     provenance,
     "/program",
-    "",
+    graphActions?.identities ? ACTION_SCRIPT : "",
     provDetail ? freshnessChips(provDetail, ["orchestration", "items", "roadmap"]) : "",
   );
 }

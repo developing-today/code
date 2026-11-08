@@ -424,6 +424,21 @@ const GQL_EDGES = {
   },
 };
 
+type MutableEdgeFixture = {
+  data: {
+    node: {
+      items: {
+        nodes: {
+          id?: string;
+          content?: {
+            blocking?: { nodes?: ({ repository?: { nameWithOwner?: string } } | null)[] } | null;
+          } | null;
+        }[];
+      };
+    };
+  };
+};
+
 describe("collector graph edges (#2399 contract)", () => {
   test("dependency connections request the supported maximum (50), not a truncating 10", () => {
     // Codex P2 on PR #2744: first: 10 silently dropped dependency edges
@@ -439,8 +454,31 @@ describe("collector graph edges (#2399 contract)", () => {
     expect(child.parentRef).toBe("developing-today/code#2401");
     // The numberless blocked-by node drops; the good one stays.
     expect(child.blockedBy).toEqual(["developing-today/code#910"]);
+    expect(child.edgeDiagnostics).toEqual([{ relation: "blockedBy", state: "unavailable", target: null }]);
     expect(child.blocks).toEqual(["developing-today/code#2403"]);
     expect(child.labels).toEqual(["effort/s", "mode/async"]);
+  });
+
+  test("parser preserves malformed endpoints as diagnostics instead of inventing refs", () => {
+    const malformed = structuredClone(GQL_EDGES) as unknown as MutableEdgeFixture;
+    const child = malformed.data.node.items.nodes.find((node) => node.id === "PVTI_11")!;
+    child.content!.blocking!.nodes![0]!.repository!.nameWithOwner = "bad repo";
+    const parsed = parseProjectItems(malformed);
+    const item = parsed.find((poolItem) => poolItem.ref === "developing-today/code#2402")!;
+    expect(item.blocks).toBeUndefined();
+    expect(item.edgeDiagnostics).toContainEqual({ relation: "blocks", state: "malformed", target: "bad repo#2403" });
+    expect(isProjectPoolItem(item)).toBe(true);
+  });
+
+  test("an explicitly unavailable relation connection is not confused with no edges", () => {
+    const unavailable = structuredClone(GQL_EDGES) as unknown as MutableEdgeFixture;
+    const child = unavailable.data.node.items.nodes.find((node) => node.id === "PVTI_11")!;
+    child.content!.blocking = null;
+    const parsed = parseProjectItems(unavailable);
+    const item = parsed.find((poolItem) => poolItem.ref === "developing-today/code#2402")!;
+    expect(item.blocks).toBeUndefined();
+    expect(item.edgeDiagnostics).toContainEqual({ relation: "blocks", state: "unavailable", target: null });
+    expect(isProjectPoolItem(item)).toBe(true);
   });
 
   test("epic, PR, and edgeless shapes carry no edges from the parse", () => {
