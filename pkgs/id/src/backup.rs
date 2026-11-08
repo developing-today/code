@@ -37,6 +37,12 @@
 //!   notification for every bound device; the restored key is not
 //!   authoritative for new group epochs until the notifications are
 //!   confirmed via [`BackupStore::confirm_restore_notifications`].
+//!   Confirmations name a [`RestoreToken`] — the restore epoch plus
+//!   the backup generation (a store-level counter bumped every time
+//!   a backup record is created for an identity, never reset by
+//!   deletion) — so a delayed confirmation from a deleted backup
+//!   cannot clear a recreated backup's pending notifications even
+//!   when the recreated backup reuses the same restore epoch.
 //!   No rotation flag is introduced here — that representation belongs
 //!   to #2380.
 
@@ -381,7 +387,24 @@ pub struct DeviceNotification {
     pub key_hash: [u8; 32],
     /// The bound device's public key to notify.
     pub device_public_key: [u8; 32],
+    /// The backup generation the notification belongs to.
+    pub generation: u64,
     /// The restore epoch the notification announces.
+    pub restore_epoch: u64,
+}
+
+/// The confirmation token for one restore's notifications: the
+/// backup generation plus the restore epoch. Both halves must match
+/// the pending restore exactly — a token from an earlier backup of
+/// the same identity (before a delete + recreate) never confirms a
+/// later backup's restore, even at the same restore epoch (Codex
+/// review on PR #7658).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RestoreToken {
+    /// Backup generation: bumped on every record creation for the
+    /// identity, never reset by deletion or tombstone purge.
+    pub generation: u64,
+    /// The restore epoch within that generation.
     pub restore_epoch: u64,
 }
 
@@ -405,6 +428,8 @@ pub struct RestoreReceipt {
     pub envelope: Vec<u8>,
     /// `restore_epoch` after this restore's increment.
     pub restore_epoch: u64,
+    /// The token that confirms this restore's notifications.
+    pub token: RestoreToken,
     /// Notifications emitted to bound devices by this restore.
     pub notifications: Vec<DeviceNotification>,
 }
@@ -418,7 +443,11 @@ pub struct RestoreReceipt {
 pub struct BackupStore {
     entries: HashMap<[u8; 32], BackupEntry>,
     bound_devices: HashMap<[u8; 32], Vec<[u8; 32]>>,
-    restore_pending: HashMap<[u8; 32], u64>,
+    restore_pending: HashMap<[u8; 32], RestoreToken>,
+    /// Per-identity backup generation: bumped on every record
+    /// creation, never reset (deletion and tombstone purge keep it),
+    /// so restore tokens stay unique across delete + recreate.
+    generations: HashMap<[u8; 32], u64>,
 }
 
 fn validate_envelope(envelope: &[u8]) -> Result<(), BackupError> {
@@ -475,6 +504,20 @@ impl BackupStore {
         Self::default()
     }
 
+    /// Bump and return the backup generation for `hash`. Called on
+    /// every record creation (first upload, or recreation after a
+    /// delete) — never on an overwrite of a live record.
+    fn bump_generation(&mut self, hash: &[u8; 32]) -> u64 {
+        let generation = self.generations.entry(*hash).or_default();
+        *generation = generation.saturating_add(1);
+        *generation
+    }
+
+    /// The current backup generation for `hash` (0 = never created).
+    fn generation(&self, hash: &[u8; 32]) -> u64 {
+        self.generations.get(hash).copied().unwrap_or(0)
+    }
+
     /// Upload endpoint (#5033 item 4): verify the signature against
     /// the named public key, reject non-increasing epochs, overwrite
     /// only on a valid higher-epoch upload.
@@ -503,6 +546,7 @@ impl BackupStore {
                 }
                 // A fresh, higher-epoch signed upload by the key
                 // holder is a new backup, not a replay.
+                self.bump_generation(&hash);
                 self.entries.insert(
                     hash,
                     BackupEntry::Live(BackupRecord {
@@ -532,6 +576,7 @@ impl BackupStore {
                 record.epoch = epoch;
             }
             None => {
+                self.bump_generation(&hash);
                 self.entries.insert(
                     hash,
                     BackupEntry::Live(BackupRecord {
@@ -593,20 +638,26 @@ impl BackupStore {
         record.restore_epoch = record.restore_epoch.saturating_add(1);
         let restore_epoch = record.restore_epoch;
         let envelope = record.envelope.clone();
+        let token = RestoreToken {
+            generation: self.generation(&hash),
+            restore_epoch,
+        };
         let notifications: Vec<DeviceNotification> = devices
             .iter()
             .map(|device| DeviceNotification {
                 key_hash: hash,
                 device_public_key: *device,
+                generation: token.generation,
                 restore_epoch,
             })
             .collect();
         if !notifications.is_empty() {
-            self.restore_pending.insert(hash, restore_epoch);
+            self.restore_pending.insert(hash, token);
         }
         Ok(RestoreReceipt {
             envelope,
             restore_epoch,
+            token,
             notifications,
         })
     }
@@ -661,19 +712,22 @@ impl BackupStore {
         }
     }
 
-    /// Confirm the restore notifications for the restore at
-    /// `restore_epoch` were delivered; the restored key becomes
-    /// authoritative. A confirmation naming an older epoch does NOT
+    /// Confirm the restore notifications for the restore named by
+    /// `token` were delivered; the restored key becomes
+    /// authoritative. A confirmation naming an older restore does NOT
     /// clear a newer restore's pending notifications (Codex review
-    /// on PR #7658): the caller must name the epoch its notifications
-    /// belong to, exactly as carried on each DeviceNotification.
+    /// on PR #7658): the caller must present the exact token its
+    /// notifications belong to, as carried on the RestoreReceipt and
+    /// each DeviceNotification. The generation half keeps tokens
+    /// unique across a delete + recreate, where the recreated
+    /// backup's restore_epoch restarts at 1.
     pub fn confirm_restore_notifications(
         &mut self,
         public_key: &[u8; 32],
-        restore_epoch: u64,
+        token: RestoreToken,
     ) -> bool {
         let hash = key_hash(public_key);
-        if self.restore_pending.get(&hash) == Some(&restore_epoch) {
+        if self.restore_pending.get(&hash) == Some(&token) {
             self.restore_pending.remove(&hash);
             true
         } else {
@@ -980,8 +1034,10 @@ mod tests {
         assert_eq!(receipt.notifications.len(), 1);
         assert_eq!(receipt.notifications[0].device_public_key, [42; 32]);
         assert_eq!(receipt.notifications[0].restore_epoch, 1);
+        assert_eq!(receipt.notifications[0].generation, 1);
+        assert_eq!(receipt.token.generation, 1);
         assert!(!store.is_authoritative(&public));
-        assert!(store.confirm_restore_notifications(&public, 1));
+        assert!(store.confirm_restore_notifications(&public, receipt.token));
         assert!(store.is_authoritative(&public));
         assert_eq!(store.record(&public).unwrap().restore_epoch(), 1);
     }
@@ -999,9 +1055,38 @@ mod tests {
         let second = store.download_for_restore(&public, 6_000).unwrap();
         assert_eq!(second.restore_epoch, 2);
         assert!(!store.is_authoritative(&public));
-        assert!(!store.confirm_restore_notifications(&public, 1));
+        assert!(!store.confirm_restore_notifications(&public, first.token));
         assert!(!store.is_authoritative(&public));
-        assert!(store.confirm_restore_notifications(&public, 2));
+        assert!(store.confirm_restore_notifications(&public, second.token));
+        assert!(store.is_authoritative(&public));
+    }
+
+    /// Oracle: Codex review on PR #7658 — a delayed confirmation
+    /// from a deleted backup must not clear a recreated backup's
+    /// pending notifications: recreation restarts `restore_epoch`
+    /// at 1, so the token's generation half is what keeps the old
+    /// confirmation (generation 1, epoch 1) from confirming the new
+    /// backup's restore (generation 2, epoch 1).
+    #[test]
+    fn stale_restore_token_does_not_confirm_recreated_backup() {
+        let (mut store, signing, public, envelope) = uploaded_store();
+        store.bind_device(&public, [42; 32]);
+        let first = store.download_for_restore(&public, 5_000).unwrap();
+        assert_eq!(first.token, RestoreToken { generation: 1, restore_epoch: 1 });
+        // Delete while the first restore's notifications are still
+        // delivering, then recreate at a higher upload epoch.
+        let delete_sig = sign_delete(&signing, 1);
+        store.delete(&public, &delete_sig).unwrap();
+        let recreate_sig = sign_upload(&signing, &envelope, 2);
+        store.upload(&public, &envelope, 2, &recreate_sig, 6_000).unwrap();
+        let second = store.download_for_restore(&public, 7_000).unwrap();
+        assert_eq!(second.restore_epoch, 1);
+        assert_eq!(second.token, RestoreToken { generation: 2, restore_epoch: 1 });
+        assert!(!store.is_authoritative(&public));
+        // The delayed confirmation from the deleted backup arrives.
+        assert!(!store.confirm_restore_notifications(&public, first.token));
+        assert!(!store.is_authoritative(&public));
+        assert!(store.confirm_restore_notifications(&public, second.token));
         assert!(store.is_authoritative(&public));
     }
 
