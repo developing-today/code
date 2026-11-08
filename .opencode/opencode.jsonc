@@ -2686,7 +2686,7 @@
         "autonomy": "rules"
       },
       "workhorse-weighted": {
-        "name": "Workhorse weighted - EMPTIED 2026-11-07 (Drew): no legs; chain stage kept, contributes nothing",
+        "name": "Workhorse weighted - Luna #xhigh w2 only: last-tier fallback behind the Flash primary (Drew 2026-11-07)",
         // The weighted half of workhorse's incremental structure: sessions
         // that fail over (or are demoted off) the Flash primary draw here
         // by weight. Not addressed by any agent directly.
@@ -2721,8 +2721,26 @@
         // now exactly deepseek-flash-plan#high via workhorse-ordered.
         // Former members: haiku-plan#high w2, spark-plan#xhigh w1,
         // deepseek-flash-plan#high w2 (history in comments above).
-        "targets": [],
+        // 2026-11-07 (Drew, direct order, later the same night):
+        // Luna joins this stage as its ONLY member -
+        // openai-plan/gpt-6-luna#xhigh at weight 2. This restores
+        // exactly the seat Luna held in workhorse-primary (weight
+        // 2, #xhigh) before tonight's emptying, moved to the LAST
+        // tier of the chain: workhorse reaches Luna only when
+        // workhorse-ordered (deepseek-flash-plan#high) yields
+        // nothing ready and the still-empty workhorse-primary
+        // contributes nothing. Nothing else is re-added -
+        // haiku-plan, spark-plan and deepseek-flash-plan do NOT
+        // return to this stage. openai-plan is the OpenAI provider
+        // route (openai.main + openai.alternate, weights 2:1):
+        // at the order, openai.main's weekly sat 24% used (OPEN)
+        // and openai.alternate was weekly-walled until Mon
+        // 2026-11-09 17:04Z - the provider route's own weighting
+        // and quota demotion shed the walled door, so the leg is
+        // live tonight through openai.main.
+        "targets": ["openai-plan/gpt-6-luna#xhigh"],
         "selection": "weighted",
+        "weights": { "openai-plan/gpt-6-luna": 2 },
         "autonomy": "rules"
       },
       "specialist": {
