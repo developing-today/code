@@ -563,6 +563,73 @@
             }
           }
         },
+        "zai-glm-5-3": {
+          "name": "GLM 5.3",
+          // Declared 2026-11-07 (Drew, direct order): NOT a Vibe
+          // preset — a La Plateforme catalog model the Mistral wire
+          // also serves, billed under Vibe Code on the account's
+          // usage page (verified there 2026-11-07). Declaring it
+          // here makes it addressable through this door at all (the
+          // same move as deepseek-v4-1-flash-1017 above); the
+          // glm-5-3-plan pool seats this leg directly. No limit
+          // declared — most preset entries above declare none and
+          // take the default. The variants mirror the wire set of
+          // the sibling third-party catalog model above
+          // (none/low/high/max).
+          "variants": {
+            "none": {
+              "options": {
+                "reasoning_effort": "none"
+              }
+            },
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            }
+          }
+        },
+        "zai-glm-5-3-flash": {
+          "name": "GLM 5.3 Flash",
+          // Declared 2026-11-07 (Drew, direct order): same basis
+          // as zai-glm-5-3 above — billed under Vibe Code on the
+          // account's usage page (verified 2026-11-07); declared
+          // so the glm-5-3-flash-plan pool can seat this leg
+          // directly. Variants mirror the same wire set
+          // (none/low/high/max).
+          "variants": {
+            "none": {
+              "options": {
+                "reasoning_effort": "none"
+              }
+            },
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            }
+          }
+        },
         "codestral-latest": {
           "name": "Codestral"
         },
@@ -2482,6 +2549,46 @@
           "opencode-go-plans/mimo-v2.6-flash": 3,
           "_commandcode/xiaomi/mimo-v2.6-flash": 0.5
         }
+      },
+      "glm-5-3-plan": {
+        "name": "GLM 5.3 - plan providers",
+        // NEW 2026-11-07 (Drew, direct order): the GLM 5.3 pool.
+        // For-now membership is the Mistral side only, and per
+        // Drew's clarification the same evening that means the
+        // _vibe door ONLY, as a direct leaf — NOT the mistral-plan
+        // route (its fallback would land draws on the account API
+        // leg: the exact failure just fixed in deepseek-flash-plan)
+        // and no mistral API member. The model is billed under
+        // Vibe Code on the account's usage page (verified
+        // 2026-11-07) and is declared on the _vibe provider above.
+        // DEFINED ONLY (Drew: "don't hook them anywhere") — no
+        // route references this pool.
+        "targets": [
+          {
+            "model": "_vibe/zai-glm-5-3",
+            "variants": { "xhigh": "max" }
+          }
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
+      },
+      "glm-5-3-flash-plan": {
+        "name": "GLM 5.3 Flash - plan providers",
+        // NEW 2026-11-07 (Drew, direct order): the GLM 5.3 Flash
+        // pool. Same for-now shape as glm-5-3-plan: the _vibe door
+        // only, as a direct leaf (zai-glm-5-3-flash — billed under
+        // Vibe Code, verified on the account's usage page
+        // 2026-11-07; declared on the _vibe provider above). No
+        // mistral-plan route, no mistral API member. DEFINED ONLY
+        // — no route references this pool.
+        "targets": [
+          {
+            "model": "_vibe/zai-glm-5-3-flash",
+            "variants": { "xhigh": "max" }
+          }
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
       },
       "scout": {
         "name": "Scout - routine work: cheapest, fastest, smart enough",
