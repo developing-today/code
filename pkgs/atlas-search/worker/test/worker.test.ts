@@ -63,6 +63,21 @@ beforeAll(() => {
     .reply(embedReply("good"))
     .persist();
   origin
+    .intercept({
+      path: "/v1/search",
+      method: "POST",
+      body: (b: string) => b.includes("nullsearch query"),
+    })
+    .reply(() => {
+      counts.search++;
+      return {
+        statusCode: 200,
+        data: "null",
+        responseOptions: { headers: { "Content-Type": "application/json" } },
+      };
+    })
+    .persist();
+  origin
     .intercept({ path: "/v1/search", method: "POST" })
     .reply(searchReply)
     .persist();
@@ -158,5 +173,21 @@ describe("atlas-search worker", () => {
     // write, so a bad-space vector cannot enter the cache.
     expect(meta.has_result ?? false).toBe(false);
     expect(meta.has_embedding ?? false).toBe(false);
+  });
+
+  it("reports a null search-service response as a 502, not a raw TypeError (#6982)", async () => {
+    const resp = await search({ query: "nullsearch query" });
+    expect(resp.status).toBe(502);
+    const body = (await resp.json()) as { error?: { message?: string } };
+    expect(body.error?.message).toContain("non-object response (null)");
+    const inspect = await SELF.fetch(
+      "https://worker.test/v1/cache/inspect?query=nullsearch%20query",
+      { headers: GATE },
+    );
+    const meta = (await inspect.json()) as Record<string, unknown>;
+    // The embedding was stored before the search ran (the entry stays
+    // retryable in the embedded state); no result was cached.
+    expect(meta.has_embedding).toBe(true);
+    expect(meta.has_result).toBe(false);
   });
 });
