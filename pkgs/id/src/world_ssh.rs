@@ -57,7 +57,13 @@ use crate::directory_view::{
 use crate::frames::{Decoded, FrameBuffer, encode_frame};
 use crate::world::hex_encode;
 use crate::world_hub::{ResolveError, WorldHub};
-use crate::world_session::{Inbound, SessionIo, encode_hex, run_session};
+#[cfg(test)]
+use crate::world_session::{
+    DocumentError, MAX_DOCUMENT_BYTES, list_public_documents, read_public_document,
+};
+use crate::world_session::{
+    Inbound, SessionConfig, SessionIo, encode_hex, run_session, run_session_with,
+};
 
 /// File, beside the other server keys, that holds the SSH host key.
 pub const SSH_HOST_KEY_FILE: &str = ".ssh-host-key";
@@ -430,8 +436,13 @@ impl Handler for SshClient {
             backlog: Arc::clone(&self.exec_backlog),
         };
         let hub = self.hub.clone();
+        let documents_store = self.blobs.clone();
         tokio::spawn(async move {
-            run_session(&hub, &mut io).await;
+            let config = SessionConfig {
+                documents_store: Some(documents_store),
+                ..SessionConfig::default()
+            };
+            run_session_with(&hub, &mut io, config).await;
             let _ = io.handle.eof(channel).await;
             let _ = io.handle.close(channel).await;
         });
@@ -546,13 +557,21 @@ impl Handler for SshClient {
             records_prefix: None,
             records_drained: 0,
             records_after: None,
+            documents_prefix: None,
+            documents_names: Vec::new(),
+            documents_drained: 0,
+            documents_after: None,
             errored: false,
             previous_screen: None,
         };
         let hub = self.hub.clone();
         tokio::spawn(async move {
+            let config = SessionConfig {
+                documents_store: Some(io.blobs.clone()),
+                ..SessionConfig::default()
+            };
             io.enter_alt_screen().await;
-            run_session(&hub, &mut io).await;
+            run_session_with(&hub, &mut io, config).await;
             if io.errored {
                 tokio::time::sleep(REFUSED_SHELL_DELAY).await;
             }
@@ -654,11 +673,18 @@ fn command_frame(command: &WorldCommand, capability: &str) -> Option<String> {
         WorldCommand::RecordsContinue { prefix, after } => json!({
             "type": "records", "capability": capability, "prefix": prefix, "after": after
         }),
+        WorldCommand::Documents { prefix } => json!({
+            "type": "documents", "capability": capability, "prefix": prefix, "after": null
+        }),
+        WorldCommand::DocumentsContinue { prefix, after } => json!({
+            "type": "documents", "capability": capability, "prefix": prefix, "after": after
+        }),
+        WorldCommand::Document(name) => json!({
+            "type": "document", "capability": capability, "name": name
+        }),
         WorldCommand::Stats => json!({ "type": "info", "capability": capability }),
         WorldCommand::Caps => json!({ "type": "caps", "capability": capability }),
-        WorldCommand::Documents { .. }
-        | WorldCommand::Document(_)
-        | WorldCommand::Logs { .. }
+        WorldCommand::Logs { .. }
         | WorldCommand::Help
         | WorldCommand::Message(_)
         | WorldCommand::Quit => return None,
@@ -745,6 +771,14 @@ struct SshIo {
     /// first page, whose request sends `after: null`); the page's
     /// `next_after` must strictly advance past it (#6615).
     records_after: Option<String>,
+    /// `Some(prefix)` while draining documents pages from a `/documents` command.
+    documents_prefix: Option<Option<String>>,
+    /// Names accumulated across the pages of the current `/documents` drain.
+    documents_names: Vec<String>,
+    /// Cumulative name bytes for the current drain, against the list caps.
+    documents_drained: usize,
+    /// Cursor that produced the in-flight documents page.
+    documents_after: Option<String>,
     errored: bool,
     /// Last screen successfully written to this shell's terminal. A missing
     /// value forces the next screen view to repaint the whole terminal.
@@ -848,42 +882,16 @@ impl SessionIo for SshIo {
                             self.records_drained = 0;
                             self.records_after = None;
                         }
+                        if let WorldCommand::Documents { prefix } = &command {
+                            self.documents_prefix = Some(prefix.clone());
+                            self.documents_names = Vec::new();
+                            self.documents_drained = 0;
+                            self.documents_after = None;
+                        }
                         return Inbound::Text(frame);
                     }
                     // Everything else is answered by the shell itself.
                     match command {
-                        WorldCommand::Documents { prefix } => {
-                            let text =
-                                match list_public_documents(&self.blobs, prefix.as_deref()).await {
-                                    Ok(text) => text,
-                                    Err(_) => "documents unavailable".to_owned(),
-                                };
-                            if self
-                                .handle
-                                .data(
-                                    self.channel,
-                                    terminal_text(&format!("\r\n{text}\r\nworld> ")),
-                                )
-                                .await
-                                .is_err()
-                            {
-                                return Inbound::Closed;
-                            }
-                        }
-                        WorldCommand::Document(name) => {
-                            let text = match read_public_document(&self.blobs, &name).await {
-                                Ok(text) => format!("\r\n{text}\r\nworld> "),
-                                Err(error) => format!("\r\n{}\r\nworld> ", error.message()),
-                            };
-                            if self
-                                .handle
-                                .data(self.channel, terminal_text(&text))
-                                .await
-                                .is_err()
-                            {
-                                return Inbound::Closed;
-                            }
-                        }
                         WorldCommand::Help => {
                             let help = "World chat: type a line to chat. Commands: /input <hex>, /records [prefix], /stats, /logs, /caps, /documents [prefix], /document <name>, /help, /quit\r\nworld> ";
                             if self.handle.data(self.channel, help).await.is_err() {
@@ -921,6 +929,9 @@ impl SessionIo for SshIo {
                         | WorldCommand::Input(_)
                         | WorldCommand::Records { .. }
                         | WorldCommand::RecordsContinue { .. }
+                        | WorldCommand::Documents { .. }
+                        | WorldCommand::DocumentsContinue { .. }
+                        | WorldCommand::Document(_)
                         | WorldCommand::Stats
                         | WorldCommand::Caps => {}
                     }
@@ -1011,6 +1022,9 @@ impl SessionIo for SshIo {
                 self.errored = true;
                 self.records_prefix = None;
                 self.records_after = None;
+                self.documents_prefix = None;
+                self.documents_names = Vec::new();
+                self.documents_after = None;
                 let message = value["message"].as_str().unwrap_or("error");
                 self.last_error = Some(format!("\r\n{}\r\n", terminal_text(message)));
                 self.last_error.clone().unwrap_or_default()
@@ -1079,6 +1093,61 @@ impl SessionIo for SshIo {
                 } else {
                     format!("\r\n{}", terminal_text(&text))
                 }
+            }
+            Some("documents") => {
+                // Drain pages like records: validate the cursor, accumulate
+                // names under the list caps (512 items / 32 KiB of name
+                // lines — the caps the shell-local listing enforced), and
+                // render only the final page, in the shell-local format.
+                let produced_by = self.documents_after.clone().unwrap_or_default();
+                let (after, malformed) = match records_cursor(value.get("next_after"), &produced_by)
+                {
+                    RecordsCursor::Advance(next) => (Some(next), false),
+                    RecordsCursor::End => (None, false),
+                    RecordsCursor::Malformed | RecordsCursor::Stalled => (None, true),
+                };
+                let mut truncated = malformed;
+                if let Some(names) = value["names"].as_array() {
+                    for name in names.iter().filter_map(serde_json::Value::as_str) {
+                        if self.documents_names.len() >= MAX_DOCUMENT_LIST_ITEMS
+                            || self.documents_drained + name.len() + 1 > MAX_DOCUMENT_LIST_BYTES
+                        {
+                            truncated = true;
+                            break;
+                        }
+                        self.documents_drained += name.len() + 1;
+                        self.documents_names.push(name.to_owned());
+                    }
+                }
+                let next = match (&self.documents_prefix, &after) {
+                    (Some(prefix), Some(after)) if !truncated => {
+                        Some((prefix.clone(), after.clone()))
+                    }
+                    _ => None,
+                };
+                if after.is_some() && next.is_none() {
+                    truncated = true;
+                }
+                if let Some((prefix, after)) = next {
+                    self.documents_after = Some(after.clone());
+                    self.commands
+                        .push_back(WorldCommand::DocumentsContinue { prefix, after });
+                    String::new()
+                } else {
+                    let names = std::mem::take(&mut self.documents_names);
+                    self.documents_prefix = None;
+                    self.documents_after = None;
+                    self.documents_drained = 0;
+                    let text = render_documents_listing(&names, truncated);
+                    format!("\r\n{}\r\nworld> ", terminal_text(&text))
+                }
+            }
+            Some("document") => {
+                let name = value["name"].as_str().unwrap_or_default();
+                let size = value["size"].as_u64().unwrap_or_default();
+                let text = value["text"].as_str().unwrap_or_default();
+                let rendered = format!("--- {name} ({size} bytes; read-only) ---\n{text}");
+                format!("\r\n{}\r\nworld> ", terminal_text(&rendered))
             }
             Some("caps") => {
                 let report = value
@@ -1313,7 +1382,6 @@ const MAX_RECORDS_TERMINAL_BYTES: usize = 384 * 1024;
 /// Total rendered bytes a single `/records` drain may produce across all its
 /// pages. Each page is additionally bounded by [`MAX_RECORDS_TERMINAL_BYTES`].
 const MAX_RECORDS_TOTAL_BYTES: usize = 1024 * 1024;
-const MAX_DOCUMENT_BYTES: usize = 64 * 1024;
 const MAX_DOCUMENT_LIST_BYTES: usize = 32 * 1024;
 const MAX_DOCUMENT_LIST_ITEMS: usize = 512;
 
@@ -1330,6 +1398,10 @@ enum WorldCommand {
     },
     Documents {
         prefix: Option<String>,
+    },
+    DocumentsContinue {
+        prefix: Option<String>,
+        after: String,
     },
     Document(String),
     Stats,
@@ -1470,6 +1542,26 @@ impl WorldLineBuffer {
     }
 }
 
+/// Render a drained documents listing exactly as the shell-local
+/// `list_public_documents` did: header, one name per line (or `(none)`),
+/// the truncation marker when the drain stopped early, and the footer.
+fn render_documents_listing(names: &[String], truncated: bool) -> String {
+    let mut output = String::from("public named files:\n");
+    if names.is_empty() {
+        output.push_str("(none)\n");
+    } else {
+        for name in names {
+            output.push_str(name);
+            output.push('\n');
+        }
+    }
+    if truncated {
+        output.push_str("[listing truncated]\n");
+    }
+    output.push_str("View UTF-8 .txt/.md/.markdown files with /document <name>.\n");
+    output
+}
+
 fn render_records_value(
     records: Option<&serde_json::Map<String, serde_json::Value>>,
     sequence: u64,
@@ -1537,118 +1629,6 @@ fn render_records(
         sequence,
         next_after,
     )
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DocumentError {
-    InvalidName,
-    Missing,
-    TooLarge,
-    Binary,
-    Unavailable,
-}
-
-impl DocumentError {
-    const fn message(self) -> &'static str {
-        match self {
-            Self::InvalidName => "document name must be a public .txt, .md, or .markdown tag",
-            Self::Missing => "document not found",
-            Self::TooLarge => "document exceeds the 64 KiB SSH viewing limit",
-            Self::Binary => "document is not valid UTF-8 text",
-            Self::Unavailable => "document unavailable",
-        }
-    }
-}
-
-fn is_viewable_document_name(name: &str) -> bool {
-    if !is_public_document_name(name) {
-        return false;
-    }
-    let lower = name.to_ascii_lowercase();
-    lower.ends_with(".md") || lower.ends_with(".markdown") || lower.ends_with(".txt")
-}
-
-async fn list_public_documents(
-    store: &iroh_blobs::api::Store,
-    prefix: Option<&str>,
-) -> anyhow::Result<String> {
-    let mut tags = store.tags().list().await?;
-    let mut names = Vec::new();
-    let mut total_bytes = 0usize;
-    let mut truncated = false;
-    while let Some(item) = tags.next().await {
-        let item = item?;
-        let Ok(name) = std::str::from_utf8(item.name.as_ref()) else {
-            continue;
-        };
-        if !is_public_document_name(name) || prefix.is_some_and(|p| !name.starts_with(p)) {
-            continue;
-        }
-        let line = format!("{name}\n");
-        if names.len() >= MAX_DOCUMENT_LIST_ITEMS
-            || total_bytes + line.len() > MAX_DOCUMENT_LIST_BYTES
-        {
-            truncated = true;
-            break;
-        }
-        total_bytes += line.len();
-        names.push(name.to_owned());
-    }
-    names.sort();
-    let mut output = String::from("public named files:\n");
-    if names.is_empty() {
-        output.push_str("(none)\n");
-    } else {
-        for name in names {
-            output.push_str(&name);
-            output.push('\n');
-        }
-    }
-    if truncated {
-        output.push_str("[listing truncated]\n");
-    }
-    output.push_str("View UTF-8 .txt/.md/.markdown files with /document <name>.\n");
-    Ok(output)
-}
-
-fn is_public_document_name(name: &str) -> bool {
-    !name.is_empty()
-        && !crate::tags::is_internal_tag(name)
-        && !name.contains('/')
-        && !name.contains('\\')
-        && !name.chars().any(char::is_control)
-}
-
-async fn read_public_document(
-    store: &iroh_blobs::api::Store,
-    name: &str,
-) -> Result<String, DocumentError> {
-    if !is_viewable_document_name(name) {
-        return Err(DocumentError::InvalidName);
-    }
-    let tag = store
-        .tags()
-        .get(name)
-        .await
-        .map_err(|_| DocumentError::Unavailable)?
-        .ok_or(DocumentError::Missing)?;
-    let size = match store.blobs().status(tag.hash).await {
-        Ok(iroh_blobs::api::blobs::BlobStatus::Complete { size }) => size,
-        _ => return Err(DocumentError::Unavailable),
-    };
-    if size > MAX_DOCUMENT_BYTES as u64 {
-        return Err(DocumentError::TooLarge);
-    }
-    let bytes = store
-        .blobs()
-        .get_bytes(tag.hash)
-        .await
-        .map_err(|_| DocumentError::Unavailable)?;
-    if bytes.len() > MAX_DOCUMENT_BYTES {
-        return Err(DocumentError::TooLarge);
-    }
-    let text = std::str::from_utf8(&bytes).map_err(|_| DocumentError::Binary)?;
-    Ok(format!("--- {name} ({size} bytes; read-only) ---\n{text}"))
 }
 
 /// One explorer login: the world, the caller it acts as, and the secret it

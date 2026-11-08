@@ -75,6 +75,22 @@
       "opens": "query",
       "fields": { "capability": "string" }
     },
+    "documents": {
+      "class": "query",
+      "phases": ["opening", "query", "joined"],
+      "opens": "query",
+      "fields": {
+        "capability": "string",
+        "prefix": "string?",
+        "after": "string?"
+      }
+    },
+    "document": {
+      "class": "query",
+      "phases": ["opening", "query", "joined"],
+      "opens": "query",
+      "fields": { "capability": "string", "name": "string" }
+    },
     "download_module": {
       "class": "query",
       "phases": ["opening", "query"],
@@ -340,6 +356,14 @@
     "records_ticket": {
       "class": "reply",
       "fields": { "ticket": "string" }
+    },
+    "documents": {
+      "class": "reply",
+      "fields": { "names": "string[]", "next_after": "string?" }
+    },
+    "document": {
+      "class": "reply",
+      "fields": { "name": "string", "size": "u64", "text": "string" }
     },
     "module_begin": {
       "class": "reply",
