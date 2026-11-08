@@ -1854,6 +1854,9 @@
       // drewrypope:popesdrew, replacing the equal round-robin split
       // described above; the opencode providers are weighted above
       // opendesign in every pool that seats both.
+      // 2026-11-07 (Drew, direct order): internal split back to
+      // 1:1 — each account door at weight 1, superseding the 2:1
+      // above.
       // The bare opencode-go provider is NOT a member: it has no account
       // of its own and rides whichever console login is active, so its
       // burn landed on that account unattributed. Quota/health rules
@@ -1861,7 +1864,7 @@
       "opencode-go-plans": {
         "providers": ["opencode-go.drewrypope", "opencode-go.popesdrew"],
         "selection": "weighted",
-        "weights": { "opencode-go.drewrypope": 2, "opencode-go.popesdrew": 1 }
+        "weights": { "opencode-go.drewrypope": 1, "opencode-go.popesdrew": 1 }
       }
     },
     "model_routes": {
@@ -1956,6 +1959,22 @@
         // disabled_providers AND re-seat "deepseek/deepseek-flash" as
         // this route's last target (weight 0.1) in the same pass that
         // records Drew's approval for the PAYG use.
+        // 2026-11-07 (Drew, direct order): tier re-weight — the Go
+        // plans leg drops 6 -> 2 and Command Code rises 0.5 -> 1.
+        // The mistral-plan member swaps its model from
+        // mistral-small-latest to DeepSeek Flash at tier 1: the
+        // mistral API catalog serves DeepSeek V4.1 Flash 1017 as
+        // deepseek-v4-1-flash-1017 (family deepseek-flash; variants
+        // none/low/high/max), so the member seats
+        // mistral-plan/deepseek-v4-1-flash-1017. The _vibe leg does
+        // NOT carry that model (Mistral-native presets only), so
+        // inside the group the draw lands on the mistral API leg —
+        // this member no longer rides the Vibe plan budget; it
+        // bills the Mistral account API budget. Its variant remap
+        // changes accordingly: low -> low (the old leg mapped low
+        // -> none because mistral-small on this wire offers only
+        // none/high) and xhigh -> max (mirroring the Go/ClinePass
+        // leaves).
         "targets": [
           {
             "model": "opencode-go-plans/deepseek-v4.1-flash",
@@ -1971,7 +1990,7 @@
           },
           "_commandcode/deepseek/deepseek-v4.1-flash",
           {
-            "model": "mistral-plan/mistral-small-latest",
+            "model": "mistral-plan/deepseek-v4-1-flash-1017",
             // Variant remap: the pool's effort rungs map onto the two
             // variants both mistral-plan legs can produce (none /
             // high — see the vibe-direct model note). The remap keys
@@ -1980,7 +1999,7 @@
             // every rung (a #low draw runs the group at "none", a
             // #high draw at "high", both producible by vibe-direct
             // first and the API leg alike).
-            "variants": { "low": "none", "medium": "high", "high": "high", "xhigh": "high", "max": "high" }
+            "variants": { "low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max" }
           }
         ],
         "selection": "round-robin",
@@ -1989,11 +2008,11 @@
         // stack note above. Higher tier serves first; rotation is
         // even within a tier.
         "weights": {
-          "opencode-go-plans/deepseek-v4.1-flash": 6,
+          "opencode-go-plans/deepseek-v4.1-flash": 2,
           "cline-pass/deepseek-v4.1-flash": 1,
           "opendesign/deepseek-v4.1-flash": 1,
-          "_commandcode/deepseek/deepseek-v4.1-flash": 0.5,
-          "mistral-plan/mistral-small-latest": 0.25
+          "_commandcode/deepseek/deepseek-v4.1-flash": 1,
+          "mistral-plan/deepseek-v4-1-flash-1017": 1
         }
       },
       "deepseek-flash": {
