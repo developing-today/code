@@ -517,6 +517,13 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             client.close();
             endpoint.close().await;
             print!("{}", crate::world_manifest::diff(&manifest, &state));
+            // Diff stays informational: report drift an apply would refuse.
+            if let Err(error) = crate::world_manifest::check_schedule_horizon(
+                &crate::world_manifest::plan(&manifest, &state),
+                crate::time::unix_ms(),
+            ) {
+                eprintln!("warning: `world apply` would refuse this manifest: {error:#}");
+            }
             Ok(())
         }
         WorldCommand::Apply(args) => {
@@ -535,6 +542,15 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             let (endpoint, client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
             let state = current_world_state(&client, &capability, Some(&admin_token)).await?;
             let steps = crate::world_manifest::plan(&manifest, &state);
+            // Refuse before any step runs: schedules apply last, so the
+            // host's horizon refusal would otherwise abort a partial apply (#6486).
+            if let Err(error) =
+                crate::world_manifest::check_schedule_horizon(&steps, crate::time::unix_ms())
+            {
+                client.close();
+                endpoint.close().await;
+                return Err(error);
+            }
             if steps.is_empty() {
                 println!("no drift");
             } else {

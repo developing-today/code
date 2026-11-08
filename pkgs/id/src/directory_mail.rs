@@ -132,6 +132,7 @@ impl CommandSink {
     }
 
     fn send_with_timeout(&self, mail: &Mail, timeout: Duration) -> Result<()> {
+        mail.validate_header_fields()?;
         let mut command = Command::new(&self.program);
         command
             .args(&self.args)
@@ -517,6 +518,32 @@ mod tests {
             "a@b.co|Your code|Code 123456"
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn assert_command_sink_refuses_without_running(mail: &Mail, expected_error: &str) {
+        let dir = scratch("command-invalid");
+        let out = dir.join("out.txt");
+        let script = format!("printf ran > {}", out.display());
+        let error = CommandSink::new(PathBuf::from("/bin/sh"), vec!["-c".to_owned(), script])
+            .send(mail)
+            .unwrap_err();
+        assert!(error.to_string().contains(expected_error), "{error:#}");
+        assert!(!out.exists(), "the program must never be invoked");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_command_sink_refuses_subject_header_injection_before_spawning() {
+        let mut mail = sample();
+        mail.subject = "Your code\nBcc: attacker@evil.example".to_owned();
+        assert_command_sink_refuses_without_running(&mail, "subject");
+    }
+
+    #[test]
+    fn the_command_sink_refuses_crlf_recipient_before_spawning() {
+        let mut mail = sample();
+        mail.to = "a@b.co>\r\nRCPT TO:<x@y.z".to_owned();
+        assert_command_sink_refuses_without_running(&mail, "recipient");
     }
 
     #[test]

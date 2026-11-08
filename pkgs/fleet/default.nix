@@ -18,11 +18,17 @@
   rustPlatform,
   pkgsStatic,
   binutils,
-  onnxruntime,
+  callPackage,
   sourceRev ? "unknown",
 }:
 
 let
+  # ONNX Runtime, pinned to the latest upstream release through the
+  # atlas-search package's vendored copy (../atlas-search/onnxruntime):
+  # the search serve role's baked library must be the release the
+  # corpus and the Gate A fixtures are certified under (code#6765).
+  onnxruntime = callPackage ../atlas-search/onnxruntime { };
+
   # The search serve role (#5604) consumes atlas-core / atlas-embed /
   # atlas-proto by relative path (../atlas-search/crates/*, untouched),
   # so the build source is the pkgs/ tree holding both workspaces and
@@ -34,6 +40,9 @@ let
       ./.
       ../atlas-search/Cargo.toml
       ../atlas-search/crates
+      # atlas-core include_str!s the stage DDL from schema/ (stage.rs);
+      # without it the fleet build fails on the missing .sql files.
+      ../atlas-search/schema
     ];
   };
 

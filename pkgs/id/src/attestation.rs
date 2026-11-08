@@ -199,6 +199,7 @@ pub fn sign_genesis(
             link: None,
             checkpoint: None,
             rotation: None,
+            chat: None,
         },
     )?)
 }
@@ -248,6 +249,7 @@ pub fn sign_claim(
             link: None,
             checkpoint: None,
             rotation: None,
+            chat: None,
         },
     )?)
 }

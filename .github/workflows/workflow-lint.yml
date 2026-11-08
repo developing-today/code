@@ -18,7 +18,6 @@ on:
       - ".github/actions/**"
       - ".github/scripts/check-workflows.sh"
       - ".github/scripts/check-workflows.test.sh"
-  merge_group:
   workflow_dispatch:
 
 permissions:

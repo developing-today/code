@@ -1115,6 +1115,34 @@ fn req_bool(req: &Value, key: &str) -> Option<bool> {
 // Verbs
 // ---------------------------------------------------------------------------
 
+/// Statuses in which a task still owns its dedupe key: an enqueue
+/// that dedupe-matches one of these is a true duplicate and returns
+/// the live row. Terminal rows (done/cancelled/failed) do NOT block
+/// the key (#6838): PG's enqueue revived on dedupe-over-terminal,
+/// and the Turso port dropped that nuance (cutover doc deviation 6).
+pub const LIVE_STATUSES: [&str; 4] = ["queued", "claimed", "parked", "blocked"];
+pub const TERMINAL_STATUSES: [&str; 3] = ["done", "cancelled", "failed"];
+
+/// Partition the rows sharing one (queue, dedupe_key) into the live
+/// dedupe hit, if any, and the newest terminal predecessor, if any.
+/// Rows arrive ordered by id ASC, so the last terminal row seen is
+/// the most recent attempt — the one a revive links back to.
+fn dedupe_partition(rows: &[Value]) -> (Option<Value>, Option<Value>) {
+    let mut live: Option<Value> = None;
+    let mut terminal: Option<Value> = None;
+    for row in rows {
+        let status = row.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if LIVE_STATUSES.contains(&status) {
+            if live.is_none() {
+                live = Some(row.clone());
+            }
+        } else if TERMINAL_STATUSES.contains(&status) {
+            terminal = Some(row.clone());
+        }
+    }
+    (live, terminal)
+}
+
 fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
     let packet = req.get("packet").cloned().unwrap_or(Value::Null);
     let (errors, warnings) = validate_packet(&packet);
@@ -1126,24 +1154,44 @@ fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
         });
     }
     let queue = req_str(req, "queue").unwrap_or("").to_string();
+    if queue.is_empty() {
+        return fail(2, "enqueue: queue is required".to_string());
+    }
+    // Shadow queues are for deliberate shadow runs only (#7016): an
+    // enqueue may land in one only when the caller declares shadow
+    // intent, so a forgotten --queue can never silently misroute
+    // real work there again.
+    if queue.ends_with("-shadow") && !req_bool(req, "shadow_intent").unwrap_or(false) {
+        return fail(
+            2,
+            format!(
+                "enqueue: queue {queue} is a shadow queue; pass shadow_intent \
+                 (CLI: --shadow-intent) to enqueue there deliberately"
+            ),
+        );
+    }
     let task = task_from_packet(&packet, &queue);
     if req.get("dry_run").and_then(|d| d.as_bool()).unwrap_or(false) {
         return ok(json!({"dry_run": true, "task": task, "warnings": warnings}));
     }
     let now = now_iso();
     let dedupe = task.get("dedupe_key").and_then(|v| v.as_str()).map(str::to_string);
-    let work = (|| -> Result<Value, TErr> {
+    let work = (|| -> Result<(Value, Option<Value>), TErr> {
+        let mut predecessor: Option<Value> = None;
         if let Some(dk) = &dedupe {
             let existing = t.query_objs(
                 &format!(
-                    "SELECT {TASK_COLS} FROM tasks WHERE queue = ? AND dedupe_key = ?"
+                    "SELECT {TASK_COLS} FROM tasks WHERE queue = ? AND dedupe_key = ? \
+                     ORDER BY id ASC"
                 ),
                 &[Arg::Text(queue.clone()), Arg::Text(dk.clone())],
                 &TASK_JSON_COLS,
             )?;
-            if let Some(row) = existing.into_iter().next() {
-                return Ok(row);
+            let (live, terminal) = dedupe_partition(&existing);
+            if let Some(row) = live {
+                return Ok((row, None));
             }
+            predecessor = terminal;
         }
         let ins = t.exec(
             "INSERT INTO tasks (queue, title, body, payload, dedupe_key, priority, \
@@ -1171,15 +1219,227 @@ fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             ],
         )?;
         let id = ins.last_insert_rowid.unwrap_or(0);
-        get_task(t, id).map(|r| r.unwrap_or(Value::Null))
+        // Revive-on-enqueue (#6838): the key's only prior row(s) are
+        // terminal, so this fresh task is a revival, not a first
+        // enqueue. Link it to its predecessor in progress (the audit
+        // chain) and leave an event on BOTH rows.
+        if let Some(pred) = &predecessor {
+            let pred_id = pred.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+            let link = json!({
+                "task_id": pred_id,
+                "status": pred.get("status").cloned().unwrap_or(Value::Null),
+                "completed_at": pred.get("completed_at").cloned().unwrap_or(Value::Null),
+                "revived_at": now_iso(),
+                "via": "enqueue_repo_task_turso",
+            });
+            t.exec(
+                "UPDATE tasks SET progress = ? WHERE id = ?",
+                &[
+                    Arg::Text(json!({"revived_from": link}).to_string()),
+                    Arg::Int(id),
+                ],
+            )?;
+            event(
+                t,
+                Some("enqueue_repo_task"),
+                Some(id),
+                "task_revived",
+                &json!({"predecessor": link, "dedupe_key": dedupe}),
+            )?;
+            event(
+                t,
+                Some("enqueue_repo_task"),
+                Some(pred_id),
+                "revived_by",
+                &json!({"successor_task_id": id, "dedupe_key": dedupe}),
+            )?;
+        }
+        let row = get_task(t, id).map(|r| r.unwrap_or(Value::Null))?;
+        Ok((row, predecessor))
     })();
     match work {
-        Ok(row) if !row.is_null() => ok(json!({
-            "row": row, "rpc": "enqueue_repo_task_turso", "warnings": warnings
-        })),
+        Ok((row, predecessor)) if !row.is_null() => {
+            let mut envelope = json!({
+                "row": row, "rpc": "enqueue_repo_task_turso", "warnings": warnings
+            });
+            if let Some(pred) = &predecessor {
+                envelope["revived_from"] = json!({
+                    "task_id": pred.get("id").cloned().unwrap_or(Value::Null),
+                    "status": pred.get("status").cloned().unwrap_or(Value::Null),
+                });
+            }
+            ok(envelope)
+        }
         Ok(_) => fail(5, "enqueue_repo_task_turso returned no row"),
         Err(e) => terr(e),
     }
+}
+
+/// Whether a task row may be revived by the /revive verb (#6838):
+/// a failed row can always be re-queued; a queued row only when it
+/// is dead at cap (attempts exhausted — the silent-zombie state
+/// #6463 censused). Anything else is live or terminal-done work the
+/// verb must not touch.
+fn revive_eligible(status: &str, attempts: i64, max_attempts: i64) -> Result<(), String> {
+    match status {
+        "failed" => Ok(()),
+        "queued" if attempts >= max_attempts => Ok(()),
+        "queued" => Err(format!(
+            "task is queued with attempts {attempts} < max_attempts {max_attempts}: \
+             not dead at cap, nothing to revive"
+        )),
+        other => Err(format!(
+            "task status {other} cannot be revived (only failed, or queued dead-at-cap)"
+        )),
+    }
+}
+
+/// The revive verb (#6838): reset a dead task in place — attempts
+/// back to 0, last_error cleared, status queued, due now (or at the
+/// caller's not_before) — with a `revived` audit event. This is the
+/// supported path the fleet monitor's dead-in-queue self-repair
+/// re-points to, replacing its direct SQL.
+fn verb_revive(t: &TursoBackend, req: &Value) -> Value {
+    let task_id = req_i64(req, "task_id").unwrap_or(0);
+    let worker = req_str(req, "worker").unwrap_or("fleet-queue-cli").to_string();
+    let reason = req_str(req, "reason").unwrap_or("").to_string();
+    let not_before = req_str(req, "not_before")
+        .map(str::to_string)
+        .unwrap_or_else(now_iso);
+    let work = (|| -> Result<Value, String> {
+        let Some(row) = get_task(t, task_id).map_err(|e| e)? else {
+            return Err(format!("revive_task: task {task_id} does not exist"));
+        };
+        let status = row
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let attempts = row.get("attempts").and_then(|v| v.as_i64()).unwrap_or(0);
+        let max_attempts = row
+            .get("max_attempts")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(4);
+        revive_eligible(&status, attempts, max_attempts)
+            .map_err(|e| format!("revive_task: task {task_id}: {e}"))?;
+        t.exec(
+            "UPDATE tasks SET status = 'queued', attempts = 0, last_error = NULL, \
+               not_before = ?, worker_id = NULL, lease_until = NULL, \
+               updated_at = ? WHERE id = ?",
+            &[
+                Arg::Text(not_before.clone()),
+                Arg::Text(now_iso()),
+                Arg::Int(task_id),
+            ],
+        )
+        .map_err(|e| e)?;
+        event(
+            t,
+            Some(&worker),
+            Some(task_id),
+            "revived",
+            &json!({
+                "reason": reason, "previous_status": status,
+                "previous_attempts": attempts, "not_before": not_before,
+                "via": "revive_task_turso",
+            }),
+        )
+        .map_err(|e| e)?;
+        get_task(t, task_id)
+            .map(|r| r.unwrap_or(Value::Null))
+            .map_err(|e| e)
+    })();
+    match work {
+        Ok(row) if !row.is_null() => ok(json!({"row": row})),
+        Ok(_) => fail(5, format!("revive_task: task {task_id} does not exist")),
+        Err(e) if e.starts_with("revive_task:") => fail(5, e),
+        Err(e) => terr(e),
+    }
+}
+
+/// #5444: a stored payload counts as missing when it is NULL, or an
+/// empty JSON object — the shape a payload-less row hands a worker.
+/// (Empty/malformed payload TEXT never reaches here as a Value: the
+/// claim candidate predicate filters it in SQL, and the quarantine
+/// sweep below handles the stored forms.)
+fn payload_missing(parsed: Option<&Value>) -> bool {
+    match parsed {
+        None => true,
+        Some(Value::Null) => true,
+        Some(Value::Object(o)) => o.is_empty(),
+        Some(_) => false,
+    }
+}
+
+/// The #5444 claim guard: a claimed row may be handed out only when
+/// its payload is present AND the packet passes the same validator
+/// /enqueue runs. The oracle is `validate_packet` — claim and enqueue
+/// can never disagree about what a valid packet is. Returns the
+/// quarantine reason for a row that must not be handed out.
+fn claim_guard_reason(row: &Value) -> Option<String> {
+    if payload_missing(row.get("payload")) {
+        return Some(
+            "quarantined by claim path: payload missing/empty (#5444)".to_string(),
+        );
+    }
+    let (errors, _warnings) = validate_packet(row);
+    if errors.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "quarantined by claim path: packet failed validation (#5444): {}",
+            errors.join("; ")
+        ))
+    }
+}
+
+/// Quarantine one task (#5444): blocked with the reason in last_error
+/// and a `blocked` event row, claim and lease cleared — the same
+/// terminal shape verb_block produces — so a payload-less or
+/// schema-invalid row stops circulating instead of crashing or
+/// misleading the next worker that claims it.
+fn quarantine_task(t: &TursoBackend, id: i64, reason: &str) -> Result<(), TErr> {
+    t.exec(
+        "UPDATE tasks SET status = 'blocked', worker_id = NULL, \
+           lease_until = NULL, last_error = ?, updated_at = ? WHERE id = ?",
+        &[
+            Arg::Text(reason.to_string()),
+            Arg::Text(now_iso()),
+            Arg::Int(id),
+        ],
+    )?;
+    t.exec("DELETE FROM leases WHERE task_id = ?", &[Arg::Int(id)])?;
+    event(
+        t,
+        None,
+        Some(id),
+        "blocked",
+        &json!({"reason": reason, "via": "claim_payload_quarantine"}),
+    )?;
+    Ok(())
+}
+
+/// Sweep this queue's claimable rows for stored payload-less forms
+/// (NULL / empty / '{}') and quarantine them (#5444 acceptance 1;
+/// Turso mirror of migration-0025's quarantine step). Runs on the
+/// claim path, which is where such rows would otherwise circulate.
+fn quarantine_payload_missing(t: &TursoBackend, queue: &str) -> Result<(), TErr> {
+    let rows = t.query_objs(
+        "SELECT id FROM tasks WHERE queue = ? AND status IN ('queued', 'parked') \
+           AND (payload IS NULL OR payload = '' OR payload = '{}')",
+        &[Arg::Text(queue.to_string())],
+        &[],
+    )?;
+    for r in rows {
+        if let Some(id) = r.get("id").and_then(|v| v.as_i64()) {
+            quarantine_task(
+                t,
+                id,
+                "quarantined by claim path: payload missing/empty (#5444)",
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
@@ -1214,6 +1474,7 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
             }
         }
         expire_leases(t)?;
+        quarantine_payload_missing(t, &queue)?;
         let now = now_iso();
         let lease_until = after_iso(lease_seconds);
         // One conditional UPDATE = the claim. The subquery picks the
@@ -1221,6 +1482,13 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
         // parked rows whose not_before has passed resume without an
         // attempts increment); the outer status re-check keeps the
         // statement atomic against a competing claim.
+        // #5444: the pick loops past rows the guard quarantines —
+        // a skipped row degrades to the next candidate or to no
+        // claim, never to a handed-out invalid packet.
+        let mut row: Value;
+        let mut id: i64;
+        let mut skipped = 0usize;
+        loop {
         let upd = t.exec(
             "UPDATE tasks SET status = 'claimed', worker_id = ?, claimed_at = ?, \
                lease_until = ?, \
@@ -1228,7 +1496,8 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
                lane_id = ?, park_kind = NULL, wait_kind = NULL, not_before = NULL, \
                updated_at = ? \
              WHERE id = ( \
-               SELECT id FROM tasks WHERE queue = ? AND ( \
+               SELECT id FROM tasks WHERE queue = ? \
+                 AND payload IS NOT NULL AND payload <> '' AND payload <> '{}' AND ( \
                  (status = 'queued' AND attempts < max_attempts \
                    AND (not_before IS NULL OR not_before <= ?)) \
                  OR (status = 'parked' AND not_before IS NOT NULL AND not_before <= ?)) \
@@ -1257,10 +1526,23 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
             &[Arg::Text(queue.clone()), Arg::Text(worker.clone())],
             &TASK_JSON_COLS,
         )?;
-        let Some(mut row) = rows.into_iter().next() else {
+        let Some(candidate) = rows.into_iter().next() else {
             return Ok(None);
         };
-        let id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+        if let Some(reason) = claim_guard_reason(&candidate) {
+            let cid = candidate.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+            quarantine_task(t, cid, &reason)?;
+            skipped += 1;
+            if skipped >= 32 {
+                return Ok(None);
+            }
+            continue;
+        }
+        id = candidate.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+        row = candidate;
+        break;
+        }
+        let mut row = row;
         // Migration 0023 §4: a fresh claim never inherits a binding.
         let progress = row.get("progress").cloned().unwrap_or(json!({}));
         let (progress, cleared) = clear_binding(&progress, "claim_repo_task");
@@ -1882,12 +2164,161 @@ fn verb_fail(t: &TursoBackend, req: &Value) -> Value {
     }
 }
 
+/// Completion gating (Drew's triage doctrine, #7016; the
+/// completion-without-evidence defect, 2026-11-07): what a task's
+/// completion must carry depends on its class, derived from the
+/// packet kind in its payload.
+#[derive(Debug, PartialEq)]
+enum CompletionClass {
+    /// Work that produces an artifact: completion requires an
+    /// evidence reference recorded on the task.
+    Fix,
+    /// Triage annotates and validates; it never completes the
+    /// issue. Completion re-enqueues the follow-on by default.
+    Triage,
+    /// No packet kind (hand-built rows, legacy tasks): ungated, so
+    /// the gate never breaks non-packet work.
+    Ungated,
+}
+
+fn completion_class(payload: &Value) -> CompletionClass {
+    match payload.get("kind").and_then(|k| k.as_str()) {
+        Some("small_fix") | Some("ci_investigation") | Some("pr_shepherd") => {
+            CompletionClass::Fix
+        }
+        Some("triage") => CompletionClass::Triage,
+        _ => CompletionClass::Ungated,
+    }
+}
+
+/// The evidence reference on a completion result, if it carries
+/// one: a merged PR, a commit, or a verified-closure note, under
+/// any of the field names the fleet's completion notes use.
+fn evidence_ref(result: &Value) -> Option<Value> {
+    for key in [
+        "evidence",
+        "pr_url",
+        "pr",
+        "merged_pr",
+        "commit",
+        "commit_sha",
+        "verified_closure",
+    ] {
+        match result.get(key) {
+            Some(Value::String(s)) if !s.trim().is_empty() => {
+                return Some(json!({key: s}));
+            }
+            Some(Value::Array(a)) if !a.is_empty() => {
+                return Some(json!({key: a}));
+            }
+            Some(v @ Value::Object(_)) => return Some(json!({key: v})),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// What a triage completion does with its issue (doctrine exits:
+/// invalid is the only no-evidence-free exit, and both exits still
+/// require the validation evidence on the record).
+#[derive(Debug, PartialEq)]
+enum TriageOutcome {
+    FollowOn,
+    ExitInvalid,
+    ExitAlreadySolved,
+}
+
+/// The broker-side completion gate. Err = the completion is
+/// rejected and the task stays claimed.
+fn gate_completion(
+    class: &CompletionClass,
+    result: &Value,
+) -> Result<Option<TriageOutcome>, String> {
+    match class {
+        CompletionClass::Ungated => Ok(None),
+        CompletionClass::Fix => {
+            if evidence_ref(result).is_none() {
+                return Err(
+                    "complete_task: fix-class completion requires an evidence \
+                     reference on the result (merged PR, commit, or \
+                     verified-closure note); the task remains claimed"
+                        .to_string(),
+                );
+            }
+            Ok(None)
+        }
+        CompletionClass::Triage => {
+            let outcome = result
+                .get("triage_outcome")
+                .and_then(|v| v.as_str())
+                .unwrap_or("follow_on");
+            match outcome {
+                "follow_on" => Ok(Some(TriageOutcome::FollowOn)),
+                "invalid" => {
+                    // The validation note is the evidence for this
+                    // exit; a bare verdict is not enough.
+                    let noted = evidence_ref(result).is_some()
+                        || matches!(
+                            result.get("triage_note"),
+                            Some(Value::String(s)) if !s.trim().is_empty()
+                        );
+                    if !noted {
+                        return Err(
+                            "complete_task: triage exit 'invalid' requires the \
+                             validation evidence on the result (evidence or \
+                             triage_note); the task remains claimed"
+                                .to_string(),
+                        );
+                    }
+                    Ok(Some(TriageOutcome::ExitInvalid))
+                }
+                "already_solved" => {
+                    if evidence_ref(result).is_none() {
+                        return Err(
+                            "complete_task: triage exit 'already_solved' requires \
+                             an evidence reference on the result (merged PR, \
+                             commit, or verified-closure note); the task \
+                             remains claimed"
+                                .to_string(),
+                        );
+                    }
+                    Ok(Some(TriageOutcome::ExitAlreadySolved))
+                }
+                other => Err(format!(
+                    "complete_task: unknown triage_outcome {other:?} \
+                     (follow_on | invalid | already_solved)"
+                )),
+            }
+        }
+    }
+}
+
+/// The follow-on fix key for a triage key: same family shape with
+/// the family swapped triage -> fix. None for keys with no fix
+/// counterpart (maintenance, pr families).
+fn follow_on_key(triage_key: &str) -> Option<String> {
+    if triage_key.contains(":triage:") && triage_key.contains(":issue:") {
+        Some(triage_key.replacen(":triage:", ":fix:", 1))
+    } else {
+        None
+    }
+}
+
 fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     let row = match claimed_by(t, task_id, &worker, "complete_task") {
         Ok(r) => r,
         Err(v) => return v,
+    };
+    // The completion gate runs BEFORE any mutation: a rejected
+    // completion leaves the task claimed by its worker.
+    let payload = row.get("payload").cloned().unwrap_or(json!({}));
+    let class = completion_class(&payload);
+    let gate_result = req.get("result").cloned().unwrap_or(json!({}));
+    let triage_outcome = match gate_completion(&class, &gate_result) {
+        Ok(o) => o,
+        Err(e) => return fail(2, e),
     };
     // Terminal transitions keep the session binding (migration 0023
     // header): on a done row it is the execution record.
@@ -1915,8 +2346,125 @@ fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
             "completed",
             &json!({"via": "complete_task_turso"}),
         )?;
+        // Triage doctrine (#7016): a triage completion is not the
+        // issue being done — the issue goes back in the queue as a
+        // fix follow-on unless triage exited it (invalid /
+        // already_solved, gated above). The follow-on dedupes
+        // against any live fix task for the same key; a terminal
+        // predecessor links via progress like an enqueue revive.
+        let mut follow_on_id: Option<i64> = None;
+        if triage_outcome == Some(TriageOutcome::FollowOn) {
+            let queue = row
+                .get("queue")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let triage_key = row
+                .get("dedupe_key")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            match follow_on_key(&triage_key) {
+                Some(fix_key) => {
+                    let existing = t.query_objs(
+                        &format!(
+                            "SELECT {TASK_COLS} FROM tasks \
+                             WHERE queue = ? AND dedupe_key = ? ORDER BY id ASC"
+                        ),
+                        &[Arg::Text(queue.clone()), Arg::Text(fix_key.clone())],
+                        &TASK_JSON_COLS,
+                    )?;
+                    let (live, terminal) = dedupe_partition(&existing);
+                    let fid = if let Some(live_row) = live {
+                        live_row.get("id").and_then(|v| v.as_i64()).unwrap_or(0)
+                    } else {
+                        let mut fpayload = payload.clone();
+                        if let Some(obj) = fpayload.as_object_mut() {
+                            obj.insert("kind".to_string(), json!("small_fix"));
+                            obj.insert(
+                                "triage_follow_on".to_string(),
+                                json!({"from_task": task_id, "at": now_iso()}),
+                            );
+                        }
+                        let fprogress = match &terminal {
+                            Some(pred) => json!({
+                                "triage_source_task": task_id,
+                                "revived_from": {
+                                    "task_id": pred.get("id").cloned().unwrap_or(Value::Null),
+                                    "status": pred.get("status").cloned().unwrap_or(Value::Null),
+                                    "via": "triage_completion_follow_on",
+                                },
+                            }),
+                            None => json!({"triage_source_task": task_id}),
+                        };
+                        let ins = t.exec(
+                            "INSERT INTO tasks (queue, title, body, payload, dedupe_key, \
+                               priority, status, max_attempts, progress, result, \
+                               created_at, updated_at) \
+                             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, '{}', ?, ?)",
+                            &[
+                                Arg::Text(queue.clone()),
+                                arg_str(row.get("title").and_then(|v| v.as_str())),
+                                arg_str(row.get("body").and_then(|v| v.as_str())),
+                                Arg::Text(fpayload.to_string()),
+                                Arg::Text(fix_key.clone()),
+                                row.get("priority")
+                                    .and_then(|v| v.as_i64())
+                                    .map(Arg::Int)
+                                    .unwrap_or(Arg::Null),
+                                Arg::Int(
+                                    fpayload
+                                        .get("max_attempts")
+                                        .and_then(|v| v.as_i64())
+                                        .unwrap_or(4),
+                                ),
+                                Arg::Text(fprogress.to_string()),
+                                Arg::Text(now_iso()),
+                                Arg::Text(now_iso()),
+                            ],
+                        )?;
+                        let new_id = ins.last_insert_rowid.unwrap_or(0);
+                        event(
+                            t,
+                            Some(&worker),
+                            Some(new_id),
+                            "enqueued",
+                            &json!({
+                                "via": "triage_completion_follow_on",
+                                "source_task": task_id, "dedupe_key": fix_key,
+                            }),
+                        )?;
+                        new_id
+                    };
+                    follow_on_id = Some(fid);
+                    event(
+                        t,
+                        Some(&worker),
+                        Some(task_id),
+                        "triage_follow_on_enqueued",
+                        &json!({"follow_on_task_id": fid, "dedupe_key": fix_key}),
+                    )?;
+                }
+                None => {
+                    event(
+                        t,
+                        Some(&worker),
+                        Some(task_id),
+                        "triage_follow_on_skipped",
+                        &json!({
+                            "reason": "dedupe key has no fix-family counterpart",
+                            "dedupe_key": triage_key,
+                        }),
+                    )?;
+                }
+            }
+        }
         let row = get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))?;
-        verb_with_execution(t, req, row)
+        let mut envelope = verb_with_execution(t, req, row)?;
+        if let (Some(obj), Some(fid)) = (envelope.as_object_mut(), follow_on_id) {
+            obj.insert("follow_on_task_id".to_string(), json!(fid));
+        }
+        Ok(envelope)
     })();
     match work {
         Ok(v) => v,
@@ -1944,6 +2492,16 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
     if let Some(s) = req_str(req, "status") {
         sql += " AND status = ?";
         args.push(Arg::Text(s.to_string()));
+    }
+    // #5444: recover a lane's or worker's live claims before lease
+    // expiry — list filters end-to-end (client -> broker -> here).
+    if let Some(l) = req_str(req, "lane") {
+        sql += " AND lane_id = ?";
+        args.push(Arg::Text(l.to_string()));
+    }
+    if let Some(w) = req_str(req, "worker") {
+        sql += " AND worker_id = ?";
+        args.push(Arg::Text(w.to_string()));
     }
     if let Some(nb) = req_str(req, "not_before") {
         sql += " AND (not_before IS NULL OR not_before <= ?)";
@@ -2111,6 +2669,7 @@ fn verb_signal_count(t: &TursoBackend, req: &Value) -> Value {
 pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
     match path {
         "/enqueue" => verb_enqueue(t, req),
+        "/revive" => verb_revive(t, req),
         "/claim" => verb_claim(t, req),
         "/lane" => verb_lane(t, req),
         "/bind" => verb_bind(t, req),
@@ -2239,9 +2798,207 @@ mod tests {
     }
 
     #[test]
+    fn dedupe_partition_live_hit_wins_and_terminal_is_newest() {
+        let rows = vec![
+            json!({"id": 1, "status": "done"}),
+            json!({"id": 2, "status": "cancelled"}),
+        ];
+        let (live, terminal) = dedupe_partition(&rows);
+        assert!(live.is_none());
+        // The newest terminal row is the revive predecessor.
+        assert_eq!(terminal.unwrap().get("id"), Some(&json!(2)));
+        let rows = vec![
+            json!({"id": 1, "status": "done"}),
+            json!({"id": 3, "status": "parked"}),
+            json!({"id": 4, "status": "failed"}),
+        ];
+        let (live, terminal) = dedupe_partition(&rows);
+        assert_eq!(live.unwrap().get("id"), Some(&json!(3)));
+        assert_eq!(terminal.unwrap().get("id"), Some(&json!(4)));
+        let (live, terminal) = dedupe_partition(&[]);
+        assert!(live.is_none() && terminal.is_none());
+    }
+
+    #[test]
+    fn revive_eligibility_matches_6838() {
+        // Failed rows can always be re-queued.
+        assert!(revive_eligible("failed", 4, 4).is_ok());
+        assert!(revive_eligible("failed", 1, 4).is_ok());
+        // Queued rows only when dead at cap (the #6463 zombie state).
+        assert!(revive_eligible("queued", 4, 4).is_ok());
+        assert!(revive_eligible("queued", 3, 4).is_err());
+        // Live work and done work are untouchable.
+        assert!(revive_eligible("claimed", 4, 4).is_err());
+        assert!(revive_eligible("done", 4, 4).is_err());
+        assert!(revive_eligible("cancelled", 4, 4).is_err());
+    }
+
+    #[test]
     fn merge_obj_is_shallow_and_object_only() {
         let out = merge_obj(&json!({"a": 1, "b": 2}), &json!({"b": 3, "c": 4}));
         assert_eq!(out, json!({"a": 1, "b": 3, "c": 4}));
         assert_eq!(merge_obj(&json!(null), &json!({"a": 1})), json!({"a": 1}));
+    }
+
+    #[test]
+    fn completion_gate_fix_class_requires_evidence() {
+        let fix = CompletionClass::Fix;
+        assert!(gate_completion(&fix, &json!({})).is_err());
+        assert!(gate_completion(&fix, &json!({"note": "did stuff"})).is_err());
+        assert!(gate_completion(&fix, &json!({"evidence": ""})).is_err());
+        assert!(gate_completion(&fix, &json!({"evidence": []})).is_err());
+        assert!(gate_completion(
+            &fix,
+            &json!({"pr_url": "https://github.com/developing-today/code/pull/1"})
+        )
+        .is_ok());
+        assert!(gate_completion(&fix, &json!({"commit": "abc123"})).is_ok());
+        assert!(gate_completion(
+            &fix,
+            &json!({"verified_closure": "closed by #1, verified on the issue"})
+        )
+        .is_ok());
+        assert!(gate_completion(&fix, &json!({"evidence": ["artifact"]})).is_ok());
+    }
+
+    #[test]
+    fn completion_gate_triage_doctrine() {
+        let triage = CompletionClass::Triage;
+        // Default: the issue goes back in the queue as a follow-on.
+        assert_eq!(
+            gate_completion(&triage, &json!({})).unwrap(),
+            Some(TriageOutcome::FollowOn)
+        );
+        assert_eq!(
+            gate_completion(&triage, &json!({"triage_outcome": "follow_on"})).unwrap(),
+            Some(TriageOutcome::FollowOn)
+        );
+        // Invalid is an exit only with the validation evidence.
+        assert!(gate_completion(&triage, &json!({"triage_outcome": "invalid"})).is_err());
+        assert_eq!(
+            gate_completion(
+                &triage,
+                &json!({"triage_outcome": "invalid", "triage_note": "not a real issue: duplicate of #1"})
+            )
+            .unwrap(),
+            Some(TriageOutcome::ExitInvalid)
+        );
+        // Already-solved needs a real evidence reference.
+        assert!(
+            gate_completion(&triage, &json!({"triage_outcome": "already_solved"})).is_err()
+        );
+        assert_eq!(
+            gate_completion(
+                &triage,
+                &json!({"triage_outcome": "already_solved", "pr_url": "https://x/pull/2"})
+            )
+            .unwrap(),
+            Some(TriageOutcome::ExitAlreadySolved)
+        );
+        assert!(
+            gate_completion(&triage, &json!({"triage_outcome": "done"})).is_err()
+        );
+    }
+
+    fn claimable_row(payload: Value) -> Value {
+        json!({
+            "id": 42,
+            "queue": "repo-health-code-pilot",
+            "title": "Fix #5444: claim payload guard",
+            "body": "b",
+            "priority": 30,
+            "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:5444",
+            "payload": payload,
+        })
+    }
+
+    fn valid_payload() -> Value {
+        json!({
+            "schema": "repo-task/v1",
+            "kind": "small_fix",
+            "repo": "developing-today/code",
+            "issue": {"number": 5444},
+            "problem": "p",
+            "priority_reason": "r",
+            "evidence": ["e"],
+            "acceptance": ["a"],
+            "tests": ["t"],
+            "context_refs": [],
+            "scope": {"include": ["x"], "exclude": ["y"]},
+            "risk": {"level": "low", "flags": []},
+            "timebox_minutes": 45,
+            "max_attempts": 4,
+            "dedupe": {"checked_at": "2026-11-04T00:00:00Z", "basis": "search"},
+        })
+    }
+
+    #[test]
+    fn claim_guard_accepts_a_valid_packet() {
+        // Oracle: validate_packet, the /enqueue validator — a row
+        // enqueue would accept must pass the claim guard unchanged.
+        assert_eq!(claim_guard_reason(&claimable_row(valid_payload())), None);
+    }
+
+    #[test]
+    fn claim_guard_rejects_payload_less_rows() {
+        // The 2026-11-04 incident shapes: no payload field, a null
+        // payload, and an empty-object payload must never be handed
+        // out (#5444). Each is a quarantine, not a claim.
+        let mut no_field = claimable_row(valid_payload());
+        no_field.as_object_mut().unwrap().remove("payload");
+        for row in [
+            no_field,
+            claimable_row(Value::Null),
+            claimable_row(json!({})),
+        ] {
+            let reason = claim_guard_reason(&row).expect("payload-less row must be guarded");
+            assert!(reason.contains("payload missing/empty"), "{reason}");
+        }
+    }
+
+    #[test]
+    fn claim_guard_rejects_schema_invalid_packets() {
+        // A present-but-invalid packet (wrong schema, kind/family
+        // mismatch) fails the same validator enqueue runs.
+        let mut bad = valid_payload();
+        bad["schema"] = json!("repo-task/v0");
+        let reason = claim_guard_reason(&claimable_row(bad))
+            .expect("schema-invalid packet must be guarded");
+        assert!(reason.contains("packet failed validation"), "{reason}");
+        // Invariant sweep: mutating any required identity field of a
+        // valid packet to a placeholder must trip the guard — claim
+        // never returns a row failing validate_packet.
+        for mutated in [
+            json!({"number": 0}),
+            json!({"number": -1}),
+        ] {
+            let mut p = valid_payload();
+            p["issue"] = mutated;
+            assert!(claim_guard_reason(&claimable_row(p)).is_some());
+        }
+    }
+
+    #[test]
+    fn completion_class_and_follow_on_key() {
+        assert_eq!(
+            completion_class(&json!({"kind": "small_fix"})),
+            CompletionClass::Fix
+        );
+        assert_eq!(
+            completion_class(&json!({"kind": "triage"})),
+            CompletionClass::Triage
+        );
+        assert_eq!(completion_class(&json!({})), CompletionClass::Ungated);
+        // Ungated completions never gate, whatever the result.
+        assert_eq!(gate_completion(&CompletionClass::Ungated, &json!({})).unwrap(), None);
+        assert_eq!(
+            follow_on_key("repo-health:v1:triage:developing-today/code:issue:787"),
+            Some("repo-health:v1:fix:developing-today/code:issue:787".to_string())
+        );
+        // Maintenance triage keys have no fix counterpart.
+        assert_eq!(
+            follow_on_key("repo-health:v1:maintenance:developing-today/code:weekly:2026-W44"),
+            None
+        );
     }
 }

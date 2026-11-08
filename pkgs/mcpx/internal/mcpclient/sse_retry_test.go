@@ -1,6 +1,7 @@
 package mcpclient
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -47,15 +48,15 @@ func TestParseSSERetry(t *testing.T) {
 // default, exactly as before).
 func TestReadSSERetryClamp(t *testing.T) {
 	tr := &HTTPTransport{}
-	st := tr.readSSE(nil, strings.NewReader("retry: 315360000000\n\n"), nil)
+	st := tr.readSSE(context.TODO(), strings.NewReader("retry: 315360000000\n\n"), nil)
 	if st.retry != 60*time.Second {
 		t.Errorf("readSSE retry = %v, want 60s (clamped)", st.retry)
 	}
-	st = tr.readSSE(nil, strings.NewReader("retry: 3000\n\n"), nil)
+	st = tr.readSSE(context.TODO(), strings.NewReader("retry: 3000\n\n"), nil)
 	if st.retry != 3*time.Second {
 		t.Errorf("readSSE retry = %v, want 3s", st.retry)
 	}
-	st = tr.readSSE(nil, strings.NewReader("retry: -5\n\n"), nil)
+	st = tr.readSSE(context.TODO(), strings.NewReader("retry: -5\n\n"), nil)
 	if st.retry != 0 {
 		t.Errorf("readSSE retry = %v, want 0 (ignored, default applies)", st.retry)
 	}

@@ -69,7 +69,11 @@ type Task struct {
 	fault  *Fault
 	cancel context.CancelFunc
 	done   chan struct{}
-	timer  *time.Timer
+	// doneClosed, guarded by Store.mu, makes closing done once-only:
+	// grace expiry closes it without the work's return, and the worker
+	// goroutine's close after finish must not close it a second time.
+	doneClosed bool
+	timer      *time.Timer
 	// cancelTimer bounds the in-memory cooperative-cancellation window. The
 	// cancelling mark and timer are deliberately not persisted or exposed.
 	cancelTimer *time.Timer
@@ -343,7 +347,7 @@ func ensureTaskColumn(db *sql.DB, name string) error {
 	if err != nil {
 		return fmt.Errorf("reading tasks schema: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var cid, notNull, primaryKey int
 		var column, kind string
@@ -374,7 +378,7 @@ FROM tasks`)
 	if err != nil {
 		return fmt.Errorf("querying stored tasks: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	now := time.Now()
 	nowMs := now.UnixMilli()
@@ -455,6 +459,7 @@ FROM tasks`)
 		}
 
 		close(t.done)
+		t.doneClosed = true
 		s.tasks[t.TaskID] = t
 		t.refreshTTLRemaining(now)
 		s.armExpiryLocked(t, time.Duration(expiresAtMs-nowMs)*time.Millisecond)
@@ -901,7 +906,7 @@ func (s *Store) StartWithDeadline(requestor Requestor, ttl int64, deadline time.
 	go func() {
 		result, fault := fn(ctx)
 		moved := s.finish(t, result, fault)
-		close(t.done)
+		s.closeDone(t)
 		if moved {
 			s.changed(t.TaskID)
 		}
@@ -1203,6 +1208,25 @@ func (s *Store) CancelImmediate(id string, reason string) (Task, bool) {
 	return snap, true
 }
 
+// closeDoneLocked releases Result waiters exactly once. The caller
+// holds s.mu. Terminal transitions recorded without the work's return
+// (grace expiry) close done themselves; the worker goroutine's close
+// after finish is then a no-op instead of a double-close panic.
+func (s *Store) closeDoneLocked(t *Task) {
+	if t.doneClosed {
+		return
+	}
+	t.doneClosed = true
+	close(t.done)
+}
+
+// closeDone is closeDoneLocked for callers not holding s.mu.
+func (s *Store) closeDone(t *Task) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closeDoneLocked(t)
+}
+
 // expireCancellation records the cancel only if the task's work did not
 // record a terminal status first. Called by the per-task grace timer.
 func (s *Store) expireCancellation(t *Task, reason string) {
@@ -1219,6 +1243,10 @@ func (s *Store) expireCancellation(t *Task, reason string) {
 	}
 	s.armRetentionLocked(t)
 	s.saveTaskLocked(t)
+	// The work may never return (that is the path grace expiry exists
+	// for), so release Result waiters here: they read the recorded
+	// Cancelled status and return the cancelled fault (#6897).
+	s.closeDoneLocked(t)
 	s.mu.Unlock()
 	s.logTerminal(t)
 	s.changed(t.TaskID)
