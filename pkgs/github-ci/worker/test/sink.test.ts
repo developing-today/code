@@ -171,3 +171,53 @@ describe("advanceSnapshot default_branch guard (#6945)", () => {
     expect(del).toHaveLength(0);
   });
 });
+
+describe("advanceSnapshot property: head_sha invariant (#6945, testing doctrine)", () => {
+  // Oracle: the resolved default branch is storedDef (existing row only)
+  // else the payload default else unknown. head_sha may be written ONLY
+  // for a non-deletion push whose ref is exactly refs/heads/<resolved>,
+  // and the written value must be the push's after SHA. Generated
+  // combinations (seeded PRNG over the full factor grid) are checked
+  // against this oracle via the captured Turso pipeline INSERTs.
+  it("property: head_sha is written only for a non-deletion push matching the resolved default", async () => {
+    let seed = 0x6945;
+    const rnd = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    };
+    const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(rnd() * xs.length)];
+    const existsOpts = [true, false] as const;
+    const defOpts = [null, "main", "dev"] as const;
+    const payloadOpts = [undefined, null, "main", "dev"] as const;
+    const refOpts = ["refs/heads/main", "refs/heads/dev", "refs/heads/feature-x", "refs/tags/v1"] as const;
+    const afterOpts = [SHA, ZERO] as const;
+    for (let i = 0; i < 250; i++) {
+      const exists = pick(existsOpts);
+      const storedDef = pick(defOpts);
+      const payloadDef = pick(payloadOpts);
+      const ref = pick(refOpts);
+      const after = pick(afterOpts);
+      const resolved = (exists ? storedDef : null) || payloadDef || null;
+      const expectHead = after !== ZERO && !!resolved && ref === `refs/heads/${resolved}`;
+      const captured: CapturedInsert[] = [];
+      vi.stubGlobal("fetch", fakeTurso({ exists, defBranch: storedDef }, captured));
+      const wrote = await advanceSnapshot(queueEnv, "developing-today/code", after, ref, NOW, payloadDef);
+      const ctx = JSON.stringify({ exists, storedDef, payloadDef, ref, after });
+      if (exists && !expectHead) {
+        expect(wrote, ctx).toBe(false);
+        expect(captured, ctx).toHaveLength(0);
+      } else {
+        expect(wrote, ctx).toBe(true);
+        expect(captured, ctx).toHaveLength(1);
+        if (expectHead) {
+          expect(captured[0].sql, ctx).toContain("head_sha");
+          expect(captured[0].args.map((a) => a.value), ctx).toContain(after);
+        } else {
+          expect(captured[0].sql, ctx).not.toContain("head_sha");
+          expect(captured[0].args.map((a) => a.value), ctx).not.toContain(after);
+        }
+      }
+      vi.unstubAllGlobals();
+    }
+  });
+});
