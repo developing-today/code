@@ -78,7 +78,7 @@ func (s *Server) openStore() (*logstore.Store, error) {
 	}
 	if s.set.Bool("plumbing.indexOnQuery") {
 		if _, err := st.Ingest(); err != nil {
-			st.Close()
+			_ = st.Close()
 			return nil, err
 		}
 	}
@@ -157,7 +157,7 @@ func (s *Server) handleLogQuery(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, err)
 		return
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	if chain := q.Get("chain"); chain != "" {
 		// Chain walks a trace tree by id and takes no filters. Accepting
@@ -231,7 +231,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, err)
 		return
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	var rows any
 	switch dim {
@@ -549,7 +549,7 @@ func rankCompletions(candidates []string, value string) []string {
 			hits = append(hits, scored{c, fc, 1, 0})
 		case strings.HasPrefix(fc, q):
 			hits = append(hits, scored{c, fc, 2, 0})
-		case q != "" && strings.Index(fc, q) >= 0:
+		case q != "" && strings.Contains(fc, q):
 			hits = append(hits, scored{c, fc, 3, strings.Index(fc, q)})
 		}
 	}
@@ -582,13 +582,13 @@ func rankCompletions(candidates []string, value string) []string {
 
 // ---- tasks ----
 
-// taskStore is the daemon's own, created on first use so a daemon that never
-// runs one carries nothing.
 // TaskStore returns the daemon's one task store, creating it on first
 // use exactly as the /v1 handlers do. internal/cli uses it to share
 // the same instance with the daemon's MCP surface (issue #1555): a
 // task started over MCP is then visible via /v1, and a /v1 task lives
 // in the same store the MCP surface reads.
+// taskStore is the daemon's own, created on first use so a daemon that never
+// runs one carries nothing.
 func (s *Server) TaskStore() *tasks.Store { return s.taskStore() }
 
 func (s *Server) taskStore() *tasks.Store {
@@ -842,9 +842,4 @@ func firstSentence(s string) string {
 		return strings.TrimSpace(s[:i])
 	}
 	return strings.TrimSpace(s)
-}
-
-// hasPrefixFold matches the way a person types: case is not a filter.
-func hasPrefixFold(s, prefix string) bool {
-	return strings.HasPrefix(strings.ToLower(s), strings.ToLower(prefix))
 }

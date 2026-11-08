@@ -33,7 +33,7 @@ const GRIST_DOC = "czYHYKgG9SHcm9CPwiKEq1"; // "Program roadmap"
 const CODE = "developing-today/code";
 const OPENCODE = "developing-today-forks/opencode";
 const OPENCHAMBER = "developing-today-forks/openchamber";
-const NIX = "dezren39/nix";
+const NIX = "dezren39/darwin-nix";
 
 function gh(
   ref: RefKey,
@@ -1238,6 +1238,7 @@ export const FIXTURE_USAGE: UsageView = {
       usageNote: "Counts only in this hub — secret names/values never enter it. No count recorded yet.",
     },
   ],
+  uninstrumentedServices: [],
   payg: [
     {
       id: "meta-payg",

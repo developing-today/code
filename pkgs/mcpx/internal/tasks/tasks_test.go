@@ -149,7 +149,7 @@ func TestTaskPersistenceAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open reopen failed: %v", err)
 	}
-	defer st2.Close()
+	defer func() { _ = st2.Close() }()
 
 	// t1 should still exist and be completed with its result
 	snap1, ok := st2.Get(t1.TaskID)
@@ -564,7 +564,7 @@ func TestRetentionAcrossReopenRunsFromCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open reopen failed: %v", err)
 	}
-	defer st2.Close()
+	defer func() { _ = st2.Close() }()
 	snap, ok := st2.Get(t1.TaskID)
 	if !ok {
 		t.Fatal("t1 was deleted at reopen: its retention was clocked from creation")
@@ -700,7 +700,7 @@ func TestTaskTouchMetadataPersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st2.Close()
+	defer func() { _ = st2.Close() }()
 	got, ok := st2.Get(task.TaskID)
 	if !ok || got.ExpiresAt == nil || got.LastTouched == nil {
 		t.Fatalf("touched task did not survive reopen: %+v", got)
@@ -922,7 +922,7 @@ func seedLegacyTaskRow(t *testing.T, dbPath, id string, completedAt time.Time, t
 	if err != nil {
 		t.Fatalf("seed open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	ms := completedAt.UnixMilli()
 	_, err = db.Exec(`INSERT INTO tasks (task_id, status, status_message, created_at_ms, updated_at_ms, ttl_ms, last_touched_ms, expires_ms, poll_interval, result_json, fault_json)
 		VALUES (?, 'completed', '', ?, ?, ?, ?, 0, 0, ?, NULL)`,
@@ -960,7 +960,7 @@ func TestOpenWithRetentionPreservesLegacyRowUntilStoredTTLDeadline(t *testing.T)
 	if err != nil {
 		t.Fatalf("OpenWithRetention failed: %v", err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	snap, ok := st.Get("legacy-keep")
 	if !ok {
 		t.Fatalf("legacy-keep missing after OpenWithRetention with maxAge=4h: startup migration deleted a result inside its configured retention")
@@ -985,7 +985,7 @@ func TestOpenWithRetentionPreservesLegacyRowUntilStoredTTLDeadline(t *testing.T)
 	if err != nil {
 		t.Fatalf("Open (control) failed: %v", err)
 	}
-	defer plain.Close()
+	defer func() { _ = plain.Close() }()
 	if _, ok := plain.Get("legacy-keep"); ok {
 		t.Errorf("control: legacy-keep survived plain Open with the built-in 1h maxAge; the seeded row does not reproduce the pre-fix loss")
 	}

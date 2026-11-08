@@ -71,7 +71,7 @@ export function lifecycleForEntry(entry: QuotaCurrentEntry, now = new Date()): C
     ...(hasExpiry ? { expiresAt } : {}),
     ...(error ? { reason: error } : {}),
   };
-  if (entry.providerId === "claude" && (state === "expired" || state === "expiring")) {
+  if ((entry.providerId === "claude" || entry.providerId === "_claude") && (state === "expired" || state === "expiring")) {
     const title =
       entry.credentialSource === "opencode"
         ? "Refresh Anthropic authentication in OpenCode"
@@ -82,7 +82,7 @@ export function lifecycleForEntry(entry: QuotaCurrentEntry, now = new Date()): C
             : undefined;
     if (title) row.userAction = { owner: "user", title };
   }
-  if (entry.providerId === "claude" && state === "expired" && !row.reason) {
+  if ((entry.providerId === "claude" || entry.providerId === "_claude") && state === "expired" && !row.reason) {
     row.reason = "Claude credential expiry is confirmed by its configured credential source.";
   }
   return row;

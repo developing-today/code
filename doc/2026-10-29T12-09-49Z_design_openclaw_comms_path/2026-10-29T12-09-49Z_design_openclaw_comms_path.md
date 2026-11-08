@@ -76,6 +76,24 @@ gateway API" silently assumes (a) works.
   enforcement + provisioning). No credential is created or rotated by this
   design task.
 
+- **Status (2026-11-08, task 13141, issue #2300):** the invalid-caller half
+  of this gap is now **verified live**. A probe of the tailnet gateway
+  (`ws://100.99.113.103:18789`) using only a synthetic invalid token was
+  rejected: the WebSocket connected, then the gateway closed it with code
+  1008 and `unauthorized: gateway token mismatch`. Current `origin/main`
+  configuration matches that outcome: `home/openclaw/default.nix` sets
+  `gateway.bind = "tailnet"` and `gateway.auth.mode = "token"`, with the
+  token supplied as an environment SecretRef named
+  `OPENCLAW_GATEWAY_TOKEN`; `nixos/hosts/amd-openclaw-secrets.nix`
+  provisions it from the secrets-manager entry named
+  `openclaw.gateway-token` (names and references only — no credential
+  value was read, sent, or recorded by the probe or by this update).
+  **Still unverified:** a successful *authorized* non-loopback call, and
+  distinct per-consumer caller identity (the design decision above names
+  Muse's gateway client as the first consumer). Issue #2300 therefore
+  stays open for the authorized-caller / per-consumer identity remainder;
+  the invalid-token rejection alone does not close it.
+
 ### G3. The sandbox has no non-SSH route to the laptop
 
 The sandbox VM is not a tailnet node; its CONNECT proxy is SSH-only and
@@ -221,6 +239,9 @@ wrote it.
   non-loopback gateway callers, provision via the secrets manager by
   reference; verify the tailnet bind requires it. Filed as a follow-up
   issue from this doc's PR pass: **#2300**.
+  Status 2026-11-08: invalid-token rejection verified live on the tailnet
+  bind (close code 1008); #2300 stays open for the authorized-caller /
+  per-consumer identity remainder — see the G2 status note in §2.
 - **Sandbox tailnet route (G3):** join the sandbox VM to the tailnet (or
   record the stated refusal and fall back to a relay design) so the
   phase-2 direct-API path has a route. Filed as a follow-up issue: **#2301**.

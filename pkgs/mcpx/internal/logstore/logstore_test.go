@@ -49,7 +49,7 @@ func appendLog(t *testing.T, path string, lines ...string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	for _, l := range lines {
 		if _, err := f.WriteString(l + "\n"); err != nil {
 			t.Fatal(err)
@@ -63,7 +63,7 @@ func open(t *testing.T, dir string) *logstore.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { st.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 	return st
 }
 
@@ -191,7 +191,7 @@ func TestAPartialTrailingLineIsPickedUpOnceItIsComplete(t *testing.T) {
 	if _, err := f.WriteString(half[:20]); err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	st := open(t, dir)
 	if res := ingest(t, st); res.Inserted != 1 {

@@ -343,7 +343,7 @@ func ensureTaskColumn(db *sql.DB, name string) error {
 	if err != nil {
 		return fmt.Errorf("reading tasks schema: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var cid, notNull, primaryKey int
 		var column, kind string
@@ -374,7 +374,7 @@ FROM tasks`)
 	if err != nil {
 		return fmt.Errorf("querying stored tasks: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	now := time.Now()
 	nowMs := now.UnixMilli()

@@ -19,7 +19,7 @@ function fakeStore() {
   const items = new Map<string, Omit<ItemRow, "fetched_at">>();
   const comments = new Map<string, Omit<CommentRow, "fetched_at">>();
   const pushes: any[] = [];
-  const deleted: string[] = [];
+  const deleted: [string, string][] = [];
   const deletedItems: string[] = [];
   const deletions = new Map<string, string>();
   const store: ProjectorStore = {
@@ -40,7 +40,7 @@ function fakeStore() {
       comments.set(c.id, c);
     },
     async markCommentDeleted(c) {
-      deleted.push(c.id);
+      deleted.push([c.id, c.kind]);
       comments.set(c.id, { ...c, deleted: 1 });
     },
     async deleteItem(ref, sourceUpdatedAt) {
@@ -287,7 +287,12 @@ describe("projector: comment deletion + push", () => {
       },
       comment: { id: 700 },
     });
-    expect(deleted).toContain("700");
+    expect(deleted).toEqual([["700", "issue_comment"]]);
+    await applyEvent(store, "pull_request_review_comment", {
+      action: "deleted", repository: { full_name: "developing-today/code" },
+      pull_request: { number: 300 }, comment: { id: 700 },
+    });
+    expect(deleted[1]).toEqual(["700", "review_comment"]);
   });
 
   test("deleted review comment marks deleted", async () => {
@@ -304,7 +309,7 @@ describe("projector: comment deletion + push", () => {
       },
       comment: { id: 703 },
     });
-    expect(deleted).toContain("703");
+    expect(deleted).toContainEqual(["703", "review_comment"]);
   });
 
   test("push event records head/before/pusher", async () => {
@@ -532,7 +537,7 @@ describe("projector: item deletion marker (#6782)", () => {
       comment: { id: 9002, body: "since removed", created_at: "2026-10-25T01:00:00Z", updated_at: "2026-10-25T01:30:00Z" },
     });
     expect(items.has(ref)).toBe(false);
-    expect(deleted).toContain("9002");
+    expect(deleted).toContainEqual(["9002", "issue_comment"]);
     expect(comments.get("9002")?.deleted).toBe(1);
     expect(r.wrote).toBe(true);
   });
@@ -582,7 +587,7 @@ describe("projector: item deletion marker (#6782)", () => {
       comment: reviewComment,
     });
     expect(items.has(ref)).toBe(false);
-    expect(deleted).toContain("9003");
+    expect(deleted).toContainEqual(["9003", "review_comment"]);
     expect(comments.get("9003")?.deleted).toBe(1);
     expect(r.wrote).toBe(true);
   });

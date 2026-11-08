@@ -64,7 +64,7 @@
 //     snapshot store (SnapshotStore.append dedupes). Setting
 //     USAGE_SNAPSHOT_OUTBOX_PATH switches the sink to the writers'
 //     outbox JSONL instead (the sandbox collector's drain path).
-//   - Turso agent_quota_records rows (muse-platform), one per pool
+//   - Turso agent_quota_records rows (fleet-platform), one per pool
 //     entry per tick, source "opencode-quota" — Drew's rule that all
 //     quota info lands in the quota ledger on a regular basis in
 //     addition to the dashboard. (The previous writer of pool rows,
@@ -100,7 +100,7 @@
 //      TURSO_QUOTA_SINK=0 (or the legacy SUPABASE_QUOTA_SINK=0)
 //      disables the Turso sink (default on; token resolved by name
 //      via the resolveBwsSecret plumbing:
-//      turso.muse-platform-rw-token).
+//      turso.fleet-platform-rw-token).
 import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { access, appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -576,8 +576,8 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
   return runs;
 }
 
-const TURSO_TOKEN_NAME = "turso.muse-platform-rw-token";
-const TURSO_URL = "https://muse-platform-dezren39.aws-us-east-1.turso.io";
+const TURSO_TOKEN_NAME = "turso.fleet-platform-rw-token";
+const TURSO_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io";
 
 function sqlString(v: string): string {
   return `'${v.replace(/'/g, "''")}'`;
@@ -593,7 +593,7 @@ function sqlString(v: string): string {
  * failure is logged, never fails the tick, never zeroes a row).
  * Until the 2026-11-06 Wave 3 cutover (code#5690) this wrote to
  * Supabase agent.quota_records (muse-dev2) via the Management API;
- * the table now lives in Turso muse-platform and is written through
+ * the table now lives in Turso fleet-platform and is written through
  * the libsql HTTP pipeline with INSERT OR IGNORE on the
  * (source, id, ts) PK.
  */
