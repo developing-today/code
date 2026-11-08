@@ -334,3 +334,75 @@ describe("backup / restore round trip (#3322)", () => {
     expect((await dstEvents.list()).length).toBe(before);
   });
 });
+
+describe("audit archive retention — Codex round-2 regressions (#3322, PR #7665)", () => {
+  test("health reports a malformed archived record as an archive verdict instead of rejecting", async () => {
+    const dir = tmpDir("agg-events-archive-malformed-");
+    const file = join(dir, "events.json");
+    const stamped = stampChain([{ at: iso(60 * 60 * 1000), summary: "recent" }]);
+    await writeEventsFile(file, stamped);
+    await mkdir(join(dir, "events.json.archive"), { recursive: true });
+    await writeFile(
+      join(dir, "events.json.archive", "events-archive-2026-09.json"),
+      JSON.stringify({ version: 1, archivedAt: new Date().toISOString(), records: [null] }, null, 2),
+    );
+    const store = new EventsStore(file);
+    const health = await store.health();
+    expect(health.events).toBe(1);
+    expect(health.integrity.ok).toBe(true);
+    expect(health.archive.ok).toBe(false);
+    expect(health.archive.detail).toContain("malformed");
+    const verdict = verifyArchivedRecords([null] as unknown as AuditEvent[]);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.error).toContain("malformed");
+  });
+
+  test("load-time retention preserves missing-anchor evidence through rechaining", async () => {
+    const dir = tmpDir("agg-events-archive-anchor-");
+    const file = join(dir, "events.json");
+    const missingAnchor = "ab".repeat(32);
+    const stamped = stampChain(
+      [
+        { at: iso(40 * DAY_MS), summary: "old, will be archived at load" },
+        { at: iso(60 * 60 * 1000), summary: "recent, retained" },
+      ],
+      missingAnchor,
+    );
+    await writeEventsFile(file, stamped);
+    const store = new EventsStore(file);
+    expect((await store.list()).map((e) => e.summary)).toEqual(["recent, retained"]);
+    expect(await store.listArchived()).toHaveLength(1);
+    const health = await store.health();
+    expect(health.historyGap.present).toBe(true);
+    expect(health.historyGap.detail).toContain("retention anchor");
+    // Restart: the on-disk hot chain was rechained from genesis and the
+    // pruned record sits in the archive — the new store sees a complete
+    // retained+archived set, so no gap is reported by the fresh load.
+    const reloaded = new EventsStore(file);
+    const reloadedHealth = await reloaded.health();
+    expect(reloadedHealth.archivedRecords).toBe(1);
+    expect(reloadedHealth.historyGap.present).toBe(false);
+  });
+
+  test("replaying a stable id that retention archived returns the archived record, never a twin", async () => {
+    const dir = tmpDir("agg-events-archive-replay-");
+    const file = join(dir, "events.json");
+    const store = new EventsStore(file);
+    const oldAt = iso(40 * DAY_MS);
+    await store.record({ ...base, at: oldAt, id: "evt_replay_1", summary: "original" });
+    await store.record({ ...base, at: oldAt, id: "evt_replay_2", summary: "second" });
+    // Both records are past the time bound: retention archived them.
+    expect(await store.list()).toHaveLength(0);
+    const archivedBefore = await store.listArchived();
+    expect(archivedBefore).toHaveLength(2);
+    const originalHash = archivedBefore.find((e) => e.id === "evt_replay_1")!.hash;
+    expect(originalHash).not.toBe("");
+    const replay = await store.record({ ...base, at: oldAt, id: "evt_replay_1", summary: "original" });
+    expect(replay.id).toBe("evt_replay_1");
+    expect(replay.hash).toBe(originalHash);
+    expect(await store.list()).toHaveLength(0);
+    const archived = await store.listArchived();
+    expect(archived).toHaveLength(2);
+    expect(archived.filter((e) => e.id === "evt_replay_1")).toHaveLength(1);
+  });
+});

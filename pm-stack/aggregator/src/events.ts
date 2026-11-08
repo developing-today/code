@@ -422,6 +422,24 @@ export function verifyArchivedRecords(
   let linksVerified = 0;
   for (let i = 0; i < records.length; i++) {
     const e = records[i]!;
+    // A damaged partition can hold non-records (e.g. a null from a
+    // torn write): that is an archive verdict, never a throw —
+    // health() must report the unhealthy archive, not reject
+    // (#3322 Codex re-review, PR #7665).
+    if (
+      typeof e !== "object" ||
+      e === null ||
+      typeof e.id !== "string" ||
+      typeof e.prevHash !== "string" ||
+      typeof e.hash !== "string"
+    ) {
+      return {
+        ok: false,
+        records: records.length,
+        linksVerified,
+        error: `archived record at index ${i} is malformed (not an audit record) — archive partition is damaged`,
+      };
+    }
     if (e.hash === "" || eventHash(e.prevHash, e) !== e.hash) {
       return {
         ok: false,
@@ -604,6 +622,10 @@ export class EventsStore {
   private writeSeq = 0;
   private integrityViolation: string | null = null;
   private archiveError: string | null = null;
+  /** Missing-anchor evidence captured at load, before retention
+   *  or rechaining can touch the chain (#3322 Codex re-review,
+   *  PR #7665): preserved for health()'s history-gap report. */
+  private missingAnchorDetail: string | null = null;
 
   constructor(private readonly file: string) {}
 
@@ -693,6 +715,30 @@ export class EventsStore {
       // violation is loud and is reported by health() until a
       // human looks.
       const verdict = verifyEventChain(normalized.filter((e) => e.hash !== ""));
+      // Missing-anchor evidence is captured BEFORE retention and
+      // before any persist can rechain the retained records from
+      // genesis (#3322 Codex re-review, PR #7665): if the loaded
+      // chain's first record names a predecessor that no archive
+      // partition holds, that gap is a fact about the loaded store
+      // and must survive this load's archiving + rechaining.
+      const loadAnchor = normalized[0]?.prevHash;
+      if (loadAnchor && loadAnchor !== EVENT_CHAIN_GENESIS) {
+        let anchorArchived = false;
+        let archiveReadable = false;
+        try {
+          const archivedNow = await this.listArchived();
+          archiveReadable = true;
+          anchorArchived = archivedNow.some((e) => e?.hash === loadAnchor);
+        } catch {
+          archiveReadable = false;
+        }
+        if (archiveReadable && !anchorArchived) {
+          this.missingAnchorDetail =
+            "the loaded chain's retention anchor (prevHash " + loadAnchor.slice(0, 12) + "…) names a predecessor " +
+            "that no archive partition holds — history before the anchor is outside the retained+archived set " +
+            "(pruned before the #3322 archive contract, or a lost partition)";
+        }
+      }
       if (verdict.ok) {
         // Archive before pruning (#3322 retention contract): records
         // leaving the hot stream are preserved in the archive
@@ -1038,6 +1084,13 @@ export class EventsStore {
               ok: true,
               detail: `${archived.length} archived record(s) verify (${verification?.linksVerified ?? 0} inter-record link(s) verified)`,
             };
+    if (this.missingAnchorDetail) {
+      return {
+        archivedRecords: archived.length,
+        archive,
+        historyGap: { present: true, detail: this.missingAnchorDetail },
+      };
+    }
     const first = this.events[0];
     let historyGap: EventsHealth["historyGap"];
     if (!first || first.prevHash === EVENT_CHAIN_GENESIS) {
@@ -1135,6 +1188,21 @@ export class EventsStore {
     if (input.id !== undefined) {
       const existing = this.events.find((e) => e.id === input.id);
       if (existing) return existing;
+      // The id may already have left the hot stream: retention
+      // archives before pruning, so a replayed stable id can live
+      // only in the archive (#3322 Codex re-review, PR #7665).
+      // Resolve it there too — appending a twin would put two
+      // records with one stable id in the retained+archived set.
+      try {
+        const archivedHit = (await this.listArchived()).find((e) => e?.id === input.id);
+        if (archivedHit) return archivedHit;
+      } catch (err) {
+        console.error(
+          `[events] WARNING: could not check the archive for replayed id ${input.id} in ${this.file} ` +
+            `(${err instanceof Error ? err.message : String(err)}); proceeding with the append — if that id was ` +
+            `archived, this may duplicate it; the archive failure is reported via health().`,
+        );
+      }
     }
     const event: AuditEvent = {
       ...parsed.value,
