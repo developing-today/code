@@ -29,7 +29,10 @@ use crate::notes::{
     REVISE_KIND as NOTE_REVISE_KIND, check_note_op, fold_notes,
 };
 use crate::search::{Hit, ValueMatch, search_store};
-use crate::tag_claims::{CLEAR_KIND, Claim, MAX_CLEAR_CLAIMS, SET_KIND, TagOp, check_op};
+use crate::local_claims::LocalClaims;
+use crate::tag_claims::{
+    CLEAR_KIND, Claim, LocalClaim, MAX_CLEAR_CLAIMS, SET_KIND, TagOp, TagScope, check_op,
+};
 use crate::waiting::{AuthorKey, WaitingLimits};
 
 /// The directory the event store lives in, under the data directory, unless `--event-store` names
@@ -213,6 +216,8 @@ fn fold_remote_notes(
 #[derive(Debug)]
 pub struct LocalEvents {
     store: EventStore,
+    /// The node's own local-only claims (#1793): never signed, never synced.
+    local: LocalClaims,
     key: SigningKey,
 }
 
@@ -225,7 +230,8 @@ impl LocalEvents {
     pub fn open(dir: &Path, key: SigningKey) -> Result<Self> {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         let store = EventStore::open(dir, WaitingLimits::default(), now_ms())?;
-        Ok(Self { store, key })
+        let local = LocalClaims::open(dir).context("open the local claim store")?;
+        Ok(Self { store, local, key })
     }
 
     /// Runs one range-sync session over `conn` against this node's store: the session
@@ -297,16 +303,127 @@ impl LocalEvents {
 
     /// Sets the tag `name` on `subject`, with `value` if given. The new claim's ID is the event's.
     ///
+    /// The claim is shared: it is signed into the event store and published to peers, exactly as
+    /// before scopes existed. Use [`LocalEvents::set_tag_scoped`] to choose the scope.
+    ///
     /// # Errors
     ///
     /// Fails if the name or value is refused, or the store cannot record the event.
     pub fn set_tag(&mut self, subject: Hash, name: &str, value: Option<&str>) -> Result<Hash> {
-        let op = TagOp::Set {
-            subject,
-            name: name.to_owned(),
-            value: value.map(str::to_owned),
-        };
-        self.record(SET_KIND, Some(op), None, None, None, &[])
+        self.set_tag_scoped(subject, name, value, TagScope::Shared)
+    }
+
+    /// Sets the tag `name` on `subject`, with `value` if given, at the chosen `scope` (#1793).
+    ///
+    /// A [`TagScope::Shared`] claim is a signed `tag.set` event, exactly as [`LocalEvents::set_tag`]
+    /// records it, and its ID is the event's. A [`TagScope::Local`] claim is never signed and never
+    /// enters the event store, so it never reaches another node; its ID is derived from its content
+    /// ([`crate::tag_claims::LocalClaim::id_for`]). Both kinds are returned by
+    /// [`LocalEvents::tags_on`], [`LocalEvents::search`] and [`LocalEvents::review_tags`], each
+    /// carrying its scope.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the name or value is refused, or the store cannot record the event (shared) or
+    /// write the local claim file (local).
+    pub fn set_tag_scoped(
+        &mut self,
+        subject: Hash,
+        name: &str,
+        value: Option<&str>,
+        scope: TagScope,
+    ) -> Result<Hash> {
+        match scope {
+            TagScope::Local => Ok(self.local.set(&self.author(), subject, name, value)?),
+            TagScope::Shared => {
+                let op = TagOp::Set {
+                    subject,
+                    name: name.to_owned(),
+                    value: value.map(str::to_owned),
+                };
+                self.record(SET_KIND, Some(op), None, None, None, &[])
+            }
+        }
+    }
+
+    /// Changes the scope of every live claim named `name` on `subject` that this node authored.
+    ///
+    /// Moving a claim to [`TagScope::Local`] records a local claim and then clears the shared one;
+    /// moving it to [`TagScope::Shared`] records a shared claim and then removes the local one. The
+    /// claim keeps its name and value, so the move changes only where it lives. Claims authored by
+    /// another node are not touched: this node cannot rewrite another node's signed claim, and a
+    /// local claim is this node's own by construction.
+    ///
+    /// Returns the number of claims moved.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the store cannot be read or written, or the local claim file cannot be written.
+    pub fn set_tag_scope(
+        &mut self,
+        subject: Hash,
+        name: &str,
+        scope: TagScope,
+    ) -> Result<usize> {
+        let me = self.author();
+        let mut moved = 0;
+        let shared: Vec<Claim> = self
+            .store
+            .tag_claims()?
+            .into_iter()
+            .filter(|claim| {
+                claim.subject == subject && claim.name == name && claim.author == me
+            })
+            .collect();
+        match scope {
+            TagScope::Local => {
+                for claim in &shared {
+                    self.local
+                        .set(&me, subject, &claim.name, claim.value.as_deref())?;
+                    moved += 1;
+                }
+                if !shared.is_empty() {
+                    self.clear_claim_ids(&shared.iter().map(|claim| claim.id).collect::<Vec<_>>())?;
+                }
+            }
+            TagScope::Shared => {
+                let local = self.local.on_subject(&subject);
+                for claim in local.iter().filter(|claim| claim.name == name) {
+                    self.set_tag(subject, &claim.name, claim.value.as_deref())?;
+                    moved += 1;
+                }
+                if moved > 0 {
+                    self.local.clear(&me, subject, name)?;
+                }
+            }
+        }
+        Ok(moved)
+    }
+
+    /// Clears only the named claim IDs, in batches that fit the wire limit. Used by scope moves
+    /// so changing this node's scope cannot accidentally clear another author's claims with the
+    /// same name.
+    fn clear_claim_ids(&mut self, claims: &[Hash]) -> Result<()> {
+        let author = self.author();
+        let required: Vec<Hash> = self
+            .frontier()?
+            .into_iter()
+            .find(|head| head.author == author)
+            .map(|head| vec![head.event])
+            .unwrap_or_default();
+        for group in claims.chunks(MAX_CLEAR_CLAIMS) {
+            self.record(
+                CLEAR_KIND,
+                Some(TagOp::Clear {
+                    claims: group.to_vec(),
+                }),
+                None,
+                None,
+                None,
+                &required,
+            )?;
+        }
+        Ok(())
     }
 
     /// Clears every live claim named `name` on `subject`, whoever set it, by recording
@@ -335,6 +452,16 @@ impl LocalEvents {
     ///
     /// Fails if no live claim matches, or the store cannot record an event.
     pub fn clear_tag(&mut self, subject: Hash, name: &str) -> Result<(usize, Hash)> {
+        // Local claims are this node's own and are removed from the local store; shared claims
+        // are cleared by `tag.clear` events, as before (#1793).
+        let local_ids: Vec<Hash> = self
+            .local
+            .on_subject(&subject)
+            .into_iter()
+            .filter(|claim| claim.name == name)
+            .map(|claim| claim.id)
+            .collect();
+        let removed_local = self.local.clear(&self.author(), subject, name)?;
         let claims: Vec<Claim> = self
             .store
             .tag_claims()?
@@ -342,9 +469,15 @@ impl LocalEvents {
             .filter(|claim| claim.subject == subject && claim.name == name)
             .collect();
         if claims.is_empty() {
+            if removed_local > 0 {
+                // Nothing shared to clear: the local claims are gone, and the last local claim's
+                // ID stands in for the event ID a shared clear would have returned.
+                let last = local_ids.last().copied().unwrap_or(subject);
+                return Ok((removed_local, last));
+            }
             bail!("no live claim on {} is named {name}", subject.to_hex());
         }
-        let count = claims.len();
+        let count = claims.len() + removed_local;
         // The current head of each author, for the required tier of each sub-clear.
         let heads: HashMap<AuthorKey, Hash> = self
             .frontier()?
@@ -411,12 +544,28 @@ impl LocalEvents {
     ///
     /// Fails if the store cannot be read.
     pub fn tags_on(&self, subject: Hash) -> Result<Vec<Claim>> {
-        Ok(self
+        let mut claims: Vec<Claim> = self
             .store
             .tag_claims()?
             .into_iter()
             .filter(|claim| claim.subject == subject)
-            .collect())
+            .collect();
+        claims.extend(self.local.on_subject(&subject).iter().map(LocalClaim::as_claim));
+        claims.sort_by_key(|claim| *claim.id.as_bytes());
+        Ok(claims)
+    }
+
+    /// Every live claim this node can see — shared and local — for the review listing (#1793),
+    /// sorted by scope then claim ID, so the local-only claims are reviewable on their own.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the store cannot be read.
+    pub fn review_tags(&self) -> Result<Vec<Claim>> {
+        let mut claims = self.store.tag_claims()?;
+        claims.extend(self.local.claims().iter().map(LocalClaim::as_claim));
+        claims.sort_by_key(|claim| (claim.scope == TagScope::Local, *claim.id.as_bytes()));
+        Ok(claims)
     }
 
     /// The live claims that match `name`, and `value` if given, as [`crate::search`] returns them.
@@ -426,7 +575,20 @@ impl LocalEvents {
     /// Fails if the store cannot be read.
     pub fn search(&self, name: &str, value: Option<&str>) -> Result<Vec<Hit>> {
         let matching = value.map_or(ValueMatch::Any, ValueMatch::Exact);
-        Ok(search_store(&self.store, name, matching)?)
+        let mut hits = search_store(&self.store, name, matching)?;
+        // Local claims are this node's own, so they are part of this node's search answer (#1793).
+        // They are folded in per subject, so a subject with both kinds reports one hit.
+        for claim in self.local.matching(name, value) {
+            let entry = claim.as_claim();
+            match hits.iter_mut().find(|hit| hit.subject == claim.subject) {
+                Some(hit) => hit.claims.push(entry),
+                None => hits.push(Hit {
+                    subject: claim.subject,
+                    claims: vec![entry],
+                }),
+            }
+        }
+        Ok(hits)
     }
 
     /// Creates a note with `content` as its first content. The returned ID is the note's
@@ -796,6 +958,7 @@ fn entry_of(event: &Event) -> Option<Entry> {
                 subject,
                 name,
                 value,
+                ..
             }),
             _,
             _,
@@ -1208,6 +1371,65 @@ mod tests {
         let published = events.publish("text/plain", b"hello", &tags).unwrap();
         assert_eq!(published.claims.len(), 3);
         assert_eq!(events.tags_on(published.id).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn test_local_claim_is_reviewable_but_never_enters_the_shared_store() {
+        let (_dir, mut events) = open_events();
+        let subject = publish_subject(&mut events);
+        let before = events.store.sync_entries().unwrap();
+
+        let id = events
+            .set_tag_scoped(subject, "city", Some("Oslo"), TagScope::Local)
+            .unwrap();
+
+        let visible = events.tags_on(subject).unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].id, id);
+        assert_eq!(visible[0].scope, TagScope::Local);
+        assert!(events.store.tag_claims().unwrap().is_empty());
+        assert_eq!(events.store.sync_entries().unwrap(), before);
+        assert_eq!(events.review_tags().unwrap(), visible);
+        assert_eq!(events.search("city", Some("Oslo")).unwrap()[0].claims, visible);
+    }
+
+    #[test]
+    fn test_scope_edit_moves_a_local_claim_to_shared_and_back() {
+        let (_dir, mut events) = open_events();
+        let subject = publish_subject(&mut events);
+        let local_id = events
+            .set_tag_scoped(subject, "city", Some("Oslo"), TagScope::Local)
+            .unwrap();
+
+        assert_eq!(events.set_tag_scope(subject, "city", TagScope::Shared).unwrap(), 1);
+        let shared = events.tags_on(subject).unwrap();
+        assert_eq!(shared.len(), 1);
+        assert_eq!(shared[0].scope, TagScope::Shared);
+        assert_ne!(shared[0].id, local_id);
+        assert!(events.local.claims().is_empty());
+        assert_eq!(events.store.tag_claims().unwrap(), shared);
+
+        assert_eq!(events.set_tag_scope(subject, "city", TagScope::Local).unwrap(), 1);
+        let local = events.tags_on(subject).unwrap();
+        assert_eq!(local.len(), 1);
+        assert_eq!(local[0].scope, TagScope::Local);
+        assert!(events.store.tag_claims().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_clear_tag_removes_local_claims_without_signing_a_clear() {
+        let (_dir, mut events) = open_events();
+        let subject = publish_subject(&mut events);
+        let before = events.store.sync_entries().unwrap();
+        events
+            .set_tag_scoped(subject, "city", Some("Oslo"), TagScope::Local)
+            .unwrap();
+
+        let (count, _) = events.clear_tag(subject, "city").unwrap();
+
+        assert_eq!(count, 1);
+        assert!(events.tags_on(subject).unwrap().is_empty());
+        assert_eq!(events.store.sync_entries().unwrap(), before);
     }
 
     fn open_events() -> (tempfile::TempDir, LocalEvents) {
