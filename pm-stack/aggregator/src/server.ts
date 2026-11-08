@@ -505,7 +505,7 @@ function emptyQuotaView(): QuotaView {
   return { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } };
 }
 function emptyUsageView(): UsageView {
-  return { services: [], payg: [], charges: [], attention: [], domains: null, subscriptions: [], history: {} };
+  return { services: [], uninstrumentedServices: [], payg: [], charges: [], attention: [], domains: null, subscriptions: [], history: {} };
 }
 
 async function boardContext() {
@@ -1915,6 +1915,7 @@ async function handler(req: Request): Promise<Response> {
       attention: usage.attention,
       domains: usage.domains,
       subscriptions: usage.subscriptions,
+      uninstrumentedServices: usage.uninstrumentedServices,
     });
   }
   if (req.method === "POST" && path === "/api/quota/refresh") {

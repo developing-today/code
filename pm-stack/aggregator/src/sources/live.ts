@@ -44,6 +44,7 @@ import {
   extractPaygLines,
   extractSaasServices,
   extractSubscriptions,
+  extractUninstrumentedServices,
 } from "../saas-extract.ts";
 import { mergeChargeRows } from "../charges-collect.ts";
 import type { CloudflareExportDoc, SupabaseExportDoc } from "../saas-extract.ts";
@@ -1394,6 +1395,11 @@ export function liveSource(
       // plus the stewardship / check-usage outbox); a background writer
       // tick lands them into the local store. This reader only reads it.
       const feed = await getFeed();
+      const uninstrumentedServices =
+        feed?.uninstrumentedServices ??
+        (await readFile(cfg.freeServicesTrackerFile, "utf8")
+          .then(extractUninstrumentedServices)
+          .catch(() => []));
       const store = new SnapshotStore(cfg.snapshotsDir);
       const history = await store.byService().catch(() => ({}));
       const domains =
@@ -1428,10 +1434,13 @@ export function liveSource(
       const chargesDroppedNote = feed?.chargesDropped
         ? ` · sanitized at load: dropped ${feed.chargesDropped} malformed charge row(s) (#2445)`
         : "";
+      const trackerRowsDroppedNote = feed?.uninstrumentedServicesDropped
+        ? ` · sanitized at load: dropped ${feed.uninstrumentedServicesDropped} malformed tracker row(s) (#1172)`
+        : "";
       const saasDroppedNote = feed?.saasDropped
         ? ` · sanitized at load: dropped ${feed.saasDropped} malformed SaaS service row(s) (#2451)`
         : "";
-      const feedSanitizationNotes = saasDroppedNote + chargesDroppedNote;
+      const feedSanitizationNotes = saasDroppedNote + chargesDroppedNote + trackerRowsDroppedNote;
       const feedChargeFlags: AttentionFlag[] = (feed?.chargesAttention ?? []).map((u) => ({
         kind: "unmatched-charge",
         label: `${u.merchant} — unrecognized SaaS/AI charge`,
@@ -1451,6 +1460,7 @@ export function liveSource(
           .catch(() => null);
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(feed.saas, cfExport), supabaseExport),
+          uninstrumentedServices,
           payg: feed.payg ?? [],
           charges: feedCharges,
           subscriptions: feed.subscriptions ?? [],
@@ -1483,6 +1493,7 @@ export function liveSource(
         // evidence (the feed rows) takes precedence.
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(extractSaasServices(doc), cfExport), supabaseExport),
+          uninstrumentedServices,
           payg: extractPaygLines(doc, registryText),
           charges: mergeChargeRows(feedCharges, extractCharges(doc, registryText)),
           subscriptions: extractSubscriptions(doc),
@@ -1508,6 +1519,7 @@ export function liveSource(
         // sections that are missing, not for the ones that arrived.
         return {
           ...fallback,
+          uninstrumentedServices,
           charges: feedCharges.length ? feedCharges : fallback.charges,
           chargesNote: feedCharges.length ? undefined : fallback.chargesNote,
           attention: [...fallback.attention, ...feedChargeFlags],
