@@ -477,6 +477,58 @@ export async function parseJsonObjectBody(req: Request): Promise<JsonObjectBody>
   return { ok: true, body: parsed as Record<string, unknown> };
 }
 
+// --- Multipart file-upload body validation (#7087) ------------------------
+// POST /api/files is the one POST route #2480's JSON helpers could not
+// cover: it consumes multipart form data, and it consumed it unguarded —
+// req.formData() threw a raw TypeError for any non-multipart body (a JSON
+// or plain-text body, an empty body), and form.get("file") returns a
+// string for a text field, which the route's bare `as File` cast hid until
+// file.arrayBuffer() crashed on it. Both escaped as a 500 carrying the
+// runtime's internal error text. These helpers give the route the same
+// 400 vocabulary as the JSON routes: an unparseable form body and a
+// missing or non-file 'file' field are client errors, named as such,
+// before any R2/D1/Queue side effect.
+
+export type FormDataBody = { ok: true; form: FormData } | { ok: false; error: string };
+
+export async function parseFormDataBody(req: Request): Promise<FormDataBody> {
+  let form: FormData;
+  try {
+    form = await req.formData();
+  } catch {
+    return { ok: false, error: "multipart form body required" };
+  }
+  return { ok: true, form };
+}
+
+export interface UploadFileLike {
+  name: string;
+  type: string;
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+export function parseUploadFile(value: unknown): Validated<UploadFileLike> {
+  if (value === null || value === undefined) {
+    return { ok: false, error: "multipart field 'file' required" };
+  }
+  if (
+    typeof value !== "object" ||
+    typeof (value as { name?: unknown }).name !== "string" ||
+    typeof (value as { arrayBuffer?: unknown }).arrayBuffer !== "function"
+  ) {
+    return { ok: false, error: "multipart field 'file' must be a file upload" };
+  }
+  const file = value as { name: string; type?: unknown; arrayBuffer(): Promise<ArrayBuffer> };
+  return {
+    ok: true,
+    values: {
+      name: file.name,
+      type: typeof file.type === "string" ? file.type : "",
+      arrayBuffer: () => file.arrayBuffer(),
+    },
+  };
+}
+
 export type RequiredString = { ok: true; value: string } | { ok: false; error: string };
 
 // A required field is satisfied only by a string with non-whitespace
