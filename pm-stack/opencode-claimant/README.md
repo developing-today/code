@@ -184,7 +184,7 @@ The implementation follows the deterministic specification in `claimant.py`. To 
 ## Known Limitations
 
 - `get_stuck_bound()` in poll.py is a placeholder - full implementation requires OpenCode server API access
-- Session prompt delivery in `launch_step()` is documented but not fully implemented (would use session API)
+- `launch_step()` sends the worker prompt to the bound session via `POST /api/session/<id>/prompt`
 - Error handling assumes server API is available and responsive
 
 ## Implementation Status

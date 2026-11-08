@@ -1093,6 +1093,27 @@ fn list_row_cells(r: &Value) -> Vec<String> {
     ]
 }
 
+fn list_request(args: &Args, limit: i64) -> Value {
+    json!({
+        "queue": opt_queue(args),
+        "status": args.get("status"),
+        "limit": limit,
+        "not_before": args.get("not-before"),
+        "rich": args.has("json"),
+    })
+}
+
+fn list_response_rows(resp: &Value) -> Vec<Value> {
+    resp.get("rows")
+        .and_then(|rows| rows.as_array())
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn list_json_output(rows: &[Value]) -> Value {
+    Value::Array(rows.to_vec())
+}
+
 /// Find a task row by id in a `/list` rows array — the recovery path a
 /// worker uses when a claim's own output was lost: `list --status
 /// claimed` must return the same task with its identifying fields.
@@ -1102,27 +1123,19 @@ fn find_task_row(rows: &[Value], task_id: i64) -> Option<&Value> {
 }
 
 fn cmd_list(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["queue", "status", "limit", "not-before"], &[]);
+    let args = parse_args(rest, &["queue", "status", "limit", "not-before"], &["json"]);
     reject_extra_pos("list", &args, 0);
     let limit = match list_limit_or_default(args.get_i64("limit")) {
         Ok(limit) => limit,
         Err(e) => die(2, &e),
     };
-    let resp = call(
-        "/list",
-        &json!({
-            "queue": opt_queue(&args),
-            "status": args.get("status"),
-            "limit": limit,
-            "not_before": args.get("not-before"),
-        }),
-    );
+    let resp = call("/list", &list_request(&args, limit));
     let resp = unwrap_ok(resp);
-    let rows = resp
-        .get("rows")
-        .and_then(|r| r.as_array())
-        .cloned()
-        .unwrap_or_default();
+    let rows = list_response_rows(&resp);
+    if args.has("json") {
+        print_json(&list_json_output(&rows));
+        return 0;
+    }
     if rows.is_empty() {
         println!("(no tasks)");
         return 0;
@@ -2158,6 +2171,33 @@ mod tests {
         })
     }
 
+    fn rich_claimed_row_fixture() -> Value {
+        json!({
+            "id": 10811,
+            "queue": "repo-health-code-pilot",
+            "title": "Add repo-queue claim response-shape regression tests (#5486)",
+            "priority": 50,
+            "status": "claimed",
+            "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:5486",
+            "created_at": "2026-11-08T12:00:00Z",
+            "not_before": null,
+            "worker_id": "repo-worker-code",
+            "lease_until": "2026-11-08T12:45:00Z",
+            "lane_id": "code-a",
+            "attempts": 0,
+            "max_attempts": 5,
+            "progress": {
+                "lane": "opencode",
+                "session_id": null,
+                "issue_number": 5486,
+                "last_checkpoint": {
+                    "stage": "handed_off",
+                    "at": "2026-11-08T12:00:00Z"
+                }
+            }
+        })
+    }
+
     #[test]
     fn claim_success_envelope_prints_the_real_row() {
         // The reported #5486 failure printed an all-null task row for
@@ -2242,6 +2282,50 @@ mod tests {
             cells[5],
             "Add repo-queue claim response-shape regression tests (#5486)"
         );
+    }
+
+    #[test]
+    fn list_json_requests_rich_rows_and_emits_a_json_array() {
+        // The broker's /list envelope is {ok:true, rows:[...]}. With
+        // --json, request rich fields and preserve the selected rows
+        // verbatim, including the checkpoint shape consumed by the
+        // opencode claimant. Empty output is still [] rather than prose.
+        let args = parse_args_inner(
+            &pos(&[
+                "--queue",
+                "repo-health-code-pilot",
+                "--status",
+                "claimed",
+                "--json",
+            ]),
+            &["queue", "status", "limit", "not-before"],
+            &["json"],
+        )
+        .expect("list --json parses");
+        let request = list_request(&args, 20);
+        assert_eq!(request["queue"], json!("repo-health-code-pilot"));
+        assert_eq!(request["status"], json!("claimed"));
+        assert_eq!(request["limit"], json!(20));
+        assert_eq!(request["rich"], json!(true));
+
+        let row = rich_claimed_row_fixture();
+        let response = json!({"ok": true, "rows": [row.clone()]});
+        assert_eq!(
+            list_json_output(&list_response_rows(&response)),
+            json!([row])
+        );
+        assert_eq!(
+            list_json_output(&list_response_rows(&json!({"ok": true, "rows": []}))),
+            json!([])
+        );
+
+        let table_args = parse_args_inner(
+            &pos(&["--queue", "repo-health-code-pilot"]),
+            &["queue", "status", "limit", "not-before"],
+            &["json"],
+        )
+        .expect("ordinary list invocation parses");
+        assert_eq!(list_request(&table_args, 20)["rich"], json!(false));
     }
 
     proptest! {

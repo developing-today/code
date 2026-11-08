@@ -36,7 +36,7 @@ Prints one JSON object:
 
 Read-only by construction: claimed rows come from the repo-queue
 binary (`~/.local/bin/repo-queue list --queue <queue>
---status claimed` — the deployed binary's list verb rejects
+--status claimed --json` — the deployed binary's list verb rejects
 `--worker`, verified 2026-11-07) and session state from GETs to the
 laptop OpenCode server. The claimant treats a null cap_room as NO
 launch room: an unreadable session list or active set must never
@@ -298,7 +298,7 @@ def fetch_claimed_rows(queue):
     try:
         result = subprocess.run(
             [str(REPO_QUEUE_CMD), "list", "--queue", queue,
-             "--status", "claimed"],
+             "--status", "claimed", "--json"],
             capture_output=True,
             text=True,
             timeout=30,
@@ -331,16 +331,33 @@ def fetch_claimed_rows(queue):
 def normalize_row(row):
     """Ensure a claimed row carries the progress dict the classifiers
     read. Broker rows already do; a flattened row (lane/stage/
-    session_id at top level) gets its progress synthesized so either
-    shape classifies the same way."""
+    session_id at top level) gets its progress synthesized. Queue
+    checkpoints store their stage at progress.last_checkpoint.stage;
+    normalize that to progress.stage while retaining the original
+    checkpoint so both row shapes classify identically."""
+    row = dict(row)
     if not isinstance(row.get("progress"), dict):
-        row = dict(row)
-        row["progress"] = {
+        progress = {
             "lane": row.get("lane"),
             "stage": row.get("stage"),
             "session_id": row.get("session_id"),
             "issue_number": row.get("issue_number") or row.get("issue"),
         }
+    else:
+        progress = dict(row["progress"])
+
+    checkpoint = progress.get("last_checkpoint")
+    checkpoint_stage = (
+        checkpoint.get("stage") if isinstance(checkpoint, dict) else None
+    )
+    if checkpoint_stage:
+        # The checkpoint is the recorded yield and takes precedence over
+        # a stale legacy progress.stage when both formats are present.
+        progress["stage"] = checkpoint_stage
+    elif not progress.get("stage"):
+        progress["stage"] = row.get("stage")
+
+    row["progress"] = progress
     return row
 
 

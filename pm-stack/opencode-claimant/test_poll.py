@@ -161,6 +161,17 @@ class TestIsCandidate(unittest.TestCase):
             )
         )
 
+    def test_recorded_checkpoint_overrides_a_stale_legacy_stage(self):
+        row = poll.normalize_row({
+            "progress": {
+                "lane": "opencode",
+                "stage": "working",
+                "last_checkpoint": {"stage": "handed_off"},
+            },
+        })
+        self.assertEqual(row["progress"]["stage"], "handed_off")
+        self.assertTrue(poll.is_candidate(row))
+
     def test_assigned_but_not_handed_off_is_not_candidate(self):
         self.assertFalse(
             poll.is_candidate(
@@ -339,8 +350,50 @@ class TestFetchClaimedRows(unittest.TestCase):
         self.assertEqual(
             cmd[1:],
             ["list", "--queue", "repo-health-code-pilot",
-             "--status", "claimed"],
+             "--status", "claimed", "--json"],
         )
+
+    def test_rich_json_rows_use_the_recorded_checkpoint_stage(self):
+        # This mirrors the broker's rich /list row (including the
+        # checkpoint object written by queue checkpoint): JSON mode
+        # returns the rows directly as an array, and the claimant's
+        # launch-safe stage is progress.last_checkpoint.stage.
+        def rich_row(task_id, stage):
+            return {
+                "id": task_id,
+                "queue": "repo-health-code-pilot",
+                "title": "handed-off task",
+                "priority": 50,
+                "status": "claimed",
+                "dedupe_key": f"repo-health:issue:{task_id}",
+                "created_at": "2026-11-08T12:00:00Z",
+                "not_before": None,
+                "worker_id": "repo-worker-code",
+                "lease_until": "2026-11-08T12:45:00Z",
+                "lane_id": "code-a",
+                "attempts": 0,
+                "max_attempts": 5,
+                "progress": {
+                    "lane": "opencode",
+                    "session_id": None,
+                    "issue_number": task_id,
+                    "last_checkpoint": {
+                        "stage": stage,
+                        "at": "2026-11-08T12:00:00Z",
+                    },
+                },
+            }
+
+        rows, captured = self.fetch([
+            rich_row(5486, "handed_off"),
+            rich_row(5487, "launch_failed"),
+        ])
+        self.assertEqual(
+            [row["progress"]["stage"] for row in rows],
+            ["handed_off", "launch_failed"],
+        )
+        self.assertTrue(all(poll.is_candidate(row) for row in rows))
+        self.assertIn("--json", [str(part) for part in captured["cmd"]])
 
     def test_flattened_row_gets_progress_synthesized(self):
         rows, _ = self.fetch([{

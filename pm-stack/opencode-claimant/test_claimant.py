@@ -44,7 +44,8 @@ class Result:
         self.stderr = stderr
 
 
-def make_fake_run(binds, *, session_get="gone", messages="[]"):
+def make_fake_run(binds, *, prompts=None, actions=None, queue_lists=None,
+                  prompt_returncode=0, session_get="gone", messages="[]"):
     """Build a subprocess.run stub dispatching on argv shape.
 
     binds: list collecting every repo-queue bind argv.
@@ -56,6 +57,8 @@ def make_fake_run(binds, *, session_get="gone", messages="[]"):
         argv = [str(part) for part in cmd]
         joined = " ".join(argv)
         if "repo-queue" in argv[0] and "list" in argv:
+            if queue_lists is not None:
+                queue_lists.append(argv)
             queue = argv[argv.index("--queue") + 1]
             if queue == claimant.QUEUES[0]:
                 rows = [{
@@ -69,7 +72,24 @@ def make_fake_run(binds, *, session_get="gone", messages="[]"):
             return Result(0, json.dumps(rows))
         if "repo-queue" in argv[0] and "bind" in argv:
             binds.append(cmd)
+            if actions is not None:
+                actions.append("bind")
             return Result(0, "{}")
+        if (argv[0] == "curl" and "POST" in argv
+                and argv[-1].endswith("/prompt")):
+            if prompts is not None:
+                prompts.append({
+                    "url": argv[-1],
+                    "body": json.loads(argv[argv.index("-d") + 1]),
+                    "argv": argv,
+                })
+            if actions is not None:
+                actions.append("prompt")
+            return Result(
+                prompt_returncode,
+                "{}" if prompt_returncode == 0 else "",
+                "prompt failed" if prompt_returncode != 0 else "",
+            )
         if argv[0] == "curl" and "-X" in argv and "DELETE" in argv:
             return Result(0, "")
         if argv[0] == "curl" and joined.rstrip().endswith("/messages"):
@@ -105,9 +125,14 @@ CANDIDATE = {
 class TestLaunchStep(unittest.TestCase):
     def test_valid_candidate_launches_and_binds(self):
         binds = []
+        prompts = []
+        actions = []
         with patch.object(claimant, "run_poll",
                           return_value={"candidates": [dict(CANDIDATE)]}), \
-             patch.object(claimant.subprocess, "run", make_fake_run(binds)):
+             patch.object(
+                 claimant.subprocess, "run",
+                 make_fake_run(binds, prompts=prompts, actions=actions),
+             ):
             launched, skips = claimant.launch_step("live", 3)
         self.assertEqual(skips, [])
         self.assertEqual(len(launched), 1)
@@ -120,6 +145,31 @@ class TestLaunchStep(unittest.TestCase):
         self.assertTrue(all(isinstance(part, str) for part in bind_argv))
         self.assertIn("777", bind_argv)
         self.assertIn("ses_new1", bind_argv)
+        self.assertEqual(actions, ["bind", "prompt"])
+        self.assertEqual(
+            prompts[0]["url"],
+            "http://127.0.0.1:13420/api/session/ses_new1/prompt",
+        )
+        prompt_text = prompts[0]["body"]["text"]
+        self.assertIn("Execute queue task 777", prompt_text)
+        self.assertIn("Issue: #1234", prompt_text)
+        self.assertIn("Use --worker repo-worker-code", prompt_text)
+        self.assertIn("-f", prompts[0]["argv"])
+
+    def test_prompt_failure_keeps_the_bound_session_slot_reserved(self):
+        binds = []
+        candidates = [dict(CANDIDATE), {**CANDIDATE, "id": 778}]
+        with patch.object(claimant, "run_poll", return_value={"candidates": candidates}), \
+             patch.object(
+                 claimant.subprocess, "run",
+                 make_fake_run(binds, prompt_returncode=1),
+             ):
+            launched, skips = claimant.launch_step("live", 1)
+
+        self.assertEqual(launched, [])
+        self.assertEqual(len(binds), 1)
+        self.assertIn("Prompt delivery failed", skips[0]["reason"])
+        self.assertEqual(skips[1], {"task_id": 778, "reason": "cap_saturated"})
 
     def test_vanished_candidate_is_a_recorded_skip(self):
         calls = {"n": 0}
@@ -140,7 +190,11 @@ class TestLaunchStep(unittest.TestCase):
 class TestSupervisionStep(unittest.TestCase):
     def test_gone_zero_message_session_is_recovered(self):
         binds = []
-        with patch.object(claimant.subprocess, "run", make_fake_run(binds)):
+        queue_lists = []
+        with patch.object(
+            claimant.subprocess, "run",
+            make_fake_run(binds, queue_lists=queue_lists),
+        ):
             recovered = claimant.supervision_step("live")
         self.assertEqual(recovered, [{
             "task_id": 4242,
@@ -151,6 +205,8 @@ class TestSupervisionStep(unittest.TestCase):
         bind_argv = [str(part) for part in binds[0]]
         self.assertIn(claimant.LAUNCHED_BY_RECOVERY_ZERO_MESSAGE, bind_argv)
         self.assertIn("4242", bind_argv)
+        self.assertEqual(len(queue_lists), len(claimant.QUEUES))
+        self.assertTrue(all("--json" in argv for argv in queue_lists))
 
     def test_active_session_is_left_bound(self):
         binds = []

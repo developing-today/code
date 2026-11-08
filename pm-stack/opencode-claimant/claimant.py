@@ -190,7 +190,8 @@ def supervision_step(mode: str) -> List[Dict]:
         try:
             # Use repo-queue to list tasks
             result = subprocess.run(
-                [str(REPO_QUEUE_CMD), "list", "--queue", queue, "--status", "claimed"],
+                [str(REPO_QUEUE_CMD), "list", "--queue", queue,
+                 "--status", "claimed", "--json"],
                 capture_output=True,
                 text=True,
                 timeout=10
@@ -475,6 +476,10 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
                         "reason": "bind_failed"
                     })
                     continue
+
+                # The bound session already consumes a root-session
+                # slot even if prompt delivery later fails or times out.
+                cap_room -= 1
                 
                 # Step 4d: Send prompt to bound session
                 # The worker should use: repo-queue with --worker <worker_id> and the execution context
@@ -488,18 +493,28 @@ Use --worker {worker_id} for all queue CLI operations.
 Heartbeat while working to keep the claim lease alive.
 Finish with: complete, park, block, or fail --execution '{{...}}'
 """
-                
-                # In a real implementation, this would send the prompt via the session API
-                # For now, we just record the successful launch
-                
+
+                prompt_result = subprocess.run(
+                    [
+                        "curl", "-sS", "-f", "-m", "30", "-X", "POST",
+                        "-H", "Content-Type: application/json",
+                        "-d", json.dumps({"text": prompt}),
+                        f"http://127.0.0.1:13420/api/session/{session_id}/prompt",
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                if prompt_result.returncode != 0:
+                    raise RuntimeError(
+                        f"Prompt delivery failed: {prompt_result.stderr}"
+                    )
+
                 launched.append({
                     "task_id": task_id,
                     "session_id": session_id,
                     "worker_id": worker_id,
                     "timestamp": datetime.utcnow().isoformat() + "Z"
                 })
-                
-                cap_room -= 1
                 
             except Exception as e:
                 skips.append({
