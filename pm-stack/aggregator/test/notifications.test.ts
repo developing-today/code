@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   buildNotificationCandidates,
   decideNotification,
+  deriveSoleDoorPoolIds,
   nextNotificationDigestAt,
   NOTIFICATION_CLASS_DEFAULTS,
   rollupNotificationSends,
@@ -401,5 +402,98 @@ describe("renderNotifications", () => {
   test("unavailable renders the paused message, not an empty roll-up", () => {
     const html = renderNotifications({ available: false, rollup: null }, PROV);
     expect(html).toContain("unreachable");
+  });
+});
+
+describe("#7193 Codex regression fixes", () => {
+  const pool = (over: Record<string, unknown>) => ({
+    id: "p1",
+    provider: "Example",
+    plan: "Pro",
+    state: "ok",
+    windows: [],
+    ...over,
+  });
+
+  test("stale and errored quota reads never produce wall candidates", () => {
+    for (const state of ["stale", "error"]) {
+      const quota = {
+        pools: [
+          pool({
+            state,
+            windows: [{ name: "weekly", unit: "tokens", limit: 100, used: 100, percent: 100, resetsAt: "2026-11-20T00:00:00Z" }],
+          }),
+        ],
+      };
+      const candidates = buildNotificationCandidates(
+        snapshot({ quota: quota as unknown as NotificationSnapshot["quota"], soleDoorPoolIds: new Set(["p1"]) }),
+        TASK_NOW,
+      );
+      expect(candidates.filter((c) => c.class.startsWith("quota"))).toEqual([]);
+    }
+  });
+
+  test("wall reset comes from the exhausted window, not a healthy short window", () => {
+    const quota = {
+      pools: [
+        pool({
+          windows: [
+            { name: "5h", unit: "tokens", limit: 100, used: 10, percent: 10, resetsAt: "2026-11-03T19:00:00Z" },
+            { name: "weekly", unit: "tokens", limit: 100, used: 100, percent: 100, resetsAt: "2026-11-06T18:00:00Z" },
+          ],
+        }),
+      ],
+    };
+    const candidates = buildNotificationCandidates(snapshot({ quota: quota as unknown as NotificationSnapshot["quota"] }), TASK_NOW);
+    expect(candidates.map((c) => c.class)).toEqual(["quota-wall"]);
+  });
+
+  test("dedupe resets after a recovery marker, and only then", () => {
+    const candidate: NotificationCandidate = {
+      class: "stack-health",
+      objectRef: "health:aggregator",
+      stateFingerprint: '{"state":"down"}',
+      title: "t",
+      body: "b",
+      url: "/health",
+      observedAt: new Date(TASK_NOW).toISOString(),
+      breakthrough: false,
+    };
+    const sent = {
+      at: new Date(TASK_NOW - 7 * 24 * 60 * 60_000).toISOString(),
+      class: "stack-health" as const,
+      objectRef: "health:aggregator",
+      stateFingerprint: '{"state":"down"}',
+      outcome: "sent" as const,
+    };
+    expect(decideNotification(candidate, [sent], TASK_NOW, false)).toBe("suppress-dedupe");
+    const recovered = { ...sent, at: new Date(TASK_NOW - 6 * 24 * 60 * 60_000).toISOString(), outcome: "recovered" as const };
+    expect(decideNotification(candidate, [sent, recovered], TASK_NOW, false)).toBe("send");
+  });
+
+  test("deriveSoleDoorPoolIds marks only single-pool providers", () => {
+    const quota = {
+      pools: [pool({ id: "a", provider: "Solo" }), pool({ id: "b", provider: "Duo" }), pool({ id: "c", provider: "Duo" })],
+    } as unknown as NotificationSnapshot["quota"];
+    expect([...deriveSoleDoorPoolIds(quota)]).toEqual(["a"]);
+  });
+
+  test("filterAttentionViewByRefs keeps only the named entries", async () => {
+    const { filterAttentionViewByRefs } = await import("../src/derive.ts");
+    const entry = (sessionId: string) => ({ sessionId, state: "errored", order: 1, evidence: "", tier: "needs-drew", lastActivityAt: null });
+    const view = {
+      drew: [entry("s1"), entry("s2")],
+      orchestrator: [],
+      drewExtra: [{ id: "i1", kind: "task", title: "t", source: "github", reason: "r", since: "2026-11-03T00:00:00Z", lastSeenAt: "2026-11-03T00:00:00Z", ref: "developing-today/code#1" }],
+      orchestratorExtra: [],
+      watchdog: [],
+      all: [entry("s1"), entry("s2")],
+      expiredCount: 0,
+      tierSource: { present: true, state: "fresh" },
+    } as unknown as Parameters<typeof filterAttentionViewByRefs>[0];
+    const filtered = filterAttentionViewByRefs(view, ["session:s2", "gh:developing-today/code#1"]);
+    expect(filtered.drew.map((e) => e.sessionId)).toEqual(["s2"]);
+    expect(filtered.drewExtra.map((i) => i.id)).toEqual(["i1"]);
+    expect(filtered.all.map((e) => e.sessionId)).toEqual(["s2"]);
   });
 });

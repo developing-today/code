@@ -306,6 +306,12 @@ export interface NewSubscription {
   p256dh: string;
   auth: string;
   classes: Record<string, boolean>;
+  /** The class keys the caller explicitly sent (#7193 Codex): on an
+   * upsert of an existing endpoint only these keys change; the stored
+   * choices for every other class survive (the dashboard Alerts form
+   * submits only classes.incident, and mergeClasses would otherwise
+   * silently re-enable every other class from the defaults). */
+  providedClasses?: Record<string, boolean>;
   quiet: QuietPrefs;
   userAgent?: string;
 }
@@ -322,6 +328,12 @@ export function validateNewSubscription(
   if (!endpoint || !/^https:\/\//.test(endpoint)) return { ok: false, error: "endpoint must be an https URL" };
   if (!p256dh) return { ok: false, error: "keys.p256dh required" };
   if (!auth) return { ok: false, error: "keys.auth required" };
+  const providedClasses: Record<string, boolean> = {};
+  if (b.classes && typeof b.classes === "object") {
+    for (const [k, v] of Object.entries(b.classes as Record<string, unknown>)) {
+      if (typeof v === "boolean") providedClasses[k] = v;
+    }
+  }
   return {
     ok: true,
     value: {
@@ -329,6 +341,7 @@ export function validateNewSubscription(
       p256dh,
       auth,
       classes: mergeClasses(b.classes),
+      providedClasses,
       quiet: mergeQuiet(b.quiet),
       userAgent: typeof b.userAgent === "string" ? b.userAgent : undefined,
     },
@@ -399,7 +412,8 @@ export class AlertsStore {
          sub.userAgent ? sqlStr(sub.userAgent) : "null"
        })
        on conflict (endpoint) do update set
-         p256dh = excluded.p256dh, auth = excluded.auth, classes = excluded.classes,
+         p256dh = excluded.p256dh, auth = excluded.auth,
+         classes = push_subscriptions.classes || ${sqlJson(sub.providedClasses ?? {})},
          quiet = excluded.quiet, user_agent = excluded.user_agent,
          last_seen_at = now(), gone_count = 0
        returning *`,
@@ -789,6 +803,30 @@ async function runDashboardNotificationTick(
       pending.delete(key);
     }
 
+    // Recovery markers: a previously recorded candidate state that is no
+    // longer among this subscription's current candidates has ended its
+    // episode. decideNotification dedupes only against sends recorded
+    // after the latest recovery, so a recurrence notifies again.
+    const latestByKey = new Map<string, NotificationHistoryEntry>();
+    for (const entry of subHistory) {
+      const key = keyOf(entry);
+      const prev = latestByKey.get(key);
+      if (!prev || Date.parse(entry.at) >= Date.parse(prev.at)) latestByKey.set(key, entry);
+    }
+    for (const [key, latest] of latestByKey) {
+      if (currentKeys.has(key) || latest.outcome === "recovered") continue;
+      const marker: NotificationHistoryEntry = {
+        at: new Date(now).toISOString(),
+        class: latest.class,
+        objectRef: latest.objectRef,
+        stateFingerprint: latest.stateFingerprint,
+        outcome: "recovered",
+        subscriptionId: sub.id,
+      };
+      await append(marker);
+      subHistory.push(marker);
+    }
+
     for (const candidate of enabledCandidates) {
       const key = keyOf({ ...candidate, subscriptionId: sub.id });
       const decision = decideNotification(candidate, subHistory, now, inQuietHours(sub.quiet, new Date(now)));
@@ -891,6 +929,22 @@ async function runDashboardNotificationTick(
     const due = [...pending.entries()].filter(([, entry]) => Date.parse(entry.dueAt ?? "") <= now);
     const digestCandidates = due.map(([, entry]) => entry.candidate).filter((candidate): candidate is NonNullable<typeof candidate> => !!candidate);
     if (digestCandidates.length === 0) continue;
+    // #7193 Codex: revalidate the CURRENT quiet window before draining —
+    // the persisted dueAt was computed under an earlier window (or the
+    // server was offline past it into a new quiet period). Defer to the
+    // next allowed boundary instead of sending inside quiet hours.
+    if (inQuietHours(sub.quiet, new Date(now))) {
+      for (const [key, queued] of due) {
+        const retry: NotificationHistoryEntry = {
+          ...queued,
+          at: new Date(now).toISOString(),
+          dueAt: new Date(nextNotificationDigestAt(now + 60_000, sub.quiet)).toISOString(),
+        };
+        await append(retry);
+        pending.set(key, retry);
+      }
+      continue;
+    }
     const refs = digestCandidates.map((candidate) => candidate.objectRef);
     const items = digestCandidates.map((candidate) => ({
       class: candidate.class,

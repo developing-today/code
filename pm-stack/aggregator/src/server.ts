@@ -57,7 +57,7 @@ import {
 import { manifestRouteFor } from "./pages.ts";
 import { conflictInbox, type ConflictInbox } from "./conflicts.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
-import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
+import { allRefs, buildAttention, deriveToday, filterAttentionViewByRefs, projectPace, type RoadmapGrain } from "./derive.ts";
 import {
   reconcileRoadmap,
   roadmapDriftReport,
@@ -128,7 +128,7 @@ import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
 import { resolveBwsSecret } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
 import { renderAlerts, renderNotifications, renderDigest, esc } from "./render.ts";
-import { rollupNotificationSends, type NotificationSnapshot } from "./notifications.ts";
+import { deriveSoleDoorPoolIds, rollupNotificationSends, type NotificationSnapshot } from "./notifications.ts";
 import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
 import { searchWork } from "./search-view.ts";
@@ -1603,18 +1603,27 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/attention") {
     // #1444: shell first; header/queues/sessions stream in as
     // fragments. ?full=1 keeps the full server render (no-JS path).
+    // ?refs=<objectRefs> is the digest landing filter (#7193 Codex):
+    // only the named entries render, and the refs ride the fragment
+    // URLs so the streamed sections stay filtered.
+    const refsParam = url.searchParams.get("refs");
+    const refs = refsParam ? refsParam.split(",").map((ref) => ref.trim()).filter(Boolean) : [];
     if (url.searchParams.get("full") !== "1") {
-      return html(renderAttentionShell(prov(), provDetail()));
+      return html(renderAttentionShell(prov(), provDetail(), refsParam ?? undefined));
     }
-    const { view, coverage, counts, act, briefs, census } = await attentionRender();
-    return html(renderAttention(view, coverage, prov(), counts, provDetail(), act, briefs, census));
+    const rendered = await attentionRender();
+    const view = refs.length ? filterAttentionViewByRefs(rendered.view, refs) : rendered.view;
+    return html(renderAttention(view, rendered.coverage, prov(), rendered.counts, provDetail(), rendered.act, rendered.briefs, rendered.census));
   }
   const attnFragMatch = /^\/frag\/attention\/(header|queues|sessions)$/.exec(path);
   if (attnFragMatch) {
     const section = attnFragMatch[1] as "header" | "queues" | "sessions";
-    const { view, coverage, counts, act, briefs, census } = await attentionRender();
-    const sections = attentionSections(view, coverage, counts, act, briefs, census);
-    return sseResponse(ssePatch(`#attn-${section}`, attentionFragment(section, sections[section])));
+    const refsParam = url.searchParams.get("refs");
+    const refs = refsParam ? refsParam.split(",").map((ref) => ref.trim()).filter(Boolean) : [];
+    const rendered = await attentionRender();
+    const view = refs.length ? filterAttentionViewByRefs(rendered.view, refs) : rendered.view;
+    const sections = attentionSections(view, rendered.coverage, rendered.counts, rendered.act, rendered.briefs, rendered.census);
+    return sseResponse(ssePatch(`#attn-${section}`, attentionFragment(section, sections[section], refsParam ?? undefined)));
   }
   if (path === "/assets/app.css") {
     // The committed Tailwind + DaisyUI build (Phase C): source is
@@ -2419,5 +2428,5 @@ startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
     ...actions.filter((action) => action.author.kind === "drew").map((action) => ({ objectRef: action.objectRef, at: action.createdAt })),
     ...comments.filter((comment) => comment.author.kind === "drew").map((comment) => ({ objectRef: comment.objectRef, at: comment.createdAt })),
   ];
-  return { attention: attention.view, quota, health, drewActivity };
+  return { attention: attention.view, quota, health, drewActivity, soleDoorPoolIds: deriveSoleDoorPoolIds(quota) };
 });

@@ -1007,3 +1007,26 @@ describe("push subscription redaction (#3693)", () => {
     expect(verbatim).toContain(sentinelAuth);
   });
 });
+
+describe("subscription class preservation (#7193 Codex)", () => {
+  test("validateNewSubscription records only the explicitly sent class keys", () => {
+    const parsed = validateNewSubscription({
+      endpoint: "https://push.example/x",
+      keys: { p256dh: "p", auth: "a" },
+      classes: { incident: true },
+      quiet: { start: "22:00", end: "06:00" },
+    });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.value.providedClasses).toEqual({ incident: true });
+      // The expanded map is still the full default set for NEW rows.
+      expect(parsed.value.classes["quota-wall"]).toBe(true);
+    }
+  });
+
+  test("no classes sent records an empty provided set", () => {
+    const parsed = validateNewSubscription({ endpoint: "https://push.example/x", keys: { p256dh: "p", auth: "a" } });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.value.providedClasses).toEqual({});
+  });
+});
