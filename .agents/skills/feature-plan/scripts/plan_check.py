@@ -26,18 +26,23 @@ FIELDS = (
 
 
 def parse(text):
-    wave, step, steps = None, None, {}
+    wave, step, steps = None, None, []
     for line in text.splitlines():
         if found := re.match(r"### Wave (\d+)", line):
             wave, step = int(found[1]), None
         elif line.startswith("## "):
             wave, step = None, None
         elif wave and (found := re.match(r"(\d+)\. \*\*(\[P\] )?", line)):
-            step = int(found[1])
-            steps[step] = {"wave": wave, "parallel": bool(found[2]), "text": ""}
-        elif step and line.startswith("   - "):
-            steps[step]["text"] += line + "\n"
-    for fields in steps.values():
+            step = {
+                "number": int(found[1]),
+                "wave": wave,
+                "parallel": bool(found[2]),
+                "text": "",
+            }
+            steps.append(step)
+        elif step is not None and line.startswith("   - "):
+            step["text"] += line + "\n"
+    for fields in steps:
         text = fields["text"]
         files = re.search(r"Files: (.*?)(?: Cites:|$)", text, re.MULTILINE)
         fields["files"] = re.findall(r"`([^`]+)`", files[1]) if files else []
@@ -51,7 +56,19 @@ def parse(text):
 
 def problems(steps, package):
     found = []
-    for number, step in steps.items():
+    by_number = {}
+    for step in steps:
+        number = step["number"]
+        if number in by_number:
+            first = by_number[number]
+            found.append(
+                f"duplicate step number {number}: first in wave {first['wave']}, "
+                f"repeated in wave {step['wave']}"
+            )
+        else:
+            by_number[number] = step
+    for step in steps:
+        number = step["number"]
         found += [
             f"step {number}: missing {f}" for f in FIELDS if f not in step["text"]
         ]
@@ -59,21 +76,22 @@ def problems(steps, package):
         if done and "`" not in done[1]:
             found.append(f"step {number}: done check is not a command")
         for target in step["requires"]:
-            if target >= number or target not in steps:
+            if target >= number or target not in by_number:
                 found.append(f"step {number}: requires {target}, not a lower step")
-            elif steps[target]["wave"] >= step["wave"]:
+            elif by_number[target]["wave"] >= step["wave"]:
                 found.append(
                     f"step {number}: requires {target} in its own or a later wave"
                 )
     waves = defaultdict(list)
-    for number, step in steps.items():
-        waves[step["wave"]].append(number)
-    for wave, numbers in sorted(waves.items()):
+    for step in steps:
+        waves[step["wave"]].append(step)
+    for wave, wave_steps in sorted(waves.items()):
         writers = defaultdict(list)
-        for number in numbers:
-            for path in steps[number]["files"]:
+        for step in wave_steps:
+            number = step["number"]
+            for path in step["files"]:
                 writers[path].append(number)
-            if len(numbers) > 1 and not steps[number]["parallel"]:
+            if len(wave_steps) > 1 and not step["parallel"]:
                 found.append(
                     f"wave {wave}: step {number} has no [P] but shares the wave"
                 )
@@ -83,7 +101,7 @@ def problems(steps, package):
             if len(ns) > 1
         ]
     if package:
-        cited = "".join(step["text"] for step in steps.values())
+        cited = "".join(step["text"] for step in steps)
         for record in sorted(Path(package, "decisions").glob("D*.md")):
             source = re.search(r"^- Source: (\S+)", record.read_text(), re.MULTILINE)
             decision = record.name.split("-")[0]
@@ -100,7 +118,7 @@ def main():
     found = problems(steps, sys.argv[2] if len(sys.argv) == 3 else None)
     if not steps:
         found.append("no steps found under '### Wave <n>' headings")
-    waves = len({step["wave"] for step in steps.values()})
+    waves = len({step["wave"] for step in steps})
     print("\n".join(found) or f"ok: {len(steps)} steps in {waves} waves")
     sys.exit(1 if found else 0)
 

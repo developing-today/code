@@ -22,13 +22,15 @@ import (
 // the tools object, is invisible here; the check made when the call
 // happens is what catches those.
 //
-// Known blind spots, kept deliberately: binding is source-global (a name
-// bound anywhere counts as declared everywhere, with no block-scoped
-// shadowing precision); a "/" directly after a value-closing "}" is read
-// as division, so a regex literal starting a statement right after a
-// block may be scanned as code; parameters of method shorthand and
-// destructuring assignments without a declaration keyword are not
-// collected as bindings.
+// Known limitations, triaged in #3453: binding is source-global (a name
+// bound anywhere counts as declared everywhere, with no scope precision); a
+// "/" directly after a value-closing "}" is read as division, so a regex
+// literal starting a statement right after a block may be scanned as code;
+// method-shorthand parameters are not collected as bindings, which can
+// over-report a local namespace-shaped parameter. A destructuring assignment
+// without a declaration keyword is not a binding and intentionally does not
+// suppress a namespace reach. These limits can miss or add preflight refs;
+// the per-call guard remains the authorization boundary.
 func References(src string, configured func(string) bool) []string {
 	toks := lex(src)
 	declared := declaredNames(toks)

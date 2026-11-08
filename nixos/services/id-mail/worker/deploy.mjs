@@ -13,8 +13,22 @@ const KNOWN_TRANSPORTS = ["email"];
 const MODES = ["template", "free"];
 const PLACEHOLDER = "{code}";
 
+// Strict argument validation (#3281): the only accepted invocation is
+// `deploy.mjs [--dry-run]`. Anything else — a typo'd `--dry-rnu`, a
+// stray positional, an unknown flag — aborts here, before any config,
+// bws, wrangler or API work: the old `argv.includes("--dry-run")`
+// check silently treated every unrecognized argument as a request for
+// the real deploy sequence (retire, deploy, secret put).
+const args = process.argv.slice(2);
+const unknownArgs = args.filter((arg) => arg !== "--dry-run");
+if (args.length > 1 || unknownArgs.length > 0) {
+  const offenders = unknownArgs.length > 0 ? unknownArgs : args;
+  console.error(`unrecognized argument(s): ${offenders.join(" ")}\nusage: deploy.mjs [--dry-run]`);
+  process.exit(2);
+}
+const dryRun = args.includes("--dry-run");
+
 const config = JSON.parse(readFileSync(join(here, "config.json"), "utf8"));
-const dryRun = process.argv.includes("--dry-run");
 
 const problems = validate(config);
 if (problems.length > 0) {
@@ -70,7 +84,7 @@ if (dryRun) {
 }
 
 // A hostname can belong to only one Worker, so retired Workers go before the deploy takes their routes.
-for (const name of config.retire) {
+for (const name of config.retire ?? []) {
   await retire(name);
 }
 wrangler(["deploy"]);
@@ -109,6 +123,10 @@ function requireEnv(name) {
 
 function validate(c) {
   const errors = [];
+  if (c === null || typeof c !== "object" || Array.isArray(c)) {
+    errors.push("config must be a JSON object");
+    return errors;
+  }
   const check = (ok, message) => {
     if (!ok) {
       errors.push(message);
@@ -125,16 +143,21 @@ function validate(c) {
   check(isStringList(c.retire ?? []) && !(c.retire ?? []).includes(c.worker), "retire must list other Workers");
   check(isStringList(c.senders) && c.senders.length > 0 && c.senders.every(isEmail), "senders must be email addresses");
   check(isStringList(c.transports) && c.transports.length > 0, "transports must be a non-empty list");
+  const transportList = Array.isArray(c.transports) ? c.transports : [];
   check(
-    (c.transports ?? []).every((name) => KNOWN_TRANSPORTS.includes(name)),
+    transportList.every((name) => KNOWN_TRANSPORTS.includes(name)),
     `transports must be among ${KNOWN_TRANSPORTS.join(", ")}`,
   );
-  check((c.transports ?? []).includes(c.defaultTransport), "defaultTransport must be one of transports");
+  check(transportList.includes(c.defaultTransport), "defaultTransport must be one of transports");
   check(isPositiveInt(c.limits?.windowSeconds), "limits.windowSeconds must be a positive integer");
   check(isPositiveInt(c.limits?.callerPerWindow), "limits.callerPerWindow must be a positive integer");
   check(isPositiveInt(c.limits?.recipientPerWindow), "limits.recipientPerWindow must be a positive integer");
   check(Array.isArray(c.templates), "templates must be a list");
-  for (const template of c.templates ?? []) {
+  for (const [index, template] of (Array.isArray(c.templates) ? c.templates : []).entries()) {
+    if (template === null || typeof template !== "object") {
+      check(false, `templates[${index}] must be an object with subject and body`);
+      continue;
+    }
     check(
       typeof template.subject === "string" && !/[\r\n]/.test(template.subject),
       "each template subject must be one line of text",
@@ -146,12 +169,20 @@ function validate(c) {
   }
   check(c.callers && typeof c.callers === "object" && Object.keys(c.callers).length > 0, "callers must not be empty");
   for (const [name, caller] of Object.entries(c.callers ?? {})) {
+    if (caller === null || typeof caller !== "object") {
+      check(false, `callers.${name} must be an object`);
+      continue;
+    }
     check(typeof caller.tokenKey === "string", `callers.${name}.tokenKey must be a Bitwarden secret name`);
     const grants = Object.entries(caller.transports ?? {});
     check(grants.length > 0, `callers.${name}.transports must grant at least one transport`);
     for (const [transport, grant] of grants) {
       const where = `callers.${name}.transports.${transport}`;
-      check(c.transports?.includes(transport), `${where} is not an enabled transport`);
+      if (grant === null || typeof grant !== "object") {
+        check(false, `${where} must be an object`);
+        continue;
+      }
+      check(transportList.includes(transport), `${where} is not an enabled transport`);
       check(MODES.includes(grant.mode), `${where}.mode must be ${MODES.join(" or ")}`);
       check(
         isStringList(grant.from) && grant.from.length > 0 && grant.from.every((from) => c.senders?.includes(from)),

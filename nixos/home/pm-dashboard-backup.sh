@@ -20,6 +20,13 @@
 # ~/backups/dashboard/.last-run.json (#1026), read by the
 # laptop-backups watchdog (modules/laptop-backups-watchdog.sh).
 #
+# The archive also carries a pmp_links-only export of the projector DB
+# (code#1744 P0): pmp_links is the only non-rebuildable table in that DB,
+# so the export is staged as a conditionally-required manifest member —
+# required whenever a projector DB is present at the configured path —
+# while the rest of projector.db (a rebuildable projection) is never
+# archived.
+#
 # Credentials come from Bitwarden Secrets Manager at runtime, referenced
 # by key name only and never logged (the repo-archive-backup pattern):
 # cloudflare.r2-backups-access-key-id, cloudflare.r2-backups-secret-
@@ -41,7 +48,10 @@ R2_PREFIX="dashboard"
 DRIVE_DIR="Cloud/cold-store/db-backups/pm-aggregator"
 
 log() { echo "pm-dashboard-backup: $*"; }
-fail() { echo "pm-dashboard-backup: FAILED $*" >&2; exit 1; }
+fail() {
+  echo "pm-dashboard-backup: FAILED $*" >&2
+  exit 1
+}
 # One EXIT handler for both duties (#1010): bash traps replace, not
 # stack, so a second `trap ... EXIT` for the staging dir (installed
 # where STAGE is created below) silently discarded the FAILED-exit
@@ -69,6 +79,25 @@ DEST_LOCAL="not-attempted"
 DEST_R2="not-attempted"
 DEST_DRIVE="not-attempted"
 ARC_SHA=""
+# --- run ledger (#1854 rule 2: one failure ledger per run) ------------------
+# Every material step's outcome lands in ONE ordered ledger, serialized
+# into the run record as "steps" by write_record below. Outcomes:
+# not-attempted -> in-progress -> ok | failed, plus not-applicable for
+# a step whose precondition is absent (the optional DB dump, #1514).
+# The record's overall result is DERIVED from this ledger in
+# write_record: a run whose required steps are not all ok (db-dump may
+# be ok or not-applicable) is recorded failed even on a zero exit, so a
+# failed or interrupted step can never be recorded as complete. A step
+# is non-fatal only when named here as tolerated -- db-dump's
+# not-applicable; an undeclared swallow is a defect.
+LEDGER_ORDER="validate-date credentials db-dump local-archive r2-upload drive-upload"
+declare -A LEDGER=()
+for _s in $LEDGER_ORDER; do LEDGER[$_s]="not-attempted"; done
+ledger_set() { LEDGER["$1"]="$2"; }
+ledger_begin() {
+  STEP="$1"
+  ledger_set "$1" "in-progress"
+}
 # Suppressed until DATE validation passes: an invalid DATE must be
 # rejected before ANY side effect (#989, pinned by the date suite),
 # so a rejected run leaves no record and no backup root.
@@ -81,13 +110,37 @@ write_record() {
     [ "$d_r2" = "in-progress" ] && d_r2="failed"
     [ "$d_drive" = "in-progress" ] && d_drive="failed"
   fi
+  # Ledger derivation (#1854 rule 2): an in-progress step on a failed
+  # exit is the failing step; on ANY exit, the first required step that
+  # is not ok (db-dump: not ok and not not-applicable) makes the run
+  # failed and names failing_step -- the exit code alone never decides.
+  local steps_arg="" _name _outcome failing=""
+  for _name in $LEDGER_ORDER; do
+    _outcome="${LEDGER[$_name]}"
+    if [ "$rc" -ne 0 ] && [ "$_outcome" = "in-progress" ]; then _outcome="failed"; fi
+    steps_arg="${steps_arg:+$steps_arg,}$_name:$_outcome"
+    if [ -z "$failing" ]; then
+      if [ "$_outcome" = "failed" ]; then
+        failing="$_name"
+      elif [ "$rc" -eq 0 ] && [ "$_name" = "db-dump" ]; then
+        # Zero exit only: an untouched db-dump on a failed exit is not
+        # the failure -- the in-progress step (converted above) or the
+        # $STEP fallback names it, never an unattempted step.
+        { [ "$_outcome" != "ok" ] && [ "$_outcome" != "not-applicable" ]; } && failing="$_name"
+      elif [ "$rc" -eq 0 ] && [ "$_outcome" != "ok" ]; then
+        failing="$_name"
+      fi
+    fi
+  done
+  if [ -n "$failing" ]; then result="failed"; fi
   command -v python3 >/dev/null 2>&1 || return 0
   mkdir -p "$ROOT" 2>/dev/null || return 0
   RECORD_PATH="$RECORD" RECORD_RESULT="$result" RECORD_RC="$rc" \
-  RECORD_STEP="$STEP" RECORD_DATE="$DATE" RECORD_STARTED="$CREATED_AT" \
-  RECORD_SHA="$ARC_SHA" RECORD_LOCAL="$d_local" RECORD_R2="$d_r2" \
-  RECORD_DRIVE="$d_drive" \
-  python3 - <<'PYEOF' 2>/dev/null || true
+    RECORD_STEP="${failing:-$STEP}" RECORD_STEPS="$steps_arg" \
+    RECORD_DATE="$DATE" RECORD_STARTED="$CREATED_AT" \
+    RECORD_SHA="$ARC_SHA" RECORD_LOCAL="$d_local" RECORD_R2="$d_r2" \
+    RECORD_DRIVE="$d_drive" \
+    python3 - <<'PYEOF' 2>/dev/null || true
 import json, os
 from datetime import datetime, timezone
 rec = {
@@ -98,6 +151,10 @@ rec = {
     "result": os.environ["RECORD_RESULT"],
     "exit_code": int(os.environ["RECORD_RC"]),
     "failing_step": os.environ["RECORD_STEP"] if os.environ["RECORD_RESULT"] == "failed" else None,
+    "steps": [
+        {"step": pair.split(":", 1)[0], "outcome": pair.split(":", 1)[1]}
+        for pair in os.environ["RECORD_STEPS"].split(",") if pair
+    ],
     "archive_sha256": os.environ["RECORD_SHA"] or None,
     "destinations": {
         "local": os.environ["RECORD_LOCAL"],
@@ -129,7 +186,10 @@ trap on_exit EXIT
 # signal trap exits 128+signum (HUP 129, INT 130, TERM 143); on_exit
 # additionally forces that code if it was entered with $? = 0.
 INTERRUPTED=""
-on_signal() { INTERRUPTED="$1"; exit $((128 + $1)); }
+on_signal() {
+  INTERRUPTED="$1"
+  exit $((128 + $1))
+}
 trap 'on_signal 1' HUP
 trap 'on_signal 2' INT
 trap 'on_signal 15' TERM
@@ -142,10 +202,11 @@ trap 'on_signal 15' TERM
 # escaped the backup root ('../../x'), or named a day that does not
 # exist ('2026-02-30'). The round-trip through date -d rejects
 # normalized non-dates; the regex pins the strict shape.
-if [[ ! "$DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] \
-  || [ "$(date -d "$DATE" +%F 2>/dev/null)" != "$DATE" ]; then
+if [[ ! $DATE =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] ||
+  [ "$(date -d "$DATE" +%F 2>/dev/null)" != "$DATE" ]; then
   fail "invalid DATE '$DATE' - expected a real calendar date as YYYY-MM-DD"
 fi
+ledger_set validate-date ok
 
 mkdir -p "$ROOT"
 RECORD_SKIP=0
@@ -181,7 +242,7 @@ if ! command -v bws >/dev/null 2>&1 && [ -x "$HOME/tools/bin/bws" ]; then
 fi
 command -v bws >/dev/null 2>&1 || fail "bws not in PATH"
 
-STEP="credentials"
+ledger_begin credentials
 # --- credentials from Bitwarden (names only in code/logs) ------------------
 if [ -z "${BWS_ACCESS_TOKEN:-}" ] && [ -f "$HOME/.config/bws/access-token" ]; then
   BWS_ACCESS_TOKEN="$(cat "$HOME/.config/bws/access-token")"
@@ -198,11 +259,11 @@ for s in json.load(sys.stdin):
 R2_ACCESS_KEY_ID="$(bws_get cloudflare.r2-backups-access-key-id)"
 R2_SECRET_ACCESS_KEY="$(bws_get cloudflare.r2-backups-secret-access-key)"
 R2_ENDPOINT="$(bws_get cloudflare.r2-endpoint)"
-[ -n "$R2_ACCESS_KEY_ID" ] && [ -n "$R2_SECRET_ACCESS_KEY" ] && [ -n "$R2_ENDPOINT" ] \
-  || fail "R2 credentials incomplete in Bitwarden"
+[ -n "$R2_ACCESS_KEY_ID" ] && [ -n "$R2_SECRET_ACCESS_KEY" ] && [ -n "$R2_ENDPOINT" ] ||
+  fail "R2 credentials incomplete in Bitwarden"
 case "$R2_ENDPOINT" in
-  http://*|https://*) ;;
-  *) R2_ENDPOINT="https://$R2_ENDPOINT" ;;
+http://* | https://*) ;;
+*) R2_ENDPOINT="https://$R2_ENDPOINT" ;;
 esac
 R2_ENDPOINT="${R2_ENDPOINT%/}"
 # An env-configured rclone remote for R2 (no rclone.conf edit needed).
@@ -216,28 +277,37 @@ export RCLONE_CONFIG_R2BAK_REGION="auto"
 # bucket check - otherwise it falls back to CreateBucket and the upload
 # fails with AccessDenied (found 2026-10-28 via the openclaw-backup job).
 export RCLONE_CONFIG_R2BAK_NO_CHECK_BUCKET="true"
-
+ledger_set credentials ok
 
 # --- optional pm-stack DB dumps (code#1514) --------------------------------
 # The #1514 dump job (Kaneo Postgres + Grist + Pad) publishes its script at
-# ~/tools/pm-stack-db-backup.sh and writes dumps to ~/Backups/db-dumps/<date>/
-# (here: ~/backups/db-dumps/<date>/). When present it runs first and its
-# output rides this archive to all three destinations; until it lands, the
-# archive carries the dashboard state set only and says so in the log.
+# ~/tools/pm-stack-db-backup.sh (a bridge to pm-stack-backup.sh) and writes
+# dumps to ~/backups/pm-stack/<date>/ (here: $DUMP_DIR). When present it runs
+# first and its output rides this archive to all three destinations; until
+# it lands, the archive carries the dashboard state set only and says so in
+# the log. (nix#1365: DUMP_DIR previously pointed at ~/backups/db-dumps,
+# which the dump script never writes — every run with DUMP_RAN=1 then failed
+# verify as required-member-missing. The staged tree keeps its historic
+# db-dumps name; only the source dir changed.)
 DUMP_SCRIPT="${PM_DB_DUMP_SCRIPT:-$HOME/tools/pm-stack-db-backup.sh}"
-DUMP_DIR="$HOME/backups/db-dumps/$DATE"
+DUMP_DIR="$HOME/backups/pm-stack/$DATE"
 DUMP_RAN=0
+PMP_RAN=0
 if [ -x "$DUMP_SCRIPT" ]; then
-  STEP="db-dump"
+  ledger_begin db-dump
   log "running DB dump step: $DUMP_SCRIPT"
   "$DUMP_SCRIPT" "$DATE" || fail "DB dump step failed"
   DUMP_RAN=1
+  ledger_set db-dump ok
 else
+  # Tolerated absence (named in the ledger contract above): the dump
+  # job has not landed, so the step is not-applicable, never a failure.
+  ledger_set db-dump not-applicable
   log "no DB dump script at $DUMP_SCRIPT (code#1514 pending) - dashboard state only"
 fi
 
 # === leg 1: the local archive (dashboard-backup.sh, code#1459) ============
-STEP="local-archive"
+ledger_begin local-archive
 DEST_LOCAL="in-progress"
 STAGE="$(mktemp -d)"
 mkdir -p "$STAGE/aggregator" "$STAGE/meta-quota-export" "$STAGE/journals" "$OUTDIR"
@@ -252,10 +322,10 @@ mkdir -p "$STAGE/aggregator" "$STAGE/meta-quota-export" "$STAGE/journals" "$OUTD
 # the source silently shrank the backup set. Classes preserve the
 # intent the staging code below has always had: existing state files
 # are required (their WARN-for-missing becomes a failed run at verify);
-# the snapshots tree and the journal logs are optional (journals keep
-# their tolerated-unavailable placeholder, but are now recorded);
-# db-dumps is CONDITIONALLY required — required when the DB dump step
-# ran (DUMP_RAN=1), optional otherwise.
+# retired meta-quota-export files, the snapshots tree and active journal
+# logs are optional; journals keep their tolerated-unavailable
+# placeholder, but are now recorded; db-dumps is CONDITIONALLY required
+# — required when the DB dump step ran (DUMP_RAN=1), optional otherwise.
 EXPECTED_SET="required file aggregator/actions.json
 required file aggregator/comments.json
 required file aggregator/fleet-feed.json
@@ -263,13 +333,18 @@ required file aggregator/quota-current.json
 required file aggregator/registry.json
 required file aggregator/quota-gatherer-state.json
 required file aggregator/quota-gatherer-heartbeat.json
-required file meta-quota-export/latest.json
-required file meta-quota-export/history.jsonl
+required file aggregator/events.json
+required file aggregator/coverage-snapshot.json
+required file aggregator/aa-last-good.json
+optional file aggregator/views.json
+optional tree aggregator/charge-inputs
+optional file meta-quota-export/latest.json
+optional file meta-quota-export/history.jsonl
 conditional tree db-dumps
+conditional file projector/pmp_links.sql
 optional tree aggregator/snapshots
 optional file journals/pm-aggregator.log
-optional file journals/quota-gatherer.log
-optional file journals/meta-quota-export.log"
+optional file journals/quota-gatherer.log"
 
 # --- data set (explicit list only; the aggregator .env is deliberately NOT
 # --- included — no config/secret files belong in this archive) ---
@@ -282,39 +357,91 @@ optional file journals/meta-quota-export.log"
 # before the cursor can advance. A missing file stays a WARN, as
 # before: absent and present-but-unreadable are different events.
 for f in actions.json comments.json fleet-feed.json quota-current.json \
-         registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json; do
-  if [ -f "$AGG/$f" ]; then cp -a "$AGG/$f" "$STAGE/aggregator/$f" \
-    || fail "dataset copy failed: $AGG/$f";
+  registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json \
+  events.json views.json coverage-snapshot.json aa-last-good.json; do
+  if [ -f "$AGG/$f" ]; then
+    cp -a "$AGG/$f" "$STAGE/aggregator/$f" ||
+      fail "dataset copy failed: $AGG/$f"
   else echo "pm-dashboard-backup: WARN missing $AGG/$f" >&2; fi
 done
-if [ -d "$AGG/snapshots" ]; then cp -a "$AGG/snapshots" "$STAGE/aggregator/snapshots" \
-  || fail "dataset copy failed: $AGG/snapshots"; fi
+if [ -d "$AGG/snapshots" ]; then cp -a "$AGG/snapshots" "$STAGE/aggregator/snapshots" ||
+  fail "dataset copy failed: $AGG/snapshots"; fi
+if [ -d "$AGG/charge-inputs" ]; then cp -a "$AGG/charge-inputs" "$STAGE/aggregator/charge-inputs" ||
+  fail "dataset copy failed: $AGG/charge-inputs"; fi
 for f in latest.json history.jsonl; do
-  if [ -f "$META/$f" ]; then cp -a "$META/$f" "$STAGE/meta-quota-export/$f" \
-    || fail "dataset copy failed: $META/$f";
+  if [ -f "$META/$f" ]; then
+    cp -a "$META/$f" "$STAGE/meta-quota-export/$f" ||
+      fail "dataset copy failed: $META/$f"
   else echo "pm-dashboard-backup: WARN missing $META/$f" >&2; fi
 done
 
-if [ -d "$DUMP_DIR" ]; then cp -a "$DUMP_DIR" "$STAGE/db-dumps" \
-  || fail "dataset copy failed: $DUMP_DIR"; fi
+if [ -d "$DUMP_DIR" ]; then cp -a "$DUMP_DIR" "$STAGE/db-dumps" ||
+  fail "dataset copy failed: $DUMP_DIR"; fi
+
+# --- pmp_links export (code#1744 P0) ----------------------------------
+# Source: the ACTUAL configured projector database — DATABASE_URL in the
+# pm-projector env file when it names a file: URL, else the deployed
+# default ~/.local/state/pm-projector/projector.db (a relative file:
+# value resolves against the projector unit's working directory).
+# PM_PROJECTOR_DB / PM_PROJECTOR_ENV override both (tests, relocation).
+# Only the pmp_links table is exported (schema + rows as SQL): the rest
+# of projector.db is a rebuildable projection and credentials never
+# enter the archive — the .env file itself is NOT read beyond the
+# DATABASE_URL line and is never staged.
+PMP_DB="${PM_PROJECTOR_DB:-}"
+if [ -z "$PMP_DB" ]; then
+  PMP_ENV="${PM_PROJECTOR_ENV:-$HOME/.local/state/pm-projector/.env}"
+  if [ -f "$PMP_ENV" ]; then
+    _url="$(grep -m1 '^DATABASE_URL=' "$PMP_ENV" 2>/dev/null | cut -d= -f2- | tr -d '"'"'"' \r')" 
+    case "$_url" in
+      file:*) PMP_DB="${_url#file:}"; PMP_DB="${PMP_DB%%\?*}" ;;
+    esac
+  fi
+  [ -n "$PMP_DB" ] || PMP_DB="$HOME/.local/state/pm-projector/projector.db"
+  case "$PMP_DB" in
+    /*) ;;
+    *) PMP_DB="${PM_PROJECTOR_DIR:-$HOME/git/code/pm-stack/projector}/$PMP_DB" ;;
+  esac
+fi
+if [ -f "$PMP_DB" ]; then
+  command -v sqlite3 >/dev/null 2>&1 ||
+    fail "sqlite3 not found — cannot export pmp_links from $PMP_DB"
+  PMP_ROWS="$(sqlite3 "file:$PMP_DB?mode=ro" 'SELECT COUNT(*) FROM pmp_links;' 2>/dev/null)" ||
+    fail "pmp_links export failed: cannot read pmp_links in $PMP_DB"
+  mkdir -p "$STAGE/projector"
+  sqlite3 "file:$PMP_DB?mode=ro" '.dump pmp_links' >"$STAGE/projector/pmp_links.sql" ||
+    fail "pmp_links export failed: .dump of $PMP_DB"
+  # .dump omits the table's indexes on this sqlite build — append them
+  # from sqlite_master so a restore reproduces the full table shape.
+  sqlite3 "file:$PMP_DB?mode=ro" \
+    "SELECT sql || ';' FROM sqlite_master WHERE type = 'index' AND tbl_name = 'pmp_links' AND sql IS NOT NULL;" \
+    >>"$STAGE/projector/pmp_links.sql" ||
+    fail "pmp_links export failed: index definitions of $PMP_DB"
+  grep -q 'CREATE TABLE pmp_links' "$STAGE/projector/pmp_links.sql" ||
+    fail "pmp_links export failed: no pmp_links schema in dump of $PMP_DB"
+  PMP_RAN=1
+  log "pmp_links export staged from $PMP_DB ($PMP_ROWS rows)"
+else
+  log "no projector DB at $PMP_DB — pmp_links export not applicable"
+fi
 
 # --- journals: window start = min(last successful run, 24h ago) ---
 NOW_EPOCH="$(date +%s)"
 LAST=0
 if [ -f "$MARKER" ]; then LAST="$(cat "$MARKER" 2>/dev/null || echo 0)"; fi
-case "$LAST" in (*[!0-9]*|"") LAST=0;; esac
-W=$(( NOW_EPOCH - 86400 ))
+case "$LAST" in *[!0-9]* | "") LAST=0 ;; esac
+W=$((NOW_EPOCH - 86400))
 if [ "$LAST" -gt 0 ] && [ "$LAST" -lt "$W" ]; then W="$LAST"; fi
 SINCE_STR="$(date -d "@$W" '+%F %T')"
-for svc in pm-aggregator quota-gatherer meta-quota-export; do
+for svc in pm-aggregator quota-gatherer; do
   journalctl --user -u "$svc.service" --since "$SINCE_STR" --no-pager -o short-iso \
-    > "$STAGE/journals/$svc.log" 2>/dev/null \
-    || echo "(journal unavailable for $svc)" > "$STAGE/journals/$svc.log"
+    >"$STAGE/journals/$svc.log" 2>/dev/null ||
+    echo "(journal unavailable for $svc)" >"$STAGE/journals/$svc.log"
 done
 
 # --- manifest (files as staged + the expected set's per-member status) ---
-EXPECTED_SET="$EXPECTED_SET" DUMP_RAN="$DUMP_RAN" \
-python3 - "$STAGE" "$DATE" "$CREATED_AT" <<'PYEOF'
+EXPECTED_SET="$EXPECTED_SET" DUMP_RAN="$DUMP_RAN" PMP_RAN="$PMP_RAN" \
+  python3 - "$STAGE" "$DATE" "$CREATED_AT" <<'PYEOF'
 import hashlib, json, os, sys
 stage, date, created = sys.argv[1], sys.argv[2], sys.argv[3]
 files = []
@@ -340,7 +467,9 @@ for line in os.environ.get("EXPECTED_SET", "").splitlines():
         continue
     cls, kind, rel = parts
     if cls == "conditional":
-        cls = "required" if os.environ.get("DUMP_RAN") == "1" else "optional"
+        ran = os.environ.get("PMP_RAN") if rel.startswith("projector/") \
+            else os.environ.get("DUMP_RAN")
+        cls = "required" if ran == "1" else "optional"
     member = {"path": rel, "class": cls, "kind": kind}
     if kind == "tree":
         full = os.path.join(stage, rel)
@@ -376,7 +505,8 @@ tar -I zstd -cf "$TMPARC" -C "$STAGE" .
 mv "$TMPARC" "$ARCHIVE"
 VDIR="$(mktemp -d)"
 tar -I zstd -xf "$ARCHIVE" -C "$VDIR"
-if ! ( cd "$VDIR" && python3 - <<'PYEOF'
+if ! (
+  cd "$VDIR" && python3 - <<'PYEOF'
 import hashlib, json, os, sys
 m = json.load(open("manifest.json"))
 bad = 0
@@ -404,12 +534,14 @@ sys.exit(1 if bad else 0)
 PYEOF
 ); then
   echo "pm-dashboard-backup: VERIFY FAILED for $ARCHIVE" >&2
-  rm -rf "$VDIR"; exit 1
+  rm -rf "$VDIR"
+  exit 1
 fi
 rm -rf "$VDIR"
 
 ARC_SHA="$(sha256sum "$ARCHIVE" | cut -d' ' -f1)"
 DEST_LOCAL="ok"
+ledger_set local-archive ok
 log "local OK $ARCHIVE ($(stat -c%s "$ARCHIVE") bytes, sha256 $ARC_SHA)"
 
 # --- prune local day dirs older than 30 days (only this script's own;
@@ -418,7 +550,10 @@ CUTOFF="$(date -d '30 days ago' +%F)"
 for d in "$ROOT"/20??-??-??; do
   [ -d "$d" ] || continue
   day="$(basename "$d")"
-  if [[ "$day" != "$DATE" && "$day" < "$CUTOFF" ]]; then rm -rf "$d"; log "pruned local $day"; fi
+  if [[ $day != "$DATE" && $day < $CUTOFF ]]; then
+    rm -rf "$d"
+    log "pruned local $day"
+  fi
 done
 
 # === legs 2+3: offsite copies, sha256-verified =============================
@@ -438,38 +573,40 @@ prune_remote() { # $1 rclone dir holding <date> subdirs, $2 label
   # deliberately not discarded, so the cause reaches the log. A
   # genuinely empty listing still succeeds: lsf exits 0 with no
   # output and the loop below simply has nothing to prune.
-  subs="$(rclone lsf --dirs-only "$1")" \
-    || fail "prune listing failed on $2 ($1)"
+  subs="$(rclone lsf --dirs-only "$1")" ||
+    fail "prune listing failed on $2 ($1)"
   for day in $subs; do
     day="${day%/}"
-    if [[ "$day" =~ ^20[0-9]{2}-[0-9]{2}-[0-9]{2}$ ]] && [[ "$day" != "$DATE" && "$day" < "$CUTOFF" ]]; then
+    if [[ $day =~ ^20[0-9]{2}-[0-9]{2}-[0-9]{2}$ ]] && [[ $day != "$DATE" && $day < $CUTOFF ]]; then
       rclone purge "$1/$day" >/dev/null 2>&1 || fail "prune failed on $2 ($day)"
       log "pruned $2 $day"
     fi
   done
 }
 
-STEP="r2-upload"
+ledger_begin r2-upload
 DEST_R2="in-progress"
 R2_DEST="r2bak:$R2_BUCKET/$R2_PREFIX/$DATE/dashboard-$DATE.tar.zst"
 rclone copyto "$ARCHIVE" "$R2_DEST" || fail "R2 upload failed"
 verify_remote "$R2_DEST" "R2"
 prune_remote "r2bak:$R2_BUCKET/$R2_PREFIX" "R2"
 DEST_R2="ok"
+ledger_set r2-upload ok
 
-STEP="drive-upload"
+ledger_begin drive-upload
 DEST_DRIVE="in-progress"
 DRIVE_DEST="drive:$DRIVE_DIR/$DATE/dashboard-$DATE.tar.zst"
 rclone copyto "$ARCHIVE" "$DRIVE_DEST" || fail "Drive upload failed"
 verify_remote "$DRIVE_DEST" "Drive"
 prune_remote "drive:$DRIVE_DIR" "Drive"
 DEST_DRIVE="ok"
+ledger_set drive-upload ok
 STEP="complete"
 
 # --- journal cursor: advance ONLY now that all three legs have succeeded ---
 # (#981: this write used to sit right after the local leg, so a run that
 # failed on R2/Drive still advanced the cursor and its journal window was
 # never included in any later archive.)
-echo "$NOW_EPOCH" > "$MARKER"
+echo "$NOW_EPOCH" >"$MARKER"
 
 log "OK dashboard $DATE backed up to local + R2 + Drive (sha256 $ARC_SHA)"

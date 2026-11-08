@@ -78,6 +78,64 @@
           "namepath": "root::chown",
           "shebang": true
         },
+        "deploy-developing-today-backup": {
+          "attributes": [{ "group": "github-backup" }],
+          "body": [["nix run .#developing-today-backup-deploy -- ", [["variable", "args"]]]],
+          "dependencies": [],
+          "doc": "Deploy the developing-today-backup Worker via the nix flake app (wrangler versions flow; extra args go to deploy.mjs, e.g. --dry-run, --deploy-version <id> to roll back)",
+          "name": "deploy-developing-today-backup",
+          "parameters": [
+            {
+              "default": null,
+              "export": false,
+              "flag": false,
+              "help": null,
+              "kind": "star",
+              "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
+              "name": "args",
+              "pattern": null,
+              "short": null,
+              "value": null
+            }
+          ],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::deploy-developing-today-backup",
+          "shebang": false
+        },
+        "deploy-pkarr": {
+          "attributes": [{ "group": "pkarr" }],
+          "body": [["nix run .#pkarr-deploy -- ", [["variable", "args"]]]],
+          "dependencies": [],
+          "doc": "Deploy the pkarr Worker via the nix flake app (cf versions flow; extra args go to deploy.mjs, e.g. --dry-run, --deploy-version <id> to roll back)",
+          "name": "deploy-pkarr",
+          "parameters": [
+            {
+              "default": null,
+              "export": false,
+              "flag": false,
+              "help": null,
+              "kind": "star",
+              "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
+              "name": "args",
+              "pattern": null,
+              "short": null,
+              "value": null
+            }
+          ],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::deploy-pkarr",
+          "shebang": false
+        },
         "fix": {
           "attributes": [{ "group": "format" }],
           "body": [],
@@ -138,6 +196,51 @@
           "private": false,
           "quiet": false,
           "namepath": "root::fmt",
+          "shebang": false
+        },
+        "github-backup-fetch": {
+          "attributes": [{ "group": "github-backup" }],
+          "body": [
+            ["systemctl --user start github-backup-fetch.service"],
+            ["@systemctl --user status github-backup-fetch.service --no-pager | head -5"]
+          ],
+          "dependencies": [],
+          "doc": "Run the github-backup daily fetch now (via the installed systemd unit)",
+          "name": "github-backup-fetch",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::github-backup-fetch",
+          "shebang": false
+        },
+        "github-backup-reconcile": {
+          "attributes": [{ "group": "github-backup" }],
+          "body": [
+            ["systemctl --user start github-backup-reconcile.service"],
+            ["@systemctl --user status github-backup-reconcile.service --no-pager | head -5"]
+          ],
+          "dependencies": [],
+          "doc": "Run the github-backup weekly reconciliation sweep now (via the installed systemd unit)",
+          "name": "github-backup-reconcile",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::github-backup-reconcile",
+          "shebang": false
+        },
+        "github-backup-units": {
+          "attributes": [{ "group": "github-backup" }],
+          "body": [["bash infra/github-backup/systemd/install-units.sh"]],
+          "dependencies": [],
+          "doc": "Install or refresh the github-backup laptop systemd units from this checkout",
+          "name": "github-backup-units",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::github-backup-units",
           "shebang": false
         },
         "id-mail-deploy": {
@@ -724,7 +827,7 @@
         "windows_shell": null,
         "working_directory": null
       },
-      "source": "/home/user/git/fleet/4094-2729-just-recipes-drift/root.just",
+      "source": "/home/user/git/fleet/4856/root.just",
       "unexports": [],
       "warnings": []
     }
@@ -1361,10 +1464,13 @@
         { "arguments": [], "recipe": "web-fmt-check", "star": null },
         { "arguments": [], "recipe": "cargo-check", "star": null },
         { "arguments": [], "recipe": "clippy-lint", "star": null },
+        { "arguments": [], "recipe": "clippy-native-shell", "star": null },
         { "arguments": [], "recipe": "web-lint", "star": null },
         { "arguments": [], "recipe": "test-sandbox", "star": null },
+        { "arguments": [], "recipe": "test-native-shell", "star": null },
         { "arguments": [], "recipe": "test-web-unit", "star": null },
         { "arguments": [], "recipe": "test-web-typecheck", "star": null },
+        { "arguments": [], "recipe": "roc-test", "star": null },
         { "arguments": [], "recipe": "doc", "star": null },
         { "arguments": [], "recipe": "build", "star": null },
         { "arguments": [], "recipe": "release", "star": null }
@@ -1372,7 +1478,7 @@
       "doc": "CI-safe checks (read-only, no modifications) [bun]",
       "name": "ci",
       "parameters": [],
-      "priors": 11,
+      "priors": 14,
       "private": false,
       "quiet": false,
       "namepath": "ci",
@@ -1415,6 +1521,19 @@
       "private": false,
       "quiet": false,
       "namepath": "clippy-lint-fix",
+      "shebang": false
+    },
+    "clippy-native-shell": {
+      "attributes": [{ "group": "lint" }],
+      "body": [["cargo clippy -p id-native-shell --all-targets"]],
+      "dependencies": [],
+      "doc": "Clippy for id-native-shell (#5582): non-default workspace member, so the default-member clippy-lint never sees it.",
+      "name": "clippy-native-shell",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "clippy-native-shell",
       "shebang": false
     },
     "coverage": {
@@ -1982,6 +2101,35 @@
       "namepath": "repl",
       "shebang": false
     },
+    "roc-test": {
+      "attributes": [{ "group": "test" }],
+      "body": [
+        ["#!/usr/bin/env bash"],
+        ["set -euo pipefail"],
+        ["if ! command -v roc >/dev/null 2>&1; then"],
+        ["    echo \"roc-test: the pinned Roc compiler (nix/roc.nix) is not on PATH.\" >&2"],
+        [
+          "    echo \"roc-test: run inside 'nix develop' or the roc-test flake check — refusing to skip silently (#813).\" >&2"
+        ],
+        ["    exit 1"],
+        ["fi"],
+        ["echo \"roc-test: $(roc version)\""],
+        ["for module in RocJson Screen Key; do"],
+        ["    echo \"=== roc test examples/roc-world/${module}.roc ===\""],
+        ["    roc test \"examples/roc-world/${module}.roc\""],
+        ["done"],
+        ["echo \"✓ Roc library expectations passed (RocJson, Screen, Key)\""]
+      ],
+      "dependencies": [],
+      "doc": "Run the Roc library expect() tests (RocJson, Screen, Key) with the pinned Roc compiler (#813)",
+      "name": "roc-test",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "roc-test",
+      "shebang": true
+    },
     "run": {
       "attributes": [{ "group": "run" }],
       "body": [["cargo run -- ", [["variable", "ARGS"]]]],
@@ -2442,6 +2590,19 @@
       "private": false,
       "quiet": false,
       "namepath": "test-integration",
+      "shebang": false
+    },
+    "test-native-shell": {
+      "attributes": [{ "group": "test" }],
+      "body": [["cargo test -p id-native-shell"]],
+      "dependencies": [],
+      "doc": "Run the id-native-shell unit + contract transcript tests (#5582): non-default workspace member, so the default-member test recipes never run it.",
+      "name": "test-native-shell",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "test-native-shell",
       "shebang": false
     },
     "test-nix": {
@@ -3168,7 +3329,7 @@
     "windows_shell": null,
     "working_directory": null
   },
-  "source": "/home/user/git/fleet/4094-2729-just-recipes-drift/pkgs/id/justfile",
+  "source": "/home/user/git/fleet/4856/pkgs/id/justfile",
   "unexports": [],
   "warnings": []
 }

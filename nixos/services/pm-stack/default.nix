@@ -36,9 +36,12 @@
 # credentials BY NAME, exactly as the hand units consumed them).
 # pm-dispatch's env files are external the same way:
 # ~/pm-stack/dispatch/.env (rendered by pm-stack/dispatch/install.sh
-# from the same SOPS file) and ~/secrets/dispatch.env (operator secrets
-# that are not in SOPS). install.sh remains the env renderer and the
-# fallback installer; this module owns the unit lifecycle.
+# from the same SOPS file — it carries the GitHub App material and the
+# fleet Supabase config: supabase_url + supabase_service_role_key for
+# muse-dev2) and ~/secrets/dispatch.env (operator-only secrets that
+# are not in SOPS: DISPATCH_API_TOKEN). install.sh remains the env
+# renderer and the fallback installer; this module owns the unit
+# lifecycle.
 #
 # The Kaneo stack is the exception to the checkout model: pm-kaneo
 # runs deploy.sh from the ~/pm-stack deployment dir, because the
@@ -112,6 +115,7 @@ in
             WorkingDirectory = "${repo}/pm-stack/projector";
             ExecStart = "${bun} run src/index.ts";
             EnvironmentFile = "${projState}/.env";
+            Environment = [ "PM_AGG_FRESHNESS_URL=http://127.0.0.1:4871/publish" ];
             Restart = "on-failure";
             RestartSec = 5;
           };
@@ -130,8 +134,43 @@ in
             ExecStart = "${bun} run src/server.ts";
             EnvironmentFile = "${aggState}/.env";
             # The projector is a deployed service of this stack — never
-            # render it off (see the header note).
-            Environment = "PM_PROJECTOR_URL=http://127.0.0.1:${toString cfg.projectorPort}";
+            # render it off (see the header note). The coverage snapshot
+            # is runtime state: keep it in the state dir, not the
+            # checkout — written into the working tree it dirtied the
+            # primary clone and failed pm-git-sync on every cycle
+            # (2026-11-01; the aggregator's config already supports
+            # PM_AGG_COVERAGE_SNAPSHOT_FILE for exactly this).
+            Environment = [
+              "PM_PROJECTOR_URL=http://127.0.0.1:${toString cfg.projectorPort}"
+              "PM_AGG_COVERAGE_SNAPSHOT_FILE=${aggState}/coverage-snapshot.json"
+              # Roadmap annotations (#1284) are runtime state too: the
+              # first annotation would otherwise create
+              # roadmap-annotations.json inside this checkout and block
+              # pm-git-sync the same way (Codex P1 on PR #4054).
+              "PM_AGG_ROADMAP_ANNOTATIONS_FILE=${aggState}/roadmap-annotations.json"
+              # The event log and saved views are runtime state too
+              # (2026-11-03, code#4906): events.json was still written
+              # into the checkout, where a repo-keeper snapshot of it
+              # onto main blocked every fast-forward of the primary.
+              # Declared here like the two paths above; the same two
+              # vars were also added to the state .env so the deployed
+              # (pre-switch) unit resolves them identically.
+              "PM_AGG_EVENTS_FILE=${aggState}/events.json"
+              "PM_AGG_VIEWS_FILE=${aggState}/views.json"
+              # Freshness notices are a separate bounded store; the
+              # publisher listener binds only to loopback on this port.
+              "PM_AGG_FRESHNESS_FILE=${aggState}/freshness.json"
+              "PM_AGG_FRESHNESS_PORT=4871"
+              # The activity-ingestion store (#3321) is runtime state
+              # too: left at its cwd default its first persisted
+              # delivery created activity-ingestion.json inside this
+              # checkout (Codex P1 on PR #5141, same failure class as
+              # code#4906 above).
+              "PM_AGG_ACTIVITY_FILE=${aggState}/activity-ingestion.json"
+              # The digest archive (#1278) is runtime state too: one
+              # JSON per day, rendered verbatim by /digest?date=<date>.
+              "PM_AGG_DIGESTS_DIR=${aggState}/digests"
+            ];
             Restart = "on-failure";
             RestartSec = 5;
           };
@@ -149,10 +188,13 @@ in
             WorkingDirectory = "${repo}/pm-stack/dispatch";
             ExecStart = "${bun} run src/server.ts";
             # The env files stay outside the module, exactly like the
-            # aggregator's: install.sh renders the sops-derived file,
-            # and the operator file is laptop-only. The "-" keeps the
-            # hand unit's semantics — a missing operator file degrades
-            # the service instead of crash-looping it.
+            # aggregator's: install.sh renders the sops-derived file
+            # (GitHub App + Supabase config), and the operator file is
+            # laptop-only (DISPATCH_API_TOKEN). The "-" keeps the hand
+            # unit's semantics — a missing operator file degrades the
+            # service instead of crash-looping it. systemd applies the
+            # files in order, so the operator file wins on a collision:
+            # it must never carry SUPABASE_* lines (install.sh warns).
             EnvironmentFile = [
               "${stackDir}/dispatch/.env"
               "-${home}/secrets/dispatch.env"
@@ -205,6 +247,48 @@ in
           };
         };
 
+        pm-digest-daily = {
+          Unit = {
+            Description = "PM daily digest — generate + archive + deliver the day's digest (NixOS; runs from ~/git/code checkout, #1278)";
+            After = [
+              "network-online.target"
+              "pm-aggregator.service"
+            ];
+          };
+          Service = {
+            Type = "oneshot";
+            TimeoutStartSec = 300;
+            WorkingDirectory = "${repo}/pm-stack/aggregator";
+            EnvironmentFile = "${aggState}/.env";
+            Environment = [
+              "PM_AGG_SOURCE=live"
+              "PM_AGG_DIGESTS_DIR=${aggState}/digests"
+            ];
+            ExecStart = "${bun} run ${repo}/pm-stack/aggregator/scripts/generate-digest.ts --kind daily";
+          };
+        };
+
+        pm-digest-weekly = {
+          Unit = {
+            Description = "PM weekly digest — generate + archive + deliver the week's roll-up (NixOS; runs from ~/git/code checkout, #1278)";
+            After = [
+              "network-online.target"
+              "pm-aggregator.service"
+            ];
+          };
+          Service = {
+            Type = "oneshot";
+            TimeoutStartSec = 300;
+            WorkingDirectory = "${repo}/pm-stack/aggregator";
+            EnvironmentFile = "${aggState}/.env";
+            Environment = [
+              "PM_AGG_SOURCE=live"
+              "PM_AGG_DIGESTS_DIR=${aggState}/digests"
+            ];
+            ExecStart = "${bun} run ${repo}/pm-stack/aggregator/scripts/generate-digest.ts --kind weekly";
+          };
+        };
+
         fleet-feed-collector = {
           Unit = {
             Description = "Fleet feed collector for the PM aggregator — collect the fleet feed every ~5 minutes (NixOS; runs from ~/git/code checkout, #3363)";
@@ -219,9 +303,9 @@ in
               "BWS_BIN=/run/current-system/sw/bin/bws"
               "BWS_ACCESS_TOKEN_FILE=${home}/.config/bws/access-token"
               "FLEET_FEED_OUT=${aggState}/fleet-feed.json"
+              "PM_AGG_FRESHNESS_URL=http://127.0.0.1:4871/publish"
               "QUOTA_VIEW_PATH=${home}/hatch-personal/workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md"
               "QUOTA_REGISTRY_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"
-              "JULES_STATE_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/jules-review-state.json"
               "ORCHESTRATION_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/orchestration.json"
               "DNS_REGISTER_PATH=${home}/hatch-personal/workspace/goals/stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs/files/dns-domain-register.md"
               "CHARGE_CANDIDATES_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/charges-candidates.json"
@@ -258,7 +342,15 @@ in
             # EnvironmentFile in ExecStart, exactly as the hand-written
             # unit relied on.
             EnvironmentFile = "${stackDir}/tunnel.env";
-            ExecStart = "${cloudflared} tunnel --no-autoupdate run --token \${TUNNEL_TOKEN}";
+            # --protocol http2 (#5647): the default QUIC transport kept
+            # dropping on this host's network path - cloudflared logged
+            # "failed to accept QUIC stream: timeout: no recent network
+            # activity" and re-registered (2026-11-05 11:36Z), and while
+            # its connections were down Cloudflare's edge answered
+            # pm-dispatch callers with 502 ("error code: 502") even
+            # though pm-dispatch itself was healthy. HTTP/2 runs over
+            # TCP and does not depend on the UDP path QUIC needs.
+            ExecStart = "${cloudflared} tunnel --no-autoupdate --protocol http2 run --token \${TUNNEL_TOKEN}";
             Restart = "on-failure";
             RestartSec = 5;
           };
@@ -328,6 +420,28 @@ in
             RandomizedDelaySec = 20;
             Persistent = true;
             Unit = "quota-gatherer.service";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+
+        pm-digest-daily = {
+          Unit.Description = "Run the PM daily digest every morning at 07:00 local (pm-stack, #1278)";
+          Timer = {
+            OnCalendar = "*-*-* 07:00:00";
+            RandomizedDelaySec = 60;
+            Persistent = true;
+            Unit = "pm-digest-daily.service";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+
+        pm-digest-weekly = {
+          Unit.Description = "Run the PM weekly digest on Mondays at 07:05 local (pm-stack, #1278)";
+          Timer = {
+            OnCalendar = "Mon *-*-* 07:05:00";
+            RandomizedDelaySec = 60;
+            Persistent = true;
+            Unit = "pm-digest-weekly.service";
           };
           Install.WantedBy = [ "timers.target" ];
         };

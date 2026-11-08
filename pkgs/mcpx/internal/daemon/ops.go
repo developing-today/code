@@ -39,6 +39,7 @@ func (s *Server) routesV1Ops(mux *http.ServeMux) {
 	s.route(mux, "GET /v1/tasks/{id}", s.handleTaskGet)
 	s.route(mux, "GET /v1/tasks/{id}/result", s.handleTaskResult)
 	s.route(mux, "POST /v1/tasks/{id}/cancel", s.handleTaskCancel)
+	s.route(mux, "POST /v1/writes/{server}/clear", s.handleWriteClear)
 	s.route(mux, "GET /v1/openapi.json", s.handleOpenAPI)
 }
 
@@ -128,7 +129,10 @@ func namedFilters(q url.Values) []string {
 
 func (s *Server) handleLogQuery(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	limit, _ := strconv.Atoi(q.Get("limit"))
+	limit, ok := parseOptionalIntQuery(w, q, "limit")
+	if !ok {
+		return
+	}
 	if limit == 0 {
 		limit = s.callSettings(r).Int("logstore.queryLimit")
 	}
@@ -200,7 +204,10 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	if dim == "" {
 		dim = "calls"
 	}
-	top, _ := strconv.Atoi(q.Get("top"))
+	top, ok := parseOptionalIntQuery(w, q, "top")
+	if !ok {
+		return
+	}
 	if top <= 0 {
 		top = s.callSettings(r).Int("stats.top")
 	}
@@ -275,7 +282,11 @@ func capped[T any](rows []T, top int) []T {
 
 func (s *Server) handleRegistrySearch(w http.ResponseWriter, r *http.Request) {
 	cs := s.callSettings(r)
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	q := r.URL.Query()
+	limit, ok := parseOptionalIntQuery(w, q, "limit")
+	if !ok {
+		return
+	}
 	if limit <= 0 {
 		limit = cs.Int("registry.limit")
 	}
@@ -352,6 +363,37 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cs := s.callSettings(r)
+	cc := callContext(r, req.Context, req.Session)
+	// The completion rate limit (#2387, Phase 1 of #2386) is consulted
+	// here -- after shape validation, before any pool lookup -- so a
+	// refused request never acquires a pool lease or wakes an upstream.
+	// The caller is the identity callContext already resolved, never
+	// anything else the request reports.
+	// Both keys use the canonical (configured) server name: Pool also
+	// answers to the namespace spelling, and keying by the raw request
+	// spelling would give one server a budget per spelling (Codex
+	// review, PR #3730). CanonicalName is a registry map read -- it
+	// acquires no lease and wakes no upstream.
+	serverName := s.reg.CanonicalName(req.Server)
+	if refused := s.completeLimiter.admit([]limitCheck{
+		{
+			Name:  "completion.perMinute",
+			What:  "this caller and server",
+			Key:   "caller\x00" + completionCaller(cc) + "\x00" + serverName,
+			Limit: cs.Int("completion.perMinute"),
+		},
+		{
+			Name:  "completion.serverPerMinute",
+			What:  "this server",
+			Key:   "server\x00" + serverName,
+			Limit: cs.Int("completion.serverPerMinute"),
+		},
+	}); refused != nil {
+		writeErr(w, http.StatusTooManyRequests, fmt.Errorf(
+			"completion rate limit: %s allows %d per minute for %s",
+			refused.Name, refused.Limit, refused.What))
+		return
+	}
 	p, ok := s.reg.Pool(req.Server)
 	if !ok {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("unknown server or namespace %q", req.Server))
@@ -366,8 +408,7 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		fwd["context"] = map[string]any{"arguments": req.Arguments}
 	}
 	params, _ := json.Marshal(fwd)
-	cc := callContext(r, req.Context, req.Session)
-	raw, upstream, err := p.Complete(r.Context(), s.reg.keyFor(p, cc), params)
+	raw, upstream, err := p.Complete(r.Context(), s.reg.resolvedFor(p, cc), params)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -401,6 +442,27 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		"source":   "cache",
 		"because":  "this server did not declare the completions capability",
 	})
+}
+
+// completionCaller names the caller a completion rate-limit window
+// binds: the session the caller resolved to, else its PID, else its
+// per-call id. A PIDShared PID is the daemon's own (every /v1/exec run
+// reports it), not the caller's, so it falls through to the per-call id
+// too -- the same !PIDShared guard CallerOwned applies (#3783). The
+// per-call fallback means a caller with neither a
+// session nor a PID is effectively unwindowed per caller -- which is
+// honest, because there is nothing stable to bind -- and the per-server
+// window (completion.serverPerMinute) remains the backstop that does
+// not depend on caller identity at all.
+func completionCaller(cc config.CallContext) string {
+	switch {
+	case cc.SessionID != "":
+		return "session:" + cc.SessionID
+	case cc.PID > 0 && !cc.PIDShared:
+		return "pid:" + strconv.Itoa(cc.PID)
+	default:
+		return "call:" + cc.CallID
+	}
 }
 
 // localCompletion answers from the schemas mcpx already holds.
@@ -533,12 +595,27 @@ func (s *Server) taskStore() *tasks.Store {
 	s.taskOnce.Do(func() {
 		if s.paths.State != "" {
 			dbPath := filepath.Join(s.paths.State, "tasks.db")
-			if store, err := tasks.Open(dbPath); err == nil {
+			// Retention must reach the store before Open migrates
+			// legacy rows, or startup deletes results the configured
+			// retention promises to keep (issue #6248). The hot
+			// Configure refresh below still applies later updates.
+			var cfgTTL, cfgMaxAge time.Duration
+			if s.set != nil {
+				cfgTTL = s.set.Duration("tasks.ttl")
+				cfgMaxAge = s.set.Duration("tasks.maxAge")
+			}
+			if store, err := tasks.OpenWithRetention(dbPath, cfgTTL, cfgMaxAge); err == nil {
 				s.tasks = store
+			} else if s.logger != nil {
+				s.logger.Printf("task store: could not open %s: %v; using in-memory fallback", dbPath, err)
 			}
 		}
 		if s.tasks == nil {
 			s.tasks = tasks.New()
+		}
+		if s.sink != nil {
+			sink := s.sink
+			s.tasks.Audit = func(record logging.Record) { sink.Write(record, nil) }
 		}
 		if s.set != nil {
 			s.tasks.PollInterval = s.set.Duration("protoTasks.pollInterval")
@@ -547,6 +624,7 @@ func (s *Server) taskStore() *tasks.Store {
 			// is injected into the MCP server, MCP too.
 			s.tasks.MaxTTL = s.set.Duration("protoTasks.maxTTL")
 			s.tasks.MaxPerRequestor = s.set.Int("protoTasks.maxPerRequestor")
+			s.tasks.CancelGrace = s.set.Duration("protoTasks.cancelGrace")
 			// The setting's 0 disables the window; the store's 0 means
 			// "default", so translate here.
 			if pm := s.set.Int("protoTasks.perMinute"); pm == 0 {
@@ -556,6 +634,12 @@ func (s *Server) taskStore() *tasks.Store {
 			}
 		}
 	})
+	// Retention settings are hot: refresh them on access so runtime updates
+	// affect new tasks and subsequent item/result reads without replacing the
+	// shared store.
+	if s.set != nil {
+		s.tasks.Configure(s.set.Duration("tasks.ttl"), s.set.Duration("tasks.maxAge"))
+	}
 	return s.tasks
 }
 
@@ -597,9 +681,12 @@ func (s *Server) handleTaskGet(w http.ResponseWriter, r *http.Request) {
 	if !s.admitTaskRoute(w, r) {
 		return
 	}
-	t, ok := s.taskStore().Get(r.PathValue("id"))
+	store := s.taskStore()
+	id := r.PathValue("id")
+	store.RecordRetrieval("v1", "tasks/get", id)
+	t, ok := store.Read(id)
 	if !ok {
-		writeErr(w, http.StatusNotFound, tasks.ErrNoTask{ID: r.PathValue("id")})
+		writeErr(w, http.StatusNotFound, tasks.ErrNoTask{ID: id})
 		return
 	}
 	writeJSON(w, http.StatusOK, t)
@@ -609,6 +696,9 @@ func (s *Server) handleTaskResult(w http.ResponseWriter, r *http.Request) {
 	if !s.admitTaskRoute(w, r) {
 		return
 	}
+	store := s.taskStore()
+	id := r.PathValue("id")
+	store.RecordRetrieval("v1", "tasks/result", id)
 	wait, err := pollWait(r.URL.Query().Get("waitMs"), s.callSettings(r).Duration("tasks.resultWait"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -617,7 +707,7 @@ func (s *Server) handleTaskResult(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), wait)
 	defer cancel()
 
-	result, fault, err := s.taskStore().Result(ctx, r.PathValue("id"))
+	result, fault, err := store.ReadResult(ctx, id)
 	switch {
 	case err != nil:
 		var missing tasks.ErrNoTask

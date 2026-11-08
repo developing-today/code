@@ -98,6 +98,7 @@
     "eventSubscriberBuffer": 256,
     "streamReconnect": "2s",
     "taskTTL": "10m",
+    "taskMaxAge": "1h",
     "taskResultWait": "2m",
     "statsTop": 20,
     "registryLimit": 20,
@@ -105,6 +106,9 @@
   },
   "resolve": {
     "dialTimeout": "200ms"
+  },
+  "preflight": {
+    "npmTimeout": "5s"
   },
   "elicit": {
     "ttl": "120s",
@@ -160,6 +164,9 @@
   },
   "exec": {
     "timeout": "120s",
+    "hookTimeout": "60s",
+    "resolveTimeout": "3m",
+    "resolveWaitDelay": "2s",
     "workDirs": 8,
     "programs": 64,
     "entries": 8,
@@ -265,7 +272,11 @@
     "taskAfter": "2s"
   },
   "protoTasks": {
-    "pollInterval": "1s"
+    "pollInterval": "1s",
+    "cancelGrace": "5s"
+  },
+  "wasm": {
+    "logLineSize": "64KiB"
   },
   "stdioShutdown": {
     "stdinGrace": "2s",
@@ -279,6 +290,7 @@
     "eraFile": "upstream-eras.json",
     "eraFileVersion": 1,
     "errorBodyLimit": "4KB",
+    "responseBodyLimit": "8MiB",
     "sseReconnectDelay": "1s",
     "sseReconnectAttempts": 5,
     "listenReopenDelay": "1s",
@@ -292,6 +304,9 @@
   "embeddings": {
     "remoteTimeout": "10s",
     "searchTimeout": "2s"
+  },
+  "proxy": {
+    "timeout": "10m"
   },
   "hooks": {
     "timeout": "2s"

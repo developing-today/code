@@ -3,7 +3,8 @@
 //   (a) the fleet-feed collector derives records from the hub sections
 //       of the feed it is about to publish (SaaS services, PAYG lines,
 //       the DNS register totals) and embeds them in the feed; the
-//       laptop aggregator ingests them into its local store.
+//       laptop aggregator's background writer tick lands them in its
+//       local store (never a page/read path).
 //   (b) stewardship-cycle, after a quota-view refresh, runs
 //       scripts/append-usage-snapshots.ts, which derives records from
 //       the same extractors (pools included) into the outbox the
@@ -17,15 +18,8 @@
 // (service, metric, ts, value), so an unchanged read re-derives the
 // identical record and appends nothing.
 import { POOL_SPECS, sectionOf } from "./quota-extract.ts";
-import { parseIsoDate } from "./validate.ts";
-import type {
-  DnsSection,
-  PaygLine,
-  QuotaPool,
-  SaasService,
-  SnapshotRecord,
-  UsageUnit,
-} from "./model.ts";
+import { isPercentOf, isRecord, parseIsoDate } from "./validate.ts";
+import type { DnsSection, PaygLine, QuotaPool, SaasService, SnapshotRecord, UsageUnit } from "./model.ts";
 
 const DATE_RE = /\d{4}-\d{2}-\d{2}/g;
 
@@ -43,7 +37,10 @@ export function tsFor(measuredAt: string): string {
  * dates compete (#2264): an impossible date like 2026-02-30 or
  * 2026-13-01 in prose must not win the freshness comparison. */
 export function freshestDate(text: string): string | null {
-  const ds = [...text.matchAll(DATE_RE)].map((m) => m[0]).filter((d) => parseIsoDate(d) !== null).sort();
+  const ds = [...text.matchAll(DATE_RE)]
+    .map((m) => m[0])
+    .filter((d) => parseIsoDate(d) !== null)
+    .sort();
   return ds.length ? ds[ds.length - 1] : null;
 }
 
@@ -132,7 +129,7 @@ export function recordsFromPaygLines(lines: PaygLine[], observedBy: string): Sna
     if (line.accruedUsd != null) {
       out.push({
         ts,
-        serviceId: line.id === "meta-payg" ? "meta:high-usage" : line.id,
+        serviceId: line.id === "meta-payg" ? "meta" : line.id,
         metricId: "payg-accrued",
         value: line.accruedUsd,
         unit: "usd",
@@ -179,12 +176,14 @@ export function recordsFromDeepseekBalance(quotaViewText: string, observedBy: st
   if (!amount) return [];
   const value = Number(amount[1].replace(/,/g, ""));
   if (!Number.isFinite(value)) return [];
-  const date = /\d{4}-\d{2}-\d{2}/.exec(line)?.[0] ?? lastCheckedDate(section) ?? freshestDate(section);
+  const raw = /\d{4}-\d{2}-\d{2}/.exec(line)?.[0] ?? null;
+  const onLine = raw !== null && parseIsoDate(raw) !== null ? raw : null;
+  const date = onLine ?? lastCheckedDate(section) ?? freshestDate(section);
   if (!date) return [];
   return [
     {
       ts: dayTs(date),
-      serviceId: "deepseek:api",
+      serviceId: "deepseek",
       metricId: "credits_balance",
       value,
       unit: "cny",
@@ -294,18 +293,20 @@ export function recordsFromProviderUsage(snap: unknown, observedBy: string): Sna
     });
   }
   const rl = s.codex_usage?.usage?.rate_limit;
+  const isQuotaPercent = isPercentOf(100);
   const windowMetric = (w: unknown): void => {
-    if (typeof w !== "object" || w === null) return;
+    if (!isRecord(w)) return;
     const win = w as { used_percent?: unknown; limit_window_seconds?: unknown };
-    if (typeof win.used_percent !== "number") return;
+    const usedPercent = win.used_percent;
+    if (!isQuotaPercent(usedPercent)) return;
     const metricId =
       win.limit_window_seconds === 604_800 ? "7-day" : win.limit_window_seconds === 18_000 ? "5-hour" : null;
     if (!metricId) return;
     out.push({
       ts,
-      serviceId: "openai:codex",
+      serviceId: "openai.main",
       metricId,
-      value: win.used_percent,
+      value: usedPercent,
       unit: "pct",
       limit: 100,
       source: "api",

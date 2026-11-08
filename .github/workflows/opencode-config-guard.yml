@@ -1,0 +1,25 @@
+name: opencode-config-guard
+
+# CI tier policy: see .github/ci-policy.md
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opencode-config-guard-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  metered-provider-guard:
+    name: "basic: OpenCode metered-provider guard"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run guard fixtures
+        run: node --test bin/check-opencode-metered-providers.test.mjs
+      - name: Check canonical OpenCode config
+        run: node bin/check-opencode-metered-providers.mjs .opencode/opencode.jsonc

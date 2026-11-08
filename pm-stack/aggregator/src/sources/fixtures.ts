@@ -31,8 +31,8 @@ import type { Source } from "../source.ts";
 
 const GRIST_DOC = "czYHYKgG9SHcm9CPwiKEq1"; // "Program roadmap"
 const CODE = "developing-today/code";
-const OPENCODE = "developing-today/opencode";
-const OPENCHAMBER = "developing-today/openchamber";
+const OPENCODE = "developing-today-forks/opencode";
+const OPENCHAMBER = "developing-today-forks/openchamber";
 const NIX = "dezren39/nix";
 
 function gh(
@@ -134,7 +134,6 @@ export const FIXTURE_BOARD: BoardItem[] = [
     // The cross-repo case Kaneo cannot express: a code task linking an
     // openchamber PR (the UI's host) alongside its own repo's PRs.
     links: [link(`${CODE}#902`, "implements"), link(`${CODE}#901`, "relates"), link(`${OPENCHAMBER}#210`, "relates")],
-    notes: [{ title: "PM-stack design & phase plan", url: "http://127.0.0.1:7777/" }],
   },
   {
     id: "kaneo:code/fx0connectrepos00000111",
@@ -358,16 +357,16 @@ export const FIXTURE_QUOTA: QuotaView = {
       activeSessions: [],
     },
     {
-      id: "opencode-go:personal",
+      id: "opencode-go.drewrypope",
       provider: "OpenCode Go",
-      plan: "Personal",
+      plan: "drewrypope",
       state: "near",
       windows: [{ name: "monthly", unit: "tokens", limit: null, used: 18_000_000, resetsAt: null, percent: 85 }],
       burnTokensPerMin: 210,
       activeSessions: [{ session: "ses_e8e4b5a44ffe0fnmHE0FmlGpkG", model: "deepseek-v4-pro", tokens: 3_400_000 }],
     },
     {
-      id: "antigravity:gemini",
+      id: "antigravity-direct.gemini",
       provider: "Antigravity",
       plan: "Google Antigravity",
       note: "Antigravity has TWO independent pools: Gemini models, and the Claude models it supports.",
@@ -377,7 +376,7 @@ export const FIXTURE_QUOTA: QuotaView = {
       ],
     },
     {
-      id: "antigravity:claude",
+      id: "antigravity-direct.claude-gpt",
       provider: "Antigravity",
       plan: "Google Antigravity",
       note: "The Claude models Antigravity supports — a separate pool from its Gemini models.",
@@ -404,7 +403,7 @@ export const FIXTURE_QUOTA: QuotaView = {
       ],
     },
     {
-      id: "deepseek:api",
+      id: "deepseek",
       provider: "DeepSeek",
       plan: "API balance",
       state: "healthy",
@@ -438,9 +437,9 @@ export const FIXTURE_QUOTA: QuotaView = {
     },
   ],
   choices: {
-    hasHeadroom: ["antigravity:claude", "antigravity:gemini", "meta:model-api", "openai:chatgpt"],
-    burnBeforeReset: ["antigravity:gemini", "antigravity:claude"],
-    doNotStart: ["anthropic:claude-subscription", "opencode-go:personal"],
+    hasHeadroom: ["antigravity-direct.claude-gpt", "antigravity-direct.gemini", "meta:model-api", "openai:chatgpt"],
+    burnBeforeReset: ["antigravity-direct.gemini", "antigravity-direct.claude-gpt"],
+    doNotStart: ["anthropic:claude-subscription", "opencode-go.drewrypope"],
   },
 };
 
@@ -536,19 +535,6 @@ export const FIXTURE_ATTENTION: SessionFeedEntry[] = [
     activeToolCalls: 0,
     repeatedErrorCount: 4,
     lastTurnError: "claude_session_limit (retry)",
-  },
-  {
-    // Jules, wired via the keeper's state in slice 2.
-    sessionId: "4259424002214698449",
-    source: "jules",
-    title: "Fix #811: id phase-9: a joiner's resize (up to 500x200) can permanently…",
-    directory: "developing-today/code",
-    createdAt: ago(5),
-    lastActivityAt: ago(0.2),
-    messageCount: 0,
-    activeToolCalls: 0,
-    awaitingQuestion: "Does this look good, and should I proceed?",
-    supervisionNote: "Jules AWAITING_USER_FEEDBACK · keeper: replied",
   },
   {
     // A finished one-shot probe: expires out of the view (slice 2).
@@ -946,9 +932,9 @@ export const FIXTURE_AA: AaSection = {
       aaTimePerTask: 191.6,
     },
     {
-      id: "opencode-go.personal/gpt-6-luna",
-      provider: "opencode-go.personal",
-      providerName: "OpenCode Go — Personal",
+      id: "opencode-go.drewrypope/gpt-6-luna",
+      provider: "opencode-go.drewrypope",
+      providerName: "OpenCode Go — drewrypope",
       model: "gpt-6-luna",
       name: "GPT-6 Luna",
       contextLimit: 1050000,
@@ -956,7 +942,7 @@ export const FIXTURE_AA: AaSection = {
       variants: ["low", "medium", "high", "xhigh", "max"],
       routes: ["luna-plan"],
       disabled: false,
-      plan: "OpenCode Go — Personal",
+      plan: "OpenCode Go — drewrypope",
       multiplier: 6,
       planNote:
         "$10/mo buys a $60/mo list-rate meter (6×); Flash promo cap $80 (≈8×). Cancelled — period ends 2026-11-02.",
@@ -1317,7 +1303,7 @@ export const FIXTURE_USAGE: UsageView = {
         value: 12,
         unit: "pct",
         limit: 100,
-        resetsAt: "2026-10-31T00:00:00Z",
+        resetsAt: `${daysAgo(-1)}T00:00:00Z`, // future-dated: a fixed past reset collapses the pace window (windowStartIndex) and the detail view loses Pace projections
         source: "manual",
         observedBy: "fixtures",
       },
@@ -1328,7 +1314,7 @@ export const FIXTURE_USAGE: UsageView = {
         value: 38,
         unit: "pct",
         limit: 100,
-        resetsAt: "2026-10-31T00:00:00Z",
+        resetsAt: `${daysAgo(-1)}T00:00:00Z`,
         source: "manual",
         observedBy: "fixtures",
       },
@@ -1339,7 +1325,7 @@ export const FIXTURE_USAGE: UsageView = {
         value: 82,
         unit: "pct",
         limit: 100,
-        resetsAt: "2026-10-31T00:00:00Z",
+        resetsAt: `${daysAgo(-1)}T00:00:00Z`,
         source: "manual",
         observedBy: "fixtures",
       },
@@ -1392,6 +1378,16 @@ export function fixtureSource(): Source {
       const wanted = new Set(refs);
       return FIXTURE_COMMENTS.filter((x) => wanted.has(x.ref));
     },
+    latestComments: async (refs) => {
+      const wanted = new Set(refs);
+      const byRef = new Map<string, (typeof FIXTURE_COMMENTS)[number]>();
+      for (const c of FIXTURE_COMMENTS) {
+        if (!wanted.has(c.ref) || c.deleted) continue;
+        const cur = byRef.get(c.ref);
+        if (!cur || cur.createdAt < c.createdAt) byRef.set(c.ref, c);
+      }
+      return [...byRef.values()];
+    },
     quota: async () => FIXTURE_QUOTA,
     usage: async () => ({ ...FIXTURE_USAGE, attention: buildAttentionFlags(FIXTURE_QUOTA, FIXTURE_USAGE) }),
     attention: async () => FIXTURE_ATTENTION,
@@ -1416,12 +1412,6 @@ export function fixtureSource(): Source {
         label: "OpenCode · laptop server",
         wired: true,
         detail: "fixtures",
-      },
-      {
-        source: "jules",
-        label: "Jules",
-        wired: true,
-        detail: "fixtures (keeper state)",
       },
       {
         source: "claude-code",

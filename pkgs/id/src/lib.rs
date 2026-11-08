@@ -128,7 +128,7 @@
 //!
 //! Two protocols are used:
 //! - **Blobs Protocol** (`/iroh-blobs/1`): For blob data transfer
-//! - **Meta Protocol** (`/iroh-meta/2`): For metadata operations (list, find, delete, etc.)
+//! - **Meta Protocol** (`/iroh-meta/3`): For metadata operations (list, find, delete, etc.)
 //!
 //! ## Features
 //!
@@ -152,16 +152,25 @@
 //! id get abc123... myfile.txt
 //! ```
 
-pub mod access;
+pub use id_core::access;
+pub mod abuse;
 pub mod aliases;
+pub mod app_manifest;
 #[cfg(feature = "world")]
 pub mod artifact;
 pub mod attestation;
 pub mod blob_gate;
+#[cfg(feature = "world")]
+pub mod boards;
 pub mod chain;
+pub mod chat;
+pub mod chat_presence;
 pub mod cli;
 pub mod commands;
-pub mod connectivity;
+pub use id_core::connectivity;
+pub mod conversion;
+pub mod currency;
+pub mod currency_poc;
 pub mod dht;
 #[cfg(feature = "world")]
 pub mod directory;
@@ -173,7 +182,8 @@ pub mod directory_log;
 pub mod directory_mail;
 #[cfg(feature = "world")]
 pub mod directory_view;
-pub mod discovery;
+pub use id_core::discovery;
+pub mod didit;
 pub mod documents;
 #[cfg(feature = "world")]
 pub mod encryption;
@@ -187,17 +197,29 @@ pub mod fileops;
 pub mod frames;
 pub mod groups;
 pub mod helpers;
+pub mod hosted_binding;
+pub mod idset;
+pub mod input_framing;
 pub mod invite;
 pub mod invites;
+pub mod issuer_rotation;
+pub(crate) mod key_envelope;
 pub mod local;
 pub mod local_events;
 pub mod log_sync;
-pub mod membership;
+mod peer_announcement;
+pub use id_core::membership;
+pub mod match_audit;
 pub mod meta_client;
+pub mod note_links;
+pub mod notes;
 #[cfg(feature = "world")]
-pub mod petname;
+pub use id_core::petname;
 pub mod protocol;
+pub mod publications;
 pub mod pull_policy;
+pub use id_core::residency;
+pub mod references;
 pub mod rejection;
 pub mod repl;
 #[cfg(feature = "sandbox")]
@@ -207,23 +229,27 @@ pub mod search;
 pub mod seitan;
 #[cfg(feature = "world")]
 pub mod server_config;
+pub mod session_checkpoint;
 #[cfg(feature = "world")]
 pub mod shell_contract;
 pub mod store;
 pub mod store_traits;
-pub mod sync_method;
+pub mod structured_logging;
+pub use id_core::sync_method;
 pub mod tag_claims;
 pub mod tag_index;
 pub mod tags;
 #[cfg(test)]
 mod test_forgeries;
-pub(crate) mod time;
-pub mod tuple;
-pub mod waiting;
+pub(crate) mod text;
+pub(crate) use id_core::is_format_char;
+pub(crate) use id_core::time;
+pub use id_core::tuple;
+pub use id_core::waiting;
 #[cfg(feature = "world")]
 pub mod world;
 #[cfg(feature = "world")]
-pub mod world_caps;
+pub use id_core::world_caps;
 #[cfg(feature = "world")]
 pub mod world_compile;
 #[cfg(feature = "world")]
@@ -233,7 +259,7 @@ pub mod world_fixture;
 #[cfg(feature = "world")]
 pub mod world_hub;
 #[cfg(feature = "world")]
-pub mod world_limits;
+pub use id_core::world_limits;
 pub(crate) mod world_line;
 #[cfg(feature = "world")]
 pub mod world_manifest;
@@ -242,7 +268,9 @@ pub mod world_native;
 #[cfg(feature = "world")]
 pub mod world_net;
 #[cfg(feature = "world")]
-pub mod world_presentation;
+pub mod world_replication_net;
+#[cfg(feature = "world")]
+pub use id_core::world_presentation;
 #[cfg(feature = "world")]
 pub mod world_records;
 #[cfg(feature = "world")]
@@ -251,14 +279,16 @@ pub mod world_session;
 pub mod world_ssh;
 #[cfg(feature = "world")]
 pub mod world_store;
+#[cfg(feature = "world")]
+pub(crate) mod world_terminal;
 
 #[cfg(feature = "web")]
-pub mod qr;
+pub use id_core::qr;
 #[cfg(feature = "web")]
 pub mod web;
 
 // Re-export commonly used types for convenience
-pub use cli::{Cli, Command, TagCommand};
+pub use cli::{Cli, Command, KeyCommand, TagCommand};
 pub use commands::{
     PeekOptions, PeersOptions, ReplContext, ReplContextInner, SearchOptions, ServeInfo,
     ServeOptions, cmd_find, cmd_find_matches, cmd_get_local, cmd_get_multi, cmd_get_one,
@@ -268,12 +298,13 @@ pub use commands::{
     create_serve_lock, get_serve_info, is_process_alive, remove_serve_lock,
 };
 pub use discovery::{
-    ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, PeerAnnouncement,
-    PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL, STALE_THRESHOLD, defaults,
-    parse_defaults, resolve_config,
+    ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, MAX_PEER_NAME_BYTES,
+    MAX_PEERS, PeerAnnouncement, PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL,
+    STALE_THRESHOLD, defaults, parse_defaults, resolve_config,
 };
 pub use helpers::{
-    parse_get_spec, parse_put_spec, print_match_cli, print_match_repl, print_matches_cli,
+    download_output_path, parse_get_spec, parse_put_spec, print_match_cli, print_match_repl,
+    print_matches_cli,
 };
 pub use protocol::{FindMatch, MatchKind, MetaProtocol, MetaRequest, MetaResponse, TaggedMatch};
 pub use repl::run_repl;
@@ -321,10 +352,15 @@ pub const SERVE_LOCK: &str = ".iroh-serve.lock";
 /// and `Error`. It is not wire-compatible with `/iroh-meta/1`; the ALPN bump
 /// makes old and new nodes fail the handshake cleanly instead of mis-decoding.
 ///
+/// **Version 3** changes the `List` response item from `(hash, name)` pairs
+/// to `ListEntry` records carrying the file's origin node and upload time
+/// (#4973). That payload change is not wire-compatible with `/iroh-meta/2`
+/// under postcard, so it takes this ALPN bump per the rule below.
+///
 /// Compatibility rule: within a version, only **append** enum variants. Any
 /// other change to [`protocol::MetaRequest`] / [`protocol::MetaResponse`]
 /// requires a new ALPN. `protocol::tests` pins every discriminant.
-pub const META_ALPN: &[u8] = b"/iroh-meta/2";
+pub const META_ALPN: &[u8] = b"/iroh-meta/3";
 
 // ============================================================================
 // Utility Functions
@@ -708,7 +744,7 @@ mod tests {
         assert_eq!(CLIENT_KEY_FILE, ".iroh-key-client");
         assert_eq!(STORE_PATH, ".iroh-store");
         assert_eq!(SERVE_LOCK, ".iroh-serve.lock");
-        assert_eq!(META_ALPN, b"/iroh-meta/2");
+        assert_eq!(META_ALPN, b"/iroh-meta/3");
     }
 
     #[tokio::test]

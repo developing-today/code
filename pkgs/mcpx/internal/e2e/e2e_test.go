@@ -85,6 +85,15 @@ func newEnv(t *testing.T, cfgBody string) *env {
 			// This is the setting `mcpx` gives the daemon it starts on
 			// demand, so it is the one the tests start.
 			"MCPX_AUTOSTART_IDLE_EXIT="+testIdleExit,
+			// The write policy gate (#1979) defaults to ask, and these
+			// tests drive the CLI and the MCP surface with no human to
+			// answer: an unannotated tool is a write by the
+			// specification's defaults, so every such call would wait
+			// out the ask timeout and fail. The gate's own tests opt
+			// back in by setting policy.write=ask (or the
+			// confirmDestructive floor) explicitly, the way
+			// handoff_load_test.go already does.
+			"MCPX_POLICY_WRITE=allow",
 		),
 	}
 	t.Cleanup(func() {
@@ -194,6 +203,13 @@ func (e *env) run(args ...string) string {
 const oneServer = `{
   "mcpServers": {
     "demo": { "command": "FAKE", "mcpx": { "sharing": "shared", "scope": "global", "description": "a fake server" } }
+  }
+}`
+
+const twoVisibleServers = `{
+  "mcpServers": {
+    "alpha": { "command": "FAKE" },
+    "beta":  { "command": "FAKE" }
   }
 }`
 
@@ -2999,6 +3015,9 @@ func TestExecFlagProbeRowsMatchCoverage(t *testing.T) {
 // and must change an observable outcome.
 type execFlagProbeRow struct {
 	flag string
+	// config optionally gives a probe its own fixture; most rows share the
+	// one-server environment, while namespace visibility needs two servers.
+	config string
 	// base is given both with and without the flag, so the comparison
 	// isolates the flag rather than everything around it.
 	base   []string
@@ -3101,6 +3120,18 @@ var execFlagProbeRows = []execFlagProbeRow{
 		source: `emit({ok: 1});`,
 		want:   "valid=true",
 	},
+	{
+		flag:   "--ns",
+		config: twoVisibleServers,
+		args:   []string{"--ns", "alpha"},
+		source: `const g = globalThis as any;
+const hasAlpha = typeof g.alpha?.echo === "function";
+const hasBeta = typeof g.beta?.state === "function";
+if (hasAlpha && !hasBeta) console.log("ALPHA_ONLY");
+if (hasAlpha && hasBeta) console.log("BOTH_NAMESPACES");`,
+		want: "ALPHA_ONLY",
+		gone: "BOTH_NAMESPACES",
+	},
 }
 
 func TestEveryExecFlagChangesSomething(t *testing.T) {
@@ -3109,17 +3140,21 @@ func TestEveryExecFlagChangesSomething(t *testing.T) {
 	for _, where := range []string{"local", "remote"} {
 		for _, c := range rows {
 			t.Run(where+"/"+c.flag, func(t *testing.T) {
+				probeEnv := e
+				if c.config != "" {
+					probeEnv = newEnv(t, c.config)
+				}
 				lead := []string{"exec"}
 				if where == "remote" {
 					lead = append(lead, "--remote")
 				}
 				lead = append(lead, c.base...)
 				argv := append(append(append([]string{}, lead...), c.args...), c.source)
-				with, werr := e.try(argv...)
+				with, werr := probeEnv.try(argv...)
 				if !c.fails && werr != nil {
 					t.Fatalf("%s: %v\n%s", c.flag, werr, with)
 				}
-				without, _ := e.try(append(append([]string{}, lead...), c.source)...)
+				without, _ := probeEnv.try(append(append([]string{}, lead...), c.source)...)
 				if c.want != "" {
 					if !strings.Contains(with, c.want) {
 						t.Errorf("%s did nothing: wanted %q in\n%s", c.flag, c.want, with)

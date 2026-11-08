@@ -86,4 +86,12 @@ describe("isAaSection gate depth (#2415)", () => {
     undefDate.testRuns = [{ testRunKey: "run-1" }];
     expect(isAaSection(undefDate)).toBe(false);
   });
+
+  test("rejects impossible generatedAt dates Date.parse rolls over (#3441)", () => {
+    for (const generatedAt of ["2026-02-30T00:00:00Z", "2026-02-29T00:00:00Z", "2026-04-31T00:00:00Z"]) {
+      const s = completeSection();
+      s.generatedAt = generatedAt;
+      expect(isAaSection(s)).toBe(false);
+    }
+  });
 });

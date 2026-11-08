@@ -58,7 +58,8 @@ use anyhow::{Result, bail};
 use iroh_base::EndpointId;
 use iroh_mdns_address_lookup::MdnsAddressLookup;
 
-use crate::discovery::{PeerAnnouncement, resolve_config};
+use crate::discovery::{PeerAnnouncement, PeerDiscovery, resolve_config};
+use crate::peer_announcement::SignedPeerAnnouncement;
 use crate::protocol::{MetaRequest, MetaResponse};
 use crate::store::load_or_create_keypair;
 use crate::{CLIENT_KEY_FILE, META_ALPN, is_node_id};
@@ -120,6 +121,13 @@ pub struct PeersOptions {
 /// tab, CR, LF or other structure-breaking character is quoted and escaped by
 /// [`plain_field`] instead of shifting a column or forging a row (#1613).
 pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()> {
+    if options.depth < 0 {
+        bail!(
+            "peer crawl depth must be non-negative, got {}",
+            options.depth
+        );
+    }
+
     let mut all_peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
 
     // Determine mode
@@ -163,7 +171,7 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
                 options.no_relay,
                 options.no_mdns,
             )
-            .await;
+            .await?;
             merge_capped(&mut all_peers, crawled, options.max_peers, "crawl results");
         }
     }
@@ -242,7 +250,7 @@ enum PeerOffer {
 /// server's independent discovery snapshot, so an older crawl snapshot
 /// must not roll back a newer RPC record. Equal timestamps keep the
 /// existing arrival-order behavior (the later record wins), matching
-/// [`merge_gossip_peers`].
+/// [`merge_capped`].
 fn offer_peer(
     peers: &mut HashMap<EndpointId, PeerAnnouncement>,
     peer: PeerAnnouncement,
@@ -304,7 +312,7 @@ async fn query_local_peers() -> Result<Vec<PeerAnnouncement>> {
         send.write_all(&req).await?;
         send.finish()?;
         let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
         match resp {
@@ -344,7 +352,7 @@ async fn query_remote_peers(
         send.write_all(&req).await?;
         send.finish()?;
         let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
         match resp {
@@ -368,7 +376,11 @@ async fn crawl_peers(
     timeout_secs: u64,
     no_relay: bool,
     no_mdns: bool,
-) -> Vec<PeerAnnouncement> {
+) -> Result<Vec<PeerAnnouncement>> {
+    if depth < 0 {
+        bail!("peer crawl depth must be non-negative, got {depth}");
+    }
+
     let mut all_peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
     let mut visited: HashSet<EndpointId> = HashSet::new();
     let mut frontier: Vec<EndpointId> = Vec::new();
@@ -390,10 +402,9 @@ async fn crawl_peers(
     }
 
     let mut current_depth = 0;
-    let max_depth = if depth < 0 { i32::MAX } else { depth };
     let timeout = tokio::time::Duration::from_secs(timeout_secs);
 
-    while current_depth < max_depth && !frontier.is_empty() {
+    while current_depth < depth && !frontier.is_empty() {
         if all_peers.len() >= max_peers {
             tracing::warn!(
                 "peers: max-peers cap ({}) reached at depth {}",
@@ -458,7 +469,7 @@ async fn crawl_peers(
         current_depth += 1;
     }
 
-    all_peers.into_values().collect()
+    Ok(all_peers.into_values().collect())
 }
 
 /// Discovers peers via gossip by joining the discovery topic.
@@ -535,14 +546,14 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
 
     // Collect announcements for a limited time
     let collect_timeout = tokio::time::Duration::from_secs(options.timeout_secs);
-    let mut peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
+    let peers = PeerDiscovery::new();
 
     let _ = tokio::time::timeout(collect_timeout, async {
         while let Ok(event) = receiver.next().await {
             if let iroh_gossip::api::Event::Received(msg) = event
-                && let Ok(announcement) = postcard::from_bytes::<PeerAnnouncement>(&msg.content)
+                && let Some(announcement) = SignedPeerAnnouncement::decode_frame(&msg.content)
             {
-                if offer_peer(&mut peers, announcement, options.max_peers) == PeerOffer::Capped {
+                if !admit_gossip_announcement_capped(&peers, announcement, options.max_peers) {
                     tracing::warn!(
                         "peers: max-peers cap ({}) reached in gossip collection; ignoring further announcements",
                         options.max_peers
@@ -557,7 +568,37 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
     accept_handle.abort();
     endpoint.close().await;
 
-    Ok(peers.into_values().collect())
+    Ok(peers
+        .peers()
+        .into_iter()
+        .map(|peer| peer.announcement)
+        .collect())
+}
+
+/// Admit a decoded gossip announcement through the shared freshness and
+/// ordering checks used by the serve-side peer table.
+fn admit_gossip_announcement(peers: &PeerDiscovery, announcement: PeerAnnouncement) {
+    peers.update(announcement);
+}
+
+/// Admit a gossip announcement without letting the temporary discovery
+/// table exceed `--max-peers`. Existing peers may still be refreshed when
+/// the collection is full; `PeerDiscovery::update` applies timestamp
+/// freshness and ordering rules.
+fn admit_gossip_announcement_capped(
+    peers: &PeerDiscovery,
+    announcement: PeerAnnouncement,
+    max_peers: usize,
+) -> bool {
+    let known = peers
+        .peers()
+        .iter()
+        .any(|peer| peer.announcement.node_id == announcement.node_id);
+    if !known && peers.peers().len() >= max_peers {
+        return false;
+    }
+    admit_gossip_announcement(peers, announcement);
+    true
 }
 
 /// Parse bootstrap node IDs with serve parity (#2016): warn per invalid
@@ -587,6 +628,14 @@ mod tests {
     use crate::discovery::PeerDiscovery;
     use iroh_base::SecretKey;
 
+    #[tokio::test]
+    async fn crawl_peers_refuses_negative_depth_before_networking() {
+        let err = crawl_peers(&[], -1, 1000, 30, false, false)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("depth must be non-negative"));
+    }
+
     fn now_secs() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -612,6 +661,109 @@ mod tests {
             blob_count: 7,
             timestamp_secs,
         }
+    }
+    #[test]
+    fn gossip_collection_uses_freshness_and_monotonic_ordering() {
+        let discovery = PeerDiscovery::new();
+        let now = now_secs();
+
+        let mut ancient = announcement(30, Some("ancient"));
+        ancient.timestamp_secs = 1;
+        admit_gossip_announcement(&discovery, ancient);
+
+        let mut far_future = announcement(31, Some("far-future"));
+        far_future.timestamp_secs = u64::MAX;
+        admit_gossip_announcement(&discovery, far_future);
+
+        let mut newer = announcement(32, Some("newer"));
+        newer.timestamp_secs = now.saturating_sub(1);
+        admit_gossip_announcement(&discovery, newer);
+
+        let mut older_replay = announcement(32, Some("older replay"));
+        older_replay.timestamp_secs = now.saturating_sub(2);
+        admit_gossip_announcement(&discovery, older_replay);
+
+        // A fresh, in-order control remains collectable.
+        let mut fresh_control = announcement(33, Some("fresh control"));
+        fresh_control.timestamp_secs = now;
+        admit_gossip_announcement(&discovery, fresh_control);
+
+        let peers = discovery.peers();
+        assert_eq!(peers.len(), 2);
+        assert!(
+            peers
+                .iter()
+                .all(|peer| peer.announcement.node_id != announcement(30, None).node_id)
+        );
+        assert!(
+            peers
+                .iter()
+                .all(|peer| peer.announcement.node_id != announcement(31, None).node_id)
+        );
+        assert!(peers.iter().any(|peer| {
+            peer.announcement.node_id == announcement(32, None).node_id
+                && peer.announcement.name.as_deref() == Some("newer")
+        }));
+        assert!(peers.iter().any(|peer| {
+            peer.announcement.node_id == announcement(33, None).node_id
+                && peer.announcement.name.as_deref() == Some("fresh control")
+        }));
+    }
+
+    #[test]
+    fn gossip_merge_does_not_replace_fresher_rpc_results() {
+        let now = now_secs();
+
+        let mut rpc_fresher = announcement(34, Some("rpc fresher"));
+        rpc_fresher.timestamp_secs = now.saturating_sub(1);
+        let mut gossip_older = announcement(34, Some("gossip older"));
+        gossip_older.timestamp_secs = now.saturating_sub(2);
+
+        let mut rpc_older = announcement(35, Some("rpc older"));
+        rpc_older.timestamp_secs = now.saturating_sub(2);
+        let mut gossip_fresher = announcement(35, Some("gossip fresher"));
+        gossip_fresher.timestamp_secs = now.saturating_sub(1);
+
+        let mut all_peers = HashMap::from([
+            (rpc_fresher.node_id, rpc_fresher),
+            (rpc_older.node_id, rpc_older),
+        ]);
+        merge_capped(&mut all_peers, [gossip_older, gossip_fresher], 10, "test");
+
+        assert_eq!(
+            all_peers[&announcement(34, None).node_id].name.as_deref(),
+            Some("rpc fresher")
+        );
+        assert_eq!(
+            all_peers[&announcement(35, None).node_id].name.as_deref(),
+            Some("gossip fresher")
+        );
+    }
+
+    #[test]
+    fn gossip_collection_is_capped_but_keeps_updates_to_retained_peers() {
+        let discovery = PeerDiscovery::new();
+        let now = now_secs();
+        assert!(admit_gossip_announcement_capped(
+            &discovery,
+            stamped(36, "first", now.saturating_sub(2)),
+            1,
+        ));
+        assert!(!admit_gossip_announcement_capped(
+            &discovery,
+            stamped(37, "over-cap", now.saturating_sub(1)),
+            1,
+        ));
+        // A duplicate remains eligible even at the cap, and the discovery
+        // table's timestamp policy keeps its fresher update.
+        assert!(admit_gossip_announcement_capped(
+            &discovery,
+            stamped(36, "updated", now),
+            1,
+        ));
+        let peers = discovery.peers();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].announcement.name.as_deref(), Some("updated"));
     }
 
     fn valid_id_string(byte: u8) -> String {
@@ -937,11 +1089,17 @@ mod tests {
         // Depth 0 performs no network queries; the returned set is the
         // seed set, which the cap must bound (#1765).
         let seeds: Vec<PeerAnnouncement> = (1..=5u8).map(|b| announcement(b, None)).collect();
-        let crawled = crawl_peers(&seeds, 0, 3, 1, true, true).await;
+        let crawled = crawl_peers(&seeds, 0, 3, 1, true, true)
+            .await
+            .expect("crawl succeeds");
         assert_eq!(crawled.len(), 3);
-        let uncapped = crawl_peers(&seeds, 0, 1000, 1, true, true).await;
+        let uncapped = crawl_peers(&seeds, 0, 1000, 1, true, true)
+            .await
+            .expect("crawl succeeds");
         assert_eq!(uncapped.len(), 5);
-        let zero = crawl_peers(&seeds, 0, 0, 1, true, true).await;
+        let zero = crawl_peers(&seeds, 0, 0, 1, true, true)
+            .await
+            .expect("crawl succeeds");
         assert!(zero.is_empty());
     }
 }

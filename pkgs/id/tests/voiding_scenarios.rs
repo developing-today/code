@@ -96,6 +96,10 @@ impl Builder {
             tag: None,
             document: None,
             removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
         };
         let body = action.as_ref().map(|action| encode_body(action).unwrap());
         let event = sign(&key(who), seq, backlink, body.as_deref(), ext).unwrap();

@@ -43,11 +43,45 @@ const WORKER_SECRETS = [
 const WORKER_URL = "https://developing-today-backup.developing-today.workers.dev";
 
 const args = process.argv.slice(2);
-const dryRun = args.includes("--dry-run");
-const deployVersionAt = args.indexOf("--deploy-version");
-const deployVersion = deployVersionAt >= 0 ? args[deployVersionAt + 1] : null;
-if (deployVersionAt >= 0 && !deployVersion) {
-  throw new Error("--deploy-version needs a version id");
+// Strict argument validation (#3287, phase 1 of #3352): every argument
+// is accounted for before any bws/wrangler/git subprocess or deploy
+// side effect. The only accepted invocations are `deploy.mjs`,
+// `deploy.mjs --dry-run`, and `deploy.mjs --deploy-version <id>`.
+// Anything else — a typo'd `--dry-rnu`, a stray positional, an unknown
+// flag, a missing or flag-like --deploy-version value — aborts here
+// with a usage error naming the offending argument (exit 2), following
+// the sibling #3281 contract. The old `includes`/`indexOf` check
+// silently treated every unrecognized argument as a request for the
+// real deploy sequence (upload + secret put).
+function usageError(message) {
+  console.error(
+    `${message}\nusage: deploy.mjs [--dry-run] | deploy.mjs --deploy-version <id>`
+  );
+  process.exit(2);
+}
+let dryRun = false;
+let deployVersion = null;
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === "--dry-run") {
+    if (dryRun) usageError("duplicate argument: --dry-run");
+    dryRun = true;
+  } else if (arg === "--deploy-version") {
+    if (deployVersion !== null) usageError("duplicate argument: --deploy-version");
+    const value = args[i + 1];
+    if (value === undefined || value === "") {
+      usageError("--deploy-version needs a version id");
+    }
+    if (value.startsWith("-")) {
+      usageError(`--deploy-version needs a version id, got flag-like value: ${value}`);
+    }
+    deployVersion = value;
+    i++;
+  } else if (arg.startsWith("-")) {
+    usageError(`unrecognized argument: ${arg}`);
+  } else {
+    usageError(`unrecognized argument: ${arg}`);
+  }
 }
 if (dryRun && deployVersion !== null) {
   // #3474: the deployVersion branch runs before the dryRun branch and
@@ -56,10 +90,12 @@ if (dryRun && deployVersion !== null) {
   // real 100% deployment while looking like a preview. There is no
   // non-deploying preview of a versions deployment, so reject the
   // combination outright — before any bws/wrangler invocation.
-  throw new Error(
+  console.error(
     "--dry-run cannot be combined with --deploy-version: a dry run never deploys, " +
-    "but --deploy-version always deploys at 100%. Drop --dry-run to roll back for real."
+    "but --deploy-version always deploys at 100%. Drop --dry-run to roll back for real.\n" +
+    "usage: deploy.mjs [--dry-run] | deploy.mjs --deploy-version <id>"
   );
+  process.exit(2);
 }
 
 requireEnv("CLOUDFLARE_ACCOUNT_ID");

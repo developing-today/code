@@ -30,7 +30,7 @@ on:
         required: false
         default: ""
       tasks:
-        description: "Explicit comma-separated task list (e.g. \"bolt,palette\"). When non-empty it is used verbatim and the slot table is not consulted."
+        description: 'Explicit comma-separated task list (e.g. "bolt,palette"). When non-empty it is used verbatim and the slot table is not consulted.'
         type: string
         required: false
         default: ""
@@ -39,6 +39,7 @@ on:
         type: string
         required: false
         default: ""
+  workflow_dispatch:
 
 jobs:
   # Exactly one job. Permissions are the CALLER's: a reusable
@@ -49,7 +50,27 @@ jobs:
   #     contents: read
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
+      # The pm-dispatch action family is loaded from this checkout
+      # rather than as `developing-today/code/.github/actions/...@main`.
+      # The remote form made the runner download the whole
+      # developing-today/code repo as an action archive, which fails
+      # with `Could not find file .../_staging/code-<sha>/archive`
+      # (issue #4742; same failure and fix as issue #4867 in
+      # main-broken.yml). A local action path is resolved from the
+      # workspace and needs no action-repository download. The
+      # checkout lands at .pm-central because pm-dispatch-task's own
+      # nested steps load pm-dispatch-start / pm-dispatch-queue from
+      # that same path (see that action's header note).
+      - name: Check out the pm-dispatch actions (central)
+        uses: actions/checkout@v7
+        with:
+          repository: developing-today/code
+          ref: main
+          path: .pm-central
+          persist-credentials: false
+
       - name: Resolve the target repo and the task list
         id: resolve
         shell: bash
@@ -102,16 +123,16 @@ jobs:
             case "$INPUT_SCHEDULE" in
               # --- Task slots -> bolt,palette ---
               "0 1 * * *")   tasks="bolt,palette" ;; # developing-today/code — 20:00 CDT (previous evening)
-              "0 2 * * *")   tasks="bolt,palette" ;; # developing-today/openchamber — 21:00 CDT (previous evening)
-              "0 0 * * *")   tasks="bolt,palette" ;; # developing-today/opencode — 19:00 CDT (previous evening)
-              "0 5 * * *")   tasks="bolt,palette" ;; # dezren39/nix + dezren39/dezren39 — 00:00 CDT
+              "0 2 * * *")   tasks="bolt,palette" ;; # developing-today-forks/openchamber — 21:00 CDT (previous evening)
+              "0 0 * * *")   tasks="bolt,palette" ;; # developing-today-forks/opencode — 19:00 CDT (previous evening)
+              "0 5 * * *")   tasks="bolt,palette" ;; # dezren39/darwin-nix + dezren39/dezren39 — 00:00 CDT
               "30 13 * * *") tasks="bolt,palette" ;; # developing-today/zettel — 08:30 CDT
 
               # --- Suggestions slots -> suggestions ---
               "0 13 * * *") tasks="suggestions" ;; # developing-today/code — 08:00 CDT
-              "0 14 * * *") tasks="suggestions" ;; # developing-today/openchamber — 09:00 CDT
-              "0 15 * * *") tasks="suggestions" ;; # developing-today/opencode — 10:00 CDT
-              "0 16 * * *") tasks="suggestions" ;; # dezren39/nix — 11:00 CDT
+              "0 14 * * *") tasks="suggestions" ;; # developing-today-forks/openchamber — 09:00 CDT
+              "0 15 * * *") tasks="suggestions" ;; # developing-today-forks/opencode — 10:00 CDT
+              "0 16 * * *") tasks="suggestions" ;; # dezren39/darwin-nix — 11:00 CDT
               "0 17 * * *") tasks="suggestions" ;; # developing-today/zettel — 12:00 CDT
               "0 18 * * *") tasks="suggestions" ;; # dezren39/dezren39 — 13:00 CDT
 
@@ -154,7 +175,7 @@ jobs:
       - name: Dispatch bolt
         id: bolt
         if: steps.resolve.outputs.has_bolt == 'true'
-        uses: developing-today/code/.github/actions/pm-dispatch-task@main
+        uses: ./.pm-central/.github/actions/pm-dispatch-task
         with:
           task: bolt
           repo: ${{ steps.resolve.outputs.repo }}
@@ -162,7 +183,7 @@ jobs:
       - name: Dispatch palette
         id: palette
         if: steps.resolve.outputs.has_palette == 'true'
-        uses: developing-today/code/.github/actions/pm-dispatch-task@main
+        uses: ./.pm-central/.github/actions/pm-dispatch-task
         with:
           task: palette
           repo: ${{ steps.resolve.outputs.repo }}
@@ -170,7 +191,7 @@ jobs:
       - name: Dispatch suggestions
         id: suggestions
         if: steps.resolve.outputs.has_suggestions == 'true'
-        uses: developing-today/code/.github/actions/pm-dispatch-task@main
+        uses: ./.pm-central/.github/actions/pm-dispatch-task
         with:
           task: suggestions
           repo: ${{ steps.resolve.outputs.repo }}

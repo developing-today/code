@@ -59,6 +59,10 @@ impl Writer {
             }),
             document: None,
             removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
         };
         let event = sign(&self.key, self.seq, self.last, None, ext).unwrap();
         self.seq += 1;

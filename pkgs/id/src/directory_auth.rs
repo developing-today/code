@@ -149,11 +149,23 @@ impl DirectoryAuth {
     /// Make a six-digit code for an address and remember its digest. Returns
     /// the code, which is sent by mail and never stored.
     ///
+    /// Issuing first sweeps every expired pending code, for any address, so
+    /// a code whose address never comes back does not sit in the map forever
+    /// (#1732). The sweep is opportunistic: it runs only when a code is
+    /// issued, so nothing is reclaimed while the world is idle and the map
+    /// has no hard size bound. `HashMap::retain` scans the whole map, so an
+    /// issuance costs O(pending codes) on top of its own work — accepted
+    /// here because issuance is already rate-limited per address and the
+    /// scan is the same shape as the session sweep in `open_session`.
+    /// Unexpired codes are all kept, including ones that have run out of
+    /// attempts, so resend throttling and the attempt limit are unchanged.
+    ///
     /// # Errors
     ///
     /// Fails with [`Refusal::RateLimited`] if a code for this address was sent
     /// less than a minute ago.
     pub fn issue_code(&mut self, purpose: Purpose, address: &str, now: u64) -> Result<String> {
+        self.codes.retain(|_, pending| pending.expires_at > now);
         if let Some(pending) = self.codes.get(address)
             && pending.sent_at + CODE_RESEND_MS > now
         {
@@ -247,7 +259,8 @@ impl ReplayGuard {
             .into());
         }
         self.seen
-            .retain(|_, seen_at| *seen_at + SIGNED_WINDOW_MS > now);
+            // Keep nonces through the same inclusive boundary as `verify_signed`'s `window_ok` below.
+            .retain(|_, seen_at| *seen_at + SIGNED_WINDOW_MS >= now);
         let id = format!("{key}:{nonce}");
         if self.seen.contains_key(&id) {
             return Err(Refusal::Unauthenticated("request was already used".to_owned()).into());
@@ -324,6 +337,7 @@ pub fn verify_signed(
             "signature does not verify".to_owned(),
         ))
     };
+    // This inclusive window shares its boundary with `ReplayGuard::accept`'s retention above.
     let window_ok = signed.at.abs_diff(now) <= SIGNED_WINDOW_MS;
     if !window_ok {
         return Err(Refusal::Unauthenticated(
@@ -451,6 +465,57 @@ mod tests {
     }
 
     #[test]
+    fn issuing_for_another_address_evicts_expired_codes_at_the_ttl_boundary() {
+        let mut auth = DirectoryAuth::default();
+        let purpose = Purpose::SignIn {
+            account: "ab".repeat(32),
+        };
+        auth.issue_code(purpose.clone(), "a@b.co", now()).unwrap();
+        // One millisecond before expiry the first code is still pending:
+        // issuing for a second address must keep it.
+        auth.issue_code(purpose.clone(), "c@d.co", now() + CODE_TTL_MS - 1)
+            .unwrap();
+        assert!(auth.codes.contains_key("a@b.co"));
+        // At exactly expires_at the code is expired (check_code refuses at
+        // expires_at <= now), so the same issuance sweep evicts it without
+        // the first address ever checking.
+        auth.issue_code(purpose, "e@f.co", now() + CODE_TTL_MS)
+            .unwrap();
+        assert!(!auth.codes.contains_key("a@b.co"));
+        assert!(auth.codes.contains_key("c@d.co"));
+        assert!(auth.codes.contains_key("e@f.co"));
+    }
+
+    #[test]
+    fn the_sweep_keeps_unexpired_codes_even_after_their_attempts_run_out() {
+        let mut auth = DirectoryAuth::default();
+        let purpose = Purpose::Confirm {
+            account: "ab".repeat(32),
+        };
+        let code = auth.issue_code(purpose.clone(), "a@b.co", now()).unwrap();
+        let wrong = if code == "999999" { "000000" } else { "999999" };
+        for _ in 0..CODE_ATTEMPTS {
+            assert!(auth.check_code("a@b.co", wrong, now()).is_err());
+        }
+        // Issuing for another address inside the TTL sweeps expired codes
+        // only: the exhausted code stays, so the attempt limit still refuses
+        // even the right answer, and the new code verifies normally.
+        let other = auth
+            .issue_code(purpose.clone(), "c@d.co", now() + CODE_RESEND_MS)
+            .unwrap();
+        assert!(auth.codes.contains_key("a@b.co"));
+        assert!(
+            auth.check_code("a@b.co", &code, now() + CODE_RESEND_MS)
+                .is_err()
+        );
+        assert_eq!(
+            auth.check_code("c@d.co", &other, now() + CODE_RESEND_MS)
+                .unwrap(),
+            purpose
+        );
+    }
+
+    #[test]
     fn a_signed_request_verifies_once_inside_its_window() {
         let key = SigningKey::from_bytes(&[7; 32]);
         let signed = sign_request(
@@ -482,6 +547,40 @@ mod tests {
                 now()
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn a_signed_request_replay_is_refused_through_the_inclusive_window_edge() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let at = now();
+        let target = "/api/world/directory?world=x";
+        let signed = sign_request(&key, "GET", target, b"", at, "edge");
+        let mut replays = ReplayGuard::default();
+
+        assert!(verify_signed(&mut replays, &signed, "GET", target, b"", at).is_ok());
+        for instant in [
+            at + SIGNED_WINDOW_MS - 1,
+            at + SIGNED_WINDOW_MS,
+            at + SIGNED_WINDOW_MS + 1,
+        ] {
+            assert!(
+                verify_signed(&mut replays, &signed, "GET", target, b"", instant).is_err(),
+                "replay accepted at {instant}"
+            );
+        }
+
+        let mut boundary_replays = ReplayGuard::default();
+        assert!(
+            verify_signed(
+                &mut boundary_replays,
+                &signed,
+                "GET",
+                target,
+                b"",
+                at + SIGNED_WINDOW_MS,
+            )
+            .is_ok()
         );
     }
 
