@@ -49,14 +49,15 @@ check_fail() {
 }
 
 # Clean tree: one small file, integration tests, vendored code and the
-# module-gated encryption tests are all out of scope and must not trip
+# module-gated encryption and world-session tests are all out of scope and must not trip
 # a limit of 3.
 reset_tree
 write_small src
-mkdir -p "$tmp/tests" "$tmp/vendor/dep" "$tmp/src/encryption" "$tmp/src/web"
+mkdir -p "$tmp/tests" "$tmp/vendor/dep" "$tmp/src/encryption" "$tmp/src/web" "$tmp/src/world_session"
 printf 'line1\nline2\nline3\nline4\n' >"$tmp/tests/big_integration.rs"
 printf 'line1\nline2\nline3\nline4\n' >"$tmp/vendor/dep/big_vendor.rs"
 printf 'line1\nline2\nline3\nline4\n' >"$tmp/src/encryption/tests.rs"
+printf 'line1\nline2\nline3\nline4\n' >"$tmp/src/world_session/tests.rs"
 printf 'line1\nline2\nline3\n#[cfg(test)]\nmod tests { }\n' >"$tmp/src/web/markdown.rs"
 check_pass 3 'clean tree passes'
 

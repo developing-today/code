@@ -47,6 +47,10 @@ test_only_reason() {
     printf 'module-gated test module (#[cfg(test)] mod tests in src/encryption/mod.rs)'
     return 0
     ;;
+  src/world_session/tests.rs)
+    printf 'module-gated test module (#[cfg(test)] mod tests in src/world_session/mod.rs)'
+    return 0
+    ;;
   esac
   return 1
 }
