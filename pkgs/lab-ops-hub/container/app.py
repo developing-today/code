@@ -77,6 +77,35 @@ _IDNA_DISALLOWED = frozenset(
     + list(range(0x2066, 0x206A))
 )
 
+# The codepoints UTS-46 — the table the Worker's WHATWG
+# domain-to-ASCII consults — marks DISALLOWED, per codepoint, in a
+# category the earlier arms do not already refuse. UTS-46 is not
+# category-based: the great majority of symbol, punctuation and
+# separator codepoints are *valid* (the Worker accepts and
+# punycode-encodes them: U+1F600 "😀", U+00A9 "©", U+2603 "☃",
+# U+20AC "€", U+2665 "♥", U+00A7 "§" all round-trip through new URL
+# as A-labels), so the old blanket "any non-ASCII P/S/Z" refusal
+# over-refused them and left the package's own pinned
+# WHATWG-alignment test red on main (#5947). What UTS-46 does reject
+# is a much smaller per-codepoint set; most of it — the Cn, Cf, Cc,
+# Co and Cs disallowed codepoints — is already refused by the
+# forbidden-character, unassigned/format and private-use arms, so
+# this frozenset carries only the disallowed codepoints of the
+# remaining categories: the dot leaders, ellipsis and three
+# separators (the separators also listed in _IDNA_DISALLOWED above),
+# the enclosed alphanumerics, the ideographic description
+# characters, the squared Latin abbreviations, the vertical/small
+# presentation forms with no NFKC mapping, and the object/replacement
+# characters. Frozen to IdnaMappingTable.txt 16.0.0 (2024-07-03); a
+# codepoint UTS-46 later reclassifies is a deliberate version bump,
+# not a unicodedata artefact.
+_UTS46_DISALLOWED = frozenset(
+    [0x1680, 0x2024, 0x2025, 0x2026, 0x2028, 0x2029, 0xFFFC, 0xFFFD, 0x1F100]
+    + list(range(0x2488, 0x249C))
+    + list(range(0x2FF0, 0x3000))
+    + [0x31EF, 0x33C2, 0x33C7, 0x33D8, 0xFE12, 0xFE19, 0xFE30, 0xFE52]
+)
+
 
 def validate_crawl_url(raw):
     # WHATWG URL parsing first removes leading and trailing C0 control
@@ -762,31 +791,26 @@ def _judge_idna_label(label, host):
     # violation the Worker refuses, while at label start the mapped
     # letter is an ordinary first character, closing the former
     # leading-mark over-refusal (#596).
-    # IDNA2008/UTS-46 marks every punctuation, symbol, separator,
-    # private-use and surrogate codepoint DISALLOWED (the CONTEXTO /
-    # CONTEXTJ exceptions below are judged by their own rules: the
-    # Catalan middle dot and Hebrew punctuation are context-judged
+    # UTS-46 judges symbol/punctuation/separator codepoints one by
+    # one, not by Unicode category: most are valid and the Worker's
+    # WHATWG domain-to-ASCII accepts them, while the smaller
+    # _UTS46_DISALLOWED set is refused (#5947). The CONTEXTO /
+    # CONTEXTJ exceptions are judged by their own rules: the Catalan
+    # middle dot and Hebrew punctuation are context-validated
     # punctuation, the Arabic separators by the AN/separator rules
-    # below, and the undertie pair is CONTEXTJ joining punctuation).
-    # None of the checks around this one sees them: they are assigned
-    # (not Cn), not format characters (not Cf), NFKC leaves most of
-    # them unchanged, and the stdlib IDNA-2003 codec's stringprep
-    # tables do not prohibit them — so a decoded label carrying
-    # U+00A8, U+00B4, U+037E or a currency/math symbol passed while
-    # the Worker refuses it (#588). Category-based, not an enumerated
-    # table, so it carries no unicodedata version skew of its own.
+    # below, and the undertie pair is CONTEXTJ joining punctuation —
+    # all of them UTS-46 *valid*, so they are absent from the set.
+    # The Cn / Cf / Cc disallowed codepoints and the private-use /
+    # surrogate codepoints are refused by the arms around this one,
+    # so this check names only the residual disallowed codepoints.
     if any(
         ord(c) > 0x7F
-        and ord(c) not in (0x00B7, 0x05F3, 0x05F4, 0x066B, 0x066C, 0x203F, 0x2040)
-        and (
-            unicodedata.category(c)[0] in "PSZ"
-            or unicodedata.category(c) in ("Co", "Cs")
-        )
+        and (ord(c) in _UTS46_DISALLOWED or unicodedata.category(c) in ("Co", "Cs"))
         for c in label
     ):
         raise ValueError(
             f"refusing to crawl host {host}: label {label!r} "
-            "contains an IDNA-disallowed punctuation, symbol or separator character"
+            "contains a UTS-46 disallowed punctuation, symbol or separator character"
         )
     label = label.translate({0x0345: "ι"})
     if any(_maps_to_label_separator(c) for c in label if ord(c) > 0x7F):
