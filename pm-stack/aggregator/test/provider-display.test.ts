@@ -35,6 +35,35 @@ describe("providerDisplayNames (#6125)", () => {
     expect([...names.keys()].sort()).toEqual(["_antigravity.claude-gpt", "_antigravity.gemini", "_claude", "meta"]);
   });
 
+  test("reads one-shot iterables exactly once and preserves their input keys", () => {
+    const inputs = ["_claude", "meta", "_antigravity.gemini"];
+    function* providers() {
+      yield* inputs;
+    }
+
+    const expected: [string, string][] = [
+      ["_claude", "claude"],
+      ["meta", "meta"],
+      ["_antigravity.gemini", "antigravity.gemini"],
+    ];
+    expect([...providerDisplayNames(providers())]).toEqual(expected);
+
+    const keys = new Map(inputs.map((name) => [name, true] as const)).keys();
+    expect([...providerDisplayNames(keys)]).toEqual(expected);
+  });
+
+  test("keeps the ownership marker when stripping it would collide with a plain provider", () => {
+    const names = providerDisplayNames(["_claude", "claude"]);
+    expect(names.get("_claude")).toBe("_claude");
+    expect(names.get("claude")).toBe("claude");
+  });
+
+  test("keeps dotted renamed providers distinguishable from their plain sibling", () => {
+    const names = providerDisplayNames(["_antigravity.gemini", "antigravity.gemini"]);
+    expect(names.get("_antigravity.gemini")).toBe("_antigravity.gemini");
+    expect(names.get("antigravity.gemini")).toBe("antigravity.gemini");
+  });
+
   test("non-direct names are untouched", () => {
     const names = providerDisplayNames(["mistral", "openai.main", "cline-pass", "direct"]);
     expect(names.get("mistral")).toBe("mistral");
