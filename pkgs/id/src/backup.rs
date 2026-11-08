@@ -241,10 +241,32 @@ impl WeightedWindow {
             .saturating_add(u64::try_from(weighted).unwrap_or(u64::MAX))
     }
 
-    fn retry_after_ms(&self, now_ms: u64) -> u64 {
-        let rolled = self.rolled(now_ms);
-        let elapsed = now_ms.saturating_sub(rolled.cur_start_ms);
-        rolled.window_ms.saturating_sub(elapsed).max(1)
+    /// Earliest delay after `now_ms` at which the weighted estimate
+    /// falls below `limit` — the next admissible instant, per the
+    /// Codex finding on PR #7658 (4506243710). The old value (next
+    /// fixed-window boundary) is wrong for a weighted estimator: at
+    /// the boundary the previous window still contributes its full
+    /// count, so a client retrying exactly then is refused again and
+    /// advertised another full window, even though the estimate
+    /// permits admission ~1 ms later. The estimate is monotonically
+    /// non-increasing in time (the previous window's weight decays
+    /// linearly, a roll re-weights the old current count to at most
+    /// its end-of-window value, and two windows out the estimate is
+    /// 0), so binary search over `estimate` finds the minimum.
+    /// Oracle: the estimator itself — retrying at `now_ms + result`
+    /// must be admissible, and at any earlier instant must not.
+    fn retry_after_ms(&self, now_ms: u64, limit: u64) -> u64 {
+        let mut lo: u64 = 1;
+        let mut hi: u64 = self.window_ms.saturating_mul(2).max(1);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if self.estimate(now_ms.saturating_add(mid)) < limit {
+                hi = mid;
+            } else {
+                lo = mid.saturating_add(1);
+            }
+        }
+        lo.max(1)
     }
 
     fn record(&mut self, now_ms: u64) {
@@ -278,10 +300,10 @@ impl DownloadBudget {
         if hour_full || day_full {
             let mut retry = 0;
             if hour_full {
-                retry = retry.max(self.hour.retry_after_ms(now_ms));
+                retry = retry.max(self.hour.retry_after_ms(now_ms, DOWNLOAD_HOUR_LIMIT));
             }
             if day_full {
-                retry = retry.max(self.day.retry_after_ms(now_ms));
+                retry = retry.max(self.day.retry_after_ms(now_ms, DOWNLOAD_DAY_LIMIT));
             }
             return Err(BackupError::DownloadBudgetExceeded {
                 retry_after_ms: retry,
@@ -964,6 +986,33 @@ mod tests {
                 assert!(retry_after_ms > 0);
             }
             other => panic!("51st daily download must be refused, got {other:?}"),
+        }
+    }
+
+    /// Regression test for the Codex finding on PR #7658
+    /// (4506243710), oracle = the weighted estimator itself: ten
+    /// downloads at t0 exhaust the hour budget; a refusal at
+    /// t0 + 1_000 must advertise the next admissible instant
+    /// (one millisecond past the window boundary, where the
+    /// previous window's weighted contribution drops to 9), not
+    /// the fixed-window boundary — and a download at the advertised
+    /// instant must actually be admitted.
+    #[test]
+    fn download_budget_retry_after_is_the_next_admissible_instant() {
+        let (mut store, _signing, public, _envelope) = uploaded_store();
+        let t0 = 20_000_000;
+        for _ in 0..DOWNLOAD_HOUR_LIMIT {
+            store.download(&public, t0).unwrap();
+        }
+        let refused_at = t0 + 1_000;
+        match store.download(&public, refused_at) {
+            Err(BackupError::DownloadBudgetExceeded { retry_after_ms }) => {
+                assert_eq!(retry_after_ms, DOWNLOAD_HOUR_WINDOW_MS - 1_000 + 1);
+                store
+                    .download(&public, refused_at + retry_after_ms)
+                    .unwrap();
+            }
+            other => panic!("11th hourly download must be refused, got {other:?}"),
         }
     }
 
