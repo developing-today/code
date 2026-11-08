@@ -1253,6 +1253,24 @@ impl WorldActor {
                     let issued = self.core.issue_capability(&name, scopes, bounds)?;
                     self.record_issued(issued)
                 });
+                // Issuance grants participant access, so it belongs in the
+                // audit trail alongside Revoke: record the non-secret
+                // identity, scopes, bounds, and outcome. The capability
+                // token itself is a secret and is never recorded.
+                let parameters = match &result {
+                    Ok((participant, _)) => serde_json::json!({
+                        "participant_id": participant.id,
+                        "name": participant.display_name,
+                        "scopes": format!("{scopes:?}"),
+                        "bounds": format!("{bounds:?}"),
+                    }),
+                    Err(_) => serde_json::json!({
+                        "name": name,
+                        "scopes": format!("{scopes:?}"),
+                        "bounds": format!("{bounds:?}"),
+                    }),
+                };
+                self.audit_admin_result("admin", "Issue", parameters, result.is_ok());
                 let _ = reply.send(result);
             }
             WorldCommand::Attenuate {
@@ -1931,7 +1949,11 @@ impl WorldActor {
             WorldCommand::Metrics { reply } => {
                 let sessions = self.presence.values().sum::<usize>() as u64;
                 let metrics = self.metrics.snapshot(sessions);
-                self.audit_admin_result("admin", "Metrics", serde_json::json!({}), true);
+                // No audit record: metrics are readable by any joined
+                // participant holding a capability (the session layer's
+                // Metrics frame), so recording the read as admin would
+                // falsify the audit actor. Participant-readable queries are
+                // not administrative actions and stay out of the audit trail.
                 let _ = reply.send(metrics);
             }
             WorldCommand::AdminEventHistory { reply } => {
@@ -1973,11 +1995,10 @@ impl WorldActor {
             }
             WorldCommand::CapsInfo { reply } => {
                 let report = self.caps_report();
-                let parameters = report.as_ref().map_or_else(
-                    |_| serde_json::json!({}),
-                    |report| serde_json::json!({"report": format!("{report:?}")}),
-                );
-                self.audit_admin_result("admin", "CapsInfo", parameters, report.is_ok());
+                // No audit record, for the same reason as Metrics above:
+                // the capability report is readable by joined participants
+                // (the session layer's Caps frame), so an admin audit
+                // record would misattribute a participant read.
                 let _ = reply.send(report);
             }
             WorldCommand::Shutdown { .. } => unreachable!("handled by run"),

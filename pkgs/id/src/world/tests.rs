@@ -7352,6 +7352,90 @@ mod audit_tests {
                 && record.get("admin_token").is_none()
         }));
     }
+
+    #[test]
+    fn issuance_is_audited_alongside_revocation_without_the_token() {
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
+        let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
+
+        futures_lite::future::block_on(async {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::Issue {
+                    name: "Ann".to_owned(),
+                    scopes: WorldScopes::JOIN,
+                    bounds: CapabilityBounds::default(),
+                    reply,
+                })
+                .await;
+            let (participant, _token) = response.await.unwrap().unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::Revoke {
+                    participant_id: participant.id,
+                    by: None,
+                    reply,
+                })
+                .await;
+            assert!(response.await.unwrap());
+        });
+
+        let captured = records.lock().unwrap().clone();
+        let issue_records: Vec<_> = captured
+            .iter()
+            .filter(|record| record["action"] == "Issue")
+            .collect();
+        assert_eq!(
+            issue_records.len(),
+            1,
+            "one issuance must emit one audit record: {captured:?}"
+        );
+        let record = issue_records[0];
+        assert_eq!(record["outcome"], "accepted");
+        assert_eq!(record["parameters"]["name"], "Ann");
+        assert!(record["parameters"]["participant_id"].is_number());
+        assert!(
+            record.get("token").is_none() && record["parameters"].get("token").is_none(),
+            "the capability token is a secret and must never be audited"
+        );
+        assert!(
+            captured
+                .iter()
+                .any(|record| record["action"] == "Revoke" && record["outcome"] == "accepted"),
+            "issuance and revocation are both in the trail: {captured:?}"
+        );
+    }
+
+    #[test]
+    fn participant_readable_queries_emit_no_admin_audit_record() {
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
+        let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
+
+        futures_lite::future::block_on(async {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor.handle(WorldCommand::Metrics { reply }).await;
+            let _snapshot = response.await.unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor.handle(WorldCommand::CapsInfo { reply }).await;
+            response.await.unwrap().unwrap();
+        });
+
+        let captured = records.lock().unwrap().clone();
+        assert!(
+            captured.is_empty(),
+            "participant-readable queries must not be audited as admin: {captured:?}"
+        );
+    }
 }
 
 /// Structural guard for the one client projection (F11.11, #543).
