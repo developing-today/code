@@ -95,7 +95,12 @@ let
     zig # id: builds the roc-world wasm host (build.zig.zon wants 0.16)
     cargo-watch
     cargo-nextest
-    cargo-llvm-cov
+    # cargo-llvm-cov 0.9.0's test suite fails under the pinned Cargo 1.99.0.
+    # The devShell needs the binary, not the package's tests, so keep the tool
+    # and skip only its broken check phase (#4818; same narrow remedy as #5275).
+    (cargo-llvm-cov.overrideAttrs (_: {
+      doCheck = false;
+    }))
     cargo-audit
     cargo-outdated
     cargo-machete
