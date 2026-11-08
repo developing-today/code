@@ -627,6 +627,8 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	nsFlag := fs.String("ns", "", "restrict the client to these namespaces (comma separated)")
 	rt := fs.String("runtime", "",
 		"javascript runtime: auto, deno, bun, node, a name from script.runtimes, or a path")
+	lang := fs.String("language", "",
+		"script language: auto, typescript, javascript, or python (default: script.language)")
 	timeout := fs.Duration("timeout", 0, "kill the script after this long (0 = no limit)")
 	keep := fs.Bool("keep", false, "keep the generated client and script for inspection")
 	session := fs.String("session", "", "session key (default: a fresh one per run)")
@@ -847,10 +849,18 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		}
 	}
 
+	// --language is hand-written like --runtime; the resolved
+	// script.language setting is the fallback when the flag is absent.
+	languagePref := *lang
+	if languagePref == "" && a.Settings().Given("script.language") {
+		languagePref = a.Settings().String("script.language")
+	}
+
 	if elsewhere {
 		return a.execOnDaemon(ctx, c, fs, inline, ns, sessionKey, eo,
 			execRemoteFlags{timeout: *timeout, runtime: *rt, permissions: *perms,
-				export: *export, session: sessionKey, shape: shape, dryRun: *dryRunFlag})
+				language: languagePref,
+				export:   *export, session: sessionKey, shape: shape, dryRun: *dryRunFlag})
 	}
 	// This process is about to start the script, so it checks first. The
 	// daemon would refuse a script it was asked to run; this one is not asked.
@@ -996,6 +1006,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		Clients:        clients,
 		CaptureConsole: shape.captureConsole,
 		Runtime:        runtimePref,
+		Language:       languagePref,
 		Interpreter:    interpreterPref,
 		CwdPolicy:      cwdPolicy,
 		ConfigDir:      configDir,

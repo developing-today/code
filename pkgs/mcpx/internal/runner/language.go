@@ -8,14 +8,16 @@
 // beside it, never by a JavaScript runtime with no client at all.
 //
 // The evidence is the same evidence dispatch uses -- a shebang first, then
-// the file extension -- and there is no setting yet (script.language is a
-// later slice of #1917), so an inline snippet is TypeScript unless its
-// shebang says otherwise.
+// the file extension. An explicit selection (the script.language setting,
+// the --language flag, or ExecOptions.language) beats that detection for a
+// run with no shebang or interpreter dispatch; otherwise an inline snippet
+// is TypeScript unless its shebang says otherwise.
 
 package runner
 
 import (
 	"errors"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -53,6 +55,36 @@ func ScriptLanguage(file, source string) string {
 		return codegen.TypeScript.Name
 	}
 	return ""
+}
+
+// NormalizeLanguage validates an explicit script-language selection and
+// returns the codegen language name it selects: "python" selects Python,
+// "typescript"/"javascript" select TypeScript, and ""/"auto" select
+// nothing (detection decides, as before). Any other value is an error the
+// caller reports before a run starts, never a silent fallback.
+func NormalizeLanguage(v string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "auto":
+		return "", nil
+	case "python":
+		return codegen.Python.Name, nil
+	case "typescript", "javascript":
+		return codegen.TypeScript.Name, nil
+	default:
+		return "", fmt.Errorf("runner: script language %q is not one of auto, typescript, javascript, python", v)
+	}
+}
+
+// EffectiveScriptLanguage is ScriptLanguage with an explicit selection
+// applied: a valid explicit language wins over shebang/extension
+// detection; an empty, "auto" or invalid explicit value leaves detection
+// in charge (validation of the explicit value is NormalizeLanguage's job,
+// done once by the entry points).
+func EffectiveScriptLanguage(file, source, explicit string) string {
+	if n, err := NormalizeLanguage(explicit); err == nil && n != "" {
+		return n
+	}
+	return ScriptLanguage(file, source)
 }
 
 // isPythonInterpreter reports whether a command names a Python interpreter:
