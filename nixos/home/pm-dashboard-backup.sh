@@ -359,9 +359,25 @@ optional file journals/quota-gatherer.log"
 # the run here via fail(), naming the source, before any upload and
 # before the cursor can advance. A missing file stays a WARN, as
 # before: absent and present-but-unreadable are different events.
+# Copy order matters (#3322 Codex review, PR #7665): the ingestion
+# state acknowledges events, and IngestionStore.ingestSerialized()
+# persists the event BEFORE it marks the delivery seen. Copy the
+# ingestion checkpoint/seen state FIRST, then the event stream, so a
+# generation can never contain a seen ID or checkpoint whose event is
+# missing — that would make a restore skip the delivery as a
+# duplicate and lose the record permanently. The same reasoning puts
+# the retry outbox (records not yet in events.json) before the hot
+# file: an outbox record that also landed is merged by stable id, so
+# an extra copy is harmless while a missing one is loss.
+for f in activity-ingestion.json events.json.outbox.jsonl; do
+  if [ -f "$AGG/$f" ]; then
+    cp -a "$AGG/$f" "$STAGE/aggregator/$f" ||
+      fail "dataset copy failed: $AGG/$f"
+  else echo "pm-dashboard-backup: WARN missing $AGG/$f" >&2; fi
+done
 for f in actions.json comments.json fleet-feed.json quota-current.json \
   registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json \
-  events.json events.json.outbox.jsonl activity-ingestion.json \
+  events.json \
   views.json coverage-snapshot.json aa-last-good.json; do
   if [ -f "$AGG/$f" ]; then
     cp -a "$AGG/$f" "$STAGE/aggregator/$f" ||

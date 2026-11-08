@@ -130,7 +130,66 @@ describe("audit archive retention (#3322)", () => {
     expect(verifyArchivedRecords(archived).ok).toBe(true);
     await store.record({ ...base, at: iso(60 * 1000), summary: "fresh" });
     expect((await store.list()).map((e) => e.summary)).toEqual(["fresh"]);
-    expect((await new EventsStore(join(dir, "events.json"))).health().then((h) => h.archivedRecords)).toBe(1);
+    expect((await new EventsStore(join(dir, "events.json")).health()).archivedRecords).toBe(1);
+  });
+
+  test("a backfilled append inside the retained range keeps the chain valid and prunes the oldest", async () => {
+    // #3322 Codex review, PR #7665 (P1): retention must keep the
+    // STORED-chain order of the retained records. A backfilled event
+    // whose `at` falls inside the existing range is stamped at the
+    // chain tail; re-sorting it into the middle by timestamp broke
+    // the links and set the sticky integrityViolation, which then
+    // refused every later append.
+    const dir = tmpDir("agg-events-archive-backfill-");
+    const file = join(dir, "events.json");
+    // A full hot stream (the count bound) written as one fixture file.
+    const rows = Array.from({ length: EVENT_RETENTION_MAX }, (_, i) => ({
+      at: iso((EVENT_RETENTION_MAX - i) * 1000),
+      summary: `e${i}`,
+    }));
+    await writeEventsFile(file, stampChain(rows));
+    const store = new EventsStore(file);
+    expect((await store.health()).events).toBe(EVENT_RETENTION_MAX);
+    // Backfilled INSIDE the retained range: stamped at the chain tail,
+    // but older than the newest records by `at`.
+    await store.record({ ...base, at: iso(Math.floor(EVENT_RETENTION_MAX / 2) * 1000), summary: "backfilled-inside" });
+    const health = await store.health();
+    expect(health.integrity.ok).toBe(true);
+    expect(health.events).toBe(EVENT_RETENTION_MAX);
+    // The oldest record left the hot stream and is archived, not lost.
+    expect(health.archivedRecords).toBe(1);
+    expect((await store.listArchived()).map((e) => e.summary)).toEqual(["e0"]);
+    // The appended record is still in the stream and later appends work.
+    expect((await store.list()).map((e) => e.summary)).toContain("backfilled-inside");
+    await store.record({ ...base, at: iso(0), summary: "after" });
+    expect((await store.health()).integrity.ok).toBe(true);
+  }, 30_000);
+
+  test("pruning a backfilled record out of the middle archives it and rechains the retained stream", async () => {
+    // A time bound can remove a record from the middle of stored
+    // order. The old chain verified first; the removed record is
+    // archived with its original hash; the retained stream is
+    // rechained so its next persist verifies (#3322 Codex review,
+    // PR #7665).
+    const dir = tmpDir("agg-events-archive-middle-");
+    const file = join(dir, "events.json");
+    const stamped = stampChain([
+      { at: iso(60 * 1000), summary: "head-recent" },
+      { at: iso(40 * DAY_MS), summary: "middle-old" },
+      { at: iso(30 * 1000), summary: "tail-recent" },
+    ]);
+    await writeEventsFile(file, stamped);
+    const store = new EventsStore(file);
+    const health = await store.health();
+    expect(health.integrity.ok).toBe(true);
+    expect(health.events).toBe(2);
+    expect(health.archivedRecords).toBe(1);
+    const archived = await store.listArchived();
+    expect(archived).toEqual([stamped[1]!]);
+    expect(verifyArchivedRecords(archived).ok).toBe(true);
+    await store.record({ ...base, at: iso(0), summary: "post" });
+    expect((await store.health()).integrity.ok).toBe(true);
+    expect((await store.list()).map((e) => e.summary)).toEqual(["post", "tail-recent", "head-recent"]);
   });
 
   test("a tampered archive partition fails the archive health verdict", async () => {

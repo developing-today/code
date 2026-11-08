@@ -372,19 +372,26 @@ export function pruneEvents<T extends StreamEvent>(events: readonly T[], now = n
 /** Split a stream into the records retention keeps hot and the
  *  records it would drop, using exactly pruneEvents' bounds (older
  *  than EVENT_RETENTION_DAYS, or beyond the newest
- *  EVENT_RETENTION_MAX). `retained` is pruneEvents' own output;
- *  `pruned` keeps the input's (stored-chain) order, which is the
- *  order the archive partitions preserve. This partition is the
- *  single gate for BOTH bounds: nothing leaves the hot stream except
- *  through it, and the store archives `pruned` before dropping it
- *  (#3322 retention contract). */
+ *  EVENT_RETENTION_MAX). WHICH records survive is pruneEvents'
+ *  decision; the ORDER of both halves is the input's (stored-chain)
+ *  order — never pruneEvents' chronological sort — because the store
+ *  persists `retained` and verifies its hash links in stored order
+ *  (#3322 Codex review, PR #7665: re-sorting a backfilled record
+ *  into the middle broke the chain and set the sticky
+ *  integrityViolation). `pruned` keeps that same stored order, which
+ *  is the order the archive partitions preserve. This partition is
+ *  the single gate for BOTH bounds: nothing leaves the hot stream
+ *  except through it, and the store archives `pruned` before
+ *  dropping it (#3322 retention contract). */
 export function partitionRetention<T extends StreamEvent>(
   events: readonly T[],
   now = new Date(),
 ): { retained: T[]; pruned: T[] } {
-  const retained = pruneEvents(events, now);
-  const kept = new Set<T>(retained);
-  return { retained, pruned: events.filter((e) => !kept.has(e)) };
+  const kept = new Set<T>(pruneEvents(events, now));
+  const retained: T[] = [];
+  const pruned: T[] = [];
+  for (const event of events) (kept.has(event) ? retained : pruned).push(event);
+  return { retained, pruned };
 }
 
 /** One monthly archive partition file: pruned audit records in
@@ -884,7 +891,10 @@ export class EventsStore {
       ) {
         throw new Error(`archive partition ${name} does not have the expected { records: [...] } shape`);
       }
-      records.push(...(parsed as EventArchivePartition).records);
+      // Iterate, never spread: a monthly partition has no record-count
+      // bound, and pushing an entire partition as call arguments throws
+      // RangeError once it is large enough (#3322 Codex review, PR #7665).
+      for (const record of (parsed as EventArchivePartition).records) records.push(record);
     }
     return records;
   }
@@ -908,9 +918,19 @@ export class EventsStore {
       let existing: AuditEvent[] = [];
       try {
         const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
-        if (Array.isArray((parsed as EventArchivePartition).records)) {
-          existing = (parsed as EventArchivePartition).records;
+        // A partition that parses but is not the expected shape is
+        // DAMAGED, not empty: treating it as empty would overwrite the
+        // original bytes with only this batch and destroy recoverable
+        // history. Fail instead, so pruning is deferred and the file
+        // stays available for investigation (#3322 Codex review, PR #7665).
+        if (
+          typeof parsed !== "object" ||
+          parsed === null ||
+          !Array.isArray((parsed as EventArchivePartition).records)
+        ) {
+          throw new Error(`archive partition ${name} does not have the expected { records: [...] } shape`);
         }
+        existing = (parsed as EventArchivePartition).records;
       } catch (err) {
         if ((err as { code?: unknown })?.code !== "ENOENT") throw err;
       }
@@ -963,7 +983,16 @@ export class EventsStore {
       }
     }
     this.archiveError = null;
-    this.events = retained;
+    // A timestamp-based retention decision can remove a record from
+    // the middle of append/stored order when events were backfilled.
+    // We verified the complete old chain before reaching this gate
+    // (load verifies before retention; append persists/verifies before
+    // retention), and the removed records now have their original
+    // hashes safely archived. If their removal leaves a hole, rechain
+    // only the retained hot stream so its next persist verifies. This
+    // is a deliberate retention transition, not a repair of an
+    // unverified chain.
+    this.events = verifyEventChain(retained).ok ? retained : rechain(retained);
     return stamped.length;
   }
 
