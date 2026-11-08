@@ -99,7 +99,9 @@ export default {
       if (eventType === "push" && isFleet) {
         const after = String(payload.after ?? "");
         const ref = String(payload.ref ?? "");
-        await advanceSnapshot(env, repoName, after, ref, nowIso);
+        const payloadDefaultBranch =
+          typeof repo.default_branch === "string" ? repo.default_branch : null;
+        await advanceSnapshot(env, repoName, after, ref, nowIso, payloadDefaultBranch);
         await appendAgentEvent(env, "push", { repo: repoName, after, ref });
         return json({ ok: true, repo: repoName, after });
       }
