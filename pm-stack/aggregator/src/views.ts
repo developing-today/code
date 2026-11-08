@@ -102,6 +102,16 @@ function isSavedView(value: unknown): value is SavedView {
   );
 }
 
+/** Uniqueness key for view names: action input trims names before
+ *  they reach the store (validateViewName), so every uniqueness
+ *  comparison — load validator, save, rename — must compare the
+ *  trimmed, case-insensitive form, or a persisted file can carry
+ *  "Alpha" and " Alpha" for one owner past the load gate
+ *  (CodeRabbit finding, PR #4536). */
+function normalizedViewName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
 function crossRowInvariantError(views: readonly SavedView[]): string | null {
   const ids = new Set<string>();
   const namesByOwner = new Map<string, Set<string>>();
@@ -116,7 +126,7 @@ function crossRowInvariantError(views: readonly SavedView[]): string | null {
       names = new Set<string>();
       namesByOwner.set(view.owner, names);
     }
-    const normalizedName = view.name.toLowerCase();
+    const normalizedName = normalizedViewName(view.name);
     if (names.has(normalizedName)) {
       return `view row ${index} duplicates name "${view.name}" for owner "${view.owner}"`;
     }
@@ -306,7 +316,7 @@ export class ViewsStore {
   /** Create a view for the owner. Names are unique per owner. */
   async save(input: { owner: string; name: string; filters: ViewFilters }): Promise<SavedView> {
     await this.load();
-    if (this.views.some((v) => v.owner === input.owner && v.name.toLowerCase() === input.name.toLowerCase())) {
+    if (this.views.some((v) => v.owner === input.owner && normalizedViewName(v.name) === normalizedViewName(input.name))) {
       throw new Error(`a view named "${input.name}" already exists for this owner`);
     }
     const now = new Date().toISOString();
@@ -328,7 +338,7 @@ export class ViewsStore {
     await this.load();
     const v = this.views.find((x) => x.id === id && x.owner === owner);
     if (!v) return null;
-    if (this.views.some((x) => x.owner === owner && x.id !== id && x.name.toLowerCase() === name.toLowerCase())) {
+    if (this.views.some((x) => x.owner === owner && x.id !== id && normalizedViewName(x.name) === normalizedViewName(name))) {
       throw new Error(`a view named "${name}" already exists for this owner`);
     }
     v.name = name;
