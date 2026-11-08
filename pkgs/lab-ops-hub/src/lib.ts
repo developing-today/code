@@ -214,6 +214,47 @@ export function crawlArchiveKey(nowMs: number, unique: string): string {
   return `crawls/${nowMs}-${unique}.json`;
 }
 
+// --- Container crawl result validation (#7018) ------------------------------
+// The container crawler is a separate service with its own release cadence
+// (CrawlerContainerV2 exists because the original container application
+// broke), so its 200 response is a cross-service boundary, not a trusted
+// internal value. crawlWithContainer used to return res.json() under a
+// type cast, and the route archived and bound the result unvalidated: a
+// JSON null body 500'd on the first field read (after the R2 archive was
+// already written), a JSON string was archived spread by character index
+// and stored as an all-null crawls row, and wrong-typed fields bound
+// as-is. A malformed result must instead read as a container failure, so
+// the route's existing catch falls back to the Worker crawler.
+
+export interface CrawlResult {
+  title?: string;
+  excerpt?: string;
+  links?: number;
+  status_code?: number;
+  text?: string;
+}
+
+const CRAWL_RESULT_STRING_FIELDS = ["title", "excerpt", "text"] as const;
+const CRAWL_RESULT_NUMBER_FIELDS = ["links", "status_code"] as const;
+
+export function parseCrawlResult(value: unknown): Validated<CrawlResult> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, error: "crawl result must be a JSON object" };
+  }
+  const body = value as Record<string, unknown>;
+  for (const field of CRAWL_RESULT_STRING_FIELDS) {
+    if (body[field] !== undefined && typeof body[field] !== "string") {
+      return { ok: false, error: `crawl result field ${field} must be a string` };
+    }
+  }
+  for (const field of CRAWL_RESULT_NUMBER_FIELDS) {
+    if (body[field] !== undefined && (typeof body[field] !== "number" || !Number.isFinite(body[field]))) {
+      return { ok: false, error: `crawl result field ${field} must be a number` };
+    }
+  }
+  return { ok: true, values: body as CrawlResult };
+}
+
 export type ManualFetcher = (url: string) => Promise<Response>;
 
 // Keep this policy in sync with container/app.py's _ValidatingRedirectHandler:
