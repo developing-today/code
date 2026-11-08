@@ -6,6 +6,11 @@
 # remain in OpenCode configuration files (repo tracked config,
 # user deployed config, and runtime state configs).
 #
+# "Active" means a configuration value: JSONC comments (// line and
+# /* */ block) are stripped before searching, so retirement history
+# recorded in comments does not block a retirement whose real
+# references are gone (PR #7679 Codex finding 4506184819).
+#
 # Usage:
 #   scripts/check-provider-retirement-gate.sh [options] <provider-id> [provider-id...]
 #
@@ -17,7 +22,8 @@
 # Exit codes:
 #   0: No references found across checked configs (safe to retire)
 #   1: Active references exist (retirement BLOCKED)
-#   2: Usage error / missing files
+#   2: Usage error / missing files / a config that could not be searched
+#      (fail closed: an unreadable config is never "no references")
 set -euo pipefail
 
 usage() {
@@ -35,8 +41,47 @@ Options:
 Exit codes:
   0: Safe to retire — zero references found across all checked config files.
   1: Retirement BLOCKED — active references found.
-  2: Configuration error or invalid usage.
+  2: Configuration error or invalid usage (including a config file that
+     could not be read/searched — the gate fails closed).
 EOF
+}
+
+# Strip JSONC comments from a config file, writing the result to stdout.
+# Comment characters are replaced with spaces (newlines preserved) so
+# line numbers in the output still match the source file. String
+# literals are passed through untouched, including // and /* sequences
+# inside them. Returns non-zero when the file cannot be read.
+strip_jsonc_comments() {
+  awk '
+    BEGIN { in_str = 0; in_block = 0; esc = 0 }
+    {
+      out = ""
+      n = length($0)
+      for (i = 1; i <= n; i++) {
+        c = substr($0, i, 1); d = substr($0, i + 1, 1)
+        if (in_block) {
+          if (c == "*" && d == "/") { in_block = 0; out = out "  "; i++ }
+          else { out = out " " }
+          continue
+        }
+        if (in_str) {
+          out = out c
+          if (esc) { esc = 0 }
+          else if (c == "\\") { esc = 1 }
+          else if (c == "\"") { in_str = 0 }
+          continue
+        }
+        if (c == "\"") { in_str = 1; out = out c; continue }
+        if (c == "/" && d == "/") {
+          for (j = i; j <= n; j++) out = out " "
+          i = n
+          break
+        }
+        if (c == "/" && d == "*") { in_block = 1; out = out "  "; i++; continue }
+        out = out c
+      }
+      print out
+    }' "$1"
 }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -120,9 +165,25 @@ total_violations=0
 for provider in "${providers[@]}"; do
   provider_matches=0
   for cfg in "${resolved_configs[@]}"; do
-    if grep -qF "$provider" "$cfg"; then
-      matches="$(grep -nF "$provider" "$cfg" || true)"
-      count="$(echo "$matches" | wc -l)"
+    stripped_file="$(mktemp)"
+    if ! strip_jsonc_comments "$cfg" > "$stripped_file"; then
+      echo "::error::Config file '$cfg' could not be read/searched; failing closed (exit 2)." >&2
+      rm -f "$stripped_file"
+      exit 2
+    fi
+    grep_status=0
+    matches="$(grep -nF "$provider" "$stripped_file")" || grep_status=$?
+    rm -f "$stripped_file"
+    if [[ $grep_status -eq 2 ]]; then
+      echo "::error::Config file '$cfg' could not be searched (grep error); failing closed (exit 2)." >&2
+      exit 2
+    fi
+    if [[ $grep_status -ne 0 && $grep_status -ne 1 ]]; then
+      echo "::error::Searching config file '$cfg' failed with unexpected status $grep_status; failing closed (exit 2)." >&2
+      exit 2
+    fi
+    if [[ $grep_status -eq 0 ]]; then
+      count="$(printf '%s\n' "$matches" | wc -l)"
       echo "::error::Config file '$cfg' contains $count reference(s) to provider '$provider':" >&2
       while IFS= read -r line; do
         echo "  $line" >&2

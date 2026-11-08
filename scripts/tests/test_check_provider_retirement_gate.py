@@ -110,5 +110,69 @@ class TestCheckProviderRetirementGate(unittest.TestCase):
             self.assertIn("--allow-empty", result.stdout)
 
 
+    def test_comment_only_references_pass(self):
+        # Codex finding 4506184819 (PR #7679): a provider mentioned only
+        # in JSONC comments (retirement history) is not an active
+        # reference and must not block retirement.
+        with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
+            cfg = Path(tmp) / "opencode.jsonc"
+            cfg.write_text(
+                '{\n'
+                '  // openai-codex retired 2026-11-01; see history.\n'
+                '  /* opencode-route was here,\n'
+                '     multi-line note about opencode-route */\n'
+                '  "model": "native-provider/model"\n'
+                '}\n'
+            )
+            for provider in ("openai-codex", "opencode-route"):
+                result = run_gate(["--config", str(cfg), provider])
+                self.assertEqual(result.returncode, 0, (provider, result.stderr))
+                self.assertIn("Retirement gate OK", result.stdout)
+
+    def test_value_reference_still_blocks_when_comments_present(self):
+        with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
+            cfg = Path(tmp) / "opencode.jsonc"
+            cfg.write_text(
+                '{\n'
+                '  // opencode-route mentioned in a comment\n'
+                '  "small_model": "opencode-route/speed"\n'
+                '}\n'
+            )
+            result = run_gate(["--config", str(cfg), "opencode-route"])
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("Retirement BLOCKED", result.stderr)
+            self.assertIn("opencode-route/speed", result.stderr)
+
+    def test_slashes_inside_strings_are_not_comments(self):
+        with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
+            cfg = Path(tmp) / "opencode.jsonc"
+            cfg.write_text(
+                '{\n'
+                '  "endpoint": "http://127.0.0.1:18750",\n'
+                '  "model": "opencode-route/workhorse"\n'
+                '}\n'
+            )
+            result = run_gate(["--config", str(cfg), "opencode-route"])
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("opencode-route/workhorse", result.stderr)
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0,
+                     "root can read chmod-0 files; grep-error path not exercisable")
+    def test_unreadable_config_fails_closed(self):
+        # Codex finding 4506184829 (PR #7679): a config that exists but
+        # cannot be searched is a configuration error (exit 2), never
+        # a silent "no references" pass.
+        with tempfile.TemporaryDirectory(prefix="retirement-gate-") as tmp:
+            cfg = Path(tmp) / "opencode.jsonc"
+            cfg.write_text('{\n  "model": "native/model"\n}\n')
+            cfg.chmod(0)
+            try:
+                result = run_gate(["--config", str(cfg), "opencode-route"])
+            finally:
+                cfg.chmod(0o644)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("failing closed", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
