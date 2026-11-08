@@ -176,6 +176,51 @@ code=$?
 assert_exit "unpairable #[ignore] fails" 1 "$code"
 assert_contains "unpairable #[ignore] is named as drift" "$out" "not followed by a recognizable fn declaration"
 
+# --- Codex findings on PR #4272: raw strings, non-ASCII names, comments --
+out="$(
+  cat <<'EOF' | run_guard
+#[test]
+#[ignore = r#"requires support for the '"' delimiter"#]
+fn uncovered_delimiter_gate() {}
+
+#[test]
+#[ignore = "gate"]
+fn covered_full_sweep_has_no_failures_gate() {}
+EOF
+)"
+code=$?
+assert_exit "raw-string reason shape fails" 1 "$code"
+assert_contains "raw-string reason shape named" "$out" "uncovered_delimiter_gate"
+
+out="$(
+  cat <<'EOF' | run_guard
+#[test]
+#[ignore = "corpus"]
+fn write_corpusé() {}
+
+#[test]
+#[ignore = "gate"]
+fn covered_ingest_survives_every_crash_point_gate() {}
+EOF
+)"
+code=$?
+assert_exit "non-ASCII name is not truncated into the corpus exclusion" 1 "$code"
+assert_contains "non-ASCII name preserved whole" "$out" "write_corpusé"
+
+out="$(
+  cat <<'EOF' | run_guard
+// These #[ignore]d tests run only in release.
+// See the crash-gate recipes for invocation.
+/* A block comment mentioning #[ignore] is not an attribute either. */
+#[test]
+#[ignore = "gate"]
+fn covered_full_sweep_has_no_failures_gate() {}
+EOF
+)"
+code=$?
+assert_exit "comment mentions of #[ignore] are ignored" 0 "$code"
+assert_contains "comment-mention fixture counted" "$out" "covers all 1"
+
 if [ "$failures" -ne 0 ]; then
   echo "$failures check-crash-gate-coverage test(s) FAILED" >&2
   exit 1

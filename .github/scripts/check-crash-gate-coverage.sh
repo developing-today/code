@@ -63,16 +63,16 @@ done
 # exact line pattern. A #[ignore] that cannot be paired with a fn
 # declaration is parse drift: the awk names it on stderr and exits
 # non-zero rather than silently dropping the test from the enumeration.
+# Enumeration is comment- and string-aware (Codex review on PR #4272,
+# task 13381): #[ignore] mentions inside // or /* */ comments or
+# string literals do not count, raw-string reasons are lexed as raw
+# strings, and fn names are preserved whole -- a non-ASCII identifier
+# is never truncated into a corpus-writer exclusion.
 # Names repeat across files (main.rs and identity.rs carry copies);
 # coverage is by name, so deduplicate.
 if ! ignored_raw="$(
   awk '
-    function unquoted_quotes(line,   s) {
-      s = line
-      gsub(/\\./, "", s)
-      return gsub(/"/, "\"", s)
-    }
-    function fn_name(line,   s) {
+    function fn_name(line,   s, k, ch, nm) {
       s = line
       sub(/^[[:space:]]*/, "", s)
       sub(/^pub[[:space:]]*\([^)]*\)[[:space:]]*/, "", s)
@@ -83,38 +83,104 @@ if ! ignored_raw="$(
       sub(/^const[[:space:]]+/, "", s)
       if (s !~ /^fn[[:space:]]+/) return ""
       sub(/^fn[[:space:]]+/, "", s)
-      sub(/[^A-Za-z0-9_].*/, "", s)
-      return s
+      sub(/^r#/, "", s)
+      nm = ""
+      for (k = 1; k <= length(s); k++) {
+        ch = substr(s, k, 1)
+        if (ch == " " || ch == "\t" || ch == "(" || ch == "<" || ch == "{") break
+        nm = nm ch
+      }
+      return nm
+    }
+    # scan() is a small lexer for the shapes naive quote counting gets
+    # wrong (Codex review on PR #4272): it walks one line tracking
+    # normal strings, raw strings (r#"..."#, any hash count), char
+    # literals, and // and /* */ comments. It records in code_text the
+    # line code with string contents blanked and comments removed,
+    # plus began_str / began_blk for the state at the line start, so
+    # an #[ignore] mentioned inside a comment or a string is never
+    # mistaken for an attribute, and a raw-string reason containing a
+    # quote never desynchronises the string state.
+    function scan(line,   i, c, n, h, j, closed) {
+      sq = sprintf("%c", 39)
+      began_str = (str != 0)
+      began_blk = (blk > 0)
+      code_text = ""
+      n = length(line)
+      i = 1
+      while (i <= n) {
+        c = substr(line, i, 1)
+        if (blk > 0) {
+          if (c == "/" && substr(line, i + 1, 1) == "*") { blk++; i += 2 }
+          else if (c == "*" && substr(line, i + 1, 1) == "/") { blk--; i += 2 }
+          else i++
+          continue
+        }
+        if (str == 1) {
+          if (c == "\\") { i += 2; continue }
+          if (c == "\"") { str = 0; code_text = code_text "\"" }
+          i++
+          continue
+        }
+        if (str == 2) {
+          if (c == "\"") {
+            closed = 1
+            for (h = 1; h <= rawhash; h++) if (substr(line, i + h, 1) != "#") { closed = 0; break }
+            if (closed) { str = 0; code_text = code_text "\""; i += 1 + rawhash; continue }
+          }
+          i++
+          continue
+        }
+        if (c == "/" && substr(line, i + 1, 1) == "/") break
+        if (c == "/" && substr(line, i + 1, 1) == "*") { blk = 1; code_text = code_text " "; i += 2; continue }
+        if (c == "\"") { str = 1; code_text = code_text "\""; i++; continue }
+        if (c == "r" || (c == "b" && substr(line, i + 1, 1) == "r")) {
+          j = i + (c == "b" ? 2 : 1)
+          h = 0
+          while (substr(line, j, 1) == "#") { h++; j++ }
+          if (substr(line, j, 1) == "\"") { str = 2; rawhash = h; code_text = code_text "\""; i = j + 1; continue }
+        }
+        if (c == sq) {
+          if (substr(line, i + 1, 1) == "\\") {
+            j = i + 2
+            while (j <= n && substr(line, j, 1) != sq) { if (substr(line, j, 1) == "\\") j++; j++ }
+            code_text = code_text "0"; i = j + 1; continue
+          }
+          if (substr(line, i + 2, 1) == sq) { code_text = code_text "0"; i += 3; continue }
+          code_text = code_text c; i++; continue
+        }
+        code_text = code_text c
+        i++
+      }
     }
     function drift(where) {
       printf "::error::check-crash-gate-coverage: #[ignore] at %s is not followed by a recognizable fn declaration — the enumeration in check-crash-gate-coverage.sh cannot see this test; fix the declaration shape or extend the enumeration.\n", where > "/dev/stderr"
       bad = 1
     }
-    in_string {
-      if (unquoted_quotes($0) % 2 == 1) in_string = 0
-      next
+    FNR == 1 && NR != 1 {
+      if (pending) drift(prev_file " (end of file)")
+      pending = 0; str = 0; blk = 0
     }
-    pending {
-      if ($0 ~ /^[[:space:]]*$/) next
-      if ($0 ~ /^[[:space:]]*\/\/\//) next
-      if ($0 ~ /^[[:space:]]*#\[/) {
-        if (unquoted_quotes($0) % 2 == 1) in_string = 1
-        next
-      }
-      name = fn_name($0)
-      if (name != "") {
-        print name
+    {
+      prev_file = FILENAME
+      scan($0)
+      if (began_str || began_blk) next
+      t = code_text
+      sub(/^[[:space:]]*/, "", t)
+      if (pending) {
+        if (t == "") next
+        if (t ~ /^#\[/) next
+        name = fn_name(t)
+        if (name != "") {
+          print name
+          pending = 0
+          next
+        }
+        drift(FILENAME ":" FNR)
         pending = 0
         next
       }
-      drift(FILENAME ":" FNR)
-      pending = 0
-      next
-    }
-    /#\[ignore/ {
-      pending = 1
-      if (unquoted_quotes($0) % 2 == 1) in_string = 1
-      next
+      if (t ~ /^#\[ignore([^A-Za-z0-9_]|$)/) pending = 1
     }
     END {
       if (pending) drift(FILENAME " (end of file)")
