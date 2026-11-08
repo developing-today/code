@@ -50,6 +50,7 @@ on:
       - ".github/workflows/id-check.yml"
       - ".github/scripts/id-pr-checks.txt"
       - ".github/scripts/check-id-pr-checks.sh"
+      - ".github/scripts/check-id-pr-checks.test.sh"
       - ".github/scripts/check-crash-gate-coverage.sh"
   schedule:
     # Nightly backstop for the full flake check (main tier, #1781).
@@ -92,6 +93,12 @@ jobs:
       # The PR list is enumerated, so guard it against the flake (#300):
       # a new flake check that is neither listed nor excluded fails here
       # by name instead of silently getting no PR coverage.
+      # The guard's own contract tests (#6881) run first (#7628):
+      # its misdiagnosis pins (duplicates, whitespace/CRLF) were
+      # verified nowhere — no workflow ran the .test.sh suite.
+      - name: Contract tests for the PR check list guard
+        run: bash .github/scripts/check-id-pr-checks.test.sh
+
       - name: Guard PR check list against flake drift
         run: .github/scripts/check-id-pr-checks.sh
 
