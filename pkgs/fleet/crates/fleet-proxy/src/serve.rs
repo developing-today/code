@@ -637,10 +637,23 @@ fn parse_request(frame: &serde_json::Value) -> Result<Request, String> {
     }
     let body = frame.get("body").filter(|b| !b.is_null()).cloned();
     let port = parse_port(frame)?;
-    let token_file = frame
-        .get("token_file")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    let token_file = match frame.get("token_file") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(path)) => Some(path.clone()),
+        Some(value) => {
+            let shape = match value {
+                serde_json::Value::Bool(_) => "boolean",
+                serde_json::Value::Number(_) => "number",
+                serde_json::Value::Array(_) => "array",
+                serde_json::Value::Object(_) => "object",
+                serde_json::Value::Null => "null",
+                serde_json::Value::String(_) => "string",
+            };
+            return Err(format!(
+                "request \"token_file\" must be a string or null, got {shape}"
+            ));
+        }
+    };
     Ok(Request {
         method,
         path,
@@ -938,6 +951,39 @@ mod tests {
     }
 
     const PORT: u16 = 4799;
+
+    #[test]
+    fn parse_request_validates_token_file_shape() {
+        let mut absent = serde_json::json!({"method": "GET", "path": "/health"});
+        assert!(parse_request(&absent).unwrap().token_file.is_none());
+
+        absent["token_file"] = serde_json::Value::Null;
+        assert!(parse_request(&absent).unwrap().token_file.is_none());
+
+        absent["token_file"] = serde_json::json!("/tmp/request-token");
+        assert_eq!(
+            parse_request(&absent).unwrap().token_file.as_deref(),
+            Some("/tmp/request-token")
+        );
+
+        for (value, shape) in [
+            (serde_json::json!(123), "number"),
+            (serde_json::json!(true), "boolean"),
+            (serde_json::json!({"path": "token"}), "object"),
+            (serde_json::json!(["token"]), "array"),
+        ] {
+            let frame = serde_json::json!({
+                "method": "GET",
+                "path": "/health",
+                "token_file": value,
+            });
+            let error = parse_request(&frame).unwrap_err();
+            assert!(
+                error.contains(shape),
+                "expected token_file error to name {shape}, got: {error}"
+            );
+        }
+    }
 
     #[test]
     fn checkout_grows_below_ceiling_then_reuses_idle() {
