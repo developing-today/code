@@ -32,7 +32,7 @@ worth knowing before you read on:
 | `mcpx_elicit_pending`                                                             | the tool is `mcpx_elicit_list`                                                                                                                                                                                                                                                                                                                                    |
 | `plumbing.elicitTTL`, `elicit.mode`, `elicit.rules`                               | none exist. The TTL is `elicit.ttl` in `defaults.json` and is not a setting; the shipped policy is `elicit.Route` (`internal/elicit/elicit.go:491`), which is not rule-based                                                                                                                                                                                      |
 | `MCPX_PLUGIN_ELICIT`                                                              | does not exist                                                                                                                                                                                                                                                                                                                                                    |
-| `onElicit()` / `ask()` script globals, the TUI view, the `mcpx-elicitation` skill | not built; `onElicit`/`ask` decided against (2026-11-03, #1935 / ELI-21): broker-only is the deliberate design, see §5.2. The TUI view and the skill remain unbuilt proposals                                                                                                                                                                                                                                                                                                                                                        |
+| `onElicit()` / `ask()` script globals, the TUI view, the `mcpx-elicitation` skill | not built; `onElicit`/`ask` decided against (2026-11-03, #1935 / ELI-21): broker-only is the deliberate design, see §5.2. The TUI view and the skill remain unbuilt proposals                                                                                                                                                                                     |
 | a `202` with `Location` and `Retry-After`, an `Elicitation` OpenAPI component     | not built. The retry shape that shipped is MCP-side `input_required`                                                                                                                                                                                                                                                                                              |
 
 ---
@@ -425,7 +425,7 @@ Why the broker stays the only answer path:
   gate or force every generated client to re-implement `Route`. Neither
   is acceptable, so the routing lives in exactly one place: the broker.
 - **A script cannot reliably know which call asked.** The correlation
-  the protocol has identifies a *call*, and a script is many calls,
+  the protocol has identifies a _call_, and a script is many calls,
   possibly concurrent over one shared upstream instance; questions that
   cannot be attributed are already marked `ambiguous` on the CLI path
   (§5.1). A registered global handler would answer questions it cannot

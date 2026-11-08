@@ -99,16 +99,52 @@ func TestMalformedEnvironmentPairsAreCaught(t *testing.T) {
 }
 
 func TestTypeCheckIsSkippedWhenOff(t *testing.T) {
-	r := preflight.TypeCheck(nil, "/bin/deno", "/nope.ts", preflight.TypeCheckOff, 0)
+	r := preflight.TypeCheck(context.TODO(), "/bin/deno", "/nope.ts", preflight.TypeCheckOff, 0)
 	if len(r.Problems) != 0 {
 		t.Errorf("off means off: %v", r.Problems)
+	}
+}
+
+func TestScriptCheckModesSelectTypesAndStrictCommands(t *testing.T) {
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "main.ts")
+	if err := os.WriteFile(entry, []byte("export {};\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "args")
+	stub := filepath.Join(dir, "deno-stub")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + marker + "'\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		mode preflight.TypeCheckMode
+		want []string
+	}{
+		{preflight.TypeCheckTypes, []string{"check", entry}},
+		{preflight.TypeCheckStrict, []string{"check", "--all", entry}},
+	} {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			rep := preflight.TypeCheckResolved(context.Background(), stub, entry, tc.mode, 0, nil, dir)
+			if err := rep.Err(); err != nil {
+				t.Fatalf("check failed: %v", err)
+			}
+			got, err := os.ReadFile(marker)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fields := strings.Fields(string(got)); strings.Join(fields, "\x00") != strings.Join(tc.want, "\x00") {
+				t.Errorf("arguments = %q, want %q", fields, tc.want)
+			}
+		})
 	}
 }
 
 func TestTypeCheckSaysSoWhenTheRuntimeCannotDoIt(t *testing.T) {
 	// Node and Bun strip types rather than checking them. Saying so is
 	// better than pretending the check ran.
-	r := preflight.TypeCheck(nil, "/usr/bin/node", "/x.ts", preflight.TypeCheckOn, 0)
+	r := preflight.TypeCheck(context.TODO(), "/usr/bin/node", "/x.ts", preflight.TypeCheckOn, 0)
 	if len(r.Problems) != 1 {
 		t.Fatalf("expected one note, got %v", r.Problems)
 	}

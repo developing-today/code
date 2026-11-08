@@ -178,29 +178,29 @@ func (p *Pool) restore(handed []*Instance) {
 // describe is the instance's record without its pipes. p.mu is held; the
 // executable identity is read under p.execMu, which guards it everywhere
 // else (see Pool).
-func (in *Instance) describe(p *Pool) InstanceHandoff {
-	in.subMu.Lock()
-	subs := make([]string, 0, len(in.subscribed))
-	for uri := range in.subscribed {
+func (i *Instance) describe(p *Pool) InstanceHandoff {
+	i.subMu.Lock()
+	subs := make([]string, 0, len(i.subscribed))
+	for uri := range i.subscribed {
 		subs = append(subs, uri)
 	}
-	in.subMu.Unlock()
+	i.subMu.Unlock()
 	p.execMu.Lock()
-	execStamp, execIdentity := in.execStamp, in.execIdentity
+	execStamp, execIdentity := i.execStamp, i.execIdentity
 	p.execMu.Unlock()
 	return InstanceHandoff{
-		ID:           in.ID,
-		Trace:        in.trace,
-		Key:          in.key,
-		Root:         in.root,
-		Cwd:          in.cwd,
+		ID:           i.ID,
+		Trace:        i.trace,
+		Key:          i.key,
+		Root:         i.root,
+		Cwd:          i.cwd,
 		ExecStamp:    execStamp,
 		ExecIdentity: execIdentity,
-		StartedAt:    in.startedAt,
-		LastUsed:     in.lastUsed,
-		Calls:        in.calls.Load(),
-		EraSource:    in.eraSource,
-		LegacyLane:   in.legacyLane,
+		StartedAt:    i.startedAt,
+		LastUsed:     i.lastUsed,
+		Calls:        i.calls.Load(),
+		EraSource:    i.eraSource,
+		LegacyLane:   i.legacyLane,
 		Subscribed:   subs,
 	}
 }
@@ -374,6 +374,17 @@ func (p *Pool) resumeInstance(a *Adopted) *Instance {
 		in.subscribed[uri] = true
 	}
 	ref.set(in)
+	// A session adopted in a takeover gets the same cold-restart
+	// persistence a started one does (#1415): without it, a session id
+	// rotated after adoption never reaches the store, and a session
+	// adopted from a pre-persistence daemon has no record at all. The
+	// fingerprint is over the effective config for the adopted scope;
+	// if it cannot be resolved, persistence is skipped, not fatal --
+	// the adoption itself is unaffected.
+	if eff, err := p.cfg.Effective(h.Root, h.Cwd); err == nil {
+		p.installSessionPersistence(eff, h.Key, h.LegacyLane, ref, cl, a.tr)
+		p.saveUpstreamSession(eff, h.Key, h.LegacyLane, ref)
+	}
 	return in
 }
 

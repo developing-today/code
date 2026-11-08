@@ -12,6 +12,10 @@ ExecStart=/run/current-system/sw/bin/bun run src/server.ts
 # ~/secrets/pm-stack.sops.yaml by install.sh (mode 600, never committed).
 # Runtime files live outside the checkout so deploys cannot overwrite them.
 EnvironmentFile=%h/.local/state/pm-aggregator/.env
+# Digest archives live in the state dir (same rule as above); this must
+# match the digest units (aggregator/systemd/digest-*.service) or the
+# server defaults to <checkout>/digests and never sees generated archives.
+Environment=PM_AGG_DIGESTS_DIR=%h/.local/state/pm-aggregator/digests
 Restart=on-failure
 RestartSec=5
 

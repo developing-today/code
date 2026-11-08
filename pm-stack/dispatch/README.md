@@ -92,7 +92,7 @@ failed.
 
 ```jsonc
 {
-  "repo": "developing-today/opencode", // required
+  "repo": "developing-today-forks/opencode", // required
   "title": "investigate the red build", // required
   "prompt": "…", // required ("body" accepted as an alias)
   "kind": "triage", // optional: triage|small_fix|pr_shepherd|ci_investigation
@@ -473,19 +473,19 @@ touching any caller.
 
 ## Configuration (env)
 
-| Name                                              | Default                                     | Notes                                                                 |
-| ------------------------------------------------- | ------------------------------------------- | --------------------------------------------------------------------- |
-| `DISPATCH_HOSTS`                                  | `127.0.0.1`                                 | install.sh renders loopback + the laptop tailnet IP                   |
-| `DISPATCH_PORT`                                   | `4879`                                      |                                                                       |
-| `DISPATCH_BUILD_VERSION`                          | `dev`                                       | set by install.sh to the deployed commit                              |
-| `DISPATCH_API_TOKEN`                              | —                                           | from `~/secrets/dispatch.env`                                         |
-| `DISPATCH_OIDC_AUDIENCE`                          | `pm-dispatch`                               |                                                                       |
-| `DISPATCH_REPO_ALLOWLIST`                         | the six fleet repos                         |                                                                       |
-| `SUPABASE_URL`                                    | — (required, no default)                    | rendered by install.sh from `~/secrets/pm-stack.sops.yaml` (`supabase_url`, muse-dev2) |
+| Name                                              | Default                                     | Notes                                                                                                                                            |
+| ------------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `DISPATCH_HOSTS`                                  | `127.0.0.1`                                 | install.sh renders loopback + the laptop tailnet IP                                                                                              |
+| `DISPATCH_PORT`                                   | `4879`                                      |                                                                                                                                                  |
+| `DISPATCH_BUILD_VERSION`                          | `dev`                                       | set by install.sh to the deployed commit                                                                                                         |
+| `DISPATCH_API_TOKEN`                              | —                                           | from `~/secrets/dispatch.env`                                                                                                                    |
+| `DISPATCH_OIDC_AUDIENCE`                          | `pm-dispatch`                               |                                                                                                                                                  |
+| `DISPATCH_REPO_ALLOWLIST`                         | the six fleet repos                         |                                                                                                                                                  |
+| `SUPABASE_URL`                                    | — (required, no default)                    | rendered by install.sh from `~/secrets/pm-stack.sops.yaml` (`supabase_url`, muse-dev2)                                                           |
 | `SUPABASE_SERVICE_ROLE_KEY`                       | —                                           | rendered by install.sh from `~/secrets/pm-stack.sops.yaml` (`supabase_service_role_key`; Bitwarden source `supabase.muse-dev2.service-role-key`) |
-| `OPENCODE_URL`                                    | `http://127.0.0.1:13420`                    | laptop standing server                                                |
-| `OPENCODE_AUTH_FILE`                              | `~/.local/state/opencode/service-prod.json` | password read at runtime, never logged                                |
-| `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_BASE64` | —                                           | rendered by install.sh from `~/secrets/pm-stack.sops.yaml`            |
+| `OPENCODE_URL`                                    | `http://127.0.0.1:13420`                    | laptop standing server                                                                                                                           |
+| `OPENCODE_AUTH_FILE`                              | `~/.local/state/opencode/service-prod.json` | password read at runtime, never logged                                                                                                           |
+| `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_BASE64` | —                                           | rendered by install.sh from `~/secrets/pm-stack.sops.yaml`                                                                                       |
 
 GitHub issue creation uses the pm-stack GitHub App (installed on code,
 opencode, openchamber and dezren39/nix — **not** developing-today/zettel

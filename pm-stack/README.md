@@ -17,13 +17,13 @@ Phase 2 (2026-10-24) added three layers, each in its own subdirectory
 with the same deploy shape (SOPS → mode-600 env → compose/unit →
 health gate):
 
-| Layer     | Piece           | Version / pin                                                    | Reach                                                                                    | Deployment definition |
-| --------- | --------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | --------------------- |
-| Dispatch  | ready-for-agent | npm `ready-for-agent@1.1.0` (no container image exists upstream) | UI + GraphQL on `6056`, loopback + tailnet (app loopback-only; tailnet via socket proxy, #1181)                        | `ready-for-agent/`    |
-| Planning  | Pad             | `ghcr.io/perpetualsoftware/pad:0.18.1`, pinned by digest         | `127.0.0.1:7777` + host tailnet address (`PM_STACK_TAILNET_IP`):7777; no tunnel hostname | `pad/`                |
-| Tables    | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + host tailnet address (`PM_STACK_TAILNET_IP`):8484; no tunnel hostname | `grist/`              |
-| Dashboard | Aggregator      | this repo (Bun app, user unit `pm-aggregator`)                   | `127.0.0.1:4870` + tailnet `amd-6.raptor-pumpkinseed.ts.net:4870`; no public route       | `aggregator/`         |
-| Intake    | pm-dispatch     | this repo (Bun app, user unit `pm-dispatch`)                     | `127.0.0.1:4879` + tailnet; public via tunnel as `dispatch.security.cab`                 | `dispatch/`           |
+| Layer     | Piece           | Version / pin                                                    | Reach                                                                                           | Deployment definition |
+| --------- | --------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------- |
+| Dispatch  | ready-for-agent | npm `ready-for-agent@1.1.0` (no container image exists upstream) | UI + GraphQL on `6056`, loopback + tailnet (app loopback-only; tailnet via socket proxy, #1181) | `ready-for-agent/`    |
+| Planning  | Pad             | `ghcr.io/perpetualsoftware/pad:0.18.1`, pinned by digest         | `127.0.0.1:7777` + host tailnet address (`PM_STACK_TAILNET_IP`):7777; no tunnel hostname        | `pad/`                |
+| Tables    | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + host tailnet address (`PM_STACK_TAILNET_IP`):8484; no tunnel hostname        | `grist/`              |
+| Dashboard | Aggregator      | this repo (Bun app, user unit `pm-aggregator`)                   | `127.0.0.1:4870` + tailnet `amd-6.raptor-pumpkinseed.ts.net:4870`; no public route              | `aggregator/`         |
+| Intake    | pm-dispatch     | this repo (Bun app, user unit `pm-dispatch`)                     | `127.0.0.1:4879` + tailnet; public via tunnel as `dispatch.security.cab`                        | `dispatch/`           |
 
 ready-for-agent runs as a systemd **user unit** (like `pm-tunnel`)
 because upstream ships only an npm package; Pad and Grist run as
@@ -60,6 +60,36 @@ isolated in `deploy.sh` (two env vars) and the systemd unit paths;
 everything else is host-independent so the stack can move to the
 Kubernetes cluster later (the same values map onto a Secret + the
 upstream Helm chart's env).
+
+## Sandbox posture and alignment
+
+The sandbox is for Muse sessions, SSH, and web browsing only. It is not a
+PM-stack host: do not start or enable servers, proxies, containers, or
+service timers there. PM-stack services and the fleet-feed collector run
+on the laptop host `amd`; the old sandbox kill-collector timer has been
+retired, and its script refuses to run unless `hostname -s` is `amd`.
+
+To align a sandbox checkout with the laptop's repository source, preserve
+local work and fast-forward from `origin/main` (never reset or force a
+checkout):
+
+```bash
+cd ~/git/code
+git status --short --branch
+git fetch origin
+git switch main
+git merge --ff-only origin/main
+git rev-parse HEAD
+```
+
+Compare that commit with the laptop's `git -C ~/git/code rev-parse HEAD`
+using `~/tools/laptop-ssh.sh`. If the checkout has local changes or
+cannot fast-forward, stop and preserve them for reconciliation; do not
+reset it. Refresh repo-managed configuration from the aligned checkout,
+but keep runtime deployment on the laptop: do not run `deploy.sh`, an
+`install.sh`, `nixos-rebuild`, or any `systemctl enable/start` command on
+the sandbox. Keep copied configuration source-aligned; do not copy
+runtime state or rendered secret files as part of this alignment step.
 
 ## GitHub Project #4 conventions
 
@@ -118,7 +148,7 @@ instead). Changing `AUTH_SECRET` signs everyone out; changing
 `POSTGRES_PASSWORD` after first initialisation breaks the database
 login until the database password is changed to match.
 
-## Bring it up (first time, on the host)
+## Bring it up (first time, on laptop host `amd` only)
 
 ```bash
 # 1. Check out this repo (or copy this directory + ../secrets) and cd in
@@ -225,7 +255,7 @@ cd ready-for-agent
   [`ready-for-agent/config.json`](ready-for-agent/config.json) names
   every served repository (clone URL, local dir, `mergePolicy`,
   `defaultModel`, `includeAllIssueAuthors`, paused). `./install.sh
-  clone` clones/fetches them all into `ready-for-agent/repos/`, and
+clone` clones/fetches them all into `ready-for-agent/repos/`, and
   every `./install.sh` run finishes by applying the config through
   the harness's GraphQL API via
   [`ready-for-agent/apply-config.sh`](ready-for-agent/apply-config.sh)

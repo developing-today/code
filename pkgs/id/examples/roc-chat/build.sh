@@ -40,5 +40,5 @@ $WASM_OPT -Os --all-features roc-chat.wasm -o roc-chat.wasm.opt
 mv roc-chat.wasm.opt roc-chat.wasm
 $WASM_TOOLS strip roc-chat.wasm -o roc-chat.wasm.stripped
 mv roc-chat.wasm.stripped roc-chat.wasm
-"${WASM_TOOLS}" validate roc-chat.wasm
+$WASM_TOOLS validate roc-chat.wasm
 echo "Built roc-chat.wasm (import-free Roc world module)"

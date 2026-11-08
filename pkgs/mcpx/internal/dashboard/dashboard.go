@@ -1,3 +1,4 @@
+// Package dashboard serves the mcpx web dashboard: its single-page UI and HTTP handler.
 package dashboard
 
 import (

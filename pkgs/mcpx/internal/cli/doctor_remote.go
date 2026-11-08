@@ -127,7 +127,7 @@ func (a *App) doctorSlowRemotes(ctx context.Context) []check {
 	if err != nil {
 		return nil
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	rows, err := st.Calls(logstore.Query{})
 	if err != nil {
 		return nil
