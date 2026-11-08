@@ -13,6 +13,7 @@
 {
   fleet,
   mcpx,
+  routeProxy,
   idMailDeploy,
   pkarrDeploy,
   developingTodayBackupDeploy,
@@ -146,5 +147,36 @@
     healthCheck = null;
     targets = [ "cloudflare" ];
     class = "cloudflare";
+  };
+
+  # Route proxy - issue #5768, migration M1 of the deployment
+  # architecture (design doc/2026-11-04_deployment-architecture-services-layer.md, §7): the
+  # hand-written opencode-route-proxy.service unit is already gone
+  # and :18750 serves nothing, while the deployed OpenCode config
+  # still routes opencode-route/* through it (#5610). This registry
+  # entry is the services-layer target definition; the package is the
+  # restored proxy script (see route-proxy.nix). Activation - the
+  # rendered unit, generations, and rollback in M1's acceptance -
+  # waits on the systemd renderer/generation slice, which has not
+  # landed; no hand-written unit replaces this entry in the meantime.
+  # Whether the proxy itself is retired stays #5610's decision; this
+  # entry only moves its deployment mechanism.
+  route-proxy = {
+    package = routeProxy;
+    entryPoint = "bin/opencode-route-proxy";
+    args = [ ];
+    environment = {
+      OPENCODE_ROUTE_PROXY_PORT = "18750";
+      OPENCODE_ROUTE_PROXY_HOST = "127.0.0.1";
+    };
+    secrets = [ ]; # credentials are read by the proxy itself from the OpenCode credential store at runtime
+    user = "user";
+    ports = [ 18750 ];
+    restart = "on-failure";
+    # A real request through :18750 (the proxy's own health route),
+    # not a process or port check.
+    healthCheck = "http://127.0.0.1:18750/health";
+    targets = [ "laptop" ];
+    class = "systemd";
   };
 }

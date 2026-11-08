@@ -20,6 +20,7 @@ let
   definitions = import ./services.nix {
     fleet = fleetPkgs.fleet;
     mcpx = callPackage ../mcpx/package.nix { };
+    routeProxy = callPackage ./route-proxy.nix { };
     # The existing Cloudflare deploy apps (issue #5767, phase 1) — the
     # same callPackage expressions lib/default.nix uses for the
     # id-mail-deploy / pkarr-deploy / developing-today-backup-deploy
