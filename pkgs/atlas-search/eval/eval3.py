@@ -2,7 +2,7 @@
 """Golden-set v3 evaluator for the Atlas embedding bake-off.
 
 Scoring differs from the v2 harness in ONE deliberate way: a question is a
-hit when one of its recorded GOLD CHUNK IDS (golden-queries-v3.json
+hit when one of its recorded GOLD CHUNK IDS (`fixtures/golden-311.json`
 `chunk_ids`) appears in the top-k ranked chunk ids; the rank used for MRR
 is the position of the first gold id. (v2 scored by expected_hint string
 presence in chunk text; v3 gold ids are canonical chunk ids, verified at
@@ -27,7 +27,7 @@ Corpus guard: before scoring, chunk count and the v3 fingerprint
 are recomputed and compared with the frozen values; mismatch = abort.
 
 Usage:
-  eval3.py --mode fts   --corpus DB --queries golden-queries-v3.json --out res.json
+  eval3.py --mode fts   --corpus DB --queries fixtures/golden-311.json --out res.json
   eval3.py --mode vector --vecdb VDB --table vec_x --framework st --model M [--trunc 384]
   eval3.py --mode hybrid (same vector args; FTS fused in)
 """
