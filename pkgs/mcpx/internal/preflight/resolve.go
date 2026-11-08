@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/deps"
 )
 
@@ -419,7 +419,7 @@ func npmLatestVersion(ctx context.Context, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: defaults.PreflightNPMTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
