@@ -556,10 +556,22 @@ async function roadmapContext() {
 }
 
 async function searchContext(query: string) {
-  const [board, rows] = await Promise.all([source.board(), source.roadmap()]);
+  // #1212 slice 2: registry, DNS, services, and tier items join the
+  // board/roadmap subjects. Each extra source fails soft (empty on
+  // error) so one broken source never takes search down with it.
+  const [board, rows, registry, dns, usage, orchestration] = await Promise.all([
+    source.board(),
+    source.roadmap(),
+    source.registry().catch(() => []),
+    source.dns().catch(() => null),
+    source.usage().catch(() => null),
+    source.orchestration().catch(() => null),
+  ]);
   const refs = [...new Set([...allRefs(board), ...allRefs(rows)])];
   const items = await source.items(refs);
-  return { query, results: searchWork(board, rows, items, query), items };
+  const tierItems = orchestration ? [...orchestration.tiers.needsDrew, ...orchestration.tiers.needsOrchestrator] : [];
+  const extras = { registry, dns, services: usage?.services ?? [], tierItems };
+  return { query, results: searchWork(board, rows, items, query, extras), items };
 }
 
 // #3321: watchdog gap-sync passes run whole and in observation
