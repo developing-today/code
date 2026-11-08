@@ -81,4 +81,94 @@ describe("roadmap Horizon contract (#1207)", () => {
     expect(rows.length).toBeGreaterThan(0);
     expect(source.provenance().roadmap).toContain("grist unreachable");
   });
+
+  describe("property-based Horizon parser coverage", () => {
+    // Oracle: an independent Gregorian calendar model - JS Date UTC
+    // round-trip - decides date validity. The parser under test uses an
+    // arithmetic leap-year table instead, so agreement across generated
+    // inputs is a real cross-check, not a restatement of the parser.
+    const mulberry32 = (seedStart: number) => {
+      let a = seedStart >>> 0;
+      return () => {
+        a = (a + 0x6d2b79f5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    };
+    const pad = (n: number, w: number) => String(n).padStart(w, "0");
+    const oracleValidDate = (year: number, month: number, day: number): boolean => {
+      const dt = new Date(0);
+      dt.setUTCFullYear(year, month - 1, day);
+      return dt.getUTCFullYear() === year && dt.getUTCMonth() === month - 1 && dt.getUTCDate() === day;
+    };
+
+    test("generated dates: validity always agrees with the calendar oracle", () => {
+      const rand = mulberry32(0x1207);
+      const edgeYears = [1900, 2000, 2100, 2400, 2024, 2026];
+      for (let i = 0; i < 900; i++) {
+        const year = i % 3 === 0 ? edgeYears[Math.floor(rand() * edgeYears.length)] : 1800 + Math.floor(rand() * 800);
+        const month = Math.floor(rand() * 15); // 0..14 - includes invalid months
+        const day = Math.floor(rand() * 34); // 0..33 - includes invalid days
+        const value = `${pad(year, 4)}-${pad(month, 2)}-${pad(day, 2)}`;
+        const result = validateRoadmapHorizon(value);
+        expect(result.valid).toBe(oracleValidDate(year, month, day));
+        if (result.valid) expect(result).toEqual({ valid: true, canonical: value, changed: false });
+      }
+    });
+
+    test("generated valid values: canonicalization is idempotent under case/whitespace variation", () => {
+      const rand = mulberry32(0x3958);
+      const buckets = ["Now", "Next", "Later", "Ongoing", "Unscheduled"];
+      const flipCase = (s: string) => [...s].map((c) => (rand() < 0.5 ? c.toUpperCase() : c.toLowerCase())).join("");
+      const wrap = (s: string) => `${" ".repeat(Math.floor(rand() * 3))}${s}${"\t".repeat(Math.floor(rand() * 2))}`;
+      for (let i = 0; i < 600; i++) {
+        const kind = Math.floor(rand() * 3);
+        let canonical: string;
+        let variant: string;
+        if (kind === 0) {
+          let year = 0, month = 0, day = 0;
+          do {
+            year = 1800 + Math.floor(rand() * 800);
+            month = 1 + Math.floor(rand() * 12);
+            day = 1 + Math.floor(rand() * 31);
+          } while (!oracleValidDate(year, month, day));
+          canonical = `${pad(year, 4)}-${pad(month, 2)}-${pad(day, 2)}`;
+          variant = wrap(canonical);
+        } else if (kind === 1) {
+          const q = 1 + Math.floor(rand() * 4);
+          const year = 1800 + Math.floor(rand() * 800);
+          canonical = `Q${q} ${year}`;
+          variant = wrap(`${flipCase(`Q${q}`)}${" ".repeat(1 + Math.floor(rand() * 3))}${year}`);
+        } else {
+          canonical = buckets[Math.floor(rand() * buckets.length)];
+          variant = wrap(flipCase(canonical));
+        }
+        const result = validateRoadmapHorizon(variant);
+        expect(result).toEqual({ valid: true, canonical, changed: variant !== canonical });
+        // Idempotence: re-validating the canonical form is a fixed point.
+        expect(validateRoadmapHorizon(canonical)).toEqual({ valid: true, canonical, changed: false });
+      }
+    });
+
+    test("generated malformed values are rejected", () => {
+      const rand = mulberry32(0x7297);
+      const buckets = ["Now", "Next", "Later", "Ongoing", "Unscheduled"];
+      for (let i = 0; i < 300; i++) {
+        const year = 1800 + Math.floor(rand() * 800);
+        const bad = [
+          `Q${rand() < 0.5 ? 0 : 5 + Math.floor(rand() * 5)} ${year}`,
+          `${year}/${pad(1 + Math.floor(rand() * 12), 2)}/${pad(1 + Math.floor(rand() * 28), 2)}`,
+          `${year}-${pad(1 + Math.floor(rand() * 12), 2)}`,
+          `${buckets[Math.floor(rand() * buckets.length)]}!`,
+          `Q1 ${pad(year, 5)}`,
+          `${pad(year, 4)}-${1 + Math.floor(rand() * 9)}-${pad(1 + Math.floor(rand() * 28), 2)}`,
+        ][Math.floor(rand() * 6)];
+        expect(validateRoadmapHorizon(bad).valid).toBe(false);
+      }
+      for (const nonText of [null, undefined, 20261024, {}, []]) {
+        expect(validateRoadmapHorizon(nonText).valid).toBe(false);
+      }
+    });
+  });
 });
