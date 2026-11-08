@@ -2507,7 +2507,7 @@
         "autonomy": "rules"
       },
       "workhorse-primary": {
-        "name": "Workhorse primary - Codex (Luna) + Meta (Spark contributor) + DeepSeek Flash plan + Sonnet plan (Antigravity)",
+        "name": "Workhorse primary - EMPTIED 2026-11-07 (Drew): no legs; chain stage kept, contributes nothing",
         // 2026-10-31 (Drew): primary swaps Terra -> Luna #xhigh to start (high also approved). AA v5 cost-per-score: Luna beats Terra at EVERY effort level (cost per 100 score pts - low 0.021 vs 0.241, medium 0.067 vs 0.447, high 0.091 vs 0.619, xhigh 0.114 vs 0.889, max 0.184 vs 1.882 USD); both burn the same ChatGPT pair, so the efficiency is pure quota yield. Terra kept its specialist-tier seats at that writing (corrected 2026-11-03, task 8486 / issue #4390: Terra #medium was removed from specialist on 2026-10-27 and left the workhorse relief pool on 2026-10-31, so it now holds no specialist or workhorse seat), where its higher score ceiling (51 max vs Luna 38) earns its cost.
         // 2026-10-31 (Drew): primary swaps to Codex — terra-plan#medium takes the primary seat to burn the Codex pool down (Drew resets the quota once it is used up); Gemini Flash moves to workhorse-weighted at weight 2.
         // 2026-10-31 (Drew): Sonnet leaves primary — primary is Gemini Flash alone. Sonnet moves to workhorse-weighted.
@@ -2634,20 +2634,18 @@
         // bucket, NOT the Gemini bucket pulled from the primary path on
         // 2026-10-31. Medium effort: workhorse is the volume tier;
         // sonnet-plan#high stays specialist's head seat.
-        "targets": [
-          "openai-plan/gpt-6-luna#xhigh",
-          "_muse/muse-spark-1.3-contributor#xhigh",
-          "opencode-route/deepseek-flash-plan#high",
-          "opencode-route/sonnet-plan#medium"
-        ],
+        // 2026-11-07 (Drew, direct order): workhorse-primary is EMPTIED
+        // - targets [] and no weights map. The route definition stays
+        // in the workhorse chain (workhorse-ordered -> workhorse-primary
+        // -> workhorse-weighted) but contributes no legs; workhorse
+        // traffic is served by workhorse-ordered (deepseek-flash-plan
+        // #high) and workhorse-weighted only. History of the former
+        // four legs (Luna #xhigh, Spark contributor #xhigh,
+        // deepseek-flash-plan#high, sonnet-plan#medium, all weight 2)
+        // is in the comment block above and in git history.
+        "targets": [],
         "selection": "round-robin",
-        "autonomy": "rules",
-        "weights": {
-          "openai-plan/gpt-6-luna": 2,
-          "_muse/muse-spark-1.3-contributor": 2,
-          "opencode-route/deepseek-flash-plan": 2,
-          "opencode-route/sonnet-plan": 2
-        }
+        "autonomy": "rules"
       },
       "workhorse": {
         "name": "Workhorse - standard work: Flash primary, weighted relief pool behind it",
