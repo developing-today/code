@@ -89,6 +89,7 @@ export function normalizeResetAt(v: unknown): string | null {
 export function serviceIdFor(providerId: string): string {
   switch (providerId) {
     case "claude":
+    case "_claude":
       return "anthropic:claude-pro";
     case "codex":
       return "openai.main";
@@ -96,15 +97,45 @@ export function serviceIdFor(providerId: string): string {
       return "cline-pass";
     case "command-code":
       return "commandcode";
+    case "_commandcode":
+      return "_commandcode";
     case "deepseek":
       return "deepseek";
     case "meta":
+    case "_muse":
       return "meta";
     case "opendesign":
       return "opendesign";
     default:
       return providerId;
   }
+}
+
+/**
+ * Canonical provider ids for snapshot entries. The quota module answers
+ * in its own spellings; the snapshot contract speaks the OpenCode config
+ * provider ids — the router matches quota readings by exact provider id
+ * (quota-driven skip re-admission), so an entry published under a module
+ * spelling never reaches the provider it describes. The fleet-built
+ * providers were renamed to leading-underscore config ids in the fork
+ * (#1823, 2026-11-07): antigravity -> _antigravity, the claude-code door
+ * (module: "claude") -> _claude, commandcode (module: "command-code")
+ * -> _commandcode, and the muse-direct door (module: "meta", the Muse
+ * Code High Usage reading) -> _muse. Normalize here, at the one mapping
+ * point every gathered result passes through. Pool/service ids are a
+ * separate contract and stay put: serviceIdFor carries the dual-spelling
+ * cases (both "claude" and "_claude" land on anthropic:claude-pro, and
+ * "_muse" keeps the "meta" pool).
+ */
+const CANONICAL_PROVIDER_IDS: Readonly<Record<string, string>> = {
+  antigravity: "_antigravity",
+  claude: "_claude",
+  "command-code": "_commandcode",
+  meta: "_muse",
+};
+
+export function canonicalProviderId(providerId: string): string {
+  return CANONICAL_PROVIDER_IDS[providerId] ?? providerId;
 }
 
 export const GATHERER_SOURCE = "opencode-quota";
@@ -122,8 +153,13 @@ export const GATHERER_SOURCE = "opencode-quota";
  */
 export const GO_DREWRYPOPE_SERVICE_ID = "opencode-go.drewrypope";
 export const GO_POPESDREW_SERVICE_ID = "opencode-go.popesdrew";
-export const ANTIGRAVITY_GEMINI_SERVICE_ID = "antigravity-direct.gemini";
-export const ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID = "antigravity-direct.claude-gpt";
+export const ANTIGRAVITY_GEMINI_SERVICE_ID = "_antigravity.gemini";
+export const ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID = "_antigravity.claude-gpt";
+// Pre-rename (#1823) split ids: a gatherer still paired with the old
+// fork binary reports providerId "antigravity" and its rows keep the
+// historical series; the renamed provider starts the new series.
+export const ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID = "antigravity-direct.gemini";
+export const ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID = "antigravity-direct.claude-gpt";
 
 /**
  * Which split Go pool a per-workspace entry belongs to, from the
@@ -148,7 +184,8 @@ export function goPoolServiceId(entry: QuotaCurrentEntry): string | null {
  * Claude+GPT pool. Quota grouping must use the same rule, or burn and
  * quota would disagree about which pool a model draws from.
  */
-function antigravityPoolForModel(model: string): string {
+function antigravityPoolForModel(model: string, legacy = false): string {
+  if (legacy) return model.startsWith("gemini") ? ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID : ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID;
   return model.startsWith("gemini") ? ANTIGRAVITY_GEMINI_SERVICE_ID : ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID;
 }
 
@@ -169,7 +206,11 @@ function antigravityPoolRows(entry: QuotaCurrentEntry): QuotaCurrentEntry[] {
     // A failed provider read lapses both pools loudly — history
     // retained, no stale % presented as current — instead of leaving
     // the pools on their dated reads with no signal the source died.
-    return [ANTIGRAVITY_GEMINI_SERVICE_ID, ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID].map((serviceId) => ({
+    const ids =
+      entry.providerId === "antigravity"
+        ? [ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID, ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID]
+        : [ANTIGRAVITY_GEMINI_SERVICE_ID, ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID];
+    return ids.map((serviceId) => ({
       ...entry,
       serviceId,
     }));
@@ -181,7 +222,7 @@ function antigravityPoolRows(entry: QuotaCurrentEntry): QuotaCurrentEntry[] {
     const sep = w.name.lastIndexOf(":");
     if (sep <= 0 || sep === w.name.length - 1) continue;
     if (w.pctOfLimit == null) continue;
-    const pool = antigravityPoolForModel(w.name.slice(0, sep));
+    const pool = antigravityPoolForModel(w.name.slice(0, sep), entry.providerId === "antigravity");
     const winName = w.name.slice(sep + 1);
     let group = best.get(pool);
     if (!group) {
@@ -224,7 +265,7 @@ export function entriesWithPoolSplits(entries: readonly QuotaCurrentEntry[]): Qu
       // their dated reads until a real read (ok or error) arrives.
       const serviceId = goPoolServiceId(entry);
       if (serviceId && entry.state !== "unconfigured") out.push({ ...entry, serviceId });
-    } else if (entry.providerId === "antigravity") {
+    } else if (entry.providerId === "antigravity" || entry.providerId === "_antigravity") {
       out.push(...antigravityPoolRows(entry));
     }
   }
@@ -269,7 +310,7 @@ export function entryFromFileExport(
   opts: { fileMtimeIso: string | null; stale: boolean },
 ): QuotaCurrentEntry {
   const entry: QuotaCurrentEntry = {
-    providerId: "meta",
+    providerId: canonicalProviderId("meta"),
     providerName: "Meta",
     serviceId: "meta",
     state: "error",
@@ -359,10 +400,11 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
     if (Number.isFinite(fetchedDate.getTime())) measuredAt = fetchedDate.toISOString();
   }
   const state: QuotaCurrentEntry["state"] = result.ok ? "ok" : result.configured ? "error" : "unconfigured";
+  const providerId = canonicalProviderId(result.providerId);
   const entry: QuotaCurrentEntry = {
-    providerId: result.providerId,
-    providerName: result.providerName ?? result.providerId,
-    serviceId: serviceIdFor(result.providerId),
+    providerId,
+    providerName: result.providerName ?? providerId,
+    serviceId: serviceIdFor(providerId),
     state,
     measuredAt,
     source: GATHERER_SOURCE,
@@ -821,7 +863,8 @@ export async function mapWithConcurrency<T, R>(
  * never retained.
  */
 export function lastKnownEntries(prev: readonly QuotaCurrentEntry[], providerId: string): QuotaCurrentEntry[] {
-  return prev.filter((e) => e.providerId === providerId && e.state === "ok");
+  const wanted = canonicalProviderId(providerId);
+  return prev.filter((e) => canonicalProviderId(e.providerId) === wanted && e.state === "ok");
 }
 
 /**
@@ -832,5 +875,9 @@ export function lastKnownEntries(prev: readonly QuotaCurrentEntry[], providerId:
  * instead of it reading as fresh until the freshness bound lapses.
  */
 export function markRetained(entries: readonly QuotaCurrentEntry[], failedTickIso: string): QuotaCurrentEntry[] {
-  return entries.map((e) => ({ ...e, retainedFromFailedTick: failedTickIso }));
+  return entries.map((e) => ({
+    ...e,
+    providerId: canonicalProviderId(e.providerId),
+    retainedFromFailedTick: failedTickIso,
+  }));
 }

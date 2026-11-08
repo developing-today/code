@@ -41,8 +41,10 @@
 //!   empty ranking (all metrics 0) — an incomplete run is penalized,
 //!   never silently skipped.
 //! - A ranking may not repeat a doc, a qrel may not repeat a
-//!   (query, doc) pair, and qrels must name known queries; violations
-//!   are rejected at parse/validation time.
+//!   (query, doc) pair, a run's `results` may not repeat a query key
+//!   (serde_json would otherwise keep only the last ranking), and
+//!   qrels must name known queries; violations are rejected at
+//!   parse/validation time.
 //!
 //! ## Metrics and reporting
 //!
@@ -116,13 +118,127 @@ pub struct Qrel {
 }
 
 /// One signal's saved rankings: query id → doc ids in rank order.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Run {
     /// Signal name (`dense`, `bm25`, `splade`, `fused:dense+bm25`, …).
     pub signal: String,
     /// Ranked doc ids per query (best first). Rank order is the
     /// contract; raw scores are not needed by any metric here.
     pub results: BTreeMap<String, Vec<String>>,
+}
+
+// Manual `Deserialize` for `Run` (#6390): serde_json collapses a
+// repeated object key into a map silently, so the derived impl dropped
+// the first ranking for a repeated query key in `results` before
+// `validate()` could ever see it. This impl deserializes `results`
+// through a visitor that records a repeated key, then rejects the run
+// naming both the signal and the query. Serialization stays derived,
+// and struct-field duplicates keep serde's derived rejection.
+impl<'de> Deserialize<'de> for Run {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(field_identifier, rename_all = "lowercase")]
+        enum Field {
+            Signal,
+            Results,
+            #[serde(other)]
+            Other,
+        }
+
+        /// `results` plus the first repeated query key, if any.
+        struct DupCheckedResults(BTreeMap<String, Vec<String>>, Option<String>);
+
+        impl<'de> Deserialize<'de> for DupCheckedResults {
+            fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                struct ResultsVisitor;
+
+                impl<'de> serde::de::Visitor<'de> for ResultsVisitor {
+                    type Value = DupCheckedResults;
+
+                    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                        formatter.write_str("a map of query id to ranked doc ids")
+                    }
+
+                    fn visit_map<A>(
+                        self,
+                        mut access: A,
+                    ) -> std::result::Result<Self::Value, A::Error>
+                    where
+                        A: serde::de::MapAccess<'de>,
+                    {
+                        let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                        let mut duplicate: Option<String> = None;
+                        while let Some((key, value)) = access.next_entry::<String, Vec<String>>()? {
+                            if map.contains_key(&key) && duplicate.is_none() {
+                                duplicate = Some(key.clone());
+                            }
+                            map.entry(key).or_insert(value);
+                        }
+                        Ok(DupCheckedResults(map, duplicate))
+                    }
+                }
+
+                deserializer.deserialize_map(ResultsVisitor)
+            }
+        }
+
+        struct RunVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for RunVisitor {
+            type Value = Run;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("an atlas-eval run (signal + results)")
+            }
+
+            fn visit_map<A>(self, mut access: A) -> std::result::Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut signal: Option<String> = None;
+                let mut results: Option<BTreeMap<String, Vec<String>>> = None;
+                let mut duplicate_query: Option<String> = None;
+                while let Some(key) = access.next_key::<Field>()? {
+                    match key {
+                        Field::Signal => {
+                            if signal.is_some() {
+                                return Err(serde::de::Error::duplicate_field("signal"));
+                            }
+                            signal = Some(access.next_value()?);
+                        }
+                        Field::Results => {
+                            if results.is_some() {
+                                return Err(serde::de::Error::duplicate_field("results"));
+                            }
+                            let checked = access.next_value::<DupCheckedResults>()?;
+                            duplicate_query = checked.1;
+                            results = Some(checked.0);
+                        }
+                        Field::Other => {
+                            let _ = access.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                let signal = signal.ok_or_else(|| serde::de::Error::missing_field("signal"))?;
+                let results = results.ok_or_else(|| serde::de::Error::missing_field("results"))?;
+                if let Some(query) = duplicate_query {
+                    return Err(serde::de::Error::custom(format!(
+                        "duplicate results key: run {signal:?} repeats query {query:?} \
+                         (a repeated query key would silently replace that query's ranking)"
+                    )));
+                }
+                Ok(Run { signal, results })
+            }
+        }
+
+        deserializer.deserialize_struct("Run", &["signal", "results"], RunVisitor)
+    }
 }
 
 /// A complete `atlas-eval/v1` input document.
@@ -146,7 +262,8 @@ impl EvalData {
     /// Fails on malformed JSON or any validation rule in the module
     /// docs (wrong format version, duplicate query ids, qrels naming
     /// unknown queries, duplicate qrels, grades above `MAX_GRADE`,
-    /// duplicate docs in a ranking, duplicate signal names).
+    /// duplicate docs in a ranking, duplicate results keys, duplicate
+    /// signal names).
     pub fn from_json(text: &str) -> Result<Self> {
         let data: EvalData = serde_json::from_str(text)
             .map_err(|e| Error::fatal(format!("eval input is not valid atlas-eval JSON: {e}")))?;
@@ -520,7 +637,10 @@ pub fn select_best_signal(report: &EvalReport, metric: Metric) -> Result<String>
     let mut best: Option<(&SignalReport, f64)> = None;
     for signal in &report.signals {
         let value = metric.of(&signal.overall);
-        if best.is_none_or(|(_, best_value)| value > best_value) {
+        if best.is_none_or(|(best_signal, best_value)| {
+            value > best_value
+                || (value == best_value && signal.signal.as_str() < best_signal.signal.as_str())
+        }) {
             best = Some((signal, value));
         }
     }
@@ -678,6 +798,60 @@ mod tests {
         );
     }
 
+    fn report_with_scores(scores: &[(&str, f64)]) -> EvalReport {
+        EvalReport {
+            format: REPORT_FORMAT.to_owned(),
+            split: Split::Dev,
+            signals: scores
+                .iter()
+                .map(|(signal, ndcg10)| SignalReport {
+                    signal: (*signal).to_owned(),
+                    queries_total: 0,
+                    queries_scored: 0,
+                    overall: MetricMeans {
+                        ndcg10: *ndcg10,
+                        recall100: 0.0,
+                        recall1000: 0.0,
+                        mrr10: 0.0,
+                    },
+                    per_class: BTreeMap::new(),
+                    per_query: Vec::new(),
+                })
+                .collect(),
+        }
+    }
+
+    // Oracle: these report fixtures have explicit metric values. Equal
+    // scores must select the lexicographically smallest signal regardless
+    // of report order or JSON round-tripping; a strict winner still wins.
+    #[test]
+    fn selection_ties_use_lexicographic_order_for_any_report_order() {
+        let reverse = report_with_scores(&[("zeta", 0.5), ("alpha", 0.5)]);
+        assert_eq!(
+            select_best_signal(&reverse, Metric::Ndcg10).unwrap(),
+            "alpha"
+        );
+
+        let serialized = serde_json::to_string(&reverse).unwrap();
+        let deserialized: EvalReport = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(
+            select_best_signal(&deserialized, Metric::Ndcg10).unwrap(),
+            "alpha"
+        );
+
+        let sorted = report_with_scores(&[("alpha", 0.5), ("zeta", 0.5)]);
+        assert_eq!(
+            select_best_signal(&sorted, Metric::Ndcg10).unwrap(),
+            "alpha"
+        );
+
+        let strict = report_with_scores(&[("zeta", 0.6), ("alpha", 0.5)]);
+        assert_eq!(select_best_signal(&strict, Metric::Ndcg10).unwrap(), "zeta");
+
+        let empty = report_with_scores(&[]);
+        assert!(select_best_signal(&empty, Metric::Ndcg10).is_err());
+    }
+
     // Oracle: the format rules in the module docs, one violation each.
     #[test]
     fn validation_rejects_format_violations() {
@@ -711,6 +885,37 @@ mod tests {
             {"query": "q1", "doc": "d1", "grade": 2}
         ]);
         assert!(EvalData::from_json(&dup_qrel.to_string()).is_err());
+    }
+
+    // Oracle: issue #6390 — the raw document level of the format. A
+    // repeated query key inside a run's `results` object must be
+    // rejected naming the signal and the query; serde_json's map
+    // collapse must not get to silently keep the last ranking. Raw
+    // text is required: `serde_json::json!` cannot express duplicate
+    // object keys.
+    #[test]
+    fn duplicate_results_key_is_rejected_from_raw_text() {
+        let raw = r#"{
+            "format": "atlas-eval/v1",
+            "queries": [{"id": "q1", "class": "code", "split": "dev"}],
+            "qrels": [{"query": "q1", "doc": "d1", "grade": 1}],
+            "runs": [{"signal": "dense", "results": {"q1": ["d1"], "q1": ["d2"]}}]
+        }"#;
+        let err = EvalData::from_json(raw).expect_err("duplicate results key must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate results key"),
+            "error names the violation: {msg}"
+        );
+        assert!(msg.contains("dense"), "error names the signal: {msg}");
+        assert!(msg.contains("q1"), "error names the query: {msg}");
+
+        // The same document with the duplicate removed parses and
+        // scores exactly as before.
+        let clean = raw.replace(r#", "q1": ["d2"]"#, "");
+        let d = EvalData::from_json(&clean).expect("clean document parses");
+        let report = evaluate(&d, Split::Dev).unwrap();
+        assert_eq!(report.signals[0].overall.ndcg10, 1.0);
     }
 
     // Oracle: the documented missing-run rule — a signal with no
@@ -781,6 +986,174 @@ mod tests {
         }
         fn below(&mut self, n: usize) -> usize {
             (self.next() % n as u64) as usize
+        }
+    }
+
+    // Oracle: the #6390 parser invariant, property-style over
+    // generated documents (the repo testing doctrine for parsers):
+    // for arbitrary query ids (including ids that need JSON
+    // escaping), signal names, run-object field orderings, and
+    // duplicate positions, a repeated results key is always rejected
+    // naming the signal and the query — and the same generated
+    // document without the repetition always parses, preserving its
+    // rankings through a serialize/parse round-trip.
+    #[test]
+    fn duplicate_results_key_rejected_over_generated_documents() {
+        fn js(s: &str) -> String {
+            serde_json::to_string(s).expect("a string always encodes")
+        }
+        fn results_obj(entries: &[(&str, &[&str])]) -> String {
+            let parts: Vec<String> = entries
+                .iter()
+                .map(|(key, docs)| {
+                    let arr = serde_json::to_string(
+                        &docs.iter().map(|d| (*d).to_owned()).collect::<Vec<_>>(),
+                    )
+                    .expect("an array always encodes");
+                    format!("{}: {}", js(key), arr)
+                })
+                .collect();
+            format!("{{{}}}", parts.join(", "))
+        }
+        fn run_obj(signal: &str, results: &str, results_first: bool) -> String {
+            if results_first {
+                format!("{{\"results\": {}, \"signal\": {}}}", results, js(signal))
+            } else {
+                format!("{{\"signal\": {}, \"results\": {}}}", js(signal), results)
+            }
+        }
+        fn document(queries: &[&str], runs: &str) -> String {
+            let queries: Vec<String> = queries
+                .iter()
+                .map(|q| {
+                    format!(
+                        "{{\"id\": {}, \"class\": \"code\", \"split\": \"dev\"}}",
+                        js(q)
+                    )
+                })
+                .collect();
+            format!(
+                "{{\"format\": \"atlas-eval/v1\", \"queries\": [{}], \
+                 \"qrels\": [], \"runs\": [{}]}}",
+                queries.join(", "),
+                runs
+            )
+        }
+
+        let id_pieces = ["q", "query-", "a b", "a\"b", "a\\b", "caf\u{e9}", "x/y", ""];
+        let signal_pieces = ["dense", "bm25", "fused:a+b", "sig nal", "s\"1"];
+        let mut rng = Rng(0x6390_2026_1106);
+        for case in 0..300u64 {
+            let base = id_pieces[rng.below(id_pieces.len())];
+            let q_dup = format!("{base}{}", rng.below(5));
+            let q_other = format!("{q_dup}~other");
+            let signal = format!(
+                "{}{}",
+                signal_pieces[rng.below(signal_pieces.len())],
+                rng.below(3)
+            );
+            let signal2 = format!("{signal}~second");
+            let results_first = case % 2 == 1;
+            let r1: &[&str] = &["d1", "d2"];
+            let r2: &[&str] = &["d3"];
+            let ro: &[&str] = &["d9"];
+
+            // (raw runs text, signal named in the error, query named)
+            let (dup_runs, dup_signal, dup_query, clean_runs, expected): (
+                String,
+                String,
+                String,
+                String,
+                Vec<(&str, Vec<(&str, &[&str])>)>,
+            ) = match case % 3 {
+                0 => (
+                    run_obj(
+                        &signal,
+                        &results_obj(&[(&q_dup, r1), (&q_dup, r2)]),
+                        results_first,
+                    ),
+                    signal.clone(),
+                    q_dup.clone(),
+                    run_obj(&signal, &results_obj(&[(&q_dup, r1)]), results_first),
+                    vec![(signal.as_str(), vec![(q_dup.as_str(), r1)])],
+                ),
+                1 => (
+                    run_obj(
+                        &signal,
+                        &results_obj(&[(&q_dup, r1), (&q_other, ro), (&q_dup, r2)]),
+                        results_first,
+                    ),
+                    signal.clone(),
+                    q_dup.clone(),
+                    run_obj(
+                        &signal,
+                        &results_obj(&[(&q_dup, r1), (&q_other, ro)]),
+                        results_first,
+                    ),
+                    vec![(
+                        signal.as_str(),
+                        vec![(q_dup.as_str(), r1), (q_other.as_str(), ro)],
+                    )],
+                ),
+                _ => (
+                    format!(
+                        "{}, {}",
+                        run_obj(&signal, &results_obj(&[(&q_dup, r1)]), results_first),
+                        run_obj(
+                            &signal2,
+                            &results_obj(&[(&q_other, ro), (&q_other, r1)]),
+                            results_first
+                        )
+                    ),
+                    signal2.clone(),
+                    q_other.clone(),
+                    format!(
+                        "{}, {}",
+                        run_obj(&signal, &results_obj(&[(&q_dup, r1)]), results_first),
+                        run_obj(&signal2, &results_obj(&[(&q_other, ro)]), results_first)
+                    ),
+                    vec![
+                        (signal.as_str(), vec![(q_dup.as_str(), r1)]),
+                        (signal2.as_str(), vec![(q_other.as_str(), ro)]),
+                    ],
+                ),
+            };
+
+            let queries: Vec<&str> = vec![&q_dup, &q_other];
+            let err = EvalData::from_json(&document(&queries, &dup_runs))
+                .expect_err("a repeated results key must be rejected");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("duplicate results key")
+                    && msg.contains(&format!("{dup_signal:?}"))
+                    && msg.contains(&format!("{dup_query:?}")),
+                "case {case}: error must name signal and query: {msg}"
+            );
+
+            let parsed = EvalData::from_json(&document(&queries, &clean_runs))
+                .unwrap_or_else(|e| panic!("case {case}: clean document must parse: {e}"));
+            assert_eq!(parsed.runs.len(), expected.len(), "case {case}");
+            for (run, (want_signal, want_results)) in parsed.runs.iter().zip(&expected) {
+                assert_eq!(run.signal, *want_signal, "case {case}");
+                let want: BTreeMap<String, Vec<String>> = want_results
+                    .iter()
+                    .map(|(q, docs)| {
+                        (
+                            (*q).to_owned(),
+                            docs.iter().map(|d| (*d).to_owned()).collect(),
+                        )
+                    })
+                    .collect();
+                assert_eq!(run.results, want, "case {case}");
+            }
+            let round_tripped = EvalData::from_json(
+                &serde_json::to_string(&parsed).expect("parsed data serializes"),
+            )
+            .expect("serialized data re-parses");
+            assert_eq!(
+                round_tripped, parsed,
+                "case {case}: round-trip preserves the data"
+            );
         }
     }
 

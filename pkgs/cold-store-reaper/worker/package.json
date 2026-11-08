@@ -10,7 +10,7 @@
   "private": true,
   "scripts": {
     "build": "esbuild src/index.js --bundle --format=esm --platform=neutral --target=es2022 --outfile=dist/worker.js",
-    "test": "node test/run-local-proof.mjs && node test/range-ignored.test.mjs"
+    "test": "node test/run-local-proof.mjs && node test/range-ignored.test.mjs && node test/bounded-decompress.test.mjs"
   },
   "type": "module",
   "version": "1.0.0"

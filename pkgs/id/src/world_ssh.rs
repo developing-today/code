@@ -545,6 +545,7 @@ impl Handler for SshClient {
             commands: VecDeque::new(),
             records_prefix: None,
             records_drained: 0,
+            records_after: None,
             errored: false,
             previous_screen: None,
         };
@@ -740,6 +741,10 @@ struct SshIo {
     /// Cumulative bytes already rendered for the current `/records` drain, so a
     /// large world's records are bounded across pages, not just per page.
     records_drained: usize,
+    /// Cursor that produced the in-flight records page (`None` before the
+    /// first page, whose request sends `after: null`); the page's
+    /// `next_after` must strictly advance past it (#6615).
+    records_after: Option<String>,
     errored: bool,
     /// Last screen successfully written to this shell's terminal. A missing
     /// value forces the next screen view to repaint the whole terminal.
@@ -841,6 +846,7 @@ impl SessionIo for SshIo {
                         if let WorldCommand::Records { prefix } = &command {
                             self.records_prefix = Some(prefix.clone());
                             self.records_drained = 0;
+                            self.records_after = None;
                         }
                         return Inbound::Text(frame);
                     }
@@ -1004,6 +1010,7 @@ impl SessionIo for SshIo {
             Some("error") => {
                 self.errored = true;
                 self.records_prefix = None;
+                self.records_after = None;
                 let message = value["message"].as_str().unwrap_or("error");
                 self.last_error = Some(format!("\r\n{}\r\n", terminal_text(message)));
                 self.last_error.clone().unwrap_or_default()
@@ -1011,7 +1018,31 @@ impl SessionIo for SshIo {
             Some("records") => {
                 let records = value["records"].as_object();
                 let sequence = value["sequence"].as_u64().unwrap_or_default();
-                let after = value["next_after"].as_str().map(str::to_owned);
+                // Validate the cursor before trusting it (#6615): a
+                // present-but-non-string `next_after` is a malformed page,
+                // not a clean end-of-pages, and a cursor that does not
+                // strictly advance past the one that produced this page
+                // would re-request the same page until the byte cap stops
+                // the drain (~18,700 re-requests in the filing's probe).
+                // The advance rule is also why no page-count bound is
+                // needed beside the byte bound below: every continuation
+                // moves the cursor forward through the host's key space,
+                // so pages cannot repeat, and the rendered-byte total
+                // still caps the drain's size. Oracle: the `world_net`
+                // records cursor contract (#6505/#6578).
+                let produced_by = self.records_after.clone().unwrap_or_default();
+                let (after, notice) = match records_cursor(value.get("next_after"), &produced_by) {
+                    RecordsCursor::Advance(next) => (Some(next), None),
+                    RecordsCursor::End => (None, None),
+                    RecordsCursor::Malformed => (
+                        None,
+                        Some("[records truncated: host sent a malformed next-page cursor]\n"),
+                    ),
+                    RecordsCursor::Stalled => (
+                        None,
+                        Some("[records truncated: host cursor did not advance]\n"),
+                    ),
+                };
                 let text = render_records_value(records, sequence, after.as_deref());
                 // Bound the whole drain, not just each page: a world with many
                 // records would otherwise keep fetching pages without limit.
@@ -1026,16 +1057,24 @@ impl SessionIo for SshIo {
                 };
                 let truncated = after.is_some() && self.records_drained >= MAX_RECORDS_TOTAL_BYTES;
                 if let Some((prefix, after)) = next {
+                    self.records_after = Some(after.clone());
                     self.commands
                         .push_back(WorldCommand::RecordsContinue { prefix, after });
                 } else {
                     self.records_prefix = None;
+                    self.records_after = None;
                 }
                 if truncated {
                     format!(
                         "\r\n{}\r\n{}",
                         terminal_text(&text),
                         terminal_text("[records truncated: too much output]\n")
+                    )
+                } else if let Some(notice) = notice {
+                    format!(
+                        "\r\n{}\r\n{}",
+                        terminal_text(&text),
+                        terminal_text(notice)
                     )
                 } else {
                     format!("\r\n{}", terminal_text(&text))
@@ -1453,6 +1492,37 @@ fn render_records_value(
         output.push_str("more records; fetching next page\n");
     }
     output
+}
+
+/// What a records page's `next_after` means for the drain, judged
+/// against `produced_by` — the cursor that produced this page (the
+/// empty string before the first page, whose request sends
+/// `after: null`). Factored out of the `records` frame arm so the
+/// contract can be unit-tested without a live session (#6615).
+#[derive(Debug, PartialEq, Eq)]
+enum RecordsCursor {
+    /// No cursor (absent or null): the listing is complete.
+    End,
+    /// A cursor that strictly advances: fetch the next page after it.
+    Advance(String),
+    /// A present, non-string cursor: a malformed page, never a clean
+    /// end-of-pages.
+    Malformed,
+    /// A cursor that does not advance past `produced_by` (a repeat,
+    /// a step backwards, or the empty cursor at the start): following
+    /// it would re-request the page just rendered.
+    Stalled,
+}
+
+fn records_cursor(next_after: Option<&serde_json::Value>, produced_by: &str) -> RecordsCursor {
+    match next_after {
+        None | Some(serde_json::Value::Null) => RecordsCursor::End,
+        Some(serde_json::Value::String(cursor)) if cursor.as_str() > produced_by => {
+            RecordsCursor::Advance(cursor.clone())
+        }
+        Some(serde_json::Value::String(_)) => RecordsCursor::Stalled,
+        Some(_) => RecordsCursor::Malformed,
+    }
 }
 
 #[cfg(test)]
@@ -3217,6 +3287,65 @@ mod tests {
                 "the total cap must be finite"
             )
         };
+    }
+
+    #[test]
+    fn records_cursor_must_be_a_string_that_advances() {
+        // Issue #6615: the SSH /records drain trusted `next_after`
+        // unchecked — a non-string cursor silently read as a complete
+        // listing, and a repeated/empty cursor re-requested the same
+        // page ~18,700 times until the rendered-byte cap stopped it.
+        // Oracle: the world_net records cursor contract (#6505/#6578)
+        // — the cursor must be a string and must strictly advance.
+        let cursor = |value: serde_json::Value, produced_by: &str| {
+            records_cursor(Some(&value), produced_by)
+        };
+
+        // Absent and null both mean the host has no more pages.
+        assert_eq!(records_cursor(None, ""), RecordsCursor::End);
+        assert_eq!(
+            cursor(serde_json::Value::Null, "k1"),
+            RecordsCursor::End
+        );
+
+        // A normal multi-page drain: each cursor advances past the
+        // one that produced the page, then the listing ends.
+        assert_eq!(
+            cursor(serde_json::json!("k1"), ""),
+            RecordsCursor::Advance("k1".to_owned())
+        );
+        assert_eq!(
+            cursor(serde_json::json!("k2"), "k1"),
+            RecordsCursor::Advance("k2".to_owned())
+        );
+        assert_eq!(records_cursor(None, "k2"), RecordsCursor::End);
+
+        // Present but not a string: a malformed page, never End.
+        for bad in [
+            serde_json::json!(123),
+            serde_json::json!(true),
+            serde_json::json!({"key": "k1"}),
+            serde_json::json!(["k1"]),
+        ] {
+            assert_eq!(
+                cursor(bad, ""),
+                RecordsCursor::Malformed,
+                "non-string cursor must be malformed"
+            );
+        }
+
+        // A cursor that does not advance stops the drain: the empty
+        // cursor on the first page, a repeat of the producing
+        // cursor, and a step backwards.
+        assert_eq!(cursor(serde_json::json!(""), ""), RecordsCursor::Stalled);
+        assert_eq!(
+            cursor(serde_json::json!("k1"), "k1"),
+            RecordsCursor::Stalled
+        );
+        assert_eq!(
+            cursor(serde_json::json!("k0"), "k1"),
+            RecordsCursor::Stalled
+        );
     }
 
     #[cfg(test)]

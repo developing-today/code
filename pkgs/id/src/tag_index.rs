@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 
 use p2panda_core::Hash;
 
-use crate::tag_claims::Claim;
+use crate::tag_claims::{Claim, TagScope};
 use crate::tuple::TupleEncoder;
 use crate::waiting::AuthorKey;
 
@@ -34,6 +34,8 @@ pub struct Entry {
     pub name: String,
     /// The tag value, or `None` for a bare tag.
     pub value: Option<String>,
+    /// Where the claim lives: shared, or this node only (#1793).
+    pub scope: TagScope,
     /// The claim's ID.
     pub claim: Hash,
 }
@@ -59,6 +61,7 @@ impl TagIndex {
                 author: claim.author,
                 name: claim.name.clone(),
                 value: claim.value.clone(),
+                scope: claim.scope,
                 claim: claim.id,
             };
             alpha.insert(alpha_key(&entry), entry.clone());
@@ -245,6 +248,7 @@ mod tests {
             subject: Hash::from_bytes([subject; 32]),
             name: name.to_owned(),
             value: value.map(str::to_owned),
+            scope: TagScope::Shared,
         }
     }
 
@@ -276,6 +280,7 @@ mod tests {
             subject: Hash::from_bytes([subject; 32]),
             name: name.to_owned(),
             value: value.map(str::to_owned),
+            scope: TagScope::Shared,
         }
     }
 

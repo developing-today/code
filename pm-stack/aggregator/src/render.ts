@@ -116,6 +116,7 @@ import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
 import { EPIC_GRAPH_DEFAULT_CAP, epicGraph, epicSelector } from "./epic-graph.ts";
 import { type AuthorIdentity } from "./registry.ts";
 import type { SearchResult } from "./search-view.ts";
+import { dnsAnchor } from "./search-view.ts";
 
 export function esc(s: unknown): string {
   return String(s ?? "")
@@ -492,7 +493,7 @@ function layout(
 </main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script>${extra}${paletteHtml()}${KEYBOARD_SCRIPT}</body></html>`;
 }
 
-/** First-slice global search over board/roadmap subjects and linked refs. */
+/** Global search over board/roadmap subjects, linked refs, and the slice-2 sources (#1212): registry sessions, the DNS register, services, and tier items. */
 export function renderSearch(
   query: string,
   results: SearchResult[],
@@ -505,22 +506,38 @@ export function renderSearch(
       const badges = result.refs
         .map((ref) => {
           const item = items.get(ref);
+          // Codex P1 on PR #7331 (defense in depth): a non-GitHub ref
+          // (tracked-goal id, orch: key) must never reach refUrl, which
+          // throws on it — render it as a plain-text badge instead.
           return item
             ? itemBadge(item)
-            : `<a class="badge closed" href="${esc(refUrl(ref))}" title="Unresolved by the current item source">${esc(ref)} · unresolved</a>`;
+            : isValidRef(ref)
+              ? `<a class="badge closed" href="${esc(refUrl(ref))}" title="Unresolved by the current item source">${esc(ref)} · unresolved</a>`
+              : `<span class="badge closed">${esc(ref)} · unresolved</span>`;
         })
         .join(" ");
-      return `<div class="card"><a href="/item/${encodeURIComponent(result.id)}"><strong>${esc(result.title)}</strong></a><br><span class="muted">${result.kind} · ${esc(result.summary)}</span>${badges ? `<div class="strip">${badges}</div>` : ""}</div>`;
+      return `<div class="card"><a href="${esc(result.href)}"><strong>${esc(result.title)}</strong></a><br><span class="muted">${result.kind} · ${esc(result.summary)}</span>${badges ? `<div class="strip">${badges}</div>` : ""}</div>`;
     })
     .join("");
-  const body = `<h1>Search</h1><p class="muted">Search board items and roadmap rows by subject, title, or linked issue/PR ref. Linked GitHub badges show their current projected state and whether the result is fixture-only.</p><form class="search-page-form" action="/search" method="get" role="search"><label for="search-query">Search work</label><input id="search-query" type="search" name="q" value="${esc(query)}" placeholder="Title or owner/repo#123"><button type="submit" class="btn btn-sm">Search</button></form>${query ? `<h2>${results.length} result${results.length === 1 ? "" : "s"} for “${esc(query)}”</h2>${cards || '<p class="muted">No matching work found.</p>'}` : '<p class="muted">Enter a title or issue/PR reference to search.</p>'}`;
+  const body = `<h1>Search</h1><p class="muted">Search board items, roadmap rows, registry sessions, DNS domains, services, and tier items by subject, title, or linked issue/PR ref. Every result links to its own detail view. Linked GitHub badges show their current projected state and whether the result is fixture-only.</p><form class="search-page-form" action="/search" method="get" role="search"><label for="search-query">Search work</label><input id="search-query" type="search" name="q" value="${esc(query)}" placeholder="Title or owner/repo#123"><button type="submit" class="btn btn-sm">Search</button></form>${query ? `<h2>${results.length} result${results.length === 1 ? "" : "s"} for “${esc(query)}”</h2>${cards || '<p class="muted">No matching work found.</p>'}` : '<p class="muted">Enter a title or issue/PR reference to search.</p>'}`;
+  // #1212 slice 2: the search page carries the same freshness facets
+  // as the home page of each result kind present (board/roadmap/items
+  // for work, registry for sessions, dns for the register, quota and
+  // usage for services, orchestration/attention/registry for tiers).
+  const chipKeys = new Set<keyof Provenance>(["board", "roadmap", "items"]);
+  for (const result of results) {
+    if (result.kind === "registry") chipKeys.add("registry");
+    if (result.kind === "dns") chipKeys.add("dns");
+    if (result.kind === "service") { chipKeys.add("quota"); chipKeys.add("usage"); }
+    if (result.kind === "tier") { chipKeys.add("orchestration"); chipKeys.add("attention"); chipKeys.add("registry"); }
+  }
   return layout(
     "Search",
     body,
     provenance,
     "/search",
     "",
-    detail ? freshnessChips(detail, ["board", "roadmap", "items"]) : "",
+    detail ? freshnessChips(detail, [...chipKeys]) : "",
   );
 }
 
@@ -1786,6 +1803,8 @@ export interface ItemExtras {
   epicRollup?: EpicRollup;
   /** Project-pool briefs for linked refs (#1279). */
   briefs?: Map<RefKey, ItemBrief>;
+  /** Real ready-for-agent dispatch state for explicitly labelled linked issues. */
+  dispatchStates?: { ref: RefKey; state: string; provenance: { source: string; observedAt: string } }[];
   /** The shared audit stream, scoped to the item's canonical refs. */
   activity?: { events: AuditEvent[]; globalHref: string; gaps: GapRecord[]; coverage?: readonly ActivityCoverage[] };
 }
@@ -1871,12 +1890,20 @@ export function renderItem(
     ? `<p>Live services: ${extras.serviceLinks.map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>`
     : "";
   const epicRollup = extras?.epicRollup ? epicRollupHtml(extras.epicRollup) : "";
+  const dispatchSection = extras?.dispatchStates?.length
+    ? `<section><h2>ready-for-agent dispatch</h2><ul>${extras.dispatchStates
+        .map(
+          (entry) =>
+            `<li><a href="https://github.com/${esc(entry.ref.replace("#", "/issues/"))}">${esc(entry.ref)}</a>: <strong>${esc(entry.state)}</strong> <span class="muted">· ${esc(entry.provenance.source)} checked ${esc(entry.provenance.observedAt)}</span></li>`,
+        )
+        .join("")}</ul></section>`
+    : "";
   const activitySection = extras?.activity
     ? `<h2>Activity stream</h2><p><a href="${esc(extras.activity.globalHref)}">View these events in the global river</a></p><p class="muted"><strong>Freshness: unknown.</strong> The ingestion checkpoint records deliveries, not successful source polls. An empty event list does not establish complete coverage. Known gaps and documented source coverage are shown below.</p>${eventTableHtml(extras.activity.events)}<h3>Known activity gaps</h3><p class="muted">Gap records are source-scoped and do not currently identify affected item refs, so this is the global known-gap list.</p><div class="tblwrap">${gapsHtml(extras.activity.gaps)}</div><h3>Activity source coverage</h3><div class="tblwrap">${activityCoverageHtml(extras.activity.coverage)}</div>`
     : "";
   return layout(
     title,
-    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${epicRollup}${svcLinks}${stripHtml(items, links)}
+    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${epicRollup}${svcLinks}${dispatchSection}${stripHtml(items, links)}
 ${
   extras?.briefs
     ? briefPanelsForRefs(
@@ -1907,14 +1934,13 @@ export function sessionRecordLine(
   const parent = r.parentId
     ? ` · sub of <a href="/sessions?id=${encodeURIComponent(r.parentId)}#${encodeURIComponent(r.parentId)}">${esc(r.parentId)}</a>`
     : "";
-  const renderedRefs = r.taskRefs.flatMap((ref) => {
-    try {
-      return [`<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`];
-    } catch {
-      // A malformed ref may still exist in an older or ungated in-memory
-      // record. Keep the session visible and omit only the invalid link.
-      return [];
-    }
+  const renderedRefs = r.taskRefs.map((ref) => {
+    // #6243 (ref contract rule 4, #6242): a malformed ref may still
+    // exist in an older or ungated in-memory record. Keep the session
+    // visible and render the invalid ref as plain text — the same
+    // treatment tierItemCard (#6149) and poolRefLink give it — never
+    // a throw, and never silently omitted.
+    return isValidRef(ref) ? `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>` : esc(ref);
   });
   const refs = renderedRefs.length ? ` · ${renderedRefs.join(" ")}` : "";
   // #1156: live records carry the session action set on the merged
@@ -2028,6 +2054,17 @@ function serviceCardHtml(svc: SaasService, history: SnapshotRecord[]): string {
     : "";
   const pace = paceLineHtml(svc.id, history);
   return `<div class="card${f.stale ? " stale" : ""}"><div><strong><a href="/quota/service/${esc(svc.id)}">${esc(svc.name)}</a></strong>${svc.status !== "active" ? ` <span class="badge src">${esc(svc.status)}</span>` : ""}${conflict}<br><span class="muted">${esc(svc.plan)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}${svc.nextDate ? `<br><span class="muted">next: ${esc(svc.nextDate)}</span>` : ""}</div><div>${metrics}${billed}${payg}${pace}<div><a href="/quota/service/${esc(svc.id)}">show all →</a></div></div></div>`;
+}
+
+function uninstrumentedServicesHtml(services: UsageView["uninstrumentedServices"]): string {
+  if (!services.length) return "";
+  const rows = services
+    .map(
+      (svc) =>
+        `<tr><th scope="row">${esc(svc.name)}</th><td>${esc(svc.whatFor)}</td><td>${esc(svc.status)}</td><td>${esc(svc.checkedAt ?? "no check date recorded")}</td><td>${esc(svc.overageBehavior)}</td><td>${esc(svc.guardrailNotes)}</td></tr>`,
+    )
+    .join("");
+  return `<h2>Tracker services without instrumented quotas</h2><details><summary>${services.length} evaluated services — expand for tracker states and guardrails</summary><div class="tblwrap"><table><caption>Services in free-services-to-check.md</caption><tr><th scope="col">Service</th><th scope="col">What for</th><th scope="col">Tracker state</th><th scope="col">Checked</th><th scope="col">Overage behavior</th><th scope="col">Guardrail notes</th></tr>${rows}</table></div></details>`;
 }
 
 /** A one-line pace projection on a card, when the history supports one (§1.5). */
@@ -2177,6 +2214,26 @@ export function renderQuota(
         })
         .join("")}</div>`
     : "";
+  // #6671: provider-auth keeper problems render as their own card —
+  // a dying provider session (or a keeper that stopped reporting)
+  // must be visible on the board, not only in a state file. All-ok
+  // keepers render nothing here (no alert, no noise).
+  const providerAuthProblems = (view.providerAuth ?? []).filter((a) => a.reporting !== "ok");
+  const providerAuthSection = providerAuthProblems.length
+    ? `<h2>Provider auth</h2><div class="card">${providerAuthProblems
+        .map((a) => {
+          const detail =
+            a.reporting === "attention"
+              ? `${esc(a.alert ?? a.status ?? "attention")}${a.alertSince ? ` · since ${fmtDate(a.alertSince)}` : ""}${a.sessionExpiresAt ? ` · session expires ${fmtDate(a.sessionExpiresAt)}` : ""}${a.lastGoodAt ? ` · last good ${fmtDate(a.lastGoodAt)}` : ""}`
+              : a.reporting === "stale"
+                ? `keeper not reporting · last check ${fmtDate(a.checkedAt)}`
+                : a.reporting === "invalid"
+                  ? "keeper not reporting · state file invalid"
+                  : "keeper not reporting · no state file";
+          return `<div><strong>${esc(a.provider)}</strong> <span class="badge error">${esc(a.reporting)}</span> <span class="muted">${detail}</span></div>`;
+        })
+        .join("")}</div>`
+    : "";
   const pools = view.pools
     .map((p) => {
       const windows = p.windows
@@ -2226,6 +2283,7 @@ export function renderQuota(
       "Quota + throughput",
       `<h1>Quota + throughput</h1><p class="muted">All pooled quotas, resets, and burn rates. Machine-first: the same data is at <a href="/api/quota.json">/api/quota.json</a>.</p>
 ${credentialLifecycle}
+${providerAuthSection}
 ${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
 <h2>Pools</h2>${pools}
 ${burnAndChoices}`,
@@ -2269,10 +2327,11 @@ ${burnAndChoices}`,
     `<h1>Usage &amp; billing</h1><p class="muted">Token quotas, PAYG dollars, and SaaS usage vs limits — from dated local records; every card carries its measured-at stamp, and stale cards dim. Machine-first: <a href="/api/quota.json">/api/quota.json</a>.</p>
 ${attentionStripHtml(usage)}
 ${credentialLifecycle}
+${providerAuthSection}
 ${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
 <h2>Token quotas</h2>${pools}
 ${paygCardHtml(usage)}
-<h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}
+<h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}${uninstrumentedServicesHtml(usage.uninstrumentedServices ?? [])}
 ${chargesStripHtml(usage)}
 <h2>Sources</h2><div class="card"><div>Research records behind the cards on this page that carry provenance — all in <code>~/workspace/ai-subscriptions/</code>:</div><div>· evidence baseline: <code>evidence-and-interpretation-baseline-2026-10-20.md</code> (dated official pricing wording + interpretation notes)</div><div>· master tracker: the tracker behind <code>quota-view.md</code> Part (b) — each card with a tracker row cites its Summary (b) row and service section</div><div>· candidate evaluations: <code>free-services-to-check.md</code></div><div class="muted">Per-service provenance (tracker row or its absence, baseline, quota-view section) is on each service's detail page.</div></div>
 ${burnAndChoices}`,
@@ -3361,11 +3420,16 @@ export function renderTodayBody(
   const actions = today.actions?.length
     ? `<h2>Pushed back into motion</h2>${today.actions.map((a) => `<div class="card"><span class="badge">${esc(a.kind)}</span> <strong>${esc(a.target)}</strong><br>${esc(a.summary)}<br><span class="muted">${esc(fmtDate(a.at))}</span></div>`).join("")}`
     : "";
+  // #6174: an objective ref comes from publisher lined-up data and is
+  // only sometimes a GitHub ref — tracked-goal items carry their goal id,
+  // and refUrl throws on those, which 500ed the whole /today render (the
+  // Today-page sibling of the #6149 Needs-you fix). Mirror tierItemCard:
+  // GitHub refs link, everything else renders as plain code.
   const objectives = today.objectives.length
     ? today.objectives
         .map(
           (o, i) =>
-            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.ref ? `<br><a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : ""}</div></div>`,
+            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.ref ? `<br>${isValidRef(o.ref) ? `<a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : `<code>${esc(o.ref)}</code>`}` : ""}</div></div>`,
         )
         .join("")
     : `<p class="muted">No objectives lined up for today.</p>`;
@@ -3461,7 +3525,9 @@ function queueRows(rows: QueueRow[], empty: string): string {
         : "";
       const worker = item.worker ? `<br><strong>Worker:</strong> ${esc(item.worker)}` : "";
       const epic = item.epic
-        ? `<br><span class="muted">Epic: <a href="${esc(item.epic.url)}">${esc(item.epic.title)}</a></span>`
+        ? item.epic.url
+          ? `<br><span class="muted">Epic: <a href="${esc(item.epic.url)}">${esc(item.epic.title)}</a></span>`
+          : `<br><span class="muted">Epic: ${esc(item.epic.title)}</span>`
         : "";
       const why = item.why ? `<br><span class="muted">${esc(item.why)}</span>` : "";
       const horizon = item.horizon ? ` · ${esc(item.horizon)}` : "";
@@ -3801,7 +3867,7 @@ function dnsTable(entries: DnsEntry[], renewingSoon: Set<DnsEntry>, nextRenewal?
   const rows = entries
     .map(
       (e) =>
-        `<tr${e === nextRenewal ? ' id="dns-next-renewal"' : ""} data-dns-row data-dns-status="${esc(e.status)}" data-dns-renewing-soon="${renewingSoon.has(e)}"><td><strong>${esc(e.domain)}</strong></td><td>${esc(e.renewal)}</td><td>${e.priceUsd != null ? `$${e.priceUsd.toFixed(2)}` : "—"}</td><td>${esc(e.autoRenew)}</td><td>${esc(e.plan)}</td><td>${esc(e.review)}</td></tr>`,
+        `<tr${e === nextRenewal ? ' id="dns-next-renewal"' : ""} data-dns-row data-dns-status="${esc(e.status)}" data-dns-renewing-soon="${renewingSoon.has(e)}"><td><strong id="${esc(dnsAnchor(e.domain))}">${esc(e.domain)}</strong></td><td>${esc(e.renewal)}</td><td>${e.priceUsd != null ? `$${e.priceUsd.toFixed(2)}` : "—"}</td><td>${esc(e.autoRenew)}</td><td>${esc(e.plan)}</td><td>${esc(e.review)}</td></tr>`,
     )
     .join("");
   return `<div class="tblwrap"><table id="dns-register-table"><caption>Domain register</caption><thead><tr><th scope="col">Domain</th><th scope="col">Next renewal</th><th scope="col">Price (list)</th><th scope="col">Auto-renew</th><th scope="col">Plan / status</th><th scope="col">Review?</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">none</td></tr>'}</tbody></table></div>`;
@@ -6460,6 +6526,12 @@ ${trackedTable(live.tracked)}${poolSectionHtml}`;
 
 const POOL_ITEM_CAP = 24;
 
+/** Render a graph ref as a link only when it satisfies the shared ref rule. */
+function poolRefLink(ref: RefKey): string {
+  const label = esc(ref);
+  return isValidRef(ref) ? `<a href="${esc(refUrl(ref))}">${label}</a>` : label;
+}
+
 /** The #2400 graph section of a project page: blocked weight + longest
  * blocked chain and the depth-graph SVG, from the part-1 edge contract
  * (#2399). Graceful absence is explicit: a pool with no effort labels
@@ -6476,7 +6548,7 @@ function poolGraphHtml(items: ProjectPoolItem[], allW: ReturnType<typeof summari
   const blocked = blockedSummary(items);
   const chainHtml =
     blocked.longestChain.length >= 2
-      ? ` · longest blocked chain: ${blocked.longestChain.map((r) => `<a href="${esc(refUrl(r))}">${esc(r)}</a>`).join(" → ")} (${blocked.longestChain.length - 1} link${blocked.longestChain.length === 2 ? "" : "s"})`
+      ? ` · longest blocked chain: ${blocked.longestChain.map(poolRefLink).join(" → ")} (${blocked.longestChain.length - 1} link${blocked.longestChain.length === 2 ? "" : "s"})`
       : "";
   const blockedHtml = blocked.blockedCount
     ? `<p class="muted"><strong>Blocked weight: ${blocked.blockedWeight}</strong> across ${blocked.blockedCount} open item${blocked.blockedCount === 1 ? "" : "s"} waiting on an unresolved blocker${blocked.blockedUnsizedCount ? ` (${blocked.blockedUnsizedCount} of them unsized — counted, never zero-weighted)` : ""}${chainHtml}.</p>`
@@ -6577,17 +6649,21 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
     ? `<p class="muted">Truncated: this graph shows ${g.nodes.length} of ${g.totalNodes} nodes (cap ${EPIC_GRAPH_DEFAULT_CAP}). The counts above cover the full set; a capped graph is not complete.</p>`
     : "";
 
-  // Ranked summary: open member items by how many unresolved blockers
-  // they wait on, from the graph's pre-cap ranking (the full transitive
-  // unblock ranking is #3974; this is the per-epic blocked summary
-  // beside the graph). Never derived from the capped node list: a
-  // member the cap hid is still waiting.
+  // Ranked summary: open member items by how many distinct open epic items
+  // are in the transitive blockedBy ancestry of their blockers (the full
+  // transitive downstream ranking is #3974). Never derived from the
+  // capped node list: a member the cap hid is still waiting.
   const ranked = g.rankedBlocked;
   const rankedHtml = ranked.length
     ? `<ul class="epic-graph-list">${ranked
         .map(
-          (r) =>
-            `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${r.blockers.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>`).join(", ")}</li>`,
+          (r) => {
+            const blockerItems = r.blockers.map((b) => poolRefLink(b));
+            const contributingItems = r.contributingItems.length > 0
+              ? `<br><span class="muted">Contributing downstream epics: ${r.contributingItems.map((ci) => poolRefLink(ci)).join(", ")}</span>`
+              : "";
+            return `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.downstreamCount} distinct downstream open epic item${r.downstreamCount === 1 ? "" : "s"} via ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${blockerItems.join(", ")}${contributingItems}</li>`;
+          },
         )
         .join("")}</ul>`
     : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
@@ -6629,7 +6705,8 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
         : n.epic
           ? `<rect x="${x - 6}" y="${y - 6}" width="12" height="12" fill="${n.state === "open" ? "#8957e5" : "#6e7781"}" stroke="#0d1117" stroke-width="1.5"/>`
           : `<circle cx="${x}" cy="${y}" r="6" fill="${n.state === "open" ? "#bf8700" : "#6e7781"}" stroke="#0d1117" stroke-width="1.5"/>`;
-      return `${shape}<a href="${esc(n.issueUrl)}"><text x="${x + 11}" y="${y + 4}" font-size="11" fill="currentColor">${esc(label)}</text></a>`;
+      const nodeLabel = `<text x="${x + 11}" y="${y + 4}" font-size="11" fill="currentColor">${esc(label)}</text>`;
+      return `${shape}${isValidRef(n.ref) ? `<a href="${esc(n.issueUrl)}">${nodeLabel}</a>` : nodeLabel}`;
     })
     .join("");
   const svg = g.edges.length
@@ -6642,13 +6719,14 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
         ? "not in this pool / status unknown — unresolved"
         : `issue ${esc(n.state ?? "unknown")}`;
       const blockedBy = n.blockers.length
-        ? `blocked by: ${n.blockers.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>${unresolvedOf(b) ? " (unresolved)" : " (resolved)"}`).join(", ")}`
+        ? `blocked by: ${n.blockers.map((b) => `${poolRefLink(b)}${unresolvedOf(b) ? " (unresolved)" : " (resolved)"}`).join(", ")}`
         : "blocked by: none observed";
       const blocks = n.dependents.length
-        ? `blocks: ${n.dependents.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>`).join(", ")}`
+        ? `blocks: ${n.dependents.map(poolRefLink).join(", ")}`
         : "blocks: none observed";
       const name = n.title ? `${esc(n.title)}` : "(outside this pool — no title in this feed)";
-      return `<li><a href="${esc(n.issueUrl)}">${esc(n.ref)}</a> ${name} — ${stateText}; ${blockedBy}; ${blocks}</li>`;
+      const nodeRef = isValidRef(n.ref) ? `<a href="${esc(n.issueUrl)}">${esc(n.ref)}</a>` : esc(n.ref);
+      return `<li>${nodeRef} ${name} — ${stateText}; ${blockedBy}; ${blocks}</li>`;
     })
     .join("")}</ul>`;
 

@@ -10,8 +10,11 @@ never count.
 """
 
 import importlib.util
+import json
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 _spec = importlib.util.spec_from_file_location(
     "poll", Path(__file__).resolve().parent / "poll.py"
@@ -291,6 +294,141 @@ class TestIsStuckBound(unittest.TestCase):
                 NOW,
             )
         )
+
+
+class TestFetchClaimedRows(unittest.TestCase):
+    """Claimed rows come from the repo-queue binary (#5419 replaced
+    the broker-HTTP read this suite originally pinned when it was
+    written against the pre-#5419 poll.py). subprocess.run is
+    stubbed; no queue is touched. A queue that cannot be read
+    contributes no rows: fetch_claimed_rows returns [] on any CLI
+    or payload failure."""
+
+    class Result:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def fetch(self, payload, returncode=0):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            stdout = payload if isinstance(payload, str) else json.dumps(payload)
+            return self.Result(returncode, stdout)
+
+        with patch.object(poll.subprocess, "run", side_effect=fake_run):
+            rows = poll.fetch_claimed_rows("repo-health-code-pilot")
+        return rows, captured
+
+    def test_cli_list_reads_claimed_rows_and_normalizes(self):
+        raw = {
+            "id": 42,
+            "queue": "repo-health-code-pilot",
+            "status": "claimed",
+            "worker_id": "repo-worker",
+            "progress": {"lane": "opencode", "stage": "handed_off"},
+        }
+        rows, captured = self.fetch({"rows": [raw]})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], 42)
+        self.assertEqual(rows[0]["progress"]["stage"], "handed_off")
+        cmd = [str(part) for part in captured["cmd"]]
+        self.assertEqual(
+            cmd[1:],
+            ["list", "--queue", "repo-health-code-pilot",
+             "--status", "claimed"],
+        )
+
+    def test_flattened_row_gets_progress_synthesized(self):
+        rows, _ = self.fetch([{
+            "id": 7,
+            "status": "claimed",
+            "lane": "opencode",
+            "stage": "handed_off",
+            "session_id": None,
+        }])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["progress"]["lane"], "opencode")
+        self.assertEqual(rows[0]["progress"]["stage"], "handed_off")
+
+    def test_empty_list_is_a_valid_empty_queue(self):
+        rows, _ = self.fetch({"rows": []})
+        self.assertEqual(rows, [])
+
+    def test_cli_failure_returns_no_rows(self):
+        rows, _ = self.fetch("", returncode=1)
+        self.assertEqual(rows, [])
+
+    def test_malformed_payload_returns_no_rows(self):
+        rows, _ = self.fetch("this is not json")
+        self.assertEqual(rows, [])
+
+    def test_non_dict_and_unclaimed_rows_are_skipped(self):
+        rows, _ = self.fetch({"rows": [
+            None,
+            {"id": 1, "status": "queued"},
+            {"id": 2, "status": "claimed",
+             "progress": {"lane": "opencode"}},
+        ]})
+        self.assertEqual([r["id"] for r in rows], [2])
+
+
+class TestFetchSessions(unittest.TestCase):
+    """Fetch-layer completeness (#4757): /api/session truncates at 50
+    by default and honours limit but not offset, so fetch_sessions
+    escalates the limit until a read comes back below it — and fails
+    closed (None) whenever completeness cannot be proven.
+    _server_get is stubbed; no server is touched."""
+
+    def stub_server(self, total, fail_on_call=None):
+        calls = []
+
+        def fake_get(path):
+            calls.append(path)
+            if fail_on_call is not None and len(calls) == fail_on_call:
+                return None
+            limit = int(path.rsplit("limit=", 1)[1])
+            return [{"id": f"ses_{i}"} for i in range(min(limit, total))]
+
+        return fake_get, calls
+
+    def run_fetch(self, total, **kw):
+        fake_get, calls = self.stub_server(total, **kw)
+        original = poll._server_get
+        poll._server_get = fake_get
+        try:
+            return poll.fetch_sessions(), calls
+        finally:
+            poll._server_get = original
+
+    def test_short_single_read_is_complete(self):
+        sessions, calls = self.run_fetch(3)
+        self.assertEqual(len(sessions), 3)
+        self.assertEqual(len(calls), 1)
+
+    def test_escalating_limit_finds_the_whole_list(self):
+        sessions, calls = self.run_fetch(2500)
+        self.assertEqual(len(sessions), 2500)
+        self.assertEqual(len(calls), 2)
+
+    def test_count_exactly_at_a_limit_escalates(self):
+        sessions, calls = self.run_fetch(1000)
+        self.assertEqual(len(sessions), 1000)
+        self.assertEqual(len(calls), 2)
+
+    def test_failed_read_fails_closed(self):
+        sessions, _ = self.run_fetch(2500, fail_on_call=1)
+        self.assertIsNone(sessions)
+        sessions, _ = self.run_fetch(2500, fail_on_call=2)
+        self.assertIsNone(sessions)
+
+    def test_count_at_every_limit_fails_closed(self):
+        sessions, calls = self.run_fetch(10**9)
+        self.assertIsNone(sessions)
+        self.assertEqual(len(calls), len(poll.SESSION_FETCH_LIMITS))
 
 
 if __name__ == "__main__":

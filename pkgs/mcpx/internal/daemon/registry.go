@@ -1649,7 +1649,6 @@ func (r *Registry) Namespaces(prof config.Profile) []NamespaceInfo {
 	return out
 }
 
-// ToolInfo describes one tool for search results.
 // TermScore is one term's contribution to a search hit's Score: the field
 // it matched and the points that field's tier awards (#1923, --explain).
 type TermScore struct {
@@ -1658,6 +1657,7 @@ type TermScore struct {
 	Points int    `json:"points"`
 }
 
+// ToolInfo describes one tool for search results.
 type ToolInfo struct {
 	Namespace string `json:"namespace"`
 	Server    string `json:"server"`
@@ -2601,12 +2601,6 @@ func (r *Registry) GetPrompt(ctx context.Context, server, name string, args map[
 		return nil, err
 	}
 	return p.GetPrompt(ctx, r.resolvedFor(p, cc), name, args)
-}
-
-// keyFor resolves a server's scope key; resolvedFor is the full
-// resolution, for callers that also pass the root to the pool.
-func (r *Registry) keyFor(p *pool.Pool, cc config.CallContext) string {
-	return r.resolvedFor(p, cc).Key
 }
 
 // resolvedFor resolves a server's scope and records the association so

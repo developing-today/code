@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -317,5 +317,50 @@ describe("CoverageSnapshotStore writes (PR #3309 Codex)", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+describe("CoverageSnapshotStore reads (#4140)", () => {
+  const row = {
+    repo: "developing-today/code",
+    openIssues: 10,
+    gateNow: 1,
+    gateNext: 2,
+    poolItems: 3,
+    poolUnsetStatus: 1,
+    poolUnsetArea: 0,
+  };
+  const report = { generatedAt: "2026-11-01T00:00:00Z", repos: [row] };
+  const goodFile = { baseline: report, current: report, weekly: report, anchorAt: "2026-11-01T00:00:00Z" };
+
+  async function readRaw(raw: unknown): Promise<CoverageSnapshotFile | null> {
+    const dir = await mkdtemp(join(tmpdir(), "coverage-store-read-"));
+    try {
+      const file = join(dir, "coverage-snapshot.json");
+      await writeFile(file, typeof raw === "string" ? raw : JSON.stringify(raw), "utf8");
+      return await new CoverageSnapshotStore(file).read();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("a well-formed file reads back; pre-weekly/pre-anchor files keep their fallbacks", async () => {
+    expect(await readRaw(goodFile)).toEqual(goodFile);
+    const legacy = { baseline: null, current: report };
+    expect(await readRaw(legacy)).toEqual(legacy);
+  });
+
+  test("a malformed baseline or weekly reads as absent", async () => {
+    expect(await readRaw({ ...goodFile, baseline: "junk" })).toBeNull();
+    expect(await readRaw({ ...goodFile, baseline: { generatedAt: "2026-11-01T00:00:00Z" } })).toBeNull();
+    expect(await readRaw({ ...goodFile, baseline: { generatedAt: "2026-11-01T00:00:00Z", repos: "nope" } })).toBeNull();
+    expect(await readRaw({ ...goodFile, weekly: "junk" })).toBeNull();
+  });
+
+  test("garbage row field types read as absent, in any report slot", async () => {
+    const badRow = { ...row, openIssues: "ten" };
+    const badReport = { generatedAt: "2026-11-01T00:00:00Z", repos: [badRow] };
+    expect(await readRaw({ ...goodFile, current: badReport })).toBeNull();
+    expect(await readRaw({ ...goodFile, baseline: badReport })).toBeNull();
+    expect(await readRaw("{not json")).toBeNull();
   });
 });
