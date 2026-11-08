@@ -415,3 +415,7 @@ deliberately failing batch that never reaches a search client.
 Filed as the design record for #6057. The implementation follow-ons in §9
 are the tracked next actions; the gate is not "done" until at least the
 gate-record state machine (follow-on 1) exists as an issue against #5669.
+
+**Tracked next actions.** Follow-on 1 (gate record + state machine) is
+filed as #7709 against #5669. Follow-ons 2–6 are filed against their
+siblings as those siblings land (#6021, #5733, #6018/#3125, #5669/#6666).
