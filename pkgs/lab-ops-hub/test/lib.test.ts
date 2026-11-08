@@ -11,6 +11,7 @@ import {
   MAX_CRAWL_BODY_BYTES,
   parseJsonObjectBody,
   parseCrawlResult,
+  parseAiSummaryResult,
   readResponseTextCapped,
   uploadKey,
   validateCrawlUrl,
@@ -1022,6 +1023,32 @@ test("parseCrawlResult rejects wrong-typed container fields (#7018)", () => {
     const parsed = parseCrawlResult(body);
     assert.equal(parsed.ok, false, JSON.stringify(body));
     if (!parsed.ok) assert.match(parsed.error, /crawl result/);
+  }
+});
+
+test("parseAiSummaryResult returns the trimmed summary of a well-formed AI result (#7037)", () => {
+  const parsed = parseAiSummaryResult({ response: "  a tidy summary  " });
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) assert.equal(parsed.values.summary, "a tidy summary");
+});
+
+test("parseAiSummaryResult rejects non-object AI results (#7037)", () => {
+  // A null result used to crash the summarize route with a raw TypeError;
+  // a bare string result was read as a missing response and silently
+  // stored an empty summary reported as success.
+  for (const body of [null, "just a string", 42, true, [1, 2, 3]]) {
+    const parsed = parseAiSummaryResult(body);
+    assert.equal(parsed.ok, false, JSON.stringify(body));
+  }
+});
+
+test("parseAiSummaryResult rejects a missing, non-string, or empty response (#7037)", () => {
+  // {} used to store summary="" with a 200 ok:true, erasing any previous
+  // summary; a numeric/object/array response crashed on .trim.
+  for (const body of [{}, { response: 123 }, { response: { text: "x" } }, { response: ["x"] }, { response: null }, { response: "" }, { response: "   " }]) {
+    const parsed = parseAiSummaryResult(body);
+    assert.equal(parsed.ok, false, JSON.stringify(body));
+    if (!parsed.ok) assert.match(parsed.error, /AI summary result/);
   }
 });
 
