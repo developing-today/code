@@ -1721,6 +1721,18 @@ fn format_cursor(offset: usize) -> String {
 }
 
 fn parse_cursor(cursor: &str) -> Result<usize, ServerError> {
+    // Every byte must be an ASCII hex digit and the length even (#7761,
+    // the #2517 gate the sibling hex parsers already carry): slicing the
+    // string at byte offsets without this gate panics on an odd-length
+    // cursor (final pair out of range) or on a multi-byte character at a
+    // misaligned offset, killing the per-connection thread instead of
+    // returning the malformed-cursor 400 below. u8::from_str_radix also
+    // accepts a leading plus sign, so the gate is what makes a pair two
+    // hex digits and nothing else.
+    let raw = cursor.as_bytes();
+    if raw.len() % 2 != 0 || !raw.iter().all(u8::is_ascii_hexdigit) {
+        return Err(ServerError::bad_request("malformed cursor"));
+    }
     let bytes: Result<Vec<u8>, _> = (0..cursor.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&cursor[i..i + 2], 16))
@@ -3327,5 +3339,19 @@ mod tests {
             None,
         );
         assert_eq!(result_ids(&pq.body), vec![2]);
+    }
+    #[test]
+    fn parse_cursor_refuses_malformed_input_without_panicking() {
+        // #7761: odd-length, single-char, and multibyte cursors used to
+        // panic on byte-offset slicing; every malformed shape must be
+        // the malformed-cursor error instead.
+        let valid = format_cursor(42);
+        assert_eq!(parse_cursor(&valid).ok(), Some(42));
+        assert!(parse_cursor("").is_err());
+        assert!(parse_cursor("zzzz").is_err());
+        assert!(parse_cursor("a").is_err());
+        assert!(parse_cursor(&valid[..valid.len() - 1]).is_err());
+        assert!(parse_cursor("6162aé").is_err());
+        assert!(parse_cursor("+a").is_err());
     }
 }
