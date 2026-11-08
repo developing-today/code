@@ -35,6 +35,28 @@ class QuotaOrSecretTests(unittest.TestCase):
         r = classify("API rate limit exceeded for installation\n")
         self.assertEqual(r["classification"], "quota-or-secret")
 
+    def test_echoed_run_script_secret_text_is_not_evidence(self):
+        r = classify(
+            "##[group]Run if [ -z \\\"$TOKEN\\\" ]; then\n"
+            "  echo 'secret MISSING_TOKEN is not set'\n"
+            "fi\n"
+            "##[endgroup]\n"
+            "checks skipped increased from 2 to 3\n"
+            "test result: FAILED. 14 passed; 1 failed\n"
+        )
+        self.assertEqual(r["classification"], "real-regression")
+
+    def test_executed_secret_error_after_run_group_is_evidence(self):
+        r = classify(
+            "##[group]Run if [ -z \\\"$TOKEN\\\" ]; then\n"
+            "  echo 'secret MISSING_TOKEN is not set'\n"
+            "fi\n"
+            "##[endgroup]\n"
+            "secret DEPLOY_TOKEN is not set in the environment\n"
+        )
+        self.assertEqual(r["classification"], "quota-or-secret")
+        self.assertIn("DEPLOY_TOKEN", r["detail"])
+
     def test_quota_beats_test_failure_summary(self):
         r = classify("--- FAIL: TestThing\nBad credentials\n")
         self.assertEqual(r["classification"], "quota-or-secret")

@@ -123,6 +123,8 @@ RULES: list[tuple[str, str, list[re.Pattern[str]]]] = [
 SECRET_NAME_RE = re.compile(
     r"(?:secret|token|api[_-]?key)\s+([A-Z][A-Z0-9_]{2,})", re.I
 )
+RUN_GROUP_START_RE = re.compile(r"##\[group\]Run(?:\s|$)", re.I)
+GROUP_END_RE = re.compile(r"##\[endgroup\]", re.I)
 
 
 def tail_lines(text: str, n: int) -> list[str]:
@@ -130,9 +132,33 @@ def tail_lines(text: str, n: int) -> list[str]:
     return lines[-n:] if len(lines) > n else lines
 
 
+def without_echoed_commands(text: str) -> str:
+    """Drop Actions' echoed ``Run`` scripts, retaining their command output.
+
+    GitHub wraps the shell source printed before execution in a ``Run`` log
+    group. A credential-looking string in an unexecuted branch of that source
+    is not evidence that a credential failed, so do not classify those lines.
+    """
+    kept: list[str] = []
+    in_run_group = False
+    for line in text.splitlines():
+        if in_run_group:
+            if GROUP_END_RE.search(line):
+                in_run_group = False
+            continue
+        if RUN_GROUP_START_RE.search(line):
+            in_run_group = True
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def classify(logs: dict[str, str], tail: int = DEFAULT_TAIL_LINES) -> dict:
     """logs maps job display name -> full log text. Returns the result dict."""
-    tailed = {name: tail_lines(text, tail) for name, text in logs.items()}
+    tailed = {
+        name: tail_lines(without_echoed_commands(text), tail)
+        for name, text in logs.items()
+    }
     for classification, route, patterns in RULES:
         evidence: list[str] = []
         detail = ""
