@@ -124,6 +124,37 @@ def slug(value):
     return value
 
 
+def load_outline(path):
+    """Load an --outline file, rejecting wrong shapes via fail().
+
+    Every rejection names the outline file and the field/expectation, so
+    a malformed outline produces the tool's clean diagnostic instead of
+    a raw AttributeError/TypeError/JSONDecodeError from deep in
+    scaffold() (issue #6862).
+    """
+    try:
+        outline = json.loads(Path(path).read_text())
+    except json.JSONDecodeError as error:
+        fail(f"Outline {path} is not valid JSON: {error}")
+    if not isinstance(outline, dict):
+        fail(f"Outline {path} must be a JSON object at the top level")
+    for field in ("title", "introduction"):
+        if field in outline and not isinstance(outline[field], str):
+            fail(f"Outline {path} field '{field}' must be a string")
+    concepts = outline.get("concepts")
+    if isinstance(concepts, list):
+        for index, concept in enumerate(concepts, 1):
+            if not isinstance(concept, dict):
+                fail(f"Outline {path} concept {index} must be a JSON object")
+            for field in ("slug", "summary"):
+                if field in concept and not isinstance(concept[field], str):
+                    fail(
+                        f"Outline {path} concept {index} field '{field}'"
+                        " must be a string"
+                    )
+    return outline
+
+
 def marker(kind, data):
     payload = json.dumps(data, ensure_ascii=False, indent=2).replace("<", "\\u003c")
     return f"<!-- workflow:{kind} -->\n{payload}\n<!-- /workflow:{kind} -->\n"
@@ -241,7 +272,7 @@ def scaffold(args, root, config):
     if package.exists() or package.is_symlink():
         fail(f"Package already exists: {package}")
     outline = (
-        json.loads(Path(args.outline).read_text())
+        load_outline(args.outline)
         if args.outline
         else {
             "title": args.concept or args.slug.replace("-", " ").title(),

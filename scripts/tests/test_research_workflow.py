@@ -273,6 +273,80 @@ class ResearchWorkflowTests(unittest.TestCase):
         self.init(outline=outline, ok=False)
         self.assertEqual(self.snapshot(), before)
 
+    def test_outline_top_level_must_be_an_object(self):
+        before = self.snapshot()
+        result = self.init(outline=[], ok=False)
+        self.assertIn("outline.json", result.stderr)
+        self.assertIn("must be a JSON object", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_outline_non_json_names_the_file(self):
+        self.outline_file = self.scratch / "outline.json"
+        self.outline_file.write_text("this is not json", encoding="utf-8")
+        before = self.snapshot()
+        result = self.cli(
+            "init",
+            "--repo-root",
+            self.root,
+            "--input",
+            self.input,
+            "--slug",
+            "assorted-ideas",
+            "--timestamp",
+            TIMESTAMP,
+            "--outline",
+            self.outline_file,
+            ok=False,
+        )
+        self.assertIn("outline.json", result.stderr)
+        self.assertIn("is not valid JSON", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_outline_title_must_be_a_string(self):
+        outline = self.outline()
+        outline["title"] = 42
+        before = self.snapshot()
+        result = self.init(outline=outline, ok=False)
+        self.assertIn("outline.json", result.stderr)
+        self.assertIn("'title' must be a string", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_outline_introduction_must_be_a_string(self):
+        outline = self.outline()
+        outline["introduction"] = 42
+        before = self.snapshot()
+        result = self.init(outline=outline, ok=False)
+        self.assertIn("outline.json", result.stderr)
+        self.assertIn("'introduction' must be a string", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_outline_concept_entries_must_be_objects(self):
+        outline = self.outline()
+        outline["concepts"][0] = "just-a-string"
+        before = self.snapshot()
+        result = self.init(outline=outline, ok=False)
+        self.assertIn("outline.json", result.stderr)
+        self.assertIn("concept 1 must be a JSON object", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_outline_concept_slug_must_be_a_string(self):
+        outline = self.outline()
+        outline["concepts"][0]["slug"] = 42
+        before = self.snapshot()
+        result = self.init(outline=outline, ok=False)
+        self.assertIn("outline.json", result.stderr)
+        self.assertIn("'slug' must be a string", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_outline_concept_summary_must_be_a_string(self):
+        outline = self.outline()
+        outline["concepts"][0]["summary"] = 42
+        before = self.snapshot()
+        result = self.init(outline=outline, ok=False)
+        self.assertIn("outline.json", result.stderr)
+        self.assertIn("'summary' must be a string", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
     def test_existing_package_collision_never_overwrites_completed_intake(self):
         self.init()
         before = self.snapshot()
