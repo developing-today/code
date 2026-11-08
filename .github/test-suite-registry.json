@@ -233,6 +233,20 @@
       "reason": "The registered id-bench workflow is disabled_manually."
     },
     {
+      "id": "id.just-recipes.drift-guard",
+      "paths": ["pkgs/id/scripts/just-recipes-check-test.sh"],
+      "invocation": "just-recipes-drift flake check: just-recipes-check && bash scripts/just-recipes-check-test.sh (pkgs/id/flake.nix, via .github/scripts/id-pr-checks.txt)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / just-recipes-drift",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [6186],
+      "notes": "Regression suite for the just-recipes drift guard: asserts failures for changed parameter flags, dependency arguments, alias targets, and malformed JSON. Registered per the Codex review finding on PR #6360 (2026-11-08); the other suites named in the earlier Codex round (mcpx gotest-report, mcpx affected-untracked, production-line-limit, id-bench compare) were already registered."
+    },
+    {
       "id": "mcpx.go.unit",
       "paths": ["pkgs/mcpx/**/*.go"],
       "path_excludes": ["pkgs/mcpx/internal/e2e/**"],
