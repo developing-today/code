@@ -96,3 +96,30 @@ func TestAPIEditsPreserveSiblingSections(t *testing.T) {
 		t.Fatalf("remove left the entry behind:\n%s", b)
 	}
 }
+
+// TestAPIEditsPreserveExactNumbers: a combined declaration document can
+// carry sibling values that do not survive float64 — a tool-view pinned
+// ID above 2^53 is the known case (#1933). Editing the apis list must
+// not round them (Codex P2, PR #4637; oracle: the exact decimal literal
+// in the source document must appear verbatim after add and remove).
+func TestAPIEditsPreserveExactNumbers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "combined.json")
+	doc := `{"toolViews":{"v":{"pin":9007199254740993}},"apis":[{"name":"old","spec":"./old.json"}]}`
+	if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddAPIEntry(path, map[string]any{"name": "new", "spec": "./new.json"}, false); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	if !strings.Contains(string(b), "9007199254740993") {
+		t.Fatalf("add rounded the pinned ID:\n%s", b)
+	}
+	if _, err := RemoveAPIEntry(path, "old"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = os.ReadFile(path)
+	if !strings.Contains(string(b), "9007199254740993") {
+		t.Fatalf("remove rounded the pinned ID:\n%s", b)
+	}
+}

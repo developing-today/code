@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -239,12 +240,12 @@ func adapterDocument(path string) (entries []any, bare bool, doc map[string]any,
 	}
 	trimmed := strings.TrimSpace(string(StripJSONC(b)))
 	if strings.HasPrefix(trimmed, "[") {
-		if err := json.Unmarshal([]byte(trimmed), &entries); err != nil {
+		if err := decodeUseNumber([]byte(trimmed), &entries); err != nil {
 			return nil, false, nil, fmt.Errorf("%s is not a valid adapter file: %w", path, err)
 		}
 		return entries, true, nil, nil
 	}
-	if err := json.Unmarshal([]byte(trimmed), &doc); err != nil {
+	if err := decodeUseNumber([]byte(trimmed), &doc); err != nil {
 		return nil, false, nil, fmt.Errorf("%s is not a valid adapter file: %w", path, err)
 	}
 	list, _ := doc["adapters"].([]any)
@@ -351,6 +352,17 @@ func AdapterDefinedIn(paths []string, name string) (string, bool, error) {
 	return "", false, nil
 }
 
+// decodeUseNumber decodes JSON preserving exact numbers as json.Number,
+// the way config.parse does: a combined declaration document can carry
+// sibling values (e.g. a tool-view pinned ID above 2^53) that a plain
+// json.Unmarshal into map[string]any would silently round through
+// float64 on the next write (Codex P2, PR #4637).
+func decodeUseNumber(data []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	return dec.Decode(v)
+}
+
 // ---- API declaration files ----
 //
 // An API declaration file is the same shape as an adapter one with a
@@ -372,12 +384,12 @@ func apiDocument(path string) (entries []any, bare bool, doc map[string]any, err
 	}
 	trimmed := strings.TrimSpace(string(StripJSONC(b)))
 	if strings.HasPrefix(trimmed, "[") {
-		if err := json.Unmarshal([]byte(trimmed), &entries); err != nil {
+		if err := decodeUseNumber([]byte(trimmed), &entries); err != nil {
 			return nil, false, nil, fmt.Errorf("%s is not a valid API file: %w", path, err)
 		}
 		return entries, true, nil, nil
 	}
-	if err := json.Unmarshal([]byte(trimmed), &doc); err != nil {
+	if err := decodeUseNumber([]byte(trimmed), &doc); err != nil {
 		return nil, false, nil, fmt.Errorf("%s is not a valid API file: %w", path, err)
 	}
 	list, _ := doc["apis"].([]any)

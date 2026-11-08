@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/config"
@@ -347,8 +348,19 @@ func (a *App) apiAdd(ctx context.Context, args []string) error {
 		return fmt.Errorf("an API needs --spec <path-or-url>")
 	}
 	name := fs.Arg(0)
+	// A local spec path is resolved against THIS process's working
+	// directory before it is sent to the daemon: the daemon (and the
+	// API server it spawns) may run from a different directory, so a
+	// caller-relative path persisted unchanged would load the wrong
+	// document or none at all (Codex P2, PR #4637). URLs pass through.
+	specVal := *spec
+	if !strings.HasPrefix(specVal, "http://") && !strings.HasPrefix(specVal, "https://") {
+		if abs, aerr := filepath.Abs(specVal); aerr == nil {
+			specVal = abs
+		}
+	}
 	body := map[string]any{
-		"name": name, "spec": *spec, "replace": *replace,
+		"name": name, "spec": specVal, "replace": *replace,
 	}
 	if *baseURL != "" {
 		body["baseUrl"] = *baseURL

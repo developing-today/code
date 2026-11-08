@@ -1122,7 +1122,18 @@ func (s *Server) handleAPIsAdd(w http.ResponseWriter, r *http.Request) {
 	if cfg := s.currentConfig(); cfg != nil {
 		want := config.SanitizeNamespace(req.Name)
 		for name, srv := range cfg.MCPServers {
-			if srv == nil || config.SanitizeNamespace(name) != want {
+			if srv == nil {
+				continue
+			}
+			// Compare against the server's RESOLVED namespace, not its
+			// name: a server named `backend` with mcpx.namespace "pets"
+			// owns the namespace `pets`, and ResolveAll would reject an
+			// API of that name at reload (Codex P1, PR #4637).
+			resolved := config.SanitizeNamespace(name)
+			if r, rerr := cfg.Resolve(name); rerr == nil && r != nil {
+				resolved = r.Namespace
+			}
+			if resolved != want && config.SanitizeNamespace(resolved) != want {
 				continue
 			}
 			if name == req.Name {
