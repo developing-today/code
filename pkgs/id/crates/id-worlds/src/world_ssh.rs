@@ -3819,6 +3819,12 @@ mod tests {
                 "values": {"name": "Ada"}
             })
             .to_string(),
+        let more_documents = WorldCommand::DocumentsContinue {
+            prefix: None,
+            after: "a.md".to_owned(),
+        };
+        sent.push(check(
+            &command_frame(&more_documents, "cap").unwrap(),
             Phase::Joined,
         ));
         assert_eq!(
@@ -3830,8 +3836,11 @@ mod tests {
                 "records",
                 "info",
                 "caps",
+                "documents",
+                "document",
                 "records",
-                "form_result"
+                "form_result",
+                "documents"
             ]
         );
         let status = serde_json::json!({
