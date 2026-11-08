@@ -87,7 +87,10 @@ describe("detectConflicts (#1282 slice 1)", () => {
     const entries = detectConflicts({ pool: [], services: [svc], now: NOW });
     expect(entries).toHaveLength(2);
     expect(entries.map((e) => e.id)).toEqual(["quota-records:turso:0", "quota-records:turso:1"]);
-    expect(entries[0].values).toEqual({ a: "Summary row says $25/mo, card says $20/mo", b: "Dashboard says 3 of 5 databases" });
+    expect(entries[0].values).toEqual({
+      a: "Summary row says $25/mo, card says $20/mo",
+      b: "Dashboard says 3 of 5 databases",
+    });
     expect(entries[0].sources.a).toBe("Turso");
     expect(entries[0].ageDays).toBe(2);
     expect(entries[0].ageBasis).toBe("service-measured-at");
@@ -180,7 +183,7 @@ describe("health surface counts the inbox (#1282 slice 1)", () => {
       now: NOW,
     });
     const view = await buildHealth(
-      { mode: "fixtures", cfg: loadConfig({}), feed: null, feedFileMtimeMs: null, conflicts: inbox },
+      { mode: "fixtures", cfg: loadConfig({ PM_AGG_DEV: "1" }), feed: null, feedFileMtimeMs: null, conflicts: inbox },
       { now: NOW },
     );
     expect(view.conflicts?.total).toBe(2);
@@ -193,7 +196,7 @@ describe("health surface counts the inbox (#1282 slice 1)", () => {
 
   test("a health view assembled without the inbox says so instead of inventing zero", async () => {
     const view = await buildHealth(
-      { mode: "fixtures", cfg: loadConfig({}), feed: null, feedFileMtimeMs: null },
+      { mode: "fixtures", cfg: loadConfig({ PM_AGG_DEV: "1" }), feed: null, feedFileMtimeMs: null },
       { now: NOW },
     );
     expect(view.conflicts).toBeNull();

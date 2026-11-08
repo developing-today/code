@@ -447,7 +447,9 @@ class TestPack(ColdStoreTestBase):
             return real_compress(store_self, src_arg, frame_path)
 
         with mock.patch.object(
-            ColdStore, "_compress_to_frame", autospec=True,
+            ColdStore,
+            "_compress_to_frame",
+            autospec=True,
             side_effect=mutate_then_compress,
         ):
             with self.assertRaisesRegex(
@@ -2247,6 +2249,23 @@ class TestEvictScan(EvictTestBase):
         self.assertIn(self.keys["evict1"], self.s3.objects)
 
 
+class TestEvictScanGuards(EvictTestBase):
+    def test_negative_min_age_days_rejected(self):
+        # A negative age floor makes `now - last_modified < min_age`
+        # false for every object, silently disabling the age gate that
+        # keeps evict --apply from deleting brand-new objects (#5642).
+        with self.assertRaises(cold_store.ColdStoreError):
+            self.store.evict_scan(min_age_days=-1, keep_newest=2)
+
+    def test_negative_keep_newest_rejected(self):
+        with self.assertRaises(cold_store.ColdStoreError):
+            self.store.evict_scan(min_age_days=14, keep_newest=-1)
+
+    def test_zero_min_age_days_is_an_explicit_no_floor(self):
+        scan = self.scan_by_key(min_age_days=0, keep_newest=0)
+        self.assertEqual(scan[self.keys["young"]]["verdict"], "evictable")
+
+
 class TestOffsetLessLastModified(EvictTestBase):
     """#2110: an offset-less LastModified has no zone, so it is
     unparseable -> None (the aware-or-None contract of
@@ -3201,9 +3220,6 @@ class TestD1ResponseShapes(ColdStoreTestBase):
                     self.store.sync_manifest()
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 
 class TestResumableUploadStalls(ColdStoreTestBase):
     """#2797: a 308 whose Range stops advancing must not loop forever,
@@ -3268,3 +3284,59 @@ class TestResumableUploadStalls(ColdStoreTestBase):
         self.assertEqual(result, "file-x")
         starts = [int(p.split(" ")[1].split("-")[0]) for p in puts]
         self.assertEqual(starts, [0, 100, 200, 300, 400, 500, 600, 700, 800, 900])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
+import json
+from unittest import mock
+
+
+class TestListingBounds6602Drive(ColdStoreTestBase):
+    """#6602: a fresh-token page stream must hit the listing bound."""
+
+    def _fresh_token_fake(self, calls):
+        def fake(method, url, headers=None, **kw):
+            calls["n"] += 1
+            body = {"files": [{"id": "f1", "name": "b", "size": 1,
+                               "createdTime": "2026-01-01T00:00:00Z"}],
+                    "nextPageToken": "tok-%d" % calls["n"]}
+            return 200, {}, json.dumps(body).encode()
+        return fake
+
+    def test_drive_fresh_token_stream_hits_page_bound(self):
+        calls = {"n": 0}
+        with mock.patch.object(cold_store, "http_request", self._fresh_token_fake(calls)), mock.patch.object(cold_store, "LIST_MAX_PAGES", 5):
+            with mock.patch.object(self.store, "_folder_id", lambda name: "folder1"), mock.patch.object(self.store, "_auth_headers", lambda: {}):
+                with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                    self.store.list_backups("supabase")
+        self.assertIn("supabase", str(ctx.exception))
+        self.assertEqual(calls["n"], 5)
+
+    def test_drive_result_bound_trips(self):
+        calls = {"n": 0}
+        with mock.patch.object(cold_store, "http_request", self._fresh_token_fake(calls)), mock.patch.object(cold_store, "LIST_MAX_RESULTS", 0):
+            with mock.patch.object(self.store, "_folder_id", lambda name: "folder1"), mock.patch.object(self.store, "_auth_headers", lambda: {}):
+                with self.assertRaises(cold_store.ColdStoreError):
+                    self.store.list_backups("supabase")
+
+
+class TestListingBounds6602S3(S3TestBase):
+    def test_s3_fresh_token_stream_hits_page_bound(self):
+        calls = {"n": 0}
+
+        def fake(method, bucket, query=None, **kw):
+            calls["n"] += 1
+            body = ("<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                    "<IsTruncated>true</IsTruncated>"
+                    f"<NextContinuationToken>tok-{calls[chr(110)]}</NextContinuationToken>"
+                    "<Contents><Key>k1</Key><Size>1</Size>"
+                    "<LastModified>2026-10-01T00:00:00.000Z</LastModified></Contents>"
+                    "</ListBucketResult>")
+            return 200, {}, body.encode()
+
+        with mock.patch.object(self.store, "_s3_request", fake), mock.patch.object(cold_store, "LIST_MAX_PAGES", 5):
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.s3_list_objects("supabase-backups")
+        self.assertIn("supabase-backups", str(ctx.exception))
+        self.assertEqual(calls["n"], 5)

@@ -466,6 +466,14 @@ impl WorldActor {
                 return Err(error.context("world storage failed; the world is read-only"));
             }
             self.metrics.record_journal_append(started.elapsed());
+            // Write locality (#2275): an entity-addressed input is a
+            // region-scoped write, so it lands in the locality table
+            // under its entity reference.
+            if let JournalEntry::Committed { event } | JournalEntry::System { event } = &entry {
+                if let WorldEventKind::EntityInput { entity_ref, .. } = &event.kind {
+                    self.metrics.record_write_locality(entity_ref);
+                }
+            }
             if let Some(header_version) = journal.replication_header_version() {
                 if version_before != Some(header_version) {
                     let update = journal
@@ -1477,9 +1485,19 @@ impl WorldActor {
                                                         Some(fallback_text)
                                                     };
                                                     match bounded {
-                                                        Some(text) if text.len() <= self.core.limits.presentation_bytes => Ok(Some(text)),
+                                                        Some(text)
+                                                            if text.len()
+                                                                <= self
+                                                                    .core
+                                                                    .limits
+                                                                    .presentation_bytes =>
+                                                        {
+                                                            Ok(Some(text))
+                                                        }
                                                         _ => {
-                                                            self.view_failures = self.view_failures.saturating_add(1);
+                                                            self.view_failures = self
+                                                                .view_failures
+                                                                .saturating_add(1);
                                                             Err(anyhow::anyhow!(
                                                                 "world presentation exceeds {} bytes",
                                                                 self.core.limits.presentation_bytes

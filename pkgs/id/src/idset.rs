@@ -50,9 +50,16 @@
 //! shorter array) be canonical bytes and still decode, while a re-encoded
 //! entry always carries the flag.
 //!
-//! This module is types and encoding only. Expansion, projection, and
-//! counting are later slices of the spec's routing (§9 items 2–4) and are
-//! deliberately absent here.
+//! `set_id` is checked against its derivation: a set with `scope: Some(purpose)`
+//! must carry `set_id == derive_set_id(owner, purpose)` or both the encoder
+//! and the decoder refuse it. A set with `scope: None` has no purpose to derive
+//! from, so its `set_id` is an owner-chosen opaque value, unverifiable by
+//! design.
+//!
+//! This module is the types and encoding. Expansion now lives beside the
+//! types: [`expand`] wires [`view`]'s pure projection to the membership
+//! layer (spec §9 item 2). Counting is a later slice of the spec's routing
+//! (§9 item 4) and is deliberately absent here.
 
 use cbor_core::{DecodeOptions, Strictness, Value};
 use p2panda_core::Hash;
@@ -60,6 +67,12 @@ use unicode_normalization::is_nfc;
 
 use crate::groups::Role;
 use crate::waiting::AuthorKey;
+
+/// Store-wired expansion over the membership layer (spec §9 item 2).
+pub mod expand;
+
+/// View projection and discovery over an explicitly pinned snapshot.
+pub mod view;
 
 /// The kind of a writer-set event, as the header's `kind` names it.
 pub const WRITER_KIND: &str = "idset.writer";
@@ -99,6 +112,15 @@ const OOM_MITIGATION: usize = 64;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WriterSet {
     /// The set's stable derived ID (see [`WriterSet::derive_set_id`]).
+    ///
+    /// When `scope` is `Some(purpose)`, [`WriterSet::check`] requires this to
+    /// equal `derive_set_id(owner, purpose)`. When `scope` is `None` there is
+    /// no purpose to derive from, so the ID is an owner-chosen opaque value
+    /// that cannot be verified here — unverifiable by design. Consumers that
+    /// group versions by `set_id` (spec §4.1) are still safe, because the
+    /// owner signs every version of its own chain; the check closes the
+    /// separate hole of a scoped set claiming an identity its own
+    /// `(owner, scope)` does not derive.
     pub set_id: Hash,
     /// The publishing event's sequence number in the owner's chain.
     pub version: u64,
@@ -130,10 +152,19 @@ impl WriterSet {
     /// # Errors
     ///
     /// Returns [`IdsetError::Shape`] for a scope that is too long or not NFC,
-    /// or for more than [`MAX_ENTRIES`] entries in total.
+    /// for a scoped set whose `set_id` is not
+    /// `derive_set_id(owner, scope)` (a `scope: None` set is not checked, see
+    /// [`WriterSet::set_id`]), for more than [`MAX_ENTRIES`] entries in total, or for a duplicate
+    /// entry identity within `entries` or within `excludes` (see
+    /// [`check_entry_identities`]).
     pub fn check(&self) -> Result<(), IdsetError> {
         if let Some(scope) = &self.scope {
             check_scope(scope)?;
+            if self.set_id != Self::derive_set_id(&self.owner, scope) {
+                return Err(IdsetError::Shape(
+                    "set_id does not match derive_set_id(owner, scope)".to_owned(),
+                ));
+            }
         }
         let total = self.entries.len() + self.excludes.0.len();
         if total > MAX_ENTRIES {
@@ -141,8 +172,52 @@ impl WriterSet {
                 "{total} entries, the most is {MAX_ENTRIES}"
             )));
         }
+        check_entry_identities(&self.entries, "entries")?;
+        check_entry_identities(&self.excludes.0, "excludes")?;
         Ok(())
     }
+}
+
+/// Refuses a repeated entry identity within one list: the same author key
+/// twice, the same group at the same `role_min` twice, or more than one
+/// `public` entry. `include_history` is an attribute of an admission, not
+/// part of its identity, so entries that differ only in that flag are still
+/// duplicates. `role_min` IS part of a group entry's identity: the design
+/// (writer-set spec §D3 / OQ-8) expresses a group whose members split by
+/// role threshold as two `Group` entries for the same group id, so the
+/// same group at different `role_min` values is a documented shape, not a
+/// duplicate. The check is per list: the same key appearing once in
+/// `entries` and once in `excludes` is not a duplicate — exclusions win by
+/// design (spec §D6).
+fn check_entry_identities(entries: &[Entry], list: &str) -> Result<(), IdsetError> {
+    let mut keys: std::collections::HashSet<AuthorKey> = std::collections::HashSet::new();
+    let mut groups: std::collections::HashSet<(Hash, u64)> = std::collections::HashSet::new();
+    let mut public_seen = false;
+    for entry in entries {
+        match entry {
+            Entry::Key { author, .. } => {
+                if !keys.insert(*author) {
+                    return Err(IdsetError::Shape(format!("duplicate key entry in {list}")));
+                }
+            }
+            Entry::Group { id, role_min, .. } => {
+                if !groups.insert((*id, role_level(*role_min))) {
+                    return Err(IdsetError::Shape(format!(
+                        "duplicate group entry in {list}"
+                    )));
+                }
+            }
+            Entry::Public { .. } => {
+                if public_seen {
+                    return Err(IdsetError::Shape(format!(
+                        "duplicate public entry in {list}"
+                    )));
+                }
+                public_seen = true;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// One entry of a writer set (spec §D3): a union of three shapes, each
@@ -642,6 +717,77 @@ mod tests {
         assert_eq!(decode_rescind_body(&body).unwrap(), unbounded);
     }
 
+    fn assert_set_id_mismatch(set: &WriterSet) {
+        assert!(matches!(
+            set.check(),
+            Err(IdsetError::Shape(ref msg)) if msg.contains("set_id")
+        ));
+        assert!(matches!(
+            encode_writer_body(set),
+            Err(IdsetError::Shape(ref msg)) if msg.contains("set_id")
+        ));
+    }
+
+    /// Re-encodes a set's body with its `set_id` bytes replaced, bypassing the
+    /// encoder's check, so the decoder is tested on its own.
+    fn body_with_set_id(set: &WriterSet, forged: Hash) -> Vec<u8> {
+        let good = encode_writer_body(set).unwrap();
+        let real = set.set_id.as_bytes();
+        let at = good
+            .windows(32)
+            .position(|w| w == real)
+            .expect("set_id bytes present");
+        let mut body = good;
+        body[at..at + 32].copy_from_slice(forged.as_bytes());
+        body
+    }
+
+    #[test]
+    fn mismatched_set_id_is_refused_for_scoped_sets() {
+        let good = sample_set();
+        // control: the correctly derived set passes and round-trips
+        assert!(good.check().is_ok());
+        assert_eq!(
+            decode_writer_body(&encode_writer_body(&good).unwrap()).unwrap(),
+            good
+        );
+
+        let wrong_purpose = WriterSet {
+            set_id: WriterSet::derive_set_id(&owner(), "cat-care"),
+            ..sample_set()
+        };
+        let wrong_owner = WriterSet {
+            set_id: WriterSet::derive_set_id(&[1u8; 32], "dog-care"),
+            ..sample_set()
+        };
+        let arbitrary = WriterSet {
+            set_id: Hash::digest(b"anything"),
+            ..sample_set()
+        };
+        for forged in [&wrong_purpose, &wrong_owner, &arbitrary] {
+            assert_set_id_mismatch(forged);
+            // decoder side: wire bytes carrying the forged identity
+            let body = body_with_set_id(&good, forged.set_id);
+            assert!(matches!(
+                decode_writer_body(&body),
+                Err(IdsetError::Shape(ref msg)) if msg.contains("set_id")
+            ));
+        }
+    }
+
+    /// With no scope there is nothing to derive from: any `set_id` passes.
+    #[test]
+    fn unscoped_set_id_is_unverifiable_by_design() {
+        let set = WriterSet {
+            set_id: Hash::digest(b"opaque-owner-chosen"),
+            scope: None,
+            ..sample_set()
+        };
+        assert!(set.check().is_ok());
+        let body = encode_writer_body(&set).unwrap();
+        assert_eq!(decode_writer_body(&body).unwrap(), set);
+    }
+
     #[test]
     fn set_id_is_stable_and_purpose_bound() {
         let a = WriterSet::derive_set_id(&owner(), "dog-care");
@@ -762,6 +908,7 @@ mod tests {
                 note: None,
                 link: None,
                 checkpoint: None,
+                rotation: None,
             },
         )
         .unwrap();
@@ -769,6 +916,166 @@ mod tests {
         assert_eq!(received.header.extensions.kind, WRITER_KIND);
         assert_eq!(received.header.payload_hash, Some(Hash::digest(&body)));
         assert_eq!(decode_writer_body(&body).unwrap(), set);
+    }
+
+    /// Hand-built bodies (not encoder output, which now refuses these too)
+    /// carrying a repeated identity in one list must be refused on decode:
+    /// same key with opposite `include_history`, same group at the same
+    /// `role_min` with opposite `include_history`, `public` twice, and a
+    /// duplicate inside `excludes`.
+    #[test]
+    fn duplicate_entry_identities_are_refused_on_decode() {
+        let group = Hash::digest(b"household");
+        let cases: Vec<(Vec<Entry>, Vec<Entry>)> = vec![
+            (
+                vec![
+                    Entry::Key {
+                        author: [9u8; 32],
+                        include_history: true,
+                    },
+                    Entry::Key {
+                        author: [9u8; 32],
+                        include_history: false,
+                    },
+                ],
+                vec![],
+            ),
+            (
+                vec![
+                    Entry::Group {
+                        id: group,
+                        role_min: Role::Read,
+                        include_history: false,
+                    },
+                    Entry::Group {
+                        id: group,
+                        role_min: Role::Read,
+                        include_history: true,
+                    },
+                ],
+                vec![],
+            ),
+            (
+                vec![
+                    Entry::Public {
+                        include_history: true,
+                    },
+                    Entry::Public {
+                        include_history: false,
+                    },
+                ],
+                vec![],
+            ),
+            (
+                vec![],
+                vec![
+                    Entry::Key {
+                        author: [5u8; 32],
+                        include_history: true,
+                    },
+                    Entry::Key {
+                        author: [5u8; 32],
+                        include_history: false,
+                    },
+                ],
+            ),
+        ];
+        for (entries, excludes) in cases {
+            let body = Value::Array(vec![
+                Value::TextString(WRITER_KIND.into()),
+                Value::Unsigned(VERSION),
+                hash_value(&Hash::digest(b"set")),
+                Value::Unsigned(0),
+                Value::ByteString(owner().to_vec().into()),
+                Value::null(),
+                entries_value(&entries),
+                entries_value(&excludes),
+            ])
+            .encode();
+            assert!(
+                matches!(
+                    decode_writer_body(&body),
+                    Err(IdsetError::Shape(ref msg)) if msg.contains("duplicate")
+                ),
+                "entries {entries:?} excludes {excludes:?} must be refused as duplicates"
+            );
+        }
+    }
+
+    /// The encoder shares the decoder's gate, so a set with a duplicate
+    /// identity cannot be written either.
+    #[test]
+    fn duplicate_entry_identities_are_refused_on_encode() {
+        let mut set = sample_set();
+        // sample_set already lists key [9; 32] with include_history: true.
+        set.entries.push(Entry::Key {
+            author: [9u8; 32],
+            include_history: false,
+        });
+        assert!(matches!(
+            encode_writer_body(&set),
+            Err(IdsetError::Shape(_))
+        ));
+    }
+
+    /// The same key once in `entries` and once in `excludes` is NOT a
+    /// duplicate: exclusions win by design (spec §D6), and the shape must
+    /// keep decoding.
+    #[test]
+    fn same_key_in_entries_and_excludes_still_decodes() {
+        let body = Value::Array(vec![
+            Value::TextString(WRITER_KIND.into()),
+            Value::Unsigned(VERSION),
+            hash_value(&Hash::digest(b"set")),
+            Value::Unsigned(0),
+            Value::ByteString(owner().to_vec().into()),
+            Value::null(),
+            entries_value(&[Entry::Key {
+                author: [9u8; 32],
+                include_history: true,
+            }]),
+            entries_value(&[Entry::Key {
+                author: [9u8; 32],
+                include_history: false,
+            }]),
+        ])
+        .encode();
+        let set = decode_writer_body(&body).unwrap();
+        assert_eq!(set.entries.len(), 1);
+        assert_eq!(set.excludes.0.len(), 1);
+    }
+
+    /// The same group at two different `role_min` values is NOT a
+    /// duplicate: the design (writer-set spec §D3 / OQ-8) expresses a group
+    /// whose members split by role threshold exactly this way — e.g.
+    /// readers admitted prospectively, admins also importing history.
+    #[test]
+    fn same_group_at_different_role_min_still_decodes() {
+        let group = Hash::digest(b"household");
+        let body = Value::Array(vec![
+            Value::TextString(WRITER_KIND.into()),
+            Value::Unsigned(VERSION),
+            hash_value(&Hash::digest(b"set")),
+            Value::Unsigned(0),
+            Value::ByteString(owner().to_vec().into()),
+            Value::null(),
+            entries_value(&[
+                Entry::Group {
+                    id: group,
+                    role_min: Role::Read,
+                    include_history: false,
+                },
+                Entry::Group {
+                    id: group,
+                    role_min: Role::Admin,
+                    include_history: true,
+                },
+            ]),
+            entries_value(&[]),
+        ])
+        .encode();
+        let set = decode_writer_body(&body).unwrap();
+        assert_eq!(set.entries.len(), 2);
     }
 
     #[test]

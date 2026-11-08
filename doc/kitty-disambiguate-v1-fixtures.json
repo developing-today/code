@@ -30,9 +30,7 @@
             "key": {
               "scalar": "x"
             },
-            "modifiers": [
-              "Alt"
-            ],
+            "modifiers": ["Alt"],
             "kind": "Press"
           }
         }
@@ -62,9 +60,7 @@
             "key": {
               "scalar": "i"
             },
-            "modifiers": [
-              "Control"
-            ],
+            "modifiers": ["Control"],
             "kind": "Press"
           }
         }
@@ -94,9 +90,7 @@
             "key": {
               "scalar": "m"
             },
-            "modifiers": [
-              "Control"
-            ],
+            "modifiers": ["Control"],
             "kind": "Press"
           }
         }
@@ -111,9 +105,7 @@
             "key": {
               "named": "Right"
             },
-            "modifiers": [
-              "Control"
-            ],
+            "modifiers": ["Control"],
             "kind": "Press"
           }
         }
@@ -158,9 +150,7 @@
             "key": {
               "named": "Tab"
             },
-            "modifiers": [
-              "Shift"
-            ],
+            "modifiers": ["Shift"],
             "kind": "Press"
           }
         }
@@ -175,9 +165,7 @@
             "key": {
               "named": "Tab"
             },
-            "modifiers": [
-              "Shift"
-            ],
+            "modifiers": ["Shift"],
             "kind": "Press"
           }
         }
@@ -192,9 +180,7 @@
             "key": {
               "named": "Escape"
             },
-            "modifiers": [
-              "Alt"
-            ],
+            "modifiers": ["Alt"],
             "kind": "Press"
           }
         }
@@ -209,10 +195,7 @@
             "key": {
               "named": "Delete"
             },
-            "modifiers": [
-              "Alt",
-              "Control"
-            ],
+            "modifiers": ["Alt", "Control"],
             "kind": "Press"
           }
         }
@@ -227,9 +210,7 @@
             "key": {
               "scalar": "c"
             },
-            "modifiers": [
-              "Super"
-            ],
+            "modifiers": ["Super"],
             "kind": "Press"
           }
         }
@@ -343,9 +324,7 @@
             "key": {
               "scalar": "A"
             },
-            "modifiers": [
-              "Control"
-            ],
+            "modifiers": ["Control"],
             "kind": "Press"
           }
         }
@@ -375,9 +354,7 @@
             "key": {
               "named": "F5"
             },
-            "modifiers": [
-              "Shift"
-            ],
+            "modifiers": ["Shift"],
             "kind": "Press"
           }
         }
@@ -407,9 +384,7 @@
             "key": {
               "named": "F1"
             },
-            "modifiers": [
-              "Control"
-            ],
+            "modifiers": ["Control"],
             "kind": "Press"
           }
         }
@@ -568,9 +543,7 @@
             "key": {
               "scalar": "ą"
             },
-            "modifiers": [
-              "Shift"
-            ],
+            "modifiers": ["Shift"],
             "kind": "Press"
           }
         }
@@ -624,9 +597,7 @@
           "key": {
             "scalar": "i"
           },
-          "modifiers": [
-            "Control"
-          ],
+          "modifiers": ["Control"],
           "kind": "Press"
         }
       },
@@ -658,9 +629,7 @@
           "key": {
             "named": "Tab"
           },
-          "modifiers": [
-            "Shift"
-          ],
+          "modifiers": ["Shift"],
           "kind": "Press"
         }
       },

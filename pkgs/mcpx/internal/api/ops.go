@@ -221,6 +221,16 @@ func Ops() []Op {
 			CoveredBy: "mcpx_status",
 		},
 		{
+			Name: "sessions_read", Method: "GET", Path: "/v1/sessions",
+			Permission: PermissionRead,
+			Summary:    "The session inventory: every pool's live instances",
+			Description: "One entry per live instance across every pool, as the same " +
+				"InstanceStatus snapshot /v1/status embeds per server: id, pid, " +
+				"holders, key, calls, uptime and idle seconds. An empty inventory " +
+				"is an empty list. Reading only -- killing, detaching or resuming " +
+				"a session is a later operation (#1931).",
+		},
+		{
 			Name: "authz_decisions", Method: "GET", Path: "/v1/authz/decisions",
 			Permission: PermissionRead,
 			Summary:    "The permissive authorisation decision report",

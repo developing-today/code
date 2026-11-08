@@ -642,6 +642,14 @@ func (c *Client) EnsureDaemon(ctx context.Context) error {
 	defer logFile.Close()
 
 	cmd := exec.Command(exe, args...)
+	// A daemon auto-started by this invocation must resolve the
+	// same chain this process did. A --paths-config seed lives only
+	// in this process's memory, so forward it as the child's
+	// MCPX_PATHS_CONFIG (PR #2477 finding); an environment seed
+	// needs no forwarding, as the child inherits the environment.
+	if seed, ok := config.PathsConfigSeedEnv(); ok {
+		cmd.Env = append(os.Environ(), "MCPX_PATHS_CONFIG="+seed)
+	}
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Stdin = nil

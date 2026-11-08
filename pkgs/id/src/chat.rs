@@ -39,8 +39,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 
+use crate::text::sanitize_chat;
 use crate::waiting::AuthorKey;
-use crate::world::sanitize_chat;
 
 /// The kind of a `chat.message.v1` event, as the header's `kind` names it.
 pub const CHAT_MESSAGE_KIND: &str = "chat.message.v1";
@@ -181,9 +181,7 @@ impl ChatMessage {
             )));
         }
         if sanitize_chat(&self.text) != self.text {
-            return Err(ChatError::Text(
-                "the text is not sanitized".to_owned(),
-            ));
+            return Err(ChatError::Text("the text is not sanitized".to_owned()));
         }
         if self.links.len() > MAX_LINKS {
             return Err(ChatError::Links(format!(
@@ -259,8 +257,11 @@ pub fn project(records: impl IntoIterator<Item = ChatRecord>) -> Vec<ChatRecord>
     let mut pending: HashMap<[u8; 32], usize> = HashMap::new();
     for record in by_id.values() {
         let mut parents = 0;
-        let mut parent_ids: Vec<[u8; 32]> =
-            record.after.iter().map(|parent| *parent.as_bytes()).collect();
+        let mut parent_ids: Vec<[u8; 32]> = record
+            .after
+            .iter()
+            .map(|parent| *parent.as_bytes())
+            .collect();
         if let Some(backlink) = &record.backlink {
             parent_ids.push(*backlink.as_bytes());
         }
@@ -329,7 +330,10 @@ mod tests {
         ChatRecord {
             id: Hash::digest(&[id]),
             author: author(id),
-            after: after.iter().map(|parent| Hash::digest(&[*parent])).collect(),
+            after: after
+                .iter()
+                .map(|parent| Hash::digest(&[*parent]))
+                .collect(),
             backlink: None,
             message: ChatMessage::new(text, Vec::new()).unwrap(),
         }
@@ -389,8 +393,9 @@ mod tests {
 
     #[test]
     fn test_link_kinds_are_only_blob_and_event() {
-        let parsed: Result<ChatLink, _> =
-            serde_json::from_str(r#"{"kind":"file","hash":"0000000000000000000000000000000000000000000000000000000000000000","author":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"hint":null}"#);
+        let parsed: Result<ChatLink, _> = serde_json::from_str(
+            r#"{"kind":"file","hash":"0000000000000000000000000000000000000000000000000000000000000000","author":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"hint":null}"#,
+        );
         assert!(parsed.is_err());
     }
 
