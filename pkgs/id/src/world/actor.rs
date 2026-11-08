@@ -9,6 +9,35 @@ use tracing::Instrument;
 
 use crate::world_caps::{CapError, CapsReport, Decision, Request, Subscription};
 
+/// Reserved tracing target for structured administrative and provider-use audit records.
+pub(crate) const AUDIT_TRACE_TARGET: &str = "id::audit";
+
+/// One structured audit event. `parameters` contains only non-secret action data.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct AuditRecord {
+    /// Independent audit-record schema version.
+    pub(crate) schema_version: u8,
+    /// Unix timestamp in milliseconds.
+    pub(crate) timestamp_ms: u64,
+    /// World that processed the action.
+    pub(crate) world_id: String,
+    /// Public authority or non-secret actor identity.
+    pub(crate) actor: String,
+    /// Stable command or provider-use name.
+    pub(crate) action: String,
+    /// Safe, essential parameters for replay or review.
+    pub(crate) parameters: serde_json::Value,
+    /// `accepted`, `refused`, or a provider-use decision.
+    pub(crate) outcome: String,
+}
+
+fn authority_identity(authority: &Authority) -> String {
+    match authority {
+        Authority::Admin => "admin".to_owned(),
+        Authority::Signed(public_key) => format!("signed:{public_key}"),
+    }
+}
+
 impl WorldCommand {
     pub(crate) fn name(&self) -> &'static str {
         match self {
@@ -332,6 +361,58 @@ pub(crate) struct WorldActor {
 }
 
 impl WorldActor {
+    fn audit_record(
+        &self,
+        actor: impl Into<String>,
+        action: &str,
+        parameters: serde_json::Value,
+        outcome: &str,
+    ) {
+        let record = AuditRecord {
+            schema_version: 1,
+            timestamp_ms: self.core.clock().now_ms(),
+            world_id: self.core.world_id().to_owned(),
+            actor: actor.into(),
+            action: action.to_owned(),
+            parameters,
+            outcome: outcome.to_owned(),
+        };
+        if let Ok(json) = serde_json::to_string(&record) {
+            tracing::info!(target: AUDIT_TRACE_TARGET, audit_record = %json);
+        } else {
+            tracing::error!(target: AUDIT_TRACE_TARGET, action, "could not serialize audit record");
+        }
+    }
+
+    fn audit_admin_result(
+        &self,
+        actor: impl Into<String>,
+        action: &str,
+        parameters: serde_json::Value,
+        accepted: bool,
+    ) {
+        self.audit_record(
+            actor,
+            action,
+            parameters,
+            if accepted { "accepted" } else { "refused" },
+        );
+    }
+
+    fn audit_provider_decision(&self, capability: &str, decision: &Decision, actor: String) {
+        let outcome = match decision {
+            Decision::Allow => "allowed",
+            Decision::AllowAndGrant => "first_use_grant",
+            Decision::Deny(_) => "denied",
+        };
+        self.audit_record(
+            actor,
+            "provider_use",
+            serde_json::json!({"capability": capability}),
+            outcome,
+        );
+    }
+
     pub(crate) async fn run(mut self, mut receiver: mpsc::Receiver<WorldCommand>) {
         self.after_change().await;
         loop {
@@ -640,7 +721,9 @@ impl WorldActor {
                 }
                 continue;
             }
-            match self.core.ledger.decide(sub.cap()) {
+            let decision = self.core.ledger.decide(sub.cap());
+            self.audit_provider_decision(sub.cap(), &decision, "program".to_owned());
+            match decision {
                 Decision::Allow => self.arm(sub),
                 Decision::AllowAndGrant => {
                     let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
@@ -752,7 +835,12 @@ impl WorldActor {
                 .effective_scopes(participant)
                 .is_some_and(|scopes| scopes.allows_effect(&request.cap)),
         };
-        match self.core.ledger.decide_for(&request.cap, actor_permits) {
+        let decision = self.core.ledger.decide_for(&request.cap, actor_permits);
+        let actor = self
+            .acting
+            .map_or_else(|| "program".to_owned(), |id| format!("participant:{id}"));
+        self.audit_provider_decision(&request.cap, &decision, actor);
+        match decision {
             Decision::Allow => {}
             Decision::AllowAndGrant => {
                 let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
@@ -1165,6 +1253,24 @@ impl WorldActor {
                     let issued = self.core.issue_capability(&name, scopes, bounds)?;
                     self.record_issued(issued)
                 });
+                // Issuance grants participant access, so it belongs in the
+                // audit trail alongside Revoke: record the non-secret
+                // identity, scopes, bounds, and outcome. The capability
+                // token itself is a secret and is never recorded.
+                let parameters = match &result {
+                    Ok((participant, _)) => serde_json::json!({
+                        "participant_id": participant.id,
+                        "name": participant.display_name,
+                        "scopes": format!("{scopes:?}"),
+                        "bounds": format!("{bounds:?}"),
+                    }),
+                    Err(_) => serde_json::json!({
+                        "name": name,
+                        "scopes": format!("{scopes:?}"),
+                        "bounds": format!("{bounds:?}"),
+                    }),
+                };
+                self.audit_admin_result("admin", "Issue", parameters, result.is_ok());
                 let _ = reply.send(result);
             }
             WorldCommand::Attenuate {
@@ -1259,6 +1365,16 @@ impl WorldActor {
                 // the verified journal, never as local commands. Report
                 // nothing revoked, like an unknown participant.
                 if self.read_only {
+                    // The replica refusal is a processed administrative
+                    // outcome and belongs in the audit trail, like the
+                    // writability refusals: emit exactly one refused
+                    // record before returning (Codex finding on PR #4017).
+                    self.audit_admin_result(
+                        by.map_or_else(|| "admin".to_owned(), |id| format!("participant:{id}")),
+                        "Revoke",
+                        serde_json::json!({"participant_id": participant_id, "changed": false}),
+                        false,
+                    );
                     let _ = reply.send(false);
                     return;
                 }
@@ -1270,6 +1386,12 @@ impl WorldActor {
                         let _ = self.revocation_sender.send(id);
                     }
                 }
+                self.audit_admin_result(
+                    by.map_or_else(|| "admin".to_owned(), |id| format!("participant:{id}")),
+                    "Revoke",
+                    serde_json::json!({"participant_id": participant_id, "changed": was_active}),
+                    true,
+                );
                 let _ = reply.send(was_active);
             }
             WorldCommand::ParticipantId { token, reply } => {
@@ -1547,6 +1669,16 @@ impl WorldActor {
                 // Refuse before touching the replacement program: installs
                 // are writer authority.
                 if let Err(error) = self.check_writable() {
+                    // The writability refusal is a processed administrative
+                    // outcome and belongs in the audit trail, like the
+                    // refusals whose writability checks run inside the
+                    // recorded result below: emit exactly one record for it.
+                    self.audit_admin_result(
+                        installed_by.map_or_else(|| "admin".to_owned(), |id| format!("participant:{id}")),
+                        "InstallProgram",
+                        serde_json::json!({"module_hash": module_hash, "seed": seed, "installed_by": installed_by}),
+                        false,
+                    );
                     let _ = reply.send(Err(error));
                     return;
                 }
@@ -1555,6 +1687,12 @@ impl WorldActor {
                 let new_records = match program_records(replacement.as_mut()) {
                     Ok(records) => records.unwrap_or_default(),
                     Err(error) => {
+                        self.audit_admin_result(
+                            installed_by.map_or_else(|| "admin".to_owned(), |id| format!("participant:{id}")),
+                            "InstallProgram",
+                            serde_json::json!({"module_hash": module_hash, "seed": seed, "installed_by": installed_by}),
+                            false,
+                        );
                         let _ = reply.send(Err(error.context("new world program records failed")));
                         return;
                     }
@@ -1609,6 +1747,12 @@ impl WorldActor {
                     }
                     Err(error) => Err(error),
                 };
+                self.audit_admin_result(
+                    installed_by.map_or_else(|| "admin".to_owned(), |id| format!("participant:{id}")),
+                    "InstallProgram",
+                    serde_json::json!({"module_hash": module_hash, "seed": seed, "installed_by": installed_by}),
+                    result.is_ok(),
+                );
                 let _ = reply.send(result);
             }
             WorldCommand::UpdateCaps {
@@ -1616,6 +1760,10 @@ impl WorldActor {
                 revoke,
                 reply,
             } => {
+                let audit_parameters = serde_json::json!({
+                    "grant": grant.clone(),
+                    "revoke": revoke.clone(),
+                });
                 let result = (|| -> Result<CapsReport> {
                     self.check_writable()?;
                     crate::world_caps::validate_grant_names(&grant)?;
@@ -1633,13 +1781,22 @@ impl WorldActor {
                     self.reconcile_subscriptions();
                     self.caps_report()
                 })();
+                self.audit_admin_result("admin", "UpdateCaps", audit_parameters, result.is_ok());
                 let _ = reply.send(result);
             }
             WorldCommand::SetCapsCeiling { ceiling, reply } => {
+                let audit_parameters = serde_json::json!({"ceiling": ceiling.clone()});
                 let result = self.set_caps_ceiling(ceiling);
+                self.audit_admin_result(
+                    "admin",
+                    "SetCapsCeiling",
+                    audit_parameters,
+                    result.is_ok(),
+                );
                 let _ = reply.send(result);
             }
             WorldCommand::SetExecutionProfile { profile, reply } => {
+                let audit_parameters = serde_json::json!({"profile": format!("{profile:?}")});
                 let result = self
                     .check_writable()
                     .and_then(|()| self.persist(JournalEntry::ExecutionProfile { profile }))
@@ -1650,15 +1807,34 @@ impl WorldActor {
                             applies_on_next_program_install_or_process_restart: true,
                         }
                     });
+                self.audit_admin_result(
+                    "admin",
+                    "SetExecutionProfile",
+                    audit_parameters,
+                    result.is_ok(),
+                );
                 let _ = reply.send(result);
             }
             WorldCommand::ExecutionProfileInfo { reply } => {
-                let _ = reply.send(self.core.execution_profile);
+                let profile = self.core.execution_profile;
+                // No audit record, for the same reason as Metrics below:
+                // the execution profile is readable by any joined
+                // participant holding a capability (the session layer's
+                // ExecutionProfileInfo frame), so an admin audit record
+                // would misattribute a participant read.
+                let _ = reply.send(profile);
             }
             WorldCommand::ManifestState { reply } => {
-                let _ = reply.send((self.core.active_seed, self.core.schedules.clone()));
+                let state = (self.core.active_seed, self.core.schedules.clone());
+                // No audit record, for the same reason as Metrics below:
+                // the session layer's WorldState frame accepts a
+                // participant capability (only the seed is withheld from
+                // non-admin callers there), so an admin audit record
+                // would misattribute a participant read.
+                let _ = reply.send(state);
             }
             WorldCommand::AdminScheduleAt { id, at_ms, reply } => {
+                let audit_id = id.clone();
                 let result = (|| -> Result<BTreeMap<String, u64>> {
                     self.check_writable()?;
                     if self.core.schedules.get(&id) == Some(&at_ms) {
@@ -1685,6 +1861,12 @@ impl WorldActor {
                     self.core.schedules.insert(id, at_ms);
                     Ok(self.core.schedules.clone())
                 })();
+                self.audit_admin_result(
+                    "admin",
+                    "AdminScheduleAt",
+                    serde_json::json!({"id": audit_id, "at_ms": at_ms}),
+                    result.is_ok(),
+                );
                 let _ = reply.send(result);
             }
             WorldCommand::AdminCancelSchedule { id, reply } => {
@@ -1698,6 +1880,12 @@ impl WorldActor {
                     }
                     Ok(self.core.schedules.clone())
                 })();
+                self.audit_admin_result(
+                    "admin",
+                    "AdminCancelSchedule",
+                    serde_json::json!({"id": id.clone()}),
+                    result.is_ok(),
+                );
                 let _ = reply.send(result);
             }
             WorldCommand::SetIsolation {
@@ -1706,10 +1894,23 @@ impl WorldActor {
                 reply,
             } => {
                 let result = self.set_isolation(&authority, isolation);
+                self.audit_admin_result(
+                    authority_identity(&authority),
+                    "SetIsolation",
+                    serde_json::json!({"isolation": format!("{isolation:?}")}),
+                    result.is_ok(),
+                );
                 let _ = reply.send(result);
             }
             WorldCommand::IsolationInfo { reply } => {
-                let _ = reply.send(self.core.isolation());
+                let isolation = self.core.isolation();
+                self.audit_admin_result(
+                    "admin",
+                    "IsolationInfo",
+                    serde_json::json!({"isolation": format!("{isolation:?}")}),
+                    true,
+                );
+                let _ = reply.send(isolation);
             }
             WorldCommand::SetCrossWorldWrite {
                 authority,
@@ -1717,10 +1918,22 @@ impl WorldActor {
                 reply,
             } => {
                 let result = self.set_cross_world_write(&authority, enabled);
+                self.audit_admin_result(
+                    authority_identity(&authority),
+                    "SetCrossWorldWrite",
+                    serde_json::json!({"enabled": enabled}),
+                    result.is_ok(),
+                );
                 let _ = reply.send(result);
             }
             WorldCommand::ForceCrossWorldWrite { authority, reply } => {
                 let result = self.force_cross_world_write(&authority);
+                self.audit_admin_result(
+                    authority_identity(&authority),
+                    "ForceCrossWorldWrite",
+                    serde_json::json!({}),
+                    result.is_ok(),
+                );
                 let _ = reply.send(result);
             }
             WorldCommand::SetFileScope {
@@ -1730,14 +1943,36 @@ impl WorldActor {
                 reply,
             } => {
                 let result = self.set_file_scope(&authority, scope, write_override);
+                self.audit_admin_result(
+                    authority_identity(&authority),
+                    "SetFileScope",
+                    serde_json::json!({
+                        "scope": format!("{scope:?}"),
+                        "write_override": write_override,
+                    }),
+                    result.is_ok(),
+                );
                 let _ = reply.send(result);
             }
             WorldCommand::PolicyInfo { reply } => {
-                let _ = reply.send(self.core.policy());
+                let policy = self.core.policy();
+                self.audit_admin_result(
+                    "admin",
+                    "PolicyInfo",
+                    serde_json::json!({"policy": format!("{policy:?}")}),
+                    true,
+                );
+                let _ = reply.send(policy);
             }
             WorldCommand::Metrics { reply } => {
                 let sessions = self.presence.values().sum::<usize>() as u64;
-                let _ = reply.send(self.metrics.snapshot(sessions));
+                let metrics = self.metrics.snapshot(sessions);
+                // No audit record: metrics are readable by any joined
+                // participant holding a capability (the session layer's
+                // Metrics frame), so recording the read as admin would
+                // falsify the audit actor. Participant-readable queries are
+                // not administrative actions and stay out of the audit trail.
+                let _ = reply.send(metrics);
             }
             WorldCommand::AdminEventHistory { reply } => {
                 let result = (|| -> Result<AdminEventHistory> {
@@ -1777,7 +2012,12 @@ impl WorldActor {
                 let _ = reply.send(result);
             }
             WorldCommand::CapsInfo { reply } => {
-                let _ = reply.send(self.caps_report());
+                let report = self.caps_report();
+                // No audit record, for the same reason as Metrics above:
+                // the capability report is readable by joined participants
+                // (the session layer's Caps frame), so an admin audit
+                // record would misattribute a participant read.
+                let _ = reply.send(report);
             }
             WorldCommand::Shutdown { .. } => unreachable!("handled by run"),
         }
