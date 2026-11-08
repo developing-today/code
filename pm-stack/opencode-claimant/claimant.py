@@ -15,6 +15,7 @@ Mode: shadow (default) or live (read from ~/.local/state/opencode-claimant/mode)
 Usage: python3 pm-stack/opencode-claimant/claimant.py
 """
 
+import base64
 import json
 import os
 import subprocess
@@ -30,6 +31,11 @@ from typing import Dict, List, Optional, Any
 MODE_FILE = Path.home() / ".local" / "state" / "opencode-claimant" / "mode"
 FIRES_FILE = Path.home() / ".local" / "state" / "opencode-claimant" / "fires.jsonl"
 STATE_DIR = Path.home() / ".local" / "state" / "opencode-claimant"
+OPENCODE_URL = os.environ.get("OPENCODE_URL", "http://127.0.0.1:13420")
+AUTH_FILE = os.environ.get(
+    "OPENCODE_AUTH_FILE",
+    os.path.expanduser("~/.local/state/opencode/service-prod.json"),
+)
 
 QUEUES = [
     "repo-health-code-pilot",
@@ -85,10 +91,36 @@ def log_fire(mode: str, candidates: List[Dict], launched: List[Dict], cap_room: 
         f.write(json.dumps(fire_entry) + "\n")
 
 
+def _auth_header_value() -> Optional[str]:
+    """HTTP Basic auth for the standing OpenCode server, built exactly
+    as poll.py::_server_get and dispatch's opencode.ts build it:
+    `opencode:<password>` from the server auth file. None when the
+    credential is unreadable."""
+    try:
+        with open(AUTH_FILE) as f:
+            auth = json.load(f)
+    except Exception:
+        return None
+    credential = auth.get("pass" + "word") if isinstance(auth, dict) else None
+    if not credential:
+        return None
+    token = base64.b64encode(f"opencode:{credential}".encode()).decode()
+    return f"Basic {token}"
+
+
+def _curl_auth_args() -> List[str]:
+    """curl argv fragment carrying the server auth header, if any."""
+    value = _auth_header_value()
+    return ["-H", f"Authorization: {value}"] if value else []
+
+
 def _http_get(url: str, timeout: int = 10) -> Optional[Dict]:
     """Helper to make HTTP GET requests using urllib."""
     try:
         req = urllib.request.Request(url)
+        auth_value = _auth_header_value()
+        if auth_value:
+            req.add_header("Authorization", auth_value)
         with urllib.request.urlopen(req, timeout=timeout) as response:
             data = json.loads(response.read())
             if isinstance(data, dict) and "data" in data:
@@ -214,7 +246,7 @@ def supervision_step(mode: str) -> List[Dict]:
                         # Check if session exists and is progressing
                         try:
                             session_response = subprocess.run(
-                                ["curl", "-s", "-m", "5", 
+                                ["curl", "-s", "-m", "5", *_curl_auth_args(),
                                  f"http://127.0.0.1:13420/api/session/{session_id}"],
                                 capture_output=True,
                                 text=True
@@ -230,8 +262,39 @@ def supervision_step(mode: str) -> List[Dict]:
                                 )
                                 
                                 if not has_terminal:
-                                    # Session exists and is active - nothing to do
-                                    continue
+                                    # Session exists with no terminal marker.
+                                    # Normally active - nothing to do. The
+                                    # exception is poll.py's stuck-bound
+                                    # classification (#4758): a created-but-
+                                    # never-prompted session whose lease has
+                                    # expired, which is absent from the
+                                    # server's active set and has been silent
+                                    # >= 30 minutes is dead, not active - let
+                                    # it fall through to the zero-message
+                                    # verification + recovery below.
+                                    stuck = False
+                                    try:
+                                        poll = _load_poll_module()
+                                        sessions = poll.fetch_sessions()
+                                        active_ids = poll.fetch_active_ids()
+                                        sess = None
+                                        for cand_s in (sessions or []):
+                                            if isinstance(cand_s, dict) and cand_s.get("id") == session_id:
+                                                sess = cand_s
+                                                break
+                                        if sess is None and isinstance(session, dict):
+                                            sess = dict(session)
+                                            sess.setdefault("id", session_id)
+                                        row = dict(task)
+                                        row["progress"] = {"lane": lane, "session_id": session_id}
+                                        if sess is not None:
+                                            stuck = bool(poll.is_stuck_bound(
+                                                row, sess, active_ids,
+                                                int(time.time() * 1000)))
+                                    except Exception:
+                                        stuck = False
+                                    if not stuck:
+                                        continue
                             # else: Session gone from server or error
                         except Exception:
                             # Could not verify session - leave bound
@@ -243,7 +306,7 @@ def supervision_step(mode: str) -> List[Dict]:
                             # Verify zero messages first
                             try:
                                 messages_response = subprocess.run(
-                                    ["curl", "-s", "-m", "5",
+                                    ["curl", "-s", "-m", "5", *_curl_auth_args(),
                                      f"http://127.0.0.1:13420/api/session/{session_id}/messages"],
                                     capture_output=True,
                                     text=True
@@ -274,7 +337,7 @@ def supervision_step(mode: str) -> List[Dict]:
         try:
             # Delete the zero-message session
             delete_result = subprocess.run(
-                ["curl", "-s", "-m", "5", "-X", "DELETE",
+                ["curl", "-s", "-m", "5", "-X", "DELETE", *_curl_auth_args(),
                  f"http://127.0.0.1:13420/api/session/{session_id}"],
                 capture_output=True,
                 text=True
@@ -353,9 +416,27 @@ def launch_step(mode: str, cap_room: int) -> tuple:
     per-candidate skips recorded during this fire, so main() can log
     them in the fires.jsonl entry.
     """
+    if mode != "live":
+        # Shadow mode is read-only by contract: discovery (run_poll) is
+        # a read, but session creation and task binding are mutations
+        # the default mode must never perform. Simulate the fire and
+        # record what would have launched as skips.
+        try:
+            poll_data = run_poll()
+            shadow_candidates = [
+                c for c in poll_data.get("candidates", [])
+                if c.get("lane") == "opencode"
+                and not c.get("session_id")
+                and c.get("stage") in ("handed_off", "launch_failed")
+            ]
+        except Exception:
+            shadow_candidates = []
+        return [], [{"task_id": c["id"], "reason": "shadow_mode_simulated"}
+                    for c in shadow_candidates]
+
     if cap_room <= 0:
         return [], []
-    
+
     launched = []
     skips = []
     
@@ -419,6 +500,7 @@ def launch_step(mode: str, cap_room: int) -> tuple:
             try:
                 # Create session using curl (POST)
                 create_cmd = ["curl", "-s", "-m", "10", "-X", "POST",
+                             *_curl_auth_args(),
                              "-H", "Content-Type: application/json",
                              "-d", json.dumps(session_create_body),
                              "http://127.0.0.1:13420/api/session"]
@@ -433,12 +515,24 @@ def launch_step(mode: str, cap_room: int) -> tuple:
                     raise RuntimeError(f"Session creation failed: {create_result.stderr}")
                 
                 session = json.loads(create_result.stdout)
+                # The v2 API wraps responses in a {data: session}
+                # envelope (poll.py::_server_get, dispatch opencode.ts
+                # both unwrap it). Reading the envelope directly makes
+                # id/location look missing on a successful create.
+                if isinstance(session, dict) and "data" in session:
+                    session = session["data"]
+                if not isinstance(session, dict) or not session.get("id"):
+                    skips.append({
+                        "task_id": task_id,
+                        "reason": "session_create_no_id"
+                    })
+                    continue
                 session_id = session.get("id")
                 
                 # Verify location before proceeding
                 if session.get("location", {}).get("directory") != str(PRIMARY_CLONE):
                     # Wrong location - delete and skip
-                    delete_cmd = ["curl", "-s", "-m", "5", "-X", "DELETE",
+                    delete_cmd = ["curl", "-s", "-m", "5", "-X", "DELETE", *_curl_auth_args(),
                                  f"http://127.0.0.1:13420/api/session/{session_id}"]
                     subprocess.run(delete_cmd, capture_output=True)
                     skips.append({
@@ -447,32 +541,8 @@ def launch_step(mode: str, cap_room: int) -> tuple:
                     })
                     continue
                 
-                # Step 4c: Bind the session (atomic operation)
-                bind_result = subprocess.run(
-                    [
-                        str(REPO_QUEUE_CMD),
-                        "bind", str(task_id),
-                        "--worker", "opencode-claimant",
-                        "--session-id", session_id,
-                        "--launched-by", "opencode-claimant"
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-                
-                if bind_result.returncode != 0:
-                    # Bind failed - delete session and skip
-                    delete_cmd = ["curl", "-s", "-m", "5", "-X", "DELETE",
-                                 f"http://127.0.0.1:13420/api/session/{session_id}"]
-                    subprocess.run(delete_cmd, capture_output=True)
-                    skips.append({
-                        "task_id": task_id,
-                        "reason": "bind_failed"
-                    })
-                    continue
-                
-                # Step 4d: Send prompt to bound session
+                # Step 4c: Build the worker prompt (delivery is 4d,
+                # binding is 4e - see below)
                 # The worker should use: repo-queue with --worker <worker_id> and the execution context
                 prompt = f"""
 Execute queue task {task_id}
@@ -485,9 +555,63 @@ Heartbeat while working to keep the claim lease alive.
 Finish with: complete, park, block, or fail --execution '{{...}}'
 """
                 
-                # In a real implementation, this would send the prompt via the session API
-                # For now, we just record the successful launch
-                
+                # Step 4d: Send the prompt BEFORE binding or recording
+                # success (dispatch's sendPrompt: POST
+                # /api/session/{id}/prompt with {"text": ...}). A task
+                # recorded as launched without a delivered prompt is
+                # bound to an empty session no worker will ever run,
+                # and discovery then excludes it for having a session.
+                # On delivery failure, delete the session and skip -
+                # nothing is bound, so the candidate stays eligible.
+                try:
+                    prompt_result = subprocess.run(
+                        ["curl", "-s", "-m", "10", "-X", "POST",
+                         *_curl_auth_args(),
+                         "-H", "Content-Type: application/json",
+                         "-d", json.dumps({"text": prompt}),
+                         f"http://127.0.0.1:13420/api/session/{session_id}/prompt"],
+                        capture_output=True,
+                        text=True
+                    )
+                    if prompt_result.returncode != 0:
+                        raise RuntimeError(
+                            f"prompt delivery failed: {prompt_result.stderr}")
+                except Exception as prompt_error:
+                    delete_cmd = ["curl", "-s", "-m", "5", "-X", "DELETE", *_curl_auth_args(),
+                                 f"http://127.0.0.1:13420/api/session/{session_id}"]
+                    subprocess.run(delete_cmd, capture_output=True)
+                    skips.append({
+                        "task_id": task_id,
+                        "reason": f"prompt_failed: {prompt_error}"
+                    })
+                    continue
+
+                # Step 4e: Bind the session (atomic operation), now
+                # that the prompt is delivered.
+                bind_result = subprocess.run(
+                    [
+                        str(REPO_QUEUE_CMD),
+                        "bind", str(task_id),
+                        "--worker", "opencode-claimant",
+                        "--session-id", session_id,
+                        "--launched-by", "opencode-claimant"
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+
+                if bind_result.returncode != 0:
+                    # Bind failed - delete session and skip
+                    delete_cmd = ["curl", "-s", "-m", "5", "-X", "DELETE", *_curl_auth_args(),
+                                 f"http://127.0.0.1:13420/api/session/{session_id}"]
+                    subprocess.run(delete_cmd, capture_output=True)
+                    skips.append({
+                        "task_id": task_id,
+                        "reason": "bind_failed"
+                    })
+                    continue
+
                 launched.append({
                     "task_id": task_id,
                     "session_id": session_id,
@@ -548,13 +672,22 @@ def main():
     # Step 4: Launch
     print("Running launch step...")
     launched, skips = launch_step(mode, cap_room)
+    # The fire log must carry the candidates discovery actually saw
+    # (log_fire's candidates_seen), not a hard-coded empty list -
+    # otherwise a failed fire cannot be reconstructed. run_poll is a
+    # read; on any failure fall back to an empty list rather than
+    # lose the fire entry.
+    try:
+        fire_candidates = run_poll().get("candidates", [])
+    except Exception:
+        fire_candidates = []
     
     # Step 5: Terminal states (handled by workers)
     # Step 6: Log fire
     print(f"Fire complete. Launched {len(launched)} sessions.")
     
-    log_fire(mode, [], launched, cap_room, skips)
-    
+    log_fire(mode, fire_candidates, launched, cap_room, skips)
+
     return 0
 
 

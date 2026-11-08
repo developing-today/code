@@ -169,5 +169,151 @@ class TestSupervisionStep(unittest.TestCase):
         self.assertEqual(calls, [])
 
 
+class TestCodexFindings(unittest.TestCase):
+    """Regression tests for the six Codex findings on PR #6990."""
+
+    def run_launch(self, candidates, cap_room=1, create_stdout=None,
+                   prompt_rc=0, mode="live"):
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            argv_s = [str(a) for a in argv]
+            if "bind" in argv_s:
+                return Result(0)
+            if any(a.endswith("/prompt") for a in argv_s):
+                return Result(prompt_rc, "", "prompt boom" if prompt_rc else "")
+            if any("api/session" in a for a in argv_s):
+                body = create_stdout if create_stdout is not None else {
+                    "id": "ses_test1",
+                    "location": {"directory": str(claimant.PRIMARY_CLONE)},
+                }
+                return Result(0, json.dumps(body))
+            return Result(0)
+
+        with patch.object(claimant, "run_poll",
+                          return_value={"candidates": candidates}), \
+             patch.object(claimant.subprocess, "run", side_effect=fake_run):
+            launched, skips = claimant.launch_step(mode, cap_room)
+        return launched, skips, calls
+
+    def test_shadow_mode_launch_is_read_only(self):
+        launched, skips, calls = self.run_launch([candidate()], mode="shadow")
+        self.assertEqual(launched, [])
+        self.assertEqual([s["reason"] for s in skips],
+                         ["shadow_mode_simulated"])
+        self.assertEqual(calls, [])
+
+    def test_enveloped_create_response_is_unwrapped(self):
+        launched, skips, _ = self.run_launch(
+            [candidate()],
+            create_stdout={"data": {
+                "id": "ses_env",
+                "location": {"directory": str(claimant.PRIMARY_CLONE)}}})
+        self.assertEqual(skips, [])
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(launched[0]["session_id"], "ses_env")
+
+    def test_create_without_id_is_a_skip_not_a_phantom_delete(self):
+        launched, skips, calls = self.run_launch(
+            [candidate()], create_stdout={"data": {"location": {}}})
+        self.assertEqual(launched, [])
+        self.assertEqual([s["reason"] for s in skips], ["session_create_no_id"])
+        self.assertFalse(any("None" in str(a) for a in calls))
+
+    def test_prompt_failure_skips_and_does_not_bind(self):
+        launched, skips, calls = self.run_launch([candidate()], prompt_rc=1)
+        self.assertEqual(launched, [])
+        self.assertEqual(len(skips), 1)
+        self.assertTrue(skips[0]["reason"].startswith("prompt_failed"))
+        self.assertFalse(any("bind" in [str(x) for x in a] for a in calls))
+
+    def test_prompt_is_sent_before_bind(self):
+        _, _, calls = self.run_launch([candidate()])
+        flat = [[str(x) for x in a] for a in calls]
+        prompt_idx = next(i for i, a in enumerate(flat)
+                          if any(x.endswith("/prompt") for x in a))
+        bind_idx = next(i for i, a in enumerate(flat) if "bind" in a)
+        self.assertLess(prompt_idx, bind_idx)
+
+    def test_session_calls_carry_auth_header_when_credential_exists(self):
+        with tempfile.TemporaryDirectory() as d:
+            auth = Path(d) / "auth.json"
+            auth.write_text(json.dumps({"password": "sekrit"}))
+            with patch.object(claimant, "AUTH_FILE", str(auth)):
+                _, _, calls = self.run_launch([candidate()])
+        flat = [[str(x) for x in a] for a in calls]
+        create = next(a for a in flat if any("api/session" in x for x in a))
+        self.assertIn("Authorization: Basic b3BlbmNvZGU6c2Vrcml0", create)
+
+    def test_main_records_discovered_candidates_in_fire_entry(self):
+        seen = [{"id": 42, "lane": "opencode"}]
+        with tempfile.TemporaryDirectory() as d:
+            state = Path(d)
+            with patch.object(claimant, "STATE_DIR", state), \
+                 patch.object(claimant, "FIRES_FILE", state / "fires.jsonl"), \
+                 patch.object(claimant, "read_mode", return_value="live"), \
+                 patch.object(claimant, "supervision_step", return_value=[]), \
+                 patch.object(claimant, "gate_step", return_value=True), \
+                 patch.object(claimant, "cap_step", return_value=1), \
+                 patch.object(claimant, "run_poll",
+                              return_value={"candidates": seen}), \
+                 patch.object(claimant, "launch_step", return_value=([], [])):
+                rc = claimant.main()
+            self.assertEqual(rc, 0)
+            entry = json.loads((state / "fires.jsonl").read_text().splitlines()[-1])
+            self.assertEqual(entry["candidates_seen"], seen)
+
+
+class TestSupervisionStuckBound(unittest.TestCase):
+    def test_stale_nonterminal_session_reaches_recovery(self):
+        task = {
+            "id": 777, "status": "claimed", "attempts": 1, "max_attempts": 5,
+            "lease_until": "2000-01-01T00:00:00Z",
+            "progress": {"lane": "opencode", "session_id": "ses_stuck"},
+        }
+        session = {"id": "ses_stuck", "time": {"created": 0, "updated": 0}}
+
+        class FakePoll:
+            @staticmethod
+            def fetch_sessions():
+                return [session]
+
+            @staticmethod
+            def fetch_active_ids():
+                return set()
+
+            @staticmethod
+            def is_stuck_bound(row, sess, active_ids, now_ms):
+                return True
+
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            argv_s = [str(a) for a in argv]
+            if "list" in argv_s:
+                queue = argv_s[argv_s.index("--queue") + 1]
+                rows = [task] if queue == "repo-health-code-pilot" else []
+                return Result(0, json.dumps({"rows": rows}))
+            if "DELETE" in argv_s:
+                return Result(0)
+            if any("/messages" in a for a in argv_s):
+                return Result(0, "[]")
+            if any("api/session" in a for a in argv_s):
+                return Result(0, json.dumps(session))
+            if "bind" in argv_s:
+                return Result(0)
+            return Result(0)
+
+        with patch.object(claimant, "_load_poll_module", return_value=FakePoll), \
+             patch.object(claimant.subprocess, "run", side_effect=fake_run):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(
+            recovered,
+            [{"task_id": 777, "session_id": "ses_stuck",
+              "reason": "zero_message"}])
+
+
 if __name__ == "__main__":
     unittest.main()
