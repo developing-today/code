@@ -39,14 +39,40 @@ func recordFeature(t *testing.T, kind, name string) {
 	recordFeatureForTest(t.Name(), kind, name)
 }
 
+var featureLedgerPersistMu sync.Mutex
+
+func featureCoverageLedgerPath() string {
+	path := os.Getenv(featureLedgerEnv)
+	if path == "" {
+		path = filepath.Join(os.TempDir(), fmt.Sprintf("mcpx-feature-coverage-%d.jsonl", os.Getpid()))
+	}
+	return path
+}
+
+// persistFeatureCoverage checkpoints the rows accumulated so far to the
+// ledger on disk. TestMain's final write remains authoritative, but a
+// package test timeout panics from the testing alarm goroutine and
+// m.Run() never returns — without incremental checkpoints every row of
+// a timed-out run is lost and the workflow's always() upload finds no
+// file at all (Codex review on PR #3705).
+func persistFeatureCoverage() {
+	featureLedgerPersistMu.Lock()
+	defer featureLedgerPersistMu.Unlock()
+	_ = writeFeatureCoverageLedger(featureCoverageLedgerPath(), featureCoverageSnapshot())
+}
+
 func recordFeatureForTest(test, kind, name string) {
 	if test == "" || kind == "" || name == "" {
 		return
 	}
 	row := featureCoverageRow{Test: test, Kind: kind, Name: name}
 	featureCoverage.Lock()
+	_, seen := featureCoverage.rows[row]
 	featureCoverage.rows[row] = struct{}{}
 	featureCoverage.Unlock()
+	if !seen {
+		persistFeatureCoverage()
+	}
 }
 
 func featureCoverageSnapshot() []featureCoverageRow {
@@ -94,10 +120,7 @@ func writeFeatureCoverageLedger(path string, rows []featureCoverageRow) error {
 
 func TestMain(m *testing.M) {
 	code := m.Run()
-	path := os.Getenv(featureLedgerEnv)
-	if path == "" {
-		path = filepath.Join(os.TempDir(), fmt.Sprintf("mcpx-feature-coverage-%d.jsonl", os.Getpid()))
-	}
+	path := featureCoverageLedgerPath()
 	rows := featureCoverageSnapshot()
 	if err := writeFeatureCoverageLedger(path, rows); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -125,6 +148,20 @@ func (e *env) recordCLI(args []string) {
 }
 
 func resolveCLICommand(args []string, dir string) string {
+	// A help-only dispatch (a command invoked with -h/--help anywhere in
+	// its arguments) exercises only the usage text: Handlers() converts
+	// flag.ErrHelp to nil, so the invocation "succeeds" without running
+	// the command. Crediting the command name would let the ledger
+	// conceal commands no test actually exercised (Codex review on
+	// PR #3705), so classify the invocation as help instead.
+	for _, arg := range args {
+		if arg == "--" {
+			break
+		}
+		if arg == "-h" || arg == "--help" {
+			return "help"
+		}
+	}
 	handlers := (&cli.App{}).Handlers()
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -324,6 +361,31 @@ func TestFeatureCoverageLedgerWritesJSONLines(t *testing.T) {
 func TestFeatureCoverageMatchesParameterizedAPIOperation(t *testing.T) {
 	if got := matchAPIOperation(http.MethodGet, "/v1/ask/example-id"); got != "ask_poll" {
 		t.Fatalf("matched operation %q, want ask_poll", got)
+	}
+}
+
+func TestResolveCLICommandHelpOnlyIsNotCommandCoverage(t *testing.T) {
+	for _, args := range [][]string{
+		{"events", "-h"},
+		{"artifact", "--help"},
+		{"--json", "ls", "-h"},
+	} {
+		if got := resolveCLICommand(args, t.TempDir()); got != "help" {
+			t.Fatalf("resolved command %q for help-only %v, want help", got, args)
+		}
+	}
+}
+
+func TestRecordFeaturePersistsLedgerIncrementally(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.jsonl")
+	t.Setenv(featureLedgerEnv, path)
+	recordFeatureForTest("TestRecordFeaturePersistsLedgerIncrementally", "cli", "incremental-probe")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ledger was not persisted before TestMain: %v", err)
+	}
+	if !strings.Contains(string(body), "incremental-probe") {
+		t.Fatalf("persisted ledger does not contain the new row: %s", body)
 	}
 }
 
