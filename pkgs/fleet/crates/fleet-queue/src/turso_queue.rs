@@ -2481,7 +2481,7 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
     let rich = req.get("rich").and_then(|r| r.as_bool()).unwrap_or(false);
     let select = if rich {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, \
-         worker_id, lease_until, lane_id, attempts, max_attempts, progress"
+         worker_id, lease_until, lane_id, attempts, max_attempts, progress, payload"
     } else {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before"
     };
@@ -2510,7 +2510,7 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
     sql += &format!(
         " ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT {limit}"
     );
-    let json_cols: &[&str] = if rich { &["progress"] } else { &[] };
+    let json_cols: &[&str] = if rich { &["progress", "payload"] } else { &[] };
     match t.query_objs(&sql, &args, json_cols) {
         Ok(rows) => ok(json!({"rows": rows})),
         Err(e) => terr(e),
