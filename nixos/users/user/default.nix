@@ -20,6 +20,18 @@
     isNormalUser = true;
     hashedPasswordFile = config.sops.secrets."users/user/passwordHash".path;
     description = "user";
+    # Start the user manager at boot without a login (code#5443).
+    # Every fleet service on this machine is a systemd *user* unit
+    # (pm-stack, openclaw, backups, repo keeper, ...), so without
+    # linger they stay down until someone logs in graphically. The
+    # laptop had `loginctl enable-linger user` set by hand (2026-10-23,
+    # for RustDesk) but nothing declared it, so a rebuild from a tree
+    # that did not know about it would silently lose it.
+    #
+    # Linger starts the user manager; it does NOT unlock the GNOME
+    # keyring. Anything that must work unattended uses file-based
+    # secrets (sops / Bitwarden), never the keyring.
+    linger = true;
     extraGroups = [
       # "trusted-users"
       #
