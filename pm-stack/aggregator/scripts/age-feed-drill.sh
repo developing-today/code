@@ -31,7 +31,8 @@
 #      payload reports degraded, saving that payload as the fired-signal
 #      evidence; it also records (best effort) whether the #1148
 #      watchdog's `watchdog:feed` tier item appeared on
-#      /api/attention.json.
+#      /api/attention.json, and whether the rendered overview page
+#      carries the stale-feed warning (#1116 item 5).
 #   5. Restores ALWAYS once the aging has happened: the saved bytes are
 #      written back atomically and the drill waits (up to
 #      PM_DRILL_RESTORE_WAIT_MIN) for the collector's next scheduled run
@@ -61,6 +62,7 @@
 #   PM_DRILL_FEED_FILE        feed file (default ~/.local/state/pm-aggregator/fleet-feed.json)
 #   PM_DRILL_HEALTH_CMD       command printing the /api/health JSON (default local curl)
 #   PM_DRILL_ATTENTION_CMD    command printing /api/attention.json (default local curl)
+#   PM_DRILL_PAGE_CMD         command printing the rendered overview page (default local curl); the drill greps it for the stale-feed banner
 #   PM_DRILL_AGE_MS           how far into the past to stamp the feed (default 1200000)
 #   PM_DRILL_MAX_WAIT_MIN     max minutes to wait for the stale signal (default 25)
 #   PM_DRILL_RESTORE_WAIT_MIN max minutes to wait for the collector to refresh (default 12)
@@ -73,6 +75,13 @@ INCIDENT_FLAG="${PM_DRILL_INCIDENT_FLAG:-$STATE_DIR/incident.flag}"
 FEED_FILE="${PM_DRILL_FEED_FILE:-$HOME/.local/state/pm-aggregator/fleet-feed.json}"
 HEALTH_CMD="${PM_DRILL_HEALTH_CMD:-curl -s --max-time 25 http://127.0.0.1:4870/api/health}"
 ATTENTION_CMD="${PM_DRILL_ATTENTION_CMD:-curl -s --max-time 25 http://127.0.0.1:4870/api/attention.json}"
+# #1116 item (5): the rendered half of the honesty signal. After the
+# health signal fires, the drill fetches the overview page and greps for
+# the stale-feed banner's data-signal hook (render.ts
+# renderOverviewBody). Best effort and recorded either way — a failed
+# page fetch is "unknown", never a drill failure; the deterministic
+# assertion lives in test/overview-stale-feed-1116.test.ts.
+PAGE_CMD="${PM_DRILL_PAGE_CMD:-curl -s --max-time 25 http://127.0.0.1:4870/}"
 AGE_MS="${PM_DRILL_AGE_MS:-1200000}"
 MAX_WAIT_MIN="${PM_DRILL_MAX_WAIT_MIN:-25}"
 RESTORE_WAIT_MIN="${PM_DRILL_RESTORE_WAIT_MIN:-12}"
@@ -263,6 +272,27 @@ print("yes" if any(isinstance(i, dict) and i.get("id") == "watchdog:feed" for i 
 	fi
 fi
 
+# --- rendered-page check (#1116 item 5; best effort, recorded either way) --
+# The health signal proves the aggregator *knows* the feed is stale; this
+# proves the dashboard *says* so where a human looks. PAGE_WARN ends 1
+# when the overview carries the stale-feed banner, 0 when the page was
+# read but the banner is absent, and empty (recorded as null/unknown)
+# when the page could not be fetched at all.
+PAGE_WARN=""
+if [ "$SIGNAL" = 1 ]; then
+	if PAGE="$(bash -c "$PAGE_CMD" 2>/dev/null)" && [ -n "$PAGE" ]; then
+		if printf '%s' "$PAGE" | grep -q 'data-signal="feed-stale"'; then
+			PAGE_WARN=1
+			log "rendered page carries the stale-feed warning (data-signal=feed-stale)"
+		else
+			PAGE_WARN=0
+			log "WARN: rendered page has no stale-feed warning though the health signal fired"
+		fi
+	else
+		log "rendered page unreadable; page warning unknown (health signal alone was recorded)"
+	fi
+fi
+
 # --- restore + confirm --------------------------------------------------------
 restore
 trap - EXIT INT TERM
@@ -286,9 +316,9 @@ done
 # --- report -------------------------------------------------------------------
 OUTCOME="failed"
 [ "$SIGNAL" = 1 ] && [ "$CONFIRMED" = 1 ] && OUTCOME="passed"
-python3 - "$RESULT_FILE" "$STARTED_AT" "$OUTCOME" "$SIGNAL" "$DEGRADED" "$WATCHDOG" "$CONFIRMED" "$AGE_MS" <<'PY'
+python3 - "$RESULT_FILE" "$STARTED_AT" "$OUTCOME" "$SIGNAL" "$DEGRADED" "$WATCHDOG" "$CONFIRMED" "$AGE_MS" "$PAGE_WARN" <<'PY'
 import json, sys, datetime
-path, started, outcome, signal, degraded, watchdog, confirmed, aged = sys.argv[1:9]
+path, started, outcome, signal, degraded, watchdog, confirmed, aged, page = sys.argv[1:10]
 json.dump({
     "drill": "age-feed", "issue": 1283, "epic": 1184,
     "started_at": started,
@@ -297,12 +327,13 @@ json.dump({
     "signal_fired": signal == "1",
     "health_degraded": degraded == "1",
     "watchdog_item_seen": watchdog == "1",
+    "page_warn_seen": True if page == "1" else (False if page == "0" else None),
     "restoration_confirmed": confirmed == "1",
     "aged_ms": int(aged),
     "stale_threshold_ms": 900000,
 }, open(path, "w"), indent=2)
 PY
-log "result: $OUTCOME (signal=$SIGNAL degraded=$DEGRADED watchdog=$WATCHDOG restored=$CONFIRMED) -> $RESULT_FILE"
+log "result: $OUTCOME (signal=$SIGNAL degraded=$DEGRADED watchdog=$WATCHDOG page_warn=${PAGE_WARN:-unknown} restored=$CONFIRMED) -> $RESULT_FILE"
 
 if [ "${PM_DRILL_NO_POST:-0}" != "1" ] && command -v gh >/dev/null 2>&1; then
 	if [ "$OUTCOME" = "passed" ]; then
