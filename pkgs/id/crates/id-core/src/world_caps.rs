@@ -245,8 +245,11 @@ macro_rules! define_provider_registry {
             default_ceiling: $default_ceiling:expr,
         },
     )+) => {
-        /// All statically registered providers, in stable catalog order.
-        pub const CATALOG_ENTRIES: &[ProviderManifest] = &[
+        /// All statically registered production providers, in stable catalog
+        /// order. The registry assembles [`CATALOG_ENTRIES`] from this list so
+        /// feature-gated, registry-only providers can join without touching
+        /// the production entries.
+        pub const PRODUCTION_CATALOG_ENTRIES: &[ProviderManifest] = &[
             $(ProviderManifest {
                 name: $name,
                 version: $version,
@@ -532,6 +535,67 @@ define_provider_registry! {
         default_ceiling: DefaultCeiling::Included,
     },
 }
+
+/// Name of the registry-only test provider (#1061 exit proof).
+///
+/// Only present with the `test-provider` feature, which production builds
+/// never enable. It is a plain platform-module name so the compile gate can
+/// recognize an `import` of it as a module import.
+#[cfg(feature = "test-provider")]
+pub const TEST_PROVIDER_NAME: &str = "RegistryProbe";
+
+/// The registry-only test provider (#1061 exit proof).
+///
+/// It registers exactly like a production provider — one manifest entry — and
+/// deliberately opts out of every default ceiling: adding a provider must
+/// never widen a world's authority by itself (#838).
+#[cfg(feature = "test-provider")]
+const TEST_PROVIDER_MANIFEST: ProviderManifest = ProviderManifest {
+    name: TEST_PROVIDER_NAME,
+    version: 1,
+    kind: ProviderKind::PlatformModule,
+    argument_schema: ArgumentSchema::NotApplicable,
+    bounds: &[],
+    required_scope: RequiredScope::Join,
+    default_ceiling: DefaultCeiling::Excluded,
+};
+
+/// Registry-only entries added on top of [`PRODUCTION_CATALOG_ENTRIES`].
+#[cfg(feature = "test-provider")]
+const EXTRA_CATALOG_ENTRIES: &[ProviderManifest] = &[TEST_PROVIDER_MANIFEST];
+/// Registry-only entries added on top of [`PRODUCTION_CATALOG_ENTRIES`].
+#[cfg(not(feature = "test-provider"))]
+const EXTRA_CATALOG_ENTRIES: &[ProviderManifest] = &[];
+
+/// Number of manifests in the assembled provider registry.
+const CATALOG_ENTRY_COUNT: usize = PRODUCTION_CATALOG_ENTRIES.len() + EXTRA_CATALOG_ENTRIES.len();
+
+/// Assemble the production manifests plus any feature-gated registry-only
+/// additions into one array.
+///
+/// This is the only place the registry grows. Adding a provider means adding a
+/// manifest — never editing dispatch or core files (#1061).
+const fn assemble_catalog_entries() -> [ProviderManifest; CATALOG_ENTRY_COUNT] {
+    let mut entries = [PRODUCTION_CATALOG_ENTRIES[0]; CATALOG_ENTRY_COUNT];
+    let mut index = 0;
+    while index < PRODUCTION_CATALOG_ENTRIES.len() {
+        entries[index] = PRODUCTION_CATALOG_ENTRIES[index];
+        index += 1;
+    }
+    let mut extra = 0;
+    while extra < EXTRA_CATALOG_ENTRIES.len() {
+        entries[PRODUCTION_CATALOG_ENTRIES.len() + extra] = EXTRA_CATALOG_ENTRIES[extra];
+        extra += 1;
+    }
+    entries
+}
+
+/// The assembled registry storage, in stable catalog order.
+static ASSEMBLED_CATALOG_ENTRIES: [ProviderManifest; CATALOG_ENTRY_COUNT] =
+    assemble_catalog_entries();
+
+/// All statically registered providers, in stable catalog order.
+pub const CATALOG_ENTRIES: &[ProviderManifest] = &ASSEMBLED_CATALOG_ENTRIES;
 
 /// A registry view over the statically registered provider manifests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
