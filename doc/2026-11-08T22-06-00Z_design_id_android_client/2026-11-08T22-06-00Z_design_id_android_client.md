@@ -26,7 +26,7 @@ This is a design for the product and its boundaries, not an implementation. #183
 
 ### 1.1 What already exists
 
-- #1831's input-event design defines a common pointer model, Android gesture mapping, explicit refusals, and the remote-drive boundary. It is a producer/interface design; its later manifest/shell-contract slice must land before an Android remote-drive client can emit those frames. See [`doc/2026-11-08T05-48-47Z_design_input_event_model/2026-11-08T05-48-47Z_design_input_event_model.md`](../2026-11-08T05-48-47Z_design_input_event_model/2026-11-08T05-48-47Z_design_input_event_model.md).
+- #1831's input-event design defines a common pointer model, Android gesture mapping, explicit refusals, and the remote-drive boundary. It is a producer/interface design; its later manifest/shell-contract slice must land before an Android remote-drive client can emit those frames. See [`doc/2026-11-08T05-48-47Z_design_input_event_model.md`](../2026-11-08T05-48-47Z_design_input_event_model.md).
 - #788 selects Bevy as the reference **native shell** and says shells consume the versioned client↔host contract; it separately excludes server startup and keeps Bevy out of the default `id` build. That record does not select an Android app framework. Its current `id-native-shell` package depends on `id` with `default-features = false, features = ["world"]`; it is a useful contract precedent, not a ready-made Android client.
 - #790 establishes the client-only boundary: only an explicit `id serve` hosts a world. An Android client does not start a server merely because it has local data or is serving a provider.
 - #3447 has already made `pkgs/id` a workspace with `id-core` and `id-native-shell`, but the root `id` package still owns the broad facade and default `sandbox`/`world` feature set. The Android product needs a narrower dependency surface than `id` with `world` enabled; the crate split is the seam to create it.
@@ -178,7 +178,7 @@ Thus the answer to “what wakes the app when a world changes?” is: **nothing 
 
 ## 9. Implementation follow-ons
 
-These are named next actions; they are not implementation performed by this design PR. The parent issue #5780 remains the design record until these slices are accepted and the owner chooses whether to split them into tracked child issues.
+These slices are tracked in [#7938 — implement: native Android client v1](https://github.com/developing-today/code/issues/7938), which is the implementation home; #5780 closes with this record once the design is merged. Slice 1 waits on #3447's crate seams and slice 5 waits on the #1831 input-event contract slice. Each slice is openable as its own issue when work starts.
 
 1. **Crate-split client facade and Android target:** extract `id-client` along #3447 seams; prove server-only dependencies (`wasmtime`, web, SSH, serve/listeners) are absent from its Android graph; build arm64-v8a and exercise one authenticated client session.
 2. **Android identity/enrollment spike:** test direct Ed25519 Keystore/StrongBox support and encrypted-key-envelope fallback on representative API levels/devices; specify app backup exclusions, biometric invalidation, key zeroization, and the #5684 recovery handoff.
