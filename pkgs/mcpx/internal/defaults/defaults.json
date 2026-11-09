@@ -107,6 +107,9 @@
   "resolve": {
     "dialTimeout": "200ms"
   },
+  "preflight": {
+    "npmTimeout": "5s"
+  },
   "elicit": {
     "ttl": "120s",
     "maxAge": "30m",
@@ -287,6 +290,7 @@
     "eraFile": "upstream-eras.json",
     "eraFileVersion": 1,
     "errorBodyLimit": "4KB",
+    "responseBodyLimit": "8MiB",
     "sseReconnectDelay": "1s",
     "sseReconnectAttempts": 5,
     "listenReopenDelay": "1s",

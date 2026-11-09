@@ -35,6 +35,7 @@ mod actor;
 mod clock;
 mod core;
 mod handle;
+pub mod hotness;
 mod metrics;
 mod replica;
 mod replication;
@@ -50,7 +51,10 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub(crate) use core::AdminHistoryByteLedger;
 pub use core::WorldCore;
 pub use handle::WorldHandle;
-pub use metrics::{HistogramSnapshot, MetricsSnapshot, WorldMetrics};
+pub use hotness::{FiredSignal, HotnessBand, HotnessReport, HotnessSignal};
+pub use metrics::{
+    HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,
+};
 pub use replica::{
     ReplicaCursor, ReplicaRestore, parse_replica_journal, restore_replica_entries,
     restore_replica_entries_with_runtime, restore_replica_journal,
@@ -1563,8 +1567,9 @@ pub(crate) struct JournalAdminHistory {
 pub const JOURNAL_VERSION: u32 = 1;
 
 /// Header version of a journal that contains a
-/// [`JournalEntry::ExecutionProfile`]: the first entry kind a version-1
-/// binary cannot read. See the contract on [`JOURNAL_VERSION`].
+/// [`JournalEntry::ExecutionProfile`] or [`JournalEntry::BuilderInstalled`]:
+/// entry kinds a version-1 binary cannot read. See the contract on
+/// [`JOURNAL_VERSION`].
 pub const JOURNAL_VERSION_EXECUTION_PROFILE: u32 = 2;
 
 /// Header version of a journal that contains a region-seam handoff entry
@@ -1674,6 +1679,7 @@ pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
         JournalEntry::ExecutionProfile { profile } => {
             JOURNAL_VERSION_EXECUTION_PROFILE.max(budget_version(Some(profile)))
         }
+        JournalEntry::BuilderInstalled { .. } => JOURNAL_VERSION_EXECUTION_PROFILE,
         _ => JOURNAL_VERSION,
     }
 }
@@ -1711,6 +1717,18 @@ pub trait WorldJournal: Send + 'static {
     /// Current journal header version, when the implementation can report it.
     fn replication_header_version(&self) -> Option<u32> {
         None
+    }
+
+    /// Durably append a group of entries as one all-or-nothing transaction.
+    /// Journals that cannot guarantee atomicity must leave the default in
+    /// place; an install requiring paired event and audit records will then
+    /// fail closed instead of falling back to separate appends.
+    ///
+    /// # Errors
+    ///
+    /// Any I/O failure, or if this journal does not support atomic groups.
+    fn append_transaction(&mut self, _entries: &[JournalEntry]) -> Result<()> {
+        bail!("this journal does not support atomic entry transactions")
     }
 
     /// Atomically replace the whole journal with `entries` (a header, the

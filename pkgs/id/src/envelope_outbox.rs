@@ -133,14 +133,14 @@ impl Outbox {
             path: path.into(),
             entries: BTreeMap::new(),
         };
-        let text = match fs::read_to_string(&outbox.path) {
-            Ok(text) => text,
+        let bytes = match fs::read(&outbox.path) {
+            Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(outbox),
             Err(error) => return Err(error).context("reading the envelope outbox"),
         };
         let mut kept = 0;
-        for (number, line) in text.split_inclusive('\n').enumerate() {
-            if !line.ends_with('\n') {
+        for (number, line) in bytes.split_inclusive(|byte| *byte == b'\n').enumerate() {
+            if !line.ends_with(b"\n") {
                 // The final line has no newline: a crash cut the append
                 // short. Parseable or not, it was never completely
                 // written, so it is torn and dropped — the same rule
@@ -151,13 +151,15 @@ impl Outbox {
                 // truncated to it below.
                 break;
             }
-            if line.trim().is_empty() {
+            let text = std::str::from_utf8(line)
+                .with_context(|| format!("envelope outbox line {} is corrupt", number + 1))?;
+            if text.trim().is_empty() {
                 // Blank lines carry no records, but they are complete bytes in
                 // the journal and must remain before any later torn tail.
                 kept += line.len();
                 continue;
             }
-            match serde_json::from_str::<Record>(line.trim_end()) {
+            match serde_json::from_str::<Record>(text.trim_end()) {
                 Ok(record) => {
                     outbox.apply(record).with_context(|| {
                         format!("envelope outbox line {} is refused", number + 1)
@@ -171,7 +173,7 @@ impl Outbox {
                 }
             }
         }
-        if kept < text.len() {
+        if kept < bytes.len() {
             OpenOptions::new()
                 .write(true)
                 .open(&outbox.path)?
@@ -677,7 +679,8 @@ mod tests {
         outbox.enqueue(&target(), envelope("e1")).unwrap();
         drop(outbox);
         let mut file = OpenOptions::new().append(true).open(path(&dir)).unwrap();
-        file.write_all(b"{\"op\":\"queued\",\"target\"").unwrap();
+        // The tail is cut after the first byte of a multibyte name.
+        file.write_all(b"{\"name\":\"Jos\xc3").unwrap();
         drop(file);
 
         let mut outbox = Outbox::open(path(&dir)).unwrap();

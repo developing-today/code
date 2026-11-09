@@ -159,6 +159,7 @@ pub mod app_manifest;
 #[cfg(feature = "world")]
 pub mod artifact;
 pub mod attestation;
+pub mod backup;
 pub mod blob_gate;
 #[cfg(feature = "world")]
 pub mod boards;
@@ -195,6 +196,7 @@ pub mod event_store;
 pub mod event_sync;
 pub mod fileops;
 pub mod frames;
+pub mod serve_proxy;
 pub mod groups;
 pub mod helpers;
 pub mod hosted_binding;
@@ -205,6 +207,7 @@ pub mod invites;
 pub mod issuer_rotation;
 pub(crate) mod key_envelope;
 pub mod local;
+pub mod local_claims;
 pub mod local_events;
 pub mod log_sync;
 mod peer_announcement;

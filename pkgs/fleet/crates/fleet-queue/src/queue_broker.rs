@@ -15,6 +15,13 @@
 //!      QUEUE_BROKER_TOKEN_FILE (default ~/.config/queue-broker/token),
 //!      QUEUE_BROKER_SECRETS_URL (default http://100.99.113.103:4800),
 //!      QUEUE_BROKER_SECRETS_TOKEN_FILE (default ~/.config/secrets-broker/token).
+//!
+//! Backend (#6741): QUEUE_BROKER_BACKEND=postgres (default; the
+//! Supabase PostgREST path above) or =turso — the queue core on the
+//! dedicated Turso DB `fleet-queue` (crate::turso_queue), selected by
+//! QUEUE_BROKER_TURSO_URL / QUEUE_BROKER_TURSO_TOKEN_FILE. The
+//! production default does not flip with the code; cutover is
+//! doc/fleet/queue-turso-cutover.md.
 
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -77,6 +84,9 @@ struct State {
     health_cache: RwLock<Option<HealthCacheEntry>>,
     enqueue_gate: Mutex<EnqueueGate>,
     failure_events_path: Option<std::path::PathBuf>,
+    /// #6741: Some when QUEUE_BROKER_BACKEND=turso; dispatch routes
+    /// every verb except /validate + /healthz to the Turso backend.
+    turso: Option<crate::turso_queue::TursoBackend>,
 }
 
 struct BErr {
@@ -501,6 +511,11 @@ fn verb_with_execution(st: &State, fn_name: &str, args: Value, req: &Value) -> V
 }
 
 fn dispatch(st: &State, path: &str, req: &Value) -> Value {
+    if let Some(t) = &st.turso {
+        if path != "/validate" && path != "/healthz" {
+            return crate::turso_queue::dispatch(t, path, req);
+        }
+    }
     match path {
         "/validate" => {
             let packet = req.get("packet").cloned().unwrap_or(Value::Null);
@@ -677,7 +692,7 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             // broker since the binary-direct migration retired the
             // Python helper it used to import).
             let select = if req.get("rich").and_then(|r| r.as_bool()).unwrap_or(false) {
-                "id,queue,title,priority,status,dedupe_key,created_at,not_before,worker_id,lease_until,lane_id,attempts,max_attempts,progress"
+                "id,queue,title,priority,status,dedupe_key,created_at,not_before,worker_id,lease_until,lane_id,attempts,max_attempts,progress,payload"
             } else {
                 "id,queue,title,priority,status,dedupe_key,created_at,not_before"
             };
@@ -690,6 +705,14 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             }
             if let Some(nb) = req.get("not_before").and_then(|s| s.as_str()) {
                 path += &format!("&or=(not_before.is.null,not_before.lte.{})", quote(nb, ":"));
+            }
+            // #5444: --lane/--worker list filters, PostgREST side
+            // (the Turso verb_list applies the same filters).
+            if let Some(l) = req.get("lane").and_then(|s| s.as_str()) {
+                path += &format!("&lane_id=eq.{}", quote(l, ""));
+            }
+            if let Some(w) = req.get("worker").and_then(|s| s.as_str()) {
+                path += &format!("&worker_id=eq.{}", quote(w, ""));
             }
             match st.postgrest("GET", &path, None, false) {
                 Ok((rows, _)) => ok(json!({"rows": rows})),
@@ -824,7 +847,10 @@ fn handle_request(
 pub fn run() -> i32 {
     let bind =
         std::env::var("QUEUE_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4801".to_string());
-    let home = std::env::var("HOME").expect("HOME unset");
+    let home = crate::home::from_env().unwrap_or_else(|error| {
+        eprintln!("queue-broker: {error}");
+        std::process::exit(2);
+    });
     let token_file = std::env::var("QUEUE_BROKER_TOKEN_FILE")
         .unwrap_or_else(|_| format!("{home}/.config/queue-broker/token"));
     let token = crate::token_file::load_token_file(&token_file).unwrap_or_else(|e| {
@@ -857,6 +883,55 @@ pub fn run() -> i32 {
         let _ = std::fs::create_dir_all(dir);
     }
 
+    // #6741 backend selection: Postgres stays the default; the
+    // Turso backend is opt-in per broker process until the cutover
+    // runbook flips the unit env.
+    let turso = if std::env::var("QUEUE_BROKER_BACKEND")
+        .map(|v| v.eq_ignore_ascii_case("turso"))
+        .unwrap_or(false)
+    {
+        let url = std::env::var("QUEUE_BROKER_TURSO_URL")
+            .unwrap_or_else(|_| crate::turso_queue::DEFAULT_TURSO_URL.to_string());
+        let token = match std::env::var("QUEUE_BROKER_TURSO_TOKEN_FILE") {
+            Ok(f) => crate::token_file::load_token_file(&f).unwrap_or_else(|e| {
+                crate::log::info("queue-broker", &e);
+                std::process::exit(3);
+            }),
+            Err(_) => {
+                let resolver = Resolver::new(vec![Box::new(DirectSecrets {
+                    url: secrets_url.clone(),
+                    token: secrets_token.clone(),
+                    agent: agent.clone(),
+                })]);
+                resolver
+                    .resolve(crate::turso_queue::TURSO_TOKEN_SECRET_NAME)
+                    .map(|v| v.expose().to_string())
+                    .unwrap_or_else(|e| {
+                        crate::log::info(
+                            "queue-broker",
+                            &format!("turso backend token resolve failed: {e}"),
+                        );
+                        std::process::exit(3);
+                    })
+            }
+        };
+        let backend = crate::turso_queue::TursoBackend::new(url, token, agent.clone());
+        backend.ensure_schema().unwrap_or_else(|e| {
+            crate::log::info(
+                "queue-broker",
+                &format!("turso backend schema ensure failed: {e}"),
+            );
+            std::process::exit(3);
+        });
+        crate::log::info(
+            "queue-broker",
+            &format!("queue backend: turso ({})", backend.url()),
+        );
+        Some(backend)
+    } else {
+        None
+    };
+
     let state = Arc::new(State {
         secrets_url,
         secrets_token,
@@ -865,6 +940,7 @@ pub fn run() -> i32 {
         health_cache: RwLock::new(None),
         enqueue_gate: Mutex::new(EnqueueGate::new()),
         failure_events_path: Some(failure_events_path),
+        turso,
     });
 
     let server = Server::http(&bind).unwrap_or_else(|e| {

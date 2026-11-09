@@ -215,7 +215,7 @@ func BenchmarkCallToolValidateArgs(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	if _, err := c.ListTools(ctx); err != nil {
 		b.Fatal(err)
 	}

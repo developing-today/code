@@ -58,11 +58,11 @@ const ownServerName = "mcpx"
 // falls back to convicting on the aggregate surface alone.
 var OwnInstanceID string
 
-// Trace, when set, receives a line per tool call naming the instance that
-// served it. The daemon wires this to its logger when MCPX_TRACE is set.
+// Trace receives a line per tool call naming the instance that
+// served it, when set. The daemon wires this to its logger when MCPX_TRACE is set.
 var Trace func(string, ...any)
 
-// Lifecycle, when set, receives structured lifecycle events: a server
+// Lifecycle receives structured lifecycle events when set: a server
 // starting, stopping or being reaped. Reported here rather than inferred from
 // logs so that a consumer sees the same events the pool acted on.
 var Lifecycle func(event string, attrs map[string]any)
@@ -369,7 +369,7 @@ func (p *Pool) Acquire(ctx context.Context, rs config.ResolvedScope) (*Lease, er
 			if dup := p.findLaneLocked(key, legacy); dup != nil {
 				p.cond.Broadcast()
 				p.mu.Unlock()
-				go in.Client.Close()
+				go func() { _ = in.Client.Close() }()
 				p.mu.Lock()
 				continue
 			}
@@ -551,13 +551,9 @@ func (p *Pool) reapDeadLocked() {
 		if p.lastErr == nil {
 			p.lastErr = in.Client.Err()
 		}
-		go in.Client.Close()
+		go func() { _ = in.Client.Close() }()
 	}
 	p.instances = kept
-}
-
-func (p *Pool) start(ctx context.Context) (*Instance, error) {
-	return p.startLane(ctx, false, config.ResolvedScope{})
 }
 
 // installServerHooks wires what a server may ask of mcpx into the options its

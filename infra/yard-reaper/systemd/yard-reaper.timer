@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly fleet yard reaper
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=10m
+Unit=yard-reaper.service
+
+[Install]
+WantedBy=timers.target

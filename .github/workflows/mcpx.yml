@@ -61,6 +61,10 @@ on:
         description: "Time-budget override in seconds (demo the warn/fail gates with a tiny value)"
         required: false
         default: "420"
+      seed:
+        description: "Run seed override (#1949): replay a previous run exactly with this seed id"
+        required: false
+        default: ""
 
 # Push-to-main runs each get their own group (keyed by run_id), so a
 # later merge can never cancel — or displace a pending — verification
@@ -99,11 +103,57 @@ jobs:
           diff -r pkgs/mcpx/plugin/opencode/mcpx .opencode/plugin/mcpx
           diff pkgs/mcpx/plugin/opencode/mcpx-session.ts .opencode/plugin/mcpx-session.ts
 
+  seed:
+    name: "seed: mint the run seed"
+    # #1949 section 7: one seed per workflow run, minted here — never
+    # inside a test process. Every go test job below needs this job
+    # and receives the id as MCPX_TEST_SEED. "Re-run failed jobs"
+    # does not re-run this (successful) job, so failed shards re-run
+    # with the same seed; "Re-run all jobs" mints a new one. The
+    # test-seed artifact (seed.json) is what the seed collector
+    # (#1953) scoops into pkgs/mcpx/testdata/seeds/v1.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      seed: ${{ steps.mint.outputs.seed }}
+    steps:
+      - id: mint
+        env:
+          SEED_IN: ${{ inputs.seed }}
+        run: |
+          set -euo pipefail
+          seed="${SEED_IN:-$(python3 -c "import os,time;b=bytearray(int(time.time()*1000).to_bytes(6,'big')+os.urandom(10));b[6]=b[6]&15|0x70;b[8]=b[8]&63|0x80;h=b.hex();print(f'{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}')")}"
+          if ! printf '%s' "$seed" | grep -Eq '^[A-Za-z0-9._-]{1,128}$'; then
+            echo "seed job: seed id '$seed' is not a valid seed id ([A-Za-z0-9._-]{1,128})" >&2
+            exit 1
+          fi
+          date="$(python3 -c "
+          import datetime, sys
+          seed = sys.argv[1]
+          try:
+              ms = int(seed.replace('-', '')[:12], 16)
+              print(datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc).date().isoformat())
+          except Exception:
+              print(datetime.datetime.now(datetime.timezone.utc).date().isoformat())
+          " "$seed")"
+          echo "seed=$seed" >> "$GITHUB_OUTPUT"
+          echo "MCPX_TEST_SEED=\`$seed\`" >> "$GITHUB_STEP_SUMMARY"
+          jq -n --arg seed "$seed" --arg commit "$GITHUB_SHA" --arg ref "$GITHUB_REF" \
+                --arg event "$GITHUB_EVENT_NAME" --arg run "$GITHUB_RUN_ID" \
+                --argjson attempt "$GITHUB_RUN_ATTEMPT" --arg derivation "v1" --arg date "$date" \
+                '{seed:$seed, commit:$commit, ref:$ref, event:$event, run:$run, attempt:$attempt, derivation:$derivation, date:$date}' > seed.json
+          cat seed.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-seed
+          path: seed.json
+
   test:
     name: "basic: test"
     # Original coverage was push-only; the pull_request/schedule
     # triggers above exist for the flake-policy jobs (#1973).
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: seed
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -176,10 +226,12 @@ jobs:
           # installs (deno, bun, node above; python3 on the runner) that is
           # nevertheless missing must fail the suite, never skip silently.
           MCPX_TEST_REQUIRE: deno,bun,node,python3
+          MCPX_TEST_SEED: ${{ needs.seed.outputs.seed }}
           VARS: ${{ toJSON(vars) }}
           GH_TOKEN: ${{ secrets.MCPX_CONFORMANCE_VARS_TOKEN }}
           ON_MAIN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           RUN: ${{ github.run_id }}/${{ github.run_attempt }}
+          MCPX_FEATURE_COVERAGE_LEDGER: ${{ runner.temp }}/mcpx-feature-coverage.jsonl
         run: |
           rc=0
           python3 scripts/test_gotest_report.py || rc=1
@@ -241,6 +293,14 @@ jobs:
       - name: Plugin tests (bun)
         working-directory: pkgs/mcpx
         run: bun test plugin/opencode/mcpx/
+
+      - name: Upload runtime feature coverage ledger
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mcpx-feature-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mcpx-feature-coverage.jsonl
+          if-no-files-found: ignore
 
   docs-history:
     name: "basic: docs-history check"
@@ -341,16 +401,14 @@ jobs:
             actionlint -shellcheck "shellcheck -S warning" .github/workflows/mcpx*.yml
           '
 
-      # golangci-lint runs, but is NOT blocking yet — explicitly, per
-      # #1996's acceptance fallback. Its first full run (PR #2718, run
-      # 41131293079) reported 119 pre-existing findings across the
-      # module (errcheck 50, staticcheck 50, unused 17, ineffassign 2),
-      # far beyond this slice's baseline. They are filed as #2836;
-      # when #2836 lands, this step loses `continue-on-error` and the
-      # leg becomes fully blocking. Until then the findings print on
-      # every run, visible but not gating.
-      - name: golangci-lint (non-blocking until #2836)
-        continue-on-error: true
+      # golangci-lint is blocking: #2836 cleared the module's findings
+      # (the uncapped count was 806 -- errcheck 714, staticcheck 69,
+      # unused 21, ineffassign 2; the 119 reported in PR #2718 was the
+      # linter's 50-per-linter display cap), so this step gates like
+      # every other leg. One exclusion survives in
+      # pkgs/mcpx/.golangci.yml: the SA2001 mutex barrier in
+      # internal/daemon/conns.go, with its reason recorded there.
+      - name: golangci-lint
         run: |
           nix develop .#mcpx-lint --extra-experimental-features cgroups --command bash -euo pipefail -c '
             cd pkgs/mcpx
@@ -431,6 +489,7 @@ jobs:
     # for unit packages, -count=3 for the e2e package. No retries:
     # a failure here is a finding, not something to re-run to green.
     if: github.event_name == 'pull_request'
+    needs: seed
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -466,7 +525,9 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MCPX_TEST_SEED: ${{ needs.seed.outputs.seed }}
           RUN_IDENTITY: ${{ github.run_id }}/${{ github.run_attempt }}
+          MCPX_FEATURE_COVERAGE_LEDGER: ${{ runner.temp }}/mcpx-feature-coverage.jsonl
         run: |
           # Intentional word splitting: $unit/$e2e are space-separated package
           # lists built in this block and must split into separate go test
@@ -474,8 +535,8 @@ jobs:
           # name. Directives are per-line below (actionlint's prepended `set`
           # line defeats a single block-top directive).
           set -euo pipefail
-          seed=$(python3 -c 'import hashlib, os; print(int(hashlib.sha256(("mcpx-shuffle/v1:" + os.environ["RUN_IDENTITY"]).encode()).hexdigest()[:15], 16))')
-          echo "shuffle seed: $seed (reproduce with: go test <pkg> -race -shuffle=$seed -count=<n>)"
+          seed=$(python3 -c 'import hashlib, os; root = hashlib.sha256(b"mcpx-test-seed/v1\x00" + os.environ["MCPX_TEST_SEED"].encode()).digest(); print(int.from_bytes(hashlib.sha256(root + b"shuffle").digest()[:8], "big") & (2**63 - 1))')
+          echo "shuffle seed: $seed (run seed: $MCPX_TEST_SEED; reproduce with: MCPX_TEST_SEED=$MCPX_TEST_SEED pkgs/mcpx/scripts/test.sh <pkg> -race -shuffle=$seed -count=<n>)"
           changed=$(git -C "$GITHUB_WORKSPACE" diff --name-only "$BASE_SHA...$HEAD_SHA" -- pkgs/mcpx \
             | sed 's|^pkgs/mcpx/||' | grep -E '\.go$' | grep -v '^testdata/' || true)
           if [ -z "$changed" ]; then
@@ -498,6 +559,14 @@ jobs:
             go test $e2e -race -shuffle=$seed -count=3
           fi
 
+      - name: Upload runtime feature coverage ledger
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mcpx-feature-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mcpx-feature-coverage.jsonl
+          if-no-files-found: ignore
+
   stress-nightly:
     name: "stress: nightly full suite (race/shuffle/repeat)"
     # Flake policy (#1973): the whole suite, nightly, on two OSes, off
@@ -507,6 +576,7 @@ jobs:
     # their expiry and fails the suite after it, so the nightly log
     # and the failure issue are where quarantines surface.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: seed
     strategy:
       fail-fast: false
       matrix:
@@ -538,15 +608,15 @@ jobs:
       - name: Full suite under race/shuffle/repeat
         working-directory: pkgs/mcpx
         env:
-          RUN_IDENTITY: ${{ github.run_id }}/${{ github.run_attempt }}/${{ matrix.os }}
+          MCPX_TEST_SEED: ${{ needs.seed.outputs.seed }}
         run: |
           # Intentional: $seed is a numeric shuffle seed derived in this block;
           # its expansion is a single word by construction (per-line directive
           # below -- actionlint's prepended `set` line defeats a block-top one).
           set -euo pipefail
-          seed=$(python3 -c 'import hashlib, os; print(int(hashlib.sha256(("mcpx-shuffle/v1:" + os.environ["RUN_IDENTITY"]).encode()).hexdigest()[:15], 16))')
+          seed=$(python3 -c 'import hashlib, os; root = hashlib.sha256(b"mcpx-test-seed/v1\x00" + os.environ["MCPX_TEST_SEED"].encode()).digest(); print(int.from_bytes(hashlib.sha256(root + b"shuffle").digest()[:8], "big") & (2**63 - 1))')
           echo "SHUFFLE_SEED=$seed" >> "$GITHUB_ENV"
-          echo "shuffle seed: $seed (reproduce with: go test ./... -race -shuffle=$seed -count=3)"
+          echo "shuffle seed: $seed (run seed: $MCPX_TEST_SEED; reproduce with: MCPX_TEST_SEED=$MCPX_TEST_SEED pkgs/mcpx/scripts/test.sh ./... -race -count=3)"
           # shellcheck disable=SC2086
           go test ./... -race -shuffle=$seed -count=3
 

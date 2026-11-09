@@ -164,9 +164,42 @@ def http_raw(
     raise AssertionError("unreachable")
 
 
+def _shape_name(value: object) -> str:
+    """The JSON shape of a parsed body, for diagnostics (#6864)."""
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if value is None:
+        return "null"
+    return type(value).__name__
+
+
 def http(
-    method: str, path: str, token: str, body: dict | None = None
-) -> tuple[int, dict]:
+    method: str,
+    path: str,
+    token: str,
+    body: dict | None = None,
+    expect: type = dict,
+) -> tuple[int, dict | list]:
+    """Die-on-error wrapper over http_raw with shape validation (#6864).
+
+    A parseable-but-wrong-shaped body — an array, string, or number
+    where the caller needs an object (or the reverse) — dies here with
+    a diagnostic naming the method, URL, HTTP status, and received
+    shape, instead of crashing every consumer downstream with a raw
+    AttributeError/KeyError. The error path is held to the same rule:
+    a non-object error body surfaces the HTTP status, the shape, and
+    the raw excerpt, never a crash inside the error handler itself.
+    `expect` is the one legitimate exception carved out by name:
+    /app/installations returns a top-level array.
+    """
     url = path if path.startswith("http") else API + path
     data = json.dumps(body).encode() if body is not None else None
     status, raw = http_raw(method, path, token, data)
@@ -175,8 +208,36 @@ def http(
             detail = json.loads(raw)
         except Exception:
             detail = {"raw": raw}
-        die(f"{method} {url} -> HTTP {status}: {detail.get('message', raw[:300])}")
-    return status, (json.loads(raw) if raw else {})
+        if isinstance(detail, dict):
+            die(f"{method} {url} -> HTTP {status}: {detail.get('message', raw[:300])}")
+        die(
+            f"{method} {url} -> HTTP {status}: expected a JSON object error "
+            f"body, got {_shape_name(detail)}: {raw[:300]}"
+        )
+    if not raw:
+        payload: object = {}
+    else:
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            die(f"{method} {url} -> HTTP {status}: response body is not JSON: {raw[:300]}")
+    if not isinstance(payload, expect):
+        die(
+            f"{method} {url} -> HTTP {status}: expected a JSON "
+            f"{'object' if expect is dict else 'array'}, got {_shape_name(payload)}"
+        )
+    return status, payload
+
+
+def _account_login(inst: dict) -> str:
+    """An installation's account login, or "" for any other shape: an
+    absent account, an explicit null, or a non-string login (#6864)."""
+    account = inst.get("account")
+    if isinstance(account, dict):
+        login = account.get("login")
+        if isinstance(login, str):
+            return login
+    return ""
 
 
 class AppClient:
@@ -189,23 +250,33 @@ class AppClient:
 
     def installations(self) -> list[dict]:
         if self._installations is None:
-            _, data = http("GET", "/app/installations?per_page=100", self.jwt)
+            _, data = http(
+                "GET", "/app/installations?per_page=100", self.jwt, expect=list
+            )
+            for inst in data:
+                if not isinstance(inst, dict):
+                    die(
+                        "installation entry is not a JSON object "
+                        f"(got {_shape_name(inst)})"
+                    )
             self._installations = data
         return self._installations
 
     def installation_for(self, owner: str) -> dict:
         for inst in self.installations():
-            if inst.get("account", {}).get("login", "").lower() == owner.lower():
+            if _account_login(inst).lower() == owner.lower():
                 return inst
         die(
             f"no installation of the app found for owner {owner!r} "
-            f"(installations: {[i.get('account', {}).get('login') for i in self.installations()]})"
+            f"(installations: {[_account_login(i) for i in self.installations()]})"
         )
         raise AssertionError("unreachable")
 
     def token_for(self, owner: str) -> str:
         inst = self.installation_for(owner)
-        iid = inst["id"]
+        iid = inst.get("id")
+        if isinstance(iid, bool) or not isinstance(iid, int):
+            die(f"installation for owner {owner!r} has no numeric id")
         if iid not in self._tokens:
             _, data = http(
                 "POST", f"/app/installations/{iid}/access_tokens", self.jwt, {}
@@ -224,8 +295,26 @@ class AppClient:
             _, data = http(
                 "GET", f"/installation/repositories?per_page=100&page={page}", token
             )
-            seen += [r["full_name"] for r in data.get("repositories", [])]
-            if len(seen) >= data.get("total_count", 0) or not data.get("repositories"):
+            repos = data.get("repositories", [])
+            if not isinstance(repos, list):
+                die(
+                    "installation repositories response is not a JSON array "
+                    f"(got {_shape_name(repos)})"
+                )
+            for r in repos:
+                if not isinstance(r, dict) or not isinstance(r.get("full_name"), str):
+                    die(
+                        "installation repository entry has no string "
+                        f"full_name (got {_shape_name(r)}): {str(r)[:120]}"
+                    )
+                seen.append(r["full_name"])
+            total = data.get("total_count", 0)
+            if isinstance(total, bool) or not isinstance(total, (int, float)):
+                die(
+                    "installation repositories total_count is not a number "
+                    f"(got {_shape_name(total)})"
+                )
+            if len(seen) >= total or not repos:
                 break
             page += 1
         if repo not in seen:
@@ -296,7 +385,11 @@ def find_by_exact_title(client: AppClient, repo: str, title: str) -> dict | None
             "GET", f"/search/issues?q={q}&per_page=100&page={page}", token
         )
         items = data.get("items", [])
+        if not isinstance(items, list):
+            die(f"search response items is not a JSON array (got {_shape_name(items)})")
         for item in items:
+            if not isinstance(item, dict):
+                continue
             if "pull_request" in item:
                 continue
             if item.get("title") == title:
@@ -325,7 +418,7 @@ def cmd_check(args) -> int:
     print(f"app id {client.app_id} ({APP_SLUG_HINT})")
     for inst in client.installations():
         print(
-            f"installation {inst['id']}: {inst.get('account', {}).get('login')} "
+            f"installation {inst.get('id')}: {_account_login(inst)} "
             f"permissions={inst.get('permissions')}"
         )
     if args.repo:

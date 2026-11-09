@@ -735,7 +735,11 @@ pub fn parse_wants(text: &str) -> Result<Wants> {
         text.len() <= MAX_WANTS_BYTES,
         "wants exceeds {MAX_WANTS_BYTES} bytes"
     );
-    let value: serde_json::Value = serde_json::from_str(text).context("wants is not JSON")?;
+    // A duplicate key is a parse error (#7621, the #6520 rule): the
+    // version check and the entry bounds below must see the document as
+    // written, never a last-wins collapse of it.
+    let value: serde_json::Value =
+        crate::json_unique::parse_json_without_duplicate_keys(text).context("wants is not JSON")?;
     let object = value.as_object().context("wants must be a JSON object")?;
     if let Some(version) = object.get("v") {
         ensure!(
@@ -1518,6 +1522,47 @@ mod tests {
         );
         assert!(parse_wants(&args).is_err());
         assert!(parse_wants(&" ".repeat(MAX_WANTS_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_keys_at_any_depth() {
+        // #7621: every duplicate-key document below was accepted by the
+        // bare from_str gate (last-wins collapse) before this test existed.
+        for bad in [
+            // The version check saw only the collapsed last "v".
+            r#"{"v":2,"v":1}"#,
+            r#"{"v":1,"v":2}"#,
+            // A duplicate inside one request object collapsed its cap.
+            r#"{"requests":[{"id":"r1","cap":"time.now","cap":"chat.say"}]}"#,
+            // A duplicate inside request args.
+            r#"{"requests":[{"id":"r1","cap":"chat.say","args":{"text":"a","text":"b"}}]}"#,
+        ] {
+            assert!(parse_wants(bad).is_err(), "{bad:?}");
+        }
+        // #6499 pins: an over-long cap and a control-character id hidden
+        // behind benign duplicates inside one request entry.
+        let long_cap = "x".repeat(MAX_NAME_BYTES + 1);
+        let hidden_cap = format!(r#"{{"requests":[{{"id":"r1","cap":"{long_cap}","cap":"ok"}}]}}"#);
+        assert!(parse_wants(&hidden_cap).is_err(), "{hidden_cap:?}");
+        let hidden_id = "{\"requests\":[{\"id\":\"a\\u0001b\",\"id\":\"ok\",\"cap\":\"x\"}]}";
+        assert!(parse_wants(hidden_id).is_err(), "{hidden_id:?}");
+        // #6499 pin: a whole non-conforming requests array hidden behind
+        // a duplicate top-level "requests" key.
+        let hidden_requests =
+            format!(r#"{{"requests":[{{"id":"r1","cap":"{long_cap}"}}],"requests":[]}}"#);
+        assert!(
+            parse_wants(&hidden_requests).is_err(),
+            "{hidden_requests:?}"
+        );
+        // The 64-entry bound counted only the collapsed second array.
+        let hidden = format!(
+            r#"{{"subscribe":[{}],"subscribe":["players"]}}"#,
+            (0..=MAX_WANTS_ENTRIES)
+                .map(|i| format!(r#""cap{i}""#))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        assert!(parse_wants(&hidden).is_err(), "{hidden:?}");
     }
 
     #[test]
