@@ -3,7 +3,7 @@
 - Date: 2026-11-08
 - Status: **design decision record**, ready for issue-owner review; no implementation is included.
 - Issue: [#5973](https://github.com/developing-today/code/issues/5973), child of the worlds design programme [#5955](https://github.com/developing-today/code/issues/5955) (statements S75–S76 of the 2026-11-04 brief).
-- Specified against: `origin/main` `c20d5c13fa`, read 2026-11-08. Citations below are re-checked against this revision; the draft began at `83b7a024b8`.
+- Specified against: `origin/main` `69aa168d5d`, read 2026-11-08. Citations below are re-checked against this revision; the draft began at `83b7a024b8`.
 - Coordinates with, never re-defines: the requested/used capability vocabulary owned by [#5958](https://github.com/developing-today/code/issues/5958), the release/instance fields (`requested`, `discovered_used`, `effective_grant`, `observed`) documented by [#6017](https://github.com/developing-today/code/issues/6017), and the audience vocabulary owned by [#5960](https://github.com/developing-today/code/issues/5960). Their records are cited in §1 and §5. Where this record names a capability, it means an ordinary provider-registry entry in `world_caps.rs`, not a new moderation privilege.
 
 ## Decision in brief
@@ -22,7 +22,7 @@ The rest of this record settles the four things the issue asks for: the interfac
 
 ## 1. Verified current state
 
-Read at `c20d5c13fa` (origin/main at this correction pass; the original draft pinned `83b7a024b8` and its citations were re-checked against the current revision). This section is the evidence base; every later decision cites it.
+Read at `69aa168d5d` (origin/main at this correction pass; the original draft pinned `83b7a024b8` and its citations were re-checked against the current revision). This section is the evidence base; every later decision cites it.
 
 ### 1.1 Participant scopes — the moderator bit exists and is admin-only
 
@@ -330,4 +330,4 @@ Per the programme rule ([epic #2056](https://github.com/developing-today/code/is
 ## Revision history
 
 - 2026-11-08: Initial design record for #5973 (queue task 12862, lane bf419306-c4ef-470f-a553-beabf93239de). Settled moderation-as-library as a policy-module/authority-adapter seam, per-world parameterization, artifact pre-approval, and the boards boundary.
-- 2026-11-08 (task 12862 correction pass): updated the pinned revision to `c20d5c13fa`; corrected the catalog count to 19; separated world moderation from board view-ban and directory authority; aligned §6 with the merged #5861 record; changed the library default capability footprint from "a few providers" to "event input only"; tightened approval binding and automatic-action limits; refreshed relation statuses (#5545 and #5861 closed, #5680 and #5753 open/blocked) and the #5958/#6017 attribution.
+- 2026-11-08 (task 12862 correction pass): updated the pinned revision to `69aa168d5d`; corrected the catalog count to 19; separated world moderation from board view-ban and directory authority; aligned §6 with the merged #5861 record; changed the library default capability footprint from "a few providers" to "event input only"; tightened approval binding and automatic-action limits; refreshed relation statuses (#5545 and #5861 closed, #5680 and #5753 open/blocked) and the #5958/#6017 attribution.
