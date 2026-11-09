@@ -329,3 +329,166 @@ export function clusterOverlappingGroups(
 
   return clusters;
 }
+
+// ============================================================================
+// Tooltip Visibility Modes & Per-Cursor Display State (#1790, slice 1)
+// ============================================================================
+//
+// Pure state machine for the cursor-presence remainder settled on #1790.
+// This slice is logic only: cursors.ts wiring (slice 2) and lifecycle
+// logging (slice 3) consume these functions. Oracle for every rule is the
+// #1790 issue text:
+// - modes: full / minimal / hidden. Minimal = cursor only, tooltip on
+//   hover >= 1s. Hidden = tracked but not shown, pinned cursors exempt.
+// - click-to-enlarge runs a 1s revert chain: big -> tooltip -> minimal,
+//   one step per ENLARGE_STEP_MS; "minimal" is the chain's resting end
+//   state until the caller clears `enlargedAt` on the next interaction.
+// - minimize is an explicit per-cursor action: a minimized cursor is not
+//   shown in any mode (pin exempts only from the global hidden mode, not
+//   from an explicit minimize) and is restorable from the minimized list
+//   produced by partitionCursorsByMinimized.
+
+export type TooltipMode = "full" | "minimal" | "hidden";
+
+/** What one cursor should render as, after mode/pin/minimize/enlarge. */
+export type TooltipDisplay = "big" | "tooltip" | "minimal" | "hidden";
+
+/** Minimal mode: the tooltip appears only after hovering this long. */
+export const HOVER_TOOLTIP_DELAY_MS = 1_000;
+
+/** Click-to-enlarge: each step of the revert chain lasts this long. */
+export const ENLARGE_STEP_MS = 1_000;
+
+export interface CursorDisplayState {
+  pinned: boolean;
+  minimized: boolean;
+  /** Epoch ms of the click that enlarged the tooltip, or null. */
+  enlargedAt: number | null;
+  /** Epoch ms when hover started, or null when not hovering. */
+  hoverSince: number | null;
+}
+
+export const DEFAULT_CURSOR_DISPLAY_STATE: CursorDisplayState = {
+  pinned: false,
+  minimized: false,
+  enlargedAt: null,
+  hoverSince: null,
+};
+
+export type CursorDisplayStateMap = ReadonlyMap<string | number, CursorDisplayState>;
+
+/** The mode toggle cycles full -> minimal -> hidden -> full. */
+export function nextTooltipMode(mode: TooltipMode): TooltipMode {
+  if (mode === "full") return "minimal";
+  if (mode === "minimal") return "hidden";
+  return "full";
+}
+
+/**
+ * Stage of the click-to-enlarge revert chain at `now`.
+ * Returns null when the cursor was never enlarged.
+ * Boundaries: [0,1s) big, [1s,2s) tooltip, >=2s minimal.
+ * A negative elapsed time (clock skew) reads as "big" (just enlarged).
+ */
+export function getEnlargeStage(enlargedAt: number | null, now: number): TooltipDisplay | null {
+  if (enlargedAt === null) return null;
+  const elapsed = now - enlargedAt;
+  if (elapsed < ENLARGE_STEP_MS) return "big";
+  if (elapsed < 2 * ENLARGE_STEP_MS) return "tooltip";
+  return "minimal";
+}
+
+export interface TooltipVisibilityInput {
+  mode: TooltipMode;
+  pinned?: boolean;
+  minimized?: boolean;
+  enlargedAt?: number | null;
+  hoverSince?: number | null;
+  now: number;
+}
+
+/**
+ * Resolve what one cursor renders as. Precedence (first match wins):
+ * 1. hidden mode without a pin -> "hidden" (tracked, not shown)
+ * 2. explicitly minimized -> "hidden" (restorable from the minimized list)
+ * 3. an active enlarge chain -> its stage (big / tooltip / minimal)
+ * 4. minimal mode -> "tooltip" once hover reaches HOVER_TOOLTIP_DELAY_MS,
+ *    otherwise "minimal" (cursor only)
+ * 5. full mode (and pinned cursors exempted from hidden mode) -> "tooltip"
+ */
+export function resolveTooltipDisplay(input: TooltipVisibilityInput): TooltipDisplay {
+  const pinned = input.pinned ?? false;
+  const minimized = input.minimized ?? false;
+  const enlargedAt = input.enlargedAt ?? null;
+  const hoverSince = input.hoverSince ?? null;
+
+  if (input.mode === "hidden" && !pinned) return "hidden";
+  if (minimized) return "hidden";
+
+  const stage = getEnlargeStage(enlargedAt, input.now);
+  if (stage !== null) return stage;
+
+  if (input.mode === "minimal") {
+    return hoverSince !== null && input.now - hoverSince >= HOVER_TOOLTIP_DELAY_MS
+      ? "tooltip"
+      : "minimal";
+  }
+  return "tooltip";
+}
+
+/** Read one cursor's display state, defaulting to the resting state. */
+export function getCursorDisplayState(
+  states: CursorDisplayStateMap,
+  clientID: string | number,
+): CursorDisplayState {
+  return states.get(clientID) ?? DEFAULT_CURSOR_DISPLAY_STATE;
+}
+
+function withCursorDisplayState(
+  states: CursorDisplayStateMap,
+  clientID: string | number,
+  patch: Partial<CursorDisplayState>,
+): Map<string | number, CursorDisplayState> {
+  const next = new Map(states);
+  next.set(clientID, { ...getCursorDisplayState(states, clientID), ...patch });
+  return next;
+}
+
+/** Pin/unpin one cursor (pin lives on the enlarged tooltip in the UI). */
+export function setCursorPinned(
+  states: CursorDisplayStateMap,
+  clientID: string | number,
+  pinned: boolean,
+): Map<string | number, CursorDisplayState> {
+  return withCursorDisplayState(states, clientID, { pinned });
+}
+
+/** Minimize/restore one cursor. Minimized cursors form the restore list. */
+export function setCursorMinimized(
+  states: CursorDisplayStateMap,
+  clientID: string | number,
+  minimized: boolean,
+): Map<string | number, CursorDisplayState> {
+  return withCursorDisplayState(states, clientID, { minimized });
+}
+
+/**
+ * Split cursors into the visible set and the minimized (restore) list,
+ * preserving input order in both. "Minimized" here is the explicit
+ * per-cursor flag only; mode-based hiding is resolveTooltipDisplay's job.
+ */
+export function partitionCursorsByMinimized<T extends { clientID: string | number }>(
+  cursors: T[],
+  states: CursorDisplayStateMap,
+): { visible: T[]; minimized: T[] } {
+  const visible: T[] = [];
+  const minimized: T[] = [];
+  for (const cursor of cursors) {
+    if (getCursorDisplayState(states, cursor.clientID).minimized) {
+      minimized.push(cursor);
+    } else {
+      visible.push(cursor);
+    }
+  }
+  return { visible, minimized };
+}
