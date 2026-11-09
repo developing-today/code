@@ -1247,7 +1247,7 @@ fn cmd_list(rest: &[String]) -> i32 {
 }
 
 fn cmd_claim(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["queue", "worker", "lease-seconds", "lane"], &[]);
+    let args = parse_args(rest, &["queue", "worker", "lease-seconds", "lane", "task"], &[]);
     reject_extra_pos("claim", &args, 0);
     let worker = opt_worker(&args);
     let mut body = json!({
@@ -1257,6 +1257,14 @@ fn cmd_claim(rest: &[String]) -> i32 {
     });
     if let Some(lane) = args.get("lane") {
         body["lane"] = json!(lane);
+    }
+    // --task <id>: by-id claim — take exactly that row when the
+    // broker's by-id predicate allows it (a queued row under the
+    // ordinary predicate, or a parked recorded opencode handoff).
+    // The opencode claimant uses this to collect handed-off tasks
+    // out of the parked sink; a plain claim never names a task.
+    if let Some(task) = args.get_i64("task") {
+        body["task_id"] = json!(task);
     }
     let resp = unwrap_ok_fb(call_fb("/claim", &body), "/claim");
     let (mut out, code) = claim_output(&resp);

@@ -437,6 +437,77 @@ def _send_prompt(session_id: str, prompt: str) -> bool:
     return _post_prompt(session_id, prompt)
 
 
+CLAIMANT_WORKER = "opencode-claimant"
+
+
+def _claim_parked_candidate(candidate: Dict) -> Optional[str]:
+    """Collect a parked handoff candidate: claim exactly that task
+    by id, as the claimant, so the bind below has a live claim to
+    attach to. Returns None on success (the candidate is updated in
+    place: status claimed, worker_id the claimant), else a skip
+    reason.
+
+    The handing-off lane parks the task as its handoff sink, so
+    without this step the task is never in the claimed state the
+    launch flow binds against — it waited out the park timer, was
+    re-claimed by the next shift wave, handed off, and parked again
+    (#7907/#6533). The by-id claim (claim --task) is the broker's
+    recorded-handoff path: it takes a parked row only when its
+    progress is an unbound opencode yield, and never steals a live
+    claim or a genuine wait park. A broker build without by-id
+    support (the PG fallback) ignores the task id and claims the
+    queue's top row instead; that row is parked straight back and
+    the mismatch is reported, never launched over."""
+    task_id = candidate["id"]
+    try:
+        result = subprocess.run(
+            [
+                str(REPO_QUEUE_CMD),
+                "claim",
+                "--queue", candidate["queue"],
+                "--worker", CLAIMANT_WORKER,
+                "--task", str(task_id),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        data = json.loads(result.stdout) if result.stdout.strip() else None
+    except Exception as e:
+        return f"parked_claim_error: {str(e)}"
+    # cmd_claim prints the claimed row itself ({"task": null} when
+    # nothing was claimed).
+    row = data if isinstance(data, dict) else None
+    claimed_id = row.get("id") if isinstance(row, dict) else None
+    if claimed_id == task_id:
+        candidate["status"] = "claimed"
+        candidate["worker_id"] = CLAIMANT_WORKER
+        return None
+    if claimed_id is not None:
+        # Wrong row claimed: this broker ignored --task. Restore the
+        # row to parked at once and report the mismatch; launching
+        # anything on a guessed claim is how double-execution starts.
+        try:
+            subprocess.run(
+                [
+                    str(REPO_QUEUE_CMD),
+                    "park", str(claimed_id),
+                    "--worker", CLAIMANT_WORKER,
+                    "--delay-seconds", "60",
+                    "--reason",
+                    "claimant by-id claim unsupported on this broker "
+                    "build; wrong-row claim restored to parked",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except Exception:
+            pass
+        return "parked_claim_mismatch_restored"
+    return "parked_claim_failed"
+
+
 def launch_step(mode: str, cap_room: int) -> List[Dict]:
     """
     Step 4: Launch - create sessions and bind tasks.
@@ -504,7 +575,24 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
             worker_id = candidate.get("worker_id", "unknown")
             issue = candidate.get("issue", "")
             packet = candidate.get("packet", {})
-            
+
+            # Parked handoff sink: the candidate was handed off and
+            # then parked by its claiming lane, so no live claim
+            # exists to bind against. Collect the claim by id first
+            # (as the claimant; the launched session then works
+            # under the claimant's worker identity). A failed or
+            # mismatched collection skips the candidate — the
+            # binding is never improvised.
+            if candidate.get("status") == "parked":
+                claim_skip = _claim_parked_candidate(candidate)
+                if claim_skip is not None:
+                    skips.append({
+                        "task_id": task_id,
+                        "reason": claim_skip
+                    })
+                    continue
+                worker_id = candidate.get("worker_id", CLAIMANT_WORKER)
+
             # Step 4a: Re-verify task state
             try:
                 poll_data = run_poll()
