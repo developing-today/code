@@ -116,7 +116,7 @@ func ScriptEnv() []EnvVar {
 		},
 		{
 			Name:    "MCPX_EPHEMERAL",
-			SetBy:   []Setter{SetByCLI},
+			SetBy:   []Setter{SetByCLI, SetByExec},
 			Meaning: "1 when the session key was minted for this run alone, so its instances may be stopped as soon as it ends",
 			ReadBy:  client,
 		},
@@ -210,7 +210,7 @@ func ScriptEnv() []EnvVar {
 		},
 		{
 			Name:  "MCPX_TRANSPORT_BEARER_TOKEN",
-			SetBy: []Setter{SetByCLI},
+			SetBy: []Setter{SetByCLI, SetByExec, SetByConsumer},
 			When:  "only when transport.bearerToken is configured",
 			Meaning: "the daemon's bearer token, handed to the script so the " +
 				"generated client can authenticate to a daemon that requires " +
@@ -277,6 +277,20 @@ func ScriptEnv() []EnvVar {
 			SetBy:   []Setter{SetByCLI},
 			Meaning: "the fingerprint of a declared API's declaration, set on the child a declared API launches: PoolID hashes the environment, so editing the declaration replaces the pool instead of keeping a child started for the old one",
 			ReadBy:  "the pool, as a pool identity input (api serve: PoolID hashes the server environment)",
+		},
+		{
+			Name:    "MCPX_ADAPTER_DECLARATION_SHA256",
+			SetBy:   []Setter{SetByCLI},
+			Meaning: "the fingerprint of a declared adapter's declaration, set on the adapter server entry mcpx adds: PoolID hashes the environment, so editing the declaration replaces the pool instead of keeping a child started for the old one",
+			ReadBy:  "the pool, as a pool identity input (adapter serve: PoolID hashes the server environment); the daemon, to tell an adapter's own servers from name collisions",
+		},
+		{
+			Name:    "MCPX_PATHS_CONFIG",
+			SetBy:   []Setter{SetByCLI},
+			When:    "only when a --paths-config seed is in memory and the daemon is auto-started",
+			Meaning: "the config search seed forwarded to the auto-started daemon, so it resolves the same chain",
+			ReadBy:  "`mcpx` run inside, as its config search seed (paths.config)",
+			Setting: "paths.config",
 		},
 		// ---- how the script runs ----
 		{

@@ -151,22 +151,14 @@ buildGo127Module {
         # rendering and byte comparisons over the committed docs;
         # they spawn no runtimes, daemons or sockets, so they run in
         # this checkPhase like every package not listed below.
-        # internal/e2e spawns real script subprocess trees and the build
-        # sandbox has no init reaping them: they pile up as zombies and the
-        # package burns its whole 30m timeout (#2686). It runs in CI on
-        # main instead.
-        "internal/e2e"
-        # internal/settings asserts the process environment is exactly
-        # what the code sets (TestNoUndeclaredEnvRead,
-        # TestTheScriptEnvironmentIsWhatTheCodeSets); the stdenv builder
-        # environment makes that untrue in the sandbox (#2686). It runs in
-        # CI on main instead.
-        "internal/settings"
-        # internal/cli drives the real CLI, daemon and adapter
-        # subprocesses and hangs waiting on them in the build sandbox: on
-        # 2026-10-30 it burned its whole 30m timeout with no failing test
-        # (#2686). It runs in CI on main instead.
-        "internal/cli"
+        # internal/e2e, internal/settings and internal/cli were excluded for
+        # #2686 (zombie/timeout in the sandbox without a reaping init, plus
+        # source-scan env-contract drift). Restored 2026-11-09: e2e and cli
+        # install a child-subreaper TestMain and run each mcpx invocation in
+        # its own process group with group-kill on deadline, so orphaned
+        # daemon trees are reaped under a non-init supervisor; settings
+        # declares MCPX_ADAPTER_DECLARATION_SHA256, MCPX_PATHS_CONFIG and the
+        # exec/consumer setters the scans caught, with docs regenerated.
         # internal/conformance fails on main itself right now: the
         # auth-split matrix (TestAuthSplit, TestMatrix) expects bindings
         # the in-flight auth-matrix work has not landed yet (#2686). The

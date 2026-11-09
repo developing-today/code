@@ -169,6 +169,18 @@ func (e *env) tryWithCoverage(bin string, record bool, args ...string) (string, 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
+	// Each mcpx invocation runs in its own process group so a harness
+	// deadline kills the whole subprocess tree it started, not just the
+	// direct child. Without this the build sandbox (no reaping init, #2686)
+	// accumulates orphaned script/daemon children as zombies until the
+	// package burns its 30m timeout.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return cmd.Process.Kill()
+	}
 	cmd.Dir = e.dir
 	cmd.Env = e.envVars
 	out, err := cmd.CombinedOutput()
@@ -194,6 +206,7 @@ func harnessTimeout(ctx context.Context, err error) error {
 func (e *env) runStdin(stdin string, args ...string) string {
 	e.t.Helper()
 	cmd := exec.Command(e.mcpx, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Dir = e.dir
 	cmd.Env = e.envVars
 	cmd.Stdin = strings.NewReader(stdin)
