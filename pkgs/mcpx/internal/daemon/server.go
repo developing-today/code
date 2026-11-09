@@ -264,6 +264,10 @@ func NewServer(opts Options) (*Server, error) {
 			opts.Settings.Duration("elicit.maxAge"))
 	}
 	reg.UseSettings(opts.Settings)
+	// File-backed tool views (#1933 slice 2) run through the daemon's exec
+	// service, which exists only on the Server: the registry owns the
+	// catalogue and the call funnel, the Server owns execution.
+	reg.SetScriptToolRunner(srv.runDeclaredScript)
 	roots, err := rootsFromPaths(opts.Settings.List("daemon.roots"))
 	if err != nil {
 		return nil, err

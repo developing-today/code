@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpauth"
+	"github.com/developing-today/code/pkgs/mcpx/internal/recipes"
 	"github.com/developing-today/code/pkgs/mcpx/internal/schemaval"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 	"io"
@@ -222,6 +223,28 @@ type ToolView struct {
 	// Timeout bounds one call to a script-backed view. Empty means the
 	// pool's call timeout.
 	Timeout string `json:"timeout,omitempty"`
+	// File declares a script file as the tool's implementation. Its
+	// @param header generates the tool's inputSchema and its body is
+	// rendered with the caller's arguments, exactly as a recipe is; the
+	// declaration therefore needs no inputSchema of its own. Exclusive
+	// with From and Command. Relative paths resolve against the config
+	// file that declared the server.
+	File string `json:"file,omitempty"`
+	// ReadOnly is the tool's declared readOnlyHint. It is the one
+	// classification input the confirmation and write policy trust: a
+	// script has no upstream annotations, so without it every call is a
+	// possible destructive write.
+	ReadOnly bool `json:"readOnly,omitempty"`
+	// Destructive is the tool's declared destructiveHint. Absent means
+	// true (the conservative default); it is ignored when ReadOnly is
+	// set, because a read-only tool cannot destroy anything.
+	Destructive *bool `json:"destructive,omitempty"`
+	// Path is File resolved to an absolute path at load time. It is not
+	// serialised: callers declare File, the daemon runs Path.
+	Path string `json:"-"`
+	// Placeholders are the script's @param declarations, parsed at load
+	// time so a call can render its body without re-reading the header.
+	Placeholders []recipes.Placeholder `json:"-"`
 }
 
 // Precondition specifies requirements for a tool or server.
@@ -910,6 +933,23 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 				name, ex.Namespace)
 		}
 	}
+	// Enrich script-declared views before anything holds the map: the
+	// generated schema and parsed @param list are per-load facts, and
+	// the config's own map must not be mutated (an alias shares it).
+	views := ex.ToolViews
+	if len(views) > 0 {
+		views = make(map[string]ToolView, len(ex.ToolViews))
+		for vn, tv := range ex.ToolViews {
+			if tv.File != "" {
+				enriched, verr := c.enrichScriptView(name, vn, tv)
+				if verr != nil {
+					return nil, verr
+				}
+				tv = enriched
+			}
+			views[vn] = tv
+		}
+	}
 	r := &Resolved{
 		Server:          s,
 		Sharing:         sharing,
@@ -935,7 +975,7 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 		RequiresSecrets: ex.RequiresSecrets,
 		RequiresServers: ex.RequiresServers,
 		Preconditions:   ex.Preconditions,
-		ToolViews:       ex.ToolViews,
+		ToolViews:       views,
 	}
 	if r.Min > r.Max {
 		r.Min = r.Max
@@ -955,44 +995,56 @@ func validateToolView(server, view string, tv ToolView, canRename bool) error {
 	if view == "" {
 		return fmt.Errorf("server %q: toolView name must not be empty", server)
 	}
+	kinds := 0
+	for _, set := range []bool{tv.From != "", tv.Command != "", tv.File != ""} {
+		if set {
+			kinds++
+		}
+	}
 	switch {
-	case tv.From != "" && tv.Command != "":
-		return fmt.Errorf("server %q: toolView %q: from and command are exclusive; a view renames an aliased tool or runs a command, not both", server, view)
-	case tv.From == "" && tv.Command == "":
-		return fmt.Errorf("server %q: toolView %q: command is required for a script-backed view; from names a tool on an aliased server", server, view)
+	case kinds == 0:
+		return fmt.Errorf("server %q: toolView %q: one of from, command or file is required", server, view)
+	case kinds > 1:
+		return fmt.Errorf("server %q: toolView %q: from, command and file are exclusive; a view renames an aliased tool or names one script", server, view)
 	case tv.From != "" && !canRename:
 		return fmt.Errorf("server %q: toolView %q: from needs aliasOf on a server with a process; a view renames another server's tools", server, view)
-	case tv.From != "" && (len(tv.Args) > 0 || len(tv.InputSchema) > 0 || tv.Timeout != ""):
-		return fmt.Errorf("server %q: toolView %q: args, inputSchema and timeout apply only to a command-backed view", server, view)
+	case tv.From != "" && (len(tv.Args) > 0 || len(tv.InputSchema) > 0 || tv.Timeout != "" || tv.ReadOnly || tv.Destructive != nil):
+		return fmt.Errorf("server %q: toolView %q: args, inputSchema, timeout and the behaviour hints apply only to a script-backed view", server, view)
+	case tv.File != "" && len(tv.InputSchema) > 0:
+		return fmt.Errorf("server %q: toolView %q: inputSchema is generated from the script's @param header; remove the explicit inputSchema", server, view)
+	case tv.File != "" && len(tv.Args) > 0:
+		return fmt.Errorf("server %q: toolView %q: args apply only to a command-backed view", server, view)
+	case tv.ReadOnly && tv.Destructive != nil && *tv.Destructive:
+		return fmt.Errorf("server %q: toolView %q: readOnly and destructive cannot both be true", server, view)
 	}
 	if tv.Command != "" {
 		if strings.TrimSpace(tv.Description) == "" {
-			return fmt.Errorf("server %q: toolView %q: description is required for a script-backed view; callers choose a tool by it", server, view)
+			return fmt.Errorf("server %q: toolView %q: description is required for a command-backed view; callers choose a tool by it", server, view)
 		}
-		if tv.Timeout != "" {
-			if d, err := time.ParseDuration(tv.Timeout); err != nil || d <= 0 {
-				return fmt.Errorf("server %q: toolView %q: timeout %q is not a positive duration", server, view, tv.Timeout)
-			}
+	}
+	if tv.Timeout != "" {
+		if d, err := time.ParseDuration(tv.Timeout); err != nil || d <= 0 {
+			return fmt.Errorf("server %q: toolView %q: timeout %q is not a positive duration", server, view, tv.Timeout)
 		}
-		if len(tv.InputSchema) > 0 {
-			if _, err := schemaval.Compile(tv.InputSchema); err != nil {
-				return fmt.Errorf("server %q: toolView %q: inputSchema does not compile: %v", server, view, err)
-			}
-			var doc struct {
-				Properties map[string]json.RawMessage `json:"properties"`
-			}
-			if err := json.Unmarshal(tv.InputSchema, &doc); err != nil {
-				return fmt.Errorf("server %q: toolView %q: inputSchema must be a JSON object: %v", server, view, err)
-			}
-			pins := make([]string, 0, len(tv.Pin))
-			for k := range tv.Pin {
-				pins = append(pins, k)
-			}
-			sort.Strings(pins)
-			for _, k := range pins {
-				if _, ok := doc.Properties[k]; !ok {
-					return fmt.Errorf("server %q: toolView %q: pin %q is not a property of its inputSchema", server, view, k)
-				}
+	}
+	if len(tv.InputSchema) > 0 {
+		if _, err := schemaval.Compile(tv.InputSchema); err != nil {
+			return fmt.Errorf("server %q: toolView %q: inputSchema does not compile: %v", server, view, err)
+		}
+		var doc struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		}
+		if err := json.Unmarshal(tv.InputSchema, &doc); err != nil {
+			return fmt.Errorf("server %q: toolView %q: inputSchema must be a JSON object: %v", server, view, err)
+		}
+		pins := make([]string, 0, len(tv.Pin))
+		for k := range tv.Pin {
+			pins = append(pins, k)
+		}
+		sort.Strings(pins)
+		for _, k := range pins {
+			if _, ok := doc.Properties[k]; !ok {
+				return fmt.Errorf("server %q: toolView %q: pin %q is not a property of its inputSchema", server, view, k)
 			}
 		}
 	}
@@ -1002,6 +1054,60 @@ func validateToolView(server, view string, tv ToolView, canRename bool) error {
 		}
 	}
 	return nil
+}
+
+// enrichScriptView turns a file-backed view into the tool the daemon
+// advertises (#1933 slice 2): the script's @param header becomes its
+// inputSchema, its first comment line its default description, and its
+// resolved path and parsed placeholders are kept for the call path.
+//
+// Reading the file here is deliberate. A declaration naming a script that
+// does not exist is a configuration error, and resolving it at load time
+// means `mcpx doctor` and the daemon agree before any call is attempted.
+func (c *Config) enrichScriptView(server, view string, tv ToolView) (ToolView, error) {
+	path := tv.File
+	if !filepath.IsAbs(path) {
+		base := ""
+		if f := c.Origin[server]; f != "" {
+			base = filepath.Dir(f)
+		} else if c.Path != "" {
+			base = filepath.Dir(c.Path)
+		}
+		if base != "" {
+			path = filepath.Join(base, path)
+		}
+	}
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return tv, fmt.Errorf("server %q: toolView %q: cannot read script %q: %w", server, view, tv.File, err)
+	}
+	rec := recipes.Parse(view, path, string(src))
+	tv.Path = path
+	tv.Placeholders = rec.Placeholders
+	tv.InputSchema = recipes.FormSchema(rec.Placeholders)
+	if strings.TrimSpace(tv.Description) == "" {
+		tv.Description = strings.TrimSpace(rec.Summary)
+	}
+	if strings.TrimSpace(tv.Description) == "" {
+		tv.Description = "Runs the script " + tv.File + "."
+	}
+	if len(tv.Pin) > 0 {
+		declared := map[string]bool{}
+		for _, p := range rec.Placeholders {
+			declared[p.Name] = true
+		}
+		pins := make([]string, 0, len(tv.Pin))
+		for k := range tv.Pin {
+			pins = append(pins, k)
+		}
+		sort.Strings(pins)
+		for _, k := range pins {
+			if !declared[k] {
+				return tv, fmt.Errorf("server %q: toolView %q: pin %q is not a @param of the script", server, view, k)
+			}
+		}
+	}
+	return tv, nil
 }
 
 func concat(lists ...[]string) []string {

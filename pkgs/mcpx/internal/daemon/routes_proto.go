@@ -305,7 +305,7 @@ func (r *Registry) CallAsk(ctx context.Context, id, server, tool string, cc conf
 		return nil, err
 	}
 	if script != nil {
-		return callScriptView(ctx, effTool, script, effArgs)
+		return r.runScriptView(ctx, effTool, script, effArgs, cc.SessionID)
 	}
 	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)

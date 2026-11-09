@@ -120,6 +120,11 @@ type Registry struct {
 	// writeLedger persists post-dispatch calls whose outcome could not be
 	// established, so a restart cannot make a retry silently unsafe.
 	writeLedger *WriteLedger
+
+	// scriptRun executes a file-backed tool view (#1933 slice 2). It is
+	// installed by the daemon, which owns the exec service; a registry
+	// built directly by a test may leave it nil.
+	scriptRun func(ctx context.Context, tool string, view config.ToolView, values map[string]any, session string) (json.RawMessage, error)
 }
 
 // leaseState remembers which pool keys a caller created, so releasing a
@@ -471,7 +476,7 @@ func viewTools(view *config.Resolved, all []mcpclient.Tool) []mcpclient.Tool {
 		}
 		tv := view.ToolViews[name]
 		var t mcpclient.Tool
-		if tv.Command != "" {
+		if tv.Command != "" || tv.File != "" {
 			t = scriptViewTool(name, tv)
 		} else {
 			up, ok := byName[tv.From]
@@ -1387,7 +1392,7 @@ func validateViews(order []string, views map[string]*config.Resolved, pools map[
 		sort.Strings(viewNames)
 		for _, vn := range viewNames {
 			tv := view.ToolViews[vn]
-			if tv.Command != "" {
+			if tv.Command != "" || tv.File != "" {
 				continue // a script-backed view has no target to check (#1933 slice 2)
 			}
 			t, ok := byName[tv.From]
@@ -2313,7 +2318,7 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 		return nil, err
 	}
 	if script != nil {
-		return callScriptView(ctx, effTool, script, effArgs)
+		return r.runScriptView(ctx, effTool, script, effArgs, cc.SessionID)
 	}
 	defer r.joinAsk(ctx, server, rs.Key)()
 	res, err := r.callWithLedger(withRequestedCallTimeout(ctx), p, server, effTool, effArgs, rs, "call")
@@ -2444,7 +2449,7 @@ func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, to
 			return config.ResolvedScope{}, "", nil, nil, HiddenTool{Server: server, Tool: tool}
 		}
 		if tv, isView := view.ToolViews[tool]; isView {
-			if tv.Command != "" {
+			if tv.Command != "" || tv.File != "" {
 				// A script-backed view has no upstream name: the view's
 				// own name is what policies and rules identify it by.
 				script = &tv
@@ -2813,6 +2818,15 @@ func (r *Registry) Embedder() catalog.Embedder {
 		return &catalog.SubwordEmbedder{}
 	}
 	return r.embedder
+}
+
+// SetScriptToolRunner installs the daemon's executor for file-backed tool
+// views (#1933 slice 2). A registry built without one still lists and guards
+// such tools; only a call that reaches one reports that no runner is set.
+func (r *Registry) SetScriptToolRunner(fn func(ctx context.Context, tool string, view config.ToolView, values map[string]any, session string) (json.RawMessage, error)) {
+	r.mu.Lock()
+	r.scriptRun = fn
+	r.mu.Unlock()
 }
 
 // UseSettings gives the registry the daemon's resolved configuration.

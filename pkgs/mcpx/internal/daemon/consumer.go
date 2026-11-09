@@ -474,6 +474,12 @@ func (r *Registry) confirmDestructiveFor(ctx context.Context, p *pool.Pool, serv
 	if !r.consumer.ConfirmDestructive || r.broker == nil {
 		return nil
 	}
+	if script != nil && !destructiveHint(ScriptAnnotations(*script)) {
+		// The operator declared this script read-only locally: the same
+		// trusted declaration a stdio server's annotations get (#2191),
+		// and the only classification a script has.
+		return nil
+	}
 	var found *mcpclient.Tool
 	if script != nil {
 		found = &mcpclient.Tool{Name: tool, Annotations: ScriptAnnotations(*script)}
@@ -582,7 +588,7 @@ func (e ErrArgumentRuleDenied) Error() string {
 // under allow confirmDestructive still runs, which is how the floor
 // reaches a destructive call the policy let through.
 func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (bool, error) {
-	return r.applyWritePolicyFor(ctx, p, server, tool, cc, args, false)
+	return r.applyWritePolicyFor(ctx, p, server, tool, cc, args, nil)
 }
 
 // applyWritePolicyFor is applyWritePolicy for a call that may name a

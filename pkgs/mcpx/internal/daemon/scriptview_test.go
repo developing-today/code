@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -279,4 +282,162 @@ func TestScriptOnlyServerIsNeverStarted(t *testing.T) {
 		}
 	}
 	t.Fatal("the script-only namespace is missing from the listing")
+}
+
+// A config-declared script file is an ordinary tool: its @param header is
+// the advertised inputSchema, its declaration carries the behaviour hints,
+// and a call round-trips through the daemon's exec service (#1933 slice 2).
+// The script is run with the declaration's fixed options, not caller ones.
+func TestScriptFileToolListsItsGeneratedSchemaAndRoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "greet.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf 'hello %s' @name\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Path: filepath.Join(dir, "mcpx.json"),
+		MCPServers: map[string]*config.Server{
+			"ops": {Name: "ops", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+				"greet": {File: script, ReadOnly: true},
+			}}},
+		},
+	}
+	srv, err := NewServer(Options{Config: cfg, Paths: Paths{State: dir, Cache: dir},
+		Version: "test", Logger: log.New(io.Discard, "", 0)})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(srv.reg.Close)
+
+	var listed *ToolInfo
+	for _, tool := range srv.reg.Tools([]string{"ops"}) {
+		if tool.Tool == "greet" {
+			tool := tool
+			listed = &tool
+		}
+	}
+	if listed == nil {
+		t.Fatal("the config-declared script must appear in tools/list under its namespace")
+	}
+	if listed.Namespace != "ops" {
+		t.Errorf("namespace = %q, want ops", listed.Namespace)
+	}
+	if !strings.Contains(string(listed.InputSchema), `"name"`) {
+		t.Errorf("the @param header must become the inputSchema: %s", listed.InputSchema)
+	}
+	var hints struct {
+		ReadOnly    *bool `json:"readOnlyHint"`
+		Destructive *bool `json:"destructiveHint"`
+	}
+	if err := json.Unmarshal(listed.Annotations, &hints); err != nil {
+		t.Fatalf("annotations are not JSON: %v (%s)", err, listed.Annotations)
+	}
+	if hints.ReadOnly == nil || !*hints.ReadOnly {
+		t.Errorf("readOnlyHint must be declared true: %s", listed.Annotations)
+	}
+	if hints.Destructive == nil || *hints.Destructive {
+		t.Errorf("a read-only tool declares destructiveHint false: %s", listed.Annotations)
+	}
+
+	raw, err := srv.reg.Call(scriptCtx(t), "ops", "greet", config.CallContext{}, map[string]any{"name": "world"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	res := decodeCallResult(t, raw)
+	if res.IsError {
+		t.Fatalf("a clean exit is not an error: %s", raw)
+	}
+	if got := strings.TrimSpace(res.Content[0].Text); got != "hello world" {
+		t.Errorf("script output = %q, want the rendered @name", got)
+	}
+}
+
+// A script that does not declare readOnly is a possible destructive write:
+// its destructiveHint is true even though nothing upstream annotated it.
+func TestScriptFileToolDefaultsToDestructive(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "touch.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Path: filepath.Join(dir, "mcpx.json"),
+		MCPServers: map[string]*config.Server{
+			"ops": {Name: "ops", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+				"touch": {File: script},
+			}}},
+		},
+	}
+	srv, err := NewServer(Options{Config: cfg, Paths: Paths{State: dir, Cache: dir},
+		Version: "test", Logger: log.New(io.Discard, "", 0)})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(srv.reg.Close)
+	for _, tool := range srv.reg.Tools([]string{"ops"}) {
+		if tool.Tool != "touch" {
+			continue
+		}
+		var hints struct {
+			ReadOnly    *bool `json:"readOnlyHint"`
+			Destructive *bool `json:"destructiveHint"`
+		}
+		if err := json.Unmarshal(tool.Annotations, &hints); err != nil {
+			t.Fatal(err)
+		}
+		if hints.ReadOnly == nil || *hints.ReadOnly {
+			t.Errorf("readOnlyHint must be declared false: %s", tool.Annotations)
+		}
+		if hints.Destructive == nil || !*hints.Destructive {
+			t.Errorf("an undeclared script declares destructiveHint true: %s", tool.Annotations)
+		}
+		return
+	}
+	t.Fatal("the script tool was not listed")
+}
+
+// The declaration's hints are what the write policy classifies a script by.
+// A read-only script passes a deny policy; an undeclared one is refused,
+// because it is a possible destructive write.
+func TestScriptFileHintsGovernTheWritePolicy(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "noop.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		view config.ToolView
+		want error
+	}{
+		"declared read-only": {view: config.ToolView{File: script, ReadOnly: true}},
+		"undeclared":         {view: config.ToolView{File: script}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tc.view.File = script
+			cfg := &config.Config{
+				Path: filepath.Join(dir, "mcpx.json"),
+				MCPServers: map[string]*config.Server{
+					"ops": {Name: "ops", Mcpx: &config.Extras{
+						WritePolicy: "deny", ToolViews: map[string]config.ToolView{"noop": tc.view}}},
+				},
+			}
+			srv, err := NewServer(Options{Config: cfg, Paths: Paths{State: dir, Cache: dir},
+				Version: "test", Logger: log.New(io.Discard, "", 0)})
+			if err != nil {
+				t.Fatalf("NewServer: %v", err)
+			}
+			t.Cleanup(srv.reg.Close)
+			_, err = srv.reg.Call(scriptCtx(t), "ops", "noop", config.CallContext{}, map[string]any{})
+			if name == "declared read-only" {
+				if err != nil {
+					t.Fatalf("a declared read-only script must pass deny: %v", err)
+				}
+				return
+			}
+			var denied ErrWriteDenied
+			if !errors.As(err, &denied) {
+				t.Fatalf("an undeclared script must be refused by deny, got %v", err)
+			}
+		})
+	}
 }
