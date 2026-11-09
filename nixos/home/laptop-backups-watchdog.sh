@@ -3,8 +3,8 @@
 # exists so a stopped backup gets named").
 #
 # Read-only: it changes nothing and attempts no repair. It exits 0
-# only when BOTH hold, and otherwise exits 1 with one line per
-# violation naming the job/timer:
+# only when all applicable checks hold, and otherwise exits 1 with one
+# line per violation naming the job, timer, day, or archive:
 #   (a) pm-dashboard-backup's run record ($HOME/backups/dashboard/
 #       .last-run.json, written by modules/pm-dashboard-backup.sh on
 #       every exit path) says result=complete and finished within
@@ -22,6 +22,11 @@
 #       only an object listing sees the absence. Credentials come
 #       from Bitwarden exactly as in pm-dashboard-backup.sh, and
 #       rclone/bws resolve via PATH so tests can stub both.
+#   (d) when $HOME/backups/pm-stack exists, the newest valid day dir
+#       whose mtime is within the threshold contains its
+#       pm-stack-<date>.tar.zst archive. The directory is created before
+#       dumps run, so an empty fresh dir is not evidence of a backup.
+#       Hosts without this independent backup root skip the check.
 # repo-archive-backup is covered via its timer's last-trigger time
 # only: its script and restic credentials live outside this repo, so
 # no run record is required of it (stated in laptop-backups.nix too).
@@ -166,6 +171,40 @@ for s in json.load(sys.stdin):
       *"dashboard-$offsite_date.tar.zst"*) ;;
       *) complain "pm-dashboard-backup: offsite absence on R2: dashboard/$offsite_date/dashboard-$offsite_date.tar.zst not found (run record says complete)" ;;
       esac
+    fi
+  fi
+fi
+
+# --- (d) local pm-stack archive presence -------------------------------------
+PM_STACK_ROOT="$HOME/backups/pm-stack"
+if [ -d "$PM_STACK_ROOT" ]; then
+  newest_pm_stack_day=""
+  for day_dir in "$PM_STACK_ROOT"/*/; do
+    [ -d "$day_dir" ] || continue
+    day="${day_dir%/}"
+    day="${day##*/}"
+    [[ "$day" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || continue
+    normalized_day="$(date -d "$day" +%F 2>/dev/null || true)"
+    [ "$normalized_day" = "$day" ] || continue
+
+    # The backup script creates the dated directory before its dumps;
+    # its mtime therefore detects a fresh failed run even when no file
+    # was ever written. Select by the ISO date, not mtime ordering, in
+    # case a later write touches an older day directory.
+    day_mtime="$(stat -c %Y -- "$day_dir" 2>/dev/null || true)"
+    [[ "$day_mtime" =~ ^[0-9]+$ ]] || continue
+    age=$((NOW_EPOCH - day_mtime))
+    [ "$age" -lt "$((-SKEW_TOLERANCE_SEC))" ] && continue
+    [ "$age" -gt "$MAX_AGE_SEC" ] && continue
+    if [[ -z "$newest_pm_stack_day" || "$day" > "$newest_pm_stack_day" ]]; then
+      newest_pm_stack_day="$day"
+    fi
+  done
+
+  if [ -n "$newest_pm_stack_day" ]; then
+    expected_archive="$PM_STACK_ROOT/$newest_pm_stack_day/pm-stack-$newest_pm_stack_day.tar.zst"
+    if [ ! -f "$expected_archive" ]; then
+      complain "pm-stack-backup: day $newest_pm_stack_day missing archive $expected_archive"
     fi
   fi
 fi
