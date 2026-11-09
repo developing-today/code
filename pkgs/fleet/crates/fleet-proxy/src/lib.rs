@@ -29,6 +29,7 @@
 //! per request and never stored or logged.
 
 pub mod client;
+pub mod files;
 pub mod http;
 pub mod raw_splice;
 pub mod raw_stream;
