@@ -175,7 +175,9 @@ governs mechanism 3.
 
 ## 5. Conditional blocks
 
-- A conditional block includes content for a subset of targets. It is
+- A conditional block includes content for a subset of targets.
+  Blocks are part of the one shared semantic source — not per-target
+  side declarations (§9 invariant 1 names this exception). A block is
   evaluated **before** the cascade: the semantic source a target
   renders is the source minus the blocks excluded for it; included
   content then composes through §2 exactly like unconditional content.
@@ -274,9 +276,13 @@ form "settings":
 
 ## 9. Invariants implementation must hold
 
-1. **One source.** Themes, override maps, asset tables, and
-   conditional blocks are per-target side declarations; the semantic
-   source is identical for all targets and names no target.
+1. **One source.** Themes, override maps, and asset tables are
+   per-target side declarations; the semantic source is identical
+   for all targets. Conditional blocks are the single sanctioned
+   exception to "the source names no target": they live in the one
+   shared source (§5) and their predicates may name target facts —
+   block, predicate, and content are the same in every target's
+   copy of the source; only the block's inclusion differs.
 2. **Cascade determinism.** §2's layer order plus within-layer
    specificity is total: every element/property/target has exactly
    one winning declaration or a reported error. Within layers 1–4
