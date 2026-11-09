@@ -2441,6 +2441,44 @@ fn synthesize_footnote_definitions(
 /// candidate destination that hits a blank line — including a
 /// whitespace-only one — or another `<` before its closing `>` is
 /// not a destination and is left alone.
+/// Whether a code span opened by a backtick run of length `n` is
+/// closed by an equal-length run within the same paragraph, scanning
+/// from byte `from`. A blank line (including a whitespace-only one)
+/// ends the paragraph: in CommonMark an unmatched backtick run is
+/// literal text, never an open span, so a run with no closing run
+/// before the paragraph ends must not open a span at all (#7557).
+fn code_span_closes_within_paragraph(bytes: &[u8], from: usize, n: usize) -> bool {
+    let mut k = from;
+    while k < bytes.len() {
+        match bytes[k] {
+            b'`' => {
+                let mut m = 0;
+                while k + m < bytes.len() && bytes[k + m] == b'`' {
+                    m += 1;
+                }
+                if m == n {
+                    return true;
+                }
+                k += m;
+            }
+            b'\n' => {
+                let mut m = k + 1;
+                while m < bytes.len()
+                    && (bytes[m] == b' ' || bytes[m] == b'\t' || bytes[m] == b'\r')
+                {
+                    m += 1;
+                }
+                if m >= bytes.len() || bytes[m] == b'\n' {
+                    return false;
+                }
+                k += 1;
+            }
+            _ => k += 1,
+        }
+    }
+    false
+}
+
 fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
     if !markdown.contains('\n') {
         return (markdown.to_string(), None);
@@ -2508,6 +2546,12 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
             in_indented = indent >= 4 && fence.is_none() && (prev_line_blank || prev_line_indented);
             prev_line_indented = in_indented || (indent >= 4 && line_blank && prev_line_indented);
             prev_line_blank = line_blank;
+            // A blank line is a paragraph break: an inline code span
+            // cannot cross it, so any span state ends here and an
+            // unmatched run before the break stays literal (#7557).
+            if line_blank {
+                span = None;
+            }
         }
         let literal_line = fence.is_some() || in_indented || fence_line;
         if !literal_line
@@ -2571,7 +2615,16 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
                 n += 1;
             }
             match span {
-                None => span = Some(n),
+                // An unmatched run is literal text in CommonMark: only
+                // open a span when an equal run closes it inside this
+                // paragraph, so a stray backtick cannot disable
+                // destination protection for the rest of the
+                // document (#7557).
+                None => {
+                    if code_span_closes_within_paragraph(bytes, i + n, n) {
+                        span = Some(n);
+                    }
+                }
                 Some(open) if n == open => span = None,
                 _ => {}
             }
@@ -8178,6 +8231,38 @@ mod tests {
             protected.starts_with("```\n[x](<a\nb>)\n```\n"),
             "fenced literal rewritten in mixed doc: {protected:?}"
         );
+    }
+
+    #[test]
+    fn test_newline_destination_protection_unmatched_backtick() {
+        // #7557 oracle: CommonMark treats an unmatched backtick run as
+        // literal text, so destinations after one — later in the same
+        // paragraph or in a later paragraph — are genuine and must be
+        // protected, while a properly closed span stays literal.
+        for doc in [
+            // Stray backtick, destination in a later paragraph.
+            "the `foo flag does x\n\n[x](<a\nb>)\n",
+            // Stray backtick, destination later in the same paragraph.
+            "the `foo flag does x\n[x](<a\nb>)\n",
+            // Stray double-backtick run, destination in a later paragraph.
+            "a ``foo run\n\n[x](<a\nb>)\n",
+        ] {
+            let (protected, token) = protect_newline_destinations(doc);
+            assert!(
+                token.is_some(),
+                "destination after unmatched backtick unprotected: {doc:?}"
+            );
+            assert!(
+                protected.contains("idweb-newline"),
+                "destination after unmatched backtick not tokenised: {doc:?} -> {protected:?}"
+            );
+        }
+        // A closed span in a later paragraph is still literal after a
+        // stray backtick in an earlier one.
+        let literal = "a `stray\n\n`[x](<a\nb>)`\n";
+        let (protected, token) = protect_newline_destinations(literal);
+        assert_eq!(protected, literal, "closed span rewritten: {literal:?}");
+        assert!(token.is_none(), "closed span tokenised: {literal:?}");
     }
 
     #[test]
