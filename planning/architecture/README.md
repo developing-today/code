@@ -67,6 +67,7 @@ records.
 - [Permission UX for worlds: pre-connect disclosure, grant modes, and memory](../../doc/2026-11-08T09-06-08Z_design_id_permission_ux/2026-11-08T09-06-08Z_design_id_permission_ux.md)
 - [Capability observability: who can see which capability facts, where](../../doc/2026-11-08T10-40-00Z_design_id_capability_observability/2026-11-08T10-40-00Z_design_id_capability_observability.md)
 - [ID relay and proxy protocol (#5813)](../../doc/2026-11-08T11-08-53Z_design_id5813_relay_proxy_protocol/2026-11-08T11-08-53Z_design_id5813_relay_proxy_protocol.md)
+- [ID relay/proxy transport-boundary clarification (#5813)](../../doc/2026-11-08T11-08-53Z_design_id5813_relay_proxy_protocol/2026-11-09T00-07-24Z_design_id5813_relay_proxy_protocol_transport_boundary_clarification.md)
 
 ## Package architecture docs (living, with the code)
 
