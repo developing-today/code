@@ -1061,6 +1061,8 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		opts.Env["MCPX_TRANSPORT_BEARER_TOKEN"] = tok
 	}
 	opts.TypeCheck = shape.typecheck
+	opts.TypeCheckOnError = shape.checkOnError
+	opts.TypeCheckOnUnsupported = shape.checkOnUnsupported
 	opts.Imports = shape.imports
 	opts.ImportsOnDynamic = shape.importsOnDynamic
 	opts.ImportsOnMissing = shape.importsOnMissing
@@ -2309,18 +2311,18 @@ type scriptFlags struct {
 type scriptShape struct {
 	// hooks carries the autonomy gate so the caller can report which
 	// configured phases were withheld, and why.
-	hooks                      *hookGate
-	env                        map[string]string
-	typecheck                  string
-	imports, importsOnDynamic  string
-	importsOnMissing           string
-	importsCrossProject        string
-	importsNetwork             string
-	launcher, launcherName     string
-	allowRepeat                []string
-	captureConsole             bool
-	prefix, suffix             []string
-	before, onSuccess, onError []string
+	hooks                                       *hookGate
+	env                                         map[string]string
+	typecheck, checkOnError, checkOnUnsupported string
+	imports, importsOnDynamic                   string
+	importsOnMissing                            string
+	importsCrossProject                         string
+	importsNetwork                              string
+	launcher, launcherName                      string
+	allowRepeat                                 []string
+	captureConsole                              bool
+	prefix, suffix                              []string
+	before, onSuccess, onError                  []string
 }
 
 // inlineSource splices prefix and suffix lines around a snippet. A snippet is
@@ -2424,6 +2426,8 @@ func (a *App) resolveScriptShape(cfg *config.Config, f scriptFlags) (scriptShape
 	// Read the canonical setting after resolution so legacy path, variable,
 	// and flag spellings all pass through the same value normalization.
 	sh.typecheck = a.Settings().String("script.check")
+	sh.checkOnError = a.Settings().String("script.checkOnError")
+	sh.checkOnUnsupported = a.Settings().String("script.checkOnUnsupported")
 
 	// No short flag spelling: the registry value is the whole story, from
 	// the generated --script-imports flag, a variable, or the config file.
