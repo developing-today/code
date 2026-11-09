@@ -150,9 +150,56 @@ class Inhibitor:
     def __init__(self):
         self.proc = None
 
+    def _reap(self, proc, timeout=5):
+        """Wait for a child to exit so it does not remain a zombie.
+
+        The child is already dead or has just been terminated; wait()
+        returns immediately in the common case. On timeout, escalate
+        to kill() so a wedged child cannot accumulate.
+        """
+        try:
+            return proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                return proc.wait(timeout=timeout)
+            except Exception:
+                return proc.poll()
+        except Exception:
+            try:
+                return proc.poll()
+            except Exception:
+                return None
+
+    def _dead_exit_code(self):
+        """Return the exit code if the real child is dead, else None.
+
+        Never raises: a poll failure is treated as unknown, not alive,
+        so the caller reaps and re-engages loudly rather than
+        believing a lock it cannot verify.
+        """
+        proc = self.proc
+        if proc is None or proc == "stub":
+            return None
+        try:
+            return proc.poll()
+        except Exception as exc:
+            log(f"INHIBIT child poll failed ({exc!r}); treating as dead")
+            return -1
+
     def engage(self):
         if self.proc is not None:
-            return
+            if self.proc == "stub":
+                return
+            rc = self._dead_exit_code()
+            if rc is None:
+                return
+            log(f"INHIBIT child died (exit={rc}); re-engaging")
+            self._reap(self.proc)
+            self.proc = None
         if NO_INHIBIT:
             log("INHIBIT(block sleep) [stubbed]")
             self.proc = "stub"
@@ -168,6 +215,10 @@ class Inhibitor:
                 "infinity",
             ],
             stdout=subprocess.DEVNULL,
+            # stderr is deliberately discarded (the child is `sleep
+            # infinity`, which is silent on success); the exit status
+            # is logged loudly on death in engage()/release() so the
+            # failure stays diagnosable from the journal.
             stderr=subprocess.DEVNULL,
         )
         log("INHIBIT(block sleep) engaged")
@@ -175,14 +226,43 @@ class Inhibitor:
     def release(self):
         if self.proc is None:
             return
-        if self.proc != "stub":
-            self.proc.terminate()
+        if self.proc == "stub":
+            self.proc = None
+            log("INHIBIT released")
+            return
+        proc = self.proc
         self.proc = None
-        log("INHIBIT released")
+        rc = None
+        try:
+            rc = proc.poll()
+        except Exception:
+            rc = None
+        if rc is not None:
+            self._reap(proc)
+            log(f"INHIBIT child already dead (exit={rc}); reaped")
+            log("INHIBIT released")
+            return
+        try:
+            proc.terminate()
+        except Exception as exc:
+            log(f"INHIBIT terminate failed ({exc!r}); killing")
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        rc = self._reap(proc)
+        log(f"INHIBIT released (child exit={rc})")
 
     @property
     def held(self):
-        return self.proc is not None
+        if self.proc is None:
+            return False
+        if self.proc == "stub":
+            return True
+        try:
+            return self.proc.poll() is None
+        except Exception:
+            return False
 
 
 def main():

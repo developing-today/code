@@ -23,6 +23,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -244,6 +245,116 @@ class DaemonSubprocessTests(unittest.TestCase):
             proc.terminate()
             proc.communicate(timeout=10)
         self.assertTrue(self.marker.exists(), "sustained critical state never fired")
+
+
+class FakeProc:
+    """Minimal Popen stand-in for Inhibitor unit tests (#6534)."""
+
+    def __init__(self, poll_result=None):
+        self._poll_result = poll_result
+        self.terminated = False
+        self.killed = False
+        self.waited = 0
+        self.wait_return = poll_result
+
+    def poll(self):
+        return self._poll_result
+
+    def wait(self, timeout=None):
+        self.waited += 1
+        return self.wait_return
+
+    def terminate(self):
+        self.terminated = True
+        # Simulate a clean exit after terminate for the live path.
+        if self._poll_result is None:
+            self._poll_result = -15
+            self.wait_return = -15
+
+    def kill(self):
+        self.killed = True
+
+
+class InhibitorDeadChildTests(unittest.TestCase):
+    """Oracle: issue #6534 acceptance — dead child detected/handled,
+    live child undisturbed, NO_INHIBIT stub unchanged, release reaps."""
+
+    def setUp(self):
+        self.logs = []
+        self._orig_log = pg.log
+        pg.log = self.logs.append
+        self.addCleanup(setattr, pg, "log", self._orig_log)
+
+    def test_dead_child_is_detected_and_reengaged_with_exit_logged(self):
+        # Repro from the issue: stub systemd-inhibit exits 1 at once.
+        dead = FakeProc(poll_result=1)
+        live = FakeProc(poll_result=None)
+        inh = pg.Inhibitor()
+        inh.proc = dead
+        # held must reflect poll(), not handle non-None.
+        self.assertFalse(inh.held)
+        with unittest.mock.patch.object(
+            pg.subprocess, "Popen", return_value=live
+        ) as popen:
+            inh.engage()
+            popen.assert_called_once()
+        self.assertIs(inh.proc, live)
+        self.assertTrue(inh.held)
+        self.assertGreaterEqual(dead.waited, 1, "dead child was not reaped")
+        self.assertTrue(
+            any("exit=1" in m for m in self.logs),
+            f"exit status not logged loudly: {self.logs}",
+        )
+
+    def test_live_child_is_not_disturbed(self):
+        live = FakeProc(poll_result=None)
+        inh = pg.Inhibitor()
+        inh.proc = live
+        self.assertTrue(inh.held)
+        with unittest.mock.patch.object(pg.subprocess, "Popen") as popen:
+            inh.engage()
+            popen.assert_not_called()
+        self.assertIs(inh.proc, live)
+        self.assertEqual(live.waited, 0)
+
+    def test_stub_path_unchanged(self):
+        orig = pg.NO_INHIBIT
+        pg.NO_INHIBIT = True
+        try:
+            inh = pg.Inhibitor()
+            inh.engage()
+            self.assertEqual(inh.proc, "stub")
+            self.assertTrue(inh.held)
+            inh.engage()
+            self.assertEqual(inh.proc, "stub")
+            inh.release()
+            self.assertIsNone(inh.proc)
+            self.assertFalse(inh.held)
+        finally:
+            pg.NO_INHIBIT = orig
+
+    def test_release_reaps_live_child(self):
+        live = FakeProc(poll_result=None)
+        inh = pg.Inhibitor()
+        inh.proc = live
+        inh.release()
+        self.assertIsNone(inh.proc)
+        self.assertFalse(inh.held)
+        self.assertTrue(live.terminated)
+        self.assertGreaterEqual(live.waited, 1)
+
+    def test_release_reaps_already_dead_child(self):
+        dead = FakeProc(poll_result=3)
+        inh = pg.Inhibitor()
+        inh.proc = dead
+        inh.release()
+        self.assertIsNone(inh.proc)
+        self.assertFalse(dead.terminated, "terminate() must not run on a dead child")
+        self.assertGreaterEqual(dead.waited, 1)
+        self.assertTrue(
+            any("exit=3" in m for m in self.logs),
+            f"dead-child exit not logged on release: {self.logs}",
+        )
 
 
 if __name__ == "__main__":
