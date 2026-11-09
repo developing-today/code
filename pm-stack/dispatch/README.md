@@ -122,6 +122,25 @@ where the GitHub App is not installed, the attach is skipped with a
 `warnings` entry; the task is still enqueued and `issue_number` is
 still returned.
 
+### `GET /v1/tasks/:id` — task status (issue #5555)
+
+Authenticated read of the queue task row dispatch (or a worker)
+created: `{task_id, queue, title, status, worker_id, lane_id, repo,
+kind, attempts, max_attempts, claimed_at, lease_until, created_at,
+updated_at, completed_at, progress, result, last_error, dedupe_key}`.
+The packet body and payload are NOT returned — this is a status
+surface, not a packet dump; only the payload's `repo`/`kind` are
+surfaced, and a task whose packet names a repo is readable only by
+callers allowed for that repo (the same gate as the write routes).
+Unknown id → `404`; non-numeric id → `400`; unauthenticated → `401`.
+
+### `GET /v1/sessions/:id` — session status (issue #5555)
+
+Authenticated read proxied from the OpenCode server:
+`{session_id, title, directory, time}`. A session the OpenCode
+server does not know → `404`; an OpenCode-side failure (server down,
+auth) → `502`, never conflated with "session gone".
+
 ### Why assignment is a direct PATCH
 
 The queue's `claim_repo_task` RPC claims the _next_ task in a queue —
@@ -159,7 +178,11 @@ Every endpoint except `GET /health` requires `Authorization: Bearer …`:
   See `examples/dispatch-workflow.yml`.
 - **Static bearer secret**: `DISPATCH_API_TOKEN` (in the laptop's
   `~/secrets/dispatch.env`), compared in constant time — the shape a
-  repo stores as a GitHub Actions secret.
+  repo stores as a GitHub Actions secret. The vault home for the
+  value by name is Bitwarden **`pm-dispatch.api-token`** (filed
+  under issue #5555, verified byte-identical to the service's by
+  hash): a rotation updates the vault entry and
+  `~/secrets/dispatch.env` together.
 
 The caller identity (`{type:"bearer"}` or `{type:"oidc", repository,
 actor, workflow_ref}`) is recorded in the task payload.

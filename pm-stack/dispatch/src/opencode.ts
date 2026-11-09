@@ -94,4 +94,18 @@ export class OpenCodeClient {
   async listSessions(): Promise<unknown> {
     return this.api("GET", "/api/session");
   }
+
+  /** Read one session's current state (issue #5555): the raw session
+   * object from the OpenCode server, or null when the server says the
+   * session does not exist (HTTP 404). Any other failure (server down,
+   * auth, non-JSON) stays an OpenCodeError so callers can tell "gone"
+   * apart from "unknown". */
+  async getSession(sessionId: string): Promise<unknown> {
+    try {
+      return await this.api("GET", `/api/session/${encodeURIComponent(sessionId)}`);
+    } catch (e) {
+      if (e instanceof OpenCodeError && e.message.includes("(HTTP 404)")) return null;
+      throw e;
+    }
+  }
 }

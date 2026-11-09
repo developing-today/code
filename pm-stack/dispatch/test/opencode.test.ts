@@ -102,3 +102,39 @@ describe("OpenCodeClient response body boundary (#7085)", () => {
     mode = "ok";
   });
 });
+
+describe("OpenCodeClient.getSession (#5555)", () => {
+  let stub: ReturnType<typeof Bun.serve>;
+  let stubUrl = "";
+  beforeAll(() => {
+    stub = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const path = new URL(req.url).pathname;
+        if (path === "/api/session/ses_ok") return Response.json({ data: { id: "ses_ok", title: "t" } });
+        if (path === "/api/session/ses_boom") return new Response("boom", { status: 500 });
+        return new Response("nope", { status: 404 });
+      },
+    });
+    stubUrl = `http://127.0.0.1:${stub.port}`;
+  });
+  afterAll(() => {
+    stub.stop(true);
+  });
+
+  test("returns the session object on 200 (envelope unwrapped)", async () => {
+    const client = new OpenCodeClient(stubUrl, authFile("gs.json", JSON.stringify({ password: "pw" })));
+    const raw = (await client.getSession("ses_ok")) as { id: string };
+    expect(raw.id).toBe("ses_ok");
+  });
+
+  test("returns null on 404 — the session does not exist", async () => {
+    const client = new OpenCodeClient(stubUrl, authFile("gs.json", JSON.stringify({ password: "pw" })));
+    expect(await client.getSession("ses_missing")).toBeNull();
+  });
+
+  test("a 500 stays an OpenCodeError — gone is not conflated with unknown", async () => {
+    const client = new OpenCodeClient(stubUrl, authFile("gs.json", JSON.stringify({ password: "pw" })));
+    await expect(client.getSession("ses_boom")).rejects.toBeInstanceOf(OpenCodeError);
+  });
+});
