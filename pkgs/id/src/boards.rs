@@ -1119,6 +1119,7 @@ impl BoardGraph {
                 BoardObject::BoardListing(body) => std::iter::once(body.board.clone())
                     .chain(body.supersedes.iter().cloned())
                     .collect(),
+                BoardObject::GamePost(body) => vec![body.board.clone()],
             };
             for dependency in dependencies {
                 if self.objects.contains_key(&dependency) && set.insert(dependency.clone()) {

@@ -191,10 +191,6 @@ impl WorldProtocol {
         self.connection_cap_refusals.load(Ordering::Relaxed)
     }
 
-    /// Snapshot of the per-(local node, remote endpoint) frame/byte
-    /// counters recorded by the shared evaluator — the operator
-    /// visibility surface for #2244 P0-A charging.
-    #[must_use]
     /// Estimated #2247 budget usage per scope and window — the
     /// operator-visibility surface for budgets, alongside
     /// [`WorldProtocol::abuse_counters`].
@@ -212,11 +208,23 @@ impl WorldProtocol {
             .unwrap_or_default()
     }
 
+    /// Snapshot of the per-(local node, remote endpoint) frame/byte
+    /// counters recorded by the shared evaluator — the operator
+    /// visibility surface for #2244 P0-A charging.
+    #[must_use]
     pub fn abuse_counters(&self) -> Vec<((NodeId, AbuseEndpointId), Counters)> {
         self.abuse
             .lock()
             .map(|abuse| abuse.counters().snapshot())
             .unwrap_or_default()
+    }
+
+    /// The shared abuse evaluator, for surfaces that need more than
+    /// the aggregate snapshot: the meta protocol's `AbuseCounters`
+    /// request reads the per-direction split and the policy from it.
+    #[must_use]
+    pub(crate) fn abuse_handle(&self) -> Arc<Mutex<AbuseEvaluator>> {
+        Arc::clone(&self.abuse)
     }
 
     fn prune_abuse_state(&self) {
