@@ -8,6 +8,9 @@ import {
   diffCoverage,
   isRepoCensus,
   nextCoverageSnapshot,
+  staleIssueSearchQuery,
+  staleIssueState,
+  STALE_ISSUE_CENSUS_STALE_MS,
   type CoverageReport,
   type CoverageSnapshotFile,
   type RepoCensus,
@@ -154,6 +157,9 @@ describe("snapshot rotation + delta", () => {
         poolItems: 10,
         poolUnsetStatus: 3,
         poolUnsetArea: 4,
+        staleOpenIssues: 5,
+          staleIssuesCollectedAt: "2026-11-01T00:00:00Z",
+          staleIssuesError: null,
       },
     ],
   });
@@ -207,6 +213,47 @@ describe("computeCoverage — pool unavailable (PR #3309 Codex)", () => {
   });
 });
 
+describe("stale open-issue census", () => {
+  test("query uses a strict 90-day cutoff and excludes pull requests", () => {
+    expect(staleIssueSearchQuery("a/b", new Date("2026-11-01T00:00:00Z"))).toBe(
+      "repo:a/b is:issue is:open updated:<2026-08-03T00:00:00.000Z",
+    );
+  });
+
+  test("freshness turns stale only after seven full days", () => {
+    const repo = {
+      staleOpenIssues: 7,
+      staleIssuesCollectedAt: "2026-10-25T12:00:00.000Z",
+      staleIssuesError: null,
+    };
+    expect(staleIssueState(repo, new Date(Date.parse(repo.staleIssuesCollectedAt) + STALE_ISSUE_CENSUS_STALE_MS))).toBe("current");
+    expect(staleIssueState(repo, new Date(Date.parse(repo.staleIssuesCollectedAt) + STALE_ISSUE_CENSUS_STALE_MS + 1))).toBe("stale");
+    expect(staleIssueState({ ...repo, staleOpenIssues: null, staleIssuesError: "search failed" }, NOW)).toBe("error");
+    expect(staleIssueState({ ...repo, staleOpenIssues: null, staleIssuesCollectedAt: null }, NOW)).toBe("unavailable");
+  });
+
+  test("census rows carry the count and actual collection timestamp without treating missing values as zero", () => {
+    const row: RepoCensus = {
+      repo: "developing-today/code",
+      openIssues: 100,
+      gateNow: 2,
+      gateNext: 3,
+      staleOpenIssues: 12,
+      staleIssuesCollectedAt: "2026-11-01T11:59:00.000Z",
+    };
+    expect(isRepoCensus(row)).toBe(true);
+    const report = computeCoverage([row], null, NOW);
+    expect(report.repos.find((r) => r.repo === row.repo)).toMatchObject({
+      staleOpenIssues: 12,
+      staleIssuesCollectedAt: row.staleIssuesCollectedAt,
+      staleIssuesError: null,
+    });
+    // Repos with no census row do not appear (union of census + pool, #1220).
+    expect(report.repos.map((r) => r.repo)).toEqual(["developing-today/code"]);
+    expect(isRepoCensus({ ...row, staleOpenIssues: 1.5 })).toBe(false);
+  });
+});
+
 describe("snapshot rotation anchor (PR #3309 Codex)", () => {
   const mk = (at: string, codeOpen: number | null): CoverageReport => ({
     generatedAt: at,
@@ -219,6 +266,9 @@ describe("snapshot rotation anchor (PR #3309 Codex)", () => {
         poolItems: 10,
         poolUnsetStatus: 3,
         poolUnsetArea: 4,
+        staleOpenIssues: 5,
+          staleIssuesCollectedAt: "2026-11-01T00:00:00Z",
+          staleIssuesError: null,
       },
     ],
   });
@@ -304,6 +354,9 @@ describe("CoverageSnapshotStore writes (PR #3309 Codex)", () => {
               poolItems: 10,
               poolUnsetStatus: 3,
               poolUnsetArea: 4,
+              staleOpenIssues: 5,
+              staleIssuesCollectedAt: "2026-11-01T00:00:00Z",
+              staleIssuesError: null,
             },
           ],
         },

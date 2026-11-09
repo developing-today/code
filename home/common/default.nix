@@ -1752,6 +1752,11 @@ in
       with pkgs;
       [
         libnotify
+        # On-screen keyboard (wvkbd-mobintl) for touch use over the
+        # Sunshine/Moonlight stream: launched only while a stream is
+        # live, by Sunshine's global_prep_cmd (nixos/hosts/amd-sunshine.nix);
+        # SUPER+SHIFT+O re-shows it (bind in config/hypr/hyprland.lua).
+        wvkbd
         # Atlas search CLI + service binary (pkgs/atlas-search);
         # step-6 cutover (#5356): the Rust binary is the resolved
         # `atlas-search` (the Python CLI is kept as atlas-search-py).
