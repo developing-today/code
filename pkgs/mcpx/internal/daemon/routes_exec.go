@@ -202,9 +202,14 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim.Setup, lim.SetupErr = runner.ParseSetup(set.String("script.runtimes"),
 		set.List("script.runtimeOrder"), set.String("script.profiles"))
 	lim.CaptureConsole = set.Bool("script.captureConsole")
-	lim.Typecheck = set.String("script.typecheck")
+	lim.Typecheck = set.String("script.check")
+	lim.TypeCheckOnError = set.String("script.checkOnError")
+	lim.TypeCheckOnUnsupported = set.String("script.checkOnUnsupported")
 	lim.Imports = set.String("script.imports")
 	lim.ImportsOnDynamic = set.String("script.importsOnDynamic")
+	lim.ImportsOnMissing = set.String("script.importsOnMissing")
+	lim.ImportsCrossProject = set.String("script.importsCrossProject")
+	lim.ImportsNetwork = set.String("script.importsNetwork")
 	lim.Delivery = set.String("artifacts.delivery")
 	lim.InlineMaxBytes = set.Bytes("artifacts.inlineMaxBytes")
 	lim.ChunkBytes = set.Bytes("artifacts.chunkBytes")
@@ -531,7 +536,7 @@ func (s *Server) handleArtifactGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	w.Header().Set("Content-Type", meta.Mime)
 	// Attachment, and the name quoted: the name came from a script, and a
 	// browser deciding to render somebody else's bytes inline is how a store

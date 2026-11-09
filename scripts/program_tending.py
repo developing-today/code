@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import sys
 import urllib.request
 
@@ -28,8 +29,8 @@ SECTIONS = ("epics", "roadmaps", "projects", "stalled-prs", "loose-ends")
 
 FLEET_REPOS = (
     "developing-today/code",
-    "developing-today/opencode",
-    "developing-today/openchamber",
+    "developing-today-forks/opencode",
+    "developing-today-forks/openchamber",
     "developing-today/nix",
 )
 
@@ -49,10 +50,16 @@ def _gh_api(path: str) -> list:
     """GET a GitHub REST collection, following pagination. Read-only."""
     items: list = []
     url = f"https://api.github.com{path}"
+    headers = {"Accept": "application/vnd.github+json"}
+    # The workflow hands this job a token (#6860): send it when present
+    # so the reads are authenticated; without one, behave exactly as
+    # before. The value is only ever placed in the header — it is
+    # never logged or included in any error or report string.
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     while url:
-        req = urllib.request.Request(
-            url, headers={"Accept": "application/vnd.github+json"}
-        )
+        req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=30) as resp:
             items.extend(json.loads(resp.read().decode("utf-8")))
             nxt = resp.headers.get("Link", "")

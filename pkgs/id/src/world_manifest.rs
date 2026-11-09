@@ -18,7 +18,8 @@ use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
 use crate::world_caps::{
-    MAX_NAME_BYTES, MAX_PENDING_SCHEDULES, validate_ceiling_names, validate_grant_names,
+    MAX_NAME_BYTES, MAX_PENDING_SCHEDULES, MAX_SCHEDULE_HORIZON_DAYS, MAX_SCHEDULE_HORIZON_MS,
+    validate_ceiling_names, validate_grant_names,
 };
 use crate::world_limits::WorldExecutionProfile;
 
@@ -170,6 +171,13 @@ pub fn parse(text: &str) -> Result<WorldManifest> {
 /// instead: a typo'd limit key (`wasm_fuell = 1`) must fail loudly
 /// instead of silently leaving the live profile alone (#2876).
 ///
+/// This probe is a hand-maintained mirror of `WorldExecutionProfile`'s
+/// fields and MUST gain a line for every field that struct gains:
+/// #5268 was exactly the drift where `total_memory_bytes` (#557) never
+/// got its line and every manifest naming it failed as "unknown field".
+/// The `test_profile_probe_covers_every_profile_field` test below pins the
+/// mirror to the struct so the drift cannot recur silently.
+///
 /// The probe deserializes through the typed TOML deserializer, never
 /// `toml::Value` — whose integers are `i64`-capped — so full-width
 /// `u64` values the real types accept (a `seed` or `wasm_fuel` above
@@ -198,6 +206,8 @@ fn reject_unknown_profile_keys(text: &str) -> Result<()> {
         native_cpu_seconds: Option<serde::de::IgnoredAny>,
         #[serde(default)]
         native_call_deadline_ms: Option<serde::de::IgnoredAny>,
+        #[serde(default)]
+        total_memory_bytes: Option<serde::de::IgnoredAny>,
     }
 
     let _: ProfileProbe = toml::from_str(text).map_err(anyhow::Error::new)?;
@@ -446,6 +456,31 @@ pub fn apply(steps: &[ApplyStep], state: &mut WorldState) -> Result<usize> {
     Ok(changed)
 }
 
+/// Refuse a plan whose `ScheduleAt` steps fire past the host's schedule
+/// horizon (`now_ms` plus [`MAX_SCHEDULE_HORIZON_DAYS`] days) — the rule
+/// the host's `check_schedule` enforces. `validate()` and [`apply`] are pure
+/// and clockless, and schedule steps run last in a live apply, so without
+/// this pre-flight the host's refusal would abort the apply after earlier
+/// steps had already mutated the world (#6486). Past fire times are legal
+/// (they fire on the next wakeup). `now_ms` is the caller's clock; the host
+/// re-checks against its own.
+///
+/// # Errors
+///
+/// Names the first schedule id and fire time beyond the horizon.
+pub fn check_schedule_horizon(steps: &[ApplyStep], now_ms: u64) -> Result<()> {
+    let horizon = now_ms.saturating_add(MAX_SCHEDULE_HORIZON_MS);
+    for step in steps {
+        if let ApplyStep::ScheduleAt { id, at_ms } = step {
+            ensure!(
+                *at_ms <= horizon,
+                "schedule {id:?} fires at {at_ms} ms, more than {MAX_SCHEDULE_HORIZON_DAYS} days past the host clock ({now_ms} ms; limit {horizon} ms)"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Render the steps as `id world diff` drift lines.
 #[must_use]
 pub fn diff(desired: &WorldManifest, current: &WorldState) -> String {
@@ -577,6 +612,45 @@ wasm_fuel = 5_000_000
     }
 
     #[test]
+    fn test_total_memory_bytes_profile_key_parses_and_round_trips() {
+        // #5268: total_memory_bytes is a real WorldExecutionProfile
+        // field (#557) that the #2876 probe never learned, so any
+        // manifest naming it failed parse as an unknown field.
+        let manifest = parse("[profile]\ntotal_memory_bytes = 268435456").unwrap();
+        assert_eq!(manifest.profile.total_memory_bytes, Some(268_435_456));
+        assert_eq!(round_trip(&manifest).unwrap(), manifest);
+    }
+
+    #[test]
+    fn test_total_memory_bytes_zero_is_rejected() {
+        // The value the probe now admits still goes through
+        // WorldExecutionProfile::validate: a zero budget is refused.
+        assert!(parse("[profile]\ntotal_memory_bytes = 0").is_err());
+    }
+
+    #[test]
+    fn test_profile_probe_covers_every_profile_field() {
+        // #5268 drift guard: this literal names EVERY field of
+        // WorldExecutionProfile with no `..` rest pattern, so adding a
+        // field to that struct breaks this test's compilation until
+        // the author also adds the field to ProfileKeysProbe above —
+        // the probe is a hand mirror, and this is what keeps it
+        // honest. Values sit exactly on the validate() floors.
+        let profile = WorldExecutionProfile {
+            wasm_fuel: Some(1),
+            wasm_memory_bytes: Some(65_536),
+            wasm_message_bytes: Some(1),
+            native_memory_bytes: Some(16_777_216),
+            native_cpu_seconds: Some(1),
+            native_call_deadline_ms: Some(1),
+            total_memory_bytes: Some(1),
+        };
+        let table = toml::to_string(&profile).unwrap();
+        let manifest = parse(&format!("[profile]\n{table}")).unwrap();
+        assert_eq!(manifest.profile, profile);
+    }
+
+    #[test]
     fn test_invalid_profile_bounds_are_rejected() {
         // #3015: each bound resolve() refuses at apply time must already
         // fail parse(), with the same checks.
@@ -602,10 +676,12 @@ native_call_deadline_ms = 0",
     fn test_minimum_profile_bounds_are_accepted() {
         // #3015: the boundary-valid values (one Wasm page, 16 MiB native)
         // sit exactly on the floors and must parse.
-        let manifest = parse("[profile]
+        let manifest = parse(
+            "[profile]
 wasm_memory_bytes = 65536
-native_memory_bytes = 16777216")
-            .unwrap();
+native_memory_bytes = 16777216",
+        )
+        .unwrap();
         assert_eq!(manifest.profile.wasm_memory_bytes, Some(65_536));
         assert_eq!(manifest.profile.native_memory_bytes, Some(16_777_216));
     }
@@ -731,6 +807,40 @@ native_memory_bytes = 16777216")
         assert_eq!(changed, steps.len());
         // A second plan against the reconciled state is empty.
         assert!(plan(&manifest, &state).is_empty());
+    }
+
+    #[test]
+    fn schedule_horizon_boundary_is_accepted_and_one_past_is_refused() {
+        let now = 1_000_000_u64;
+        let at = |at_ms| {
+            [ApplyStep::ScheduleAt {
+                id: "round".to_owned(),
+                at_ms,
+            }]
+        };
+        let horizon = now + crate::world_caps::MAX_SCHEDULE_HORIZON_MS;
+        check_schedule_horizon(&at(horizon), now).unwrap();
+        let err = check_schedule_horizon(&at(horizon + 1), now).unwrap_err();
+        let text = format!("{err}");
+        assert!(text.contains("round"), "{text}");
+        assert!(text.contains(&(horizon + 1).to_string()), "{text}");
+        assert!(text.contains("30 days"), "{text}");
+        assert!(check_schedule_horizon(&at(u64::MAX), now).is_err());
+        // Past and near-future fire times stay legal.
+        check_schedule_horizon(&at(1), now).unwrap();
+        check_schedule_horizon(&at(now + 86_400_000), now).unwrap();
+        // A clock near u64::MAX saturates instead of overflowing.
+        check_schedule_horizon(&at(u64::MAX), u64::MAX).unwrap();
+    }
+
+    #[test]
+    fn schedule_horizon_check_ignores_non_schedule_steps_and_plans_manifests() {
+        let now = 1_000_000_u64;
+        let manifest = parse("schedules = { far = 99999999999999 }").unwrap();
+        let steps = plan(&manifest, &WorldState::default());
+        assert!(check_schedule_horizon(&steps, now).is_err());
+        let ok = parse("seed = 1\nschedules = { soon = 2000000 }").unwrap();
+        check_schedule_horizon(&plan(&ok, &WorldState::default()), now).unwrap();
     }
 
     #[test]

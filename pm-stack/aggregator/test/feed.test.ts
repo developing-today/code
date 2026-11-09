@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   feedSectionStatus,
+  coverageFromFeed,
+  feedSectionStatus,
   isBurnSegment,
   isChargeRow,
   isFleetFeed,
@@ -9,12 +11,14 @@ import {
   isUnmatchedCharge,
   loadFeed,
   poolFromFeed,
+  projectAuditFromFeed,
   projectPoolSectionProblem,
   sanitizeCollectionError,
   sanitizeQuotaView,
   sanitizeFeedMetadata,
   sanitizeRegistry,
   sanitizeSubscriptions,
+  sanitizeUninstrumentedServices,
 } from "../src/feed.ts";
 import { buildAttentionFlags } from "../src/derive.ts";
 import { renderQuota } from "../src/render.ts";
@@ -23,14 +27,27 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isProjectPoolItem, parseProjectItems } from "../src/projects.ts";
-import type {
-  PaygLine,
-  QuotaCredentialRow,
-  QuotaPool,
-  QuotaView,
-  QuotaWindow,
-  SessionRecord,
-} from "../src/model.ts";
+import type { PaygLine, QuotaCredentialRow, QuotaPool, QuotaView, QuotaWindow, SessionRecord } from "../src/model.ts";
+
+describe("feed stale-issue census", () => {
+  test("preserves timestamped counts, accepts older census rows, and rejects malformed optional fields", () => {
+    const current = {
+      repo: "developing-today/code",
+      openIssues: 10,
+      gateNow: 1,
+      gateNext: 2,
+      staleOpenIssues: 3,
+      staleIssuesCollectedAt: "2026-11-01T11:59:00.000Z",
+      staleIssuesError: null,
+    };
+    expect(coverageFromFeed({ coverage: [current] })).toEqual([current]);
+    expect(coverageFromFeed({ coverage: [{ repo: "old/repo", openIssues: 1, gateNow: 0, gateNext: 0 }] })).toEqual([
+      { repo: "old/repo", openIssues: 1, gateNow: 0, gateNext: 0 },
+    ]);
+    expect(coverageFromFeed({ coverage: [{ ...current, staleIssuesCollectedAt: "not-a-timestamp" }] })).toBeNull();
+    expect(coverageFromFeed({})).toBeNull();
+  });
+});
 
 // Minimal valid pool item: edges entirely absent (the missing-edge
 // shape must validate cleanly — absence is data, not an error).
@@ -90,6 +107,24 @@ describe("feed project-pool section gate (#2399)", () => {
     expect(projectPoolSectionProblem([{ ...EDGElESS, parentRef: 7 }])).toBe("item 0");
     expect(projectPoolSectionProblem([{ ...EDGElESS, epicRef: null }])).toBe("item 0");
     expect(projectPoolSectionProblem([{ ...EDGElESS, blocks: "developing-today/code#1" }])).toBe("item 0");
+  });
+
+  test("every edge ref uses the shared parseRef validity rule and drops only its bad item", () => {
+    const unsafe = "developing-today/code#99999999999999999999";
+    const malformed = [
+      { ...GRAPHED, blockedBy: [unsafe] },
+      { ...GRAPHED, blockedBy: ["812"] },
+      { ...GRAPHED, blocks: [unsafe] },
+      { ...GRAPHED, parentRef: "812" },
+      { ...GRAPHED, epicRef: unsafe },
+    ];
+
+    expect(isProjectPoolItem(GRAPHED)).toBe(true);
+    for (const bad of malformed) expect(isProjectPoolItem(bad)).toBe(false);
+    expect(projectPoolSectionProblem([GRAPHED, malformed[0]])).toBe("item 1");
+    expect(
+      poolFromFeed({ projects: [EDGElESS, ...malformed, GRAPHED] as unknown as never }).map((p) => p.ref),
+    ).toEqual([EDGElESS.ref, GRAPHED.ref]);
   });
 
   test("structural fields + optional-field types are gated (#2418)", () => {
@@ -208,6 +243,25 @@ describe("feed project-pool section gate (#2399)", () => {
     expect(pool.length).toBe(2);
     expect(isProjectPoolSection(pool)).toBe(true);
     expect(poolFromFeed({ projects: pool }).length).toBe(2);
+  });
+});
+
+describe("Project #4 audit feed section (#1218)", () => {
+  const audit = {
+    title: "Developing Today",
+    number: 4,
+    url: "https://github.com/orgs/developing-today/projects/4",
+    generatedAt: "2026-11-01T20:00:00.000Z",
+    totalItems: 1,
+    fields: [{ id: "status", name: "Status", dataType: "SINGLE_SELECT", options: [{ id: "todo", name: "Todo" }] }],
+    views: [{ id: "board", name: "Board", layout: "BOARD_LAYOUT", filter: null }],
+    counts: { status: { Todo: 1 }, area: { "(unset)": 1 }, repo: { "developing-today/code": 1 } },
+  };
+
+  test("returns only a well-shaped audit snapshot", () => {
+    expect(projectAuditFromFeed({ projectAudit: audit })).toEqual(audit);
+    expect(projectAuditFromFeed({ projectAudit: { ...audit, totalItems: "1" } as never })).toBeNull();
+    expect(projectAuditFromFeed({})).toBeNull();
   });
 });
 
@@ -698,6 +752,47 @@ describe("feed subscriptions sanitization (#2446)", () => {
   });
 });
 
+describe("uninstrumented tracker feed sanitization (#1172)", () => {
+  const SERVICE = {
+    name: "Render",
+    whatFor: "PaaS",
+    status: "checked",
+    checkedAt: "2026-10-29",
+    overageBehavior: "wall",
+    guardrailNotes: "Keep no payment method on free workspaces",
+  };
+  const UNDATED_SERVICE = { ...SERVICE, status: "unchecked", checkedAt: null };
+  const feedWithServices = (uninstrumentedServices: unknown) => ({
+    version: 1,
+    generatedAt: "2026-10-01T00:00:00Z",
+    quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+    attention: [],
+    uninstrumentedServices,
+  });
+  const loadWithServices = async (uninstrumentedServices: unknown) => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-feed-tracker-"));
+    const file = join(dir, "feed.json");
+    writeFileSync(file, JSON.stringify(feedWithServices(uninstrumentedServices)));
+    return loadFeed(file);
+  };
+
+  test("valid tracker rows survive; malformed rows drop and are counted", async () => {
+    const out = sanitizeUninstrumentedServices([SERVICE, UNDATED_SERVICE, null, { ...SERVICE, checkedAt: "yesterday" }]);
+    expect(out.rows).toEqual([SERVICE, UNDATED_SERVICE]);
+    expect(out.dropped).toBe(2);
+    const loaded = await loadWithServices([SERVICE, UNDATED_SERVICE, null]);
+    expect(loaded?.uninstrumentedServices).toEqual([SERVICE, UNDATED_SERVICE]);
+    expect(loaded?.uninstrumentedServicesDropped).toBe(1);
+  });
+
+  test("an absent tracker section remains absent for older feeds", async () => {
+    expect(sanitizeUninstrumentedServices(undefined)).toEqual({ dropped: 0 });
+    const loaded = await loadWithServices(undefined);
+    expect(loaded?.uninstrumentedServices).toBeUndefined();
+    expect(loaded?.uninstrumentedServicesDropped).toBeUndefined();
+  });
+});
+
 describe("feed registry sanitization (#2539)", () => {
   const RECORD: SessionRecord = {
     id: "ses-1",
@@ -795,10 +890,14 @@ describe("feed PAYG sanitization (#2450)", () => {
       { ...PAYG, label: null },
       { ...PAYG, accruedUsd: "23.92" },
       { ...PAYG, accruedUsd: Number.POSITIVE_INFINITY },
+      { ...PAYG, accruedUsd: -0.01 },
       { ...PAYG, collectedUsd: "23.91" },
+      { ...PAYG, collectedUsd: -0.01 },
       { ...PAYG, unbilledUsd: "6.01" },
+      { ...PAYG, unbilledUsd: -0.01 },
       { ...PAYG, note: 42 },
       { ...PAYG, measuredAt: 42 },
+      { ...PAYG, measuredAt: "banana" },
       { ...PAYG, sourceClass: "unknown" },
     ]) {
       expect(isPaygLine(bad)).toBe(false);
@@ -829,6 +928,29 @@ describe("feed PAYG sanitization (#2450)", () => {
     expect(loaded?.paygDropped).toBe(2);
   });
 
+  test("negative and inverted measurements drop individually; valid and null controls survive", async () => {
+    const allNull = {
+      ...PAYG,
+      accruedUsd: null,
+      collectedUsd: null,
+      estimate: null,
+      unbilledUsd: null,
+      measuredAt: null,
+    };
+    const invalid = [
+      { ...PAYG, accruedUsd: -1 },
+      { ...PAYG, collectedUsd: -1 },
+      { ...PAYG, unbilledUsd: -1 },
+      { ...PAYG, estimate: { low: -1, high: 5, period: "month" } },
+      { ...PAYG, estimate: { low: 1, high: -1, period: "month" } },
+      { ...PAYG, estimate: { low: 6, high: 5, period: "month" } },
+      { ...PAYG, measuredAt: "banana" },
+    ];
+    const loaded = await loadWithPayg([PAYG, ...invalid, allNull]);
+    expect(loaded?.payg).toEqual([PAYG, allNull]);
+    expect(loaded?.paygDropped).toBe(invalid.length);
+  });
+
   test("estimate variants are checked structurally", async () => {
     const noEstimate = { ...PAYG };
     delete noEstimate.estimate;
@@ -839,6 +961,9 @@ describe("feed PAYG sanitization (#2450)", () => {
       { ...PAYG, estimate: { high: 25, period: "month" } },
       { ...PAYG, estimate: { low: "20", high: 25, period: "month" } },
       { ...PAYG, estimate: { low: Number.POSITIVE_INFINITY, high: 25, period: "month" } },
+      { ...PAYG, estimate: { low: -1, high: 25, period: "month" } },
+      { ...PAYG, estimate: { low: 20, high: -1, period: "month" } },
+      { ...PAYG, estimate: { low: 26, high: 25, period: "month" } },
       { ...PAYG, estimate: { low: 20, high: 25, period: 3 } },
       { ...PAYG, estimate: { low: 20, high: 25, period: "month", note: 3 } },
     ];
@@ -1159,5 +1284,49 @@ describe("collector section metadata (#1178)", () => {
     const legacyFile = join(dir, "legacy.json");
     writeFileSync(legacyFile, JSON.stringify(baseFeed()));
     expect((await loadFeed(legacyFile))?.meta).toBeUndefined();
+  });
+});
+
+describe("sanitizeCollectionError quoted-key + URL redaction (#3966)", () => {
+  test("JSON double-quoted keys redact the value, keep the key and text", () => {
+    expect(sanitizeCollectionError('{"api_key": "abc123short"}')).toBe('{"api_key": [redacted]}');
+    expect(sanitizeCollectionError('{"password": "hunter2pw"}')).toBe('{"password": [redacted]}');
+    expect(sanitizeCollectionError('upstream 500 {"token":"tok-abc12345"} retrying')).toBe(
+      'upstream 500 {"token":[redacted]} retrying',
+    );
+  });
+
+  test("single-quoted and nested keys redact the value", () => {
+    expect(sanitizeCollectionError("{'token': 'tok-abc12345'}")).toBe("{'token': [redacted]}");
+    expect(sanitizeCollectionError('{"data": {"secret": "s3cr3t-value-9"}}')).toBe(
+      '{"data": {"secret": [redacted]}}',
+    );
+    expect(sanitizeCollectionError('{"secret": "contains \\" quote and remains private"}')).toBe(
+      '{"secret": [redacted]}',
+    );
+  });
+
+  test("bare URL credential params redact the value, sibling params survive", () => {
+    expect(sanitizeCollectionError("fetch failed: https://api.example.com/data?key=supersecretvalue")).toBe(
+      "fetch failed: https://api.example.com/data?key=[redacted]",
+    );
+    expect(sanitizeCollectionError("get https://h.example/?api_key=abc123&foo=bar failed")).toBe(
+      "get https://h.example/?api_key=[redacted]&foo=bar failed",
+    );
+  });
+
+  test("words merely containing key do not redact, unquoted forms still redact", () => {
+    expect(sanitizeCollectionError("monkey=x")).toBe("monkey=x");
+    expect(sanitizeCollectionError("keyboard=y")).toBe("keyboard=y");
+    expect(sanitizeCollectionError("turnkey=abc")).toBe("turnkey=abc");
+    expect(sanitizeCollectionError("request failed token=secret-value")).toBe("request failed token=[redacted]");
+    expect(sanitizeCollectionError("plain error with no secrets at all")).toBe("plain error with no secrets at all");
+  });
+
+  test("quoted forms are redacted through sanitizeFeedMetadata", () => {
+    const meta = sanitizeFeedMetadata({
+      sections: { dns: { status: "error", at: "2026-10-01T00:00:00Z", error: '{"api_key": "abc123short"}' } },
+    });
+    expect(meta?.sections.dns?.error).toBe('{"api_key": [redacted]}');
   });
 });

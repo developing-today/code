@@ -37,7 +37,7 @@ const PREVIOUS: PreviousValue<QuotaCurrentEntry> = {
   value: {
     providerId: "cline-pass",
     providerName: "ClinePass",
-    serviceId: "cline-pass:cline-pass",
+    serviceId: "cline-pass",
     state: "ok",
     measuredAt: "2026-11-02T11:45:00Z",
     source: "token-adapter/cline-pass",
@@ -85,6 +85,22 @@ describe("parseClinePassPayload (ported OpenChamber mapping)", () => {
     expect(reading.windows.map((w) => w.usedPct)).toEqual([51, 100, 0]);
   });
 
+  test("refuses non-decimal percent strings (#3005 field form): hex, scientific, padded", () => {
+    const reading = parseClinePassPayload({
+      data: {
+        limits: [
+          { type: "weekly", percentUsed: "0x10" },
+          { type: "monthly", percentUsed: "1e2" },
+          { type: "five_hour", percentUsed: " 51 " },
+          { type: "weekly", percentUsed: "51.5" },
+        ],
+      },
+    });
+    expect(reading.windows).toEqual([
+      { name: "weekly", usedPct: 51.5, windowSeconds: 604800, resetsAt: null },
+    ]);
+  });
+
   test("skips malformed windows and unknown types, keeping valid siblings", () => {
     const reading = parseClinePassPayload({
       data: {
@@ -102,7 +118,14 @@ describe("parseClinePassPayload (ported OpenChamber mapping)", () => {
   });
 
   test("empty or drifted payloads are unparseable, never a zero reading", () => {
-    for (const payload of [null, [], {}, { data: null }, { data: { limits: [] } }, { data: { limits: [{ type: "weekly" }] } }]) {
+    for (const payload of [
+      null,
+      [],
+      {},
+      { data: null },
+      { data: { limits: [] } },
+      { data: { limits: [{ type: "weekly" }] } },
+    ]) {
       let caught: unknown = null;
       try {
         parseClinePassPayload(payload);
@@ -117,7 +140,7 @@ describe("parseClinePassPayload (ported OpenChamber mapping)", () => {
   test("entry mapping lands on the cline-pass service id with pct windows", () => {
     const entry = entryFromClinePassReading(parseClinePassPayload(DOCUMENTED), NOW.toISOString());
     expect(entry.providerId).toBe("cline-pass");
-    expect(entry.serviceId).toBe("cline-pass:cline-pass");
+    expect(entry.serviceId).toBe("cline-pass");
     expect(entry.state).toBe("ok");
     expect(entry.windows.map((w) => [w.name, w.pctOfLimit])).toEqual([
       ["5h", 43],
@@ -219,7 +242,10 @@ describe("fetchClinePassPayload (credential hygiene)", () => {
 describe("gatherClinePass (gatherer registration path)", () => {
   test("config parses references only; a bare value is rejected", () => {
     expect(credentialRefFromConfig(undefined)).toBeNull();
-    expect(credentialRefFromConfig("bitwarden:clinepass-session")).toEqual({ kind: "bitwarden", name: "clinepass-session" });
+    expect(credentialRefFromConfig("bitwarden:clinepass-session")).toEqual({
+      kind: "bitwarden",
+      name: "clinepass-session",
+    });
     expect(credentialRefFromConfig("file:/home/user/.local/state/clinepass/token")).toEqual({
       kind: "file",
       path: "/home/user/.local/state/clinepass/token",
@@ -233,11 +259,12 @@ describe("gatherClinePass (gatherer registration path)", () => {
       now: NOW,
       previous: null,
       credentialRef: { kind: "bitwarden", name: "clinepass-fixture" },
-      resolveCredentialValue: async (ref) => (ref.kind === "bitwarden" && ref.name === "clinepass-fixture" ? "fixture-token" : null),
+      resolveCredentialValue: async (ref) =>
+        ref.kind === "bitwarden" && ref.name === "clinepass-fixture" ? "fixture-token" : null,
       fetchImpl: async () => ({ status: 200, text: async () => JSON.stringify(DOCUMENTED) }),
     });
     expect(out.status).toBe("ok");
-    expect(out.value?.serviceId).toBe("cline-pass:cline-pass");
+    expect(out.value?.serviceId).toBe("cline-pass");
     expect(out.value?.windows.map((w) => w.name)).toEqual(["5h", "weekly", "monthly"]);
     expect(JSON.stringify(out)).not.toContain("fixture-token");
   });

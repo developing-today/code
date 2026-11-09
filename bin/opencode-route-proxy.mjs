@@ -12,7 +12,7 @@
 // OpenCode server uses (.opencode/opencode.jsonc: model_routes +
 // provider blocks), picks the actual pool member (ordered / round-robin
 // / weighted selection, variant remaps, disabled providers skipped,
-// quota demotion from the route_attempt ledger), expands provider
+// quota demotion from the route_attempt ledger, plus the known-exhausted seating gate #5295), expands provider
 // routes (experimental.provider_routes, #3256) into their member
 // providers, and makes ONE plain
 // chat-completions call to that member's endpoint with the member's
@@ -33,6 +33,9 @@
 //   OPENCODE_ROUTE_PROXY_PORT        listen port (default 18750)
 //   OPENCODE_ROUTE_PROXY_HOST        listen host (default 127.0.0.1)
 //   OPENCODE_ROUTE_PROXY_TIMEOUT_MS  per-request cap (default 1200000)
+//   OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS  first-response cap per leaf
+//                                         (default 3000 ms; below the client
+//                                         no-output window)
 //   OPENCODE_ROUTE_PROXY_CONFIG      opencode.jsonc path (default:
 //                                    ~/.local/share/opencode/opencode.jsonc,
 //                                    else ../.opencode/opencode.jsonc
@@ -60,6 +63,10 @@ import { parseProxyMillis, parseProxyPort } from "./proxy-port.mjs";
 const PORT = parseProxyPort("OPENCODE_ROUTE_PROXY_PORT", 18750);
 const HOST = process.env.OPENCODE_ROUTE_PROXY_HOST || "127.0.0.1";
 const TIMEOUT_MS = parseProxyMillis("OPENCODE_ROUTE_PROXY_TIMEOUT_MS", 1_200_000);
+const LEAF_TIMEOUT_MS = parseProxyMillis(
+  "OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS",
+  3_000,
+);
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH =
   process.env.OPENCODE_ROUTE_PROXY_CONFIG ||
@@ -318,6 +325,15 @@ const credentialKey = (providerId) => {
   return key;
 };
 
+// The credential a leaf would call with: a static apiKey in its
+// provider config, else its active credential-store row (#3228).
+const leafCredential = (cfg, providerId) => {
+  const def = providerDef(cfg, providerId);
+  const staticKey = def?.options?.apiKey ? expandEnv(def.options.apiKey) : null;
+  return staticKey || credentialKey(providerId);
+};
+const hasCredential = (cfg, providerId) => Boolean(leafCredential(cfg, providerId));
+
 // (provider,model) pairs demoted by the doctrine: >=3 quota failures
 // (quota detail recorded, or a RateLimit tag) inside the last 4 hours.
 const demotedPairs = () => {
@@ -340,6 +356,131 @@ const demotedPairs = () => {
       db?.close();
     } catch {}
   }
+};
+
+// The reset instant a quota detail promises, if it carries one
+// (#5295): a Retry-After-derived relative wait (the shape
+// classifyHttp records for 429s), or an absolute reset recorded under
+// any of the equivalent field names. A quota record with no reset
+// (e.g. a bare paymentRequired) cannot gate: how long it lasts is
+// unknown, and demotion remains its only handling.
+const quotaResetMs = (timeEnded, quotaText) => {
+  let q;
+  try {
+    q = JSON.parse(quotaText);
+  } catch {
+    return null;
+  }
+  if (!q || typeof q !== "object") return null;
+  // A relative retry delay runs from when the quota response was
+  // RECEIVED (the attempt's time_ended), not from when the request
+  // started: anchoring to the start would let a slow 429 response
+  // consume its own backoff.
+  if (Number.isFinite(q.retryAfterMs) && q.retryAfterMs > 0)
+    return timeEnded + q.retryAfterMs;
+  for (const k of ["resetsAtMs", "resetAtMs", "retryAtMs"])
+    if (Number.isFinite(q[k]) && q[k] > 0) return q[k];
+  for (const k of ["resetsAt", "resetAt", "retryAt"]) {
+    const ms = Date.parse(q[k]);
+    if (Number.isFinite(ms)) return ms;
+  }
+  return null;
+};
+
+// (provider,model) pairs whose binding quota window is KNOWN
+// exhausted (#5295, #4370 acceptance (c)): the pair's latest
+// quota-bearing failure in the ledger carries a reset still in the
+// future, and no success has been recorded for the pair since that
+// failure. Unlike demotion — reactive (>=3 failures in 4h) and
+// reorder-only — this is a seating-time exclusion known BEFORE the
+// next failure: a monthly-walled leg at a known 100% must not be a
+// first-choice candidate while any live candidate exists. The ledger
+// is the only source (no new network dependency in the hot path);
+// the lookback bounds the scan while covering monthly resets.
+const EXHAUSTED_LOOKBACK_MS = 40 * 24 * 60 * 60 * 1000;
+const knownExhaustedPairs = (now) => {
+  let db = null;
+  try {
+    db = openDb();
+    const since = now - EXHAUSTED_LOOKBACK_MS;
+    // All ordering is by COMPLETION time (time_ended): with
+    // overlapping requests, start-time ordering can mistake a
+    // success that finished before a quota response arrived for a
+    // recovery after it.
+    const quotaRows = db
+      .prepare(
+        `SELECT provider_id, model_id, time_started, time_ended, quota FROM route_attempt
+         WHERE quota IS NOT NULL AND outcome != 'success' AND time_ended > ?
+           AND time_ended = (
+             SELECT MAX(time_ended) FROM route_attempt r2
+             WHERE r2.provider_id = route_attempt.provider_id
+               AND r2.model_id = route_attempt.model_id
+               AND r2.quota IS NOT NULL AND r2.outcome != 'success'
+               AND r2.time_ended > ?
+           )`,
+      )
+      .all(since, since);
+    const successRows = db
+      .prepare(
+        `SELECT provider_id, model_id, MAX(time_ended) AS latest
+         FROM route_attempt
+         WHERE outcome = 'success' AND time_ended > ?
+         GROUP BY provider_id, model_id`,
+      )
+      .all(since);
+    const latestSuccess = new Map(
+      successRows.map((r) => [`${r.provider_id}/${r.model_id}`, r.latest]),
+    );
+    const out = new Map();
+    for (const r of quotaRows) {
+      const reset = quotaResetMs(r.time_ended, r.quota);
+      if (reset === null || reset <= now) continue;
+      const key = `${r.provider_id}/${r.model_id}`;
+      const successAt = latestSuccess.get(key);
+      if (successAt !== undefined && successAt > r.time_ended) continue;
+      out.set(key, reset);
+    }
+    return out;
+  } catch {
+    return new Map();
+  } finally {
+    try {
+      db?.close();
+    } catch {}
+  }
+};
+
+// Exclude known-exhausted candidates (#5295), following the
+// credential-less exclusion pattern (#3228) — but fail-safe: if the
+// gate would empty the candidate list, the demoted order is kept as
+// it was, because a known-exhausted leg as last resort beats no
+// route at all. Gate decisions are recorded on stderr, the proxy's
+// diagnostics stream.
+const applyKnownExhaustedGate = (cfg, candidates) => {
+  if (!candidates.length) return candidates;
+  const exhausted = knownExhaustedPairs(nowMs());
+  if (!exhausted.size) return candidates;
+  const key = (c) => `${c.providerId}/${c.modelKey}`;
+  const kept = candidates.filter((c) => !exhausted.has(key(c)));
+  // The fail-safe is evaluated against CREDENTIALED survivors: the
+  // credential-less filter (#3228) runs after this gate, so a kept
+  // list whose only members have no credential would still empty the
+  // route — and the exhausted leaf must then stay as the last resort
+  // instead of the request failing with "no credentialed members".
+  if (!kept.some((c) => hasCredential(cfg, c.providerId))) {
+    console.error(
+      "opencode-route-proxy: known-exhausted gate bypassed — no credentialed " +
+        "candidate survives it; keeping the demoted order (#5295)",
+    );
+    return candidates;
+  }
+  for (const c of candidates)
+    if (exhausted.has(key(c)))
+      console.error(
+        `opencode-route-proxy: known-exhausted gate excluded ${key(c)} ` +
+          `until ${new Date(exhausted.get(key(c))).toISOString()} (#5295)`,
+      );
+  return kept;
 };
 
 const recordAttempt = (a) => {
@@ -716,8 +857,7 @@ const callLeaf = async (cfg, leaf, body, wantStream, signal, sessionLabel) => {
       retryable: 0,
     });
   const def = providerDef(cfg, leaf.providerId);
-  const staticKey = def?.options?.apiKey ? expandEnv(def.options.apiKey) : null;
-  const apiKey = staticKey || credentialKey(leaf.providerId);
+  const apiKey = leafCredential(cfg, leaf.providerId);
   if (!apiKey)
     throw new LeafError(`no credential for provider ${leaf.providerId}`, {
       tag: "Authentication",
@@ -794,8 +934,20 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
   const wantStream = Boolean(body.stream);
   let candidates = resolveRoute(cfg, routeId, hooks.variantIn ?? null);
   candidates = applyDemotion(candidates, demotedPairs());
+  candidates = applyKnownExhaustedGate(cfg, candidates);
   if (!candidates.length)
     throw new LeafError(`route ${routeId} has no available members`, {
+      tag: "UnknownProvider",
+      retryable: 0,
+    });
+  // Credential-less leaves are skipped like disabled providers (#3228):
+  // a walk never spends one of its MAX_ATTEMPTS on a provider whose
+  // credential lookup comes back empty (inactive or missing row), and
+  // such a leaf never surfaces its misleading Authentication error as
+  // the run's terminal failure.
+  candidates = candidates.filter((c) => hasCredential(cfg, c.providerId));
+  if (!candidates.length)
+    throw new LeafError(`route ${routeId} has no credentialed members`, {
       tag: "UnknownProvider",
       retryable: 0,
     });
@@ -817,10 +969,27 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
       const next = attempts[i + 1];
       const failedOverTo = next ? `${next.providerId}/${next.modelKey}` : null;
       let res;
+      const leafDeadlineCtl = new AbortController();
+      const leafTimer = setTimeout(
+        () =>
+          leafDeadlineCtl.abort(
+            new Error("opencode-route-proxy leaf first-response timeout"),
+          ),
+        LEAF_TIMEOUT_MS,
+      );
+      const leafSignal = AbortSignal.any([signal, leafDeadlineCtl.signal]);
       try {
-        res = await callLeaf(cfg, leaf, body, wantStream, signal, sessionLabel);
+        res = await callLeaf(
+          cfg,
+          leaf,
+          body,
+          wantStream,
+          leafSignal,
+          sessionLabel,
+        );
       } catch (err) {
         const ended = Date.now();
+        const leafTimedOut = !signal.aborted && leafDeadlineCtl.signal.aborted;
         recordAttempt({
           started,
           ended,
@@ -828,7 +997,7 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
           providerId: leaf.providerId,
           modelId: leaf.modelKey,
           variant: leaf.variant,
-          outcome: signal.aborted ? "timeout" : "failure",
+          outcome: signal.aborted || leafTimedOut ? "timeout" : "failure",
           errorTag: err.tag || "Transport",
           errorCode: err.code ?? null,
           errorMessage: String(err.message || err).slice(0, 500),
@@ -841,6 +1010,8 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
         lastErr = err;
         if (signal.aborted) throw err;
         continue;
+      } finally {
+        clearTimeout(leafTimer);
       }
       if (!res.ok) {
         const ended = Date.now();

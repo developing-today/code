@@ -64,7 +64,7 @@ func TestClaimPathHoldsTheNameUntilTheWriteIsDone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer claim3.Close()
+	defer func() { _ = claim3.Close() }()
 	if filepath.Base(third) != "shot-2.png" {
 		t.Fatalf("third claim = %q, want shot-2.png", third)
 	}

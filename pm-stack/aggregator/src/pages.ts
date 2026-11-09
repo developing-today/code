@@ -74,6 +74,16 @@ export const PAGES: PageDef[] = [
     nav: "primary",
   },
   {
+    id: "digest",
+    title: "Digest",
+    route: "/digest",
+    api: "/api/digest.json",
+    blurb:
+      "The scheduled PM digest (#1278): moved / blocked / needs Drew / done / quota outlook from the canonical projection, archived per day at /digest?date=<date>.",
+    group: "overview",
+    nav: "dropdown",
+  },
+  {
     id: "attention",
     title: "Needs you",
     route: "/attention",
@@ -99,6 +109,15 @@ export const PAGES: PageDef[] = [
     blurb: "The program roadmap at every grain.",
     group: "overview",
     nav: "primary",
+  },
+  {
+    id: "conflicts",
+    title: "Source conflicts",
+    route: "/conflicts",
+    api: "/api/conflicts.json",
+    blurb: "One read-only queue of every live source disagreement, with both values and its age.",
+    group: "work",
+    nav: "dropdown",
   },
   {
     id: "quota",
@@ -134,6 +153,15 @@ export const PAGES: PageDef[] = [
     route: "/sessions",
     api: "/api/registry.json",
     blurb: "The agent/session identity registry: who ran what, tokens, task links.",
+    group: "work",
+    nav: "dropdown",
+  },
+  {
+    id: "search",
+    title: "Search",
+    route: "/search",
+    api: "/api/search.json",
+    blurb: "Search board, roadmap, registry sessions, DNS, services, and tier items by title or linked issue/PR ref.",
     group: "work",
     nav: "dropdown",
   },
@@ -197,6 +225,16 @@ export const PAGES: PageDef[] = [
     // the bar, not buried in the Pages dropdown (supersedes the
     // post-#1497 dropdown placement recorded in curation-1497.test).
     nav: "primary",
+  },
+  {
+    id: "notifications",
+    title: "Notifications",
+    route: "/notifications",
+    api: "/api/notifications.json",
+    blurb:
+      "Notification measurement (#3319): the weekly sent-vs-acted-on roll-up over the alert throat's send ledger, with display-only default-off proposals under 10%.",
+    group: "ops",
+    nav: "dropdown",
   },
   {
     id: "pages",

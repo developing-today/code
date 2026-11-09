@@ -10,8 +10,11 @@ never count.
 """
 
 import importlib.util
+import json
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 _spec = importlib.util.spec_from_file_location(
     "poll", Path(__file__).resolve().parent / "poll.py"
@@ -118,11 +121,12 @@ class TestSummarizeCap(unittest.TestCase):
         self.assertEqual((live, active, room), (2, 1, poll.CAP - 1))
 
 
-
 class TestIsCandidate(unittest.TestCase):
     def row(self, **over):
-        r = {"progress": {"lane": "opencode", "stage": "handed_off"},
-             "lane_id": "code-a"}
+        r = {
+            "progress": {"lane": "opencode", "stage": "handed_off"},
+            "lane_id": "code-a",
+        }
         r.update(over)
         return r
 
@@ -133,25 +137,328 @@ class TestIsCandidate(unittest.TestCase):
         self.assertTrue(poll.is_candidate(self.row(lane_id=None)))
 
     def test_openchamber_lane_claim_is_never_candidate(self):
-        self.assertFalse(poll.is_candidate(
-            self.row(lane_id="8ac61616-3815-4e7b-b33d-840a3829154a")))
+        self.assertFalse(
+            poll.is_candidate(self.row(lane_id="8ac61616-3815-4e7b-b33d-840a3829154a"))
+        )
 
     def test_direct_lane_is_not_candidate(self):
-        self.assertFalse(poll.is_candidate(
-            self.row(progress={"lane": "direct"})))
+        self.assertFalse(poll.is_candidate(self.row(progress={"lane": "direct"})))
 
     def test_bound_session_is_not_candidate(self):
-        self.assertFalse(poll.is_candidate(
-            self.row(progress={"lane": "opencode", "session_id": "ses_1"})))
+        self.assertFalse(
+            poll.is_candidate(
+                self.row(progress={"lane": "opencode", "session_id": "ses_1"})
+            )
+        )
+
+    def test_launch_failed_reclaim_is_candidate_again(self):
+        # The #4758 recovery rule checkpoints stage "launch_failed"
+        # with the binding cleared; that recorded yield must make the
+        # task a launch candidate again or the reclaim strands it.
+        self.assertTrue(
+            poll.is_candidate(
+                self.row(progress={"lane": "opencode", "stage": "launch_failed"})
+            )
+        )
 
     def test_assigned_but_not_handed_off_is_not_candidate(self):
-        self.assertFalse(poll.is_candidate(
-            self.row(progress={"lane": "opencode", "stage": "verified"})))
-        self.assertFalse(poll.is_candidate(
-            self.row(progress={"lane": "opencode"})))
+        self.assertFalse(
+            poll.is_candidate(
+                self.row(progress={"lane": "opencode", "stage": "verified"})
+            )
+        )
+        self.assertFalse(poll.is_candidate(self.row(progress={"lane": "opencode"})))
 
     def test_unassigned_task_is_not_candidate(self):
         self.assertFalse(poll.is_candidate(self.row(progress={})))
+
+
+class TestParseLeaseMs(unittest.TestCase):
+    def test_zulu_lease_parses(self):
+        self.assertEqual(
+            poll.parse_lease_ms("2026-11-03T04:43:41Z"),
+            poll.parse_lease_ms("2026-11-03T04:43:41+00:00"),
+        )
+        self.assertGreater(poll.parse_lease_ms("2026-11-03T04:43:41Z"), 0)
+
+    def test_offset_lease_parses(self):
+        self.assertIsInstance(
+            poll.parse_lease_ms("2026-11-03T04:43:41.3139+00:00"), int
+        )
+
+    def test_unparseable_lease_is_none(self):
+        self.assertIsNone(poll.parse_lease_ms(None))
+        self.assertIsNone(poll.parse_lease_ms(""))
+        self.assertIsNone(poll.parse_lease_ms("not-a-date"))
+        self.assertIsNone(poll.parse_lease_ms(12345))
+
+
+EXPIRED = "2025-01-01T00:00:00Z"  # long before NOW
+FUTURE = "2027-01-01T00:00:00Z"  # long after NOW
+
+
+class TestIsStuckBound(unittest.TestCase):
+    def row(self, **over):
+        r = {
+            "progress": {
+                "lane": "opencode",
+                "session_id": "ses_x",
+                "stage": "handed_off",
+            },
+            "lease_until": EXPIRED,
+            "lane_id": "code-a",
+        }
+        r.update(over)
+        return r
+
+    def dead_session(self, **over):
+        s = {
+            "id": "ses_x",
+            "time": {"created": NOW - 90 * MIN, "updated": NOW - 31 * MIN},
+        }
+        s.update(over)
+        return s
+
+    def test_dead_bound_session_with_expired_lease_is_stuck(self):
+        self.assertTrue(
+            poll.is_stuck_bound(self.row(), self.dead_session(), set(), NOW)
+        )
+
+    def test_exactly_at_window_boundary_is_stuck(self):
+        s = self.dead_session()
+        s["time"]["updated"] = NOW - poll.ACTIVE_WINDOW_MS
+        self.assertTrue(poll.is_stuck_bound(self.row(), s, set(), NOW))
+
+    def test_recent_activity_vetoes(self):
+        s = self.dead_session()
+        s["time"]["updated"] = NOW - 1 * MIN
+        self.assertFalse(poll.is_stuck_bound(self.row(), s, set(), NOW))
+
+    def test_active_set_membership_vetoes(self):
+        self.assertFalse(
+            poll.is_stuck_bound(self.row(), self.dead_session(), {"ses_x"}, NOW)
+        )
+
+    def test_unknown_active_set_fails_closed(self):
+        self.assertFalse(
+            poll.is_stuck_bound(self.row(), self.dead_session(), None, NOW)
+        )
+
+    def test_terminal_markers_veto(self):
+        s = self.dead_session(outcome="failed")
+        self.assertFalse(poll.is_stuck_bound(self.row(), s, set(), NOW))
+        s = self.dead_session()
+        s["time"]["idle"] = NOW - 40 * MIN
+        self.assertFalse(poll.is_stuck_bound(self.row(), s, set(), NOW))
+
+    def test_unexpired_lease_vetoes(self):
+        self.assertFalse(
+            poll.is_stuck_bound(
+                self.row(lease_until=FUTURE), self.dead_session(), set(), NOW
+            )
+        )
+
+    def test_unparseable_lease_vetoes(self):
+        self.assertFalse(
+            poll.is_stuck_bound(
+                self.row(lease_until="garbage"), self.dead_session(), set(), NOW
+            )
+        )
+        self.assertFalse(
+            poll.is_stuck_bound(
+                self.row(lease_until=None), self.dead_session(), set(), NOW
+            )
+        )
+
+    def test_missing_session_is_the_gone_case_not_stuck(self):
+        self.assertFalse(poll.is_stuck_bound(self.row(), None, set(), NOW))
+
+    def test_child_session_vetoes(self):
+        self.assertFalse(
+            poll.is_stuck_bound(
+                self.row(), self.dead_session(parentID="ses_p"), set(), NOW
+            )
+        )
+
+    def test_unbound_or_direct_lane_is_not_stuck(self):
+        self.assertFalse(
+            poll.is_stuck_bound(
+                self.row(progress={"lane": "opencode"}), self.dead_session(), set(), NOW
+            )
+        )
+        self.assertFalse(
+            poll.is_stuck_bound(
+                self.row(progress={"lane": "direct", "session_id": "ses_x"}),
+                self.dead_session(),
+                set(),
+                NOW,
+            )
+        )
+
+
+class TestFetchClaimedRows(unittest.TestCase):
+    """Claimed rows come from the queue-broker's rich /list (#7325:
+    the repo-queue binary's list verb prints a human table, and
+    json-parsing it read every queue as empty). _broker_post is
+    stubbed; no broker is touched. A queue that cannot be read
+    contributes no rows: fetch_claimed_rows returns [] on any broker
+    or payload failure."""
+
+    def fetch(self, payload, raises=None):
+        captured = {}
+
+        def fake_post(path, body):
+            captured["path"] = path
+            captured["body"] = body
+            if raises is not None:
+                raise raises
+            return payload
+
+        with patch.object(poll, "_broker_post", side_effect=fake_post):
+            rows = poll.fetch_claimed_rows("repo-health-code-pilot")
+        return rows, captured
+
+    def test_broker_list_reads_claimed_rows_and_normalizes(self):
+        raw = {
+            "id": 42,
+            "queue": "repo-health-code-pilot",
+            "status": "claimed",
+            "worker_id": "repo-worker",
+            "progress": {"lane": "opencode", "stage": "handed_off"},
+        }
+        rows, captured = self.fetch({"ok": True, "rows": [raw]})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], 42)
+        self.assertEqual(rows[0]["progress"]["stage"], "handed_off")
+        self.assertEqual(captured["path"], "/list")
+        self.assertEqual(
+            captured["body"],
+            {"queue": "repo-health-code-pilot", "status": "claimed",
+             "rich": True, "limit": poll.LIST_LIMIT},
+        )
+
+    def test_flattened_row_gets_progress_synthesized(self):
+        rows, _ = self.fetch({"rows": [{
+            "id": 7,
+            "status": "claimed",
+            "lane": "opencode",
+            "stage": "handed_off",
+            "session_id": None,
+        }]})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["progress"]["lane"], "opencode")
+        self.assertEqual(rows[0]["progress"]["stage"], "handed_off")
+
+    def test_stage_lifted_from_last_checkpoint(self):
+        # #7706: the checkpoint verb records the yield under
+        # progress.last_checkpoint.stage; the classifiers read
+        # progress.stage. The lifted row must classify as a candidate.
+        rows, _ = self.fetch({"rows": [{
+            "id": 9,
+            "status": "claimed",
+            "progress": {"lane": "opencode",
+                         "last_checkpoint": {"stage": "handed_off"}},
+        }]})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["progress"]["stage"], "handed_off")
+        self.assertTrue(poll.is_candidate(rows[0]))
+
+    def test_packet_lifted_from_payload(self):
+        packet = {"kind": "fix", "repo": "developing-today/code",
+                  "issue": 1234}
+        rows, _ = self.fetch({"rows": [{
+            "id": 11, "status": "claimed", "payload": packet,
+            "progress": {"lane": "opencode", "stage": "handed_off"},
+        }]})
+        self.assertEqual(rows[0]["packet"], packet)
+        entry = poll._candidate_entry(rows[0], "repo-health-code-pilot")
+        self.assertEqual(entry["packet"], packet)
+
+    def test_packet_lifted_from_payload_string(self):
+        rows, _ = self.fetch({"rows": [{
+            "id": 12, "status": "claimed",
+            "payload": "{\"kind\": \"triage\"}",
+            "progress": {"lane": "opencode", "stage": "handed_off"},
+        }]})
+        self.assertEqual(rows[0]["packet"], {"kind": "triage"})
+
+    def test_empty_list_is_a_valid_empty_queue(self):
+        rows, _ = self.fetch({"ok": True, "rows": []})
+        self.assertEqual(rows, [])
+
+    def test_broker_failure_returns_no_rows(self):
+        rows, _ = self.fetch(None, raises=RuntimeError("broker down"))
+        self.assertEqual(rows, [])
+
+    def test_malformed_payload_returns_no_rows(self):
+        rows, _ = self.fetch({"ok": True, "rows": "not a list"})
+        self.assertEqual(rows, [])
+        rows, _ = self.fetch({"ok": True})
+        self.assertEqual(rows, [])
+
+    def test_non_dict_and_unclaimed_rows_are_skipped(self):
+        rows, _ = self.fetch({"rows": [
+            None,
+            {"id": 1, "status": "queued"},
+            {"id": 2, "status": "claimed",
+             "progress": {"lane": "opencode"}},
+        ]})
+        self.assertEqual([r["id"] for r in rows], [2])
+
+
+class TestFetchSessions(unittest.TestCase):
+    """Fetch-layer completeness (#4757): /api/session truncates at 50
+    by default and honours limit but not offset, so fetch_sessions
+    escalates the limit until a read comes back below it — and fails
+    closed (None) whenever completeness cannot be proven.
+    _server_get is stubbed; no server is touched."""
+
+    def stub_server(self, total, fail_on_call=None):
+        calls = []
+
+        def fake_get(path):
+            calls.append(path)
+            if fail_on_call is not None and len(calls) == fail_on_call:
+                return None
+            limit = int(path.rsplit("limit=", 1)[1])
+            return [{"id": f"ses_{i}"} for i in range(min(limit, total))]
+
+        return fake_get, calls
+
+    def run_fetch(self, total, **kw):
+        fake_get, calls = self.stub_server(total, **kw)
+        original = poll._server_get
+        poll._server_get = fake_get
+        try:
+            return poll.fetch_sessions(), calls
+        finally:
+            poll._server_get = original
+
+    def test_short_single_read_is_complete(self):
+        sessions, calls = self.run_fetch(3)
+        self.assertEqual(len(sessions), 3)
+        self.assertEqual(len(calls), 1)
+
+    def test_escalating_limit_finds_the_whole_list(self):
+        sessions, calls = self.run_fetch(2500)
+        self.assertEqual(len(sessions), 2500)
+        self.assertEqual(len(calls), 2)
+
+    def test_count_exactly_at_a_limit_escalates(self):
+        sessions, calls = self.run_fetch(1000)
+        self.assertEqual(len(sessions), 1000)
+        self.assertEqual(len(calls), 2)
+
+    def test_failed_read_fails_closed(self):
+        sessions, _ = self.run_fetch(2500, fail_on_call=1)
+        self.assertIsNone(sessions)
+        sessions, _ = self.run_fetch(2500, fail_on_call=2)
+        self.assertIsNone(sessions)
+
+    def test_count_at_every_limit_fails_closed(self):
+        sessions, calls = self.run_fetch(10**9)
+        self.assertIsNone(sessions)
+        self.assertEqual(len(calls), len(poll.SESSION_FETCH_LIMITS))
 
 
 if __name__ == "__main__":

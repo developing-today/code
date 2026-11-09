@@ -45,7 +45,7 @@ var EffectProbes = map[string]string{
 	"logging.file":               "TestLoggingFileOffWritesNoDurableLog",
 	"script.captureConsole":      "TestScriptCaptureConsoleOffDropsConsoleOutput",
 	"script.prefix":              "TestScriptPrefixIsReachableFromTheEnvironment",
-	"script.typecheck":           "TestScriptTypecheckOnRefusesATypeError",
+	"script.check":               "TestScriptTypecheckOnRefusesATypeError",
 	"script.env":                 "TestScriptEnvIsReachableFromTheEnvironment",
 	"paths.state":                "TestStateDirectoryIsReachableAsASetting",
 	"registry.url":               "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
@@ -56,12 +56,14 @@ var EffectProbes = map[string]string{
 	"registry.pageSize":          "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
 	"registry.maxPages":          "TestTheRegistryPageCapSaysItStoppedEarly",
 	"paths.configFile":           "TestPathsConfigFileChangesWhichConfigLoads",
+	"tasks.maxAge":               "TestTasksMaxAgeIsReachableFromEnvironment",
 	"deps.source":                "TestDepsSourceNoneDropsTheManifestLayer",
 	"deps.manifest":              "TestDepsManifestNamesTheManifestResolutionReads",
 	"deps.packages":              "TestDepsPackagesPinContradictingTheManifestFailsTheRun",
 	"paths.deps":                 "TestPathsDepsExtendsManifestDiscovery",
 	"script.cwd":                 "TestScriptCwdIsReachableFromTheEnvironment",
 	"script.interpreter":         "TestScriptInterpreterIsReachableFromTheEnvironment",
+	"proxy.timeout":              "TestProxyUpstreamTimeoutIsReachableFromTheEnvironment",
 }
 
 // EffectExemptions maps a setting path to the reason no effect probe
@@ -82,6 +84,13 @@ var EffectExemptions = map[string]string{
 	"logging.maxAge":                     "log pipeline bound or rendering choice: its effect appears only across log volume, rotation, or time, none of which a single harness run produces deterministically",
 	"logging.keep":                       "log pipeline bound or rendering choice: its effect appears only across log volume, rotation, or time, none of which a single harness run produces deterministically",
 	"script.runtime":                     "script launcher pipeline: its effect needs a runtime, profile, or launcher fixture exercising that exact stage, which the harness script fixtures do not yet provide",
+	"script.imports":                     "static import resolution is covered by deterministic internal/preflight graph tests; the e2e harness has no Deno graph fixture yet",
+	"script.importsOnMissing":            "missing-package policies are covered by deterministic internal/preflight resolver tests; the e2e harness has no Deno graph fixture yet",
+	"script.importsOnDynamic":            "computed-import policies are covered by deterministic internal/preflight graph tests; the e2e harness has no Deno graph fixture yet",
+	"script.importsCrossProject":         "cross-project subset policies are covered by deterministic internal/preflight resolver tests; the e2e harness has no multi-project Deno graph fixture yet",
+	"script.importsNetwork":              "registry lookup gating is covered by deterministic internal/preflight resolver tests; the e2e harness has no Deno graph fixture yet",
+	"script.checkOnError":                "check failure policy is covered by deterministic internal/preflight stub-runtime tests; the e2e harness has no isolated checker fixture yet",
+	"script.checkOnUnsupported":          "unsupported-runtime policy is covered by deterministic internal/preflight stub-runtime tests; the e2e harness has no isolated checker fixture yet",
 	"script.runtimes":                    "script launcher pipeline: its effect needs a runtime, profile, or launcher fixture exercising that exact stage, which the harness script fixtures do not yet provide",
 	"script.runtimeOrder":                "script launcher pipeline: its effect needs a runtime, profile, or launcher fixture exercising that exact stage, which the harness script fixtures do not yet provide",
 	"script.permissions":                 "script launcher pipeline: its effect needs a runtime, profile, or launcher fixture exercising that exact stage, which the harness script fixtures do not yet provide",
@@ -251,6 +260,7 @@ var EffectExemptions = map[string]string{
 	"plugin.annotate":                    "read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host",
 	"plugin.headless":                    "read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host",
 	"plugin.daemonTools":                 "read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host",
+	"plugin.disabledTools":               "read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host",
 	"protoMessages.listMaxAge":           "protocol message timing: era fixtures cover the flow end-to-end, but no per-setting with/without probe exists yet",
 	"protoMessages.readMaxAge":           "protocol message timing: era fixtures cover the flow end-to-end, but no per-setting with/without probe exists yet",
 	"protoMessages.taskAfter":            "protocol message timing: era fixtures cover the flow end-to-end, but no per-setting with/without probe exists yet",
@@ -275,7 +285,7 @@ var EffectExemptions = map[string]string{
 // EffectExemptionPin is the ratchet: the exemption count at the time
 // the guard landed. It may only ever be lowered, and only in the PR
 // that removes an exemption by adding the probe that replaces it.
-const EffectExemptionPin = 202 // deliberate +1 for daemon.roots and +8 for model.*: model settings are covered by internal/model and daemon unit tests; settings-driven e2e probes are not yet present. Deliberate +1 (2026-11-03, #1925 slice 3) for sampling.answerLocally: same model-layer coverage, daemon unit tests in internal/daemon/sampling_local_test.go.
+const EffectExemptionPin = 210 // deliberate +1 for daemon.roots and +8 for model.*: model settings are covered by internal/model and daemon unit tests; settings-driven e2e probes are not yet present. Deliberate +1 (2026-11-03, #1925 slice 3) for sampling.answerLocally: same model-layer coverage, daemon unit tests in internal/daemon/sampling_local_test.go. Deliberate +1 (2026-11-03, #5242) for plugin.disabledTools: read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host, the same basis as every other plugin.* exemption. Deliberate +5 (2026-11-04, #1915 stage 2): import graph, missing, dynamic, cross-project and network policies are covered by deterministic internal/preflight tests, but the e2e harness has no isolated Deno graph fixture yet. Deliberate +2 (2026-11-05, #1911): checker error and unsupported-runtime policies are covered by deterministic internal/preflight stub-runtime tests; the e2e harness has no isolated Deno checker fixture.
 
 // CheckEffectCoverage returns one violation per way the probe and
 // exemption maps fail to cover reg exactly: a setting with neither,

@@ -127,7 +127,7 @@ type tsnetListener struct {
 // CloseNode closes the listener and shuts the node down, releasing the
 // tailnet identity so another process can take it over.
 func (l *tsnetListener) CloseNode() error {
-	_ = l.Listener.Close()
+	_ = l.Close()
 	return l.node.Close()
 }
 

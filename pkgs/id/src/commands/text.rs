@@ -144,6 +144,27 @@ pub fn tsv_row(hash: impl Display, name: &str) -> String {
     format!("{hash}\t{}", plain_field(name))
 }
 
+/// Formats one file-listing row (#4973):
+/// `<hash>\t<name>\t<origin>\t<uploaded_at>`.
+///
+/// `origin` is the node that first wrote the file and `uploaded_at` its
+/// upload time (unix seconds), both from the file's metadata tags. A file
+/// written before those tags existed renders both as `unknown` — the
+/// listing never guesses an origin.
+pub fn list_tsv_row(
+    hash: impl Display,
+    name: &str,
+    origin: Option<&str>,
+    uploaded_at: Option<u64>,
+) -> String {
+    format!(
+        "{}\t{}\t{}",
+        tsv_row(hash, name),
+        origin.map_or_else(|| "unknown".to_owned(), plain_field),
+        uploaded_at.map_or_else(|| "unknown".to_owned(), |ts| ts.to_string())
+    )
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -250,6 +271,22 @@ mod tests {
         );
         assert_eq!(rendered.matches('\t').count(), 0);
         assert!(!rendered.contains('\n'));
+    }
+
+    #[test]
+    fn list_tsv_row_shows_origin_and_upload_time() {
+        assert_eq!(
+            list_tsv_row("hash", "a.txt", Some("node-a"), Some(1_700_000_000)),
+            "hash\ta.txt\tnode-a\t1700000000"
+        );
+    }
+
+    #[test]
+    fn list_tsv_row_unknown_for_pre_change_files() {
+        assert_eq!(
+            list_tsv_row("hash", "old.txt", None, None),
+            "hash\told.txt\tunknown\tunknown"
+        );
     }
 
     #[test]

@@ -18,6 +18,10 @@
 //! three-layer view (personal filter / board view / host view) under the
 //! transparency rule: hidden is never erased. It does not render markup,
 //! serve content, or fetch attachment/game payloads.
+//! Duplicate `Rules` objects for the same board and revision are legal signed
+//! history. [`BoardGraph::resolve_rules`] selects the greater content hash
+//! within a revision; current rules are the highest revision, using that same
+//! tie-break, so every peer projects the same signed set identically.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -599,6 +603,37 @@ impl BoardGraph {
         self.objects.is_empty()
     }
 
+    /// Resolve rules for one board, returning the selected content hash and body.
+    ///
+    /// `Some(revision)` selects that exact revision; `None` selects current
+    /// rules, meaning the highest revision present. Duplicate `(board,
+    /// revision)` objects are legal signed history: within a revision, the
+    /// greater content hash wins. The same tie-break selects current rules
+    /// when multiple objects share its highest revision, independent of
+    /// insertion order. A thread's `rules_ref` remains pinned to its exact
+    /// referenced hash; this projection does not rewrite or reinterpret it.
+    pub fn resolve_rules(
+        &self,
+        board: &ArtifactHash,
+        revision: Option<u64>,
+    ) -> Option<(&ArtifactHash, &Rules)> {
+        self.objects
+            .iter()
+            .filter_map(|(hash, signed)| {
+                let BoardObject::Rules(rules) = &signed.object else {
+                    return None;
+                };
+                (rules.board == *board
+                    && revision.is_none_or(|revision| rules.revision == revision))
+                .then_some((hash, rules))
+            })
+            .max_by(|(left_hash, left), (right_hash, right)| {
+                left.revision
+                    .cmp(&right.revision)
+                    .then_with(|| left_hash.cmp(right_hash))
+            })
+    }
+
     fn validate_links(&self, signed: &SignedBoardObject) -> Result<()> {
         let author = signed.artifact.author.as_str();
         match &signed.object {
@@ -751,10 +786,7 @@ impl BoardGraph {
             }
             BoardObject::Theme(value) => {
                 if let Some(source) = &value.forked_from {
-                    ensure!(
-                        source != &signed.hash()?,
-                        "a theme cannot fork from itself"
-                    );
+                    ensure!(source != &signed.hash()?, "a theme cannot fork from itself");
                     let source_object = self
                         .objects
                         .get(source)
@@ -891,13 +923,18 @@ impl BoardGraph {
     }
 
     /// Every hash in one board's replication set: the board root plus
-    /// every object scoped to it, plus the dependency closure a fresh
-    /// graph needs before [`Self::validate_links`] will accept those
-    /// objects — the root's `theme_ref` theme and `forked_from`
-    /// ancestor root, recursively (an ancestor's own theme and fork
-    /// lineage, and a theme's fork lineage). Themes and ancestor roots
-    /// name no board (`board_ref` is `None`), so a scope-only filter
-    /// would export a set that can never be accepted elsewhere:
+    /// every object scoped to it, plus the fork provenance record when
+    /// this board is a fork (the [`BoardFork`] record names no board in
+    /// `board`, only `source_board`/`fork_board`, so scope alone would
+    /// miss it and fork provenance would never replicate), plus the
+    /// dependency closure a fresh graph needs before
+    /// [`Self::validate_links`] will accept those objects — the root's
+    /// `theme_ref` theme and `forked_from` ancestor root, recursively
+    /// (an ancestor's own theme and fork lineage, a theme's fork
+    /// lineage, and a fork record's source root, fork root, and cited
+    /// source frontier). Themes, ancestor roots, and fork records name
+    /// no board (`board_ref` is `None`), so a scope-only filter would
+    /// export a set that can never be accepted elsewhere:
     /// themed and forked boards would stall replication forever
     /// (Codex P1 on PR #4048). This set — not a server-side copy — is
     /// what hosts replicate and converge on.
@@ -906,7 +943,9 @@ impl BoardGraph {
             .objects
             .iter()
             .filter(|(hash, signed)| {
-                *hash == board || signed.object.board_ref() == Some(board)
+                *hash == board
+                    || signed.object.board_ref() == Some(board)
+                    || matches!(&signed.object, BoardObject::BoardFork(fork) if &fork.fork_board == board)
             })
             .map(|(hash, _)| hash.clone())
             .collect();
@@ -915,19 +954,87 @@ impl BoardGraph {
             let Some(signed) = self.objects.get(&hash) else {
                 continue;
             };
-            let dependencies: Vec<&ArtifactHash> = match &signed.object {
+            // The closure follows the acceptance dependencies of every
+            // object kind -- exactly the references validate_links
+            // requires to already be present -- not just roots, themes,
+            // and fork records. A frontier-cited source object (a post,
+            // say) is scoped to the *source* board, so the seed never
+            // contains its thread, that thread's forum/rules, its parent
+            // post, or its attachments; without traversing those, the
+            // export can never be accepted by a fresh graph and
+            // replication stalls (Codex P1 on PR #4545). Moderator-gated
+            // kinds (rules, forums, moderation actions) additionally
+            // depend on the grant that gives their author authority.
+            let author = signed.artifact.author.clone();
+            let moderator_grants = |board: &ArtifactHash| -> Vec<ArtifactHash> {
+                self.objects
+                    .iter()
+                    .filter_map(|(grant_hash, grant)| match &grant.object {
+                        BoardObject::RoleAttestation(value)
+                            if &value.board == board
+                                && value.member == author
+                                && value.role == BoardRole::Moderator
+                                && value.granted =>
+                        {
+                            Some(grant_hash.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            };
+            let dependencies: Vec<ArtifactHash> = match &signed.object {
                 BoardObject::Board(body) => body
                     .forked_from
                     .iter()
                     .chain(body.theme_ref.iter())
+                    .cloned()
                     .collect(),
-                BoardObject::Theme(body) => body.forked_from.iter().collect(),
-                _ => Vec::new(),
+                BoardObject::Theme(body) => body.forked_from.iter().cloned().collect(),
+                BoardObject::BoardFork(body) => body
+                    .source_frontier
+                    .iter()
+                    .chain([&body.source_board, &body.fork_board])
+                    .cloned()
+                    .collect(),
+                BoardObject::Rules(body) => std::iter::once(body.board.clone())
+                    .chain(moderator_grants(&body.board))
+                    .collect(),
+                BoardObject::Forum(body) => std::iter::once(body.board.clone())
+                    .chain(moderator_grants(&body.board))
+                    .collect(),
+                BoardObject::Thread(body) => std::iter::once(body.board.clone())
+                    .chain(body.forum_ref.iter().cloned())
+                    .chain(body.rules_ref.iter().cloned())
+                    .collect(),
+                BoardObject::Post(body) => std::iter::once(body.board.clone())
+                    .chain(std::iter::once(body.thread.clone()))
+                    .chain(body.parent_post.iter().cloned())
+                    .chain(body.attachments.iter().cloned())
+                    .chain(body.embed_ref.iter().map(|embed| embed.object.clone()))
+                    .collect(),
+                BoardObject::Attachment(body) => vec![body.board.clone()],
+                BoardObject::Membership(body) => vec![body.board.clone()],
+                BoardObject::RoleAttestation(body) => std::iter::once(body.board.clone())
+                    .chain(body.supersedes.iter().cloned())
+                    .collect(),
+                BoardObject::ModerationAction(body) => std::iter::once(body.board.clone())
+                    .chain(std::iter::once(body.target.clone()))
+                    .chain(moderator_grants(&body.board))
+                    .collect(),
+                BoardObject::Supersede(body) => vec![
+                    body.board.clone(),
+                    body.previous.clone(),
+                    body.replacement.clone(),
+                ],
+                BoardObject::Tombstone(body) => {
+                    vec![body.board.clone(), body.target.clone()]
+                }
+                BoardObject::BoardListing(body) => std::iter::once(body.board.clone())
+                    .chain(body.supersedes.iter().cloned())
+                    .collect(),
             };
             for dependency in dependencies {
-                if self.objects.contains_key(dependency)
-                    && set.insert(dependency.clone())
-                {
+                if self.objects.contains_key(&dependency) && set.insert(dependency.clone()) {
                     frontier.push(dependency.clone());
                 }
             }
@@ -1014,16 +1121,14 @@ impl BoardGraph {
     /// lagging replica is never silently presented as current, and a
     /// newer signed object is never overwritten by an older replica
     /// (the graph is append-only and keeps every signed version).
-    pub fn replica_status_against(&self, board: &ArtifactHash, source: &BoardGraph) -> ReplicaStatus {
+    pub fn replica_status_against(
+        &self,
+        board: &ArtifactHash,
+        source: &BoardGraph,
+    ) -> ReplicaStatus {
         let expected = source.board_object_set(board);
         let mut missing: Vec<ArtifactHash> = expected
-            .difference(
-                &self
-                    .objects
-                    .keys()
-                    .cloned()
-                    .collect::<BTreeSet<_>>(),
-            )
+            .difference(&self.objects.keys().cloned().collect::<BTreeSet<_>>())
             .cloned()
             .collect();
         if expected.is_empty() {
@@ -1203,10 +1308,7 @@ impl BoardGraph {
                 .filter(|(hash, _)| active_records.contains(hash))
                 .map(|(_, previous)| previous.clone())
                 .collect();
-            let next: BTreeSet<ArtifactHash> = active_records
-                .difference(&named)
-                .cloned()
-                .collect();
+            let next: BTreeSet<ArtifactHash> = active_records.difference(&named).cloned().collect();
             if next == active_records {
                 break;
             }
@@ -1261,10 +1363,8 @@ impl BoardGraph {
                     .filter(|(hash, _)| active_attestations.contains(hash))
                     .filter_map(|(_, previous)| previous.clone())
                     .collect();
-                let next: BTreeSet<ArtifactHash> = eligible_attestations
-                    .difference(&named)
-                    .cloned()
-                    .collect();
+                let next: BTreeSet<ArtifactHash> =
+                    eligible_attestations.difference(&named).cloned().collect();
                 if next == active_attestations {
                     break;
                 }
@@ -1290,9 +1390,7 @@ impl BoardGraph {
             })
             .collect();
         let owner = root.artifact.author.as_str();
-        let has_authority = |author: &str| {
-            author == owner || current_moderators.contains(author)
-        };
+        let has_authority = |author: &str| author == owner || current_moderators.contains(author);
 
         // Board layer facts, gathered in deterministic (content-hash)
         // order from the map.
@@ -1310,18 +1408,15 @@ impl BoardGraph {
                     // did) carry authority. Only empowered, current
                     // records change the projection.
                     moderation_log.push(hash.clone());
-                    if superseded.contains(hash)
-                        || !has_authority(signed.artifact.author.as_str())
+                    if superseded.contains(hash) || !has_authority(signed.artifact.author.as_str())
                     {
                         continue;
                     }
                     match value.action {
                         ModerationActionKind::Hide => {
                             *hide_balance.entry(value.target.clone()).or_default() += 1;
-                            hide_source.insert(
-                                value.target.clone(),
-                                (hash.clone(), value.reason.clone()),
-                            );
+                            hide_source
+                                .insert(value.target.clone(), (hash.clone(), value.reason.clone()));
                         }
                         ModerationActionKind::Restore => {
                             *hide_balance.entry(value.target.clone()).or_default() -= 1;
@@ -1372,8 +1467,7 @@ impl BoardGraph {
                         .unwrap_or((hash.clone(), None));
                     (Some(action), reason)
                 } else {
-                    let (action, reason) =
-                        tombstone.cloned().unwrap_or((hash.clone(), None));
+                    let (action, reason) = tombstone.cloned().unwrap_or((hash.clone(), None));
                     (Some(action), reason)
                 };
                 hidden.push(HiddenObject {
@@ -1612,6 +1706,7 @@ fn is_public_key(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use ed25519_dalek::SigningKey;
+    use proptest::prelude::*;
 
     use super::*;
     use crate::world::hex_encode;
@@ -1875,6 +1970,113 @@ mod tests {
                 "valid embed",
             ))
             .unwrap();
+    }
+
+    proptest! {
+        #[test]
+        fn rules_resolution_is_independent_of_insertion_order(
+            additional in prop::collection::vec((1_u64..=3, "[a-z0-9]{0,8}"), 0..6)
+        ) {
+            let owner = key(41);
+            let mut first_graph = BoardGraph::default();
+            let board_hash = first_graph.insert(board(&owner)).unwrap();
+            let mut reverse_graph = BoardGraph::default();
+            prop_assert_eq!(reverse_graph.insert(board(&owner)).unwrap(), board_hash.clone());
+
+            // Always include two different revision-1 rules so the regression
+            // property covers the adopted legal-duplicate case.
+            let rule_data = [(1_u64, "first".to_owned()), (1_u64, "second".to_owned())]
+                .into_iter()
+                .chain(additional.into_iter().map(|(revision, text)| (revision, text)));
+            let mut rules = Vec::new();
+            for (index, (revision, text)) in rule_data.enumerate() {
+                let signed = SignedBoardObject::sign(
+                    &owner,
+                    index as u64 + 2,
+                    "",
+                    BoardObject::Rules(Rules {
+                        board: board_hash.clone(),
+                        revision,
+                        text: format!("{index}: {text}"),
+                    }),
+                )
+                .unwrap();
+                rules.push((signed.hash().unwrap(), revision, signed));
+            }
+
+            for (_, _, signed) in &rules {
+                first_graph.insert(signed.clone()).unwrap();
+            }
+            for (_, _, signed) in rules.iter().rev() {
+                reverse_graph.insert(signed.clone()).unwrap();
+            }
+
+            let expected_current = rules
+                .iter()
+                .max_by(|(left_hash, left_revision, _), (right_hash, right_revision, _)| {
+                    left_revision
+                        .cmp(right_revision)
+                        .then_with(|| left_hash.cmp(right_hash))
+                })
+                .map(|(hash, _, _)| hash)
+                .unwrap();
+            prop_assert_eq!(
+                first_graph.resolve_rules(&board_hash, None).map(|(hash, _)| hash),
+                Some(expected_current)
+            );
+            prop_assert_eq!(
+                reverse_graph.resolve_rules(&board_hash, None).map(|(hash, _)| hash),
+                Some(expected_current)
+            );
+
+            for revision in 1..=3 {
+                let expected_revision = rules
+                    .iter()
+                    .filter(|(_, candidate_revision, _)| *candidate_revision == revision)
+                    .map(|(hash, _, _)| hash)
+                    .max();
+                prop_assert_eq!(
+                    first_graph.resolve_rules(&board_hash, Some(revision)).map(|(hash, _)| hash),
+                    expected_revision
+                );
+                prop_assert_eq!(
+                    reverse_graph.resolve_rules(&board_hash, Some(revision)).map(|(hash, _)| hash),
+                    expected_revision
+                );
+            }
+
+            // A thread keeps the exact hash it names, even if that is not the
+            // graph's selected winner for the same revision.
+            let pinned_hash = rules
+                .iter()
+                .filter(|(_, revision, _)| *revision == 1)
+                .map(|(hash, _, _)| hash)
+                .min()
+                .unwrap()
+                .clone();
+            let pinned_thread = SignedBoardObject::sign(
+                &owner,
+                u64::MAX,
+                "",
+                BoardObject::Thread(Thread {
+                    board: board_hash.clone(),
+                    forum_ref: None,
+                    rules_ref: Some(pinned_hash.clone()),
+                    title: "pinned rules".to_owned(),
+                }),
+            )
+            .unwrap();
+            let thread_hash = pinned_thread.hash().unwrap();
+            first_graph.insert(pinned_thread.clone()).unwrap();
+            reverse_graph.insert(pinned_thread).unwrap();
+            for graph in [&first_graph, &reverse_graph] {
+                let BoardObject::Thread(thread) = &graph.get(&thread_hash).unwrap().object else {
+                    prop_assert!(false, "inserted thread hash did not resolve to a thread");
+                    return Ok(());
+                };
+                prop_assert_eq!(thread.rules_ref.as_ref(), Some(&pinned_hash));
+            }
+        }
     }
 
     #[test]
@@ -2194,50 +2396,56 @@ mod tests {
         let author = key(21);
         let mut bad_name = BTreeMap::new();
         bad_name.insert("Accent".to_owned(), "#ffffff".to_owned());
-        assert!(SignedBoardObject::sign(
-            &author,
-            1,
-            "",
-            BoardObject::Theme(Theme {
-                name: "Bad".to_owned(),
-                tokens: bad_name,
-                layout: ThemeLayout::List,
-                assets: Vec::new(),
-                forked_from: None,
-            }),
-        )
-        .is_err());
+        assert!(
+            SignedBoardObject::sign(
+                &author,
+                1,
+                "",
+                BoardObject::Theme(Theme {
+                    name: "Bad".to_owned(),
+                    tokens: bad_name,
+                    layout: ThemeLayout::List,
+                    assets: Vec::new(),
+                    forked_from: None,
+                }),
+            )
+            .is_err()
+        );
 
         let mut empty_value = BTreeMap::new();
         empty_value.insert("accent".to_owned(), String::new());
-        assert!(SignedBoardObject::sign(
-            &author,
-            1,
-            "",
-            BoardObject::Theme(Theme {
-                name: "Bad".to_owned(),
-                tokens: empty_value,
-                layout: ThemeLayout::List,
-                assets: Vec::new(),
-                forked_from: None,
-            }),
-        )
-        .is_err());
+        assert!(
+            SignedBoardObject::sign(
+                &author,
+                1,
+                "",
+                BoardObject::Theme(Theme {
+                    name: "Bad".to_owned(),
+                    tokens: empty_value,
+                    layout: ThemeLayout::List,
+                    assets: Vec::new(),
+                    forked_from: None,
+                }),
+            )
+            .is_err()
+        );
 
         let asset = ArtifactHash::new("c".repeat(64)).unwrap();
-        assert!(SignedBoardObject::sign(
-            &author,
-            1,
-            "",
-            BoardObject::Theme(Theme {
-                name: "Bad".to_owned(),
-                tokens: BTreeMap::new(),
-                layout: ThemeLayout::Compact,
-                assets: vec![asset.clone(), asset],
-                forked_from: None,
-            }),
-        )
-        .is_err());
+        assert!(
+            SignedBoardObject::sign(
+                &author,
+                1,
+                "",
+                BoardObject::Theme(Theme {
+                    name: "Bad".to_owned(),
+                    tokens: BTreeMap::new(),
+                    layout: ThemeLayout::Compact,
+                    assets: vec![asset.clone(), asset],
+                    forked_from: None,
+                }),
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -2255,7 +2463,9 @@ mod tests {
         assert!(graph.insert(themed_board(&author, other_board)).is_err());
 
         let root_hash = graph.insert(themed_board(&author, theme_hash)).unwrap();
-        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        let view = graph
+            .compose_view(&root_hash, &ViewLayers::default())
+            .unwrap();
         let BoardObject::Theme(expected) = theme_signed.object else {
             unreachable!("theme helper builds a theme")
         };
@@ -2275,9 +2485,16 @@ mod tests {
         let author = key(24);
         let mut graph = BoardGraph::default();
         let root_hash = graph.insert(board(&owner)).unwrap();
-        let thread_hash = graph.insert(thread(&owner, root_hash.clone(), "General")).unwrap();
+        let thread_hash = graph
+            .insert(thread(&owner, root_hash.clone(), "General"))
+            .unwrap();
         let post_hash = graph
-            .insert(post(&author, root_hash.clone(), thread_hash, "buy my stuff"))
+            .insert(post(
+                &author,
+                root_hash.clone(),
+                thread_hash,
+                "buy my stuff",
+            ))
             .unwrap();
 
         let hide = moderation(
@@ -2290,7 +2507,9 @@ mod tests {
         );
         let hide_hash = graph.insert(hide).unwrap();
 
-        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        let view = graph
+            .compose_view(&root_hash, &ViewLayers::default())
+            .unwrap();
         assert!(!view.objects.contains(&post_hash));
         assert_eq!(view.moderation_log, vec![hide_hash.clone()]);
         assert_eq!(view.hidden.len(), 1);
@@ -2310,7 +2529,9 @@ mod tests {
             None,
         );
         graph.insert(restore).unwrap();
-        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        let view = graph
+            .compose_view(&root_hash, &ViewLayers::default())
+            .unwrap();
         assert!(view.objects.contains(&post_hash));
         assert!(view.hidden.is_empty());
         assert_eq!(view.moderation_log.len(), 2);
@@ -2325,7 +2546,9 @@ mod tests {
             Some("spam again"),
         );
         graph.insert(rehide).unwrap();
-        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        let view = graph
+            .compose_view(&root_hash, &ViewLayers::default())
+            .unwrap();
         assert_eq!(view.hidden.len(), 1);
         assert_eq!(view.hidden[0].reason.as_deref(), Some("spam again"));
     }
@@ -2337,9 +2560,16 @@ mod tests {
         let bob = key(27);
         let mut graph = BoardGraph::default();
         let root_hash = graph.insert(board(&owner)).unwrap();
-        let thread_hash = graph.insert(thread(&owner, root_hash.clone(), "General")).unwrap();
+        let thread_hash = graph
+            .insert(thread(&owner, root_hash.clone(), "General"))
+            .unwrap();
         let alice_post = graph
-            .insert(post(&alice, root_hash.clone(), thread_hash.clone(), "alice"))
+            .insert(post(
+                &alice,
+                root_hash.clone(),
+                thread_hash.clone(),
+                "alice",
+            ))
             .unwrap();
         let bob_post = graph
             .insert(post(&bob, root_hash.clone(), thread_hash, "bob"))
@@ -2363,7 +2593,9 @@ mod tests {
         assert!(!view.objects.contains(&alice_post));
         assert!(!view.objects.contains(&bob_post));
 
-        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        let view = graph
+            .compose_view(&root_hash, &ViewLayers::default())
+            .unwrap();
         assert!(view.objects.contains(&alice_post));
         assert!(view.objects.contains(&bob_post));
         assert!(view.hidden.is_empty());
@@ -2376,7 +2608,9 @@ mod tests {
         let author = key(32);
         let mut graph = BoardGraph::default();
         let root_hash = graph.insert(board(&owner)).unwrap();
-        let thread_hash = graph.insert(thread(&owner, root_hash.clone(), "General")).unwrap();
+        let thread_hash = graph
+            .insert(thread(&owner, root_hash.clone(), "General"))
+            .unwrap();
         let post_hash = graph
             .insert(post(&author, root_hash.clone(), thread_hash, "hello"))
             .unwrap();
@@ -2404,7 +2638,9 @@ mod tests {
                 Some("spam"),
             ))
             .unwrap();
-        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        let view = graph
+            .compose_view(&root_hash, &ViewLayers::default())
+            .unwrap();
         assert_eq!(view.hidden.len(), 1);
         assert_eq!(view.hidden[0].object, post_hash);
 
@@ -2422,7 +2658,9 @@ mod tests {
         )
         .unwrap();
         graph.insert(revoke).unwrap();
-        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        let view = graph
+            .compose_view(&root_hash, &ViewLayers::default())
+            .unwrap();
         // The revoked moderator's hide no longer has an effect...
         assert!(view.objects.contains(&post_hash));
         assert!(view.hidden.is_empty());
@@ -2436,9 +2674,16 @@ mod tests {
         let author = key(34);
         let mut graph = BoardGraph::default();
         let root_hash = graph.insert(board(&owner)).unwrap();
-        let thread_hash = graph.insert(thread(&owner, root_hash.clone(), "General")).unwrap();
+        let thread_hash = graph
+            .insert(thread(&owner, root_hash.clone(), "General"))
+            .unwrap();
         let first = graph
-            .insert(post(&author, root_hash.clone(), thread_hash.clone(), "first"))
+            .insert(post(
+                &author,
+                root_hash.clone(),
+                thread_hash.clone(),
+                "first",
+            ))
             .unwrap();
         let second = graph
             .insert(post(&author, root_hash.clone(), thread_hash, "second"))
@@ -2456,14 +2701,19 @@ mod tests {
             )
             .unwrap()
         };
-        let first_tombstone = graph.insert(tombstone(first.clone(), "wrong thread")).unwrap();
-        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        let first_tombstone = graph
+            .insert(tombstone(first.clone(), "wrong thread"))
+            .unwrap();
+        let view = graph
+            .compose_view(&root_hash, &ViewLayers::default())
+            .unwrap();
         assert_eq!(view.hidden.len(), 1);
         assert_eq!(view.hidden[0].object, first);
         assert_eq!(view.hidden[0].reason.as_deref(), Some("wrong thread"));
 
-        let second_tombstone =
-            graph.insert(tombstone(second.clone(), "duplicate")).unwrap();
+        let second_tombstone = graph
+            .insert(tombstone(second.clone(), "duplicate"))
+            .unwrap();
         let supersede = SignedBoardObject::sign(
             &author,
             3,
@@ -2476,7 +2726,9 @@ mod tests {
         )
         .unwrap();
         graph.insert(supersede).unwrap();
-        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        let view = graph
+            .compose_view(&root_hash, &ViewLayers::default())
+            .unwrap();
         assert!(view.objects.contains(&first));
         assert_eq!(view.hidden.len(), 1);
         assert_eq!(view.hidden[0].object, second);
@@ -2488,9 +2740,13 @@ mod tests {
         let author = key(35);
         let mut graph = BoardGraph::default();
         let theme_hash = graph.insert(theme(&author, 1, None)).unwrap();
-        let root_hash = graph.insert(themed_board(&author, theme_hash.clone())).unwrap();
+        let root_hash = graph
+            .insert(themed_board(&author, theme_hash.clone()))
+            .unwrap();
 
-        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        let view = graph
+            .compose_view(&root_hash, &ViewLayers::default())
+            .unwrap();
         assert!(view.theme.is_some());
 
         let mut layers = ViewLayers::default();
@@ -2508,7 +2764,9 @@ mod tests {
         let author = key(38);
         let mut graph = BoardGraph::default();
         let root_hash = graph.insert(board(&owner)).unwrap();
-        let thread_hash = graph.insert(thread(&owner, root_hash.clone(), "General")).unwrap();
+        let thread_hash = graph
+            .insert(thread(&owner, root_hash.clone(), "General"))
+            .unwrap();
         let post_hash = graph
             .insert(post(&author, root_hash.clone(), thread_hash, "hello"))
             .unwrap();
@@ -2538,7 +2796,9 @@ mod tests {
                 Some("spam"),
             ))
             .unwrap();
-        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        let view = graph
+            .compose_view(&root_hash, &ViewLayers::default())
+            .unwrap();
         assert_eq!(view.hidden.len(), 1);
 
         // Revocation by generic Supersede record (not the attestation's
@@ -2556,7 +2816,9 @@ mod tests {
         )
         .unwrap();
         graph.insert(supersede).unwrap();
-        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        let view = graph
+            .compose_view(&root_hash, &ViewLayers::default())
+            .unwrap();
         assert!(view.objects.contains(&post_hash));
         assert!(view.hidden.is_empty());
         assert_eq!(view.moderation_log.len(), 1);
@@ -2573,25 +2835,28 @@ mod tests {
         let moderator_key = hex_encode(&moderator.verifying_key().to_bytes());
         let mut graph = BoardGraph::default();
         let root_hash = graph.insert(board(&owner)).unwrap();
-        let thread_hash = graph.insert(thread(&owner, root_hash.clone(), "General")).unwrap();
+        let thread_hash = graph
+            .insert(thread(&owner, root_hash.clone(), "General"))
+            .unwrap();
         let post_hash = graph
             .insert(post(&author, root_hash.clone(), thread_hash, "hello"))
             .unwrap();
-        let attestation = |seq: u64, member: String, granted: bool, supersedes: Option<ArtifactHash>| {
-            SignedBoardObject::sign(
-                &owner,
-                seq,
-                "",
-                BoardObject::RoleAttestation(RoleAttestation {
-                    board: root_hash.clone(),
-                    member,
-                    role: BoardRole::Moderator,
-                    granted,
-                    supersedes,
-                }),
-            )
-            .unwrap()
-        };
+        let attestation =
+            |seq: u64, member: String, granted: bool, supersedes: Option<ArtifactHash>| {
+                SignedBoardObject::sign(
+                    &owner,
+                    seq,
+                    "",
+                    BoardObject::RoleAttestation(RoleAttestation {
+                        board: root_hash.clone(),
+                        member,
+                        role: BoardRole::Moderator,
+                        granted,
+                        supersedes,
+                    }),
+                )
+                .unwrap()
+            };
         let grant_hash = graph
             .insert(attestation(2, moderator_key.clone(), true, None))
             .unwrap();
@@ -2605,14 +2870,23 @@ mod tests {
                 Some("spam"),
             ))
             .unwrap();
-        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        let view = graph
+            .compose_view(&root_hash, &ViewLayers::default())
+            .unwrap();
         assert_eq!(view.hidden.len(), 1);
 
         // Revoke: the moderator's Hide stops applying.
         let revocation_hash = graph
-            .insert(attestation(3, moderator_key.clone(), false, Some(grant_hash.clone())))
+            .insert(attestation(
+                3,
+                moderator_key.clone(),
+                false,
+                Some(grant_hash.clone()),
+            ))
             .unwrap();
-        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        let view = graph
+            .compose_view(&root_hash, &ViewLayers::default())
+            .unwrap();
         assert!(view.objects.contains(&post_hash));
         assert!(view.hidden.is_empty());
 
@@ -2639,7 +2913,9 @@ mod tests {
         )
         .unwrap();
         graph.insert(supersede).unwrap();
-        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        let view = graph
+            .compose_view(&root_hash, &ViewLayers::default())
+            .unwrap();
         assert_eq!(view.hidden.len(), 1);
         assert!(!view.objects.contains(&post_hash));
     }
@@ -2657,7 +2933,9 @@ mod tests {
         let moderator_key = hex_encode(&moderator.verifying_key().to_bytes());
         let mut graph = BoardGraph::default();
         let root_hash = graph.insert(board(&owner)).unwrap();
-        let thread_hash = graph.insert(thread(&owner, root_hash.clone(), "General")).unwrap();
+        let thread_hash = graph
+            .insert(thread(&owner, root_hash.clone(), "General"))
+            .unwrap();
         let post_hash = graph
             .insert(post(&author, root_hash.clone(), thread_hash, "hello"))
             .unwrap();
@@ -2710,7 +2988,9 @@ mod tests {
             .insert(attestation(5, false, Some(second_grant)))
             .unwrap();
         assert_eq!(hidden(&graph), 0);
-        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        let view = graph
+            .compose_view(&root_hash, &ViewLayers::default())
+            .unwrap();
         assert!(view.objects.contains(&post_hash));
     }
 
@@ -2720,7 +3000,9 @@ mod tests {
         let author = key(40);
         let mut graph = BoardGraph::default();
         let root_hash = graph.insert(board(&owner)).unwrap();
-        let thread_hash = graph.insert(thread(&owner, root_hash.clone(), "General")).unwrap();
+        let thread_hash = graph
+            .insert(thread(&owner, root_hash.clone(), "General"))
+            .unwrap();
         let mut posts = Vec::new();
         for body in ["a", "b", "c", "d"] {
             posts.push(
@@ -2742,11 +3024,17 @@ mod tests {
             )
             .unwrap()
         };
-        let first = graph.insert(supersede(2, posts[0].clone(), posts[1].clone())).unwrap();
-        let second = graph.insert(supersede(3, posts[2].clone(), posts[3].clone())).unwrap();
+        let first = graph
+            .insert(supersede(2, posts[0].clone(), posts[1].clone()))
+            .unwrap();
+        let second = graph
+            .insert(supersede(3, posts[2].clone(), posts[3].clone()))
+            .unwrap();
         graph.insert(supersede(4, first, second)).unwrap();
 
-        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        let view = graph
+            .compose_view(&root_hash, &ViewLayers::default())
+            .unwrap();
         // The first supersede was itself superseded: post A is current
         // again. The second supersede is active: post C is replaced.
         assert!(view.objects.contains(&posts[0]));
@@ -2820,8 +3108,12 @@ mod tests {
         let host = key(9);
         let mut source = BoardGraph::default();
         let root = source.insert(board(&owner)).unwrap();
-        let thread = source.insert(thread(&owner, root.clone(), "welcome")).unwrap();
-        source.insert(post(&owner, root.clone(), thread, "hello")).unwrap();
+        let thread = source
+            .insert(thread(&owner, root.clone(), "welcome"))
+            .unwrap();
+        source
+            .insert(post(&owner, root.clone(), thread, "hello"))
+            .unwrap();
         source
             .insert(listing(&owner, 1, root.clone(), &host, 1, true, None))
             .unwrap();
@@ -2829,8 +3121,14 @@ mod tests {
         let mut replica = BoardGraph::default();
         let report = replica.replicate_board_from(&source, &root).unwrap();
         assert_eq!(report.status.state, ReplicaState::Complete);
-        assert_eq!(report.transferred.len(), source.board_object_set(&root).len());
-        assert_eq!(replica.board_object_set(&root), source.board_object_set(&root));
+        assert_eq!(
+            report.transferred.len(),
+            source.board_object_set(&root).len()
+        );
+        assert_eq!(
+            replica.board_object_set(&root),
+            source.board_object_set(&root)
+        );
 
         // A second pass is a no-op: the hosts have converged.
         let again = replica.replicate_board_from(&source, &root).unwrap();
@@ -2846,13 +3144,18 @@ mod tests {
         let owner = key(7);
         let mut source = BoardGraph::default();
         let theme_hash = source.insert(theme(&owner, 1, None)).unwrap();
-        let root = source.insert(themed_board(&owner, theme_hash.clone())).unwrap();
+        let root = source
+            .insert(themed_board(&owner, theme_hash.clone()))
+            .unwrap();
 
         let mut replica = BoardGraph::default();
         let report = replica.replicate_board_from(&source, &root).unwrap();
         assert_eq!(report.status.state, ReplicaState::Complete);
         assert!(report.transferred.contains(&theme_hash));
-        assert_eq!(replica.board_object_set(&root), source.board_object_set(&root));
+        assert_eq!(
+            replica.board_object_set(&root),
+            source.board_object_set(&root)
+        );
     }
 
     #[test]
@@ -2912,6 +3215,259 @@ mod tests {
     }
 
     #[test]
+    fn fork_record_is_in_fork_board_replication_set() {
+        // #4081: a BoardFork record names no `board`, so the scope-only
+        // seed left it in no board's replication set and fork provenance
+        // never replicated. The record belongs to the fork board's set
+        // (it is signed by the fork board's creator), and the closure
+        // pulls both roots plus the cited source frontier.
+        let owner = key(7);
+        let forker = key(8);
+        let mut source = BoardGraph::default();
+        let ancestor = source.insert(board(&owner)).unwrap();
+        let frontier_thread = source
+            .insert(thread(&owner, ancestor.clone(), "fork frontier"))
+            .unwrap();
+        let fork_root = source
+            .insert(
+                SignedBoardObject::sign(
+                    &forker,
+                    1,
+                    "",
+                    BoardObject::Board(Board {
+                        board_id: "forked-board".to_owned(),
+                        forked_from: Some(ancestor.clone()),
+                        theme_ref: None,
+                    }),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let fork_record = source
+            .insert(
+                SignedBoardObject::sign(
+                    &forker,
+                    1,
+                    "",
+                    BoardObject::BoardFork(BoardFork {
+                        source_board: ancestor.clone(),
+                        fork_board: fork_root.clone(),
+                        source_frontier: vec![ancestor.clone(), frontier_thread.clone()],
+                    }),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let fork_set = source.board_object_set(&fork_root);
+        assert!(fork_set.contains(&fork_record));
+        assert!(fork_set.contains(&fork_root));
+        assert!(fork_set.contains(&ancestor));
+        assert!(fork_set.contains(&frontier_thread));
+        // The provenance record travels with the fork board, not the
+        // source board: source replicas must not require an object
+        // their board's creator never signed.
+        assert!(!source.board_object_set(&ancestor).contains(&fork_record));
+    }
+
+    #[test]
+    fn fork_record_replicates_end_to_end_and_gates_completeness() {
+        // #4081: replicate_board_from into a fresh graph accepts and
+        // transfers the fork record, and a replica missing it reports
+        // Incomplete — never a silent Complete.
+        let owner = key(7);
+        let forker = key(8);
+        let ancestor_signed = board(&owner);
+        // Content hashes are deterministic over the signed artifact, so
+        // the thread can name the ancestor root before either is
+        // inserted.
+        let frontier_signed = thread(&owner, ancestor_signed.hash().unwrap(), "fork frontier");
+        let mut source = BoardGraph::default();
+        let ancestor = source.insert(ancestor_signed.clone()).unwrap();
+        let frontier_thread = source.insert(frontier_signed.clone()).unwrap();
+        let fork_root_signed = SignedBoardObject::sign(
+            &forker,
+            1,
+            "",
+            BoardObject::Board(Board {
+                board_id: "forked-board".to_owned(),
+                forked_from: Some(ancestor.clone()),
+                theme_ref: None,
+            }),
+        )
+        .unwrap();
+        let fork_root = source.insert(fork_root_signed.clone()).unwrap();
+        let fork_record_signed = SignedBoardObject::sign(
+            &forker,
+            1,
+            "",
+            BoardObject::BoardFork(BoardFork {
+                source_board: ancestor.clone(),
+                fork_board: fork_root.clone(),
+                source_frontier: vec![ancestor.clone(), frontier_thread.clone()],
+            }),
+        )
+        .unwrap();
+        let fork_record = source.insert(fork_record_signed.clone()).unwrap();
+
+        let mut replica = BoardGraph::default();
+        let report = replica.replicate_board_from(&source, &fork_root).unwrap();
+        assert_eq!(report.status.state, ReplicaState::Complete);
+        assert!(report.transferred.contains(&fork_record));
+        assert_eq!(
+            replica.board_object_set(&fork_root),
+            source.board_object_set(&fork_root)
+        );
+
+        let mut partial = BoardGraph::default();
+        partial.insert(ancestor_signed).unwrap();
+        partial.insert(frontier_signed).unwrap();
+        partial.insert(fork_root_signed).unwrap();
+        let status = partial.replica_status_against(&fork_root, &source);
+        assert_eq!(status.state, ReplicaState::Incomplete);
+        assert!(status.missing.contains(&fork_record));
+        assert!(status.present_objects < status.expected_objects);
+    }
+
+    #[test]
+    fn fork_frontier_post_pulls_its_acceptance_dependencies() {
+        // Codex P1 on PR #4545: when a fork record cites a source-board
+        // post in its frontier without also listing the post's thread,
+        // the closure must still pull the thread -- and the thread's
+        // forum and rules, and the moderator grant behind those -- or a
+        // fresh replica rejects the post, then the fork record, and
+        // replication stalls instead of completing.
+        let owner = key(7);
+        let moderator = key(11);
+        let moderator_hex = hex_encode(&moderator.verifying_key().to_bytes());
+        let forker = key(8);
+        let mut source = BoardGraph::default();
+        let root = source.insert(board(&owner)).unwrap();
+        let grant = source
+            .insert(
+                SignedBoardObject::sign(
+                    &owner,
+                    2,
+                    "",
+                    BoardObject::RoleAttestation(RoleAttestation {
+                        board: root.clone(),
+                        member: moderator_hex,
+                        role: BoardRole::Moderator,
+                        granted: true,
+                        supersedes: None,
+                    }),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let rules = source
+            .insert(
+                SignedBoardObject::sign(
+                    &moderator,
+                    1,
+                    "",
+                    BoardObject::Rules(Rules {
+                        board: root.clone(),
+                        revision: 1,
+                        text: "be kind".to_owned(),
+                    }),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let forum = source
+            .insert(
+                SignedBoardObject::sign(
+                    &moderator,
+                    2,
+                    "",
+                    BoardObject::Forum(Forum {
+                        board: root.clone(),
+                        name: "general".to_owned(),
+                    }),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let thread = source
+            .insert(
+                SignedBoardObject::sign(
+                    &owner,
+                    2,
+                    "",
+                    BoardObject::Thread(Thread {
+                        board: root.clone(),
+                        forum_ref: Some(forum.clone()),
+                        rules_ref: Some(rules.clone()),
+                        title: "cited thread".to_owned(),
+                    }),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let cited_post = source
+            .insert(post(
+                &owner,
+                root.clone(),
+                thread.clone(),
+                "cited by the fork",
+            ))
+            .unwrap();
+        let fork_root = source
+            .insert(
+                SignedBoardObject::sign(
+                    &forker,
+                    1,
+                    "",
+                    BoardObject::Board(Board {
+                        board_id: "forked-board".to_owned(),
+                        forked_from: Some(root.clone()),
+                        theme_ref: None,
+                    }),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let fork_record = source
+            .insert(
+                SignedBoardObject::sign(
+                    &forker,
+                    1,
+                    "",
+                    BoardObject::BoardFork(BoardFork {
+                        source_board: root.clone(),
+                        fork_board: fork_root.clone(),
+                        source_frontier: vec![cited_post.clone()],
+                    }),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let fork_set = source.board_object_set(&fork_root);
+        for expected in [
+            &fork_record,
+            &fork_root,
+            &root,
+            &cited_post,
+            &thread,
+            &forum,
+            &rules,
+            &grant,
+        ] {
+            assert!(fork_set.contains(expected), "missing {expected:?}");
+        }
+
+        let mut replica = BoardGraph::default();
+        let report = replica.replicate_board_from(&source, &fork_root).unwrap();
+        assert_eq!(report.status.state, ReplicaState::Complete);
+        assert_eq!(
+            replica.board_object_set(&fork_root),
+            source.board_object_set(&fork_root)
+        );
+    }
+
+    #[test]
     fn stale_replica_is_explicit_not_silent() {
         let owner = key(7);
         let host = key(9);
@@ -2954,5 +3510,4 @@ mod tests {
         assert_eq!(graph.len(), before);
         assert!(HostServingPolicy::default().serves_board(&root));
     }
-
 }
