@@ -1,4 +1,14 @@
 #!/usr/bin/env node
+// Parsed-shape contract (#3068): parsed is not validated. Every value
+// this tool obtains by parsing (config files, provider/model API
+// responses, local service RPCs) is shape-checked once at the parse
+// boundary before it is dereferenced: a wrong shape is a named shape
+// error in this tool's vocabulary, never a raw TypeError and never a
+// silently half-applied value. Absence is not emptiness — a missing
+// section is absent, not an empty object/array standing in for a
+// measured result. Coercion is not validation. The full statement
+// lives in pm-stack/aggregator/README.md ("Parsed-shape contract
+// (#3068)"); the closing audit is recorded on issue #3069.
 import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
