@@ -1573,7 +1573,7 @@ mod tests {
             matches!(
                 entries[0],
                 JournalEntry::Created {
-                    version: world::JOURNAL_VERSION_EXECUTION_PROFILE,
+                    version: crate::world::JOURNAL_VERSION_EXECUTION_PROFILE,
                     ..
                 }
             ),
@@ -1619,7 +1619,7 @@ mod tests {
         assert!(matches!(
             entries[0],
             JournalEntry::Created {
-                version: world::JOURNAL_VERSION_EXECUTION_PROFILE,
+                version: crate::world::JOURNAL_VERSION_EXECUTION_PROFILE,
                 ..
             }
         ));
@@ -1627,7 +1627,7 @@ mod tests {
         assert!(matches!(
             on_disk[0],
             JournalEntry::Created {
-                version: world::JOURNAL_VERSION_EXECUTION_PROFILE,
+                version: crate::world::JOURNAL_VERSION_EXECUTION_PROFILE,
                 ..
             }
         ));
