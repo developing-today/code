@@ -15,6 +15,7 @@ Mode: shadow (default) or live (read from ~/.local/state/opencode-claimant/mode)
 Usage: python3 pm-stack/opencode-claimant/claimant.py
 """
 
+import base64
 import json
 import os
 import subprocess
@@ -44,6 +45,32 @@ QUEUES = [
 # (task 12731).
 REPO_QUEUE_CMD = Path.home() / ".local" / "bin" / "repo-queue"
 PRIMARY_CLONE = Path.home() / "git" / "code"
+
+# OpenCode server coordinates: the standing server requires HTTP
+# Basic auth (user "opencode", password in its state file — the same
+# credential poll.py and the pm-dispatch client read). Calls made
+# without it are rejected, so every session call below carries it.
+OPENCODE_URL = os.environ.get("OPENCODE_URL", "http://127.0.0.1:13420")
+AUTH_FILE = os.environ.get(
+    "OPENCODE_AUTH_FILE",
+    os.path.expanduser("~/.local/state/opencode/service-prod.json"),
+)
+
+
+def _auth_header_args() -> List[str]:
+    """curl args carrying the server's Basic auth, or [] when the
+    credential cannot be read (the server then rejects the call and
+    the caller fails closed). The value is never logged."""
+    try:
+        with open(AUTH_FILE) as f:
+            auth = json.load(f)
+        password = auth.get("password") if isinstance(auth, dict) else None
+        if not password:
+            return []
+        token = base64.b64encode(f"opencode:{password}".encode()).decode()
+        return ["-H", f"Authorization: Basic {token}"]
+    except Exception:
+        return []
 
 # Concurrency cap
 CONCURRENCY_CAP = 36
@@ -185,87 +212,79 @@ def supervision_step(mode: str) -> List[Dict]:
     
     recovery_candidates = []
     
-    # Get all claimed opencode-lane tasks with bound session IDs
+    # Get all claimed opencode-lane tasks with bound session IDs.
+    # Rows come from poll.py's broker rich read: the repo-queue
+    # binary's list verb prints a human table, and json-parsing it
+    # silently supervised nothing (#7325).
+    poll = _load_poll_module()
     for queue in QUEUES:
         try:
-            # Use repo-queue to list tasks
-            result = subprocess.run(
-                [str(REPO_QUEUE_CMD), "list", "--queue", queue, "--status", "claimed"],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
+            for task in poll.fetch_claimed_rows(queue):
+                # Rich rows carry lane/session in progress; a
+                # flattened row carries them at top level.
+                prog = task.get("progress") or {}
+                lane = prog.get("lane") or task.get("lane")
+                session_id = prog.get("session_id") or task.get("session_id")
+                if lane == "opencode" and session_id:
 
-            if result.returncode == 0:
-                data = json.loads(result.stdout)
-                if isinstance(data, dict):
-                    data = data.get("rows") or []
-                for task in data:
-                    if not isinstance(task, dict):
+                    # Check if session exists and is progressing
+                    try:
+                        session_response = subprocess.run(
+                            ["curl", "-s", "-m", "5", *_auth_header_args(),
+                             f"{OPENCODE_URL}/api/session/{session_id}"],
+                            capture_output=True,
+                            text=True
+                        )
+
+                        if session_response.returncode == 0:
+                            session = json.loads(session_response.stdout)
+                            if isinstance(session, dict) and "data" in session:
+                                session = session["data"]
+                            if not isinstance(session, dict) or not session.get("id"):
+                                # Error body, not a session object:
+                                # the session is gone from the server.
+                                session = None
+                            else:
+                                # Check for terminal state
+                                has_terminal = any(
+                                    marker in str(session.get("outcome", "") or "") or
+                                    marker in str((session.get("time") or {}).get("idle", "") or "")
+                                    for marker in ["idle", "outcome", "completed", "failed"]
+                                )
+
+                                if not has_terminal:
+                                    # Session exists and is active - nothing to do
+                                    continue
+                        # else: Session gone from server or error
+                    except Exception:
+                        # Could not verify session - leave bound
                         continue
-                    # Rich rows carry lane/session in progress; a
-                    # flattened row carries them at top level (#4757:
-                    # the list verb rejects --worker, so this call
-                    # silently fetched nothing before).
-                    prog = task.get("progress") or {}
-                    lane = prog.get("lane") or task.get("lane")
-                    session_id = prog.get("session_id") or task.get("session_id")
-                    if lane == "opencode" and session_id:
-                        
-                        # Check if session exists and is progressing
+
+                    # Session is gone or stuck - check if recovery is possible
+                    # Check task attempts and lease
+                    if task.get("attempts", 0) < task.get("max_attempts", 5):
+                        # Verify zero messages first
                         try:
-                            session_response = subprocess.run(
-                                ["curl", "-s", "-m", "5", 
-                                 f"http://127.0.0.1:13420/api/session/{session_id}"],
+                            messages_response = subprocess.run(
+                                ["curl", "-s", "-m", "5", *_auth_header_args(),
+                                 f"{OPENCODE_URL}/api/session/{session_id}/messages"],
                                 capture_output=True,
                                 text=True
                             )
-                            
-                            if session_response.returncode == 0:
-                                session = json.loads(session_response.stdout)
-                                if not isinstance(session, dict) or not session.get("id"):
-                                    # Error body, not a session object:
-                                    # the session is gone from the server.
-                                    session = None
-                                else:
-                                    # Check for terminal state
-                                    has_terminal = any(
-                                        marker in str(session.get("outcome", "") or "") or
-                                        marker in str((session.get("time") or {}).get("idle", "") or "")
-                                        for marker in ["idle", "outcome", "completed", "failed"]
-                                    )
 
-                                    if not has_terminal:
-                                        # Session exists and is active - nothing to do
-                                        continue
-                            # else: Session gone from server or error
+                            if messages_response.returncode == 0:
+                                messages = json.loads(messages_response.stdout or "[]")
+                                if isinstance(messages, dict) and "data" in messages:
+                                    messages = messages["data"]
+                                if isinstance(messages, list) and len(messages) == 0:
+                                    recovery_candidates.append({
+                                        "task_id": task["id"],
+                                        "session_id": session_id,
+                                        "reason": "zero_message"
+                                    })
                         except Exception:
-                            # Could not verify session - leave bound
-                            continue
-                        
-                        # Session is gone or stuck - check if recovery is possible
-                        # Check task attempts and lease
-                        if task.get("attempts", 0) < task.get("max_attempts", 5):
-                            # Verify zero messages first
-                            try:
-                                messages_response = subprocess.run(
-                                    ["curl", "-s", "-m", "5",
-                                     f"http://127.0.0.1:13420/api/session/{session_id}/messages"],
-                                    capture_output=True,
-                                    text=True
-                                )
-                                
-                                if messages_response.returncode == 0:
-                                    message_count = len(json.loads(messages_response.stdout or "[]"))
-                                    if message_count == 0:
-                                        recovery_candidates.append({
-                                            "task_id": task["id"],
-                                            "session_id": session_id,
-                                            "reason": "zero_message"
-                                        })
-                            except Exception:
-                                # Could not read messages - treat as unknown state
-                                pass
+                            # Could not read messages - treat as unknown state
+                            pass
         except Exception as e:
             print(f"Warning: Supervision check failed for queue {queue}: {e}")
     
@@ -277,8 +296,8 @@ def supervision_step(mode: str) -> List[Dict]:
         try:
             # Delete the zero-message session
             delete_result = subprocess.run(
-                ["curl", "-s", "-m", "5", "-X", "DELETE",
-                 f"http://127.0.0.1:13420/api/session/{session_id}"],
+                ["curl", "-s", "-m", "5", "-X", "DELETE", *_auth_header_args(),
+                 f"{OPENCODE_URL}/api/session/{session_id}"],
                 capture_output=True,
                 text=True
             )
@@ -348,6 +367,63 @@ def cap_step() -> int:
     return cap_room
 
 
+def _post_prompt(session_id: str, prompt: str) -> bool:
+    """One prompt POST; True iff the server accepted it."""
+    try:
+        result = subprocess.run(
+            ["curl", "-s", "-f", "-m", "15", "-X", "POST",
+             "-H", "Content-Type: application/json",
+             *_auth_header_args(),
+             "-d", json.dumps({"text": prompt}),
+             f"{OPENCODE_URL}/api/session/{session_id}/prompt"],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _get_messages(session_id: str) -> Optional[List]:
+    """The session's message list, or None when it cannot be read
+    (transport failure, non-JSON body, error object): an unreadable
+    session is an UNKNOWN delivery state, never an empty one."""
+    try:
+        result = subprocess.run(
+            ["curl", "-s", "-m", "5", *_auth_header_args(),
+             f"{OPENCODE_URL}/api/session/{session_id}/messages"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout or "[]")
+        if isinstance(data, dict) and "data" in data:
+            data = data["data"]
+        return data if isinstance(data, list) else None
+    except Exception:
+        return None
+
+
+def _send_prompt(session_id: str, prompt: str) -> bool:
+    """Deliver the execution prompt to a bound session. Returns True
+    iff the prompt is confirmed delivered. A failed POST is
+    reconciled before any resend (prompt.md step 4): if a message
+    already landed, the worker may be executing and must never be
+    double-prompted; only a successful reconcile that proves the
+    message list is EMPTY earns one resend to the same session. An
+    inconclusive reconcile (unreadable session) never resends — the
+    binding stands and the caller flags the launch instead."""
+    if _post_prompt(session_id, prompt):
+        return True
+    messages = _get_messages(session_id)
+    if messages is None:
+        return False
+    if len(messages) > 0:
+        return True
+    return _post_prompt(session_id, prompt)
+
+
 def launch_step(mode: str, cap_room: int) -> List[Dict]:
     """
     Step 4: Launch - create sessions and bind tasks.
@@ -357,6 +433,33 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
     fire log can state why a zero-launch fire launched nothing
     (#6865).
     """
+    if mode != "live":
+        # Shadow fires observe only (#7366): report the candidates
+        # that WOULD launch, bounded by cap room, and mutate nothing —
+        # no session created, nothing bound, nothing prompted.
+        try:
+            poll_data = run_poll()
+            candidates = [
+                c for c in poll_data.get("candidates", [])
+                if c.get("lane") == "opencode"
+                and not c.get("session_id")
+                and c.get("stage") in ("handed_off", "launch_failed")
+            ]
+        except Exception as e:
+            print(f"Shadow launch scan failed: {e}")
+            return [], []
+        skips = []
+        room = cap_room
+        for candidate in candidates:
+            if room > 0:
+                skips.append({"task_id": candidate["id"],
+                              "reason": "shadow_would_launch"})
+                room -= 1
+            else:
+                skips.append({"task_id": candidate["id"],
+                              "reason": "shadow_beyond_cap"})
+        return [], skips
+
     if cap_room <= 0:
         return [], []
     
@@ -421,29 +524,37 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
             }
             
             try:
-                # Create session using curl (POST)
+                # Create session using curl (POST), with the server's
+                # Basic auth — unauthenticated calls are rejected.
                 create_cmd = ["curl", "-s", "-m", "10", "-X", "POST",
                              "-H", "Content-Type: application/json",
+                             *_auth_header_args(),
                              "-d", json.dumps(session_create_body),
-                             "http://127.0.0.1:13420/api/session"]
-                
+                             f"{OPENCODE_URL}/api/session"]
+
                 create_result = subprocess.run(
                     create_cmd,
                     capture_output=True,
                     text=True
                 )
-                
+
                 if create_result.returncode != 0:
                     raise RuntimeError(f"Session creation failed: {create_result.stderr}")
-                
+
                 session = json.loads(create_result.stdout)
-                session_id = session.get("id")
-                
+                if isinstance(session, dict) and "data" in session:
+                    session = session["data"]
+                session_id = session.get("id") if isinstance(session, dict) else None
+                if not session_id:
+                    raise RuntimeError(
+                        f"Session creation returned no id: {create_result.stdout[:200]}")
+
                 # Verify location before proceeding
                 if session.get("location", {}).get("directory") != str(PRIMARY_CLONE):
                     # Wrong location - delete and skip
                     delete_cmd = ["curl", "-s", "-m", "5", "-X", "DELETE",
-                                 f"http://127.0.0.1:13420/api/session/{session_id}"]
+                                 *_auth_header_args(),
+                                 f"{OPENCODE_URL}/api/session/{session_id}"]
                     subprocess.run(delete_cmd, capture_output=True)
                     skips.append({
                         "task_id": task_id,
@@ -468,16 +579,26 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
                 if bind_result.returncode != 0:
                     # Bind failed - delete session and skip
                     delete_cmd = ["curl", "-s", "-m", "5", "-X", "DELETE",
-                                 f"http://127.0.0.1:13420/api/session/{session_id}"]
+                                 *_auth_header_args(),
+                                 f"{OPENCODE_URL}/api/session/{session_id}"]
                     subprocess.run(delete_cmd, capture_output=True)
                     skips.append({
                         "task_id": task_id,
                         "reason": "bind_failed"
                     })
                     continue
-                
-                # Step 4d: Send prompt to bound session
-                # The worker should use: repo-queue with --worker <worker_id> and the execution context
+
+                # Step 4d: Send the execution prompt to the bound
+                # session (POST /api/session/{id}/prompt — the shape
+                # pm-dispatch's OpenCode client uses). A bound session
+                # that never receives its prompt is #4758's
+                # zero-message case (#7356), so the send is verified,
+                # never assumed: _send_prompt reconciles against the
+                # session's messages before any resend. The binding
+                # stands even if the prompt cannot be landed —
+                # supervision owns a bound-but-unprompted session,
+                # and unbinding here could double-launch over a
+                # worker that is in fact executing.
                 prompt = f"""
 Execute queue task {task_id}
 Issue: {issue}
@@ -486,19 +607,19 @@ Packet: {json.dumps(packet, indent=2)}
 You are a build agent working on this opencode-lane task.
 Use --worker {worker_id} for all queue CLI operations.
 Heartbeat while working to keep the claim lease alive.
-Finish with: complete, park, block, or fail --execution '{{...}}'
+Finish with a queue terminal verb (complete, park, block, or fail) carrying --worker {worker_id} and --execution '{{"lane": "opencode", "session_id": "{session_id}"}}'.
 """
-                
-                # In a real implementation, this would send the prompt via the session API
-                # For now, we just record the successful launch
-                
-                launched.append({
+
+                entry = {
                     "task_id": task_id,
                     "session_id": session_id,
                     "worker_id": worker_id,
                     "timestamp": datetime.utcnow().isoformat() + "Z"
-                })
-                
+                }
+                if not _send_prompt(session_id, prompt):
+                    entry["prompt_failed"] = True
+                launched.append(entry)
+
                 cap_room -= 1
                 
             except Exception as e:

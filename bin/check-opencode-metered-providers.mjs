@@ -169,7 +169,7 @@ function effectiveProperties(node) {
   return [...latest.values()].sort((left, right) => left.keyStart - right.keyStart);
 }
 
-function isMeteredModel(value) {
+export function isMeteredModel(value) {
   if (typeof value !== 'string') return false;
   const provider = value.split('/', 1)[0];
   return provider === 'deepseek' || provider.startsWith('cloudflare-');
