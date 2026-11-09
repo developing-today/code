@@ -249,7 +249,8 @@ jobs:
             "main-broken|B60205|main branch full-suite (main tier) is red; remediation chain owns this" \
             "queue/queued|7057ff|Has a queued task in the fleet agent queue" \
             "status/needs-triage|fbca04|Not yet triaged; needs a first look" \
-            "jules|57ab5a|Hand this issue to remediation (issue-labeled job in jules.yml, via pm-dispatch)"; do
+            "jules|57ab5a|Hand this issue to remediation (issue-labeled job in jules.yml, via pm-dispatch)" \
+            "flake-fix|f9d0c4|Third-strike flake: diagnose and deflake (filed by the main-broken scout leg)"; do
             IFS='|' read -r lname lcolor ldesc <<<"$spec"
             gh label create "$lname" --repo "$GH_REPO" --color "$lcolor" --description "$ldesc" 2>/dev/null || true
           done
@@ -395,6 +396,12 @@ jobs:
               # label it would match Identify's canonical-breakage lookup
               # (label + ID search) and steal the breakage from the
               # original issue (Codex finding, PR #7806).
+              # gh issue create does not coin missing labels, and the
+              # coin-labels step only runs on the create path while a
+              # third strike happens on a recurrence -- ensure the
+              # flake-fix label exists here too, or the filing fails
+              # silently under || true (Codex finding, PR #7806).
+              gh label create "flake-fix" --repo "$GH_REPO" --color "f9d0c4" --description "Third-strike flake: diagnose and deflake (filed by the main-broken scout leg)" 2>/dev/null || true
               gh issue create --repo "$GH_REPO" \
                 --title "flake-fix: $WF - Breakage-ID: $BID" \
                 --label "kind/ci" --label "flake-fix" \
