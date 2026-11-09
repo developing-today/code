@@ -27,6 +27,12 @@
   repo-root `doc/` store and is reachable at `pkgs/id/doc/` because
   `pkgs/id/doc` is a tracked symlink to `../../doc` — the #2251 placement
   requirement is met through that symlink, per repo convention.
+- **Revision (2026-11-05, queue task 9588):** reconciles the earlier `token.offer`
+  schema with #2290. The only signed rate-authorization event kinds are now
+  `currency.rate_authorisation` and `currency.rate_authorisation_revoke`; rates
+  use #2290's scale-aware units, immutable version lineage, and terminal
+  explicit revocation. “Offer” remains a presentation/API term, not a second
+  signed wire format.
 
 ## 0. Conventions inherited from `pkgs/id`
 
@@ -62,9 +68,11 @@ a new signature scheme, or a new identity type.
 
 ## 1. Wire formats
 
-Kinds are namespaced `token.*`. All bodies are CBOR maps with exactly the keys
-listed; unknown keys are refused (the `deny_unknown_fields` discipline of the
-existing `Wire` forms).
+Token kinds are namespaced `token.*`, except the canonical rate-authorization
+kinds `currency.rate_authorisation` and
+`currency.rate_authorisation_revoke` defined below. All bodies are CBOR maps
+with exactly the keys listed; unknown keys are refused (the
+`deny_unknown_fields` discipline of the existing `Wire` forms).
 
 ### 1.1 `token.define` — currency definition
 
@@ -127,25 +135,49 @@ dedicated burn identity is expressible as a plain transfer and does **not** redu
 counted supply — only `token.burn` does. (This asymmetry is deliberate: it keeps
 the supply fold a pure function of kinds, with no special-cased identities.)
 
-### 1.5 `token.offer` — rate offer
+### 1.5 `currency.rate_authorisation` — canonical directional rate authorisation
 
-Signed by the offerer (issuer or any holder with a balance in the source currency).
-Each direction is a separate offer; an offer says nothing about the reverse rate.
+This is the one signed rate-authorization event for both graph discovery and
+gateway enforcement. A wallet may present it as a “rate offer”, but `token.offer`
+is not emitted as a second signed object. The event uses the ordinary signed
+chain envelope and a closed, canonical CBOR body as described in #2290 §§1–2.
+The LP/account identity in `issuer_id` is distinct from the event author's
+device verifying key; authority resolution is specified in #2290 §2 and the
+gateway contract in #2062.
 
-| key          | type                          | notes                                                                                                                                                                                                                                                                                                           |
-| ------------ | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `from`       | hash                          | currency given                                                                                                                                                                                                                                                                                                  |
-| `to`         | hash                          | currency received                                                                                                                                                                                                                                                                                               |
-| `rate`       | rational                      | §0; **destination minor units per source minor unit** — the only rate convention in this spec; §5 step 3 applies it directly, with no scale adjustment                                                                                                                                                          |
-| `per_tx_cap` | u128                          | max `from` amount per execution                                                                                                                                                                                                                                                                                 |
-| `total_cap`  | u128                          | max cumulative `from` amount across all executions                                                                                                                                                                                                                                                              |
-| `expires`    | u64                           | wall-clock expiry, **Unix epoch seconds (UTC)**, after which executions are invalid. The inherited event envelope carries no timestamp (`chain::sign` supplies no clock value), so expiry is judged against the executor's clock under the §5 step 2 policy — it is an execution-time check, never a fold input |
-| `takers`     | `"public"` \| list of pubkeys | eligible takers                                                                                                                                                                                                                                                                                                 |
-| `supersedes` | hash, optional                | a previous offer by the same offerer for the same pair; see §2/§5 frontier rule                                                                                                                                                                                                                                 |
+| key | type | notes |
+| --- | --- | --- |
+| `authorisation_id` | u128 | Stable for this authorization's lifetime and scoped to `issuer_id`; duplicate IDs under one issuer are invalid. |
+| `version` | u64 | Starts at 1 and increases by exactly 1 for each amendment. |
+| `issuer_id` | account/ID identity | LP identity controlling the liquidity accounts; not a currency issuer key and not necessarily the event author. |
+| `from_currency`, `to_currency` | graph currency IDs | Ordered semantic currency identities `(currency issuer, definition hash)`; one direction only. The reverse is a separate authorization. |
+| `rate_num`, `rate_den` | positive u128 | GCD-reduced rational; destination major units per source major unit. No floating point. |
+| `min_amount`, `max_amount` | u128 | Inclusive per-conversion bounds in source-currency minor units; `0 < min_amount ≤ max_amount`. |
+| `total_cap` | u128 | Maximum cumulative source-currency minor units for this authorization. |
+| `authorised_callers` | `"any"` \| non-empty identity list | Eligible callers; a single counterparty is a one-element list. |
+| `not_before` | u64, optional | Unix epoch seconds (UTC); absent means immediately eligible. |
+| `expires_at` | u64, required | Unix epoch seconds (UTC); execution is eligible only while `not_before ≤ execution_time < expires_at`. |
+| `fee_bps` | u32, optional | Explicit fee policy; any fee remains a separate, quote-visible ledger leg. |
+| `reversal_window_secs` | u64, optional | Permission for a compensating reversal at the original rate; it never mutates posted transfers. |
+| `supersedes_event_id` | event ID, required when `version > 1` | Exact event ID of the immediately preceding version; absent for version 1. |
 
-An offer is revoked by superseding it (a new offer with `supersedes` set, possibly
-with `total_cap` already exhausted) — there is no separate revoke kind, so the
-frontier check in §5 is the only revocation semantics an executor must implement.
+Unknown keys, duplicate map keys, non-canonical CBOR, zero or non-reduced
+rates, invalid bounds, self-pairs, and invalid caller lists are rejected.
+Optional fields are absent when unused; no alternate default encoding is
+allowed. For source amount `x`, the scale-aware result is
+`floor(x × rate_num × 10^dest_scale / (rate_den × 10^source_scale))`, using
+checked integer intermediates; overflow and a zero result reject before
+submission. Rounding is down in the LP's favour.
+
+### 1.5a `currency.rate_authorisation_revoke` — terminal revocation
+
+The revoke event is signed through the same chain envelope by a key currently
+authorized for the LP account. Its closed body is `{authorisation_id, reason?}`.
+Once present in the gateway's accepted issuer frontier, it revokes the entire
+stable authorization ID for new submissions; it does not alter posted
+conversions. Revocation is terminal: an older version never becomes live
+again, and a replacement after revocation uses a new `authorisation_id`.
+`token.offer` supersession is therefore not a revocation mechanism.
 
 ### 1.6 `token.convert_receipt` — conversion receipt
 
@@ -154,10 +186,10 @@ for graph-native swaps, countersigned as part of the swap agreement, #2037 patte
 
 | key                | type   | notes                                                                                                                                                                                                                                                                                                      |
 | ------------------ | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `offer`            | hash   | the offer **event ID** — a specific version, never "the current offer"                                                                                                                                                                                                                                     |
-| `taker`            | pubkey | the party debited `from_amount` and credited `to_amount` in the fold (§2 conversion fold); the offerer is the cited offer's author                                                                                                                                                                         |
+| `authorisation_event_id` | hash | the exact `currency.rate_authorisation` event ID for the version used; never “the current authorization” |
+| `taker`            | pubkey | the party debited `from_amount` and credited `to_amount` in the fold (§2 conversion fold); the LP is the cited authorization's `issuer_id` |
 | `taker_intent`     | hash   | the taker-signed intent this execution rests on: for anchored conversions, the hash of the taker's signed intent object (§5 step 3, Taker authorization); for graph-native swaps, the swap agreement itself (graph-native by construction, §5 step 5). A receipt citing no valid intent folds nothing (§2) |
-| `offerer_frontier` | hash   | the offerer's chain head the executor verified at execution time (§5)                                                                                                                                                                                                                                      |
+| `offerer_frontier` | hash   | the authorized event author's chain head used to resolve the LP's active device authority at execution time (§5) |
 | `from_amount`      | u128   | debited from the taker                                                                                                                                                                                                                                                                                     |
 | `to_amount`        | u128   | credited to the taker, after rounding (§5)                                                                                                                                                                                                                                                                 |
 | `spread_amount`    | u128   | the rounding/spread leg, 0 if none; always explicit, never folded into `to_amount` silently                                                                                                                                                                                                                |
@@ -212,7 +244,7 @@ other kind (#2030's counting views are the consumer of these rules).
 **Ordering.** Events fold in chain order per author (sequence number, backlink
 chain). Cross-author ordering matters exactly where one object's validity
 depends on another author's object: a transfer's funding can include credits
-issued or sent by other authors, and a conversion depends on the offer. The
+issued or sent by other authors, and a conversion depends on the authorization. The
 fold therefore proceeds in **causal order**: an object is folded only after
 every object in its causal ancestry has been folded. **Causal ancestry** is
 the transitive closure over **both** kinds of parent link: the header
@@ -324,11 +356,11 @@ stamp — so the **executed conversion receipt itself folds**, with exactly
 these movements, in the two currencies:
 
 - `from` currency: debit the receipt's `taker` by `from_amount`; credit the
-  offerer (the cited offer's author) by `from_amount`.
-- `to` currency: debit the offerer by `to_amount + spread_amount`; credit
+  LP identified by the cited authorization's `issuer_id` by `from_amount`.
+- `to` currency: debit the LP by `to_amount + spread_amount`; credit
   the `taker` by `to_amount`; credit the spread leg's destination holder
   by `spread_amount` (the destination the §3 leg set names — normally the
-  offerer as liquidity provider, in which case that credit nets against
+  LP as liquidity provider, in which case that credit nets against
   the debit above).
 
 A receipt folds **only when the conversion is executed**: anchored, when
@@ -343,7 +375,7 @@ executed conversion.
 
 **Authorization is a fold input, not just an execution check.** A receipt
 folds only when its `taker_intent` validates: the cited intent must be
-signed by the receipt's `taker` and must bind this offer event ID, these
+signed by the receipt's `taker` and must bind this authorization event ID, these
 amounts, and this `conversion` ID (§5 step 3). An anchored receipt naming
 a taker with no valid signed intent folds nothing and fails §3 check 2 as
 unauthorized — a receipt is evidence an execution happened, and an
@@ -443,7 +475,7 @@ set that is incomplete, or whose amounts disagree with the receipt, fails
 the join exactly as a mismatched single transfer does. Legs bearing a
 `conversion` stamp whose receipt has not landed by the snapshot frontier
 are **pending conversions**: enumerated in the reconciliation report,
-counted against the offer's cap per §5 step 6, and neither passed nor
+counted against the authorization's cap per §5 step 6, and neither passed nor
 failed until the receipt (or a §5 step 6 recovery record) lands.
 
 Reconciliation at a snapshot is then a three-way mechanical check, in order:
@@ -496,7 +528,7 @@ other app functions); amounts are minor units.
 | `balance`         | `(currency, of) → u128`                                     | Counted balance: graph fold (graph binding) or ledger read (anchored). Never the asserted balance.                                                                                                                                                                                                                                                                                                           |
 | `supply`          | `(currency) → (issued, burned, counted_supply)`             | §2 counted figures; anchored: executed figures per §3.                                                                                                                                                                                                                                                                                                                                                       |
 | `accept_payment`  | `(currency, predicate{min_amount, memo_pattern}) → handler` | Registers the app's acceptance hook. On a matching transfer the host verifies, per binding (below), then fires the app's effect and emits a signed **`token.receipt`** (§1.8) naming the payment object ID and the effect taken — a non-monetary record kind, excluded from the fold and from ledger execution. Refund/revocation of what a payment bought is #2042's subject and is **not** specified here. |
-| `convert`         | `(offer_id, amount) → ConversionReceipt`                    | Executes §5. Errors: `OfferNotFound`, `OfferSuperseded`, `OfferExpired`, `CapExceeded`, `NotEligibleTaker`, `ZeroAmount` (the §5 step 3 zero-output rejection), `InsufficientLiquidity` (anchored, atomic — no partial state), `CounterpartyLegMissing` (graph binding, after the agreement window — the receipt is replaced by the signed claim, §5).                                                       |
+| `convert`         | `(authorisation_event_id, amount) → ConversionReceipt`      | Executes §5 against that exact signed event. Errors include `AuthorisationNotFound`, `AuthorisationSuperseded`, `AuthorisationRevoked`, `AuthorisationExpired`, `CapExceeded`, `CallerNotAuthorised`, `AmountOutOfBounds`, `ZeroAmount`, `InsufficientLiquidity` (anchored, atomic — no partial state), and `CounterpartyLegMissing` (graph binding, after the agreement window — the receipt is replaced by the signed claim, §5). |
 | `snapshot`        | `(currency) → SnapshotObject`                               | Latest signed snapshot at or before the local frontier; `NoSnapshotYet` if none. Verification of a snapshot is recomputation (§3), never trust in the signer alone.                                                                                                                                                                                                                                          |
 
 **Binding-specific verification inside `accept_payment`** (the steps differ;
@@ -516,38 +548,43 @@ the handler contract does not):
 An executor (service or taker) performs these steps in order; a failure at any
 step aborts before any leg is submitted.
 
-1. **Cite the offer version.** The execution names the offer by event ID
-   (§1.6). "The current offer for the pair" is not a valid citation.
-2. **Frontier freshness.** Read the offerer's chain frontier _at execution
-   time_: the cited offer must be the latest non-superseded offer for its
-   (offerer, pair) at that frontier, unexpired, with per-tx and cumulative
-   caps not exhausted by already-executed conversions citing it (counted per
+1. **Cite the authorization version.** The execution and receipt name the
+   exact `currency.rate_authorisation` event ID and version (§1.6).
+   “The current authorization for the pair” is not a valid citation.
+2. **Frontier freshness.** Read the issuer's accepted chain frontier _at
+   execution time_ and resolve its active device authority: the cited event
+   must be the unique live tip of the `supersedes_event_id` lineage for that
+   (`issuer_id`, `authorisation_id`), with no missing predecessor, skipped
+   version, or competing successor. A revocation event at that frontier
+   terminates the whole stable authorization ID; an older version never
+   revives. Check `not_before`/`expires_at`, the amount window, and the
+   cumulative cap against already-executed conversions citing it (counted per
    step 6 — receipts, durable reservations, and recovered executed legs,
    never receipts alone). That count and the step-6 reservation are one
-   atomic, offer-scoped operation (step 6). A superseded or
-   revoked offer fails here, cleanly, before value moves (abuse case 4).
-   **Expiry clock policy:** `expires` (§1.5) is Unix epoch seconds, judged
+   atomic operation scoped to `authorisation_id` (step 6). A superseded,
+   revoked, or ambiguous authorization fails here before value moves (abuse
+   case 4).
+   **Expiry clock policy:** `expires_at` (§1.5) is Unix epoch seconds, judged
    against the executor's own clock — for anchored conversions the service's
    clock is authoritative; for graph-native executions the taker's clock
    governs its own execution, with a ±300 s tolerance for counterparty clock
-   skew. An executor MUST refuse an offer expired under its own clock, and
-   MUST NOT execute one inside the tolerance window on the strength of the
-   counterparty's clock alone. Expiry is an execution-time policy check
+   skew. An executor MUST refuse an authorization outside its validity
+   window under its own clock, and MUST NOT execute one inside the tolerance
+   window on the strength of the counterparty's clock alone. Expiry is an
+   execution-time policy check
    only: folders never void a receipt retroactively on clock grounds, since
    no chain object carries the time an execution happened.
-3. **Eligibility and amounts.** Taker ∈ `takers`; `amount ≤ per_tx_cap`;
-   cumulative executed + amount ≤ `total_cap`. Compute the `to` amount from
-   the exact rational in the wire format's units (§1.5: destination minor
-   units per source minor unit): `to_amount = floor(from_amount × num / den)`,
-   directly in minor units. There is **no scale adjustment** — the two
-   definitions' `scale` values are already inside the rate as quoted, and
-   adjusting again would transfer a different amount for the same signed
-   offer.
+3. **Eligibility and amounts.** Taker ∈ `authorised_callers` (or the value is
+   `"any"`); `min_amount ≤ from_amount ≤ max_amount`; cumulative executed +
+   `from_amount ≤ total_cap`. Compute `to_amount` with the scale-aware
+   rational from §1.5:
+   `floor(from_amount × rate_num × 10^dest_scale /
+   (rate_den × 10^source_scale))`, using checked integer intermediates.
    **Taker authorization.** Before step 5 the executor MUST hold a valid
    taker-signed intent and MUST verify its signature. The intent binds the
-   offer event ID, the amounts (`from_amount` and the computed
+   authorization event ID, the amounts (`from_amount` and the computed
    `to_amount`), the `conversion` ID, and an expiry; an intent naming a
-   different offer version, different amounts, or a different conversion —
+   different authorization version, different amounts, or a different conversion —
    or one past its expiry under the step 2 clock policy — authorizes
    nothing, and the execution aborts here. Anchored: the intent is the
    taker's signed intent object, cited in the receipt by hash
@@ -586,8 +623,8 @@ step aborts before any leg is submitted.
    withhold its own receipt after both legs land.
    **The cap check and the reservation are one atomic operation.** The
    cumulative-cap check (steps 2–3) and the reservation write below are a
-   single offer-scoped atomic step: the reservation write is the
-   linearization point. An executor MUST hold per-offer serialization, or
+   single authorization-scoped atomic step: the reservation write is the
+    linearization point. An executor MUST hold per-authorization serialization, or
    perform an atomic compare-and-reserve against the durable log, such
    that two concurrent executors cannot both pass the check against the
    same unspent cap; after reserving, each executor re-reads the cap state
@@ -596,13 +633,14 @@ step aborts before any leg is submitted.
    double-spend window this step exists to close.
    The order is:
    - **Before step 5**, the executor durably records a **cap reservation**:
-     the `conversion` ID, the cited offer, and `from_amount`. Anchored: the
+     the `conversion` ID, `authorisation_id`, the cited authorization event
+     ID/version, and `from_amount`. Anchored: the
      service's durable execution log, written before the legs are submitted.
      Graph-native: the signed swap agreement (step 5) is itself the
      reservation — it exists before either leg.
    - Step 2's cumulative-cap check counts **receipts + outstanding
      reservations + executed-but-unreceipted legs**.
-   - **Recovery:** before executing against an offer again, an executor
+   - **Recovery:** before executing against an authorization again, an executor
      scans its reservations that have no receipt — anchored, by querying the
      ledger for transfers stamped with the reserved `conversion` IDs;
      graph-native, by folding for the agreement's legs. A **complete** leg
@@ -628,7 +666,7 @@ step aborts before any leg is submitted.
      second conversion consume the allowance and the delayed legs then
      exceed `total_cap`. A reservation is never silently expired while its
      legs are unaccounted for.
-   - **Emit the receipt** (§1.6) naming the offer version, the frontier
+   - **Emit the receipt** (§1.6) naming the authorization event/version, the frontier
      checked in step 2, both leg references, and the spread. A conversion
      counts as happened when it _executed_; the receipt is the public
      record of that fact, and the reservation/recovery machinery above is
@@ -641,8 +679,8 @@ step aborts before any leg is submitted.
 | 1   | Issuer inflates past an announced cap | §2: over-cap issuance is void in fold order; counting views must refuse it. Anchored: §3 check 2 exposes any ledger movement with no authorized object.                                          | Graph-native: provable, not prevented — accepted, as #2041 stated. Anchored prevention requires service honesty at execution time; the join makes dishonesty evident after the fact.                                                                  |
 | 2   | Offline double-spend                  | §2: overdrawn transfers void; fork branches void from the fork point; §4 risk tiers bound what a recipient acts on before anchor/sync.                                                           | Prevention is policy, not protocol — accepted and named.                                                                                                                                                                                              |
 | 3   | Name confusion / squatting            | §1.1: identity is (issuer, definition hash); name is display only; every object carries the compact currency ID.                                                                                 | UI discipline (issuer petname + name shown together, balances never merged across issuers) is a client requirement, restated here so it is not lost.                                                                                                  |
-| 4   | Stale/revoked offer executed          | §5 steps 1–2: version citation + frontier freshness at execution time; supersession is the only revocation and the check is mechanical.                                                          | An executor that skips step 2 is non-conformant; conformance is testable against the checklist.                                                                                                                                                       |
-| 5   | Offerer can't fund the rate           | Anchored: linked-pair atomicity — insufficient liquidity aborts both legs. Graph: swap agreement + claim. Offers and failures are on record (reputation).                                        | Graph-native non-atomicity is inherent; accepted, per #2041.                                                                                                                                                                                          |
+| 4   | Stale/revoked authorization executed  | §5 steps 1–2: exact event/version citation, unique lineage tip, explicit terminal revoke, and frontier freshness.                                                          | An executor that skips step 2 is non-conformant; conformance is testable against the checklist.                                                                                                                                                       |
+| 5   | LP can't fund the rate                | Anchored: linked-pair atomicity — insufficient liquidity aborts both legs. Graph: swap agreement + claim. Authorizations and failures are on record (reputation).                                        | Graph-native non-atomicity is inherent; accepted, per #2041.                                                                                                                                                                                          |
 | 6   | Lying snapshot                        | §3: roots are recomputable (graph) or contradicted by the ledger (anchored); snapshot is an auditable assertion, not a trust root.                                                               | Light clients that never spot-check accept signer risk between checks — inherent to the snapshot model Drew specified.                                                                                                                                |
 | 7   | Issuer key compromise                 | Partially mitigated in-spec: caps bound mint damage even with the key (§2); definitions keep their identity across rotation because identity includes the definition hash, not a key generation. | **Not solved here.** Rotation mechanics are an open question for #2043 (§7) — a rotation object signed by the old key naming a successor is sketched in #2041 but its counting-view semantics (which generation a view pins) are genuinely unsettled. |
 
@@ -670,8 +708,10 @@ silently. #2043 remains gated on #2042 (tokens for real services) as well.
 
 ## 8. What this spec does not do
 
-- No implementation. Follow-on implementation issues are filed separately;
-  this issue delivers the spec only.
+- This document specifies the wire contract, not the gateway or conversion
+  implementation. The signed rate-authorization graph types/fold are tracked
+  separately under #2290/#5521; gateway and quote behavior remain in the
+  follow-on phases.
 - No refund/revocation policy (#2042 owns it), no currencies-v1 synthesis
   decisions (#2043 owns them, gated), no changes to TigerBeetle findings
   (#2040 stands as the ledger-side input).
