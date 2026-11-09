@@ -18,7 +18,11 @@ exercises the real step logic with no server and no queue:
   changes before launch, and main() writes those skips into the
   fires.jsonl entry;
 - supervision_step recovers a bound task whose session is gone from
-  the server (error body, zero messages) via delete + recovery bind.
+  the server (404, zero messages) via delete + recovery bind;
+- supervision_step leaves a binding alone when the session GET is an
+  HTTP error (401: unknown state, not "gone"), and a recovery DELETE
+  that fails with an HTTP error (curl -f rc 22) never leads to a
+  recovery bind (#7367 residual).
 
 Negative control (#6865 acceptance): this suite fails against the
 pre-fix claimant.py (65beb42c1a, unimported requests/subprocess) and
@@ -50,15 +54,20 @@ class Result:
 
 
 def make_fake_run(binds, *, session_get="gone", messages="[]",
-                  prompt_rc=0, prompts=None):
+                  prompt_rc=0, prompts=None, delete_rc=0, deletes=None):
     """Build a subprocess.run stub dispatching on argv shape.
 
     binds: list collecting every repo-queue bind argv.
-    session_get: "gone" -> the session GET returns an error body
-    (what curl -s prints for a 404); "active" -> a live session.
+    session_get: "gone" -> the session GET returns a 404 error body;
+    "active" -> a live session (200); "unauthorized" -> a 401 error
+    body (curl -s still exits 0 without -f). The claimant's GET
+    carries -w, so the stub appends the matching status line.
     prompt_rc: return code for the prompt POST (curl -f fails on
     HTTP errors, so 1 models a rejected prompt send).
     prompts: optional list collecting every prompt POST argv.
+    delete_rc: return code for the recovery DELETE; 22 models
+    curl -f failing on an HTTP error such as 401.
+    deletes: optional list collecting every DELETE argv.
     """
 
     def fake_run(cmd, **kwargs):
@@ -68,7 +77,9 @@ def make_fake_run(binds, *, session_get="gone", messages="[]",
             binds.append(cmd)
             return Result(0, "{}")
         if argv[0] == "curl" and "-X" in argv and "DELETE" in argv:
-            return Result(0, "")
+            if deletes is not None:
+                deletes.append(cmd)
+            return Result(delete_rc, "")
         if argv[0] == "curl" and joined.rstrip().endswith("/messages"):
             return Result(0, messages)
         if argv[0] == "curl" and joined.rstrip().endswith("/prompt"):
@@ -82,11 +93,15 @@ def make_fake_run(binds, *, session_get="gone", messages="[]",
             }))
         if argv[0] == "curl" and "/api/session/" in joined:
             if session_get == "gone":
-                return Result(0, json.dumps({"error": "session not found"}))
+                return Result(0, json.dumps(
+                    {"error": "session not found"}) + "\n404")
+            if session_get == "unauthorized":
+                return Result(0, json.dumps(
+                    {"error": "unauthorized"}) + "\n401")
             return Result(0, json.dumps({
                 "id": "ses_gone",
                 "time": {"created": 1, "updated": 2},
-            }))
+            }) + "\n200")
         return Result(0, "")
 
     return fake_run
@@ -241,6 +256,37 @@ class TestSupervisionStep(unittest.TestCase):
                           make_fake_run(binds, session_get="active")):
             recovered = claimant.supervision_step("live")
         self.assertEqual(recovered, [])
+        self.assertEqual(binds, [])
+
+    def test_session_get_http_error_leaves_binding_alone(self):
+        # #7367 residual: a 401 error body is UNKNOWN state, not a
+        # gone session - no recovery candidate, no delete, no bind.
+        binds = []
+        deletes = []
+        with stub_claimed_rows([BOUND_ROW]), \
+             patch.object(claimant.subprocess, "run",
+                          make_fake_run(binds, session_get="unauthorized",
+                                        deletes=deletes)):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered, [])
+        self.assertEqual(deletes, [])
+        self.assertEqual(binds, [])
+
+    def test_delete_http_error_never_binds(self):
+        # #7367 residual acceptance: a simulated 401 on the recovery
+        # DELETE (curl -f exits 22) must not lead to a bind, even
+        # though the session really is gone with zero messages.
+        binds = []
+        deletes = []
+        with stub_claimed_rows([BOUND_ROW]), \
+             patch.object(claimant.subprocess, "run",
+                          make_fake_run(binds, delete_rc=22,
+                                        deletes=deletes)):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(len(recovered), 1)
+        self.assertEqual(len(deletes), 1)
+        delete_argv = [str(part) for part in deletes[0]]
+        self.assertIn("-f", delete_argv)
         self.assertEqual(binds, [])
 
     def test_shadow_mode_recovers_nothing(self):
