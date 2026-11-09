@@ -271,6 +271,22 @@ class TestSupervisionStep(unittest.TestCase):
                 self.assertEqual(binds, [])
                 self.assertEqual(deletes, [])
 
+    def test_wrapped_empty_message_list_is_recovered(self):
+        # The live 200 shape: {"data": [...], "cursor": {...}}. A
+        # dict wrapping a confirmed empty list is still zero messages.
+        binds = []
+        with stub_claimed_rows([BOUND_ROW]), \
+             patch.object(claimant.subprocess, "run",
+                          make_fake_run(binds,
+                                        messages='{"data": [], "cursor": {}}')):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered, [{
+            "task_id": 4242,
+            "session_id": "ses_gone",
+            "reason": "zero_message",
+        }])
+        self.assertEqual(len(binds), 1)
+
     def test_bound_session_with_messages_is_not_recovered(self):
         binds = []
         deletes = []
