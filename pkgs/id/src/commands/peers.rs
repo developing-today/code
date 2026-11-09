@@ -195,7 +195,8 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
 
     // Try gossip if needed
     if use_gossip && (all_peers.is_empty() || options.gossip) {
-        let gossip_peers = discover_via_gossip(&options).await;
+        let retained: HashSet<EndpointId> = all_peers.keys().copied().collect();
+        let gossip_peers = discover_via_gossip(&options, &retained).await;
         match gossip_peers {
             Ok(peers) => {
                 merge_capped(&mut all_peers, peers, options.max_peers, "gossip results");
@@ -577,7 +578,10 @@ async fn crawl_peers(
 /// Creates a temporary endpoint, joins the gossip topic via DHT
 /// auto-discovery, and collects announcements for a limited time.
 /// Uses [`resolve_config`] to merge defaults with CLI flags.
-async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncement>> {
+async fn discover_via_gossip(
+    options: &PeersOptions,
+    retained_elsewhere: &HashSet<EndpointId>,
+) -> Result<Vec<PeerAnnouncement>> {
     use distributed_topic_tracker::{AutoDiscoveryGossip, RecordPublisher, TopicId};
     use iroh_gossip::net::Gossip;
 
@@ -653,7 +657,7 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
             if let iroh_gossip::api::Event::Received(msg) = event
                 && let Some(announcement) = SignedPeerAnnouncement::decode_frame(&msg.content)
             {
-                if !admit_gossip_announcement_capped(&peers, announcement, options.max_peers) {
+                if !admit_gossip_announcement_capped(&peers, announcement, options.max_peers, retained_elsewhere) {
                     tracing::warn!(
                         "peers: max-peers cap ({}) reached in gossip collection; ignoring further announcements",
                         options.max_peers
@@ -689,12 +693,27 @@ fn admit_gossip_announcement_capped(
     peers: &PeerDiscovery,
     announcement: PeerAnnouncement,
     max_peers: usize,
+    retained_elsewhere: &HashSet<EndpointId>,
 ) -> bool {
-    let known = peers
-        .peers()
+    let table = peers.peers();
+    let known = table
         .iter()
         .any(|peer| peer.announcement.node_id == announcement.node_id);
-    if !known && peers.peers().len() >= max_peers {
+    if known || retained_elsewhere.contains(&announcement.node_id) {
+        // An update to a peer already retained (in this table, or by an
+        // earlier source in combined mode) never consumes a cap slot and
+        // must reach the combined merge: capping it here discarded the
+        // update before merge_capped could see it (Codex P2 on #3750).
+        admit_gossip_announcement(peers, announcement);
+        return true;
+    }
+    // The cap bounds peers this collection itself retains; announcements
+    // carried only as updates to externally retained peers do not count.
+    let own = table
+        .iter()
+        .filter(|peer| !retained_elsewhere.contains(&peer.announcement.node_id))
+        .count();
+    if own >= max_peers {
         return false;
     }
     admit_gossip_announcement(peers, announcement);
@@ -848,11 +867,13 @@ mod tests {
             &discovery,
             stamped(36, "first", now.saturating_sub(2)),
             1,
+            &HashSet::new(),
         ));
         assert!(!admit_gossip_announcement_capped(
             &discovery,
             stamped(37, "over-cap", now.saturating_sub(1)),
             1,
+            &HashSet::new(),
         ));
         // A duplicate remains eligible even at the cap, and the discovery
         // table's timestamp policy keeps its fresher update.
@@ -860,10 +881,44 @@ mod tests {
             &discovery,
             stamped(36, "updated", now),
             1,
+            &HashSet::new(),
         ));
         let peers = discovery.peers();
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].announcement.name.as_deref(), Some("updated"));
+    }
+
+    #[test]
+    fn gossip_collection_keeps_updates_to_peers_retained_by_another_source() {
+        // Codex P2 on #3750: in combined mode the gossip table filled
+        // with a new peer and then refused a fresher announcement for a
+        // peer RPC had already retained, so the combined output kept the
+        // stale RPC record. The externally retained peer stays eligible
+        // regardless of the gossip cap.
+        let discovery = PeerDiscovery::new();
+        let now = now_secs();
+        let retained: HashSet<EndpointId> =
+            [stamped(40, "rpc", now.saturating_sub(2)).node_id]
+                .into_iter()
+                .collect();
+        assert!(admit_gossip_announcement_capped(
+            &discovery,
+            stamped(41, "fills-the-cap", now.saturating_sub(1)),
+            1,
+            &retained,
+        ));
+        assert!(admit_gossip_announcement_capped(
+            &discovery,
+            stamped(40, "gossip-fresher", now),
+            1,
+            &retained,
+        ));
+        let peers = discovery.peers();
+        let kept = peers
+            .iter()
+            .find(|peer| peer.announcement.node_id == stamped(40, "x", now).node_id)
+            .expect("externally retained peer update admitted");
+        assert_eq!(kept.announcement.name.as_deref(), Some("gossip-fresher"));
     }
 
     fn valid_id_string(byte: u8) -> String {
