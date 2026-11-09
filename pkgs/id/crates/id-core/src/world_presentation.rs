@@ -824,7 +824,7 @@ mod tests {
     }
 
     #[test]
-    fn rust_screen_presenter_matches_the_shared_web_parity_corpus() {
+    fn test_rust_screen_presenter_matches_the_shared_web_parity_corpus() {
         let corpus: ScreenCellParityCorpus = serde_json::from_str(include_str!(
             "../../../web/src/test-fixtures/screen-cell-parity.json"
         ))
