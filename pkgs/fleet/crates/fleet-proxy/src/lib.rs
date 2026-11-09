@@ -37,6 +37,12 @@ pub mod tunnel;
 #[cfg(feature = "serve")]
 pub mod serve;
 
+#[cfg(feature = "serve")]
+pub mod connect_udp;
+
+#[cfg(feature = "serve")]
+pub mod udp_forward;
+
 /// Exit code for "the transport is down" — repo-queue's established
 /// 3 (§3's collision table: 3 means repair the transport, 69 means
 /// wrong build). The proxy client surface honors the same split.

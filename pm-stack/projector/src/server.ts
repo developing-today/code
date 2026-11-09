@@ -60,6 +60,8 @@ function libsqlStore(db: Client): ProjectorStore {
     upsertItem: (i) => store.upsertItem(db, i),
     upsertComment: (c) => store.upsertComment(db, c),
     markCommentDeleted: (c) => store.markCommentDeleted(db, c),
+    deleteItem: (ref, sourceUpdatedAt) => store.deleteItem(db, ref, sourceUpdatedAt),
+    itemDeletion: (ref) => store.getItemDeletion(db, ref),
     recordPush: (p) => store.recordPush(db, p),
     appendHotEvents: (events) => store.appendHotEvents(db, events),
   };
@@ -101,6 +103,19 @@ export function parseCursor(raw: string | null): number | null {
   if (raw === null || !/^[0-9]+$/.test(raw)) return null;
   const n = Number(raw);
   return Number.isSafeInteger(n) ? n : null;
+}
+
+/** A link ref is storable only if it is owner/repo#N with a safe-integer
+ *  N - the same rule the aggregator's parseRef enforces (#4952, #6211).
+ *  The shape regex alone admits numbers parseRef (and refUrl) throw on
+ *  (e.g. a 20-digit issue number), and one such stored row 500s the
+ *  aggregator's /search and project pages at render, so the write gate
+ *  checks the number itself, not just the shape. */
+export function isStorableLinkRef(ref: unknown): ref is string {
+  if (typeof ref !== "string") return false;
+  const m = /^[\w.-]+\/[\w.-]+#(\d+)$/.exec(ref);
+  if (!m) return false;
+  return Number.isSafeInteger(Number(m[1]));
 }
 
 function bearerAuthorized(req: Request, env: ServerEnv): boolean {
@@ -243,7 +258,7 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
         typeof subject !== "string" ||
         subject.length === 0 ||
         typeof ref !== "string" ||
-        !/^[\w.-]+\/[\w.-]+#\d+$/.test(ref)
+        !isStorableLinkRef(ref)
       ) {
         return jsonResponse(400, { error: "subject (non-empty string) and ref (owner/repo#N) required" });
       }

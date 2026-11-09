@@ -17,6 +17,21 @@
 //   observed weeks in scope. Below that, the result is either a
 //   clearly named borrowed baseline (low confidence) or
 //   "not_enough_history" with NO dates — never an invented date.
+//
+// - The estimator (design §1) resamples the complete weekly
+//   completion buckets — zero weeks included — with replacement
+//   under a seeded PRNG, estimating the distribution of
+//   weeks-to-complete for the remaining units; P50 and the
+//   conservative P80 are percentiles of that distribution. The seed
+//   derives from the buckets and the remaining-unit count, so the
+//   same inputs always produce the same forecast. A trial that does
+//   not finish within the per-trial week cap is a CENSORED
+//   observation, never a completion at the cap: a percentile whose
+//   rank falls on a censored trial lies beyond the simulation
+//   horizon and returns no date, with a limitation saying so
+//   (#6386). A scope whose
+//   total observed pace is zero still returns "no_measurable_pace":
+//   resampling zero buckets can only ever draw zero.
 // - Effort stays explicit: remaining work is reported per effort
 //   label, unsized work is counted as unsized, and `l` (an open-ended
 //   floor in weights.ts) is flagged open-ended. No size is inferred.
@@ -31,7 +46,18 @@ import type { ItemHistoryCutoff } from "./item-history.ts";
 import { blockerFirstObserved, weeklyTransitions } from "./item-history.ts";
 import type { RefKey } from "./model.ts";
 
-export const FORECAST_MODEL_VERSION = "forecast/v1";
+// forecast/v2 (#5274): the ETA pace derivation is the design §1
+// resampling estimator, replacing v1's median/lower-quartile pace.
+// Outputs for the same inputs change materially (bursty scopes with
+// a zero median bucket now forecast instead of returning
+// no_measurable_pace), so the model version bumps.
+// forecast/v3 (#6386): capped resampling trials are censored
+// observations, not completions at the cap. Outputs change
+// materially for horizon-exceeding scopes (a percentile beyond the
+// simulation horizon now returns no date instead of a date at the
+// cap, which understated the true completion), so the version bumps
+// again.
+export const FORECAST_MODEL_VERSION = "forecast/v3";
 export const STALL_MODEL_VERSION = "stall-risk/v1";
 
 /** At/above this score an item is surfaced as "at risk" (§3). */
@@ -70,26 +96,95 @@ function addDays(iso: string, days: number): string {
   return new Date(Date.parse(iso) + days * DAY_MS).toISOString();
 }
 
-/** ETA date for a remaining-unit count at a weekly pace, or null when
- * the horizon is not representable as a Date (an absurdly small pace
+/** ETA date a whole number of weeks after `asOf`, or null when the
+ * horizon is not representable as a Date (an absurdly distant horizon
  * would otherwise make toISOString throw a RangeError). */
-function etaDate(asOf: string, remainingUnits: number, pacePerWeek: number): string | null {
-  const weeks = Math.ceil(remainingUnits / pacePerWeek);
+function etaDateForWeeks(asOf: string, weeks: number): string | null {
   const ms = Date.parse(asOf) + weeks * 7 * DAY_MS;
   if (!Number.isFinite(ms) || Math.abs(ms) > 8.64e15) return null;
   return addDays(asOf, weeks * 7);
 }
 
-function median(xs: number[]): number {
-  const s = [...xs].sort((a, b) => a - b);
-  const mid = Math.floor(s.length / 2);
-  return s.length % 2 === 1 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
+/** mulberry32: a small seeded PRNG. The estimator's seed derives
+ * from its inputs, so resampling is a pure function of them — the
+ * same buckets and remaining-unit count always yield the same
+ * distribution, and therefore the same P50/P80 (determinism is part
+ * of this module's contract, asserted by the forecast tests). */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
-/** Lower quartile — the conservative (slower) pace behind the P80. */
-function lowerQuartile(xs: number[]): number {
-  const s = [...xs].sort((a, b) => a - b);
-  return s[Math.floor((s.length - 1) / 4)]!;
+/** FNV-1a hash of the estimator inputs, used as the resampling seed. */
+function estimatorSeed(buckets: number[], remainingUnits: number): number {
+  const text = `${buckets.join(",")}|${remainingUnits}`;
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+const RESAMPLE_TRIALS = 4096;
+/** Per-trial week cap: with any positive bucket a trial finishes
+ * almost surely long before this; the cap only bounds pathological
+ * inputs (a huge remaining count over near-zero pace) so the pure
+ * function always terminates. A trial that reaches the cap
+ * unfinished is CENSORED — it is not a completion at the cap.
+ * (Before #6386 a capped trial read as a completion at that many
+ * weeks; the old comment here called that "conservative", which is
+ * backwards for a trial whose true completion exceeds the cap:
+ * recording the cap pulls the percentile EARLIER than the true
+ * completion and publishes an optimistic date.) */
+const RESAMPLE_MAX_WEEKS = 100_000;
+
+/**
+ * The design §1 resampling estimator: draw complete weekly
+ * completion buckets (zero weeks included — they are observations,
+ * not gaps) with replacement until the drawn completions cover the
+ * remaining units; the number of drawn weeks is one sample of the
+ * weeks-to-complete distribution. Returns the sorted samples, with
+ * a trial that does not finish within RESAMPLE_MAX_WEEKS as a
+ * censored observation (null, sorted last) — never as a completion
+ * at the cap (#6386).
+ * Precondition: the buckets' total is positive (the caller returns
+ * no_measurable_pace otherwise — resampling all-zero buckets can
+ * only draw zero and no trial would ever finish).
+ */
+function resampledWeeksToComplete(buckets: number[], remainingUnits: number): (number | null)[] {
+  const rng = mulberry32(estimatorSeed(buckets, remainingUnits));
+  const maxBucket = Math.max(...buckets);
+  const samples: (number | null)[] = [];
+  for (let trial = 0; trial < RESAMPLE_TRIALS; trial++) {
+    let completed = 0;
+    let weeks = 0;
+    while (completed < remainingUnits && weeks < RESAMPLE_MAX_WEEKS) {
+      // Exact early censoring: when the units still remaining exceed
+      // what drawing the largest bucket every remaining week could
+      // cover, this trial cannot finish within the cap — it is
+      // censored now, and no further draws can change that.
+      if (remainingUnits - completed > (RESAMPLE_MAX_WEEKS - weeks) * maxBucket) break;
+      completed += buckets[Math.floor(rng() * buckets.length)]!;
+      weeks++;
+    }
+    samples.push(completed >= remainingUnits ? weeks : null);
+  }
+  return samples.sort((a, b) => (a ?? Number.POSITIVE_INFINITY) - (b ?? Number.POSITIVE_INFINITY));
+}
+
+/** Nearest-rank percentile of an ascending-sorted sample, or null
+ * when the rank falls on a censored sample: that percentile lies
+ * beyond the simulation horizon, so no weeks value is defensible. */
+function percentile(sortedXs: (number | null)[], q: number): number | null {
+  const idx = Math.min(sortedXs.length - 1, Math.max(0, Math.ceil(q * sortedXs.length) - 1));
+  return sortedXs[idx] ?? null;
 }
 
 export type ForecastConfidence = "high" | "medium" | "low" | "unavailable";
@@ -334,31 +429,40 @@ export function deriveEpicEta(input: EpicEtaInput): EpicEta {
     return result;
   }
 
-  const paceP50 = median(paceSeries);
-  if (paceP50 <= 0) {
+  const totalPace = paceSeries.reduce((a, b) => a + b, 0);
+  if (totalPace <= 0) {
+    // A truly zero total pace is "no measurable pace" (§1), exactly
+    // as before: resampling all-zero buckets can only draw zero, so
+    // no trial would ever cover the remaining units. A zero MEDIAN
+    // with positive total pace (bursty buckets like [0, 0, 0, 4]) is
+    // different — the resampling estimator below forecasts it,
+    // where v1's median pace returned no_measurable_pace (#5274).
     result.status = "no_measurable_pace";
     limitations.push("observed weekly pace is zero in the primary window; no date is returned");
     return result;
   }
-  const paceP80 = lowerQuartile(paceSeries);
-  // Whole weeks, rounded up: a partial week is not a completion date.
-  result.p50 = etaDate(asOf, remainingUnits, paceP50);
-  if (result.p50 === null) {
+  // Whole weeks only: a partial week is not a completion date. P50 is
+  // the median weeks-to-complete; P80 is the conservative (slower)
+  // tail of the same distribution, so P50 <= P80 by construction.
+  const weeksToComplete = resampledWeeksToComplete(paceSeries, remainingUnits);
+  const censoredTrials = weeksToComplete.filter((w) => w === null).length;
+  const p50Weeks = percentile(weeksToComplete, 0.5);
+  const p80Weeks = percentile(weeksToComplete, 0.8);
+  result.p50 = p50Weeks === null ? null : etaDateForWeeks(asOf, p50Weeks);
+  if (p50Weeks === null) {
+    limitations.push(
+      `P50 exceeds the simulation horizon: ${censoredTrials} of ${RESAMPLE_TRIALS} resampled trials did not complete within the ${RESAMPLE_MAX_WEEKS}-week cap (censored observations, not completions), so no P50 date is returned`,
+    );
+  } else if (result.p50 === null) {
     limitations.push("P50 horizon exceeds the representable date range; no P50 date is returned");
   }
-  if (paceP80 <= 0) {
-    // An unmeasurable conservative pace is stated, not converted into
-    // a finite denominator: a zero lower-quartile pace (a single
-    // observed zero-completion week can produce one) makes any P80
-    // date indefensible \u2014 an EPSILON pace overflows the Date range
-    // and throws.
-    result.p80 = null;
-    limitations.push("conservative (lower-quartile) weekly pace is zero in the pace window; no P80 date is defensible");
-  } else {
-    result.p80 = etaDate(asOf, remainingUnits, paceP80);
-    if (result.p80 === null) {
-      limitations.push("P80 horizon exceeds the representable date range; no P80 date is returned");
-    }
+  result.p80 = p80Weeks === null ? null : etaDateForWeeks(asOf, p80Weeks);
+  if (p80Weeks === null) {
+    limitations.push(
+      `P80 exceeds the simulation horizon: ${censoredTrials} of ${RESAMPLE_TRIALS} resampled trials did not complete within the ${RESAMPLE_MAX_WEEKS}-week cap (censored observations, not completions), so no P80 date is returned`,
+    );
+  } else if (result.p80 === null) {
+    limitations.push("P80 horizon exceeds the representable date range; no P80 date is returned");
   }
 
   if (result.status === "forecast") {
@@ -367,6 +471,11 @@ export function deriveEpicEta(input: EpicEtaInput): EpicEta {
     const stable = comparisonRate > 0 && Math.abs(primaryRate - comparisonRate) / comparisonRate <= 0.25;
     result.confidence = completionsComparison >= 12 && comparison.length >= 8 && stable ? "high" : "medium";
     if (!stable) limitations.push("4-week and 8-week rates differ materially; confidence capped");
+  }
+  if (p50Weeks === null && p80Weeks === null) {
+    // Both percentiles lie beyond the simulation horizon: no date
+    // was returned at all, so no confidence attaches to one.
+    result.confidence = "unavailable";
   }
   return result;
 }

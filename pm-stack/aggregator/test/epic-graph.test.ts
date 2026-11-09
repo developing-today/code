@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { epicGraph, epicSelector } from "../src/epic-graph.ts";
 import type { ProjectPoolItem, RefKey } from "../src/model.ts";
 
@@ -55,6 +57,18 @@ describe("epicSelector", () => {
 
   test("no epics in the pool yields an empty selector", () => {
     expect(epicSelector([item({ number: 1 }), item({ number: 2 })])).toEqual([]);
+  });
+
+  test("invalid-only blockers do not inflate selector or graph blocked counts", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), blockedBy: ["812"] }),
+      item({ number: 3, epicRef: R(1), blockedBy: [R(99)] }),
+    ];
+    expect(epicSelector(pool)[0]?.blockedCount).toBe(1);
+    const graph = epicGraph(pool, R(1));
+    expect(graph.blockedCount).toBe(1);
+    expect(graph.rankedBlocked.map((row) => row.ref)).toEqual([R(3)]);
   });
 });
 
@@ -125,6 +139,28 @@ describe("epicGraph", () => {
     expect(g.edges).toContainEqual({ from: R(3), to: R(2), type: "dependency" });
   });
 
+  test("malformed one-hop refs are omitted while valid blockedBy and blocks edges render", () => {
+    const unsafe = "developing-today/code#99999999999999999999";
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), blockedBy: ["812", R(3)], blocks: [unsafe, R(4)] }),
+      item({ number: 3 }),
+      item({ number: 4 }),
+    ];
+    const g = epicGraph(pool, R(1));
+    expect(g.nodes.map((n) => n.ref)).not.toContain("812");
+    expect(g.nodes.map((n) => n.ref)).not.toContain(unsafe);
+    expect(g.edges).toContainEqual({ from: R(2), to: R(3), type: "dependency" });
+    expect(g.edges).toContainEqual({ from: R(4), to: R(2), type: "dependency" });
+    expect(g.rankedBlocked.find((r) => r.ref === R(2))?.blockers).toEqual([R(3)]);
+
+    const html = renderWith(pool);
+    expect(html).toContain('href="https://github.com/developing-today/code/issues/3"');
+    expect(html).toContain('href="https://github.com/developing-today/code/issues/4"');
+    expect(html).not.toContain('href="https://github.com/812/issues/"');
+    expect(html).not.toContain('href="https://github.com/developing-today/code/issues/99999999999999999999"');
+  });
+
   test("truncation reports the true total and the cut count", () => {
     const g = epicGraph(fixturePool(), R(1), 3);
     expect(g.totalNodes).toBe(5);
@@ -151,6 +187,8 @@ describe("epicGraph", () => {
     expect(g.blockedCount).toBe(1); // #5 is blocked even though the cap hides it
     expect(g.rankedBlocked.map((r) => r.ref)).toEqual([R(5)]);
     expect(g.rankedBlocked[0]!.blockers).toEqual([R(99)]);
+    expect(g.rankedBlocked[0]!.downstreamCount).toBeGreaterThanOrEqual(0);
+    expect(Array.isArray(g.rankedBlocked[0]!.contributingItems)).toBe(true);
   });
 
   test("external count is computed before the node cap (Codex round-3)", () => {
@@ -249,7 +287,8 @@ describe("renderProgramProject per-epic dependency graph (#3973)", () => {
     expect(html).toContain("not in this pool / status unknown — unresolved");
     expect(html).toContain("(unresolved)");
     expect(html).toContain("blocked by:");
-    expect(html).toContain("waiting on 1 unresolved blocker");
+    expect(html).toContain("waiting on");
+    expect(html).toContain("distinct downstream open epic item");
   });
 
   test("a pool with no eligible epic says unavailable, not an empty graph", () => {
@@ -294,8 +333,12 @@ describe("renderProgramProject per-epic dependency graph (#3973)", () => {
   test("the epic selector nav is isolated from the global nav styles", () => {
     const html = renderWith(fixturePool());
     expect(html).toContain('class="epic-graph-selector"');
-    expect(html).toContain(".epic-graph-selector { position: static; }");
-    expect(html).toContain(".epic-graph-selector a { white-space: normal;");
+    // Phase C: page CSS is the external /assets/app.css build; its rules
+    // live in the stylesheet source (src/ui.css), not in the page HTML.
+    expect(html).toContain('href="/assets/app.css"');
+    const uiCss = readFileSync(join(import.meta.dir, "..", "src", "ui.css"), "utf8");
+    expect(uiCss).toContain(".epic-graph-selector { position: static; }");
+    expect(uiCss).toContain(".epic-graph-selector a { white-space: normal;");
   });
 
   test("the graph resolves against the full pool, not the Area-filtered detail pool", () => {
@@ -359,8 +402,9 @@ describe("renderProgramProject per-epic dependency graph (#3973)", () => {
 
   test("the epic-graph flex layout and its narrow-screen stacking ship in the stylesheet", () => {
     const html = renderWith(fixturePool());
-    expect(html).toContain(".epic-graph-flex { display: flex;");
-    expect(html).toContain(".epic-graph-flex { flex-direction: column; }");
+    const uiCss = readFileSync(join(import.meta.dir, "..", "src", "ui.css"), "utf8");
+    expect(uiCss).toContain(".epic-graph-flex { display: flex;");
+    expect(uiCss).toContain(".epic-graph-flex { flex-direction: column; }");
     expect(html).toContain('class="epic-graph-flex"');
     expect(html).toContain('class="epic-graph-list"');
   });

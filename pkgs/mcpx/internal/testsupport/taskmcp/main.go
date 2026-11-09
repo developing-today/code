@@ -109,9 +109,9 @@ func readLine(r *bufio.Reader) ([]byte, error) {
 func (s *server) send(v any) {
 	b, _ := json.Marshal(v)
 	s.writeMu.Lock()
-	s.out.Write(b)
-	s.out.WriteByte('\n')
-	s.out.Flush()
+	_, _ = s.out.Write(b)
+	_ = s.out.WriteByte('\n')
+	_ = s.out.Flush()
 	s.writeMu.Unlock()
 }
 

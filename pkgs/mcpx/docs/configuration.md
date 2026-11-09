@@ -568,6 +568,42 @@ annotation-trust rules unchanged -- and the floor never weakens a
 `deny`. Under `ask` the policy has already asked once, so no call is
 asked about twice.
 
+### Operator-declared read-only tools (`readOnlyTools`)
+
+The gate reads a tool's classification from its annotations, and many
+real servers publish none -- fff, whose tools are all searches, is
+one. The specification's defaults then make every call a possibly
+destructive write, so under `ask` a headless caller (an API session,
+a script -- the normal fleet mode) can never run them at all: the
+confirmation question has no answerer, and every call comes back as
+the gate's error (#6116).
+
+The operator can declare specific tools read-only in a server's
+`mcpx` block, by exact name:
+
+```json
+{ "mcpServers": { "fff": { "command": "...", "mcpx": { "readOnlyTools": ["find_files", "grep", "multi_grep"] } } } }
+```
+
+A declared tool is classified read-only whatever its annotations say
+(or do not say): the write policy does not gate it in any mode, and
+the destructive floor does not ask about it. The declaration is the
+operator's own word in their own configuration, which is why it is
+trusted -- a server cannot declare its own tools read-only this way,
+and a remote server's annotations still clear nothing (#2191). Names
+are exact, never patterns, and the declaration covers only the tools
+listed: a tool the server adds later, under a new name, is gated by
+the defaults until the operator lists it too. Listing a tool that
+actually writes is the operator's mistake to make -- and theirs
+alone; nothing infers the list.
+
+When the gate does refuse a call -- an unanswered confirmation, a
+denied write -- the refusal is typed, not a generic execution
+failure: HTTP 403 with a `code` in the error body
+(`confirmation_required` for an unconfirmed call,
+`write_policy_denied` for a policy denial), so a caller can tell
+"the gate refused this" apart from "the tool ran and failed".
+
 This gate is an operator consent gate, not the autonomy dial
 (`docs/decisions/0002-autonomy-dial.md`): the dial bounds what mcpx
 does on its own, the write policy bounds what a caller may do to the
@@ -1013,6 +1049,8 @@ skipped launcher phases).
 | `script.before` | source | *(empty)* | client | no | `--script-before` | `MCPX_SCRIPT_BEFORE` | runs first, ahead of the globals being installed |
 | `script.captureConsole` | bool | `true` | client | no | `--script-capture-console` | `MCPX_SCRIPT_CAPTURE_CONSOLE` | route console calls into the log |
 | `script.check` | enum | `off` | client | no | `--script-check`, `--script-typecheck`, `--typecheck` | `MCPX_SCRIPT_CHECK`, `MCPX_SCRIPT_TYPECHECK` | check the generated program before running it; path alias: script.typecheck; one of off, types (also on), strict |
+| `script.checkOnError` | enum | `fail` | client | no | `--script-check-on-error` | `MCPX_SCRIPT_CHECK_ON_ERROR` | fail before running, warn and run, or run without reporting a check error |
+| `script.checkOnUnsupported` | enum | `warn` | client | no | `--script-check-on-unsupported` | `MCPX_SCRIPT_CHECK_ON_UNSUPPORTED` | skip, warn, or use Deno to check when the selected runtime cannot check |
 | `script.cwd` | enum | `caller` | client | no | `--script-cwd` | `MCPX_SCRIPT_CWD` | where a script runs: caller, script, config or workdir |
 | `script.env` | list | *(empty)* | client | no | `--script-env`, `--env` | `MCPX_SCRIPT_ENV` | KEY=VALUE pairs added to the script's environment |
 | `script.imports` | enum | `report` | client | no | `--script-imports` | `MCPX_SCRIPT_IMPORTS` | resolve the script's import graph before running it |

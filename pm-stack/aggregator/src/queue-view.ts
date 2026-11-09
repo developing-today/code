@@ -3,7 +3,7 @@
 // It owns no persistence or new feed contract.
 import { DONE_BOARD_WINDOW_MS, isRetiredDoneTableTitle } from "./board-policy.ts";
 import type { BoardItem, GhItem, OrchestrationSection, ProjectPoolItem, RefKey } from "./model.ts";
-import { refUrl } from "./model.ts";
+import { isValidRef, refUrl } from "./model.ts";
 import { FEED_STALE_MS } from "./feed.ts";
 import type { HealthView } from "./health.ts";
 
@@ -14,7 +14,7 @@ export interface QueueRow {
   url?: string;
   repo: string;
   area?: string;
-  epic?: { ref: RefKey; title: string; url: string };
+  epic?: { ref: RefKey; title: string; url?: string };
   status: string;
   updatedAt?: string;
   ageDays?: number;
@@ -110,7 +110,8 @@ export function buildQueueView(input: QueueViewInput): QueueView {
     const ref = poolItem?.epicRef;
     if (!ref) return undefined;
     const parent = poolByRef.get(ref);
-    return { ref, title: parent?.title ?? ref, url: parent?.issueUrl ?? parent?.url ?? refUrl(ref) };
+    const url = parent?.issueUrl ?? parent?.url ?? (isValidRef(ref) ? refUrl(ref) : undefined);
+    return { ref, title: parent?.title ?? ref, ...(url ? { url } : {}) };
   };
   const row = (args: {
     ref?: RefKey;
@@ -136,7 +137,11 @@ export function buildQueueView(input: QueueViewInput): QueueView {
       id: args.id ?? (args.ref ? `gh:${args.ref}` : `${repo}:${args.title}`),
       title: args.title,
       ...(args.ref ? { ref: args.ref } : {}),
-      url: projectItem?.issueUrl ?? ghItem?.url ?? args.url ?? (args.ref ? refUrl(args.ref, ghItem?.kind) : undefined),
+      url:
+        projectItem?.issueUrl ??
+        ghItem?.url ??
+        args.url ??
+        (args.ref && isValidRef(args.ref) ? refUrl(args.ref, ghItem?.kind) : undefined),
       repo,
       ...(projectItem?.area ? { area: projectItem.area } : {}),
       ...(parent ? { epic: parent } : {}),

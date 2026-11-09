@@ -32,7 +32,7 @@ func readHidden(f *os.File) (string, error) {
 	defer func() { _ = termios(fd, ioctlSetTermios, &saved) }()
 
 	line, err := bufio.NewReader(f).ReadString('\n')
-	if err != nil && !(errors.Is(err, io.EOF) && line != "") {
+	if err != nil && (!errors.Is(err, io.EOF) || line == "") {
 		return "", err
 	}
 	return strings.TrimRight(line, "\r\n"), nil

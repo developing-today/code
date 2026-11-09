@@ -111,6 +111,8 @@ type ExecOptions = {
   args?: string[];
   export?: string;
   typecheck?: "off" | "types" | "strict" | "on"; // on is a legacy alias for types
+  checkOnError?: "fail" | "warn" | "run";
+  checkOnUnsupported?: "skip" | "warn" | "switch"; // switch uses Deno only as the checker
   launcher?: string;
   launcherName?: string; // template text, or "none"
   allowRepeat?: string[];

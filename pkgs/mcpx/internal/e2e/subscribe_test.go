@@ -215,7 +215,7 @@ func TestResourceSubscriptionsReachUpstream(t *testing.T) {
 			if err != nil {
 				return false
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			sc := bufio.NewScanner(resp.Body)
 			for sc.Scan() {
 				if strings.Contains(sc.Text(), "no updates will be delivered for mcpx://plain/demo://greeting") {
@@ -229,7 +229,7 @@ func TestResourceSubscriptionsReachUpstream(t *testing.T) {
 		}
 
 		// The connection ending ends the subscription upstream.
-		stdin.Close()
+		_ = stdin.Close()
 		waitLog(t, log, "unsubscribe /abs/doc", 1)
 	})
 
@@ -240,8 +240,8 @@ func TestResourceSubscriptionsReachUpstream(t *testing.T) {
 			"method": "initialize", "params": map[string]any{"protocolVersion": "2025-11-25",
 				"capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "t", "version": "1"}}})
 		session := init.Header.Get("Mcp-Session-Id")
-		init.Body.Close()
-		mcpPost(t, ep, session, map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"}).Body.Close()
+		_ = init.Body.Close()
+		_ = mcpPost(t, ep, session, map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"}).Body.Close()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -252,7 +252,7 @@ func TestResourceSubscriptionsReachUpstream(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer get.Body.Close()
+		defer func() { _ = get.Body.Close() }()
 		if get.StatusCode != http.StatusOK {
 			t.Fatalf("GET stream: %d", get.StatusCode)
 		}
@@ -262,7 +262,7 @@ func TestResourceSubscriptionsReachUpstream(t *testing.T) {
 		r := mcpPost(t, ep, session, map[string]any{"jsonrpc": "2.0", "id": 2,
 			"method": "resources/subscribe", "params": map[string]any{"uri": uri}})
 		doc := decodeJSON(t, r.Body)
-		r.Body.Close()
+		_ = r.Body.Close()
 		if doc["error"] != nil {
 			t.Fatalf("subscribe: %s", dumpJSON(t, doc))
 		}
@@ -271,7 +271,7 @@ func TestResourceSubscriptionsReachUpstream(t *testing.T) {
 
 		r = mcpPost(t, ep, session, map[string]any{"jsonrpc": "2.0", "id": 3,
 			"method": "resources/unsubscribe", "params": map[string]any{"uri": uri}})
-		r.Body.Close()
+		_ = r.Body.Close()
 		waitLog(t, log, "unsubscribe demo://greeting", 1)
 	})
 
@@ -364,7 +364,7 @@ func openListen(t *testing.T, ctx context.Context, ep string, id int, uris ...st
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { resp.Body.Close() })
+	t.Cleanup(func() { _ = resp.Body.Close() })
 	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("listen: %d %q %s", resp.StatusCode, ct, b)
