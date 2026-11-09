@@ -1,0 +1,58 @@
+[package]
+name = "fleet-queue"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The fleet queue domain: the repo-queue client surface plus the queue-broker and secrets-broker server roles (epic developing-today/code#5412, step 2 #5430)."
+
+# The three surfaces are separate features so the shipped variants
+# compile exactly the surface they carry (design note §2): the full
+# build takes all three, fleet-serve takes the two broker roles
+# without the client, and a client-only build is possible for the
+# standalone artifact.
+[features]
+client = ["dep:fleet-config"]
+queue-broker = ["client", "dep:tiny_http", "dep:ureq", "dep:fleet-config"]
+secrets-broker = ["dep:tiny_http", "dep:fleet-config"]
+
+[dependencies]
+fleet-secrets = { workspace = true }
+fleet-config = { workspace = true, optional = true }
+serde = { workspace = true }
+# preserve_order: the brokers' JSON key order is part of the wire and
+# stdout shape the fleet already consumes (the standalone workspace
+# built serde_json the same way).
+serde_json = { version = "1", features = ["preserve_order"] }
+tiny_http = { version = "0.12", optional = true }
+ureq = { version = "3", features = ["rustls", "json"], optional = true }
+
+# Standalone artifacts — the migration's rollback inventory (design
+# note §7): the same code as the fleet binary's queue domain, shipped
+# under the historical names while the migration runs. Built by the
+# `fleet-brokers` package in pkgs/fleet/default.nix.
+[[bin]]
+name = "repo-queue"
+path = "src/bin/repo-queue.rs"
+required-features = ["client"]
+
+[[bin]]
+name = "queue-broker"
+path = "src/bin/queue-broker.rs"
+required-features = ["queue-broker"]
+
+[[bin]]
+name = "secrets-broker"
+path = "src/bin/secrets-broker.rs"
+required-features = ["secrets-broker"]
+
+[[test]]
+name = "broker_bin_args"
+path = "tests/broker_bin_args.rs"
+required-features = ["queue-broker", "secrets-broker"]
+
+
+[dev-dependencies]
+# Property-based tests for the client parser invariants (#5939),
+# the same proptest version pkgs/id uses.
+proptest = "1.12"

@@ -268,7 +268,6 @@ impl Default for AbusePolicy {
     }
 }
 
-
 /// Which way traffic crosses a budget scope (#2247).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Direction {
@@ -499,7 +498,10 @@ impl WindowCounter {
     /// True when both fixed windows are empty, so the state carries
     /// no information and may be dropped.
     fn is_empty(&self) -> bool {
-        self.cur_bytes == 0 && self.cur_messages == 0 && self.prev_bytes == 0 && self.prev_messages == 0
+        self.cur_bytes == 0
+            && self.cur_messages == 0
+            && self.prev_bytes == 0
+            && self.prev_messages == 0
     }
 
     /// True when, rolled to `now_ms`, this counter would be empty:
@@ -536,12 +538,55 @@ pub struct Counters {
     pub bytes: u64,
 }
 
-/// One registry row: the counters plus the last time traffic was
-/// recorded for the pair, which is what [`CounterRegistry::prune`]
-/// ages out on.
+/// Counters split by the direction traffic crossed the evaluator in.
+///
+/// Traffic admitted through a check that knows its direction lands in
+/// `inbound` or `outbound`; traffic admitted through a check that does
+/// not (the pre-#4918 surfaces) lands in `unattributed` rather than
+/// being guessed at.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DirectionalCounters {
+    /// Frames and bytes admitted in the inbound direction.
+    pub inbound: Counters,
+    /// Frames and bytes admitted in the outbound direction.
+    pub outbound: Counters,
+    /// Frames and bytes admitted without a known direction.
+    pub unattributed: Counters,
+}
+
+impl DirectionalCounters {
+    /// The aggregate counters across every direction.
+    #[must_use]
+    pub fn total(&self) -> Counters {
+        Counters {
+            frames: self
+                .inbound
+                .frames
+                .saturating_add(self.outbound.frames)
+                .saturating_add(self.unattributed.frames),
+            bytes: self
+                .inbound
+                .bytes
+                .saturating_add(self.outbound.bytes)
+                .saturating_add(self.unattributed.bytes),
+        }
+    }
+
+    fn for_direction(&mut self, direction: Option<Direction>) -> &mut Counters {
+        match direction {
+            Some(Direction::Inbound) => &mut self.inbound,
+            Some(Direction::Outbound) => &mut self.outbound,
+            None => &mut self.unattributed,
+        }
+    }
+}
+
+/// One registry row: the per-direction counters plus the last time
+/// traffic was recorded for the pair, which is what
+/// [`CounterRegistry::prune`] ages out on.
 #[derive(Clone, Copy, Debug, Default)]
 struct CounterEntry {
-    counters: Counters,
+    counters: DirectionalCounters,
     last_seen_ms: u64,
 }
 
@@ -560,36 +605,65 @@ impl CounterRegistry {
 
     /// Records `frames` admitted frames and `bytes` admitted bytes
     /// for traffic between `local` and `remote`, stamped at
-    /// `now_ms` for pruning.
+    /// `now_ms` for pruning. `direction` names the direction the
+    /// traffic crossed in, or `None` when the admitting check cannot
+    /// tell; those charges are kept as `unattributed`.
     pub fn record(
         &mut self,
         local: NodeId,
         remote: EndpointId,
         frames: u64,
         bytes: u64,
+        direction: Option<Direction>,
         now_ms: u64,
     ) {
         let entry = self.counters.entry((local, remote)).or_default();
-        entry.counters.frames = entry.counters.frames.saturating_add(frames);
-        entry.counters.bytes = entry.counters.bytes.saturating_add(bytes);
+        let counters = entry.counters.for_direction(direction);
+        counters.frames = counters.frames.saturating_add(frames);
+        counters.bytes = counters.bytes.saturating_add(bytes);
         entry.last_seen_ms = entry.last_seen_ms.max(now_ms);
     }
 
-    /// The counters for one pair, if any traffic was recorded.
+    /// The aggregate counters for one pair — every direction summed —
+    /// if any traffic was recorded.
     #[must_use]
     pub fn get(&self, local: &NodeId, remote: &EndpointId) -> Option<Counters> {
-        self.counters.get(&(*local, *remote)).map(|e| e.counters)
+        self.counters
+            .get(&(*local, *remote))
+            .map(|e| e.counters.total())
     }
 
-    /// All counters, sorted by (local node, remote endpoint) so
-    /// snapshots are deterministic.
+    /// All counters aggregated across directions, sorted by (local
+    /// node, remote endpoint) so snapshots are deterministic.
     #[must_use]
     pub fn snapshot(&self) -> Vec<((NodeId, EndpointId), Counters)> {
         let mut rows: Vec<_> = self
             .counters
             .iter()
-            .map(|(k, e)| (*k, e.counters))
+            .map(|(k, e)| (*k, e.counters.total()))
             .collect();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        rows
+    }
+
+    /// All counters split by direction, copied without sorting.
+    ///
+    /// For callers holding a lock on the registry's owner who must keep
+    /// the hold short: copy under the lock, then sort the copy after
+    /// release (see [`CounterRegistry::snapshot_directional`]).
+    #[must_use]
+    pub fn copied_directional(&self) -> Vec<((NodeId, EndpointId), DirectionalCounters)> {
+        self.counters
+            .iter()
+            .map(|(k, e)| (*k, e.counters))
+            .collect()
+    }
+
+    /// All counters split by direction, sorted by (local node, remote
+    /// endpoint) so snapshots are deterministic.
+    #[must_use]
+    pub fn snapshot_directional(&self) -> Vec<((NodeId, EndpointId), DirectionalCounters)> {
+        let mut rows = self.copied_directional();
         rows.sort_by(|a, b| a.0.cmp(&b.0));
         rows
     }
@@ -721,11 +795,7 @@ impl AbuseEvaluator {
     /// the app-wide, per-endpoint (or per-counterparty override),
     /// and direct-IP scopes in addition to the token buckets.
     #[must_use]
-    pub fn with_budgets(
-        policy: AbusePolicy,
-        local_node: NodeId,
-        budgets: BudgetPolicy,
-    ) -> Self {
+    pub fn with_budgets(policy: AbusePolicy, local_node: NodeId, budgets: BudgetPolicy) -> Self {
         let mut evaluator = Self::new(policy, local_node);
         evaluator.budgets = Some(budgets);
         evaluator
@@ -772,7 +842,11 @@ impl AbuseEvaluator {
             ),
         ];
         if let Some(ip) = direct_ip {
-            scopes.push((BudgetKey::Ip(ip), BudgetScope::Ip(ip), policy.per_ip.clone()));
+            scopes.push((
+                BudgetKey::Ip(ip),
+                BudgetScope::Ip(ip),
+                policy.per_ip.clone(),
+            ));
         }
         scopes
     }
@@ -793,10 +867,12 @@ impl AbuseEvaluator {
         let mut retry_ms = 0_u64;
         let mut refused = false;
         for (key, _scope, limits) in &scopes {
-            let counters = self
-                .budget_state
-                .entry(*key)
-                .or_insert_with(|| limits.iter().map(|l| WindowCounter::new(l, now_ms)).collect());
+            let counters = self.budget_state.entry(*key).or_insert_with(|| {
+                limits
+                    .iter()
+                    .map(|l| WindowCounter::new(l, now_ms))
+                    .collect()
+            });
             for (counter, limit) in counters.iter_mut().zip(limits.iter()) {
                 counter.roll(now_ms);
                 if !counter.can_admit(limit, bytes, now_ms) {
@@ -819,10 +895,12 @@ impl AbuseEvaluator {
     ) {
         let scopes = self.budget_scopes(direction, endpoint, direct_ip);
         for (key, _scope, limits) in &scopes {
-            let counters = self
-                .budget_state
-                .entry(*key)
-                .or_insert_with(|| limits.iter().map(|l| WindowCounter::new(l, now_ms)).collect());
+            let counters = self.budget_state.entry(*key).or_insert_with(|| {
+                limits
+                    .iter()
+                    .map(|l| WindowCounter::new(l, now_ms))
+                    .collect()
+            });
             for counter in counters.iter_mut() {
                 counter.roll(now_ms);
                 counter.record(bytes);
@@ -913,8 +991,14 @@ impl AbuseEvaluator {
             debug_assert!(frame_taken && bytes_taken);
         }
         self.record_budget(direction, endpoint, direct_ip, bytes, now_ms);
-        self.registry
-            .record(self.local_node, endpoint, 1, bytes, now_ms);
+        self.registry.record(
+            self.local_node,
+            endpoint,
+            1,
+            bytes,
+            Some(direction),
+            now_ms,
+        );
         Ok(())
     }
 
@@ -933,9 +1017,10 @@ impl AbuseEvaluator {
             let (scope, limits): (BudgetScope, &[BudgetLimit]) = match key {
                 BudgetKey::AppInbound => (BudgetScope::AppInbound, &policy.app_inbound),
                 BudgetKey::AppOutbound => (BudgetScope::AppOutbound, &policy.app_outbound),
-                BudgetKey::Peer(endpoint) => {
-                    (BudgetScope::Peer(*endpoint), policy.limits_for_peer(endpoint))
-                }
+                BudgetKey::Peer(endpoint) => (
+                    BudgetScope::Peer(*endpoint),
+                    policy.limits_for_peer(endpoint),
+                ),
                 BudgetKey::Ip(ip) => (BudgetScope::Ip(*ip), &policy.per_ip),
             };
             for (counter, limit) in counters.iter().zip(limits.iter()) {
@@ -1084,7 +1169,7 @@ impl AbuseEvaluator {
         };
         if bucket.try_take(1, now_ms) {
             self.registry
-                .record(self.local_node, endpoint, 1, 0, now_ms);
+                .record(self.local_node, endpoint, 1, 0, None, now_ms);
             Ok(())
         } else {
             let retry = bucket.retry_after_ms(1, now_ms);
@@ -1116,7 +1201,7 @@ impl AbuseEvaluator {
         };
         if bucket.try_take(bytes, now_ms) {
             self.registry
-                .record(self.local_node, endpoint, 0, bytes, now_ms);
+                .record(self.local_node, endpoint, 0, bytes, None, now_ms);
             Ok(())
         } else {
             let retry = bucket.retry_after_ms(bytes, now_ms);
@@ -1175,8 +1260,16 @@ impl AbuseEvaluator {
             debug_assert!(frame_taken && bytes_taken);
         }
         self.registry
-            .record(self.local_node, endpoint, 1, bytes, now_ms);
+            .record(self.local_node, endpoint, 1, bytes, None, now_ms);
         Ok(())
+    }
+
+    /// The configured abuse policy — the rate and burst the token
+    /// buckets enforce, shown alongside the counters on the operator
+    /// surface.
+    #[must_use]
+    pub fn policy(&self) -> &AbusePolicy {
+        &self.policy
     }
 
     /// The counter registry this evaluator records into.
@@ -1446,6 +1539,50 @@ mod tests {
         // Nothing left to drop on a repeat prune at the same time.
         assert_eq!(eval.prune_counters(10_000, 5_000), 0);
     }
+
+    #[test]
+    fn directional_counters_split_by_direction_and_aggregate() {
+        let mut eval = evaluator();
+        let ep = endpoint(25);
+        eval.registry.record([1; 32], ep, 1, 100, Some(Direction::Inbound), 0);
+        eval.registry
+            .record([1; 32], ep, 2, 300, Some(Direction::Outbound), 0);
+        eval.registry.record([1; 32], ep, 3, 500, None, 0);
+
+        let rows = eval.counters().snapshot_directional();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, ([1; 32], ep));
+        assert_eq!(
+            rows[0].1,
+            DirectionalCounters {
+                inbound: Counters {
+                    frames: 1,
+                    bytes: 100,
+                },
+                outbound: Counters {
+                    frames: 2,
+                    bytes: 300,
+                },
+                unattributed: Counters {
+                    frames: 3,
+                    bytes: 500,
+                },
+            }
+        );
+
+        let aggregate = Counters {
+            frames: 6,
+            bytes: 900,
+        };
+        assert_eq!(eval.counters().get(&[1; 32], &ep), Some(aggregate));
+        assert_eq!(eval.counters().snapshot(), vec![(([1; 32], ep), aggregate)]);
+    }
+
+    #[test]
+    fn directional_snapshot_is_empty_without_traffic() {
+        let eval = evaluator();
+        assert!(eval.counters().snapshot_directional().is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -1551,9 +1688,10 @@ mod budget_tests {
         // 1_000-byte default.
         eval.check_budget(Direction::Inbound, capped, None, 100, 0)
             .expect("at override cap");
-        assert!(eval
-            .check_budget(Direction::Inbound, capped, None, 1, 0)
-            .is_err());
+        assert!(
+            eval.check_budget(Direction::Inbound, capped, None, 1, 0)
+                .is_err()
+        );
         // The raised peer may exceed the default per-peer budget.
         eval.check_budget(Direction::Inbound, raised, None, 3_000, 0)
             .expect("override raises the cap");
@@ -1591,9 +1729,10 @@ mod budget_tests {
         eval.check_budget(Direction::Inbound, endpoint(1), Some(ip), 700, 0)
             .expect("first endpoint on the ip");
         // A second endpoint behind the same direct IP shares its budget.
-        assert!(eval
-            .check_budget(Direction::Inbound, endpoint(2), Some(ip), 400, 0)
-            .is_err());
+        assert!(
+            eval.check_budget(Direction::Inbound, endpoint(2), Some(ip), 400, 0)
+                .is_err()
+        );
         // Relayed traffic (no directly observed IP) charges no IP scope.
         eval.check_budget(Direction::Inbound, endpoint(2), None, 400, 0)
             .expect("no ip observed, no ip scope");
@@ -1612,9 +1751,10 @@ mod budget_tests {
         let mut eval = budgeted(policy);
         eval.check_budget(Direction::Inbound, endpoint(1), None, 800, 0)
             .expect("first peer inbound");
-        assert!(eval
-            .check_budget(Direction::Inbound, endpoint(2), None, 300, 0)
-            .is_err());
+        assert!(
+            eval.check_budget(Direction::Inbound, endpoint(2), None, 300, 0)
+                .is_err()
+        );
         // Outbound has its own app-wide scope.
         eval.check_budget(Direction::Outbound, endpoint(2), None, 300, 0)
             .expect("outbound separate");
@@ -1628,9 +1768,10 @@ mod budget_tests {
         let ep = endpoint(3);
         eval.check_budget(Direction::Inbound, ep, None, 100, 0)
             .expect("full window");
-        assert!(eval
-            .check_budget(Direction::Inbound, ep, None, 1, 0)
-            .is_err());
+        assert!(
+            eval.check_budget(Direction::Inbound, ep, None, 1, 0)
+                .is_err()
+        );
         // Two windows later the usage has fully aged out.
         eval.check_budget(Direction::Inbound, ep, None, 100, 2_000)
             .expect("recovered after roll");

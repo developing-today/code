@@ -40,7 +40,8 @@
 
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { GhState, ProjectPoolItem, RefKey } from "./model.ts";
+import type { GhKind, GhState, ProjectPoolItem, RefKey } from "./model.ts";
+import { isIsoDate } from "./validate.ts";
 
 export const ITEM_HISTORY_SCHEMA_VERSION = 1;
 
@@ -141,10 +142,14 @@ export function isItemHistoryCutoff(v: unknown): v is ItemHistoryCutoff {
   if (!v || typeof v !== "object") return false;
   const c = v as Record<string, unknown>;
   if (c.schemaVersion !== ITEM_HISTORY_SCHEMA_VERSION) return false;
-  if (typeof c.cutoffAt !== "string" || Number.isNaN(Date.parse(c.cutoffAt))) return false;
+  // Real calendar dates only (#5172): Date.parse rolls impossible dates
+  // over (2026-02-30 -> Mar 2) and parses non-ISO strings in a
+  // timezone-dependent way, so gate with isIsoDate like the sibling
+  // gates (snapshots.ts, #2264/#2483).
+  if (!isIsoDate(c.cutoffAt)) return false;
   const coverage = c.coverage as Record<string, unknown> | undefined;
   if (!coverage || typeof coverage !== "object") return false;
-  if (typeof coverage.source !== "string" || typeof coverage.fetchedAt !== "string") return false;
+  if (typeof coverage.source !== "string" || !isIsoDate(coverage.fetchedAt)) return false;
   if (typeof coverage.complete !== "boolean" || typeof coverage.unavailable !== "boolean") {
     return false;
   }

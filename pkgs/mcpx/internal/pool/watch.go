@@ -166,8 +166,8 @@ func (p *Pool) monitor(in *Instance) {
 	}
 }
 
-func (in *Instance) hasSubscriptions() bool {
-	in.subMu.Lock()
-	defer in.subMu.Unlock()
-	return len(in.subscribed) > 0
+func (i *Instance) hasSubscriptions() bool {
+	i.subMu.Lock()
+	defer i.subMu.Unlock()
+	return len(i.subscribed) > 0
 }

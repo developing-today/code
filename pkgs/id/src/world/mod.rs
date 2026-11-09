@@ -35,6 +35,7 @@ mod actor;
 mod clock;
 mod core;
 mod handle;
+pub mod hotness;
 mod metrics;
 mod replica;
 mod replication;
@@ -47,10 +48,13 @@ mod tests;
 
 pub(crate) use actor::{WorldActor, WorldCommand};
 pub use clock::{Clock, ManualClock, SystemClock};
-pub use core::WorldCore;
 pub(crate) use core::AdminHistoryByteLedger;
+pub use core::WorldCore;
 pub use handle::WorldHandle;
-pub use metrics::{HistogramSnapshot, MetricsSnapshot, WorldMetrics};
+pub use hotness::{FiredSignal, HotnessBand, HotnessReport, HotnessSignal};
+pub use metrics::{
+    HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,
+};
 pub use replica::{
     ReplicaCursor, ReplicaRestore, parse_replica_journal, restore_replica_entries,
     restore_replica_entries_with_runtime, restore_replica_journal,
@@ -69,9 +73,8 @@ pub use replication_receiver::{
 };
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{
-    constant_time_eq, hex_decode_32, legacy_sanitize_display_name, sanitize_chat,
-    is_pre_fix_mint_display_name, pre_fix_sanitize_display_name,
-    sanitize_display_name, token_digest,
+    constant_time_eq, hex_decode_32, is_pre_fix_mint_display_name, legacy_sanitize_display_name,
+    pre_fix_sanitize_display_name, sanitize_chat, sanitize_display_name, token_digest,
 };
 
 /// Identity of one live connection. It stays in memory only and is never part
@@ -99,6 +102,9 @@ pub(crate) const MAX_ADMIN_HISTORY_BYTES: usize = 64 * 1024 * 1024;
 /// still closing), compaction is skipped and the complete append-only journal
 /// is retained. Restore enforces the same bound regardless of current config.
 pub(crate) const MAX_CHECKPOINT_OPEN_PRESENCE: usize = 4096;
+/// Largest encoded JSON checkpoint part entry. This remains below the v1
+/// replication payload limit so each part is carried whole in one frame.
+pub const MAX_CHECKPOINT_PART_BYTES: usize = 192 * 1024;
 
 /// Bounded limits for one world.
 #[derive(Clone, Debug)]
@@ -178,6 +184,16 @@ impl WorldScopes {
     /// [`Self::from_bits`] accepts these so a journaled builder or moderator
     /// capability round-trips, without widening [`Self::ALL`].
     const ALL_BITS: u8 = Self::ALL.0 | Self::BUILDER.0 | Self::MODERATOR.0;
+
+    /// Every recognized bit, including the admin authority bits. Used as
+    /// the seed for authority-aware effective-scope computation: unlike
+    /// [`Self::ALL`], this lets an admin-issued `BUILDER` / `MODERATOR`
+    /// bit survive the ancestor-chain intersection in
+    /// `WorldCore::authorize` (design #835 phase 2). It grants nothing on
+    /// its own — the chain intersection only ever removes bits.
+    pub(crate) const fn all_recognized() -> Self {
+        Self(Self::ALL_BITS)
+    }
 
     /// Whether this set includes the builder authority (install modules).
     #[must_use]
@@ -295,10 +311,11 @@ impl WorldScopes {
     /// connected participant may read; `chat.say` also needs `CHAT`.
     #[must_use]
     pub fn allows_effect(self, cap: &str) -> bool {
-        match crate::world_caps::PROVIDER_REGISTRY.get(cap).map_or(
-            crate::world_caps::RequiredScope::Join,
-            |provider| provider.required_scope,
-        ) {
+        match crate::world_caps::PROVIDER_REGISTRY
+            .get(cap)
+            .map_or(crate::world_caps::RequiredScope::Join, |provider| {
+                provider.required_scope
+            }) {
             crate::world_caps::RequiredScope::Chat => self.contains(Self::CHAT),
             // Reading chat needs only the right to read it (`CHAT` or
             // `HISTORY`), the same rule the event stream applies.
@@ -503,7 +520,7 @@ pub enum FileMode {
 }
 
 /// A world's sharing and file settings, read in one step.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldPolicy {
     /// Whether other worlds may read this one.
     pub isolation: Isolation,
@@ -596,6 +613,468 @@ pub struct HandoffTransferState {
     /// (import) the entity in the program. Replay applies it from the same
     /// durable fact as the journal entry itself.
     pub event: WorldEvent,
+}
+
+/// The lease holder every world starts with: the hosted actor itself
+/// (design #2819 bootstrap — existing worlds with no lease records are
+/// DO-owned at epoch 0).
+pub const DO_WRITE_LEASE_HOLDER: &str = "do";
+
+/// Recommended native lease term (design #2819): 30 seconds, renewed by
+/// the DO every 10 seconds, judged only on the DO authority's clock.
+pub const WRITE_LEASE_TERM_MS: u64 = 30_000;
+
+/// Recommended interval between DO renewals of a native lease
+/// (design #2819).
+pub const WRITE_LEASE_RENEWAL_INTERVAL_MS: u64 = 10_000;
+
+/// Why the append gate refused a writer (design #2819, phase 2 of
+/// issue #3804). A refusal is retryable in every case: the writer catches
+/// up, waits for a grant, or retries under the new holder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeaseRejectionReason {
+    /// The writer is not the current lease holder (or there is none).
+    NotHolder,
+    /// The writer presented an epoch other than the current one.
+    StaleEpoch,
+    /// The current lease term had expired on the authority's clock.
+    Expired,
+}
+
+/// Which lease transition a [`WriteLeaseTransition`] records
+/// (design #2819).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeaseTransitionKind {
+    /// A lease was granted while no holder stood (bootstrap is not a
+    /// grant; the first grant follows a revocation).
+    Granted,
+    /// The current holder's term was extended; the epoch is unchanged.
+    Renewed,
+    /// The lease was handed from one holder to another.
+    HandedOff,
+    /// The lease was revoked; no holder stands until the next grant.
+    Revoked,
+}
+
+/// One auditable lease transition, in journal order (design #2819:
+/// compaction must retain every transition needed to prove lease
+/// ownership at represented positions). `epoch` is the epoch in force
+/// after the transition (for a renewal, the unchanged epoch).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WriteLeaseTransition {
+    /// The kind of transition.
+    pub kind: LeaseTransitionKind,
+    /// The holder before the transition (`None` when none stood).
+    pub from: Option<String>,
+    /// The holder after the transition (`None` after a revocation).
+    pub to: Option<String>,
+    /// The epoch in force after the transition.
+    pub epoch: u64,
+    /// The term expiry in force after the transition, in unix
+    /// milliseconds (`None` for an untermed holder such as the DO).
+    pub expires_at_ms: Option<u64>,
+    /// Why a revocation happened; absent for other kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// One rejected stale append attempt, as the append authority audited
+/// it (design #2819). Deduplicated by `(writer, presented_epoch,
+/// operation_id)`: repeated deliveries of the same attempt produce one
+/// audit record, while a client retry of the same operation under a new
+/// holder is a distinct attempt.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeaseWriteRejection {
+    /// The authenticated writer identity that was refused.
+    pub writer: String,
+    /// The epoch the writer presented.
+    pub presented_epoch: u64,
+    /// The client operation ID the writer presented.
+    pub operation_id: String,
+    /// The authority's epoch when the attempt was refused.
+    pub observed_epoch: u64,
+    /// Why the attempt was refused.
+    pub reason: LeaseRejectionReason,
+    /// When the authority received the attempt, in unix milliseconds
+    /// on the authority's clock.
+    pub received_at_ms: u64,
+}
+
+/// One entry in a [`WriteLease`]'s audit history, in journal order.
+/// Transitions and rejection audits share one ordered list because
+/// each rejection audit is only valid against the lease state at its
+/// own journal position: a stale write audited at epoch 1 stays valid
+/// after a revocation advances the epoch to 2, and a validator that
+/// replays every transition before any audit would refuse it
+/// (Codex review on PR #5571).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "record", rename_all = "snake_case")]
+pub enum WriteLeaseHistory {
+    /// A lease transition (grant, renewal, handoff, revocation).
+    Transition(WriteLeaseTransition),
+    /// A rejected append attempt the authority audited.
+    Rejection(LeaseWriteRejection),
+}
+
+/// The journal-resident write lease for one world (design #2819,
+/// phase 2 of issue #3804): the derived state the append gate fences
+/// on, rebuilt by journal replay and carried whole in checkpoints so
+/// compaction preserves the current state, the monotonic epoch, the
+/// transition history, and the rejection audit.
+///
+/// Safety invariants: epochs never decrease or repeat across grant,
+/// handoff, and revocation (a renewal keeps the epoch); there is at
+/// most one holder at any epoch; expiry fences the old holder even
+/// before a revocation is journaled, because [`WriteLease::check_writer`]
+/// judges the term at the append decision.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WriteLease {
+    /// The current holder's authenticated identity; `None` between a
+    /// revocation and the next grant.
+    pub holder: Option<String>,
+    /// The current epoch. Bootstrap is epoch 0.
+    pub epoch: u64,
+    /// When the current term expires, in unix milliseconds on the
+    /// authority's clock; `None` for an untermed holder.
+    pub expires_at_ms: Option<u64>,
+    /// Every transition and audited rejection, interleaved in
+    /// journal order — the order is load-bearing (see
+    /// [`WriteLeaseHistory`]).
+    pub history: Vec<WriteLeaseHistory>,
+}
+
+impl Default for WriteLease {
+    fn default() -> Self {
+        Self::bootstrap()
+    }
+}
+
+impl WriteLease {
+    /// The pre-spill state of every existing world: the DO actor is the
+    /// incumbent holder at epoch 0, with no term and no history.
+    #[must_use]
+    pub fn bootstrap() -> Self {
+        Self {
+            holder: Some(DO_WRITE_LEASE_HOLDER.to_owned()),
+            epoch: 0,
+            expires_at_ms: None,
+            history: Vec::new(),
+        }
+    }
+
+    /// Every transition applied, in journal order.
+    pub fn transitions(&self) -> impl Iterator<Item = &WriteLeaseTransition> {
+        self.history.iter().filter_map(|entry| match entry {
+            WriteLeaseHistory::Transition(transition) => Some(transition),
+            WriteLeaseHistory::Rejection(_) => None,
+        })
+    }
+
+    /// Every audited rejected append attempt, in journal order.
+    pub fn rejections(&self) -> impl Iterator<Item = &LeaseWriteRejection> {
+        self.history.iter().filter_map(|entry| match entry {
+            WriteLeaseHistory::Transition(_) => None,
+            WriteLeaseHistory::Rejection(rejection) => Some(rejection),
+        })
+    }
+
+    /// Whether this lease is still the untouched bootstrap state (a
+    /// checkpoint then omits it, exactly as older checkpoints did).
+    #[must_use]
+    pub fn is_bootstrap(&self) -> bool {
+        *self == Self::bootstrap()
+    }
+
+    /// Whether `now_ms` is past the current term. An untermed holder
+    /// never expires; a world with no holder has nothing to expire.
+    #[must_use]
+    pub fn is_expired(&self, now_ms: u64) -> bool {
+        self.holder.is_some() && self.expires_at_ms.is_some_and(|expiry| now_ms >= expiry)
+    }
+
+    /// The append-gate check (design #2819): a mutation append is
+    /// admitted only from the current holder, presenting the current
+    /// epoch, before the term expires on the authority's clock. This
+    /// is the check the serialized append path performs in the same
+    /// operation as the append itself; a caller that passes it and
+    /// then appends through any other path has no fencing.
+    ///
+    /// # Errors
+    ///
+    /// The [`LeaseRejectionReason`] the gate records for the attempt.
+    pub fn check_writer(
+        &self,
+        writer: &str,
+        presented_epoch: u64,
+        now_ms: u64,
+    ) -> Result<(), LeaseRejectionReason> {
+        if self.holder.as_deref() != Some(writer) {
+            return Err(LeaseRejectionReason::NotHolder);
+        }
+        if presented_epoch != self.epoch {
+            return Err(LeaseRejectionReason::StaleEpoch);
+        }
+        if self.is_expired(now_ms) {
+            return Err(LeaseRejectionReason::Expired);
+        }
+        Ok(())
+    }
+
+    /// Apply a `LeaseGranted` record: legal only while no holder
+    /// stands, and the granted epoch must be exactly the next epoch.
+    ///
+    /// # Errors
+    ///
+    /// A grant over a standing holder (that is a handoff, not a grant),
+    /// or an epoch that is not `current + 1`.
+    pub fn apply_grant(
+        &mut self,
+        holder: &str,
+        epoch: u64,
+        expires_at_ms: Option<u64>,
+    ) -> Result<()> {
+        ensure!(
+            self.holder.is_none(),
+            "journal grants the write lease to {holder:?} while {:?} holds it",
+            self.holder
+        );
+        self.advance_epoch(epoch, "grant")?;
+        self.holder = Some(holder.to_owned());
+        self.expires_at_ms = expires_at_ms;
+        self.history
+            .push(WriteLeaseHistory::Transition(WriteLeaseTransition {
+                kind: LeaseTransitionKind::Granted,
+                from: None,
+                to: Some(holder.to_owned()),
+                epoch,
+                expires_at_ms,
+                reason: None,
+            }));
+        Ok(())
+    }
+
+    /// Apply a `LeaseRenewed` record: only the current holder renews,
+    /// the epoch is unchanged, and the term never moves backwards.
+    ///
+    /// # Errors
+    ///
+    /// A renewal by a non-holder, under a different epoch, or moving
+    /// the expiry backwards.
+    pub fn apply_renew(&mut self, holder: &str, epoch: u64, expires_at_ms: u64) -> Result<()> {
+        ensure!(
+            self.holder.as_deref() == Some(holder),
+            "journal renews the write lease for {holder:?}, held by {:?}",
+            self.holder
+        );
+        ensure!(
+            epoch == self.epoch,
+            "journal renews the write lease at epoch {epoch}, current epoch is {}",
+            self.epoch
+        );
+        ensure!(
+            self.expires_at_ms
+                .is_none_or(|current| expires_at_ms >= current),
+            "journal renewal moves the write lease expiry backwards"
+        );
+        self.expires_at_ms = Some(expires_at_ms);
+        self.history
+            .push(WriteLeaseHistory::Transition(WriteLeaseTransition {
+                kind: LeaseTransitionKind::Renewed,
+                from: Some(holder.to_owned()),
+                to: Some(holder.to_owned()),
+                epoch,
+                expires_at_ms: Some(expires_at_ms),
+                reason: None,
+            }));
+        Ok(())
+    }
+
+    /// Apply a `LeaseHandedOff` record: the handoff names the current
+    /// holder as its source and advances the epoch by exactly one;
+    /// that journal position is the ownership boundary.
+    ///
+    /// # Errors
+    ///
+    /// A handoff from a non-holder, or an epoch that is not
+    /// `current + 1`.
+    pub fn apply_handoff(
+        &mut self,
+        from: &str,
+        to: &str,
+        epoch: u64,
+        expires_at_ms: Option<u64>,
+    ) -> Result<()> {
+        ensure!(
+            self.holder.as_deref() == Some(from),
+            "journal hands the write lease off from {from:?}, held by {:?}",
+            self.holder
+        );
+        self.advance_epoch(epoch, "handoff")?;
+        self.holder = Some(to.to_owned());
+        self.expires_at_ms = expires_at_ms;
+        self.history
+            .push(WriteLeaseHistory::Transition(WriteLeaseTransition {
+                kind: LeaseTransitionKind::HandedOff,
+                from: Some(from.to_owned()),
+                to: Some(to.to_owned()),
+                epoch,
+                expires_at_ms,
+                reason: None,
+            }));
+        Ok(())
+    }
+
+    /// Apply a `LeaseRevoked` record: revocation names the current
+    /// holder, advances the epoch by exactly one, and leaves no
+    /// holder standing.
+    ///
+    /// # Errors
+    ///
+    /// A revocation of a non-holder, or an epoch that is not
+    /// `current + 1`.
+    pub fn apply_revoke(&mut self, former_holder: &str, epoch: u64, reason: &str) -> Result<()> {
+        ensure!(
+            self.holder.as_deref() == Some(former_holder),
+            "journal revokes the write lease from {former_holder:?}, held by {:?}",
+            self.holder
+        );
+        self.advance_epoch(epoch, "revocation")?;
+        self.holder = None;
+        self.expires_at_ms = None;
+        self.history
+            .push(WriteLeaseHistory::Transition(WriteLeaseTransition {
+                kind: LeaseTransitionKind::Revoked,
+                from: Some(former_holder.to_owned()),
+                to: None,
+                epoch,
+                expires_at_ms: None,
+                reason: Some(reason.to_owned()),
+            }));
+        Ok(())
+    }
+
+    /// Apply a `LeaseWriteRejected` audit record. The audited attempt
+    /// must actually be refusable under the state it names: a writer
+    /// that would have passed the gate cannot be audited as rejected.
+    /// Duplicate deliveries of one attempt (same writer, presented
+    /// epoch, and operation ID) are refused, so a journal carries at
+    /// most one audit record per attempt.
+    ///
+    /// # Errors
+    ///
+    /// An audit whose observed epoch is not the current epoch, whose
+    /// stated reason disagrees with the gate check (expiry is judged
+    /// at `received_at_ms`, the authority's own clock reading), or
+    /// that duplicates an earlier audit.
+    pub fn apply_rejection(&mut self, rejection: LeaseWriteRejection) -> Result<()> {
+        ensure!(
+            rejection.observed_epoch == self.epoch,
+            "journal audits a rejected write at observed epoch {}, current epoch is {}",
+            rejection.observed_epoch,
+            self.epoch
+        );
+        ensure!(
+            self.check_writer(
+                &rejection.writer,
+                rejection.presented_epoch,
+                rejection.received_at_ms
+            ) == Err(rejection.reason),
+            "journal audits a rejected write by {:?} whose stated reason {:?} disagrees with the lease gate",
+            rejection.writer,
+            rejection.reason
+        );
+        ensure!(
+            !self.rejections().any(|prior| {
+                prior.writer == rejection.writer
+                    && prior.presented_epoch == rejection.presented_epoch
+                    && prior.operation_id == rejection.operation_id
+            }),
+            "journal audits rejected write {:?} twice",
+            rejection.operation_id
+        );
+        self.history.push(WriteLeaseHistory::Rejection(rejection));
+        Ok(())
+    }
+
+    /// Validate a checkpoint-carried lease as a whole: replaying its
+    /// transitions and rejections from bootstrap must reproduce the
+    /// exact state the checkpoint claims. Used at restore, where a
+    /// checkpoint stands in for the journal it compacted.
+    ///
+    /// # Errors
+    ///
+    /// Any transition or rejection that replay refuses, or a final
+    /// state that differs from the claimed one.
+    pub fn validate_history(&self) -> Result<()> {
+        let mut replayed = Self::bootstrap();
+        for entry in &self.history {
+            match entry {
+                WriteLeaseHistory::Transition(transition) => match transition.kind {
+                    LeaseTransitionKind::Granted => replayed.apply_grant(
+                        transition
+                            .to
+                            .as_deref()
+                            .context("lease grant transition names no holder")?,
+                        transition.epoch,
+                        transition.expires_at_ms,
+                    )?,
+                    LeaseTransitionKind::Renewed => replayed.apply_renew(
+                        transition
+                            .to
+                            .as_deref()
+                            .context("lease renewal transition names no holder")?,
+                        transition.epoch,
+                        transition
+                            .expires_at_ms
+                            .context("lease renewal transition names no expiry")?,
+                    )?,
+                    LeaseTransitionKind::HandedOff => replayed.apply_handoff(
+                        transition
+                            .from
+                            .as_deref()
+                            .context("lease handoff transition names no source")?,
+                        transition
+                            .to
+                            .as_deref()
+                            .context("lease handoff transition names no target")?,
+                        transition.epoch,
+                        transition.expires_at_ms,
+                    )?,
+                    LeaseTransitionKind::Revoked => replayed.apply_revoke(
+                        transition
+                            .from
+                            .as_deref()
+                            .context("lease revocation transition names no holder")?,
+                        transition.epoch,
+                        transition
+                            .reason
+                            .as_deref()
+                            .context("lease revocation transition names no reason")?,
+                    )?,
+                },
+                WriteLeaseHistory::Rejection(rejection) => {
+                    replayed.apply_rejection(rejection.clone())?;
+                }
+            }
+        }
+        ensure!(
+            replayed == *self,
+            "checkpoint write lease history does not reproduce its claimed state"
+        );
+        Ok(())
+    }
+
+    fn advance_epoch(&mut self, epoch: u64, what: &str) -> Result<()> {
+        ensure!(
+            self.epoch.checked_add(1) == Some(epoch),
+            "journal {what} advances the write lease epoch from {} to {epoch}",
+            self.epoch
+        );
+        self.epoch = epoch;
+        Ok(())
+    }
 }
 
 /// One durable fact in the region coordinator's own journal (#3870 phase 1,
@@ -912,6 +1391,111 @@ pub enum JournalEntry {
         /// the payload, hex-encoded, per design #2818 §3).
         destination_event: WorldEvent,
     },
+    /// A write lease was granted while no holder stood (design #2819,
+    /// phase 2 of issue #3804). Authority-only: the append authority
+    /// writes this, never a lease holder on its own behalf. `epoch` is
+    /// the resulting epoch (`previous + 1`).
+    LeaseGranted {
+        /// The new holder's authenticated identity.
+        holder: String,
+        /// The resulting lease epoch.
+        epoch: u64,
+        /// When the granted term expires, in unix milliseconds on the
+        /// authority's clock; absent for an untermed holder.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at_ms: Option<u64>,
+    },
+    /// The current holder's lease term was renewed by the authority
+    /// (design #2819). The epoch is unchanged.
+    LeaseRenewed {
+        /// The holder whose term was renewed.
+        holder: String,
+        /// The (unchanged) lease epoch.
+        epoch: u64,
+        /// The new term expiry, in unix milliseconds.
+        expires_at_ms: u64,
+    },
+    /// The write lease was handed from one holder to another
+    /// (design #2819). This entry's journal position is the ownership
+    /// boundary: before it only the old epoch passes the append gate,
+    /// after it only the new one. `epoch` is the resulting epoch.
+    LeaseHandedOff {
+        /// The holder giving up execution.
+        from: String,
+        /// The holder taking over execution.
+        to: String,
+        /// The resulting lease epoch.
+        epoch: u64,
+        /// When the new holder's term expires, in unix milliseconds;
+        /// absent for an untermed holder.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at_ms: Option<u64>,
+    },
+    /// The write lease was revoked by the authority (design #2819):
+    /// the former holder is fenced at the resulting epoch and no
+    /// holder stands until the next grant.
+    LeaseRevoked {
+        /// The holder whose lease was revoked.
+        former_holder: String,
+        /// The resulting lease epoch.
+        epoch: u64,
+        /// Why the lease was revoked.
+        reason: String,
+    },
+    /// An authenticated append attempt was refused by the append gate
+    /// and the authority journaled the attempt as an audit record
+    /// (design #2819). The attempted entry itself was not applied.
+    /// Control metadata: replay rebuilds the audit, never the program.
+    LeaseWriteRejected {
+        /// The authenticated writer identity that was refused.
+        writer: String,
+        /// The epoch the writer presented.
+        presented_epoch: u64,
+        /// The client operation ID the writer presented.
+        operation_id: String,
+        /// The authority's epoch when the attempt was refused.
+        observed_epoch: u64,
+        /// Why the attempt was refused.
+        reason: LeaseRejectionReason,
+        /// When the authority received the attempt, in unix
+        /// milliseconds on the authority's clock.
+        received_at_ms: u64,
+    },
+    /// One UTF-8-safe part of a compacted program snapshot. The complete set
+    /// immediately precedes its checkpoint and is keyed by that checkpoint's
+    /// sequence.
+    CheckpointSnapshotPart {
+        /// Sequence of the checkpoint these bytes belong to.
+        sequence: u64,
+        /// Zero-based position within this part set.
+        part_index: u32,
+        /// Number of parts in this set.
+        part_count: u32,
+        /// UTF-8 snapshot bytes for this part.
+        bytes: String,
+    },
+    /// One bounded part of the retained participant-event window.
+    CheckpointEventsPart {
+        /// Sequence of the checkpoint these events belong to.
+        sequence: u64,
+        /// Zero-based position within this part set.
+        part_index: u32,
+        /// Number of parts in this set.
+        part_count: u32,
+        /// Ordered events in this part.
+        events: Vec<WorldEvent>,
+    },
+    /// One bounded part of the retained admin-history window.
+    CheckpointAdminPart {
+        /// Sequence of the checkpoint these events belong to.
+        sequence: u64,
+        /// Zero-based position within this part set.
+        part_index: u32,
+        /// Number of parts in this set.
+        part_count: u32,
+        /// Ordered events in this part.
+        events: Vec<WorldEvent>,
+    },
     /// The world as of `sequence`, standing in for every event up to it. Only
     /// ever written by compaction, directly after the participant entries.
     Checkpoint {
@@ -942,6 +1526,15 @@ pub enum JournalEntry {
         /// checkpoints written before journal version 3.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         transfers: Option<Vec<HandoffTransferState>>,
+        /// The journal-resident write lease as of this checkpoint
+        /// (design #2819, phase 2 of issue #3804): current holder,
+        /// epoch and term, the full transition history, and the
+        /// rejection audit, so compaction cannot reset the epoch or
+        /// lose proof of ownership. Absent when the lease is still the
+        /// bootstrap state, and in checkpoints written before journal
+        /// version 7.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease: Option<WriteLease>,
         /// The program's own serialization of its state.
         snapshot: String,
         /// Recent events kept for reconnect catch-up.
@@ -984,8 +1577,9 @@ pub(crate) struct JournalAdminHistory {
 pub const JOURNAL_VERSION: u32 = 1;
 
 /// Header version of a journal that contains a
-/// [`JournalEntry::ExecutionProfile`]: the first entry kind a version-1
-/// binary cannot read. See the contract on [`JOURNAL_VERSION`].
+/// [`JournalEntry::ExecutionProfile`] or [`JournalEntry::BuilderInstalled`]:
+/// entry kinds a version-1 binary cannot read. See the contract on
+/// [`JOURNAL_VERSION`].
 pub const JOURNAL_VERSION_EXECUTION_PROFILE: u32 = 2;
 
 /// Header version of a journal that contains a region-seam handoff entry
@@ -1013,16 +1607,30 @@ pub const JOURNAL_VERSION_WORLD_BUDGET: u32 = 4;
 /// assigned version 4 to the world-budget contract above.)
 pub const JOURNAL_VERSION_OPEN_PRESENCE: u32 = 5;
 
+/// Header version required by compacted checkpoint part entries. Older
+/// binaries refuse these entries at the header check instead of silently
+/// restoring an incomplete checkpoint.
+pub const JOURNAL_VERSION_CHECKPOINT_PARTS: u32 = 6;
+
+/// Header version of a journal that contains a native-spill write
+/// lease entry ([`JournalEntry::LeaseGranted`] and its siblings), or a
+/// checkpoint carrying a non-bootstrap [`WriteLease`] (design #2819,
+/// phase 2 of issue #3804). Version-6 binaries cannot read the lease
+/// records and would restore a world with no fencing state, so they
+/// must refuse the journal at the header check.
+pub const JOURNAL_VERSION_WRITE_LEASE: u32 = 7;
+
 /// Newest journal version this binary can read. Journals with a higher
 /// header version are refused at the header check, before any entry is
 /// applied.
-pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_OPEN_PRESENCE;
+pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_WRITE_LEASE;
 
 /// The header version a journal must carry once it contains `entry`: version 2
 /// for execution-profile entries, version 3 for region-handoff entries,
-/// version 4 for entries persisting a per-world total memory budget, and
-/// version 5 for checkpoints with open-presence metadata. Checkpoints combine
-/// the requirements of their transfers, retained events, profile and presence field.
+/// version 4 for entries persisting a per-world total memory budget, version 5
+/// for checkpoints with open-presence metadata, and version 6 for checkpoint
+/// part entries. Checkpoints combine the requirements of their transfers,
+/// retained events, profile and presence field.
 #[must_use]
 pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
     // A persisted budget always requires the budget version, on top of any
@@ -1038,6 +1646,14 @@ pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
         JournalEntry::EntityExported { .. } | JournalEntry::EntityImported { .. } => {
             JOURNAL_VERSION_REGION_HANDOFF
         }
+        JournalEntry::LeaseGranted { .. }
+        | JournalEntry::LeaseRenewed { .. }
+        | JournalEntry::LeaseHandedOff { .. }
+        | JournalEntry::LeaseRevoked { .. }
+        | JournalEntry::LeaseWriteRejected { .. } => JOURNAL_VERSION_WRITE_LEASE,
+        JournalEntry::CheckpointSnapshotPart { .. }
+        | JournalEntry::CheckpointEventsPart { .. }
+        | JournalEntry::CheckpointAdminPart { .. } => JOURNAL_VERSION_CHECKPOINT_PARTS,
         JournalEntry::Committed { event } | JournalEntry::System { event } => match &event.kind {
             WorldEventKind::EntityInput { .. } => JOURNAL_VERSION_REGION_HANDOFF,
             _ => JOURNAL_VERSION,
@@ -1049,12 +1665,15 @@ pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
         // PR #3922).
         JournalEntry::Checkpoint {
             transfers,
+            lease,
             events,
             open_presence,
             execution_profile,
             ..
         } => {
-            let base = if open_presence.is_some() {
+            let base = if lease.is_some() {
+                JOURNAL_VERSION_WRITE_LEASE
+            } else if open_presence.is_some() {
                 JOURNAL_VERSION_OPEN_PRESENCE
             } else if transfers.is_some()
                 || events
@@ -1070,6 +1689,7 @@ pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
         JournalEntry::ExecutionProfile { profile } => {
             JOURNAL_VERSION_EXECUTION_PROFILE.max(budget_version(Some(profile)))
         }
+        JournalEntry::BuilderInstalled { .. } => JOURNAL_VERSION_EXECUTION_PROFILE,
         _ => JOURNAL_VERSION,
     }
 }
@@ -1107,6 +1727,18 @@ pub trait WorldJournal: Send + 'static {
     /// Current journal header version, when the implementation can report it.
     fn replication_header_version(&self) -> Option<u32> {
         None
+    }
+
+    /// Durably append a group of entries as one all-or-nothing transaction.
+    /// Journals that cannot guarantee atomicity must leave the default in
+    /// place; an install requiring paired event and audit records will then
+    /// fail closed instead of falling back to separate appends.
+    ///
+    /// # Errors
+    ///
+    /// Any I/O failure, or if this journal does not support atomic groups.
+    fn append_transaction(&mut self, _entries: &[JournalEntry]) -> Result<()> {
+        bail!("this journal does not support atomic entry transactions")
     }
 
     /// Atomically replace the whole journal with `entries` (a header, the
@@ -1340,8 +1972,14 @@ pub const MAX_RECORD_VALUE_BYTES: usize = 8 * 1024;
 ///
 /// Anything that is not a bounded JSON object of valid keys.
 pub fn parse_records(text: &str) -> Result<Records> {
-    let records: Records =
-        serde_json::from_str(text).context("world records must be a JSON object")?;
+    // A duplicate key is a parse error (#6520): the caps below must see
+    // the document as written, never a last-wins collapse of it.
+    let value = id_core::json_unique::parse_json_without_duplicate_keys(text)
+        .context("world records must be a JSON object")?;
+    let serde_json::Value::Object(map) = value else {
+        bail!("world records must be a JSON object");
+    };
+    let records: Records = map.into_iter().collect();
     ensure!(
         records.len() <= MAX_RECORDS,
         "world publishes {} records; the limit is {MAX_RECORDS}",

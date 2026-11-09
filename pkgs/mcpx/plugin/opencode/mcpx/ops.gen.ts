@@ -20,6 +20,8 @@ type OpSpec = {
   response: "json" | "response"
 }
 
+export const OPERATION_FINGERPRINT = "f991ef3215011e82484759f8a9b2122671e0b974d4da47647141cf2f1017e8af"
+
 /** Every /v1 operation, by name. */
 export const OPS: Record<string, OpSpec> = {
   adapters_add: {
@@ -682,6 +684,12 @@ export const OPS: Record<string, OpSpec> = {
     params: {
       session: { in: "body", required: true },
     },
+    response: "json",
+  },
+  sessions_read: {
+    method: "GET",
+    path: "/v1/sessions",
+    params: {},
     response: "json",
   },
   settings_get: {
@@ -1429,6 +1437,13 @@ export class DaemonOps {
    */
   sessionRelease(args: { session: string }, opts: CallOptions = {}): Promise<unknown> {
     return this.invoke("session_release", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * The session inventory: every pool's live instances. `GET /v1/sessions`.
+   */
+  sessionsRead(args: Record<string, never> = {}, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("sessions_read", args, opts) as Promise<unknown>
   }
 
   /**

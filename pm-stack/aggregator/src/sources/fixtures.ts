@@ -25,15 +25,16 @@ import {
   refUrl,
 } from "../model.ts";
 import { buildAttentionFlags } from "../derive.ts";
+import { validateRoadmapHorizon } from "../roadmap-horizon.ts";
 import { gristDocUrl } from "../service-links.ts";
 import { recordFromSessionEntry } from "../registry.ts";
 import type { Source } from "../source.ts";
 
 const GRIST_DOC = "czYHYKgG9SHcm9CPwiKEq1"; // "Program roadmap"
 const CODE = "developing-today/code";
-const OPENCODE = "developing-today/opencode";
-const OPENCHAMBER = "developing-today/openchamber";
-const NIX = "dezren39/nix";
+const OPENCODE = "developing-today-forks/opencode";
+const OPENCHAMBER = "developing-today-forks/openchamber";
+const NIX = "dezren39/darwin-nix";
 
 function gh(
   ref: RefKey,
@@ -198,6 +199,7 @@ type SeedRow = { Title: string; Area: string; Status: string; Horizon: string; S
 
 export const FIXTURE_ROADMAP: RoadmapRow[] = (seed.rows as SeedRow[]).map((r, i) => {
   const refs = new Set([...refsInText(`${r.Source} ${r.Notes}`), ...(ROADMAP_LINKS[r.Title] ?? [])]);
+  const horizonValidation = validateRoadmapHorizon(r.Horizon);
   return {
     id: i + 1,
     subject: `grist:${GRIST_DOC}/Roadmap/${i + 1}`,
@@ -205,6 +207,7 @@ export const FIXTURE_ROADMAP: RoadmapRow[] = (seed.rows as SeedRow[]).map((r, i)
     area: r.Area,
     status: r.Status,
     horizon: r.Horizon,
+    ...(!horizonValidation.valid ? { horizonError: horizonValidation.error } : {}),
     source: r.Source,
     notes: r.Notes,
     links: [...refs].map((ref) => link(ref)),
@@ -535,19 +538,6 @@ export const FIXTURE_ATTENTION: SessionFeedEntry[] = [
     activeToolCalls: 0,
     repeatedErrorCount: 4,
     lastTurnError: "claude_session_limit (retry)",
-  },
-  {
-    // Jules, wired via the keeper's state in slice 2.
-    sessionId: "4259424002214698449",
-    source: "jules",
-    title: "Fix #811: id phase-9: a joiner's resize (up to 500x200) can permanently…",
-    directory: "developing-today/code",
-    createdAt: ago(5),
-    lastActivityAt: ago(0.2),
-    messageCount: 0,
-    activeToolCalls: 0,
-    awaitingQuestion: "Does this look good, and should I proceed?",
-    supervisionNote: "Jules AWAITING_USER_FEEDBACK · keeper: replied",
   },
   {
     // A finished one-shot probe: expires out of the view (slice 2).
@@ -1251,6 +1241,7 @@ export const FIXTURE_USAGE: UsageView = {
       usageNote: "Counts only in this hub — secret names/values never enter it. No count recorded yet.",
     },
   ],
+  uninstrumentedServices: [],
   payg: [
     {
       id: "meta-payg",
@@ -1425,12 +1416,6 @@ export function fixtureSource(): Source {
         label: "OpenCode · laptop server",
         wired: true,
         detail: "fixtures",
-      },
-      {
-        source: "jules",
-        label: "Jules",
-        wired: true,
-        detail: "fixtures (keeper state)",
       },
       {
         source: "claude-code",

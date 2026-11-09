@@ -6,6 +6,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PM_STACK_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BASH_BIN="${BASH:-$(command -v bash)}"
+# Capture bun BEFORE PATH is replaced below: CI runners get bun from
+# oven-sh/setup-bun (outside SYSTEM_PATH), and the Grist seed script
+# requires bun to validate Horizon values before seeding.
+BUN_BIN="$(command -v bun || true)"
 SYSTEM_PATH="/run/current-system/sw/bin:/usr/bin:/bin"
 export PATH="$SYSTEM_PATH"
 
@@ -174,6 +178,11 @@ else
 fi
 STUB
 chmod +x "$STUB_BIN/sops" "$STUB_BIN/curl-grist" "$STUB_BIN/curl-pad"
+# Expose the pre-isolation bun through the stub bin, which run_grist
+# already puts on the isolated PATH, so seed.sh finds bun on CI.
+if [[ -n "$BUN_BIN" ]]; then
+  ln -sf "$BUN_BIN" "$STUB_BIN/bun"
+fi
 
 GRIST_STATE="$TMP/grist-state"
 PAD_STATE="$TMP/pad-state"

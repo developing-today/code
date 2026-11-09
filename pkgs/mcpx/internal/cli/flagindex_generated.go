@@ -103,7 +103,7 @@ var handFlagIndex = map[string][]HandFlag{
 		{Name: "on-error", Usage: "line to run when it throws; repeatable"},
 		{Name: "launcher", Usage: "replace the generated launcher with this source or file"},
 		{Name: "no-launcher", Usage: "run the script with no launcher: no globals, no capture, no wrapper"},
-		{Name: "typecheck", Usage: "check the program before running it: off, on, strict"},
+		{Name: "typecheck", Usage: "check the program before running it: off, types, strict (on aliases types)"},
 		{Name: "prompt", Usage: "synthesize and execute a script from a natural language prompt"},
 		{Name: "validate", Usage: "validate script structure, tool signatures, and syntax without executing"},
 		{Name: "repair", Usage: "automatically attempt script repair using configured model if execution fails"},
@@ -114,6 +114,7 @@ var handFlagIndex = map[string][]HandFlag{
 		{Name: "permissions", Usage: "permission profiles in order, e.g. read,mine: all (default), net, read, readnet, strict, a script.profiles name, or raw:<flags>"},
 		{Name: "remote", Usage: "run the script on the daemon rather than here"},
 		{Name: "local", Usage: "run the script in this process (the default when the daemon is local)"},
+		{Name: "remote-file", Usage: "with --remote, send the script's name and let the daemon resolve it on its own script search path (#2168), instead of sending the file's text"},
 	},
 	"feedback": {
 		{Name: "score", Usage: "primary feedback score between 0.0 (bad) and 1.0 (good)"},
@@ -172,6 +173,8 @@ var handFlagIndex = map[string][]HandFlag{
 	},
 	"man": {
 		{Name: "install", Usage: "write the page into this directory as man1/mcpx.1"},
+		{Name: "format", Usage: "output format: roff (the man page) or markdown (the generated reference tree)"},
+		{Name: "o", Usage: "write the markdown reference tree into this directory (with --format markdown)"},
 	},
 	"openapi": {
 		{Name: "o", Usage: "write to this file instead of stdout"},
@@ -228,7 +231,7 @@ var handFlagIndex = map[string][]HandFlag{
 		{Name: "on-error", Usage: "line to run when it throws; repeatable"},
 		{Name: "launcher", Usage: "replace the generated launcher with this source or file"},
 		{Name: "no-launcher", Usage: "run the script with no launcher: no globals, no capture, no wrapper"},
-		{Name: "typecheck", Usage: "check the program before running it: off, on, strict"},
+		{Name: "typecheck", Usage: "check the program before running it: off, types, strict (on aliases types)"},
 		{Name: "prompt", Usage: "synthesize and execute a script from a natural language prompt"},
 		{Name: "validate", Usage: "validate script structure, tool signatures, and syntax without executing"},
 		{Name: "repair", Usage: "automatically attempt script repair using configured model if execution fails"},
@@ -239,6 +242,7 @@ var handFlagIndex = map[string][]HandFlag{
 		{Name: "permissions", Usage: "permission profiles in order, e.g. read,mine: all (default), net, read, readnet, strict, a script.profiles name, or raw:<flags>"},
 		{Name: "remote", Usage: "run the script on the daemon rather than here"},
 		{Name: "local", Usage: "run the script in this process (the default when the daemon is local)"},
+		{Name: "remote-file", Usage: "with --remote, send the script's name and let the daemon resolve it on its own script search path (#2168), instead of sending the file's text"},
 	},
 	"schema": {
 		{Name: "format", Usage: "json-schema, openapi, typescript or mcp"},

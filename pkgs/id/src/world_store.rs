@@ -28,8 +28,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail, ensure};
 
 use crate::world::{
-    JOURNAL_VERSION, JOURNAL_VERSION_EXECUTION_PROFILE, JournalEntry, WorldCore, WorldEventKind,
-    WorldHandle, WorldJournal, WorldLimits, WorldProgram, journal_version_required_by,
+    JOURNAL_VERSION, JournalEntry, WorldCore, WorldEventKind, WorldHandle, WorldJournal,
+    WorldLimits, WorldProgram, journal_version_required_by,
 };
 use crate::world_session::{WorldService, module_hash};
 
@@ -236,6 +236,34 @@ impl WorldJournal for FileJournal {
 
     fn replication_header_version(&self) -> Option<u32> {
         Some(self.version)
+    }
+
+    fn append_transaction(&mut self, transaction: &[JournalEntry]) -> Result<()> {
+        ensure!(
+            !self.broken,
+            "world journal is unusable after a failed compaction"
+        );
+        ensure!(!transaction.is_empty(), "empty world journal transaction");
+        let mut entries = read_journal_entries(&self.path)?;
+        ensure!(
+            matches!(entries.first(), Some(JournalEntry::Created { .. })),
+            "world journal {} has no header for transaction",
+            self.path.display()
+        );
+        let required = transaction
+            .iter()
+            .map(journal_version_required_by)
+            .max()
+            .unwrap_or(self.version)
+            .max(self.version);
+        if let Some(JournalEntry::Created { version, .. }) = entries.first_mut() {
+            *version = required;
+        }
+        entries.extend(transaction.iter().cloned());
+        // `compact` builds and syncs a complete sibling journal before a
+        // single rename, so a failed transaction leaves the previous journal
+        // intact and a crash sees either all entries or none of them.
+        self.compact(&entries)
     }
 
     fn compact(&mut self, entries: &[JournalEntry]) -> Result<()> {
@@ -1192,6 +1220,52 @@ mod tests {
     }
 
     #[test]
+    fn write_lease_entries_survive_jsonl_reopen_with_epoch_intact() {
+        // Design #2819 phase 2 (#3804): lease entries appended to a
+        // fresh (version 1) journal bump its header to version 7 on
+        // first write, and a reopen + replay rebuilds the same lease:
+        // holder, monotonic epoch, term, and transition history.
+        use crate::world::{
+            JOURNAL_VERSION_WRITE_LEASE, JournalEntry as Entry, WorldCore, WorldJournal,
+            WorldLimits,
+        };
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let (mut journal, _) = FileJournal::open(&path, "w").unwrap();
+        journal
+            .append(&Entry::LeaseHandedOff {
+                from: "do".to_owned(),
+                to: "native-1".to_owned(),
+                epoch: 1,
+                expires_at_ms: Some(30_000),
+            })
+            .unwrap();
+        journal
+            .append(&Entry::LeaseRenewed {
+                holder: "native-1".to_owned(),
+                epoch: 1,
+                expires_at_ms: 40_000,
+            })
+            .unwrap();
+        drop(journal);
+
+        let (_journal, entries) = FileJournal::open(&path, "w").unwrap();
+        assert!(matches!(
+            entries[0],
+            Entry::Created {
+                version: JOURNAL_VERSION_WRITE_LEASE,
+                ..
+            }
+        ));
+        let restored = WorldCore::restore("w", WorldLimits::default(), entries).unwrap();
+        let lease = restored.core.write_lease();
+        assert_eq!(lease.holder.as_deref(), Some("native-1"));
+        assert_eq!(lease.epoch, 1);
+        assert_eq!(lease.expires_at_ms, Some(40_000));
+        assert_eq!(lease.transitions().count(), 2);
+    }
+
+    #[test]
     fn replication_snapshot_repairs_an_unterminated_torn_tail() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("journal.jsonl");
@@ -2087,6 +2161,7 @@ mod tests {
             caps_ceiling: None,
             schedules: None,
             transfers: None,
+            lease: None,
             snapshot: "s".to_owned(),
             events: Vec::new(),
             admin_history: None,
@@ -2206,7 +2281,7 @@ mod tests {
             matches!(
                 entries[0],
                 JournalEntry::Created {
-                    version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                    version: crate::world::JOURNAL_VERSION_EXECUTION_PROFILE,
                     ..
                 }
             ),
@@ -2252,7 +2327,7 @@ mod tests {
         assert!(matches!(
             entries[0],
             JournalEntry::Created {
-                version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                version: crate::world::JOURNAL_VERSION_EXECUTION_PROFILE,
                 ..
             }
         ));
@@ -2260,7 +2335,7 @@ mod tests {
         assert!(matches!(
             on_disk[0],
             JournalEntry::Created {
-                version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                version: crate::world::JOURNAL_VERSION_EXECUTION_PROFILE,
                 ..
             }
         ));
@@ -2269,6 +2344,95 @@ mod tests {
             2,
             "no entry is lost in the bump: {on_disk:?}"
         );
+    }
+
+    #[test]
+    fn a_legacy_v1_journal_holding_builder_audit_is_bumped_on_open() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let legacy = [
+            JournalEntry::Created {
+                world_id: "w".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            JournalEntry::BuilderInstalled {
+                by: 7,
+                module_hash: "module".to_owned(),
+                seed: 9,
+            },
+        ];
+        let text: String = legacy
+            .iter()
+            .map(|entry| format!("{}\n", serde_json::to_string(entry).unwrap()))
+            .collect();
+        std::fs::write(&path, text).unwrap();
+
+        let (_, entries) = FileJournal::open(&path, "w").unwrap();
+        assert!(matches!(
+            entries[0],
+            JournalEntry::Created {
+                version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                ..
+            }
+        ));
+        assert!(matches!(
+            entries[1],
+            JournalEntry::BuilderInstalled { by: 7, .. }
+        ));
+        assert_eq!(journal_entries(dir.path()), entries);
+    }
+
+    #[test]
+    fn install_event_and_builder_audit_are_one_journal_transaction() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let transaction = [
+            JournalEntry::Committed {
+                event: crate::world::WorldEvent {
+                    sequence: 1,
+                    participant_id: 0,
+                    kind: WorldEventKind::ProgramInstalled {
+                        module_hash: "module".to_owned(),
+                        seed: 9,
+                        provenance: None,
+                        trust: None,
+                    },
+                },
+            },
+            JournalEntry::BuilderInstalled {
+                by: 7,
+                module_hash: "module".to_owned(),
+                seed: 9,
+            },
+        ];
+        let (mut journal, _) = FileJournal::open(&path, "w").unwrap();
+
+        // A staging-file failure happens before replacement, leaving the
+        // original complete journal and neither half of the transaction.
+        let staging_dir = path.with_extension("jsonl.tmp");
+        std::fs::create_dir(&staging_dir).unwrap();
+        assert!(journal.append_transaction(&transaction).is_err());
+        std::fs::remove_dir(&staging_dir).unwrap();
+        let unchanged = journal_entries(dir.path());
+        assert_eq!(unchanged.len(), 1, "failed transaction was not appended");
+        WorldCore::restore("w", WorldLimits::default(), unchanged).unwrap();
+
+        journal.append_transaction(&transaction).unwrap();
+        drop(journal);
+        let committed = journal_entries(dir.path());
+        assert!(matches!(
+            committed[0],
+            JournalEntry::Created {
+                version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                ..
+            }
+        ));
+        assert!(matches!(committed[1], JournalEntry::Committed { .. }));
+        assert!(matches!(
+            committed[2],
+            JournalEntry::BuilderInstalled { by: 7, .. }
+        ));
+        WorldCore::restore("w", WorldLimits::default(), committed).unwrap();
     }
 
     #[cfg(feature = "sandbox")]

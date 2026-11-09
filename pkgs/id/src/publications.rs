@@ -63,8 +63,20 @@ use serde::{Deserialize, Serialize};
 /// with a fresher list can pass their own — this constant is the
 /// fallback for the boot path, which runs before any router exists.
 pub const KNOWN_EXPLORER_ROUTES: &[&str] = &[
-    "/", "/api", "/assets", "/blob", "/edit", "/explore", "/files", "/hash", "/invite", "/peers", "/settings",
-    "/view", "/world", "/ws",
+    "/",
+    "/api",
+    "/assets",
+    "/blob",
+    "/edit",
+    "/explore",
+    "/files",
+    "/hash",
+    "/invite",
+    "/peers",
+    "/settings",
+    "/view",
+    "/world",
+    "/ws",
 ];
 
 /// Where a published program is placed.
@@ -144,6 +156,25 @@ pub fn canonicalize_mount_path(path: &str) -> Result<String> {
         return Ok("/".to_string());
     }
     Ok(format!("/{}", segments.join("/")))
+}
+
+/// Normalise a mount path's spelling for comparison purposes:
+/// collapse duplicate separators, drop `.` segments and any trailing
+/// slash. Unlike [`canonicalize_mount_path`] this never fails — it
+/// exists so records that bypassed `publish()` (hand-edited files,
+/// direct `publications` pushes) still compare and shadow-match by
+/// the placement they actually name, not by their raw spelling:
+/// `//world` is the `/world` mount, and `/api/` is `/api`.
+fn normalise_mount_spelling(path: &str) -> String {
+    let segments: Vec<&str> = path
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .collect();
+    if segments.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", segments.join("/"))
+    }
 }
 
 /// Whether mount path `mount` shadows Explorer route `route`:
@@ -236,17 +267,35 @@ impl Registry {
     ///
     /// Fails when nothing is published at that placement.
     pub fn unpublish(&mut self, placement: &Placement) -> Result<Publication> {
-        let canonical = match placement {
-            Placement::PathMount { path } => Placement::PathMount {
-                path: canonicalize_mount_path(path)?,
-            },
+        // Compare placements by the mount they name, not by raw
+        // spelling: a record stored under a non-canonical spelling
+        // (it bypassed publish(), which canonicalises) must still be
+        // removable by its canonical name.
+        let wanted = match placement {
+            Placement::PathMount { path } => {
+                ensure!(
+                    path.starts_with('/'),
+                    "mount path must start with '/': {path:?}"
+                );
+                Placement::PathMount {
+                    path: normalise_mount_spelling(path),
+                }
+            }
             listener => listener.clone(),
         };
         let position = self
             .publications
             .iter()
-            .position(|existing| existing.placement == canonical)
-            .with_context(|| format!("nothing published at {}", canonical.describe()))?;
+            .position(|existing| match &existing.placement {
+                Placement::PathMount { path } => {
+                    wanted
+                        == Placement::PathMount {
+                            path: normalise_mount_spelling(path),
+                        }
+                }
+                listener => *listener == wanted,
+            })
+            .with_context(|| format!("nothing published at {}", wanted.describe()))?;
         Ok(self.publications.remove(position))
     }
 
@@ -260,8 +309,15 @@ impl Registry {
             .iter()
             .filter(|publication| !publication.acknowledge_shadow)
             .filter_map(|publication| match &publication.placement {
-                Placement::PathMount { path } => shadowed_explorer_route(path, explorer_routes)
-                    .map(|route| shadow_warning(publication, &route)),
+                // Match on the normalised spelling: a stored `//world`
+                // shadows the route `/world`, and the warning must
+                // name that route — matching the raw string instead
+                // names `/` (the only route `//world` textually
+                // prefixes), which is the wrong route.
+                Placement::PathMount { path } => {
+                    shadowed_explorer_route(&normalise_mount_spelling(path), explorer_routes)
+                        .map(|route| shadow_warning(publication, &route))
+                }
                 Placement::Listener { .. } => None,
             })
             .collect()
@@ -281,19 +337,22 @@ impl Registry {
         }
         let json = serde_json::to_string_pretty(self).context("serialising publications")?;
         let temp = path.with_extension("json.tmp");
-        std::fs::write(&temp, json)
-            .with_context(|| format!("writing {}", temp.display()))?;
-        std::fs::rename(&temp, path)
-            .with_context(|| format!("replacing {}", path.display()))?;
+        std::fs::write(&temp, json).with_context(|| format!("writing {}", temp.display()))?;
+        std::fs::rename(&temp, path).with_context(|| format!("replacing {}", path.display()))?;
         Ok(())
     }
 
     /// Load the registry from `path`. A missing file is an empty
-    /// registry; a malformed one is an error naming the file.
+    /// registry; a malformed one is an error naming the file. A file
+    /// that parses but violates the invariants `publish()` enforces
+    /// (empty world name, non-canonical mount path, duplicate
+    /// placement) is likewise an error naming the file — see
+    /// `validate_persisted`.
     ///
     /// # Errors
     ///
-    /// Fails when the file exists but cannot be read or parsed.
+    /// Fails when the file exists but cannot be read, parsed, or
+    /// validated.
     pub fn load(path: &Path) -> Result<Self> {
         // Read directly and treat only NotFound as an empty registry:
         // probing with `exists()` first would collapse permission and
@@ -306,13 +365,52 @@ impl Registry {
                 return Ok(Self::default());
             }
             Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("reading publications from {}", path.display())
-                });
+                return Err(error)
+                    .with_context(|| format!("reading publications from {}", path.display()));
             }
         };
-        serde_json::from_str(&text)
-            .with_context(|| format!("parsing publications from {}", path.display()))
+        let registry: Self = serde_json::from_str(&text)
+            .with_context(|| format!("parsing publications from {}", path.display()))?;
+        registry
+            .validate_persisted()
+            .with_context(|| format!("validating publications from {}", path.display()))?;
+        Ok(registry)
+    }
+
+    /// The load-side counterpart of [`Registry::publish`]'s
+    /// invariants. `save()` only ever writes sets `publish()` built,
+    /// so a persisted record that violates them is hand-edited or
+    /// corrupt — and restoring it verbatim would resurrect exactly
+    /// what `publish()` refuses: an empty world name, a mount path
+    /// stored under a non-canonical spelling (which the boot shadow
+    /// check then misjudges and `unpublish` cannot name), or the
+    /// same placement twice. Fail loudly instead, per the module's
+    /// persistence contract. The shadow gate itself is *not*
+    /// re-checked here: an unacknowledged shadow mount is a boot
+    /// warning ([`Registry::boot_warnings`]), not a corrupt record.
+    fn validate_persisted(&self) -> Result<()> {
+        let mut seen: Vec<&Placement> = Vec::new();
+        for publication in &self.publications {
+            ensure!(
+                !publication.world.trim().is_empty(),
+                "publication world name must not be empty"
+            );
+            if let Placement::PathMount { path } = &publication.placement {
+                let canonical = canonicalize_mount_path(path)?;
+                ensure!(
+                    canonical == *path,
+                    "mount path is not stored in canonical form: {path:?} \
+                     (canonical form is {canonical:?})"
+                );
+            }
+            ensure!(
+                !seen.contains(&&publication.placement),
+                "duplicate publication placement: {}",
+                publication.placement.describe()
+            );
+            seen.push(&publication.placement);
+        }
+        Ok(())
     }
 }
 
@@ -372,10 +470,7 @@ mod tests {
             shadowed_explorer_route("/world", routes).as_deref(),
             Some("/world")
         );
-        assert_eq!(
-            shadowed_explorer_route("/", routes).as_deref(),
-            Some("/")
-        );
+        assert_eq!(shadowed_explorer_route("/", routes).as_deref(), Some("/"));
         assert_eq!(
             shadowed_explorer_route("/api", routes).as_deref(),
             Some("/api")
@@ -436,11 +531,7 @@ mod tests {
             .unwrap();
         let mut other = mount("/arena", false);
         other.world = "other".to_string();
-        assert!(
-            registry
-                .publish(other, KNOWN_EXPLORER_ROUTES)
-                .is_err()
-        );
+        assert!(registry.publish(other, KNOWN_EXPLORER_ROUTES).is_err());
         assert_eq!(registry.publications.len(), 1);
     }
 
@@ -468,10 +559,7 @@ mod tests {
 
     #[test]
     fn save_load_round_trips_and_missing_file_is_empty() {
-        let dir = std::env::temp_dir().join(format!(
-            "id-publications-test-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("id-publications-test-{}", std::process::id()));
         let file = dir.join("publications.json");
         let missing = Registry::load(&file).unwrap();
         assert!(missing.publications.is_empty());
@@ -514,5 +602,96 @@ mod tests {
         let warnings = registry.boot_warnings(KNOWN_EXPLORER_ROUTES);
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("/api"), "{}", warnings[0]);
+    }
+
+    fn write_registry_file(name: &str, registry: &Registry) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "id-publications-test-{}-{name}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("publications.json");
+        std::fs::write(&file, serde_json::to_string(registry).unwrap()).unwrap();
+        file
+    }
+
+    #[test]
+    fn load_rejects_a_duplicate_placement_naming_the_file() {
+        let mut first = mount("/arena", false);
+        first.world = "one".to_string();
+        let mut second = mount("/arena", false);
+        second.world = "two".to_string();
+        let file = write_registry_file(
+            "dup",
+            &Registry {
+                publications: vec![first, second],
+            },
+        );
+        let err = Registry::load(&file).unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("duplicate"), "{text}");
+        assert!(
+            text.contains(&file.display().to_string()),
+            "error must name the file: {text}"
+        );
+    }
+
+    #[test]
+    fn load_rejects_an_empty_world_name() {
+        let mut record = mount("/arena", false);
+        record.world = "  ".to_string();
+        let file = write_registry_file(
+            "empty-world",
+            &Registry {
+                publications: vec![record],
+            },
+        );
+        let err = Registry::load(&file).unwrap_err();
+        assert!(format!("{err:#}").contains("world name"), "{err:#}");
+    }
+
+    #[test]
+    fn load_rejects_a_non_canonical_mount_path() {
+        for spelling in ["/api/", "//world", "/games//arena"] {
+            let file = write_registry_file(
+                "non-canonical",
+                &Registry {
+                    publications: vec![mount(spelling, false)],
+                },
+            );
+            assert!(
+                Registry::load(&file).is_err(),
+                "stored spelling {spelling} must not load"
+            );
+        }
+    }
+
+    #[test]
+    fn boot_warning_names_the_route_for_any_spelling() {
+        // Stored outside publish(): `//world` is the `/world` mount,
+        // and the warning must name `/world` — matching the raw
+        // string names `/` instead.
+        let mut registry = Registry::default();
+        registry.publications.push(mount("//world", false));
+        let warnings = registry.boot_warnings(KNOWN_EXPLORER_ROUTES);
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].contains("route /world"),
+            "warning must name the shadowed route: {}",
+            warnings[0]
+        );
+    }
+
+    #[test]
+    fn unpublish_by_canonical_name_removes_a_non_canonically_stored_record() {
+        let mut registry = Registry::default();
+        registry.publications.push(mount("/api/", false));
+        let removed = registry
+            .unpublish(&Placement::PathMount {
+                path: "/api".to_string(),
+            })
+            .unwrap();
+        assert_eq!(removed.world, "arena");
+        assert!(registry.publications.is_empty());
     }
 }

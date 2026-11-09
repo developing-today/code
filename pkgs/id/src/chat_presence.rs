@@ -51,7 +51,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 
@@ -161,7 +161,9 @@ impl PresenceHeartbeat {
         let Ok(signature) = Signature::from_slice(&self.signature) else {
             return false;
         };
-        verifying_key.verify(&self.signing_bytes(), &signature).is_ok()
+        verifying_key
+            .verify_strict(&self.signing_bytes(), &signature)
+            .is_ok()
     }
 
     /// Whether the heartbeat claims typing in `channel`.
@@ -471,7 +473,17 @@ pub fn encode_frame(heartbeat: &PresenceHeartbeat) -> Vec<u8> {
 #[must_use]
 pub fn decode_frame(frame: &[u8]) -> Option<PresenceHeartbeat> {
     let body = frame.strip_prefix(PRESENCE_FRAME_MAGIC)?;
-    postcard::from_bytes(body).ok()
+    // `take_from_bytes`, not `from_bytes`: trailing bytes after the
+    // heartbeat must refuse the frame, not be silently ignored — the
+    // signature is verified over a canonical re-encoding of the parsed
+    // fields, so an unsigned suffix would otherwise give one signed
+    // heartbeat many accepted byte spellings (#6197; same pattern as
+    // world/replication.rs).
+    let (heartbeat, rest) = postcard::take_from_bytes(body).ok()?;
+    if !rest.is_empty() {
+        return None;
+    }
+    Some(heartbeat)
 }
 
 #[cfg(test)]
@@ -691,6 +703,54 @@ mod tests {
     }
 
     #[test]
+    fn frames_refuse_trailing_bytes() {
+        // #6197 oracle: the full-consumption invariant — a frame is exactly
+        // one postcard value after the magic; any remainder refuses it,
+        // while the genuine frame still decodes.
+        let chan = channel("general");
+        let hb = heartbeat(key(1), vec![chan], 7_100);
+        let frame = encode_frame(&hb);
+        assert_eq!(decode_frame(&frame), Some(hb.clone()));
+
+        let mut trailing_byte = frame.clone();
+        trailing_byte.push(0x00);
+        assert_eq!(decode_frame(&trailing_byte), None);
+
+        let mut trailing_garbage = frame.clone();
+        trailing_garbage.extend_from_slice(b"garbage!!");
+        assert_eq!(decode_frame(&trailing_garbage), None);
+
+        let mut trailing_second = frame.clone();
+        trailing_second.extend_from_slice(&postcard::to_allocvec(&hb).unwrap());
+        assert_eq!(decode_frame(&trailing_second), None);
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn frames_refuse_any_trailing_suffix(
+            node_byte in any::<u8>(),
+            ts in any::<u64>(),
+            suffix in proptest::collection::vec(any::<u8>(), 1..32),
+        ) {
+            // #6197 property form of the full-consumption invariant
+            // (oracle: the invariant itself, checked over generated
+            // heartbeats and arbitrary nonempty suffixes): the genuine
+            // frame round-trips, the suffixed frame never decodes.
+            let chan = channel("general");
+            let hb = heartbeat(key(node_byte), vec![chan], ts);
+            let frame = encode_frame(&hb);
+            prop_assert_eq!(decode_frame(&frame), Some(hb));
+            let mut suffixed = frame;
+            suffixed.extend_from_slice(&suffix);
+            prop_assert_eq!(decode_frame(&suffixed), None);
+        }
+    }
+
+    #[test]
     fn duplicate_delivery_does_not_extend_expiry() {
         // A captured heartbeat re-delivered inside the freshness window is
         // accepted (equal stamp, latest arrival wins) but must not extend the
@@ -710,7 +770,10 @@ mod tests {
             Liveness::Offline
         );
         let roster = table.roster_at(&chan, &[alice], replay_at);
-        assert!(!roster[0].typing, "a replayed typing claim must not refresh");
+        assert!(
+            !roster[0].typing,
+            "a replayed typing claim must not refresh"
+        );
     }
 
     #[test]
@@ -734,8 +797,43 @@ mod tests {
         forged.ts += 1;
         assert!(!forged.verify());
         let mut forged = hb;
-        forged.node = SigningKey::from_bytes(&[8u8; 32]).verifying_key().to_bytes();
+        forged.node = SigningKey::from_bytes(&[8u8; 32])
+            .verifying_key()
+            .to_bytes();
         assert!(!forged.verify());
+    }
+
+    #[test]
+    fn verify_rejects_the_small_order_identity_forgery() {
+        // #1386: the identity point is a small-order key, and the shared
+        // forgery (R = identity, S = 0) passes plain verify for any
+        // message under it — only verify_strict keeps it out of the
+        // presence authentication gate.
+        use crate::test_forgeries::{IDENTITY_KEY, identity_forgery};
+        let chan = channel("general");
+        let mut hb = heartbeat(IDENTITY_KEY, vec![chan], 9_600);
+        hb.signature = identity_forgery().to_vec();
+        assert!(!hb.verify());
+    }
+
+    #[test]
+    fn verify_rejects_a_non_canonical_s() {
+        // #1386: a genuine signature mutated to S + L must be refused,
+        // while the original verifies.
+        use crate::test_forgeries::with_non_canonical_s;
+        let chan = channel("general");
+        let alice_key = SigningKey::from_bytes(&[7u8; 32]);
+        let alice = alice_key.verifying_key().to_bytes();
+        let mut hb = heartbeat(alice, vec![chan], 9_700);
+        hb.sign(&alice_key);
+        assert!(hb.verify());
+        let signature: [u8; 64] = hb
+            .signature
+            .clone()
+            .try_into()
+            .expect("signed heartbeat carries a 64-byte signature");
+        hb.signature = with_non_canonical_s(signature).to_vec();
+        assert!(!hb.verify());
     }
 
     #[test]
@@ -808,5 +906,59 @@ mod tests {
         let stored = &entries.get(&alice).expect("heartbeat stored").heartbeat;
         assert_eq!(stored.channels, vec![chan]);
         assert_eq!(stored.typing, vec![chan]);
+    }
+    #[test]
+    fn update_at_dedups_wire_channels_before_the_cap() {
+        // #4404: a decoded wire heartbeat may repeat a channel (the constructor
+        // dedups, but the wire carries the raw signed list). Duplicates must not
+        // displace distinct channels the heartbeat genuinely claims.
+        let table = PresenceTable::new();
+        let alice = key(1);
+        let a = channel("a");
+        let b = channel("b");
+        let mut raw = vec![a; MAX_HEARTBEAT_CHANNELS];
+        raw.push(b);
+        let wire = PresenceHeartbeat {
+            node: alice,
+            channels: raw,
+            typing: Vec::new(),
+            ts: 4_100,
+            signature: Vec::new(),
+        };
+        // Through the encode/decode round trip, as the gossip plane carries it.
+        let frame = encode_frame(&wire);
+        let decoded = decode_frame(&frame).expect("presence frame decodes");
+        assert!(table.update_at(decoded, 4_100, &|_, _| true));
+        assert_eq!(table.liveness_at(&alice, &a, 4_100), Liveness::Live);
+        assert_eq!(
+            table.liveness_at(&alice, &b, 4_100),
+            Liveness::Live,
+            "[A x64, B] must keep B live: duplicates fill the cap, not displace B"
+        );
+    }
+
+    #[test]
+    fn update_at_keeps_every_distinct_channel_past_duplicate_fill() {
+        // [A x63, B, C]: after dedup only three distinct channels exist, so all
+        // three survive the cap — C must not be truncated away.
+        let table = PresenceTable::new();
+        let alice = key(1);
+        let (a, b, c) = (channel("a"), channel("b"), channel("c"));
+        let mut raw = vec![a; MAX_HEARTBEAT_CHANNELS - 2];
+        raw.push(b);
+        raw.push(c);
+        let wire = PresenceHeartbeat {
+            node: alice,
+            channels: raw,
+            typing: Vec::new(),
+            ts: 4_200,
+            signature: Vec::new(),
+        };
+        let frame = encode_frame(&wire);
+        let decoded = decode_frame(&frame).expect("presence frame decodes");
+        assert!(table.update_at(decoded, 4_200, &|_, _| true));
+        for chan in [a, b, c] {
+            assert_eq!(table.liveness_at(&alice, &chan, 4_200), Liveness::Live);
+        }
     }
 }
