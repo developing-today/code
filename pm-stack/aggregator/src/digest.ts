@@ -277,8 +277,7 @@ export function buildDigest(inputs: DigestInputs): Digest {
       .filter(
         (p) =>
           (p.freshness?.state ?? p.state) === "error" ||
-          (p.freshness?.state ?? p.state) === "stale" ||
-          (p.freshness?.state ?? p.state) === "lapsed",
+          (p.freshness?.state ?? p.state) === "stale",
       )
       .map((p) => p.provider);
     quotaSection = {

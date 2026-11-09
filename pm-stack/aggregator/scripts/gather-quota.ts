@@ -365,8 +365,6 @@ interface ProviderRun {
  */
 function finalizeRun(id: string, entries: QuotaCurrentEntry[], t0: number): ProviderRun {
   const anyOk = entries.some((e) => e.state === "ok");
-  const anyLapsed = entries.some((e) => e.state === "lapsed");
-  const anyError = entries.some((e) => e.state === "error");
   const anyMeasured = entries.some((e) => entryHasMeasuredWindow(e));
   if (anyOk && !anyMeasured) {
     const reason =
@@ -378,18 +376,18 @@ function finalizeRun(id: string, entries: QuotaCurrentEntry[], t0: number): Prov
     }
     return { id, state: "error", ms: Date.now() - t0, entries, error: reason };
   }
-  const firstBad = entries.find((e) => e.state !== "ok");
+  const firstFailure = entries.find((e) => e.state !== "ok" && e.state !== "lapsed");
   // A run whose only non-ok rows are planned lapses is terminal, not
   // failed: reporting it as "error" would trip #1268 retention and
   // replace the lapsed rows with last-known ok readings, hiding the
   // lapse the hub must show.
-  const onlyLapsed = !anyOk && anyLapsed && !anyError;
+  const onlyLapsed = entries.length > 0 && entries.every((e) => e.state === "lapsed");
   return {
     id,
     state: anyOk ? "ok" : onlyLapsed ? "lapsed" : "error",
     ms: Date.now() - t0,
     entries,
-    ...(!anyOk && !onlyLapsed && firstBad?.error ? { error: firstBad.error } : {}),
+    ...(!anyOk && !onlyLapsed && firstFailure?.error ? { error: firstFailure.error } : {}),
   };
 }
 

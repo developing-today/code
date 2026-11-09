@@ -455,6 +455,13 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
   }
   if (result.usage != null) entry.usage = result.usage;
 
+  if (state === "lapsed") {
+    // The provider may leave old usage alongside its lapse signal.
+    // Preserve the raw response for evidence, but never publish those
+    // percentages as a fresh quota window.
+    return entry;
+  }
+
   const pushWindow = (name: string, raw: RawWindow | null | undefined): void => {
     const pct = isFiniteNumber(raw?.usedPercent) ? raw.usedPercent : null;
     // Percent is bounded by the window's own 100-point limit (#2571);
@@ -476,7 +483,7 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
       resetsAt: normalizeResetAt(raw?.resetAt),
       measuredAt,
       source: GATHERER_SOURCE,
-      state: entry.state === "lapsed" ? "lapsed" : result.ok ? "ok" : "error",
+      state: result.ok ? "ok" : "error",
     });
   };
   const usageObj = result.usage;
