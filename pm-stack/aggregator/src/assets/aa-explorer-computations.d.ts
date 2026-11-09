@@ -49,6 +49,7 @@ export function computeRecommendations<
   empty: string | null;
 };
 export function normName(value: unknown): string;
+export function unpricedScoredPoints<T extends { score?: number | null; cost?: number | null; family?: string; effort?: string | null }>(points: T[]): T[];
 export function projectTask(
   model: any,
   settings: Record<string, number | string>,

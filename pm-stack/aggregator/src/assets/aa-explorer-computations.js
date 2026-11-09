@@ -262,3 +262,20 @@ export function projectTask(e, settings, aaPoints, caiPoints) {
   if (timing && timing.tps) time = turns * ((timing.ttft || 0) + answer / timing.tps + (Number(settings.overheadSec) || 0));
   return { cost: cost, time: time, band: band };
 }
+
+export function unpricedScoredPoints(points) {
+  // #1400 remainder: configurations that carry a score but no published
+  // cost. They cannot appear on any cost chart, so the explorer lists
+  // them as detail-opening buttons instead. Input order is the caller's
+  // visible set (filters/hidden already applied); this helper only
+  // selects and orders: score descending, then family/effort for a
+  // stable, scannable list. No score/cost computation happens here.
+  return (points || [])
+    .filter(function (p) { return p && p.score != null && p.cost == null; })
+    .slice()
+    .sort(function (a, b) {
+      return (b.score - a.score)
+        || String(a.family || "").localeCompare(String(b.family || ""))
+        || String(a.effort || "").localeCompare(String(b.effort || ""));
+    });
+}
