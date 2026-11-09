@@ -456,8 +456,8 @@
     },
     {
       "id": "mcpx.container.tier2",
-      "paths": ["pkgs/mcpx/scripts/tier2-containers.sh", "pkgs/mcpx/Containerfile"],
-      "invocation": "docker build and tier2-containers.sh legs: alpine-nonexec, alpine-bunmusl-exec, scratch, distroless-static, distroless-cc-deno",
+      "paths": ["pkgs/mcpx/scripts/tier2-containers.sh", "pkgs/mcpx/container-image.nix"],
+      "invocation": "nix build .#packages.x86_64-linux.mcpx-container plus tier2-containers.sh legs: alpine-nonexec, alpine-bunmusl-exec, scratch, distroless-static, distroless-cc-deno",
       "venue": {
         "workflow": ".github/workflows/mcpx-tier2-containers.yml",
         "job_step": "image and legs",
